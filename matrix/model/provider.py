@@ -38,6 +38,30 @@ class EmbeddingProviderType(str, Enum):
     OPENAI = "openai"
 
 
+class OpenResponsesFlavor(str, Enum):
+    """Which OpenAI-compatible server is on the other end of the wire.
+
+    The wire protocol is the same across these flavors (the official
+    ``openai`` SDK speaks to all of them) but server-side quirks differ
+    enough that the adapter benefits from knowing which one it is talking
+    to. Examples of flavor-specific behavior observed in the project's
+    research probes:
+
+    * LM Studio suppresses reasoning events when ``store=True``.
+    * LM Studio leaves ``encrypted_content`` absent on reasoning items.
+    * Real OpenAI requires a non-empty ``api_key``; LM Studio tolerates one.
+
+    Use :attr:`OTHER` for any OpenAI-compatible endpoint that is not
+    explicitly modelled (Ollama, vLLM, llama.cpp, Together, OpenRouter,
+    etc.) — the adapter will treat it conservatively and apply no
+    flavor-specific optimisations.
+    """
+
+    OPENAI = "openai"
+    LMSTUDIO = "lmstudio"
+    OTHER = "other"
+
+
 class _HttpApiKeyConfig(BaseModel):
     """Shared shape for HTTP providers authenticated by an API key.
 
@@ -57,7 +81,17 @@ class _HttpApiKeyConfig(BaseModel):
 
 
 class OpenResponsesConfig(_HttpApiKeyConfig):
-    """Connection settings for the ``openresponses`` LLM provider."""
+    """Connection settings for the ``openresponses`` LLM provider.
+
+    Carries a :attr:`flavor` discriminator so the adapter can apply
+    server-specific quirk handling without proliferating provider
+    enum values for every OpenAI-compatible endpoint variant.
+    """
+
+    flavor: OpenResponsesFlavor = Field(
+        default=OpenResponsesFlavor.OTHER,
+        description="Identifies which OpenAI-compatible server is on the other end so the adapter can apply flavor-specific behavior. Defaults to OTHER (conservative; no quirk handling applied).",
+    )
 
 
 class OpenAIConfig(_HttpApiKeyConfig):
