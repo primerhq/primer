@@ -1,18 +1,20 @@
-"""Pydantic models describing LLM and embedding provider configuration.
+"""Pydantic models describing LLM, embedding, and toolset provider configuration.
 
-These types define how providers are declared in configuration: which backend
-they talk to, which models are permitted, the provider-specific connection
-details, and the rate limits the application should enforce against them.
+These types define how providers are declared in configuration: which
+backend they talk to, which models are permitted, the provider-specific
+connection details, and the rate limits the application should enforce
+against them.
 
-Two top-level provider kinds are supported:
+Three top-level provider kinds are supported:
 
 * :class:`LLMProvider` — chat / completion backends.
 * :class:`EmbeddingProvider` — vector-embedding backends.
+* :class:`Toolset` — tool sources (internal registry or MCP server).
 """
 
 from enum import Enum
 
-from pydantic import BaseModel, Field, HttpUrl, PositiveInt, SecretStr
+from pydantic import BaseModel, Field, HttpUrl, PositiveInt, SecretStr, model_validator
 
 from matrix.model.common import Identifiable
 
@@ -201,3 +203,129 @@ class EmbeddingProvider(Identifiable):
         ...,
         description="Rate-limit settings enforced when calling this provider.",
     )
+
+
+# ===========================================================================
+# Toolset configuration (tool sources: internal registry or MCP server)
+# ===========================================================================
+
+
+class ToolsetProviderType(str, Enum):
+    """Supported toolset provider backends.
+
+    The string value is what gets serialized in configuration files, so it
+    must remain stable across releases.
+    """
+
+    INTERNAL = "internal"
+    MCP = "mcp"
+
+
+class TransportType(str, Enum):
+    """Transport mechanisms supported by the MCP toolset provider."""
+
+    STDIO = "stdio"
+    HTTP = "http"
+
+
+class StdioConfig(BaseModel):
+    """Stdio transport for an MCP server — launches a subprocess and
+    speaks the MCP protocol over its stdin/stdout.
+    """
+
+    command: list[str] = Field(
+        ...,
+        min_length=1,
+        description="Command (argv) to launch the MCP server subprocess.",
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Environment variables to set when launching the subprocess.",
+    )
+
+
+class HttpConfig(BaseModel):
+    """HTTP transport for an MCP server — connects to a remote endpoint
+    speaking MCP over HTTP (e.g. SSE / streamable HTTP).
+    """
+
+    url: str = Field(
+        ...,
+        min_length=1,
+        description="Base URL of the remote MCP server endpoint.",
+    )
+    headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="HTTP headers to include on every request to the MCP server (e.g. Authorization).",
+    )
+
+
+class McpConfig(BaseModel):
+    """Connection settings for an MCP toolset provider.
+
+    Carries a :attr:`transport` discriminator selecting how the client
+    talks to the MCP server, and a :attr:`config` field holding the
+    transport-specific details. The two MUST agree — a model validator
+    enforces consistency.
+    """
+
+    transport: TransportType = Field(
+        ...,
+        description="Which transport mechanism the MCP client uses to talk to the server.",
+    )
+    config: StdioConfig | HttpConfig = Field(
+        ...,
+        description="Transport-specific connection details. Must match ``transport``.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_config_matches_transport(self) -> "McpConfig":
+        if self.transport == TransportType.STDIO and not isinstance(self.config, StdioConfig):
+            raise ValueError(
+                "transport='stdio' requires a StdioConfig in 'config'"
+            )
+        if self.transport == TransportType.HTTP and not isinstance(self.config, HttpConfig):
+            raise ValueError(
+                "transport='http' requires an HttpConfig in 'config'"
+            )
+        return self
+
+
+class Toolset(Identifiable):
+    """A configured tool source.
+
+    Conceptually a *set of tools* the application can offer to LLMs.
+    Tools themselves are not enumerated here — they are resolved at
+    runtime from the provider:
+
+    * ``internal`` — tools registered in the application's internal
+      registry (looked up by toolset ``id``). No additional config is
+      needed; ``config`` MUST be ``None``.
+    * ``mcp`` — tools queried from an MCP server. ``config`` MUST be an
+      :class:`McpConfig` describing the transport and its connection
+      details.
+
+    The ``id`` (inherited from :class:`Identifiable`) is a user-chosen
+    handle the application uses to refer to this toolset.
+    """
+
+    provider: ToolsetProviderType = Field(
+        ...,
+        description="Which toolset provider backend this entry targets.",
+    )
+    config: McpConfig | None = Field(
+        default=None,
+        description="Provider-specific config. Required for 'mcp', must be omitted for 'internal'.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_config_matches_provider(self) -> "Toolset":
+        if self.provider == ToolsetProviderType.MCP and self.config is None:
+            raise ValueError(
+                "provider='mcp' requires a McpConfig in 'config'"
+            )
+        if self.provider == ToolsetProviderType.INTERNAL and self.config is not None:
+            raise ValueError(
+                "provider='internal' must not have a 'config'"
+            )
+        return self

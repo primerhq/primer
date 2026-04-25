@@ -36,9 +36,12 @@ the extended wrapper only when no reasonable subset equivalent captures the
 signal without information loss.
 """
 
+from collections.abc import Iterable
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from matrix.model.common import Describeable
 
 
 # ===========================================================================
@@ -146,6 +149,98 @@ class DocumentPart(_BinarySourceMixin):
     filename: str | None = Field(
         default=None,
         description="OpenAI-only filename hint; ignored by other providers.",
+    )
+
+
+# ---- Universal tool round-trip parts ----------------------------------------
+
+
+class ToolCallPart(BaseModel):
+    """Records a tool call the model made in a previous turn.
+
+    Universal across all four chat providers (OpenAI, Anthropic, Google,
+    Ollama). Appears as a part inside an ``assistant``-role
+    :class:`Message` to preserve the model's tool-call request when
+    rebuilding the message history for a follow-up turn.
+
+    The ``id`` field correlates with a matching :class:`ToolResultPart`
+    in a subsequent ``tool``-role message; adapters use it to wire the
+    request back to its result on the provider's wire format.
+
+    Adapter wrapping:
+
+    * OpenAI Responses: extracted as a top-level ``function_call`` input
+      item (not nested under the assistant message).
+    * Anthropic: emitted as a ``tool_use`` content block inside the
+      assistant message.
+    * Google GenAI: emitted as a ``Part(function_call=FunctionCall(id=, name=, args=))``
+      inside the model's content.
+    * Ollama: emitted on the assistant message's parallel ``tool_calls``
+      field.
+    """
+
+    type: Literal["tool_call"] = Field(
+        default="tool_call",
+        description="Discriminator tag identifying this part as a tool call the assistant made.",
+    )
+    id: str = Field(
+        ...,
+        min_length=1,
+        description="Identifier correlating this call with its later ToolResultPart.",
+    )
+    name: str = Field(
+        ...,
+        min_length=1,
+        description="Name of the tool the model invoked.",
+    )
+    arguments: dict[str, Any] = Field(
+        ...,
+        description="Parsed arguments object the model passed to the tool.",
+    )
+
+
+class ToolResultPart(BaseModel):
+    """Records the result of executing a previously-requested tool call.
+
+    Universal across all four chat providers. Appears as a part inside a
+    ``tool``-role :class:`Message` to feed the tool's output back to the
+    model on the next turn. The ``id`` MUST match the originating
+    :class:`ToolCallPart`'s ``id``.
+
+    Adapter wrapping:
+
+    * OpenAI Responses: extracted as a top-level ``function_call_output``
+      input item (not nested under any message role).
+    * Anthropic: emitted as a ``tool_result`` content block inside a
+      synthesised user-role message.
+    * Google GenAI: emitted as a ``Part(function_response=FunctionResponse(id=, name=, response=))``
+      inside a user-role content.
+    * Ollama: emitted as a separate ``tool``-role message with the
+      output as ``content``.
+
+    The ``error`` flag lets the caller signal an execution failure (the
+    tool ran but returned an error, or the user denied the call); the
+    output string carries a human-readable explanation. Distinct from a
+    transport-level :class:`Error` event, which represents a stream
+    failure rather than a tool failure.
+    """
+
+    type: Literal["tool_result"] = Field(
+        default="tool_result",
+        description="Discriminator tag identifying this part as a tool execution result.",
+    )
+    id: str = Field(
+        ...,
+        min_length=1,
+        description="Identifier matching the originating ToolCallPart's id.",
+    )
+    output: str = Field(
+        ...,
+        description="Tool execution output as a string. Adapters that need structured payloads serialise to JSON.",
+    )
+    error: bool = Field(
+        default=False,
+        description="True if the output represents a tool execution failure or denial rather than a successful result.",
     )
 
 
@@ -277,29 +372,47 @@ class ExtendedPart(BaseModel):
 
 
 Part = Annotated[
-    TextPart | ImagePart | DocumentPart | ExtendedPart,
+    TextPart | ImagePart | DocumentPart | ToolCallPart | ToolResultPart | ExtendedPart,
     Field(discriminator="type"),
 ]
 """One element of a :class:`Message`'s ``parts`` list.
 
-Universal members (:class:`TextPart`, :class:`ImagePart`,
-:class:`DocumentPart`) are the primary surface — adapters should always
-prefer one of these when a reasonable mapping exists. Provider-specific
-content (audio, video, future additions) is reached through
-:class:`ExtendedPart`.
+Universal members are the primary surface — adapters should always
+prefer one of these when a reasonable mapping exists:
+
+* :class:`TextPart`, :class:`ImagePart`, :class:`DocumentPart` —
+  content modalities accepted by every chat backend.
+* :class:`ToolCallPart` — assistant's tool call from a previous turn,
+  preserved when rebuilding history. Belongs in ``assistant``-role
+  messages.
+* :class:`ToolResultPart` — result of executing a previously-requested
+  tool call. Belongs in ``tool``-role messages.
+
+Provider-specific content (audio, video, future additions) is reached
+through :class:`ExtendedPart`.
 """
 
 
 class Message(BaseModel):
     """A single chat message.
 
-    Roles map directly onto each provider: ``user`` and ``assistant`` are
-    universal; ``system`` is treated as a system instruction by adapters
-    (Anthropic surfaces this via the top-level ``system`` parameter,
-    Google via ``system_instruction``).
+    Roles map directly onto each provider:
+
+    * ``user`` — human input.
+    * ``assistant`` — model output (text, tool calls, etc.).
+    * ``system`` — system instruction. Surfaced by adapters via the
+      top-level ``system`` parameter (Anthropic) or
+      ``system_instruction`` (Google); inlined as a message for OpenAI
+      and Ollama.
+    * ``tool`` — carries one or more :class:`ToolResultPart`s produced
+      after executing the model's tool calls. Adapters lift to the
+      provider-specific surface (OpenAI top-level
+      ``function_call_output``, Anthropic user-role ``tool_result``
+      block, Google user-role ``function_response`` part, Ollama
+      ``tool``-role message).
     """
 
-    role: Literal["user", "assistant", "system"] = Field(
+    role: Literal["user", "assistant", "system", "tool"] = Field(
         ...,
         description="Speaker role for this message.",
     )
@@ -313,36 +426,45 @@ class Message(BaseModel):
 # ---- Tool definitions and choice -------------------------------------------
 
 
-class Tool(BaseModel):
+class Tool(Describeable):
     """A function tool the model may invoke during a chat turn.
 
     Lowest-common-denominator across the four surveyed providers: each
-    tool has a name, a free-form description, and a JSON Schema for its
-    arguments. Adapters wrap the same shape into provider-specific
-    envelopes:
+    tool is identified by a string ``id``, carries a free-form
+    ``description`` (both inherited from :class:`Describeable`), a
+    ``toolset_id`` linking it to the :class:`Toolset` it belongs to,
+    and a JSON Schema describing its argument object. Adapters wrap the
+    same shape into provider-specific envelopes:
 
-    * OpenAI Responses: ``{type: "function", name, description, parameters}``.
-    * Anthropic: ``{name, description, input_schema: parameters}``
-      (rename of the parameters key).
+    * OpenAI Responses: ``{type: "function", name=id, description, parameters=schema}``.
+    * Anthropic: ``{name=id, description, input_schema=schema}``
+      (rename of the schema key).
     * Google GenAI: nested under
-      ``Tool(function_declarations=[FunctionDeclaration(name=..., description=..., parameters_json_schema=parameters)])``.
+      ``Tool(function_declarations=[FunctionDeclaration(name=id, description=..., parameters_json_schema=schema)])``.
     * Ollama: older Chat Completions nesting,
-      ``{type: "function", function: {name, description, parameters}}``.
+      ``{type: "function", function: {name=id, description, parameters=schema}}``.
+
+    The :attr:`id` is the wire-level identifier the model uses to
+    invoke the tool — it appears as the ``name`` field in
+    :class:`ToolCallPart` and in every provider's tool-call payload.
+    The :attr:`toolset_id` ties the tool back to its origin so the
+    application can route :class:`ToolCallPart` invocations to the
+    correct :class:`Toolset` for execution.
 
     For Pydantic-defined arguments, callers can derive the schema:
-    ``parameters=MyArgsModel.model_json_schema()``.
+    ``schema=MyArgsModel.model_json_schema()``.
     """
 
-    name: str = Field(
+    # ``schema`` shadows BaseModel's deprecated ``schema()`` method; opt out
+    # of Pydantic's protected-namespace check so the field is allowed cleanly.
+    model_config = ConfigDict(protected_namespaces=())
+
+    toolset_id: str = Field(
         ...,
         min_length=1,
-        description="Unique tool identifier the model uses to invoke it.",
+        description="Identifier of the Toolset this tool belongs to (matches Toolset.id).",
     )
-    description: str = Field(
-        ...,
-        description="Free-form description of what the tool does and when to use it.",
-    )
-    parameters: dict[str, Any] = Field(
+    schema: dict[str, Any] = Field(
         ...,
         description="JSON Schema describing the tool's argument object.",
     )
@@ -974,3 +1096,120 @@ underlying signal. Provider-specific events are reached through
 :class:`ExtendedEvent`; consumers that don't care about extended content
 can ignore the entire branch with one pattern-match arm.
 """
+
+
+# ===========================================================================
+# Output → Input conversion
+# ===========================================================================
+
+
+def output_to_message(events: Iterable[StreamEvent]) -> Message:
+    """Build an assistant :class:`Message` from a stream of output events.
+
+    The default converter for round-tripping the model's output back into
+    the next turn's input history. Lets the caller take a stream of
+    :data:`StreamEvent`s, append the resulting :class:`Message` to the
+    chat history, append a separate ``tool``-role message carrying the
+    :class:`ToolResultPart`s, and re-invoke the LLM with the updated
+    history — uniform across every provider adapter.
+
+    Processed events:
+
+    * :class:`TextDelta` — accumulated by ``index`` (multiple deltas
+      with the same index concatenate into one :class:`TextPart`).
+    * :class:`ToolCallStart` — opens a new :class:`ToolCallPart` keyed
+      by ``id``.
+    * :class:`ToolCallEnd` — supplies the parsed ``arguments`` dict for
+      the matching :class:`ToolCallPart`.
+    * :class:`ToolCallDelta` — ignored. The End event already carries
+      the fully-parsed arguments dict; replaying the partial JSON
+      fragments is unnecessary.
+
+    Ignored events (not round-tripped by default):
+
+    * Lifecycle (:class:`StreamStart`, :class:`Done`, :class:`Error`).
+    * Telemetry (:class:`Usage`).
+    * :class:`ReasoningDelta` — preserving reasoning across turns is
+      provider-specific (Anthropic needs cryptographic signatures,
+      Google needs ``thought_signature``, OpenAI needs reasoning items
+      with ``encrypted_content``). The default converter drops it; a
+      reasoning-aware adapter can post-process the events before
+      conversion if needed.
+    * :class:`MediaDelta` — produced media (audio bytes, generated
+      images) is not typically round-tripped on the input side.
+    * :class:`ExtendedEvent` — provider-specific extras (citations,
+      logprobs, server-tool lifecycles, refusals, safety ratings, raw
+      reasoning) have no universal input mapping.
+
+    Parts in the returned :class:`Message` appear in **first-appearance
+    order** — text and tool-call blocks are interleaved according to
+    when each new ``index`` (for text) or ``id`` (for tool call) first
+    appeared in the stream.
+
+    Parameters
+    ----------
+    events
+        Iterable of stream events. Typically the caller buffers an
+        async stream into a list first
+        (``events = [e async for e in llm.stream(...)]``) and passes
+        that list here.
+
+    Returns
+    -------
+    Message
+        :class:`Message` with ``role="assistant"`` and parts derived
+        from the stream.
+
+    Raises
+    ------
+    ValueError
+        If the event stream contains no convertible events (no
+        :class:`TextDelta` and no :class:`ToolCallStart`). Callers
+        should handle empty or error-only streams before invoking this
+        converter.
+    """
+    text_buffers: dict[int, list[str]] = {}
+    tool_call_names: dict[str, str] = {}
+    tool_call_args: dict[str, dict[str, Any]] = {}
+
+    # Track first-appearance order with unified keys: ("text", index) or ("tool", id).
+    # Insertion-ordered list preserves the order text/tool blocks began streaming.
+    parts_order: list[tuple[Literal["text", "tool"], int | str]] = []
+
+    for event in events:
+        if isinstance(event, TextDelta):
+            if event.index not in text_buffers:
+                text_buffers[event.index] = []
+                parts_order.append(("text", event.index))
+            text_buffers[event.index].append(event.text)
+        elif isinstance(event, ToolCallStart):
+            if event.id not in tool_call_names:
+                parts_order.append(("tool", event.id))
+            tool_call_names[event.id] = event.name
+        elif isinstance(event, ToolCallEnd):
+            tool_call_args[event.id] = event.arguments
+        # All other events (StreamStart, Done, Error, Usage, ReasoningDelta,
+        # MediaDelta, ToolCallDelta, ExtendedEvent) are intentionally ignored.
+
+    parts: list[Part] = []
+    for kind, key in parts_order:
+        if kind == "text":
+            assert isinstance(key, int)
+            parts.append(TextPart(text="".join(text_buffers[key])))
+        else:  # "tool"
+            assert isinstance(key, str)
+            parts.append(
+                ToolCallPart(
+                    id=key,
+                    name=tool_call_names[key],
+                    arguments=tool_call_args.get(key, {}),
+                )
+            )
+
+    if not parts:
+        raise ValueError(
+            "no convertible events found in stream "
+            "(need at least one TextDelta or ToolCallStart)"
+        )
+
+    return Message(role="assistant", parts=parts)
