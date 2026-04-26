@@ -561,3 +561,121 @@ class TestLLMProviderConfigUnion:
         )
         assert isinstance(provider.config, GoogleConfig)
         assert provider.config.api_key.get_secret_value() == "api-x"
+
+
+from matrix.model.provider import AnthropicConfig
+
+
+class TestAnthropicProviderType:
+    def test_anthropic_enum_value(self) -> None:
+        from matrix.model.provider import LLMProviderType
+        assert LLMProviderType.ANTHROPIC.value == "anthropic"
+
+    def test_existing_values_unchanged(self) -> None:
+        from matrix.model.provider import LLMProviderType
+        assert LLMProviderType.OPENRESPONSES.value == "openresponses"
+        assert LLMProviderType.GEMINI.value == "gemini"
+
+
+class TestAnthropicConfig:
+    def test_constructed_with_api_key(self) -> None:
+        from pydantic import SecretStr
+        cfg = AnthropicConfig(api_key=SecretStr("sk-ant-test"))
+        assert cfg.api_key.get_secret_value() == "sk-ant-test"
+
+    def test_rejects_missing_api_key(self) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            AnthropicConfig()  # type: ignore[call-arg]
+
+
+class TestAnthropicConfigInUnion:
+    def test_llm_provider_accepts_anthropic_config(self) -> None:
+        from pydantic import SecretStr
+        from matrix.model.provider import (
+            LLMModel, LLMProvider, LLMProviderType, Limits,
+        )
+        provider = LLMProvider(
+            id="a1",
+            provider=LLMProviderType.ANTHROPIC,
+            models=[LLMModel(name="claude-sonnet-4-5", context_length=200_000)],
+            config=AnthropicConfig(api_key=SecretStr("sk-ant-x")),
+            limits=Limits(max_concurrency=2),
+        )
+        assert isinstance(provider.config, AnthropicConfig)
+
+
+class TestGeminiEmbeddingProviderType:
+    def test_gemini_enum_value(self) -> None:
+        from matrix.model.provider import EmbeddingProviderType
+        assert EmbeddingProviderType.GEMINI.value == "gemini"
+
+    def test_existing_values_unchanged(self) -> None:
+        from matrix.model.provider import EmbeddingProviderType
+        assert EmbeddingProviderType.OPENAI.value == "openai"
+        assert EmbeddingProviderType.HUGGINGFACE.value == "huggingface"
+
+
+class TestEmbeddingProviderConfigUnionGoogle:
+    def test_accepts_google_config_for_gemini(self) -> None:
+        from pydantic import SecretStr
+        from matrix.model.provider import (
+            EmbeddingModel,
+            EmbeddingProvider,
+            EmbeddingProviderType,
+            GoogleConfig,
+            Limits,
+        )
+        provider = EmbeddingProvider(
+            id="g1",
+            provider=EmbeddingProviderType.GEMINI,
+            models=[EmbeddingModel(name="text-embedding-004", length=768)],
+            config=GoogleConfig(api_key=SecretStr("api-x")),
+            limits=Limits(max_concurrency=2),
+        )
+        assert isinstance(provider.config, GoogleConfig)
+
+
+class TestOllamaProviderType:
+    def test_ollama_enum_value(self) -> None:
+        from matrix.model.provider import LLMProviderType
+        assert LLMProviderType.OLLAMA.value == "ollama"
+
+
+class TestOllamaConfig:
+    def test_constructed_with_url_only(self) -> None:
+        from pydantic import HttpUrl
+        from matrix.model.provider import OllamaConfig
+        cfg = OllamaConfig(url=HttpUrl("http://localhost:11434"))
+        assert cfg.api_key is None
+
+    def test_constructed_with_url_and_api_key(self) -> None:
+        from pydantic import HttpUrl, SecretStr
+        from matrix.model.provider import OllamaConfig
+        cfg = OllamaConfig(
+            url=HttpUrl("https://ollama.example.com"),
+            api_key=SecretStr("secret"),
+        )
+        assert cfg.api_key.get_secret_value() == "secret"
+
+    def test_rejects_missing_url(self) -> None:
+        from pydantic import ValidationError
+        from matrix.model.provider import OllamaConfig
+        with pytest.raises(ValidationError):
+            OllamaConfig()  # type: ignore[call-arg]
+
+
+class TestOllamaConfigInUnion:
+    def test_llm_provider_accepts_ollama_config(self) -> None:
+        from pydantic import HttpUrl
+        from matrix.model.provider import (
+            LLMModel, LLMProvider, LLMProviderType, Limits, OllamaConfig,
+        )
+        provider = LLMProvider(
+            id="o1",
+            provider=LLMProviderType.OLLAMA,
+            models=[LLMModel(name="llama3", context_length=8192)],
+            config=OllamaConfig(url=HttpUrl("http://localhost:11434")),
+            limits=Limits(max_concurrency=2),
+        )
+        assert isinstance(provider.config, OllamaConfig)

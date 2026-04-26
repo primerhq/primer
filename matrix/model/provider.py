@@ -28,6 +28,8 @@ class LLMProviderType(str, Enum):
 
     OPENRESPONSES = "openresponses"
     GEMINI = "gemini"
+    ANTHROPIC = "anthropic"
+    OLLAMA = "ollama"
 
 
 class EmbeddingProviderType(str, Enum):
@@ -39,6 +41,7 @@ class EmbeddingProviderType(str, Enum):
 
     HUGGINGFACE = "huggingface"
     OPENAI = "openai"
+    GEMINI = "gemini"
 
 
 class OpenResponsesFlavor(str, Enum):
@@ -135,6 +138,38 @@ class GoogleConfig(BaseModel):
     )
 
 
+class AnthropicConfig(BaseModel):
+    """Connection settings for the Anthropic LLM provider.
+
+    Targets the Anthropic API — single api_key auth. AWS Bedrock and
+    GCP Vertex variants warrant their own provider types if needed.
+    """
+    api_key: SecretStr = Field(
+        ...,
+        description="Anthropic API key.",
+    )
+
+
+class OllamaConfig(BaseModel):
+    """Connection settings for the Ollama LLM provider.
+
+    Targets a local or remote Ollama HTTP server. ``api_key`` is
+    optional — Ollama has no authentication by default but users may
+    deploy it behind a reverse proxy that enforces its own auth.
+    """
+    url: HttpUrl = Field(
+        ...,
+        description="Base URL of the Ollama HTTP endpoint (e.g. http://localhost:11434).",
+    )
+    api_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Optional bearer token forwarded as the Authorization header. "
+            "Useful when running Ollama behind a reverse proxy that enforces auth."
+        ),
+    )
+
+
 class OpenAIConfig(_HttpApiKeyConfig):
     """Connection settings for the OpenAI embedding provider.
 
@@ -220,7 +255,7 @@ class LLMProvider(Identifiable):
         min_length=1,
         description="Models permitted on this provider; must contain at least one.",
     )
-    config: OpenResponsesConfig | GoogleConfig = Field(
+    config: OpenResponsesConfig | GoogleConfig | AnthropicConfig | OllamaConfig = Field(
         ...,
         description="Backend-specific connection configuration; must match ``provider``.",
     )
@@ -249,7 +284,7 @@ class EmbeddingProvider(Identifiable):
         min_length=1,
         description="Models permitted on this provider; must contain at least one.",
     )
-    config: OpenAIConfig | HuggingFaceConfig = Field(
+    config: OpenAIConfig | HuggingFaceConfig | GoogleConfig = Field(
         ...,
         description="Backend-specific connection configuration; must match ``provider``.",
     )
