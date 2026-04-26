@@ -1,0 +1,96 @@
+"""Project-wide exception hierarchy.
+
+Compact hierarchy with room to grow. Every exception inherits from
+:class:`MatrixError` so callers can catch the project's errors as a
+single category. Each exception carries optional ``code``,
+``status_code``, and ``cause`` so adapters can plumb provider-specific
+context without losing the underlying traceback.
+"""
+
+from __future__ import annotations
+
+
+class MatrixError(Exception):
+    """Root of the matrix exception hierarchy.
+
+    All matrix-raised exceptions inherit from this class. Carries optional
+    structured context: ``code`` (provider-side error code, when known),
+    ``status_code`` (HTTP status, when applicable), and ``cause`` (the
+    wrapped underlying exception, also set on ``__cause__`` so tracebacks
+    chain naturally).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        status_code: int | None = None,
+        cause: Exception | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.status_code = status_code
+        self.cause = cause
+        if cause is not None:
+            self.__cause__ = cause
+
+    def __str__(self) -> str:
+        prefix_parts: list[str] = []
+        if self.status_code is not None:
+            prefix_parts.append(str(self.status_code))
+        if self.code is not None:
+            prefix_parts.append(self.code)
+        prefix = f"[{' '.join(prefix_parts)}] " if prefix_parts else ""
+        return f"{prefix}{self.message}"
+
+
+class ConfigError(MatrixError):
+    """Programmer or setup error — invalid configuration or arguments."""
+
+
+class ModelNotFoundError(ConfigError):
+    """Requested model isn't in the adapter's declared models list."""
+
+
+class UnsupportedContentError(MatrixError):
+    """Adapter cannot transmit this Part type to the provider.
+
+    Examples: AudioPart sent to Anthropic chat (Anthropic doesn't accept
+    audio); ImagePart sent to OpenAI embeddings (OpenAI embeddings are
+    text-only); DocumentPart sent to Ollama (no document surface).
+    """
+
+
+class ProviderError(MatrixError):
+    """Upstream provider returned an error.
+
+    Base class for all errors that originate from the provider's HTTP
+    response. Adapters wrap the provider SDK's exceptions into one of
+    the four subclasses below based on status code or exception type.
+    """
+
+
+class AuthenticationError(ProviderError):
+    """Provider rejected credentials (401-style)."""
+
+
+class RateLimitError(ProviderError):
+    """Provider rejected the request for rate-limit reasons (429-style)."""
+
+
+class BadRequestError(ProviderError):
+    """Provider rejected the request as malformed or invalid (400-style)."""
+
+
+class ServerError(ProviderError):
+    """Provider encountered an internal error (5xx)."""
+
+
+class NetworkError(MatrixError):
+    """Network-level failure — connection refused, DNS failure, timeout.
+
+    Distinct from :class:`ProviderError` because no response was received;
+    the failure is below the application protocol layer.
+    """

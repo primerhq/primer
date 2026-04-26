@@ -27,6 +27,7 @@ class LLMProviderType(str, Enum):
     """
 
     OPENRESPONSES = "openresponses"
+    GEMINI = "gemini"
 
 
 class EmbeddingProviderType(str, Enum):
@@ -57,6 +58,29 @@ class OpenResponsesFlavor(str, Enum):
     explicitly modelled (Ollama, vLLM, llama.cpp, Together, OpenRouter,
     etc.) — the adapter will treat it conservatively and apply no
     flavor-specific optimisations.
+    """
+
+    OPENAI = "openai"
+    LMSTUDIO = "lmstudio"
+    OTHER = "other"
+
+
+class OpenAIEmbeddingFlavor(str, Enum):
+    """Which OpenAI-compatible embedding server is on the other end of the wire.
+
+    The wire protocol is the same across these flavors (the official
+    ``openai`` SDK speaks to all of them) but server-side expectations
+    differ enough that the adapter benefits from knowing which one it
+    is talking to. Examples of flavor-specific behavior:
+
+    * Real OpenAI rejects empty ``api_key`` with 401.
+    * LM Studio tolerates empty ``api_key`` (unauthenticated by default)
+      but accepts non-empty keys (e.g. for a reverse proxy that enforces
+      its own auth).
+
+    Use :attr:`OTHER` for any OpenAI-compatible embedding endpoint that
+    is not explicitly modelled — the adapter will treat it conservatively
+    and require an api_key.
     """
 
     OPENAI = "openai"
@@ -96,8 +120,38 @@ class OpenResponsesConfig(_HttpApiKeyConfig):
     )
 
 
+class GoogleConfig(BaseModel):
+    """Connection settings for the Gemini LLM provider.
+
+    Targets the Gemini API (Google AI Studio) — single api_key auth.
+    Vertex AI uses a different auth model (GCP application default
+    credentials + project/location) and warrants its own provider type
+    if needed.
+    """
+
+    api_key: SecretStr = Field(
+        ...,
+        description="Gemini API key from Google AI Studio.",
+    )
+
+
 class OpenAIConfig(_HttpApiKeyConfig):
-    """Connection settings for the OpenAI embedding provider."""
+    """Connection settings for the OpenAI embedding provider.
+
+    Carries a :attr:`flavor` discriminator so the adapter can apply
+    server-specific quirk handling (e.g. tolerate empty ``api_key``
+    for LM Studio) without proliferating enum variants on
+    :class:`EmbeddingProviderType` for every OpenAI-compatible endpoint.
+    """
+
+    flavor: OpenAIEmbeddingFlavor = Field(
+        default=OpenAIEmbeddingFlavor.OTHER,
+        description=(
+            "Identifies which OpenAI-compatible server is on the other "
+            "end so the adapter can apply flavor-specific behavior. "
+            "Defaults to OTHER (conservative; api_key required)."
+        ),
+    )
 
 
 class HuggingFaceConfig(BaseModel):
@@ -166,9 +220,9 @@ class LLMProvider(Identifiable):
         min_length=1,
         description="Models permitted on this provider; must contain at least one.",
     )
-    config: OpenResponsesConfig = Field(
+    config: OpenResponsesConfig | GoogleConfig = Field(
         ...,
-        description="Backend-specific connection configuration.",
+        description="Backend-specific connection configuration; must match ``provider``.",
     )
     limits: Limits = Field(
         ...,

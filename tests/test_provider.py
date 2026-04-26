@@ -13,12 +13,15 @@ Covers:
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
+from pydantic import HttpUrl, SecretStr, ValidationError
 
 from matrix.model.common import Identifiable
 from matrix.model.provider import (
+    GoogleConfig,
     HttpConfig,
     McpConfig,
+    OpenAIConfig,
+    OpenAIEmbeddingFlavor,
     StdioConfig,
     Toolset,
     ToolsetProviderType,
@@ -447,3 +450,114 @@ class TestToolsetCommon:
         assert restored.config.transport == TransportType.HTTP
         assert restored.config.config.url == "https://mcp.example.com"
         assert restored.config.config.headers == {"Authorization": "Bearer x"}
+
+
+# ============================================================================
+# OpenAIEmbeddingFlavor — flavor discriminator for OpenAIConfig
+# ============================================================================
+
+
+class TestOpenAIEmbeddingFlavor:
+    def test_default_flavor_is_other(self) -> None:
+        cfg = OpenAIConfig(
+            url=HttpUrl("https://api.openai.com/v1/"),
+            api_key=SecretStr("sk-test"),
+        )
+        assert cfg.flavor is OpenAIEmbeddingFlavor.OTHER
+
+    def test_explicit_openai_flavor(self) -> None:
+        cfg = OpenAIConfig(
+            url=HttpUrl("https://api.openai.com/v1/"),
+            api_key=SecretStr("sk-test"),
+            flavor=OpenAIEmbeddingFlavor.OPENAI,
+        )
+        assert cfg.flavor is OpenAIEmbeddingFlavor.OPENAI
+
+    def test_explicit_lmstudio_flavor(self) -> None:
+        cfg = OpenAIConfig(
+            url=HttpUrl("http://localhost:1234/v1/"),
+            api_key=SecretStr(""),
+            flavor=OpenAIEmbeddingFlavor.LMSTUDIO,
+        )
+        assert cfg.flavor is OpenAIEmbeddingFlavor.LMSTUDIO
+
+    def test_flavor_serializes_as_string(self) -> None:
+        assert OpenAIEmbeddingFlavor.OPENAI.value == "openai"
+        assert OpenAIEmbeddingFlavor.LMSTUDIO.value == "lmstudio"
+        assert OpenAIEmbeddingFlavor.OTHER.value == "other"
+
+
+class TestGeminiProviderType:
+    def test_gemini_enum_value(self) -> None:
+        from matrix.model.provider import LLMProviderType
+
+        assert LLMProviderType.GEMINI.value == "gemini"
+
+    def test_existing_openresponses_value_unchanged(self) -> None:
+        from matrix.model.provider import LLMProviderType
+
+        assert LLMProviderType.OPENRESPONSES.value == "openresponses"
+
+
+class TestGoogleConfig:
+    def test_constructed_with_api_key(self) -> None:
+        from pydantic import SecretStr
+
+        cfg = GoogleConfig(api_key=SecretStr("api-key-test"))
+        assert cfg.api_key.get_secret_value() == "api-key-test"
+
+    def test_rejects_missing_api_key(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            GoogleConfig()  # type: ignore[call-arg]
+
+    def test_no_url_field(self) -> None:
+        # Gemini API endpoint is fixed by the SDK; no URL field.
+        from pydantic import SecretStr
+
+        cfg = GoogleConfig(api_key=SecretStr("k"))
+        assert "url" not in cfg.model_dump()
+
+
+class TestLLMProviderConfigUnion:
+    def test_accepts_openresponses_config(self) -> None:
+        from pydantic import HttpUrl, SecretStr
+        from matrix.model.provider import (
+            LLMModel,
+            LLMProvider,
+            LLMProviderType,
+            Limits,
+            OpenResponsesConfig,
+        )
+
+        provider = LLMProvider(
+            id="o1",
+            provider=LLMProviderType.OPENRESPONSES,
+            models=[LLMModel(name="gpt-4o-mini", context_length=8192)],
+            config=OpenResponsesConfig(
+                url=HttpUrl("https://api.openai.com/v1/"),
+                api_key=SecretStr("sk-x"),
+            ),
+            limits=Limits(max_concurrency=2),
+        )
+        assert isinstance(provider.config, OpenResponsesConfig)
+
+    def test_accepts_google_config(self) -> None:
+        from pydantic import SecretStr
+        from matrix.model.provider import (
+            LLMModel,
+            LLMProvider,
+            LLMProviderType,
+            Limits,
+        )
+
+        provider = LLMProvider(
+            id="g1",
+            provider=LLMProviderType.GEMINI,
+            models=[LLMModel(name="gemini-2.5-flash", context_length=1_000_000)],
+            config=GoogleConfig(api_key=SecretStr("api-x")),
+            limits=Limits(max_concurrency=1),
+        )
+        assert isinstance(provider.config, GoogleConfig)
+        assert provider.config.api_key.get_secret_value() == "api-x"

@@ -5,10 +5,47 @@ description = "Microagents framework"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "anthropic>=0.97.0",
+    "google-genai>=1.73.1",
+    "ollama>=0.6.1",
+    "openai>=1.50.0",
     "pydantic>=2.13.3",
+    "transformers>=5.6.2",
+    "tzdata>=2026.2",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=7.1.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["matrix"]
+omit = [
+    "matrix/test.py",
+    "matrix/*/test_*.py",
+    # Pure ABC interface modules — exercised indirectly by concrete adapter
+    # tests once those land. Re-include each as its concrete adapters ship.
+    "matrix/int/*",
+    # Embedding data types — exercised once the embedder adapters and their
+    # tests land in a later sub-project.
+    "matrix/model/embedding.py",
+]
+
+[tool.coverage.report]
+fail_under = 90
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+# Per-module overrides — adapter modules ramp up to 90% as they land.
+# Until matrix/llm/* and matrix/embedder/* contain code, the gate is
+# effectively a no-op because there are no covered statements yet.
