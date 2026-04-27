@@ -943,3 +943,34 @@ class TestTool:
         t2 = Tool(id="t2", description="y", toolset_id="shared", schema={})
         assert t1.toolset_id == t2.toolset_id == "shared"
         assert t1.id != t2.id
+
+
+class TestToolCallResult:
+    """ToolCallResult is the return type of ToolsetProvider.call."""
+
+    def test_minimal_result_has_default_is_error_false_and_no_extended(self) -> None:
+        from matrix.model.chat import ToolCallResult
+
+        r = ToolCallResult(output="hello")
+
+        assert r.output == "hello"
+        assert r.is_error is False
+        assert r.extended is None
+
+    def test_error_result_is_distinct_from_success(self) -> None:
+        from matrix.model.chat import ToolCallResult
+
+        r = ToolCallResult(output="boom", is_error=True)
+
+        assert r.output == "boom"
+        assert r.is_error is True
+
+    def test_extended_carries_arbitrary_dict(self) -> None:
+        from matrix.model.chat import ToolCallResult
+
+        r = ToolCallResult(
+            output="text",
+            extended={"content": [{"type": "image", "data": "..."}]},
+        )
+
+        assert r.extended == {"content": [{"type": "image", "data": "..."}]}

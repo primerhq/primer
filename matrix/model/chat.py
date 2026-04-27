@@ -244,6 +244,49 @@ class ToolResultPart(BaseModel):
     )
 
 
+class ToolCallResult(BaseModel):
+    """Result of executing a tool through a :class:`matrix.int.ToolsetProvider`.
+
+    Mirrors the shape of MCP's tool-call response so downstream consumers
+    can convert directly to a :class:`ToolResultPart` for the next chat
+    turn::
+
+        ToolResultPart(id=call.id, output=result.output, error=result.is_error)
+
+    Distinct from :class:`ToolResultPart`:
+
+    * :class:`ToolResultPart` lives *inside* a chat ``Message`` and feeds
+      the model's next turn.
+    * :class:`ToolCallResult` is the value returned from a single
+      ``ToolsetProvider.call`` invocation — it carries the same ``output``
+      / error signal but adds a free-form ``extended`` slot for adapters
+      that surface richer payloads (MCP image / audio / embedded resource
+      content arrays).
+    """
+
+    output: str = Field(
+        ...,
+        description=(
+            "Tool execution output as a single string. Adapters that "
+            "receive structured / multi-content payloads concatenate text "
+            "parts and serialise the rest as JSON inside this string."
+        ),
+    )
+    is_error: bool = Field(
+        default=False,
+        description="True if the tool reported an execution failure.",
+    )
+    extended: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Provider-specific extras the adapter chose to surface "
+            "(e.g. raw MCP content array). Open for callers that want "
+            "richer access; safely ignored by callers that only need "
+            "``output``."
+        ),
+    )
+
+
 # ---- Extended input parts (wrapped via ExtendedPart) ------------------------
 
 

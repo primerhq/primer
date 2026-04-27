@@ -94,3 +94,33 @@ class NetworkError(MatrixError):
     Distinct from :class:`ProviderError` because no response was received;
     the failure is below the application protocol layer.
     """
+
+
+class AuthRequiredError(MatrixError):
+    """OAuth consent required before this provider can serve requests.
+
+    Distinct from :class:`AuthenticationError` -- that signals "we tried
+    and the credentials were rejected"; this signals "the caller hasn't
+    authenticated yet and the user must consent." Callers MUST handle
+    this case explicitly (catch ``AuthRequiredError`` *before* any
+    generic ``except MatrixError``) so the URL reaches the end user.
+
+    The ``state`` field is opaque to the application; the caller passes
+    it back to :meth:`matrix.toolset.mcp.McpToolsetProvider.complete_oauth`
+    together with the ``code`` query parameter the OAuth server delivered
+    to the redirect URI.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        auth_url: str,
+        state: str,
+        code: str | None = None,
+        status_code: int | None = None,
+        cause: Exception | None = None,
+    ) -> None:
+        super().__init__(message, code=code, status_code=status_code, cause=cause)
+        self.auth_url = auth_url
+        self.state = state

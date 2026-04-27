@@ -13,6 +13,7 @@ Three top-level provider kinds are supported:
 """
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field, HttpUrl, PositiveInt, SecretStr, model_validator
 
@@ -167,6 +168,78 @@ class OllamaConfig(BaseModel):
             "Optional bearer token forwarded as the Authorization header. "
             "Useful when running Ollama behind a reverse proxy that enforces auth."
         ),
+    )
+
+
+class OAuthClientCredentials(BaseModel):
+    """Static OAuth client credentials, for servers that don't support DCR.
+
+    If ``client_secret`` is None the client is treated as a public client
+    (PKCE only, no Authorization header on the token endpoint). If
+    ``client_secret`` is set the token endpoint is called with HTTP Basic.
+    """
+
+    client_id: str = Field(
+        ...,
+        min_length=1,
+        description="OAuth client identifier.",
+    )
+    client_secret: SecretStr | None = Field(
+        default=None,
+        description="OAuth client secret. None for public PKCE-only clients.",
+    )
+
+
+class OAuthConfig(BaseModel):
+    """OAuth settings for an HTTP MCP server.
+
+    Attached to :class:`HttpConfig` via the optional ``oauth`` field.
+    When present, :class:`matrix.toolset.mcp.McpToolsetProvider`
+    performs Authorization Code + PKCE on a 401 from the MCP endpoint
+    instead of immediately failing.
+    """
+
+    redirect_uri: HttpUrl = Field(
+        ...,
+        description=(
+            "The OAuth callback URL the application exposes. The auth "
+            "server will redirect the user here with ?code=...&state=...; "
+            "the application's handler then calls "
+            "McpToolsetProvider.complete_oauth(code=..., state=...)."
+        ),
+    )
+    scopes: list[str] = Field(
+        default_factory=list,
+        description="OAuth scopes to request. Empty list = whatever the server defaults to.",
+    )
+    resource_uri: str | None = Field(
+        default=None,
+        description=(
+            "RFC 8707 resource indicator. Set on token requests when "
+            "the negotiated spec version is 2025-06-18 or 2025-11-25. "
+            "If None, defaults to the MCP server's URL (the spec's "
+            "recommended canonical resource identifier)."
+        ),
+    )
+    static_client: OAuthClientCredentials | None = Field(
+        default=None,
+        description=(
+            "If set, skip Dynamic Client Registration and use these "
+            "credentials. Required when the auth server does not "
+            "support DCR; optional otherwise."
+        ),
+    )
+    spec_version: Literal["2025-03-26", "2025-06-18", "2025-11-25"] | None = Field(
+        default=None,
+        description=(
+            "Force a specific MCP authorization spec version. If None, "
+            "the adapter probes (newest -> oldest) and picks the first "
+            "version the server supports."
+        ),
+    )
+    client_name: str = Field(
+        default="matrix",
+        description="client_name passed during DCR; appears in consent UIs.",
     )
 
 
@@ -346,6 +419,14 @@ class HttpConfig(BaseModel):
     headers: dict[str, str] = Field(
         default_factory=dict,
         description="HTTP headers to include on every request to the MCP server (e.g. Authorization).",
+    )
+    oauth: OAuthConfig | None = Field(
+        default=None,
+        description=(
+            "If set, the adapter performs OAuth 2.1 (PKCE) on 401 "
+            "responses. Any Authorization header in `headers` is "
+            "overridden by the OAuth flow's bearer token once obtained."
+        ),
     )
 
 

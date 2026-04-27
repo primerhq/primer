@@ -679,3 +679,114 @@ class TestOllamaConfigInUnion:
             limits=Limits(max_concurrency=2),
         )
         assert isinstance(provider.config, OllamaConfig)
+
+
+class TestToolsetProviderReexports:
+    """ToolsetProvider and its concrete implementations are reachable
+    from their documented import paths."""
+
+    def test_toolset_provider_abc_reachable_from_matrix_int(self) -> None:
+        from matrix.int import ToolsetProvider as A
+        from matrix.int.toolset import ToolsetProvider as B
+        assert A is B
+
+    def test_concrete_providers_reachable_from_matrix_toolset(self) -> None:
+        from matrix.toolset import InternalToolsetProvider as I
+        from matrix.toolset import McpToolsetProvider as M
+        from matrix.toolset.internal import InternalToolsetProvider as I2
+        from matrix.toolset.mcp import McpToolsetProvider as M2
+        assert I is I2
+        assert M is M2
+
+
+# ============================================================================
+# OAuth configuration models attached to HttpConfig
+# ============================================================================
+
+
+class TestOAuthClientCredentials:
+    def test_minimal_public_client(self) -> None:
+        from matrix.model.provider import OAuthClientCredentials
+
+        c = OAuthClientCredentials(client_id="abc")
+        assert c.client_id == "abc"
+        assert c.client_secret is None
+
+    def test_confidential_client(self) -> None:
+        from matrix.model.provider import OAuthClientCredentials
+
+        c = OAuthClientCredentials(
+            client_id="abc",
+            client_secret="shh",
+        )
+        assert c.client_secret is not None
+        assert c.client_secret.get_secret_value() == "shh"
+
+    def test_empty_client_id_rejected(self) -> None:
+        import pytest
+        from pydantic import ValidationError
+
+        from matrix.model.provider import OAuthClientCredentials
+
+        with pytest.raises(ValidationError):
+            OAuthClientCredentials(client_id="")
+
+
+class TestOAuthConfig:
+    def test_minimal_oauth_config(self) -> None:
+        from matrix.model.provider import OAuthConfig
+
+        c = OAuthConfig(redirect_uri="https://app.example/callback")
+        assert str(c.redirect_uri).startswith("https://app.example/callback")
+        assert c.scopes == []
+        assert c.resource_uri is None
+        assert c.static_client is None
+        assert c.spec_version is None
+        assert c.client_name == "matrix"
+
+    def test_with_scopes_and_static_client(self) -> None:
+        from matrix.model.provider import OAuthClientCredentials, OAuthConfig
+
+        c = OAuthConfig(
+            redirect_uri="https://app.example/cb",
+            scopes=["read", "write"],
+            static_client=OAuthClientCredentials(
+                client_id="abc",
+                client_secret="shh",
+            ),
+            spec_version="2025-06-18",
+        )
+        assert c.scopes == ["read", "write"]
+        assert c.static_client is not None
+        assert c.static_client.client_id == "abc"
+        assert c.spec_version == "2025-06-18"
+
+    def test_invalid_spec_version_rejected(self) -> None:
+        import pytest
+        from pydantic import ValidationError
+
+        from matrix.model.provider import OAuthConfig
+
+        with pytest.raises(ValidationError):
+            OAuthConfig(
+                redirect_uri="https://app.example/cb",
+                spec_version="2024-01-01",
+            )
+
+
+class TestHttpConfigOAuth:
+    def test_default_oauth_is_none(self) -> None:
+        from matrix.model.provider import HttpConfig
+
+        c = HttpConfig(url="http://localhost:9999/mcp")
+        assert c.oauth is None
+
+    def test_oauth_can_be_attached(self) -> None:
+        from matrix.model.provider import HttpConfig, OAuthConfig
+
+        c = HttpConfig(
+            url="http://localhost:9999/mcp",
+            oauth=OAuthConfig(redirect_uri="https://app.example/cb"),
+        )
+        assert c.oauth is not None
+        assert str(c.oauth.redirect_uri).startswith("https://app.example/cb")

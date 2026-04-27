@@ -6,6 +6,7 @@ import pytest
 
 from matrix.model.except_ import (
     AuthenticationError,
+    AuthRequiredError,
     BadRequestError,
     ConfigError,
     MatrixError,
@@ -164,3 +165,49 @@ class TestConcreteSubclasses:
         except BadRequestError as exc:
             assert exc.__cause__.__class__ is ValueError
             assert str(exc.__cause__) == "inner"
+
+
+# ============================================================================
+# AuthRequiredError — OAuth consent-required signal carrying auth URL + state
+# ============================================================================
+
+
+class TestAuthRequiredError:
+    def test_carries_auth_url_and_state(self) -> None:
+        e = AuthRequiredError(
+            "consent required",
+            auth_url="https://idp.example/auth?code=...",
+            state="state-uuid-1",
+        )
+        assert e.auth_url == "https://idp.example/auth?code=..."
+        assert e.state == "state-uuid-1"
+        assert "consent required" in str(e)
+
+    def test_inherits_matrix_error(self) -> None:
+        e = AuthRequiredError(
+            "x",
+            auth_url="https://idp.example/auth",
+            state="s",
+        )
+        assert isinstance(e, MatrixError)
+
+    def test_optional_fields_default_to_none(self) -> None:
+        e = AuthRequiredError(
+            "x",
+            auth_url="https://idp.example/auth",
+            state="s",
+        )
+        assert e.code is None
+        assert e.status_code is None
+        assert e.cause is None
+
+    def test_cause_is_chained(self) -> None:
+        underlying = ValueError("nope")
+        e = AuthRequiredError(
+            "x",
+            auth_url="https://idp.example/auth",
+            state="s",
+            cause=underlying,
+        )
+        assert e.cause is underlying
+        assert e.__cause__ is underlying
