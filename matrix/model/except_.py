@@ -96,6 +96,30 @@ class NetworkError(MatrixError):
     """
 
 
+class NotFoundError(MatrixError):
+    """Storage lookup found no entity matching the request.
+
+    Raised by :class:`matrix.int.Storage` operations that target a
+    specific entity (``update``, ``delete``) when the id does not
+    exist. Distinct from :class:`ModelNotFoundError`, which is about
+    LLM/embedding model names not being in an adapter's permitted
+    models list.
+
+    :meth:`matrix.int.Storage.get` does NOT raise this -- it returns
+    ``None`` for missing entities so callers can branch without
+    catching exceptions.
+    """
+
+
+class ConflictError(MatrixError):
+    """Storage operation conflicts with the current state.
+
+    Typical cases: :meth:`matrix.int.Storage.create` when an entity
+    with the same id already exists; optimistic-concurrency mismatch
+    on update for backends that implement it.
+    """
+
+
 class AuthRequiredError(MatrixError):
     """OAuth consent required before this provider can serve requests.
 
