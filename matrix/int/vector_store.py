@@ -7,10 +7,12 @@ FAISS, pgvector, Qdrant, Pinecone, Weaviate, etc.) and accepts
 :class:`matrix.model.vector.EmbeddingRecord` rows keyed by the
 composite ``(collection_id, document_id, chunk_id)``.
 
-The interface is intentionally narrow -- four methods cover the full
-"index a chunked document, search by vector, fetch its embeddings,
-retire the document" lifecycle:
+The interface covers the full "register a collection, index its chunked
+documents, search by vector, fetch back, retire" lifecycle:
 
+* :meth:`VectorStore.create_collection` -- declare a collection and its
+  vector dimensionality. Backends that materialise per-collection
+  storage (a vector table, an index namespace) do their setup here.
 * :meth:`VectorStore.put` -- insert-or-replace one embedding row.
 * :meth:`VectorStore.search` -- return the top ``k`` records most
   similar to the query vector. Search semantics are
@@ -31,6 +33,7 @@ a time but retired together with their parent document.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any, Literal
 
 from matrix.model.vector import EmbeddingRecord, SearchResult, Vector
 
@@ -42,6 +45,39 @@ class VectorStore(ABC):
     embeddings from many collections; the backend partitions internally
     by ``collection_id`` if needed.
     """
+
+    @abstractmethod
+    async def create_collection(
+        self,
+        collection_id: str,
+        *,
+        dimensions: int,
+        distance: Literal["cosine", "l2", "ip"] = "cosine",
+    ) -> None:
+        """Register a new collection and prepare its storage / index.
+
+        Idempotent: calling for an already-registered collection with
+        the same dimensions and distance metric is a no-op. Calling
+        with a different dimensionality after data has been inserted
+        is a :class:`matrix.model.except_.ConflictError`.
+
+        Parameters
+        ----------
+        collection_id
+            Identifier of the collection. Backends that derive table /
+            index names from this MUST sanitise it (allow only
+            ``[A-Za-z0-9_-]``); reject other characters with
+            :class:`matrix.model.except_.BadRequestError`.
+        dimensions
+            Length of the vectors that will be stored in this
+            collection. Must match the embedding model's output
+            dimensionality.
+        distance
+            Distance metric used for similarity search. Defaults to
+            ``"cosine"`` (the conventional choice for normalised
+            embeddings). Backends MAY override the default at the
+            provider config level.
+        """
 
     @abstractmethod
     async def put(self, record: EmbeddingRecord) -> None:
@@ -63,16 +99,25 @@ class VectorStore(ABC):
     @abstractmethod
     async def search(
         self,
+        collection_id: str,
         vector: Vector,
         k: int,
     ) -> list[SearchResult]:
-        """Return the top ``k`` records most similar to ``vector``.
+        """Return the top ``k`` records most similar to ``vector`` within ``collection_id``.
 
         Parameters
         ----------
+        collection_id
+            Scopes the search to a single collection. Cross-collection
+            search is intentionally not supported -- collections may
+            have different dimensionalities and distance metrics, so
+            mixing their results is meaningless. Callers that need to
+            search several collections issue one call per collection
+            and merge the result lists themselves.
         vector
-            The query vector. Length should match the dimensionality
-            of vectors previously inserted; backends MAY raise
+            The query vector. Length must match the dimensionality
+            declared for ``collection_id`` at
+            :meth:`create_collection` time; backends raise
             :class:`matrix.model.except_.BadRequestError` on mismatch.
         k
             Maximum number of results to return. Backends MAY return
@@ -97,6 +142,44 @@ class VectorStore(ABC):
         the backend's choice. Callers should treat the order as
         opaque and not rely on score values being comparable across
         stores.
+        """
+
+    @abstractmethod
+    async def search_by_meta(
+        self,
+        collection_id: str,
+        meta: dict[str, Any],
+    ) -> list[EmbeddingRecord]:
+        """Return every record in ``collection_id`` whose ``meta`` matches.
+
+        Match semantics: a record matches when, for every ``(key,
+        value)`` pair in the supplied ``meta``, the record's ``meta``
+        has that key with that value. Nested objects match
+        recursively (sub-keys inside ``value`` must also be present
+        and equal in the record). Keys absent from the supplied
+        ``meta`` are unconstrained. Passing an empty ``meta`` matches
+        every record in the collection.
+
+        Parameters
+        ----------
+        collection_id
+            Scopes the search to a single collection.
+        meta
+            Key / value pairs the record's ``meta`` must contain. Use
+            JSON-compatible scalars (str, int, float, bool, None) or
+            nested dicts of the same.
+
+        Returns
+        -------
+        list[EmbeddingRecord]
+            Matching records ordered by ``(document_id, chunk_id)``
+            ascending. No similarity scoring is involved -- this is a
+            pure metadata filter.
+
+        Raises
+        ------
+        matrix.model.except_.BadRequestError
+            ``collection_id`` has not been created.
         """
 
     @abstractmethod

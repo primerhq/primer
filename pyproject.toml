@@ -6,10 +6,13 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.97.0",
+    "asyncpg>=0.30.0",
+    "croniter>=2.0.5",
     "google-genai>=1.73.1",
     "mcp>=1.16.0",
     "ollama>=0.6.1",
     "openai>=1.50.0",
+    "pgvector>=0.3.6",
     "pydantic>=2.13.3",
     "sentence-transformers>=3.0.0",
     "transformers>=5.6.2",

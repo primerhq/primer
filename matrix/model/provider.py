@@ -499,3 +499,303 @@ class Toolset(Identifiable):
                 "provider='internal' must not have a 'config'"
             )
         return self
+
+
+# ===========================================================================
+# Storage + VectorStore provider configuration
+# ===========================================================================
+
+
+class StorageProviderType(str, Enum):
+    """Supported Storage provider backends."""
+
+    POSTGRES = "postgres"
+
+
+class VectorStoreProviderType(str, Enum):
+    """Supported VectorStore provider backends."""
+
+    PGVECTOR = "pgvector"
+    PGVECTORSCALE = "pgvectorscale"
+
+
+class PoolConfig(BaseModel):
+    """Connection pool settings shared by Postgres-backed providers.
+
+    Maps directly onto asyncpg's :func:`asyncpg.create_pool` parameters.
+    Defaults are tuned for a small-to-medium application; large
+    deployments should raise ``max_size`` to match expected concurrency.
+    """
+
+    min_size: PositiveInt = Field(
+        default=1,
+        description="Minimum number of connections kept open in the pool.",
+    )
+    max_size: PositiveInt = Field(
+        default=10,
+        description="Maximum number of connections the pool will open.",
+    )
+    acquire_timeout: float = Field(
+        default=30.0,
+        gt=0,
+        description="Seconds a caller will wait to acquire a connection before raising.",
+    )
+    max_idle: float = Field(
+        default=300.0,
+        gt=0,
+        description="Seconds an idle connection may stay in the pool before being closed.",
+    )
+    max_lifetime: float = Field(
+        default=3600.0,
+        gt=0,
+        description="Seconds a connection may live before being recycled (defends against leaks).",
+    )
+
+    @model_validator(mode="after")
+    def _validate_sizes(self) -> "PoolConfig":
+        if self.max_size < self.min_size:
+            raise ValueError(
+                f"max_size ({self.max_size}) must be >= min_size ({self.min_size})"
+            )
+        return self
+
+
+class _PostgresBaseConfig(BaseModel):
+    """Common Postgres connection fields shared by every Postgres-backed provider.
+
+    Note ``db_schema`` rather than ``schema`` -- ``schema`` would shadow
+    Pydantic's deprecated ``BaseModel.schema()`` method.
+    """
+
+    hostname: str = Field(
+        ...,
+        min_length=1,
+        description="Postgres host (e.g. 'db.internal' or '127.0.0.1').",
+    )
+    port: int = Field(
+        default=5432,
+        ge=1,
+        le=65535,
+        description="Postgres TCP port.",
+    )
+    username: str = Field(
+        ...,
+        min_length=1,
+        description="Postgres role to authenticate as.",
+    )
+    password: SecretStr = Field(
+        ...,
+        description="Password for the role.",
+    )
+    database: str = Field(
+        ...,
+        min_length=1,
+        description="Database name to connect to.",
+    )
+    db_schema: str = Field(
+        default="public",
+        min_length=1,
+        description=(
+            "Postgres schema where tables and indexes are created. Renamed "
+            "from 'schema' to avoid shadowing Pydantic's BaseModel.schema()."
+        ),
+    )
+    pool: PoolConfig = Field(
+        default_factory=PoolConfig,
+        description="Connection pool settings.",
+    )
+
+
+class PostgresConfig(_PostgresBaseConfig):
+    """Connection settings for the plain Postgres Storage provider.
+
+    No vector extensions required; suitable for the generic CRUD +
+    predicate-search :class:`Storage` interface backed by JSONB tables.
+    """
+
+
+_DistanceMetric = Literal["cosine", "l2", "ip"]
+
+
+class _PgVectorBaseConfig(_PostgresBaseConfig):
+    """Common HNSW + distance options shared by pgvector-family providers."""
+
+    distance_metric: _DistanceMetric = Field(
+        default="cosine",
+        description=(
+            "Distance metric for the vector index. 'cosine' for normalised "
+            "embeddings (most common), 'l2' for Euclidean, 'ip' for inner "
+            "product."
+        ),
+    )
+    hnsw_m: PositiveInt = Field(
+        default=16,
+        description=(
+            "HNSW 'm' parameter -- max connections per node. Higher = better "
+            "recall, larger index, slower build. pgvector default is 16."
+        ),
+    )
+    hnsw_ef_construction: PositiveInt = Field(
+        default=64,
+        description=(
+            "HNSW 'ef_construction' -- candidate list size during build. "
+            "Higher = better recall, slower build. pgvector default is 64."
+        ),
+    )
+    hnsw_ef_search: PositiveInt = Field(
+        default=40,
+        description=(
+            "Query-time 'hnsw.ef_search' GUC -- candidate list size during "
+            "queries. Higher = better recall, slower queries. pgvector "
+            "default is 40."
+        ),
+    )
+    reindex_cron: str | None = Field(
+        default=None,
+        description=(
+            "Crontab expression scheduling periodic HNSW maintenance via "
+            ":meth:`matrix.int.VectorStoreProvider.maintain_indexes`. "
+            "None disables scheduling (caller drives maintenance manually)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_cron(self) -> "_PgVectorBaseConfig":
+        if self.reindex_cron is not None:
+            try:
+                from croniter import croniter
+            except ImportError as exc:  # pragma: no cover - dep is in pyproject
+                raise ValueError(
+                    "reindex_cron is set but croniter is not installed"
+                ) from exc
+            if not croniter.is_valid(self.reindex_cron):
+                raise ValueError(
+                    f"reindex_cron {self.reindex_cron!r} is not a valid crontab expression"
+                )
+        return self
+
+
+class PgVectorConfig(_PgVectorBaseConfig):
+    """Connection settings for the pgvector VectorStore provider.
+
+    Requires the ``vector`` extension to be installable on the target
+    database (the provider runs ``CREATE EXTENSION IF NOT EXISTS vector``
+    on initialise).
+    """
+
+
+class PgVectorScaleConfig(_PgVectorBaseConfig):
+    """Connection settings for the pgvectorscale VectorStore provider.
+
+    Requires the ``vector`` AND ``vectorscale`` extensions. pgvectorscale
+    layers on top of pgvector and adds the StreamingDiskANN index, SBQ
+    quantization, and tuned HNSW behaviour. When ``enable_diskann`` is
+    True the per-collection vector tables get a DiskANN index instead
+    of HNSW; the ``diskann_*`` fields below tune that index. When
+    ``enable_diskann`` is False the provider behaves exactly like
+    :class:`PgVectorConfig` plus the ``vectorscale`` extension being
+    installed for opportunistic use.
+    """
+
+    enable_diskann: bool = Field(
+        default=False,
+        description=(
+            "When True, create StreamingDiskANN indexes (from "
+            "pgvectorscale) instead of pgvector's HNSW. DiskANN is "
+            "the right choice for very large collections (10M+ "
+            "vectors) where HNSW's memory cost becomes prohibitive."
+        ),
+    )
+    diskann_storage_layout: Literal["memory_optimized", "plain"] = Field(
+        default="memory_optimized",
+        description=(
+            "DiskANN storage layout. ``memory_optimized`` enables "
+            "Statistical Binary Quantization (SBQ) -- the default and "
+            "the recommended choice; ``plain`` keeps full-precision "
+            "vectors in the index."
+        ),
+    )
+    diskann_num_neighbors: PositiveInt = Field(
+        default=50,
+        description=(
+            "DiskANN graph degree -- number of neighbours stored per "
+            "node. Higher = better recall, larger index. Default 50."
+        ),
+    )
+    diskann_search_list_size: PositiveInt = Field(
+        default=100,
+        description=(
+            "DiskANN ``search_list_size`` build parameter AND the "
+            "default query-time ``diskann.query_search_list_size`` "
+            "GUC. Higher = better recall, slower queries / build."
+        ),
+    )
+    diskann_max_alpha: float = Field(
+        default=1.2,
+        gt=1.0,
+        description=(
+            "DiskANN graph density. Higher (up to ~1.4) increases "
+            "recall at the cost of build time. Default 1.2."
+        ),
+    )
+    diskann_num_bits_per_dimension: PositiveInt | None = Field(
+        default=None,
+        description=(
+            "Bits per dimension used by SBQ when storage_layout is "
+            "``memory_optimized``. None lets pgvectorscale pick the "
+            "default (typically 2). Ignored when storage_layout is "
+            "``plain``."
+        ),
+    )
+
+
+class StorageProviderConfig(BaseModel):
+    """Top-level Storage provider configuration -- discriminated by ``provider``."""
+
+    provider: StorageProviderType = Field(
+        ...,
+        description="Which Storage backend to use.",
+    )
+    config: PostgresConfig = Field(
+        ...,
+        description="Backend-specific connection settings; must match ``provider``.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_config_matches(self) -> "StorageProviderConfig":
+        if self.provider == StorageProviderType.POSTGRES and not isinstance(
+            self.config, PostgresConfig
+        ):
+            raise ValueError(
+                "provider='postgres' requires a PostgresConfig in 'config'"
+            )
+        return self
+
+
+class VectorStoreProviderConfig(BaseModel):
+    """Top-level VectorStore provider configuration -- discriminated by ``provider``."""
+
+    provider: VectorStoreProviderType = Field(
+        ...,
+        description="Which VectorStore backend to use.",
+    )
+    config: PgVectorConfig | PgVectorScaleConfig = Field(
+        ...,
+        description="Backend-specific connection settings; must match ``provider``.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_config_matches(self) -> "VectorStoreProviderConfig":
+        if self.provider == VectorStoreProviderType.PGVECTOR and not isinstance(
+            self.config, PgVectorConfig
+        ):
+            raise ValueError(
+                "provider='pgvector' requires a PgVectorConfig in 'config'"
+            )
+        if self.provider == VectorStoreProviderType.PGVECTORSCALE and not isinstance(
+            self.config, PgVectorScaleConfig
+        ):
+            raise ValueError(
+                "provider='pgvectorscale' requires a PgVectorScaleConfig in 'config'"
+            )
+        return self
