@@ -37,13 +37,22 @@ from matrix.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 ToolCallContext.model_rebuild()
 
 
+# ``local`` imports the workspace tools (which depend on ToolCallContext
+# being fully defined), so it MUST come after the model_rebuild() above.
+from matrix.workspace.local import LocalWorkspace, LocalWorkspaceBackend  # noqa: E402
+from matrix.workspace.factory import WorkspaceBackendFactory  # noqa: E402
+
+
 __all__ = [
     "AgentSession",
     "CommitInfo",
+    "LocalWorkspace",
+    "LocalWorkspaceBackend",
     "StateRepo",
     "ToolCallContext",
     "ToolResult",
     "TruncatedOutput",
     "TruncationStore",
+    "WorkspaceBackendFactory",
     "WorkspaceTool",
 ]

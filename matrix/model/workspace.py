@@ -23,11 +23,12 @@ full design.
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field, HttpUrl, SecretStr
+from pydantic import BaseModel, Field, HttpUrl, SecretStr, model_validator
 
-from matrix.model.common import Describeable
+from matrix.model.common import Describeable, Identifiable
 
 
 # ===========================================================================
@@ -204,16 +205,22 @@ class WorkspaceTemplate(Describeable):
     template can provision many workspaces; each instantiation MAY
     override individual fields (env additions, extra files) at create
     time via :class:`WorkspaceTemplateOverrides`.
+
+    Templates do NOT carry backend-specific connection details (image
+    reference, root path, etc.). Instead they reference a configured
+    :class:`WorkspaceProvider` by id; the provider supplies the
+    backend-specific configuration, the template supplies the
+    declarative materialisation recipe.
     """
 
-    base_image: str = Field(
+    provider_id: str = Field(
         ...,
         min_length=1,
         description=(
-            "Backend-specific base image identifier. For container "
-            "backends this is a Docker image reference; for chroot "
-            "backends a base directory path; etc. Backend-opaque from "
-            "this layer's perspective."
+            "Identifier of the WorkspaceProvider that should materialise "
+            "this template. Resolved at workspace-creation time; not "
+            "validated here -- the runtime is responsible for matching "
+            "the template against a configured provider."
         ),
     )
     packages: list[PackageSpec] = Field(
@@ -303,6 +310,73 @@ class FileEntry(BaseModel):
 
 
 # ===========================================================================
+# Workspace provider configuration
+# ===========================================================================
+
+
+class WorkspaceProviderType(str, Enum):
+    """Supported workspace backends.
+
+    The string value is what gets serialised in configuration so it
+    must remain stable across releases. Today only ``local`` exists;
+    ``docker`` and ``kubernetes`` will land in future sub-projects.
+    """
+
+    LOCAL = "local"
+
+
+class LocalWorkspaceConfig(BaseModel):
+    """Connection settings for the local-FS workspace backend.
+
+    Used by :class:`matrix.workspace.local.LocalWorkspaceBackend`. The
+    only knob is the directory under which every workspace is
+    materialised; each workspace gets its own subdirectory beneath it.
+    """
+
+    path: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Absolute filesystem path under which workspaces will be "
+            "materialised. One subdirectory per workspace is created "
+            "underneath."
+        ),
+    )
+
+
+class WorkspaceProvider(Identifiable):
+    """A configured workspace backend.
+
+    Mirrors the ``LLMProvider`` / ``StorageProviderConfig`` /
+    ``VectorStoreProviderConfig`` pattern: an identifiable handle plus
+    a discriminated provider enum and a backend-specific ``config``
+    sub-model.
+
+    The id is a user-chosen handle; :class:`WorkspaceTemplate` carries
+    a ``provider_id`` referencing this entry by id.
+    """
+
+    provider: WorkspaceProviderType = Field(
+        ...,
+        description="Which workspace backend this entry targets.",
+    )
+    config: LocalWorkspaceConfig = Field(
+        ...,
+        description="Backend-specific connection settings; must match ``provider``.",
+    )
+
+    @model_validator(mode="after")
+    def _config_matches_provider(self) -> "WorkspaceProvider":
+        if self.provider == WorkspaceProviderType.LOCAL and not isinstance(
+            self.config, LocalWorkspaceConfig
+        ):
+            raise ValueError(
+                "provider='local' requires a LocalWorkspaceConfig in 'config'"
+            )
+        return self
+
+
+# ===========================================================================
 # Re-exports
 # ===========================================================================
 
@@ -311,8 +385,11 @@ __all__ = [
     "FileEntry",
     "FileMount",
     "FileSource",
+    "LocalWorkspaceConfig",
     "PackageSpec",
     "ResourceLimits",
+    "WorkspaceProvider",
+    "WorkspaceProviderType",
     "WorkspaceTemplate",
     "WorkspaceTemplateOverrides",
 ]

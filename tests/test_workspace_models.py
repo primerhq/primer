@@ -10,8 +10,11 @@ from pydantic import SecretStr, ValidationError
 from matrix.model.workspace import (
     FileEntry,
     FileMount,
+    LocalWorkspaceConfig,
     PackageSpec,
     ResourceLimits,
+    WorkspaceProvider,
+    WorkspaceProviderType,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
@@ -142,11 +145,11 @@ class TestWorkspaceTemplate:
         tpl = WorkspaceTemplate(
             id="python-basic",
             description="Python 3.13 with git installed",
-            base_image="matrix/python:3.13",
+            provider_id="local-1",
         )
         assert tpl.id == "python-basic"
         assert tpl.description == "Python 3.13 with git installed"
-        assert tpl.base_image == "matrix/python:3.13"
+        assert tpl.provider_id == "local-1"
         assert tpl.packages == []
         assert tpl.files == []
         assert tpl.env == {}
@@ -159,7 +162,7 @@ class TestWorkspaceTemplate:
         tpl = WorkspaceTemplate(
             id="python-research",
             description="Research workstation with science stack",
-            base_image="matrix/python-sci:3.13",
+            provider_id="local-1",
             packages=[
                 PackageSpec(kind="apt", name="ripgrep"),
                 PackageSpec(kind="pip", name="numpy", version=">=2.0"),
@@ -187,15 +190,15 @@ class TestWorkspaceTemplate:
             WorkspaceTemplate(
                 id="",
                 description="x",
-                base_image="img",
+                provider_id="local-1",
             )
 
-    def test_empty_base_image_rejected(self) -> None:
+    def test_empty_provider_id_rejected(self) -> None:
         with pytest.raises(ValidationError):
             WorkspaceTemplate(
                 id="x",
                 description="x",
-                base_image="",
+                provider_id="",
             )
 
     def test_state_path_must_be_non_empty(self) -> None:
@@ -203,7 +206,7 @@ class TestWorkspaceTemplate:
             WorkspaceTemplate(
                 id="x",
                 description="x",
-                base_image="img",
+                provider_id="local-1",
                 state_path="",
             )
 
@@ -211,11 +214,20 @@ class TestWorkspaceTemplate:
         tpl = WorkspaceTemplate(
             id="x",
             description="x",
-            base_image="img",
+            provider_id="local-1",
             env={"K": "V"},
         )
         assert isinstance(tpl.env["K"], SecretStr)
         assert tpl.env["K"].get_secret_value() == "V"
+
+    def test_provider_id_round_trips_through_json(self) -> None:
+        tpl = WorkspaceTemplate(
+            id="x",
+            description="x",
+            provider_id="local-1",
+        )
+        round_tripped = WorkspaceTemplate.model_validate_json(tpl.model_dump_json())
+        assert round_tripped.provider_id == "local-1"
 
 
 # ---- WorkspaceTemplateOverrides -----------------------------------------
@@ -242,6 +254,60 @@ class TestWorkspaceTemplateOverrides:
         assert ov.env["EXTRA"].get_secret_value() == "1"
         assert ov.files[0].path == "patch.txt"
         assert ov.init_commands == ["echo applied"]
+
+
+# ---- LocalWorkspaceConfig + WorkspaceProvider ---------------------------
+
+
+class TestLocalWorkspaceConfig:
+    def test_construction(self) -> None:
+        cfg = LocalWorkspaceConfig(path="/var/lib/matrix/workspaces")
+        assert cfg.path == "/var/lib/matrix/workspaces"
+
+    def test_empty_path_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            LocalWorkspaceConfig(path="")
+
+
+class TestWorkspaceProvider:
+    def test_minimal_local(self) -> None:
+        wp = WorkspaceProvider(
+            id="local-1",
+            provider=WorkspaceProviderType.LOCAL,
+            config=LocalWorkspaceConfig(path="/tmp/matrix/workspaces"),
+        )
+        assert wp.id == "local-1"
+        assert wp.provider == WorkspaceProviderType.LOCAL
+        assert wp.config.path == "/tmp/matrix/workspaces"
+
+    def test_round_trip_through_json(self) -> None:
+        wp = WorkspaceProvider(
+            id="local-1",
+            provider=WorkspaceProviderType.LOCAL,
+            config=LocalWorkspaceConfig(path="/srv/matrix"),
+        )
+        parsed = WorkspaceProvider.model_validate_json(wp.model_dump_json())
+        assert parsed == wp
+
+    def test_unknown_provider_value_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            WorkspaceProvider(
+                id="x",
+                provider="kubernetes",  # type: ignore[arg-type]
+                config=LocalWorkspaceConfig(path="/x"),
+            )
+
+    def test_provider_type_enum_values(self) -> None:
+        assert WorkspaceProviderType.LOCAL.value == "local"
+        assert {t.value for t in WorkspaceProviderType} == {"local"}
+
+    def test_empty_id_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            WorkspaceProvider(
+                id="",
+                provider=WorkspaceProviderType.LOCAL,
+                config=LocalWorkspaceConfig(path="/x"),
+            )
 
 
 # ---- FileEntry -----------------------------------------------------------

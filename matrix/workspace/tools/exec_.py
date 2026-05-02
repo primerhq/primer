@@ -8,6 +8,7 @@ which is what the LLM sees.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import ClassVar
 
@@ -73,8 +74,22 @@ class Exec(WorkspaceTool):
         "timeout_ms to bound runtime."
     )
 
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(
+        self,
+        workspace_root: Path,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        """Construct.
+
+        ``env`` -- if provided, these variables are merged on top of
+        the current process environment for every spawned shell. Pass
+        ``None`` (the default) to inherit the current environment
+        unchanged. Used by :class:`LocalWorkspace` to inject the
+        ``WorkspaceTemplate.env`` overrides.
+        """
         self._root = Path(workspace_root)
+        self._env = env
 
     def parameters(self) -> type[BaseModel]:
         return ExecArgs
@@ -93,9 +108,13 @@ class Exec(WorkspaceTool):
         if not cwd.is_dir():
             raise BadRequestError(f"workdir {args.workdir!r} is not a directory")
 
+        proc_env: dict[str, str] | None = None
+        if self._env is not None:
+            proc_env = {**os.environ, **self._env}
         proc = await asyncio.create_subprocess_shell(
             args.command,
             cwd=str(cwd),
+            env=proc_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

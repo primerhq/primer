@@ -19,7 +19,7 @@ Nine abstract base classes are exported:
 * :class:`Workspace` -- one materialised sandbox + ``.state`` + ``.tmp``
   + a session registry; hosts one or more :class:`AgentSession`
   executions concurrently.
-* :class:`WorkspaceProvider` -- backend-agnostic factory + lifecycle
+* :class:`WorkspaceBackend` -- backend-agnostic factory + lifecycle
   for :class:`Workspace` instances.
 
 See ``research/abc_interface.md`` for the design rationale and
@@ -36,7 +36,7 @@ from matrix.int.vector_store_provider import (
     MaintenanceReport,
     VectorStoreProvider,
 )
-from matrix.int.workspace import Workspace, WorkspaceProvider
+from matrix.int.workspace import Workspace, WorkspaceBackend
 
 
 __all__ = [
@@ -49,5 +49,5 @@ __all__ = [
     "VectorStore",
     "VectorStoreProvider",
     "Workspace",
-    "WorkspaceProvider",
+    "WorkspaceBackend",
 ]

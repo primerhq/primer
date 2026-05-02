@@ -1,4 +1,4 @@
-"""Abstract base classes for Workspace and WorkspaceProvider.
+"""Abstract base classes for Workspace and WorkspaceBackend.
 
 Sibling of :class:`matrix.int.LLM`, :class:`matrix.int.Embedder`,
 :class:`matrix.int.ToolsetProvider`, :class:`matrix.int.Storage`, and
@@ -9,10 +9,12 @@ Two ABCs are exported:
 * :class:`Workspace` -- one materialised sandbox + ``.state`` + ``.tmp``
   + a session registry. Multiple :class:`AgentSession` instances can
   attach concurrently and share the workspace's filesystem and shell.
-* :class:`WorkspaceProvider` -- backend-agnostic factory + lifecycle
+* :class:`WorkspaceBackend` -- backend-agnostic factory + lifecycle
   for :class:`Workspace` instances. One per execution backend
-  (``LocalWorkspaceProvider`` ships in sub-project E; future
-  Docker / Firecracker / chroot backends in later sub-projects).
+  (``LocalWorkspaceBackend`` ships in sub-project E; future
+  Docker / Firecracker / chroot backends in later sub-projects). The
+  configuration that selects which backend is the
+  :class:`matrix.model.workspace.WorkspaceProvider` model.
 
 The :class:`AgentSession` concrete class and the workspace tool
 implementations live under :mod:`matrix.workspace` -- those land in
@@ -196,12 +198,14 @@ class Workspace(ABC):
 # ===========================================================================
 
 
-class WorkspaceProvider(ABC):
+class WorkspaceBackend(ABC):
     """Backend-agnostic factory + lifecycle for :class:`Workspace`.
 
     One per execution backend. Mirrors the
     :class:`matrix.int.StorageProvider` /
-    :class:`matrix.int.VectorStoreProvider` pattern.
+    :class:`matrix.int.VectorStoreProvider` pattern. The configuration
+    that selects which backend (and supplies its connection settings)
+    lives in :class:`matrix.model.workspace.WorkspaceProvider`.
     """
 
     @abstractmethod
@@ -248,5 +252,5 @@ class WorkspaceProvider(ABC):
 
 __all__ = [
     "Workspace",
-    "WorkspaceProvider",
+    "WorkspaceBackend",
 ]
