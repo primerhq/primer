@@ -1,6 +1,6 @@
 """Provider-agnostic interface ABCs.
 
-Seven abstract base classes are exported:
+Nine abstract base classes are exported:
 
 * :class:`LLM` -- streaming chat interface (text/multimodal in,
   :class:`StreamEvent` out).
@@ -16,6 +16,11 @@ Seven abstract base classes are exported:
   ``(collection_id, document_id, chunk_id)``.
 * :class:`VectorStoreProvider` -- shared vector-DB state + factory
   for the :class:`VectorStore` handle, plus index maintenance.
+* :class:`Workspace` -- one materialised sandbox + ``.state`` + ``.tmp``
+  + a session registry; hosts one or more :class:`AgentSession`
+  executions concurrently.
+* :class:`WorkspaceProvider` -- backend-agnostic factory + lifecycle
+  for :class:`Workspace` instances.
 
 See ``research/abc_interface.md`` for the design rationale and
 per-provider adapter mapping rules.
@@ -31,6 +36,7 @@ from matrix.int.vector_store_provider import (
     MaintenanceReport,
     VectorStoreProvider,
 )
+from matrix.int.workspace import Workspace, WorkspaceProvider
 
 
 __all__ = [
@@ -42,4 +48,6 @@ __all__ = [
     "ToolsetProvider",
     "VectorStore",
     "VectorStoreProvider",
+    "Workspace",
+    "WorkspaceProvider",
 ]
