@@ -1072,6 +1072,42 @@ class SafetyRatings(BaseModel):
     )
 
 
+class _ExecutorToolResult(BaseModel):
+    """Synthetic event: an agent executor fed a tool result back to the LLM.
+
+    Reachable only through :class:`ExtendedEvent`. The agent executor
+    (``matrix.agent.AgentExecutor`` / ``WorkspaceAgentExecutor``)
+    emits one of these per :class:`ToolResultPart` it sends to the
+    LLM so streaming-tap subscribers can render the tool round-trip
+    as part of the normal stream channel. Not produced by any LLM
+    adapter -- only the executor emits it.
+
+    Lives in this module (rather than ``matrix.agent.events``) to
+    keep the :data:`ExtendedStreamContent` discriminated union
+    self-contained and avoid a chat -> agent module cycle.
+    ``matrix.agent.events`` re-exports the type for clarity at the
+    agent-side import site.
+    """
+
+    type: Literal["executor_tool_result"] = Field(
+        default="executor_tool_result",
+        description="Discriminator tag identifying this as a synthetic executor tool-result event.",
+    )
+    call_id: str = Field(
+        ...,
+        min_length=1,
+        description="Identifier matching the ToolCallPart whose result this represents.",
+    )
+    output: str = Field(
+        ...,
+        description="The tool's output as fed back to the LLM (post-truncation if applicable).",
+    )
+    error: bool = Field(
+        default=False,
+        description="True if the tool reported an execution failure or denial.",
+    )
+
+
 ExtendedStreamContent = Annotated[
     RawReasoningDelta
     | RefusalDelta
@@ -1080,7 +1116,8 @@ ExtendedStreamContent = Annotated[
     | ServerToolCallEnd
     | Citation
     | Logprobs
-    | SafetyRatings,
+    | SafetyRatings
+    | _ExecutorToolResult,
     Field(discriminator="type"),
 ]
 """Discriminated union of every extended stream-event payload.
