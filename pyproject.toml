@@ -8,7 +8,9 @@ dependencies = [
     "anthropic>=0.97.0",
     "asyncpg>=0.30.0",
     "croniter>=2.0.5",
+    "docling>=2.0",
     "google-genai>=1.73.1",
+    "jinja2>=3.1.0",
     "mcp>=1.16.0",
     "ollama>=0.6.1",
     "openai>=1.50.0",
@@ -36,6 +38,7 @@ pythonpath = ["."]
 source = ["matrix"]
 omit = [
     "matrix/test.py",
+    "matrix/test_compaction.py",   # hand-driven LLM probe script (research/compaction.md)
     "matrix/*/test_*.py",
     # Embedding data types — exercised once the embedder adapters and their
     # tests land in a later sub-project.

@@ -30,7 +30,7 @@ def _make_provider(
         id="hf-default",
         provider=EmbeddingProviderType.HUGGINGFACE,
         models=[
-            EmbeddingModel(name=name, length=384)
+            EmbeddingModel(name=name)
             for name in (models or ["sentence-transformers/all-MiniLM-L6-v2"])
         ],
         config=HuggingFaceConfig(token=SecretStr(token)),
@@ -57,7 +57,7 @@ class TestConstructor:
         provider = EmbeddingProvider(
             id="x",
             provider=EmbeddingProviderType.HUGGINGFACE,
-            models=[EmbeddingModel(name="m", length=10)],
+            models=[EmbeddingModel(name="m")],
             config=OpenAIConfig(  # type: ignore[arg-type]
                 url=HttpUrl("https://api.openai.com/v1/"),
                 api_key=SecretStr("sk-x"),

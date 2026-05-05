@@ -70,7 +70,7 @@ def _make_provider(
         id="openai-default",
         provider=EmbeddingProviderType.OPENAI,
         models=[
-            EmbeddingModel(name=name, length=1536)
+            EmbeddingModel(name=name)
             for name in (models or ["text-embedding-3-small"])
         ],
         config=OpenAIConfig(

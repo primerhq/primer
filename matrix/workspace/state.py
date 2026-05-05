@@ -319,6 +319,81 @@ class StateRepo:
             )
             return sha
 
+    async def commit_arbitrary(
+        self,
+        *,
+        summary: str,
+        files: dict[str, str | bytes] | None = None,
+        delete_files: list[str] | None = None,
+        trailers: dict[str, str] | None = None,
+    ) -> str:
+        """Commit arbitrary files relative to the ``.state/`` repo root.
+
+        Used by callers (like the graph executor) that don't fit the
+        session-scoped :meth:`commit` shape. File paths in ``files``
+        and ``delete_files`` are relative to ``.state/`` (e.g.
+        ``"graphs/gs-1/state.json"``).
+
+        ``trailers`` is a free-form ``key -> value`` mapping appended
+        to the commit message; the standard
+        ``X-Matrix-Workspace: <id>`` trailer is added automatically.
+
+        Acquires the same commit lock as :meth:`commit` so concurrent
+        graph + agent commits serialise safely on ``.git/index.lock``.
+        Returns the new commit's full SHA.
+        """
+        async with self._commit_lock:
+            staged_paths: list[str] = []
+            for rel, content in (files or {}).items():
+                _validate_relative_path(rel)
+                target = self._path / rel
+                await asyncio.to_thread(
+                    target.parent.mkdir, parents=True, exist_ok=True
+                )
+                if isinstance(content, bytes):
+                    await asyncio.to_thread(target.write_bytes, content)
+                else:
+                    await asyncio.to_thread(
+                        target.write_text, content, encoding="utf-8"
+                    )
+                staged_paths.append(self._repo_relative(target))
+
+            if staged_paths:
+                await self._run_git("add", "--", *staged_paths)
+
+            if delete_files:
+                rm_paths: list[str] = []
+                for rel in delete_files:
+                    _validate_relative_path(rel)
+                    rm_paths.append(self._repo_relative(self._path / rel))
+                await self._run_git(
+                    "rm", "--quiet", "--ignore-unmatch", "--", *rm_paths
+                )
+
+            # Build commit message: subject + workspace trailer + caller trailers.
+            message_lines = [
+                summary,
+                "",
+                f"{_TRAILER_WORKSPACE}: {self._workspace_id}",
+            ]
+            for key, value in (trailers or {}).items():
+                message_lines.append(f"{key}: {value}")
+            message = "\n".join(message_lines)
+
+            await self._run_git(
+                "-c",
+                f"user.name={_AUTHOR_NAME}",
+                "-c",
+                f"user.email={_AUTHOR_EMAIL}",
+                "commit",
+                "--allow-empty",
+                "--quiet",
+                "-m",
+                message,
+            )
+            sha_raw, _ = await self._run_git("rev-parse", "HEAD")
+            return sha_raw.strip()
+
     async def history(
         self,
         *,

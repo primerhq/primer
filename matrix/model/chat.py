@@ -1108,6 +1108,51 @@ class _ExecutorToolResult(BaseModel):
     )
 
 
+class _GraphNodeEvent(BaseModel):
+    """Synthetic event: a graph executor forwarded a child node's stream event.
+
+    Reachable only through :class:`ExtendedEvent`. The graph
+    executor (``matrix.graph.GraphExecutor`` /
+    ``WorkspaceGraphExecutor``) wraps every event produced by a
+    child agent executor so streaming-tap subscribers can correlate
+    by graph node + iteration. Not produced by any LLM adapter --
+    only the graph executor emits it.
+
+    Lives in this module (rather than ``matrix.graph.events``) for
+    the same reason as :class:`_ExecutorToolResult` -- keeping the
+    :data:`ExtendedStreamContent` union self-contained and avoiding
+    a chat -> graph module cycle.
+    """
+
+    type: Literal["graph_node_event"] = Field(
+        default="graph_node_event",
+        description="Discriminator tag identifying this as a graph-forwarded child event.",
+    )
+    node_id: str = Field(
+        ...,
+        min_length=1,
+        description="Within-graph node id that produced the wrapped event.",
+    )
+    iteration: int = Field(
+        ...,
+        ge=0,
+        description="Graph iteration during which the event was produced.",
+    )
+    inner_type: str = Field(
+        ...,
+        description="The wrapped event's ``type`` discriminator value.",
+    )
+    inner_payload: dict[str, Any] = Field(
+        ...,
+        description=(
+            "The wrapped :class:`StreamEvent` serialised as a dict "
+            "via ``model_dump(mode='json')``. Subscribers that want "
+            "the typed event can re-validate via "
+            "``TypeAdapter(StreamEvent).validate_python({type: inner_type, **inner_payload})``."
+        ),
+    )
+
+
 ExtendedStreamContent = Annotated[
     RawReasoningDelta
     | RefusalDelta
@@ -1117,7 +1162,8 @@ ExtendedStreamContent = Annotated[
     | Citation
     | Logprobs
     | SafetyRatings
-    | _ExecutorToolResult,
+    | _ExecutorToolResult
+    | _GraphNodeEvent,
     Field(discriminator="type"),
 ]
 """Discriminated union of every extended stream-event payload.

@@ -28,7 +28,7 @@ async def test_real_gemini_embedder_smoke() -> None:
     provider = EmbeddingProvider(
         id="gemini-emb-real",
         provider=EmbeddingProviderType.GEMINI,
-        models=[EmbeddingModel(name="text-embedding-004", length=768)],
+        models=[EmbeddingModel(name="text-embedding-004")],
         config=GoogleConfig(api_key=SecretStr(os.environ["GEMINI_API_KEY"])),
         limits=Limits(max_concurrency=2),
     )

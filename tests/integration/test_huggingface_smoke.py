@@ -32,7 +32,6 @@ async def test_real_huggingface_smoke() -> None:
         provider=EmbeddingProviderType.HUGGINGFACE,
         models=[EmbeddingModel(
             name="sentence-transformers/all-MiniLM-L6-v2",
-            length=384,
         )],
         config=HuggingFaceConfig(token=SecretStr("")),
         limits=Limits(max_concurrency=1),

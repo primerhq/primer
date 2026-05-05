@@ -286,16 +286,22 @@ class LLMModel(BaseModel):
 
 
 class EmbeddingModel(BaseModel):
-    """A single embedding model exposed by a provider."""
+    """A single embedding model exposed by a provider.
+
+    Carries only the provider-side model identifier. Vector
+    dimensionality is intentionally NOT recorded here -- it is learned
+    by :class:`matrix.ingest.DocumentIngester` at run time from the
+    actual length of the first chunk's embedding vector and propagated
+    to :meth:`matrix.int.VectorStore.create_collection`. Recording the
+    dimension twice (registry + actual) was a redundancy that could
+    silently drift; deferring the answer to ingestion time keeps the
+    registry schema-free.
+    """
 
     name: str = Field(
         ...,
         min_length=1,
         description="Provider-side model identifier (e.g. 'text-embedding-3-small').",
-    )
-    length: PositiveInt = Field(
-        ...,
-        description="Dimensionality of the embedding vector the model returns.",
     )
 
 

@@ -93,6 +93,18 @@ class ToolExecutionManager:
                 "workspace_session for dispatch context"
             )
 
+    @property
+    def toolset_providers(self) -> dict[str, ToolsetProvider]:
+        """Snapshot of registered toolset providers, keyed by toolset id.
+
+        Returned as a shallow copy so callers can iterate or reuse the
+        mapping without mutating internal state. Used by composers
+        (e.g. :class:`matrix.graph.WorkspaceGraphExecutor`) that need
+        to merge a base manager's providers with workspace-bound
+        tools into a fresh manager.
+        """
+        return dict(self._toolsets)
+
     @classmethod
     def for_workspace(
         cls,

@@ -629,7 +629,7 @@ class TestEmbeddingProviderConfigUnionGoogle:
         provider = EmbeddingProvider(
             id="g1",
             provider=EmbeddingProviderType.GEMINI,
-            models=[EmbeddingModel(name="text-embedding-004", length=768)],
+            models=[EmbeddingModel(name="text-embedding-004")],
             config=GoogleConfig(api_key=SecretStr("api-x")),
             limits=Limits(max_concurrency=2),
         )

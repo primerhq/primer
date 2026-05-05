@@ -46,7 +46,7 @@ async def test_real_openai_smoke() -> None:
     provider = EmbeddingProvider(
         id="real-openai",
         provider=EmbeddingProviderType.OPENAI,
-        models=[EmbeddingModel(name="text-embedding-3-small", length=1536)],
+        models=[EmbeddingModel(name="text-embedding-3-small")],
         config=OpenAIConfig(
             url=HttpUrl("https://api.openai.com/v1/"),
             api_key=SecretStr(os.environ["OPENAI_API_KEY"]),
@@ -76,7 +76,7 @@ async def test_lmstudio_smoke() -> None:
     provider = EmbeddingProvider(
         id="lmstudio-local",
         provider=EmbeddingProviderType.OPENAI,
-        models=[EmbeddingModel(name=model_name, length=384)],
+        models=[EmbeddingModel(name=model_name)],
         config=OpenAIConfig(
             url=HttpUrl("http://localhost:1234/v1/"),
             api_key=SecretStr(""),

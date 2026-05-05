@@ -51,7 +51,7 @@ def _make_provider(
         id="gemini-emb-default",
         provider=EmbeddingProviderType.GEMINI,
         models=[
-            EmbeddingModel(name=name, length=768)
+            EmbeddingModel(name=name)
             for name in (models or ["text-embedding-004"])
         ],
         config=GoogleConfig(api_key=SecretStr(api_key)),
@@ -83,7 +83,7 @@ class TestConstructor:
         provider = EmbeddingProvider(
             id="x",
             provider=EmbeddingProviderType.GEMINI,
-            models=[EmbeddingModel(name="m", length=10)],
+            models=[EmbeddingModel(name="m")],
             config=OpenAIConfig(  # type: ignore[arg-type]
                 url=HttpUrl("https://x/v1/"),
                 api_key=SecretStr("sk-x"),

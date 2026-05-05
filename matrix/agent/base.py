@@ -231,58 +231,42 @@ class _BaseAgentExecutor(ABC):
         new_messages: list[Message],
         response_format: type[BaseModel] | dict[str, Any] | None,
     ) -> AsyncIterator[StreamEvent]:
+        from matrix.agent.loop import run_agent_turn
+
         full_turn_messages: list[Message] = list(new_messages)
         prompt = self._build_prompt(history, new_messages)
-        tools = await self._tool_manager.list_tools(principal=self._principal)
 
-        while True:
-            buffered: list[StreamEvent] = []
-            stream = self._llm.stream(
-                model=self._model.name,
-                messages=prompt,
-                temperature=self._agent.temperature,
-                response_format=response_format,
-                tools=tools,
-                tool_choice="auto",
-            )
-            async for event in stream:
-                buffered.append(event)
-                await self._emit(event)
-                yield event
-                if isinstance(event, Usage):
-                    self._last_input_tokens = event.input_tokens
+        # Shared helper handles the LLM+tool dispatch loop. We tap
+        # every event into our subscriber fan-out + caller stream;
+        # the helper writes the assistant + tool-result messages
+        # directly into ``full_turn_messages`` for end-of-turn
+        # persistence below.
+        last_input_tokens_holder: list[int | None] = []
+        async for event in run_agent_turn(
+            agent=self._agent,
+            llm=self._llm,
+            llm_model=self._model,
+            tool_manager=self._tool_manager,
+            prompt=prompt,
+            response_format=response_format,
+            principal=self._principal,
+            messages_out=full_turn_messages,
+            last_input_tokens_out=last_input_tokens_holder,
+        ):
+            await self._emit(event)
+            yield event
 
-            try:
-                assistant_msg = output_to_message(buffered)
-            except ValueError:
-                # Empty / error-only stream -- already emitted; nothing to persist.
-                return
+        if last_input_tokens_holder:
+            self._last_input_tokens = last_input_tokens_holder[0]
 
-            full_turn_messages.append(assistant_msg)
-
-            tool_calls = [
-                p for p in assistant_msg.parts if isinstance(p, ToolCallPart)
-            ]
-            if not tool_calls:
-                await self._persist_turn(full_turn_messages)
-                return
-
-            tool_result_msgs = await self._dispatch_tool_calls(tool_calls)
-            for trm in tool_result_msgs:
-                full_turn_messages.append(trm)
-                for part in trm.parts:
-                    if isinstance(part, ToolResultPart):
-                        synth = ExtendedEvent(
-                            extended=_ExecutorToolResult(
-                                call_id=part.id,
-                                output=part.output,
-                                error=part.error,
-                            )
-                        )
-                        await self._emit(synth)
-                        yield synth
-
-            prompt = prompt + [assistant_msg, *tool_result_msgs]
+        # Persist only when the loop actually produced an assistant
+        # message (helper appends it on the first non-tool stop or
+        # not at all on empty/error streams).
+        produced_assistant = any(
+            m.role == "assistant" for m in full_turn_messages[len(new_messages):]
+        )
+        if produced_assistant:
+            await self._persist_turn(full_turn_messages)
 
     # ---- Tool dispatch ---------------------------------------------------
 
