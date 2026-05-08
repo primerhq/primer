@@ -74,7 +74,9 @@ class TestToolsetRouting:
         mgr = ToolExecutionManager(toolset_providers={"a": a, "b": b})  # type: ignore[arg-type]
         tools = await mgr.list_tools()
         names = sorted(t.id for t in tools)
-        assert names == ["bar", "foo"]
+        # Tool ids are scoped as ``toolset_id__bare_name`` so collisions
+        # across toolsets are impossible.
+        assert names == ["a__foo", "b__bar"]
 
     @pytest.mark.asyncio
     async def test_execute_routes_to_owning_toolset(self) -> None:
@@ -82,7 +84,7 @@ class TestToolsetRouting:
         b = _FakeToolsetProvider(toolset_id="b", tools=[_tool("bar", toolset_id="b")])
         mgr = ToolExecutionManager(toolset_providers={"a": a, "b": b})  # type: ignore[arg-type]
         await mgr.list_tools()
-        call = ToolCallPart(id="c-1", name="foo", arguments={"x": 1})
+        call = ToolCallPart(id="c-1", name="a__foo", arguments={"x": 1})
         result = await mgr.execute(call)
         assert isinstance(result, ToolResultPart)
         assert result.id == "c-1"
@@ -96,7 +98,7 @@ class TestToolsetRouting:
         mgr = ToolExecutionManager(toolset_providers={"a": a})  # type: ignore[arg-type]
         await mgr.list_tools()
         await mgr.execute(
-            ToolCallPart(id="c", name="foo", arguments={}),
+            ToolCallPart(id="c", name="a__foo", arguments={}),
             principal="alice@example.com",
         )
         assert a.calls == [("foo", {}, "alice@example.com")]
@@ -118,7 +120,7 @@ class TestToolsetRouting:
         a = _Boom(toolset_id="a", tools=[_tool("foo", toolset_id="a")])
         mgr = ToolExecutionManager(toolset_providers={"a": a})  # type: ignore[arg-type]
         await mgr.list_tools()
-        result = await mgr.execute(ToolCallPart(id="c", name="foo", arguments={}))
+        result = await mgr.execute(ToolCallPart(id="c", name="a__foo", arguments={}))
         assert result.error is True
         assert "upstream broke" in result.output
 
@@ -136,13 +138,13 @@ class TestToolsetRouting:
         mgr = ToolExecutionManager(toolset_providers={"a": a})  # type: ignore[arg-type]
         await mgr.list_tools()
         with pytest.raises(AuthRequiredError):
-            await mgr.execute(ToolCallPart(id="c", name="foo", arguments={}))
+            await mgr.execute(ToolCallPart(id="c", name="a__foo", arguments={}))
 
     @pytest.mark.asyncio
     async def test_execute_lazy_lists_tools_when_not_called_first(self) -> None:
         a = _FakeToolsetProvider(toolset_id="a", tools=[_tool("foo", toolset_id="a")])
         mgr = ToolExecutionManager(toolset_providers={"a": a})  # type: ignore[arg-type]
-        result = await mgr.execute(ToolCallPart(id="c", name="foo", arguments={}))
+        result = await mgr.execute(ToolCallPart(id="c", name="a__foo", arguments={}))
         assert result.id == "c"
 
 
@@ -201,7 +203,7 @@ class TestWorkspaceRouting:
         )
         tools = await mgr.list_tools()
         assert len(tools) == 1
-        assert tools[0].id == "fake_ws_tool"
+        assert tools[0].id == "workspace__fake_ws_tool"
         assert tools[0].toolset_id == "workspace"
 
     @pytest.mark.asyncio
@@ -214,7 +216,7 @@ class TestWorkspaceRouting:
         )
         await mgr.list_tools()
         result = await mgr.execute(
-            ToolCallPart(id="c", name="fake_ws_tool", arguments={"x": 7})
+            ToolCallPart(id="c", name="workspace__fake_ws_tool", arguments={"x": 7})
         )
         assert result.output == "ws(7)"
         assert len(ws.executed) == 1
@@ -229,7 +231,7 @@ class TestWorkspaceRouting:
         )
         await mgr.list_tools()
         result = await mgr.execute(
-            ToolCallPart(id="c", name="fake_ws_tool", arguments={"x": "not_an_int"})
+            ToolCallPart(id="c", name="workspace__fake_ws_tool", arguments={"x": "not_an_int"})
         )
         assert result.error is True
         assert "invalid arguments" in result.output
@@ -252,7 +254,7 @@ class TestWorkspaceRouting:
         )
         await mgr.list_tools()
         result = await mgr.execute(
-            ToolCallPart(id="c", name="fake_ws_tool", arguments={"x": 0})
+            ToolCallPart(id="c", name="workspace__fake_ws_tool", arguments={"x": 0})
         )
         assert "[the tool succeeded but the output was truncated]" in result.output
         assert sess.cached == [big]
@@ -267,7 +269,7 @@ class TestWorkspaceRouting:
         )
         await mgr.list_tools()
         result = await mgr.execute(
-            ToolCallPart(id="c", name="fake_ws_tool", arguments={"x": 7})
+            ToolCallPart(id="c", name="workspace__fake_ws_tool", arguments={"x": 7})
         )
         assert result.output == "ws(7)"
         assert sess.cached == []

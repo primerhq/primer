@@ -463,7 +463,10 @@ class TestToolDispatchInGraphNode:
         llm = _FakeLLM(
             scripts=[
                 [
-                    ToolCallStart(id="call-1", name="echo", index=0),
+                    # LLM emits the scoped tool id (toolset_id__bare_name);
+                    # ToolExecutionManager splits and forwards the bare
+                    # name "echo" to the provider's call().
+                    ToolCallStart(id="call-1", name="fake__echo", index=0),
                     ToolCallEnd(id="call-1", arguments={"x": 1}, index=0),
                     Done(stop_reason="tool_use", raw_reason="tool_use"),
                 ],

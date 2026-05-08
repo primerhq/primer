@@ -171,3 +171,41 @@ class TestCollectionSearch:
         s = CollectionSearch()
         assert s.mmr is None
         assert s.cer is None
+
+
+# ===========================================================================
+# Collection.system flag
+# ===========================================================================
+
+
+class TestCollectionSystemFlag:
+    def test_system_defaults_to_false(self) -> None:
+        c = Collection(
+            id="c1",
+            description="t",
+            embedder=CollectionEmbedder(provider_id="p", model="m"),
+        )
+        assert c.system is False
+
+    def test_system_true_round_trips(self) -> None:
+        original = Collection(
+            id="_catalog_agents",
+            description="System collection",
+            embedder=CollectionEmbedder(provider_id="p", model="m"),
+            system=True,
+        )
+        rehydrated = Collection.model_validate(original.model_dump())
+        assert rehydrated.system is True
+
+    def test_legacy_json_without_system_field_loads_as_user(self) -> None:
+        # Backwards compatibility: JSON predating the field deserialises
+        # cleanly with system=False (treated as a normal user collection).
+        legacy = {
+            "id": "c1",
+            "description": "t",
+            "embedder": {"provider_id": "p", "model": "m"},
+            # NB: no "system" key, no "search" key.
+        }
+        c = Collection.model_validate(legacy)
+        assert c.system is False
+        assert c.search is None

@@ -49,6 +49,14 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_TOOLSET_ID = "workspace"
 
+# Tool ids surfaced to the LLM are scoped as ``toolset_id<sep>bare_name`` so
+# tools with colliding bare names across different toolsets stay
+# distinguishable. The separator is ``__`` (two underscores) — chosen
+# because most tool names are kebab-case or snake_case and rarely contain
+# a double underscore in practice. ``ToolExecutionManager.list_tools``
+# rejects bare ids that contain this separator.
+_SCOPE_SEPARATOR = "__"
+
 
 class ToolExecutionManager:
     """Registry that owns every tool the agent can invoke.
@@ -83,7 +91,15 @@ class ToolExecutionManager:
         self._workspace_tools: dict[str, "WorkspaceTool"] = dict(workspace_tools or {})
         self._workspace_session = workspace_session
         # Built lazily on first list_tools / execute.
-        self._tool_to_toolset: dict[str, str] = {}
+        # Scoped tool id (``toolset_id__bare_name``) -> (toolset_id, bare_name).
+        # Tool ids surfaced to the LLM are scoped to avoid collisions across
+        # toolsets; dispatch splits the scope back to the bare name before
+        # calling the underlying provider.
+        self._tool_to_toolset: dict[str, tuple[str, str]] = {}
+        # Scoped workspace-tool id (``workspace__bare_name``) -> bare_name.
+        # Separate map so dispatch can look up the WorkspaceTool from
+        # ``_workspace_tools`` (still keyed by bare name).
+        self._workspace_scoped: dict[str, str] = {}
         self._catalogue: list[Tool] | None = None
         self._index_lock = asyncio.Lock()
 
@@ -129,19 +145,45 @@ class ToolExecutionManager:
         *,
         principal: str | None = None,
     ) -> list[Tool]:
-        """Merged catalogue across every dispatcher."""
+        """Merged catalogue across every dispatcher.
+
+        Emitted ``Tool.id`` values are scoped: ``toolset_id__bare_name``.
+        Bare tool ids that already contain ``__`` raise :class:`ConfigError`
+        because the double underscore is reserved as the scope separator.
+        """
         async with self._index_lock:
             if self._catalogue is not None:
                 return list(self._catalogue)
             catalogue: list[Tool] = []
-            # Toolset-provider tools.
+            # Toolset-provider tools (each provider yields tools by their
+            # bare name; we scope on the way out).
             for toolset_id, provider in self._toolsets.items():
                 async for t in provider.list_tools(principal=principal):
-                    catalogue.append(t)
-                    self._tool_to_toolset[t.id] = toolset_id
-            # Workspace tools.
+                    if _SCOPE_SEPARATOR in t.id:
+                        raise ConfigError(
+                            f"tool {t.id!r} from toolset {toolset_id!r} "
+                            f"contains {_SCOPE_SEPARATOR!r} which is "
+                            "reserved as the scope separator"
+                        )
+                    scoped_id = f"{toolset_id}{_SCOPE_SEPARATOR}{t.id}"
+                    scoped_tool = t.model_copy(update={"id": scoped_id})
+                    catalogue.append(scoped_tool)
+                    self._tool_to_toolset[scoped_id] = (toolset_id, t.id)
+            # Workspace tools (always under the WORKSPACE_TOOLSET_ID scope).
             for ws_tool in self._workspace_tools.values():
-                catalogue.append(_workspace_tool_descriptor(ws_tool))
+                if _SCOPE_SEPARATOR in ws_tool.id:
+                    raise ConfigError(
+                        f"workspace tool {ws_tool.id!r} contains "
+                        f"{_SCOPE_SEPARATOR!r} which is reserved as the "
+                        "scope separator"
+                    )
+                scoped_id = (
+                    f"{WORKSPACE_TOOLSET_ID}{_SCOPE_SEPARATOR}{ws_tool.id}"
+                )
+                catalogue.append(
+                    _workspace_tool_descriptor(ws_tool, scoped_id=scoped_id)
+                )
+                self._workspace_scoped[scoped_id] = ws_tool.id
             self._catalogue = catalogue
             return list(self._catalogue)
 
@@ -151,35 +193,50 @@ class ToolExecutionManager:
         *,
         principal: str | None = None,
     ) -> ToolResultPart:
-        """Dispatch one tool call; return a ToolResultPart for the LLM."""
+        """Dispatch one tool call; return a ToolResultPart for the LLM.
+
+        ``call.name`` is the **scoped** id (``toolset_id__bare_name``) the
+        catalog returned from :meth:`list_tools`. The dispatcher splits
+        the scope and forwards the bare name to the underlying provider.
+        """
         # Lazy-build the index if list_tools wasn't called yet.
         if self._catalogue is None:
             await self.list_tools(principal=principal)
 
-        if call.name in self._workspace_tools:
-            return await self._dispatch_workspace(call)
+        # Workspace tools first: they share the toolset-call routing table
+        # via ``_workspace_scoped`` (scoped_id -> bare_name).
+        ws_bare = self._workspace_scoped.get(call.name)
+        if ws_bare is not None:
+            return await self._dispatch_workspace(call, bare_name=ws_bare)
 
-        toolset_id = self._tool_to_toolset.get(call.name)
-        if toolset_id is None:
+        entry = self._tool_to_toolset.get(call.name)
+        if entry is None:
             raise UnsupportedContentError(
                 f"unknown tool {call.name!r}; not registered with any toolset "
                 "or workspace"
             )
-        return await self._dispatch_toolset(call, toolset_id, principal=principal)
+        toolset_id, bare_name = entry
+        return await self._dispatch_toolset(
+            call,
+            toolset_id=toolset_id,
+            bare_name=bare_name,
+            principal=principal,
+        )
 
     # ---- Internals -------------------------------------------------------
 
     async def _dispatch_toolset(
         self,
         call: ToolCallPart,
-        toolset_id: str,
         *,
+        toolset_id: str,
+        bare_name: str,
         principal: str | None,
     ) -> ToolResultPart:
         provider = self._toolsets[toolset_id]
         try:
             result = await provider.call(
-                tool_name=call.name,
+                tool_name=bare_name,
                 arguments=call.arguments,
                 principal=principal,
             )
@@ -202,10 +259,15 @@ class ToolExecutionManager:
             error=result.is_error,
         )
 
-    async def _dispatch_workspace(self, call: ToolCallPart) -> ToolResultPart:
+    async def _dispatch_workspace(
+        self,
+        call: ToolCallPart,
+        *,
+        bare_name: str,
+    ) -> ToolResultPart:
         from matrix.workspace.tool import ToolCallContext
 
-        tool = self._workspace_tools[call.name]
+        tool = self._workspace_tools[bare_name]
         sess = self._workspace_session
         assert sess is not None  # invariant from constructor
 
@@ -277,10 +339,19 @@ class ToolExecutionManager:
         )
 
 
-def _workspace_tool_descriptor(ws_tool: "WorkspaceTool") -> Tool:
-    """Convert a WorkspaceTool's ClassVars + parameters() into a Tool."""
+def _workspace_tool_descriptor(
+    ws_tool: "WorkspaceTool",
+    *,
+    scoped_id: str,
+) -> Tool:
+    """Convert a WorkspaceTool's ClassVars + parameters() into a Tool.
+
+    The emitted ``Tool.id`` is the scoped form (``workspace__bare_name``)
+    so the LLM sees a globally-unique id that won't collide with tools
+    from other toolsets.
+    """
     return Tool(
-        id=ws_tool.id,
+        id=scoped_id,
         description=ws_tool.description,
         toolset_id=WORKSPACE_TOOLSET_ID,
         schema=ws_tool.parameters().model_json_schema(),

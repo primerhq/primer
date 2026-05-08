@@ -378,7 +378,10 @@ class TestSingleTurn:
             scripts=[
                 [
                     StreamStart(model="gpt-4o-mini"),
-                    ToolCallStart(id="c-1", name="echo", index=0),
+                    # LLM emits the scoped tool id (toolset_id__bare_name);
+                    # ToolExecutionManager splits and forwards the bare
+                    # name to the provider's handler.
+                    ToolCallStart(id="c-1", name="t1__echo", index=0),
                     ToolCallEnd(id="c-1", arguments={"v": "ping"}, index=0),
                     Done(stop_reason="tool_use", raw_reason="tool_use"),
                 ],

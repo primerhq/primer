@@ -80,6 +80,17 @@ class Collection(Describeable):
             ":class:`matrix.model.search.CollectionSearch`."
         ),
     )
+    system: bool = Field(
+        default=False,
+        description=(
+            "Marks the collection as system-managed (created and "
+            "owned by an internal subsystem like the "
+            "SemanticCatalog). Future Collection-CRUD APIs MUST "
+            "refuse delete and update on system collections. "
+            "Defaults to False; legacy rows without this field "
+            "deserialise as user collections."
+        ),
+    )
 
 
 class Document(Identifiable):
