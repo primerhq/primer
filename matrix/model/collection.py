@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from matrix.model.common import Describeable, Identifiable
+from matrix.model.search import CollectionSearch
 
 
 class CollectionEmbedder(BaseModel):
@@ -65,6 +66,18 @@ class Collection(Describeable):
         description=(
             "Embedding provider and model used to vectorise this "
             "collection's documents."
+        ),
+    )
+    search: CollectionSearch | None = Field(
+        default=None,
+        description=(
+            "Optional retrieval-augmentation toggles applied on top "
+            "of the base vector search. ``None`` (default) means "
+            "vanilla vector ranking; setting ``mmr`` adds Maximal "
+            "Marginal Relevance diversification; setting ``cer`` "
+            "adds cross-encoder reranking; setting both runs "
+            "``vector → cross-encoder rerank → MMR``. See "
+            ":class:`matrix.model.search.CollectionSearch`."
         ),
     )
 

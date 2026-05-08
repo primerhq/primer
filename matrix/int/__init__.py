@@ -1,11 +1,14 @@
 """Provider-agnostic interface ABCs.
 
-Nine abstract base classes are exported:
+Ten abstract base classes are exported:
 
 * :class:`LLM` -- streaming chat interface (text/multimodal in,
   :class:`StreamEvent` out).
 * :class:`Embedder` -- embedding interface (multimodal in,
   :class:`EmbedResponse` out).
+* :class:`CrossEncoder` -- cross-encoder reranker interface
+  (``(query, document) -> relevance score``); used by
+  :class:`matrix.search.CollectionSearcher` for two-stage rerank.
 * :class:`ToolsetProvider` -- toolset interface (list and invoke tools).
 * :class:`Storage` -- generic CRUD + search interface for any
   :class:`matrix.model.common.Identifiable` model.
@@ -26,6 +29,7 @@ See ``research/abc_interface.md`` for the design rationale and
 per-provider adapter mapping rules.
 """
 
+from matrix.int.cross_encoder import CrossEncoder
 from matrix.int.embedder import Embedder
 from matrix.int.llm import LLM
 from matrix.int.storage import Storage
@@ -40,6 +44,7 @@ from matrix.int.workspace import Workspace, WorkspaceBackend
 
 
 __all__ = [
+    "CrossEncoder",
     "Embedder",
     "LLM",
     "MaintenanceReport",
