@@ -1,0 +1,235 @@
+"""Provider entity routers: LLM / Embedding / CrossEncoder / Toolset.
+
+Each entity follows the standard CRUD + Find shape from
+:mod:`matrix.api.routers._crud`, plus entity-specific operations:
+
+* LLMProvider:           ``GET /v1/llm_providers/{id}/models``
+                         ``POST /v1/llm_providers/{id}/invalidate``
+* EmbeddingProvider:     ``GET /v1/embedding_providers/{id}/models``
+                         ``POST /v1/embedding_providers/{id}/invalidate``
+* CrossEncoderProvider:  ``GET /v1/cross_encoder_providers/{id}/models``
+                         ``POST /v1/cross_encoder_providers/{id}/invalidate``
+* Toolset:               ``GET  /v1/toolsets/{id}/tools``
+                         ``POST /v1/toolsets/{id}/invalidate``
+
+PUT and DELETE on every entity cascade-invalidate the matching cached
+adapter in the per-request ProviderRegistry via the CRUD callbacks.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Header, Path, Request
+
+from matrix.api.deps import (
+    PRINCIPAL_HEADER,
+    get_cross_encoder_provider_storage,
+    get_embedding_provider_storage,
+    get_llm_provider_storage,
+    get_provider_registry,
+    get_toolset_storage,
+)
+from matrix.api.errors import common_responses
+from matrix.api.registries import ProviderRegistry
+from matrix.api.routers._crud import make_crud_router
+from matrix.model.provider import (
+    CrossEncoderProvider,
+    EmbeddingProvider,
+    LLMProvider,
+    Toolset,
+)
+
+
+# ---- cascade-invalidation hooks --------------------------------------------
+
+
+async def _invalidate_llm(entity_id: str, request: Request) -> None:
+    registry: ProviderRegistry = request.app.state.provider_registry
+    await registry.invalidate_llm(entity_id)
+
+
+async def _invalidate_embedder(entity_id: str, request: Request) -> None:
+    registry: ProviderRegistry = request.app.state.provider_registry
+    await registry.invalidate_embedder(entity_id)
+
+
+async def _invalidate_cross_encoder(entity_id: str, request: Request) -> None:
+    registry: ProviderRegistry = request.app.state.provider_registry
+    await registry.invalidate_cross_encoder(entity_id)
+
+
+async def _invalidate_toolset(entity_id: str, request: Request) -> None:
+    registry: ProviderRegistry = request.app.state.provider_registry
+    await registry.invalidate_toolset(entity_id)
+
+
+# ---- LLMProvider router ----------------------------------------------------
+
+llm_provider_router = make_crud_router(
+    model_cls=LLMProvider,
+    storage_dep=get_llm_provider_storage,
+    plural="llm_providers",
+    tag="llm-providers",
+    on_update=_invalidate_llm,
+    on_delete=_invalidate_llm,
+)
+
+
+@llm_provider_router.post(
+    "/llm_providers/{provider_id}/invalidate",
+    status_code=204,
+    summary="Invalidate cached LLM adapter",
+    responses=common_responses(500),
+)
+async def invalidate_llm_provider(
+    provider_id: str = Path(..., description="LLMProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> None:
+    await registry.invalidate_llm(provider_id)
+
+
+@llm_provider_router.get(
+    "/llm_providers/{provider_id}/models",
+    summary="Fetch live model list from the LLM provider",
+    responses=common_responses(404, 500, 502, 504),
+)
+async def get_llm_provider_models(
+    provider_id: str = Path(..., description="LLMProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    adapter = await registry.get_llm(provider_id)
+    models = await adapter.list_models()
+    return {"models": list(models)}
+
+
+# ---- EmbeddingProvider router ----------------------------------------------
+
+embedding_provider_router = make_crud_router(
+    model_cls=EmbeddingProvider,
+    storage_dep=get_embedding_provider_storage,
+    plural="embedding_providers",
+    tag="embedding-providers",
+    on_update=_invalidate_embedder,
+    on_delete=_invalidate_embedder,
+)
+
+
+@embedding_provider_router.post(
+    "/embedding_providers/{provider_id}/invalidate",
+    status_code=204,
+    summary="Invalidate cached embedder adapter",
+    responses=common_responses(500),
+)
+async def invalidate_embedding_provider(
+    provider_id: str = Path(..., description="EmbeddingProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> None:
+    await registry.invalidate_embedder(provider_id)
+
+
+@embedding_provider_router.get(
+    "/embedding_providers/{provider_id}/models",
+    summary="Fetch live model list from the embedding provider",
+    responses=common_responses(404, 500, 502, 504),
+)
+async def get_embedding_provider_models(
+    provider_id: str = Path(..., description="EmbeddingProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    adapter = await registry.get_embedder(provider_id)
+    models = await adapter.list_models()
+    return {"models": list(models)}
+
+
+# ---- CrossEncoderProvider router -------------------------------------------
+
+cross_encoder_provider_router = make_crud_router(
+    model_cls=CrossEncoderProvider,
+    storage_dep=get_cross_encoder_provider_storage,
+    plural="cross_encoder_providers",
+    tag="cross-encoder-providers",
+    on_update=_invalidate_cross_encoder,
+    on_delete=_invalidate_cross_encoder,
+)
+
+
+@cross_encoder_provider_router.post(
+    "/cross_encoder_providers/{provider_id}/invalidate",
+    status_code=204,
+    summary="Invalidate cached cross-encoder adapter",
+    responses=common_responses(500),
+)
+async def invalidate_cross_encoder_provider(
+    provider_id: str = Path(..., description="CrossEncoderProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> None:
+    await registry.invalidate_cross_encoder(provider_id)
+
+
+@cross_encoder_provider_router.get(
+    "/cross_encoder_providers/{provider_id}/models",
+    summary="Fetch live model list from the cross-encoder provider",
+    responses=common_responses(404, 500, 502, 504),
+)
+async def get_cross_encoder_provider_models(
+    provider_id: str = Path(..., description="CrossEncoderProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    adapter = await registry.get_cross_encoder(provider_id)
+    models = await adapter.list_models()
+    return {"models": list(models)}
+
+
+# ---- Toolset router --------------------------------------------------------
+
+toolset_router = make_crud_router(
+    model_cls=Toolset,
+    storage_dep=get_toolset_storage,
+    plural="toolsets",
+    tag="toolsets",
+    on_update=_invalidate_toolset,
+    on_delete=_invalidate_toolset,
+)
+
+
+@toolset_router.post(
+    "/toolsets/{toolset_id}/invalidate",
+    status_code=204,
+    summary="Invalidate cached toolset provider",
+    responses=common_responses(500),
+)
+async def invalidate_toolset_provider(
+    toolset_id: str = Path(..., description="Toolset id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> None:
+    await registry.invalidate_toolset(toolset_id)
+
+
+@toolset_router.get(
+    "/toolsets/{toolset_id}/tools",
+    summary="List tools currently exposed by a toolset",
+    responses=common_responses(401, 404, 500, 502, 504),
+)
+async def list_toolset_tools(
+    toolset_id: str = Path(..., description="Toolset id"),
+    principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    """Enumerate the toolset's tools from the live provider.
+
+    OAuth-protected MCP toolsets raise ``AuthRequiredError``, which the
+    error mapper serialises as 401 + ``extensions.auth_url`` so the
+    caller can prompt the user to consent.
+    """
+    provider = await registry.get_toolset(toolset_id)
+    tools = []
+    async for tool in provider.list_tools(principal=principal):
+        tools.append(tool.model_dump(mode="json"))
+    return {"tools": tools}
+
+
+__all__ = [
+    "cross_encoder_provider_router",
+    "embedding_provider_router",
+    "llm_provider_router",
+    "toolset_router",
+]

@@ -10,6 +10,7 @@ dependencies = [
     "croniter>=2.0.5",
     "ddgs>=9.0",
     "docling>=2.0",
+    "fastapi>=0.115",
     "google-genai>=1.73.1",
     "jinja2>=3.1.0",
     "mcp>=1.16.0",
@@ -17,9 +18,12 @@ dependencies = [
     "openai>=1.50.0",
     "pgvector>=0.3.6",
     "pydantic>=2.13.3",
+    "pydantic-settings>=2.6",
+    "python-multipart>=0.0.12",
     "sentence-transformers>=3.0.0",
     "transformers>=5.6.2",
     "tzdata>=2026.2",
+    "uvicorn[standard]>=0.32",
 ]
 
 [dependency-groups]
@@ -44,6 +48,9 @@ omit = [
     # Embedding data types — exercised once the embedder adapters and their
     # tests land in a later sub-project.
     "matrix/model/embedding.py",
+    # CLI entry point — only invoked via `python -m matrix.api`; needs
+    # a live Postgres to run, so not covered by the unit suite.
+    "matrix/api/__main__.py",
 ]
 
 [tool.coverage.report]

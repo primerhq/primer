@@ -122,8 +122,53 @@ class SearchResult(BaseModel):
     )
 
 
+# ===========================================================================
+# Vector store config (single-row)
+# ===========================================================================
+
+
+from typing import Literal  # noqa: E402
+
+from matrix.model.common import Identifiable  # noqa: E402
+
+
+_VectorStoreBackend = Literal["pgvector", "pgvectorscale"]
+
+
+class VectorStoreConfig(Identifiable):
+    """Single-row "active vector store" configuration.
+
+    Stored under the conventional id ``"_active_vector_store"`` in the
+    application's :class:`Storage[VectorStoreConfig]`. The
+    :class:`matrix.api.registries.VectorStoreRegistry` reads this row
+    on first :meth:`get` to discover which backend to construct.
+
+    Phase 3 of the REST API rollout ships CRUD endpoints over this
+    model; Phase 0 ships the model only so the registry can read from
+    storage as soon as a row exists.
+    """
+
+    backend: _VectorStoreBackend = Field(
+        ...,
+        description=(
+            "Backend implementation. Must match a known concrete "
+            "``VectorStoreBackend`` (pgvector / pgvectorscale)."
+        ),
+    )
+    settings: dict[str, Any] = Field(
+        ...,
+        description=(
+            "Backend-specific connection / configuration settings. "
+            "Free-form because each backend's config shape differs; the "
+            "factory in :mod:`matrix.vector.factory` validates the "
+            "shape at construction time."
+        ),
+    )
+
+
 __all__ = [
     "EmbeddingRecord",
     "SearchResult",
     "Vector",
+    "VectorStoreConfig",
 ]

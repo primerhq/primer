@@ -84,5 +84,9 @@ class CrossEncoder(ABC):
             Network failure communicating with a remote provider.
         """
 
+    async def aclose(self) -> None:
+        """Release backend resources held by this adapter. Default no-op."""
+        return
+
 
 __all__ = ["CrossEncoder"]

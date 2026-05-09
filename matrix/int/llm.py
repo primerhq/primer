@@ -118,3 +118,16 @@ class LLM(ABC):
             event (:class:`Done` for success, :class:`Error` with
             ``fatal=True`` for failure) before closing.
         """
+
+    async def aclose(self) -> None:
+        """Release backend resources held by this adapter.
+
+        Default is a no-op. Adapters that hold connection pools or
+        long-lived sessions (HTTP client, websocket, subprocess) MUST
+        override and close them. Idempotent: calling twice is safe.
+
+        Called by :class:`matrix.api.registries.ProviderRegistry` when
+        the underlying ``LLMProvider`` row is invalidated and the
+        cached adapter is dropped.
+        """
+        return

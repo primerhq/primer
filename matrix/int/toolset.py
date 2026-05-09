@@ -119,3 +119,7 @@ class ToolsetProvider(ABC):
         matrix.model.except_.NetworkError
             Standard upstream / transport failures.
         """
+
+    async def aclose(self) -> None:
+        """Release backend resources held by this provider. Default no-op."""
+        return

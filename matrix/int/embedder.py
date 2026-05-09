@@ -85,3 +85,7 @@ class Embedder(ABC):
             optional :class:`EmbeddingUsage` request-level telemetry.
             See :mod:`matrix.model.embedding` for the full output shape.
         """
+
+    async def aclose(self) -> None:
+        """Release backend resources held by this adapter. Default no-op."""
+        return
