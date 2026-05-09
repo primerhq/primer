@@ -14,6 +14,7 @@ from matrix.api.errors import register_error_handlers
 from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
 from matrix.api.routers import compute, health, knowledge, providers
 from matrix.api.version import API_VERSION, APP_VERSION
+from matrix.toolset.system import build_system_toolset
 
 
 if TYPE_CHECKING:
@@ -28,11 +29,21 @@ def _make_lifespan(config: AppConfig):
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
-        provider_registry = ProviderRegistry(storage_provider)
         vector_store_registry = VectorStoreRegistry(storage_provider)
+        # Bootstrap the system toolset before constructing the
+        # ProviderRegistry so the registry can short-circuit
+        # ``get_toolset('_system')`` to it.
+        provider_registry = ProviderRegistry(storage_provider)
+        system_toolset = build_system_toolset(
+            storage_provider=storage_provider,
+            provider_registry=provider_registry,
+            vector_store_registry=vector_store_registry,
+        )
+        provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
         app.state.storage_provider = storage_provider
         app.state.provider_registry = provider_registry
         app.state.vector_store_registry = vector_store_registry
+        app.state.system_toolset = system_toolset
         logger.info(
             "matrix API ready",
             extra={"version": APP_VERSION, "host": config.host, "port": config.port},
@@ -115,16 +126,30 @@ def create_test_app(
     storage_provider: "StorageProvider",
     provider_registry: ProviderRegistry,
     vector_store_registry: VectorStoreRegistry,
+    system_toolset=None,
 ) -> FastAPI:
-    """Test factory: skips the lifespan; stashes pre-built dependencies."""
+    """Test factory: skips the lifespan; stashes pre-built dependencies.
+
+    If ``system_toolset`` is omitted the factory builds one against the
+    supplied registries — the same wiring the production lifespan
+    performs. Pass an explicit instance to inject a stub.
+    """
     app = FastAPI(
         title="Matrix Microagents Framework API (test)",
         version=APP_VERSION,
         contact={"name": "matrix"},
     )
+    if system_toolset is None:
+        system_toolset = build_system_toolset(
+            storage_provider=storage_provider,
+            provider_registry=provider_registry,
+            vector_store_registry=vector_store_registry,
+        )
+    provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     app.state.storage_provider = storage_provider
     app.state.provider_registry = provider_registry
     app.state.vector_store_registry = vector_store_registry
+    app.state.system_toolset = system_toolset
     _mount_routers(app)
     register_error_handlers(app)
     return app

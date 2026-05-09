@@ -95,6 +95,9 @@ def _default_cross_encoder_factory(  # pragma: no cover
             )
 
 
+_SYSTEM_TOOLSET_ID = "_system"
+
+
 def _phase_one_only_toolset_factory(toolset: Toolset) -> ToolsetProvider:
     raise ConfigError(
         "toolset dispatch ships in Phase 1 of the REST API rollout; "
@@ -116,6 +119,7 @@ class ProviderRegistry:
             Callable[[CrossEncoderProvider], CrossEncoder] | None
         ) = None,
         toolset_factory: Callable[[Toolset], ToolsetProvider] | None = None,
+        system_toolset_provider: ToolsetProvider | None = None,
     ) -> None:
         self._sp = storage_provider
         self._llm_factory = llm_factory or _default_llm_factory
@@ -124,6 +128,10 @@ class ProviderRegistry:
             cross_encoder_factory or _default_cross_encoder_factory
         )
         self._toolset_factory = toolset_factory or _phase_one_only_toolset_factory
+        # Reserved id ``_system`` resolves to this immutable provider
+        # without consulting storage. Set via app lifespan; tests
+        # may leave it None and use the row-based path.
+        self._system_toolset_provider = system_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -176,6 +184,13 @@ class ProviderRegistry:
             return adapter
 
     async def get_toolset(self, toolset_id: str) -> ToolsetProvider:
+        # Reserved id `_system` short-circuits storage. Returns the
+        # singleton built at app startup; immutable, never re-created.
+        if (
+            self._system_toolset_provider is not None
+            and toolset_id == _SYSTEM_TOOLSET_ID
+        ):
+            return self._system_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -210,6 +225,11 @@ class ProviderRegistry:
             await adapter.aclose()
 
     async def invalidate_toolset(self, toolset_id: str) -> None:
+        # The reserved system toolset is immutable; invalidation is a
+        # no-op so the singleton survives any cascade triggered by an
+        # accidental write to the reserved id.
+        if toolset_id == _SYSTEM_TOOLSET_ID:
+            return
         async with self._lock:
             adapter = self._toolset_cache.pop(toolset_id, None)
         if adapter is not None:
