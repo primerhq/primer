@@ -273,6 +273,40 @@ class LocalWorkspace(Workspace):
                 return
             yield chunk
 
+    async def file_info(self, path: str) -> FileEntry:
+        target = self._resolve_path(path)
+        if not await asyncio.to_thread(target.exists):
+            raise NotFoundError(f"{path!r} not found")
+        return await asyncio.to_thread(_make_file_entry, target, self._root)
+
+    async def write_file(self, path: str, content: bytes) -> None:
+        target = self._resolve_path(path)
+        if await asyncio.to_thread(target.is_dir):
+            raise BadRequestError(
+                f"{path!r} is a directory; cannot overwrite with file content"
+            )
+        # Refuse writes inside the reserved state / tmp paths so the
+        # API can't corrupt the backend's bookkeeping.
+        self._refuse_reserved(target, path)
+        parent = target.parent
+        await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(target.write_bytes, content)
+
+    async def delete_file(self, path: str) -> None:
+        target = self._resolve_path(path)
+        if not await asyncio.to_thread(target.exists):
+            raise NotFoundError(f"{path!r} not found")
+        if target == self._root.resolve():
+            raise BadRequestError("refusing to delete workspace root")
+        self._refuse_reserved(target, path)
+        if await asyncio.to_thread(target.is_dir):
+            await asyncio.to_thread(target.rmdir)  # rmdir => empty-only
+        else:
+            await asyncio.to_thread(target.unlink)
+
+    async def log(self, *, limit: int = 50):
+        return await self._state.history(limit=limit)
+
     async def aclose(self) -> None:
         """End any non-ENDED sessions, then release backend resources."""
         async with self._lock:
@@ -283,6 +317,20 @@ class LocalWorkspace(Workspace):
                     # already ended; fine
                     pass
             self._sessions.clear()
+
+    def _refuse_reserved(self, resolved: Path, original: str) -> None:
+        """Block writes / deletes inside ``.state`` and ``.tmp``."""
+        root_resolved = self._root.resolve()
+        for reserved_name in (self._template.state_path, self._template.tmp_path):
+            reserved = (root_resolved / reserved_name).resolve()
+            try:
+                resolved.relative_to(reserved)
+            except ValueError:
+                continue
+            raise BadRequestError(
+                f"refusing to mutate path inside reserved tree {reserved_name!r}: "
+                f"{original!r}"
+            )
 
     # ---- internals ------------------------------------------------------
 
@@ -509,6 +557,29 @@ def _warn_unenforced(template: WorkspaceTemplate) -> None:
             "run them via init_commands",
             extra={"packages": [p.name for p in template.packages]},
         )
+
+
+def _make_file_entry(target: Path, workspace_root: Path) -> FileEntry:
+    """Build one :class:`FileEntry` for ``target`` (file/dir/symlink)."""
+    stat = target.stat()
+    if target.is_symlink():
+        kind: str = "symlink"
+        size = 0
+    elif target.is_dir():
+        kind = "dir"
+        size = 0
+    else:
+        kind = "file"
+        size = stat.st_size
+    rel = target.resolve().relative_to(workspace_root.resolve()).as_posix()
+    if rel == ".":
+        rel = ""
+    return FileEntry(
+        path=rel or ".",
+        kind=kind,  # type: ignore[arg-type]
+        size_bytes=size,
+        modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+    )
 
 
 def _walk_for_user(

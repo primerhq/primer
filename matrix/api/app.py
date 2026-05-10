@@ -11,18 +11,24 @@ from fastapi import FastAPI
 
 from matrix.api.config import AppConfig
 from matrix.api.errors import register_error_handlers
-from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+from matrix.api.registries import (
+    ProviderRegistry,
+    VectorStoreRegistry,
+    WorkspaceRegistry,
+)
 from matrix.api.routers import (
     compute,
     health,
     internal_collections,
     knowledge,
     providers,
+    workspaces as workspaces_router,
 )
 from matrix.api.version import API_VERSION, APP_VERSION
 from matrix.internal_collections import build_subsystem, load_config_or_none
 from matrix.toolset.search import build_search_toolset
 from matrix.toolset.system import build_system_toolset
+from matrix.toolset.workspaces import build_workspaces_toolset
 
 
 if TYPE_CHECKING:
@@ -38,6 +44,7 @@ def _make_lifespan(config: AppConfig):
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
         vector_store_registry = VectorStoreRegistry(config.vector_store)
+        workspace_registry = WorkspaceRegistry(storage_provider)
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
         # ``get_toolset('_system')`` to it.
@@ -48,10 +55,18 @@ def _make_lifespan(config: AppConfig):
             vector_store_registry=vector_store_registry,
         )
         provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
+        # Build the always-on _workspaces toolset.
+        ws_toolset = build_workspaces_toolset(
+            storage_provider=storage_provider,
+            workspace_registry=workspace_registry,
+        )
+        provider_registry._workspaces_toolset_provider = ws_toolset  # noqa: SLF001
         app.state.storage_provider = storage_provider
         app.state.provider_registry = provider_registry
         app.state.vector_store_registry = vector_store_registry
+        app.state.workspace_registry = workspace_registry
         app.state.system_toolset = system_toolset
+        app.state.workspaces_toolset = ws_toolset
         app.state.internal_collections = None
         app.state.search_toolset = None
         # Internal collections subsystem auto-activation: if a config
@@ -66,7 +81,10 @@ def _make_lifespan(config: AppConfig):
                 storage_provider=storage_provider,
                 provider_registry=provider_registry,
                 vector_store_registry=vector_store_registry,
-                toolset_providers={"_system": system_toolset},
+                toolset_providers={
+                    "_system": system_toolset,
+                    "_workspaces": ws_toolset,
+                },
             )
             search_toolset = build_search_toolset(ic_subsystem)
             ic_subsystem.register_toolset_provider("_search", search_toolset)
@@ -86,6 +104,7 @@ def _make_lifespan(config: AppConfig):
                 await ic_subsystem.aclose()
             await provider_registry.aclose()
             await vector_store_registry.aclose()
+            await workspace_registry.aclose()
             await storage_provider.aclose()
 
     return _lifespan
@@ -144,6 +163,14 @@ def _mount_routers(app: FastAPI) -> None:
     # semantic search). The search routes return 503 until the
     # subsystem has been bootstrapped at least once.
     app.include_router(internal_collections.router, prefix=prefix)
+    # Workspaces (providers, templates, workspaces + sessions / files /
+    # log sub-resources). Bespoke create/delete; PUT only for templates.
+    app.include_router(workspaces_router.provider_router, prefix=prefix)
+    app.include_router(workspaces_router.template_router, prefix=prefix)
+    app.include_router(workspaces_router.workspace_router, prefix=prefix)
+    app.include_router(workspaces_router.sessions_router, prefix=prefix)
+    app.include_router(workspaces_router.files_router, prefix=prefix)
+    app.include_router(workspaces_router.log_router, prefix=prefix)
 
 
 def create_app(config: AppConfig) -> FastAPI:
@@ -164,12 +191,15 @@ def create_test_app(
     storage_provider: "StorageProvider",
     provider_registry: ProviderRegistry,
     vector_store_registry: VectorStoreRegistry,
+    workspace_registry: WorkspaceRegistry | None = None,
     system_toolset=None,
+    workspaces_toolset=None,
 ) -> FastAPI:
     """Test factory: skips the lifespan; stashes pre-built dependencies.
 
-    If ``system_toolset`` is omitted the factory builds one against the
-    supplied registries — the same wiring the production lifespan
+    If any of ``system_toolset``, ``workspace_registry``, or
+    ``workspaces_toolset`` is omitted the factory builds one against
+    the supplied registries — the same wiring the production lifespan
     performs. Pass an explicit instance to inject a stub.
     """
     app = FastAPI(
@@ -177,21 +207,28 @@ def create_test_app(
         version=APP_VERSION,
         contact={"name": "matrix"},
     )
+    if workspace_registry is None:
+        workspace_registry = WorkspaceRegistry(storage_provider)
     if system_toolset is None:
         system_toolset = build_system_toolset(
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             vector_store_registry=vector_store_registry,
         )
+    if workspaces_toolset is None:
+        workspaces_toolset = build_workspaces_toolset(
+            storage_provider=storage_provider,
+            workspace_registry=workspace_registry,
+        )
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
+    provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001
     app.state.storage_provider = storage_provider
     app.state.provider_registry = provider_registry
     app.state.vector_store_registry = vector_store_registry
+    app.state.workspace_registry = workspace_registry
     app.state.system_toolset = system_toolset
+    app.state.workspaces_toolset = workspaces_toolset
     # Tests build the subsystem on demand via the /bootstrap endpoint.
-    # The lifespan-driven auto-activation path lives in create_app
-    # only; ``create_test_app`` keeps the slot empty until the test
-    # explicitly drives the activation flow.
     app.state.internal_collections = None
     app.state.search_toolset = None
     _mount_routers(app)

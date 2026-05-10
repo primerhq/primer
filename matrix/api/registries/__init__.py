@@ -10,10 +10,12 @@ from matrix.api.registries.vector_store_registry import (
     ACTIVE_VECTOR_STORE_CONFIG_ID,
     VectorStoreRegistry,
 )
+from matrix.api.registries.workspace_registry import WorkspaceRegistry
 
 
 __all__ = [
     "ACTIVE_VECTOR_STORE_CONFIG_ID",
     "ProviderRegistry",
     "VectorStoreRegistry",
+    "WorkspaceRegistry",
 ]

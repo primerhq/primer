@@ -97,6 +97,7 @@ def _default_cross_encoder_factory(  # pragma: no cover
 
 _SYSTEM_TOOLSET_ID = "_system"
 _SEARCH_TOOLSET_ID = "_search"
+_WORKSPACES_TOOLSET_ID = "_workspaces"
 
 
 def _phase_one_only_toolset_factory(toolset: Toolset) -> ToolsetProvider:
@@ -122,6 +123,7 @@ class ProviderRegistry:
         toolset_factory: Callable[[Toolset], ToolsetProvider] | None = None,
         system_toolset_provider: ToolsetProvider | None = None,
         search_toolset_provider: ToolsetProvider | None = None,
+        workspaces_toolset_provider: ToolsetProvider | None = None,
     ) -> None:
         self._sp = storage_provider
         self._llm_factory = llm_factory or _default_llm_factory
@@ -140,6 +142,10 @@ class ProviderRegistry:
         # already exists at startup); ``None`` means the subsystem is
         # inactive and ``get_toolset('_search')`` raises NotFoundError.
         self._search_toolset_provider = search_toolset_provider
+        # Reserved id ``_workspaces`` resolves to this immutable
+        # provider — always built at app startup. Mirrors ``_system``:
+        # its tools dogfood the workspace REST API to agents.
+        self._workspaces_toolset_provider = workspaces_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -206,6 +212,13 @@ class ProviderRegistry:
             and toolset_id == _SEARCH_TOOLSET_ID
         ):
             return self._search_toolset_provider
+        # Reserved id `_workspaces` resolves to the always-on
+        # workspace dogfood toolset built at app startup.
+        if (
+            self._workspaces_toolset_provider is not None
+            and toolset_id == _WORKSPACES_TOOLSET_ID
+        ):
+            return self._workspaces_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -243,7 +256,11 @@ class ProviderRegistry:
         # The reserved internal toolsets are immutable; invalidation
         # is a no-op so the singletons survive any cascade triggered
         # by an accidental write to the reserved ids.
-        if toolset_id in (_SYSTEM_TOOLSET_ID, _SEARCH_TOOLSET_ID):
+        if toolset_id in (
+            _SYSTEM_TOOLSET_ID,
+            _SEARCH_TOOLSET_ID,
+            _WORKSPACES_TOOLSET_ID,
+        ):
             return
         async with self._lock:
             adapter = self._toolset_cache.pop(toolset_id, None)

@@ -377,6 +377,59 @@ class WorkspaceProvider(Identifiable):
 
 
 # ===========================================================================
+# Persisted Workspace record
+# ===========================================================================
+
+
+class Workspace(Identifiable):
+    """Persisted record of a materialised workspace.
+
+    The actual workspace contents (filesystem, ``.state`` repo, live
+    sessions) live inside the configured :class:`WorkspaceProvider`'s
+    backend; this row is the API-layer book-keeping that lets us
+    enumerate workspaces, find which provider/template each one was
+    materialised against, and re-attach across process restarts.
+
+    Created by ``POST /v1/workspaces`` and removed by
+    ``DELETE /v1/workspaces/{id}``. There is no ``Update`` — workspace
+    contents are mutated through the files / sessions sub-APIs, not by
+    re-PUTing the row.
+    """
+
+    template_id: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Id of the WorkspaceTemplate this workspace was materialised "
+            "from. Snapshot — if the template definition changes later "
+            "the workspace keeps a reference to the original id."
+        ),
+    )
+    provider_id: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Id of the WorkspaceProvider that owns the backend storing "
+            "this workspace. Used by the API to look up the correct "
+            "backend on every per-workspace operation."
+        ),
+    )
+    overrides: WorkspaceTemplateOverrides | None = Field(
+        default=None,
+        description=(
+            "Optional per-instantiation overrides applied at "
+            "materialisation time. Recorded so the original create-time "
+            "intent stays inspectable; not consulted on subsequent "
+            "operations."
+        ),
+    )
+    created_at: datetime = Field(
+        ...,
+        description="UTC instant the workspace was materialised.",
+    )
+
+
+# ===========================================================================
 # Re-exports
 # ===========================================================================
 
@@ -388,6 +441,7 @@ __all__ = [
     "LocalWorkspaceConfig",
     "PackageSpec",
     "ResourceLimits",
+    "Workspace",
     "WorkspaceProvider",
     "WorkspaceProviderType",
     "WorkspaceTemplate",

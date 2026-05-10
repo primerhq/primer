@@ -21,7 +21,11 @@ from typing import TYPE_CHECKING
 
 from fastapi import Depends, Header, Request
 
-from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+from matrix.api.registries import (
+    ProviderRegistry,
+    VectorStoreRegistry,
+    WorkspaceRegistry,
+)
 from matrix.model.agent import Agent
 from matrix.model.collection import Collection, Document
 from matrix.model.except_ import ConfigError
@@ -32,6 +36,11 @@ from matrix.model.provider import (
     EmbeddingProvider,
     LLMProvider,
     Toolset,
+)
+from matrix.model.workspace import (
+    Workspace,
+    WorkspaceProvider,
+    WorkspaceTemplate,
 )
 
 
@@ -73,6 +82,22 @@ def get_provider_registry(request: Request) -> ProviderRegistry:
 def get_vector_store_registry(request: Request) -> VectorStoreRegistry:
     _assert_app_state_initialized(request)
     return request.app.state.vector_store_registry
+
+
+def get_workspace_registry(request: Request) -> WorkspaceRegistry:
+    """Resolve the live :class:`WorkspaceRegistry`.
+
+    Stashed by the lifespan handler / ``create_test_app`` alongside the
+    other registries on ``app.state``.
+    """
+    _assert_app_state_initialized(request)
+    registry = getattr(request.app.state, "workspace_registry", None)
+    if registry is None:
+        raise ConfigError(
+            "WorkspaceRegistry not on app.state — lifespan handler "
+            "(or create_test_app) must build one."
+        )
+    return registry
 
 
 def get_llm_provider_storage(
@@ -121,6 +146,24 @@ def get_document_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
 ) -> "Storage[Document]":
     return sp.get_storage(Document)
+
+
+def get_workspace_provider_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+) -> "Storage[WorkspaceProvider]":
+    return sp.get_storage(WorkspaceProvider)
+
+
+def get_workspace_template_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+) -> "Storage[WorkspaceTemplate]":
+    return sp.get_storage(WorkspaceTemplate)
+
+
+def get_workspace_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+) -> "Storage[Workspace]":
+    return sp.get_storage(Workspace)
 
 
 def get_internal_collections_config_storage(
@@ -179,4 +222,8 @@ __all__ = [
     "get_storage_provider",
     "get_toolset_storage",
     "get_vector_store_registry",
+    "get_workspace_provider_storage",
+    "get_workspace_registry",
+    "get_workspace_storage",
+    "get_workspace_template_storage",
 ]

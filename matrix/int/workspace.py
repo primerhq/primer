@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     # TYPE_CHECKING so this module is importable without sub-project D
     # while still giving type checkers the right types.
     from matrix.workspace.session import AgentSession
+    from matrix.workspace.state import CommitInfo
     from matrix.workspace.tool import WorkspaceTool
 
 
@@ -179,6 +180,47 @@ class Workspace(ABC):
         extra ``await`` before iteration -- mirroring the convention
         used by :meth:`matrix.int.LLM.stream` and
         :meth:`matrix.int.Storage.list_tools`.
+        """
+
+    @abstractmethod
+    async def file_info(self, path: str) -> FileEntry:
+        """Return :class:`FileEntry` for one path (file, dir, or symlink).
+
+        User-facing — distinct from the agent ``ls`` tool which
+        returns descriptive metadata for many entries. Raises
+        :class:`matrix.model.except_.NotFoundError` if the path does
+        not exist; :class:`matrix.model.except_.BadRequestError` if
+        the path tries to escape the workspace root.
+        """
+
+    @abstractmethod
+    async def write_file(self, path: str, content: bytes) -> None:
+        """Replace (or create) the file at ``path`` with ``content``.
+
+        Creates parent directories as needed. Raises
+        :class:`matrix.model.except_.BadRequestError` for invalid
+        paths (null byte, escape-attempt, attempts to overwrite a
+        directory).
+        """
+
+    @abstractmethod
+    async def delete_file(self, path: str) -> None:
+        """Delete the file or empty directory at ``path``.
+
+        Raises :class:`matrix.model.except_.NotFoundError` if absent.
+        Refuses to delete the workspace root or the ``.state`` /
+        ``.tmp`` directories with
+        :class:`matrix.model.except_.BadRequestError`.
+        """
+
+    @abstractmethod
+    async def log(self, *, limit: int = 50) -> "list[CommitInfo]":
+        """Return up to ``limit`` recent commits from the ``.state`` repo.
+
+        Newest commits first. Each commit carries the parsed
+        ``X-Matrix-*`` trailers (workspace, session, agent, op, tool,
+        call) so callers can render structured history without
+        re-parsing the message body.
         """
 
     @abstractmethod
