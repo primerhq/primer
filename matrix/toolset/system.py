@@ -70,7 +70,6 @@ from matrix.model.storage import (
     Predicate,
 )
 from matrix.model.thread import Thread
-from matrix.model.vector import VectorStoreConfig
 from matrix.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -1040,10 +1039,10 @@ def build_system_toolset(
     async def _inv_ts(eid: str) -> None:
         await provider_registry.invalidate_toolset(eid)
 
-    async def _inv_vsc(_eid: str) -> None:
-        await vector_store_registry.invalidate()
-
     # ---- CRUD sets ----------------------------------------------------
+    # Note: VectorStoreConfig was removed from this set when vector
+    # store configuration moved into AppConfig (it is no longer a
+    # storage row).
     crud_specs = [
         ("llm_provider", "llm_providers", LLMProvider, None, _inv_llm, _inv_llm),
         ("embedding_provider", "embedding_providers", EmbeddingProvider, None, _inv_emb, _inv_emb),
@@ -1053,7 +1052,6 @@ def build_system_toolset(
         ("graph", "graphs", Graph, None, None, None),
         ("collection", "collections", Collection, None, None, None),
         ("document", "documents", Document, None, None, None),
-        ("vector_store_config", "vector_store_configs", VectorStoreConfig, _inv_vsc, _inv_vsc, _inv_vsc),
         ("agent_thread", "agent_threads", Thread, None, None, None),
         ("graph_thread", "graph_threads", GraphThread, None, None, None),
     ]

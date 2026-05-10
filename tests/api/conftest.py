@@ -111,10 +111,25 @@ def fake_provider_registry(
 def fake_vector_store_registry(
     fake_storage_provider: _FakeStorageProvider,
 ) -> VectorStoreRegistry:
-    return VectorStoreRegistry(
-        fake_storage_provider,  # type: ignore[arg-type]
-        factory=lambda c: object(),  # type: ignore[arg-type]
+    # Tests run against a stub config so ``get()`` works when needed
+    # without a live Postgres + pgvector. The factory returns a bare
+    # object(); tests that exercise the live flow swap in their own.
+    from matrix.model.provider import (
+        PgVectorConfig,
+        VectorStoreProviderConfig,
+        VectorStoreProviderType,
     )
+
+    cfg = VectorStoreProviderConfig(
+        provider=VectorStoreProviderType.PGVECTOR,
+        config=PgVectorConfig(
+            hostname="x",
+            username="u",
+            password="p",  # type: ignore[arg-type]
+            database="d",
+        ),
+    )
+    return VectorStoreRegistry(cfg, factory=lambda c: object())  # type: ignore[arg-type]
 
 
 @pytest.fixture

@@ -1,26 +1,17 @@
-"""Phase-3 router tests: VectorStoreConfig + Collection + Document."""
+"""Phase-3 router tests: Collection + Document.
+
+VectorStoreConfig CRUD has moved out of the API surface — vector
+store configuration is now in :class:`AppConfig`. The cascade test
+that exercised the old CRUD route is gone; the registry-rebuild
+behaviour is covered directly by
+``tests/api/test_vector_store_registry.py``.
+"""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
-from matrix.api.registries.vector_store_registry import (
-    ACTIVE_VECTOR_STORE_CONFIG_ID,
-)
 from matrix.model.collection import Collection, CollectionEmbedder, Document
-from matrix.model.vector import VectorStoreConfig
-
-
-def _vsc(**overrides) -> VectorStoreConfig:
-    body = dict(
-        id=ACTIVE_VECTOR_STORE_CONFIG_ID,
-        backend="pgvector",
-        settings={"dsn": "x"},
-    )
-    body.update(overrides)
-    return VectorStoreConfig(**body)
 
 
 def _collection(**overrides) -> Collection:
@@ -42,35 +33,6 @@ def _document(**overrides) -> Document:
     )
     body.update(overrides)
     return Document(**body)
-
-
-class TestVectorStoreConfigRouter:
-    @pytest.mark.asyncio
-    async def test_round_trip(self, client) -> None:
-        body = _vsc().model_dump(mode="json")
-        post = await client.post("/v1/vector_store_configs", json=body)
-        assert post.status_code == 201, post.text
-        get = await client.get(
-            f"/v1/vector_store_configs/{ACTIVE_VECTOR_STORE_CONFIG_ID}"
-        )
-        assert get.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_create_invalidates_vector_store_registry(
-        self, client, fake_vector_store_registry
-    ) -> None:
-        # Pre-cache a fake provider so we can observe the invalidation
-        sentinel = MagicMock()
-        sentinel.aclose = AsyncMock()
-        fake_vector_store_registry._provider = sentinel  # type: ignore[attr-defined]
-        fake_vector_store_registry._store = MagicMock()  # type: ignore[attr-defined]
-
-        body = _vsc().model_dump(mode="json")
-        resp = await client.post("/v1/vector_store_configs", json=body)
-        assert resp.status_code == 201
-
-        assert fake_vector_store_registry._provider is None  # type: ignore[attr-defined]
-        sentinel.aclose.assert_awaited_once()
 
 
 class TestCollectionRouter:

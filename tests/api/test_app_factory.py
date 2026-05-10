@@ -40,6 +40,13 @@ class TestCreateApp:
         sp_mock = MagicMock()
         sp_mock.initialize = AsyncMock()
         sp_mock.aclose = AsyncMock()
+        # The lifespan now consults ``Storage[InternalCollectionsConfig].get``
+        # to decide whether to auto-activate the subsystem; fake a
+        # storage handle whose ``get`` returns ``None`` so the
+        # subsystem stays inactive.
+        ic_storage_mock = MagicMock()
+        ic_storage_mock.get = AsyncMock(return_value=None)
+        sp_mock.get_storage = MagicMock(return_value=ic_storage_mock)
         monkeypatch.setattr(
             app_mod, "_build_storage_provider", lambda _config: sp_mock
         )

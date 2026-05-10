@@ -26,13 +26,13 @@ from matrix.model.agent import Agent
 from matrix.model.collection import Collection, Document
 from matrix.model.except_ import ConfigError
 from matrix.model.graph import Graph
+from matrix.model.internal import IngestFailure, InternalCollectionsConfig
 from matrix.model.provider import (
     CrossEncoderProvider,
     EmbeddingProvider,
     LLMProvider,
     Toolset,
 )
-from matrix.model.vector import VectorStoreConfig
 
 
 if TYPE_CHECKING:
@@ -123,10 +123,36 @@ def get_document_storage(
     return sp.get_storage(Document)
 
 
-def get_vector_store_config_storage(
+def get_internal_collections_config_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
-) -> "Storage[VectorStoreConfig]":
-    return sp.get_storage(VectorStoreConfig)
+) -> "Storage[InternalCollectionsConfig]":
+    return sp.get_storage(InternalCollectionsConfig)
+
+
+def get_ingest_failure_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+) -> "Storage[IngestFailure]":
+    return sp.get_storage(IngestFailure)
+
+
+def get_internal_collections_subsystem(request: Request):
+    """Resolve the live :class:`InternalCollectionsSubsystem`.
+
+    Returns the subsystem instance attached to ``app.state`` by the
+    lifespan handler (or ``create_test_app``). Raises
+    :class:`ConfigError` when the subsystem isn't on the app — that
+    happens when the lifespan ran without a config row and the
+    subsystem hasn't been activated via the API yet.
+    """
+    _assert_app_state_initialized(request)
+    subsystem = getattr(request.app.state, "internal_collections", None)
+    if subsystem is None:
+        raise ConfigError(
+            "internal collections subsystem is not active; configure "
+            "it via PUT /v1/internal_collections/config and run "
+            "POST /v1/internal_collections/bootstrap."
+        )
+    return subsystem
 
 
 def get_principal(
@@ -144,11 +170,13 @@ __all__ = [
     "get_document_storage",
     "get_embedding_provider_storage",
     "get_graph_storage",
+    "get_ingest_failure_storage",
+    "get_internal_collections_config_storage",
+    "get_internal_collections_subsystem",
     "get_llm_provider_storage",
     "get_principal",
     "get_provider_registry",
     "get_storage_provider",
     "get_toolset_storage",
-    "get_vector_store_config_storage",
     "get_vector_store_registry",
 ]

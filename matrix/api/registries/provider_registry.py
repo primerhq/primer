@@ -96,6 +96,7 @@ def _default_cross_encoder_factory(  # pragma: no cover
 
 
 _SYSTEM_TOOLSET_ID = "_system"
+_SEARCH_TOOLSET_ID = "_search"
 
 
 def _phase_one_only_toolset_factory(toolset: Toolset) -> ToolsetProvider:
@@ -120,6 +121,7 @@ class ProviderRegistry:
         ) = None,
         toolset_factory: Callable[[Toolset], ToolsetProvider] | None = None,
         system_toolset_provider: ToolsetProvider | None = None,
+        search_toolset_provider: ToolsetProvider | None = None,
     ) -> None:
         self._sp = storage_provider
         self._llm_factory = llm_factory or _default_llm_factory
@@ -132,6 +134,12 @@ class ProviderRegistry:
         # without consulting storage. Set via app lifespan; tests
         # may leave it None and use the row-based path.
         self._system_toolset_provider = system_toolset_provider
+        # Reserved id ``_search`` resolves to this provider when the
+        # internal collections subsystem is active. Set lazily by the
+        # subsystem bootstrap (or the lifespan handler if a config row
+        # already exists at startup); ``None`` means the subsystem is
+        # inactive and ``get_toolset('_search')`` raises NotFoundError.
+        self._search_toolset_provider = search_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -191,6 +199,13 @@ class ProviderRegistry:
             and toolset_id == _SYSTEM_TOOLSET_ID
         ):
             return self._system_toolset_provider
+        # Reserved id `_search` resolves to the search toolset built
+        # when the internal collections subsystem is activated.
+        if (
+            self._search_toolset_provider is not None
+            and toolset_id == _SEARCH_TOOLSET_ID
+        ):
+            return self._search_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -225,10 +240,10 @@ class ProviderRegistry:
             await adapter.aclose()
 
     async def invalidate_toolset(self, toolset_id: str) -> None:
-        # The reserved system toolset is immutable; invalidation is a
-        # no-op so the singleton survives any cascade triggered by an
-        # accidental write to the reserved id.
-        if toolset_id == _SYSTEM_TOOLSET_ID:
+        # The reserved internal toolsets are immutable; invalidation
+        # is a no-op so the singletons survive any cascade triggered
+        # by an accidental write to the reserved ids.
+        if toolset_id in (_SYSTEM_TOOLSET_ID, _SEARCH_TOOLSET_ID):
             return
         async with self._lock:
             adapter = self._toolset_cache.pop(toolset_id, None)

@@ -12,8 +12,16 @@ from fastapi import FastAPI
 from matrix.api.config import AppConfig
 from matrix.api.errors import register_error_handlers
 from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
-from matrix.api.routers import compute, health, knowledge, providers
+from matrix.api.routers import (
+    compute,
+    health,
+    internal_collections,
+    knowledge,
+    providers,
+)
 from matrix.api.version import API_VERSION, APP_VERSION
+from matrix.internal_collections import build_subsystem, load_config_or_none
+from matrix.toolset.search import build_search_toolset
 from matrix.toolset.system import build_system_toolset
 
 
@@ -29,7 +37,7 @@ def _make_lifespan(config: AppConfig):
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
-        vector_store_registry = VectorStoreRegistry(storage_provider)
+        vector_store_registry = VectorStoreRegistry(config.vector_store)
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
         # ``get_toolset('_system')`` to it.
@@ -44,6 +52,28 @@ def _make_lifespan(config: AppConfig):
         app.state.provider_registry = provider_registry
         app.state.vector_store_registry = vector_store_registry
         app.state.system_toolset = system_toolset
+        app.state.internal_collections = None
+        app.state.search_toolset = None
+        # Internal collections subsystem auto-activation: if a config
+        # row already exists in storage, build the live subsystem +
+        # search toolset and start the CDC worker. We do NOT auto-run
+        # bootstrap here — the operator does that explicitly via
+        # POST /v1/internal_collections/bootstrap.
+        ic_config = await load_config_or_none(storage_provider)
+        if ic_config is not None:
+            ic_subsystem = build_subsystem(
+                config=ic_config,
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                vector_store_registry=vector_store_registry,
+                toolset_providers={"_system": system_toolset},
+            )
+            search_toolset = build_search_toolset(ic_subsystem)
+            ic_subsystem.register_toolset_provider("_search", search_toolset)
+            provider_registry._search_toolset_provider = search_toolset  # noqa: SLF001
+            app.state.internal_collections = ic_subsystem
+            app.state.search_toolset = search_toolset
+            ic_subsystem.start_worker()
         logger.info(
             "matrix API ready",
             extra={"version": APP_VERSION, "host": config.host, "port": config.port},
@@ -51,6 +81,9 @@ def _make_lifespan(config: AppConfig):
         try:
             yield
         finally:
+            ic_subsystem = app.state.internal_collections
+            if ic_subsystem is not None:
+                await ic_subsystem.aclose()
             await provider_registry.aclose()
             await vector_store_registry.aclose()
             await storage_provider.aclose()
@@ -102,10 +135,15 @@ def _mount_routers(app: FastAPI) -> None:
     # Phase 2 — compute (Agent + Graph)
     app.include_router(compute.agent_router, prefix=prefix)
     app.include_router(compute.graph_router, prefix=prefix)
-    # Phase 3 — knowledge (VectorStoreConfig + Collection + Document)
-    app.include_router(knowledge.vector_store_config_router, prefix=prefix)
+    # Phase 3 — knowledge (Collection + Document). VectorStoreConfig
+    # has moved out of storage and into AppConfig.vector_store; no
+    # CRUD endpoint exists for it any more.
     app.include_router(knowledge.collection_router, prefix=prefix)
     app.include_router(knowledge.document_router, prefix=prefix)
+    # Internal collections subsystem (config + bootstrap + per-entity
+    # semantic search). The search routes return 503 until the
+    # subsystem has been bootstrapped at least once.
+    app.include_router(internal_collections.router, prefix=prefix)
 
 
 def create_app(config: AppConfig) -> FastAPI:
@@ -150,6 +188,12 @@ def create_test_app(
     app.state.provider_registry = provider_registry
     app.state.vector_store_registry = vector_store_registry
     app.state.system_toolset = system_toolset
+    # Tests build the subsystem on demand via the /bootstrap endpoint.
+    # The lifespan-driven auto-activation path lives in create_app
+    # only; ``create_test_app`` keeps the slot empty until the test
+    # explicitly drives the activation flow.
+    app.state.internal_collections = None
+    app.state.search_toolset = None
     _mount_routers(app)
     register_error_handlers(app)
     return app

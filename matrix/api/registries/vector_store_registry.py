@@ -1,4 +1,10 @@
-"""Single-active vector-store registry."""
+"""Single-active vector-store registry.
+
+Reads its configuration from :class:`matrix.api.config.AppConfig` —
+the vector store is infrastructure-level (mirroring the database) and
+no longer lives in storage. ``None`` config means the subsystem is
+disabled; ``get()`` raises :class:`ConfigError`.
+"""
 
 from __future__ import annotations
 
@@ -8,11 +14,10 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from matrix.model.except_ import ConfigError
-from matrix.model.vector import VectorStoreConfig
+from matrix.model.provider import VectorStoreProviderConfig
 
 
 if TYPE_CHECKING:
-    from matrix.int.storage_provider import StorageProvider
     from matrix.int.vector_store import VectorStore
     from matrix.int.vector_store_provider import VectorStoreProvider
 
@@ -20,47 +25,60 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Retained for backwards compatibility with code that still references
+# the old in-storage row id; nothing in the API code path uses it now.
 ACTIVE_VECTOR_STORE_CONFIG_ID = "_active_vector_store"
 
 
-def _default_factory(  # pragma: no cover
-    config: VectorStoreConfig,
-) -> "VectorStoreProvider":
-    raise ConfigError(
-        "default VectorStoreProvider factory not wired in Phase 0; "
-        "supply a `factory` to VectorStoreRegistry"
-    )
+def _default_factory(
+    config: VectorStoreProviderConfig,
+) -> "VectorStoreProvider":  # pragma: no cover
+    """Production dispatch via :class:`VectorStoreProviderFactory`.
+
+    Local import keeps asyncpg / pgvector heavyweight imports off the
+    hot startup path until a vector store is actually constructed.
+    """
+    from matrix.vector.factory import VectorStoreProviderFactory
+
+    return VectorStoreProviderFactory.create(config)
 
 
 class VectorStoreRegistry:
-    """Cache + lifecycle for the (single) active vector store."""
+    """Cache + lifecycle for the (single) active vector store.
+
+    Configuration is supplied at construction (typically from
+    :attr:`AppConfig.vector_store`). ``None`` config = subsystem
+    disabled; calls to :meth:`get` raise :class:`ConfigError`.
+    """
 
     def __init__(
         self,
-        storage_provider: "StorageProvider",
+        config: VectorStoreProviderConfig | None,
         *,
-        factory: Callable[[VectorStoreConfig], "VectorStoreProvider"] | None = None,
+        factory: Callable[[VectorStoreProviderConfig], "VectorStoreProvider"] | None = None,
     ) -> None:
-        self._sp = storage_provider
+        self._config = config
         self._factory = factory or _default_factory
         self._provider: "VectorStoreProvider | None" = None
         self._store: "VectorStore | None" = None
         self._lock = asyncio.Lock()
 
+    @property
+    def is_configured(self) -> bool:
+        """``True`` when a vector store config was supplied at construction."""
+        return self._config is not None
+
     async def get(self) -> "VectorStore":
+        if self._config is None:
+            raise ConfigError(
+                "no vector store configured; set ``vector_store`` in "
+                "the AppConfig (env-prefix MATRIX_VECTOR_STORE__... or "
+                "TOML [vector_store] section) and restart the service."
+            )
         async with self._lock:
             if self._store is not None:
                 return self._store
-            row = await self._sp.get_storage(VectorStoreConfig).get(
-                ACTIVE_VECTOR_STORE_CONFIG_ID
-            )
-            if row is None:
-                raise ConfigError(
-                    "no vector store configured; "
-                    f"create a VectorStoreConfig row with id "
-                    f"{ACTIVE_VECTOR_STORE_CONFIG_ID!r} via the Phase 3 API"
-                )
-            provider = self._factory(row)
+            provider = self._factory(self._config)
             await provider.initialize()
             self._provider = provider
             self._store = provider.get_vector_store()

@@ -216,7 +216,6 @@ class TestCatalog:
             ("graph", "graphs"),
             ("collection", "collections"),
             ("document", "documents"),
-            ("vector_store_config", "vector_store_configs"),
             ("agent_thread", "agent_threads"),
             ("graph_thread", "graph_threads"),
         ]:
@@ -376,35 +375,6 @@ class TestCascadeInvalidation:
         second = await pr.get_llm("anthropic-1")
         assert second is sentinel_v2
         sentinel_v1.aclose.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_delete_vector_store_config_invalidates_registry(
-        self, system_toolset, vsr
-    ) -> None:
-        from matrix.api.registries.vector_store_registry import (
-            ACTIVE_VECTOR_STORE_CONFIG_ID,
-        )
-        from matrix.model.vector import VectorStoreConfig
-
-        body = VectorStoreConfig(
-            id=ACTIVE_VECTOR_STORE_CONFIG_ID,
-            backend="pgvector",
-            settings={"dsn": "x"},
-        ).model_dump(mode="json")
-        await system_toolset.call(
-            tool_name="create_vector_store_config", arguments={"entity": body}
-        )
-        sentinel = MagicMock()
-        sentinel.aclose = AsyncMock()
-        vsr._provider = sentinel  # type: ignore[attr-defined]
-        vsr._store = MagicMock()  # type: ignore[attr-defined]
-
-        await system_toolset.call(
-            tool_name="delete_vector_store_config",
-            arguments={"id": ACTIVE_VECTOR_STORE_CONFIG_ID},
-        )
-        assert vsr._provider is None  # type: ignore[attr-defined]
-        sentinel.aclose.assert_awaited_once()
 
 
 # ===========================================================================
@@ -746,19 +716,6 @@ def _toolset_body() -> dict:
     ).model_dump(mode="json")
 
 
-def _vsc() -> dict:
-    from matrix.api.registries.vector_store_registry import (
-        ACTIVE_VECTOR_STORE_CONFIG_ID,
-    )
-    from matrix.model.vector import VectorStoreConfig
-
-    return VectorStoreConfig(
-        id=ACTIVE_VECTOR_STORE_CONFIG_ID,
-        backend="pgvector",
-        settings={"dsn": "x"},
-    ).model_dump(mode="json")
-
-
 def _graph_thread() -> dict:
     now = datetime.now(timezone.utc)
     from matrix.model.graph import GraphThread
@@ -783,7 +740,6 @@ def _graph_thread() -> dict:
          lambda: _agent().model_dump(mode="json")),
         ("create_collection", "delete_collection",
          lambda: _collection().model_dump(mode="json")),
-        ("create_vector_store_config", "delete_vector_store_config", _vsc),
         ("create_graph_thread", "delete_graph_thread", _graph_thread),
     ],
 )
