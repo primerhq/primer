@@ -115,3 +115,39 @@ class TestTomlConfigPath:
         monkeypatch.setenv("MATRIX_DB_HOST", "env-host")
         config = AppConfig()
         assert config.db_host == "env-host"
+
+
+def test_app_config_default_runtime_mode_is_api_plus_worker(monkeypatch):
+    monkeypatch.setenv("MATRIX_DB_HOST", "localhost")
+    monkeypatch.setenv("MATRIX_DB_DATABASE", "matrix")
+    monkeypatch.setenv("MATRIX_DB_USER", "u")
+    monkeypatch.setenv("MATRIX_DB_PASSWORD", "p")
+    from matrix.api.config import AppConfig
+    from matrix.model.scheduler import RuntimeMode
+    cfg = AppConfig()
+    assert cfg.runtime_mode == RuntimeMode.API_PLUS_WORKER
+    assert cfg.scheduler is None
+    assert cfg.worker.concurrency == 8
+
+
+def test_app_config_accepts_scheduler_and_worker(monkeypatch):
+    monkeypatch.setenv("MATRIX_DB_HOST", "localhost")
+    monkeypatch.setenv("MATRIX_DB_DATABASE", "matrix")
+    monkeypatch.setenv("MATRIX_DB_USER", "u")
+    monkeypatch.setenv("MATRIX_DB_PASSWORD", "p")
+    from matrix.api.config import AppConfig
+    from matrix.model.scheduler import (
+        InMemorySchedulerConfig,
+        SchedulerProviderConfig,
+        SchedulerProviderType,
+        WorkerConfig,
+    )
+    cfg = AppConfig(
+        scheduler=SchedulerProviderConfig(
+            provider=SchedulerProviderType.IN_MEMORY,
+            config=InMemorySchedulerConfig(),
+        ),
+        worker=WorkerConfig(concurrency=4),
+    )
+    assert cfg.scheduler.provider == SchedulerProviderType.IN_MEMORY
+    assert cfg.worker.concurrency == 4

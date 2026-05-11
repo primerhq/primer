@@ -206,7 +206,7 @@ class _FakeWorkspace:
         del self._files[path]
 
     async def log(self, *, limit=50):
-        from matrix.workspace.state import CommitInfo
+        from matrix.workspace.local.state import CommitInfo
 
         return [
             CommitInfo(
@@ -487,12 +487,32 @@ class TestSessionsSubResource:
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_pause_then_resume(self, client, wsr) -> None:
+    async def test_pause_then_resume(self, client, wsr, app, sp) -> None:
+        # Pause/resume moved off the workspace sub-resource onto
+        # /v1/workspaces/{wid}/sessions/{sid}/{pause,resume} backed by
+        # the persisted Session row (Task 20). Seed a Session row so the
+        # new endpoints have something to look up.
+        from matrix.model.session import (
+            AgentSessionBinding,
+            Session,
+            SessionStatus,
+        )
+
         wid = await self._setup(client, wsr)
+        session = Session(
+            id="sess-1",
+            workspace_id=wid,
+            binding=AgentSessionBinding(agent_id="agt-1"),
+            status=SessionStatus.RUNNING,
+            created_at=datetime.now(timezone.utc),
+            started_at=datetime.now(timezone.utc),
+        )
+        await sp.get_storage(Session).create(session)
         pause = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/pause")
         assert pause.status_code == 204
         resume = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/resume")
-        assert resume.status_code == 204
+        assert resume.status_code == 200
+        assert resume.json()["status"] == "running"
 
     @pytest.mark.asyncio
     async def test_steer(self, client, wsr) -> None:

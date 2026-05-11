@@ -299,7 +299,11 @@ class TestWorkspaceProvider:
 
     def test_provider_type_enum_values(self) -> None:
         assert WorkspaceProviderType.LOCAL.value == "local"
-        assert {t.value for t in WorkspaceProviderType} == {"local"}
+        assert WorkspaceProviderType.CONTAINER.value == "container"
+        assert WorkspaceProviderType.KUBERNETES.value == "kubernetes"
+        assert {t.value for t in WorkspaceProviderType} == {
+            "local", "container", "kubernetes",
+        }
 
     def test_empty_id_rejected(self) -> None:
         with pytest.raises(ValidationError):

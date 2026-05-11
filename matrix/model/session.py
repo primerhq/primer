@@ -28,9 +28,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, Literal, Union
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field
+
+from matrix.model.common import Identifiable
+
+if TYPE_CHECKING:
+    from matrix.model.agent import Agent
+    from matrix.model.graph import Graph
 
 
 # ===========================================================================
@@ -41,11 +47,16 @@ from pydantic import BaseModel, Field
 class SessionStatus(str, Enum):
     """Lifecycle state of an :class:`AgentSession`.
 
-    Transitions are driven by the agent runtime (which sets
-    :attr:`RUNNING` while a turn is in flight, :attr:`WAITING` when
-    blocked on either user input or an approval, :attr:`ENDED` on
-    terminal) and by the user (who can request :attr:`PAUSED` and
-    resume back to :attr:`RUNNING`).
+    :attr:`CREATED` is the pre-execution state — the session row exists
+    but no worker has been told to run it yet. ``POST .../resume`` (or
+    ``auto_start=True`` on session create) signals the scheduler to
+    transition into :attr:`RUNNING`.
+
+    Transitions out of :attr:`CREATED` / between non-terminal states
+    are driven by the agent runtime (which sets :attr:`RUNNING` while a
+    turn is in flight, :attr:`WAITING` when blocked on either user
+    input or an approval, :attr:`ENDED` on terminal) and by the user
+    (who can request :attr:`PAUSED` and resume back to :attr:`RUNNING`).
 
     :attr:`WAITING` is intentionally one state regardless of what the
     session is blocked on -- the distinction is recorded in
@@ -56,6 +67,7 @@ class SessionStatus(str, Enum):
     Terminal: :attr:`ENDED`. Non-terminal: everything else.
     """
 
+    CREATED = "created"
     RUNNING = "running"
     WAITING = "waiting"
     PAUSED = "paused"
@@ -265,13 +277,128 @@ class Instruction(BaseModel):
 
 
 # ===========================================================================
+# Persisted Session entity (scheduler-visible)
+# ===========================================================================
+
+
+class AgentSessionBinding(BaseModel):
+    """Bind a persisted Session to a single Agent (discriminated-union member).
+
+    Distinct from the existing on-disk :class:`AgentBinding` snapshot —
+    this one identifies which Agent a scheduler-managed Session is
+    bound to, with an optional frozen snapshot field for immutability
+    against later edits to the Agent row.
+    """
+
+    kind: Literal["agent"] = Field(
+        default="agent",
+        description="Discriminator tag for the SessionBinding union.",
+    )
+    agent_id: str = Field(..., min_length=1)
+    agent_snapshot: "Agent | None" = Field(
+        default=None,
+        description=(
+            "Optional frozen snapshot of the Agent definition at session "
+            "start. Insulates a long-running session from later edits to "
+            "the Agent row."
+        ),
+    )
+
+
+class GraphSessionBinding(BaseModel):
+    """Bind a persisted Session to a single Graph (discriminated-union member)."""
+
+    kind: Literal["graph"] = Field(
+        default="graph",
+        description="Discriminator tag for the SessionBinding union.",
+    )
+    graph_id: str = Field(..., min_length=1)
+    graph_snapshot: "Graph | None" = Field(
+        default=None,
+        description=(
+            "Optional frozen snapshot of the Graph definition at session "
+            "start. Insulates a long-running session from later edits to "
+            "the Graph row."
+        ),
+    )
+
+
+SessionBinding = Annotated[
+    AgentSessionBinding | GraphSessionBinding,
+    Field(discriminator="kind"),
+]
+
+
+class Session(Identifiable):
+    """Persisted session row — scheduler's source of truth.
+
+    Distinct from :class:`SessionInfo`, which is the on-disk projection
+    inside the workspace's ``.state/`` repo. The two are synchronised
+    at turn boundaries; divergence is permitted for at most one turn
+    (at-least-once trade-off documented in the spec at
+    docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md).
+    """
+
+    workspace_id: str = Field(..., min_length=1)
+    binding: SessionBinding
+    status: SessionStatus
+    parent_session_id: str | None = Field(default=None)
+    initial_instructions: str | None = Field(default=None)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    started_at: datetime | None = Field(default=None)
+    last_turn_at: datetime | None = Field(default=None)
+    ended_at: datetime | None = Field(default=None)
+    ended_reason: Literal["completed", "failed", "cancelled"] | None = Field(
+        default=None,
+    )
+
+    # Fence + scheduler-visible columns
+    turn_no: int = Field(default=0, ge=0)
+    last_worker_id: str | None = Field(default=None)
+    attempt_count: int = Field(default=0, ge=0)
+    last_error: str | None = Field(default=None)
+
+    # Cancel/pause request flags (set by API, read by worker)
+    pause_requested: bool = Field(default=False)
+    cancel_requested: bool = Field(default=False)
+
+
+# ===========================================================================
+# Forward-reference resolution
+# ===========================================================================
+#
+# AgentSessionBinding.agent_snapshot and GraphSessionBinding.graph_snapshot
+# reference Agent / Graph, which we import only under TYPE_CHECKING above to
+# avoid a circular import (matrix.model.graph already imports SessionStatus
+# from this module). Pydantic v2 needs concrete classes to build the schema,
+# so we resolve the forward refs lazily inside a deferred-import helper that
+# runs after this module has finished executing.
+
+def _rebuild_models() -> None:
+    from matrix.model.agent import Agent  # noqa: F401
+    from matrix.model.graph import Graph  # noqa: F401
+
+    AgentSessionBinding.model_rebuild()
+    GraphSessionBinding.model_rebuild()
+    Session.model_rebuild()
+
+
+_rebuild_models()
+
+
+# ===========================================================================
 # Re-exports
 # ===========================================================================
 
 
 __all__ = [
     "AgentBinding",
+    "AgentSessionBinding",
+    "GraphSessionBinding",
     "Instruction",
+    "Session",
+    "SessionBinding",
     "SessionInfo",
     "SessionStatus",
     "WaitingState",

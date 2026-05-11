@@ -12,15 +12,20 @@ from pydantic import SecretStr
 from matrix.api.app import create_app, create_test_app
 from matrix.api.config import AppConfig
 from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+from matrix.model.scheduler import RuntimeMode
 
 
 def _config() -> AppConfig:
+    # Default ``RuntimeMode.API_PLUS_WORKER`` requires a scheduler
+    # (Task 23). These tests don't exercise the worker pool, so pin
+    # the mode to ``API`` to keep the existing assertions valid.
     return AppConfig(
         db_host="h",
         db_port=5432,
         db_database="d",
         db_user="u",
         db_password=SecretStr("p"),
+        runtime_mode=RuntimeMode.API,
     )
 
 

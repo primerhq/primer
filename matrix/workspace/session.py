@@ -40,8 +40,8 @@ from matrix.model.session import (
 
 
 if TYPE_CHECKING:
-    from matrix.workspace.cache import TruncationStore
-    from matrix.workspace.state import Op, StateRepo
+    from matrix.workspace.local.cache import LocalTruncationStore
+    from matrix.workspace.local.state import LocalStateRepo, Op
     from matrix.workspace.tool import WorkspaceTool
 
 
@@ -163,8 +163,8 @@ class AgentSession:
         *,
         session_info: SessionInfo,
         agent_binding: AgentBinding,
-        state_repo: "StateRepo",
-        truncation_store: "TruncationStore",
+        state_repo: "LocalStateRepo",
+        truncation_store: "LocalTruncationStore",
         workspace_tools: "list[WorkspaceTool] | tuple[WorkspaceTool, ...]" = (),
     ) -> None:
         if session_info.agent_id != agent_binding.agent_id:
@@ -193,8 +193,8 @@ class AgentSession:
         session_id: str,
         workspace_id: str,
         agent_binding: AgentBinding,
-        state_repo: "StateRepo",
-        truncation_store: "TruncationStore",
+        state_repo: "LocalStateRepo",
+        truncation_store: "LocalTruncationStore",
         workspace_tools: "list[WorkspaceTool] | tuple[WorkspaceTool, ...]" = (),
         instructions: str | None = None,
         parent_session_id: str | None = None,

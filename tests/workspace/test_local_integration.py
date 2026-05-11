@@ -41,7 +41,7 @@ from matrix.workspace import (
     ToolCallContext,
     WorkspaceBackendFactory,
 )
-from matrix.workspace.tools import EditArgs, ExecArgs, GrepArgs, ReadArgs
+from matrix.workspace.local.tools import EditArgs, ExecArgs, GrepArgs, ReadArgs
 
 
 pytestmark = pytest.mark.skipif(

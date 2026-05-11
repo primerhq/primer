@@ -17,8 +17,12 @@ from matrix.model.except_ import ConflictError, NotFoundError
 from matrix.model.storage import (
     CursorPage,
     CursorPageResponse,
+    FieldRef,
     OffsetPage,
     OffsetPageResponse,
+    Op,
+    Predicate,
+    Value,
 )
 
 
@@ -70,7 +74,70 @@ class _InMemoryStorage(Generic[_T]):
         return CursorPageResponse(next_cursor=next_cursor, items=sliced)
 
     async def find(self, predicate, page, *, order_by=None):
-        return await self.list(page, order_by=order_by)
+        if predicate is None:
+            return await self.list(page, order_by=order_by)
+        items = [e for e in self._data.values() if _eval_predicate(e, predicate)]
+        if isinstance(page, OffsetPage):
+            sliced = items[page.offset : page.offset + page.length]
+            return OffsetPageResponse(
+                offset=page.offset,
+                length=len(sliced),
+                total=len(items),
+                items=sliced,
+            )
+        offset = int(page.cursor) if page.cursor else 0
+        sliced = items[offset : offset + page.length]
+        next_cursor: str | None = None
+        if offset + page.length < len(items):
+            next_cursor = str(offset + page.length)
+        return CursorPageResponse(next_cursor=next_cursor, items=sliced)
+
+
+def _resolve_field(entity: Any, path: str) -> Any:
+    """Walk a dotted path against a Pydantic model / dict.
+
+    Supports ``id``, ``status``, ``binding.agent_id`` -- the patterns the
+    sessions router emits. Returns ``None`` for any unresolvable segment
+    so a missing field naturally fails an ``EQ`` comparison.
+    """
+    cur: Any = entity
+    for part in path.split("."):
+        if cur is None:
+            return None
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            cur = getattr(cur, part, None)
+    # Coerce Enums to their string value so EQ against a Value(value=str)
+    # behaves like the Postgres translator (which compares text).
+    from enum import Enum
+    if isinstance(cur, Enum):
+        return cur.value
+    return cur
+
+
+def _eval_predicate(entity: Any, node: Any) -> bool:
+    """Tiny predicate evaluator for the in-memory test storage.
+
+    Supports EQ / NE / AND / OR -- the operators the API routers
+    actually emit when translating query params. Other operators fall
+    through to ``True`` (the test storage is intentionally minimal).
+    """
+    if isinstance(node, Predicate):
+        if node.op in (Op.AND, Op.OR):
+            left = _eval_predicate(entity, node.left)
+            right = _eval_predicate(entity, node.right)
+            return (left and right) if node.op == Op.AND else (left or right)
+        # Comparison: left is a FieldRef, right is a Value.
+        if isinstance(node.left, FieldRef) and isinstance(node.right, Value):
+            actual = _resolve_field(entity, node.left.name)
+            expected = node.right.value
+            if node.op == Op.EQ:
+                return actual == expected
+            if node.op == Op.NE:
+                return actual != expected
+        return True
+    return True
 
 
 class _FakeStorageProvider:

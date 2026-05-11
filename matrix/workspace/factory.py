@@ -3,6 +3,9 @@
 Mirrors the :class:`matrix.storage.factory.StorageProviderFactory` /
 :class:`matrix.vector.factory.VectorStoreProviderFactory` pattern.
 
+Phase A wires only the Local provider. Container / Kubernetes raise
+:class:`ConfigError` until phases B and C land.
+
 Usage::
 
     config = WorkspaceProvider(
@@ -36,18 +39,35 @@ class WorkspaceBackendFactory:
         """Dispatch on ``config.provider`` and build the matching backend.
 
         Raises :class:`ConfigError` when the provider enum is recognised
-        at the type level but no backend has been wired into this
-        factory yet (only ``LOCAL`` ships today).
+        but no backend has been wired yet for it (Container/Kubernetes
+        in Phase A).
         """
         if config.provider == WorkspaceProviderType.LOCAL:
             if not isinstance(config.config, LocalWorkspaceConfig):
-                # Defensive: WorkspaceProvider's own model_validator
-                # already rejects mismatches, but keep the dispatcher
-                # honest in case the union grows.
                 raise ConfigError(
                     "provider='local' requires a LocalWorkspaceConfig"
                 )
             return LocalWorkspaceBackend(root=Path(config.config.path))
+        if config.provider == WorkspaceProviderType.CONTAINER:
+            from matrix.model.workspace import ContainerWorkspaceConfig
+            from matrix.workspace.container.backend import (
+                ContainerWorkspaceBackend,
+            )
+            if not isinstance(config.config, ContainerWorkspaceConfig):
+                raise ConfigError(
+                    "provider='container' requires a ContainerWorkspaceConfig"
+                )
+            return ContainerWorkspaceBackend(config.config)
+        if config.provider == WorkspaceProviderType.KUBERNETES:
+            from matrix.model.workspace import KubernetesWorkspaceConfig
+            from matrix.workspace.k8s.backend import (
+                KubernetesWorkspaceBackend,
+            )
+            if not isinstance(config.config, KubernetesWorkspaceConfig):
+                raise ConfigError(
+                    "provider='kubernetes' requires a KubernetesWorkspaceConfig"
+                )
+            return KubernetesWorkspaceBackend(config.config)
         raise ConfigError(
             f"no backend wired for WorkspaceProviderType {config.provider!r}"
         )

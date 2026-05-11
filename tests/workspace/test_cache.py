@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from matrix.workspace.cache import (
+from matrix.workspace.local.cache import (
+    LocalTruncationStore as TruncationStore,
     TruncatedOutput,
-    TruncationStore,
 )
 
 

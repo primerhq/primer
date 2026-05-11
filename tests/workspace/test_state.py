@@ -15,9 +15,9 @@ from matrix.model.session import (
     SessionInfo,
     SessionStatus,
 )
-from matrix.workspace.state import (
+from matrix.workspace.local.state import (
     CommitInfo,
-    StateRepo,
+    LocalStateRepo as StateRepo,
 )
 
 

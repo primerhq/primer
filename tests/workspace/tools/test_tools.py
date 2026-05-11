@@ -20,11 +20,11 @@ from matrix.model.session import AgentBinding
 # runs before any test constructs one (see matrix/workspace/__init__.py).
 import matrix.workspace as _workspace_pkg  # noqa: F401
 
-from matrix.workspace.cache import TruncationStore
+from matrix.workspace.local.cache import LocalTruncationStore as TruncationStore
+from matrix.workspace.local.state import LocalStateRepo as StateRepo
 from matrix.workspace.session import AgentSession
-from matrix.workspace.state import StateRepo
 from matrix.workspace.tool import ToolCallContext
-from matrix.workspace.tools import (
+from matrix.workspace.local.tools import (
     Edit,
     EditArgs,
     Exec,

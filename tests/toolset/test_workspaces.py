@@ -189,7 +189,7 @@ class _LiveWorkspace:
 
     async def log(self, *, limit=50):
         from datetime import datetime, timezone
-        from matrix.workspace.state import CommitInfo
+        from matrix.workspace.local.state import CommitInfo
 
         return [
             CommitInfo(

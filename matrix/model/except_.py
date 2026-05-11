@@ -63,6 +63,18 @@ class UnsupportedContentError(MatrixError):
     """
 
 
+class ValidationError(MatrixError):
+    """Request was structurally valid but failed semantic validation.
+
+    Maps to HTTP 422 (Unprocessable Entity) at the API surface. Use for
+    binding-level checks that go beyond Pydantic's structural validation
+    -- e.g. the request references an entity id that does not exist, or
+    a discriminated-union member fails a cross-field invariant. Distinct
+    from :class:`BadRequestError`, which maps to 400 and signals a
+    malformed request the server could not parse or interpret.
+    """
+
+
 class ProviderError(MatrixError):
     """Upstream provider returned an error.
 
@@ -148,3 +160,33 @@ class AuthRequiredError(MatrixError):
         super().__init__(message, code=code, status_code=status_code, cause=cause)
         self.auth_url = auth_url
         self.state = state
+
+
+class TransientError(MatrixError):
+    """Retryable failure raised by adapters (network blips, 5xx, etc.).
+
+    The worker pool's transient-failure path catches this, applies
+    exponential backoff via the scheduler, and re-enqueues the
+    session. Adapters that know a failure is recoverable should raise
+    this rather than a bare :class:`Exception`.
+
+    See docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md
+    for the full background-execution design.
+    """
+
+
+class LeaseLostError(MatrixError):
+    """Internal: ``Scheduler.complete_turn`` returned ``LEASE_LOST``.
+
+    The worker discards the in-progress turn output. Never escapes the
+    worker boundary -- REST callers do not see this.
+    """
+
+
+class TurnConflictError(MatrixError):
+    """Internal: ``Scheduler.complete_turn`` returned ``TURN_CONFLICT``.
+
+    Another worker advanced the session ahead of us. The worker
+    discards the in-progress turn output. Same scope as
+    :class:`LeaseLostError`.
+    """

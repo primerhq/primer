@@ -16,12 +16,17 @@ from matrix.api.deps import (
     get_llm_provider_storage,
     get_principal,
     get_provider_registry,
+    get_scheduler,
+    get_session_storage,
     get_storage_provider,
     get_toolset_storage,
     get_vector_store_registry,
+    get_worker_pool,
 )
 from matrix.api.errors import register_error_handlers
 from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+from matrix.model.except_ import ConfigError
+from matrix.model.session import Session
 
 
 def _mount_state_echo(app: FastAPI) -> None:
@@ -75,8 +80,8 @@ async def test_principal_absent_when_header_missing(client, app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_uninitialised_app_state_returns_500_problem() -> None:
-    """An app missing app.state attributes returns 500 ProblemDetails."""
+async def test_uninitialised_app_state_returns_503_problem() -> None:
+    """An app missing app.state attributes raises ConfigError, which maps to 503."""
     bare = FastAPI()
     register_error_handlers(bare)
     _mount_state_echo(bare)
@@ -85,9 +90,9 @@ async def test_uninitialised_app_state_returns_500_problem() -> None:
         transport=ASGITransport(app=bare), base_url="http://test"
     ) as c:
         response = await c.get("/echo-state")
-    assert response.status_code == 500
+    assert response.status_code == 503
     body = response.json()
-    assert body["type"] == "/errors/misconfigured"
+    assert body["type"] == "/errors/service-unavailable"
     assert "API state not initialised" in body["detail"]
 
 
@@ -124,3 +129,73 @@ async def test_per_model_storage_helpers_resolve_correct_handles(
     response = await client.get("/echo-storages")
     assert response.status_code == 200
     assert response.json() == {"llm": True, "emb": True, "ce": True, "ts": True}
+
+
+# --- Background-execution scheduler/worker helpers (Task 18) ----------------
+
+
+def _fake_request(app: FastAPI):
+    """Build a minimal :class:`Request` whose ``.app`` points at ``app``."""
+    from fastapi import Request
+
+    scope = {
+        "type": "http",
+        "app": app,
+        "headers": [],
+        "method": "GET",
+        "path": "/",
+    }
+    return Request(scope)
+
+
+def test_get_session_storage_returns_storage(app, fake_storage_provider):
+    """`get_session_storage` resolves to the Session-typed handle."""
+    helper_storage = get_session_storage(sp=fake_storage_provider)
+    assert helper_storage is fake_storage_provider.get_storage(Session)
+
+
+def test_get_scheduler_returns_scheduler_when_present(app):
+    from matrix.scheduler.in_memory import InMemoryScheduler
+
+    sched = InMemoryScheduler()
+    app.state.scheduler = sched
+    req = _fake_request(app)
+    assert get_scheduler(req) is sched
+
+
+def test_get_scheduler_raises_when_missing(app):
+    app.state.scheduler = None
+    req = _fake_request(app)
+    with pytest.raises(ConfigError):
+        get_scheduler(req)
+
+
+def test_get_worker_pool_returns_pool_when_present(app):
+    sentinel = object()
+    app.state.worker_pool = sentinel
+    req = _fake_request(app)
+    assert get_worker_pool(req) is sentinel
+
+
+def test_get_worker_pool_raises_when_missing(app):
+    app.state.worker_pool = None
+    req = _fake_request(app)
+    with pytest.raises(ConfigError):
+        get_worker_pool(req)
+
+
+def test_get_worker_pool_raises_when_attribute_absent(app):
+    # Defensive: helper should also raise if attribute was never set
+    if hasattr(app.state, "worker_pool"):
+        delattr(app.state, "worker_pool")
+    req = _fake_request(app)
+    with pytest.raises(ConfigError):
+        get_worker_pool(req)
+
+
+def test_get_scheduler_raises_when_attribute_absent(app):
+    if hasattr(app.state, "scheduler"):
+        delattr(app.state, "scheduler")
+    req = _fake_request(app)
+    with pytest.raises(ConfigError):
+        get_scheduler(req)

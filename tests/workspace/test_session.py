@@ -13,9 +13,9 @@ from matrix.model.session import (
     AgentBinding,
     SessionStatus,
 )
-from matrix.workspace.cache import TruncationStore
+from matrix.workspace.local.cache import LocalTruncationStore as TruncationStore
+from matrix.workspace.local.state import LocalStateRepo as StateRepo
 from matrix.workspace.session import AgentSession
-from matrix.workspace.state import StateRepo
 
 
 pytestmark = pytest.mark.skipif(

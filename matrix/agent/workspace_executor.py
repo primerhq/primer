@@ -88,6 +88,13 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             principal=principal,
         )
         self._session = session
+        # Trailing :class:`Done.stop_reason` from the most recent
+        # :meth:`invoke` call. ``None`` until the first invoke completes.
+        # The worker pool's post-turn status mapper reads this to decide
+        # whether the session should re-enqueue (``RUNNING``) or wait
+        # for inspection (``WAITING``) when the executor exits without
+        # having explicitly set the session status itself.
+        self.last_done_reason: str | None = None
 
     @property
     def session(self) -> "AgentSession":
@@ -155,6 +162,9 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             await self._session.set_status(SessionStatus.RUNNING)
 
         last_done_reason: str | None = None
+        # Reset the cached attribute up-front so a stale value from a
+        # previous invoke can't leak into the post-turn status mapper.
+        self.last_done_reason = None
         try:
             async for ev in super().invoke(
                 messages, response_format=response_format
@@ -174,6 +184,10 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                     extra={"session_id": self._session.session_id},
                 )
             raise
+
+        # Publish the trailing stop reason so the worker pool's
+        # post-turn status mapper can read it without re-iterating.
+        self.last_done_reason = last_done_reason
 
         # Post-turn status transition.
         if last_done_reason == "tool_use":

@@ -5,6 +5,8 @@ description = "Microagents framework"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiodocker>=0.21",
+    "aiohttp>=3.11",
     "anthropic>=0.97.0",
     "asyncpg>=0.30.0",
     "croniter>=2.0.5",
@@ -12,7 +14,9 @@ dependencies = [
     "docling>=2.0",
     "fastapi>=0.115",
     "google-genai>=1.73.1",
+    "grpcio>=1.60.0",
     "jinja2>=3.1.0",
+    "kubernetes-asyncio>=32.0",
     "mcp>=1.16.0",
     "ollama>=0.6.1",
     "openai>=1.50.0",
@@ -28,6 +32,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "grpcio-tools>=1.60.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.1.0",
@@ -51,6 +56,23 @@ omit = [
     # CLI entry point — only invoked via `python -m matrix.api`; needs
     # a live Postgres to run, so not covered by the unit suite.
     "matrix/api/__main__.py",
+    # Postgres scheduler — exercised by tests/scheduler/test_postgres.py
+    # which gates on MATRIX_PG_TEST_DSN. Without a live Postgres the
+    # tests skip and this file shows ~25% coverage; same treatment as
+    # the matrix/storage/postgres.py family in CI-with-DSN runs.
+    "matrix/scheduler/postgres.py",
+    # FakeSandbox is a test seam (production-importable but only used by tests).
+    "matrix/workspace/sandbox/fake.py",
+    # ContainerRuntimeAdapter ABC has no concrete impls in Phase A.
+    "matrix/workspace/runtime/adapter.py",
+    # Runtime adapters need real Docker/Podman/containerd daemons;
+    # gated contract tests cover them when env vars are set.
+    "matrix/workspace/runtime/docker.py",
+    "matrix/workspace/runtime/podman.py",
+    "matrix/workspace/runtime/containerd/adapter.py",
+    # K8s backend needs a real cluster; gated integration tests.
+    "matrix/workspace/k8s/sandbox.py",
+    "matrix/workspace/k8s/backend.py",
 ]
 
 [tool.coverage.report]

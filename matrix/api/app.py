@@ -22,10 +22,14 @@ from matrix.api.routers import (
     internal_collections,
     knowledge,
     providers,
+    sessions as sessions_router,
+    workers as workers_router,
     workspaces as workspaces_router,
 )
 from matrix.api.version import API_VERSION, APP_VERSION
 from matrix.internal_collections import build_subsystem, load_config_or_none
+from matrix.model.except_ import ConfigError
+from matrix.model.scheduler import RuntimeMode, SchedulerProviderType
 from matrix.toolset.search import build_search_toolset
 from matrix.toolset.system import build_system_toolset
 from matrix.toolset.workspaces import build_workspaces_toolset
@@ -41,6 +45,17 @@ logger = logging.getLogger(__name__)
 def _make_lifespan(config: AppConfig):
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Fail fast on a worker mode without a scheduler — saves spinning
+        # up the storage pool just to tear it back down. Task 23.
+        if config.runtime_mode in (
+            RuntimeMode.WORKER, RuntimeMode.API_PLUS_WORKER,
+        ) and config.scheduler is None:
+            raise ConfigError(
+                f"runtime_mode={config.runtime_mode.value!r} requires "
+                "scheduler config; set MATRIX_SCHEDULER__PROVIDER or "
+                "configure via TOML."
+            )
+
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
         vector_store_registry = VectorStoreRegistry(config.vector_store)
@@ -69,6 +84,48 @@ def _make_lifespan(config: AppConfig):
         app.state.workspaces_toolset = ws_toolset
         app.state.internal_collections = None
         app.state.search_toolset = None
+
+        # --- Scheduler + worker pool wiring (Task 23) ----------------
+        scheduler = None
+        if config.scheduler is not None:
+            from matrix.scheduler.factory import SchedulerFactory
+
+            scheduler = SchedulerFactory.create(
+                config.scheduler, storage_provider=storage_provider,
+            )
+            await scheduler.initialize()
+            # Loud warning: in-memory scheduler is single-process; running it
+            # alongside any worker pool (whether colocated 'api+worker' or
+            # separate 'worker' processes) means cross-process state is not
+            # synchronised — sessions can be double-claimed. Production should
+            # use the Postgres scheduler. See spec §9.1.
+            if (
+                config.scheduler.provider == SchedulerProviderType.IN_MEMORY
+                and config.runtime_mode != RuntimeMode.API
+            ):
+                logger.warning(
+                    "in-memory scheduler with runtime_mode=%s is not safe for "
+                    "multi-worker deployment; switch to Postgres for production",
+                    config.runtime_mode.value,
+                )
+        app.state.scheduler = scheduler
+
+        worker_pool = None
+        if config.runtime_mode in (
+            RuntimeMode.WORKER, RuntimeMode.API_PLUS_WORKER,
+        ):
+            from matrix.worker.pool import WorkerPool
+
+            worker_pool = WorkerPool(
+                config=config.worker,
+                scheduler=scheduler,
+                storage=storage_provider,
+                workspace_registry=workspace_registry,
+                provider_registry=provider_registry,
+            )
+            await worker_pool.start()
+        app.state.worker_pool = worker_pool
+
         # Internal collections subsystem auto-activation: if a config
         # row already exists in storage, build the live subsystem +
         # search toolset and start the CDC worker. We do NOT auto-run
@@ -99,6 +156,21 @@ def _make_lifespan(config: AppConfig):
         try:
             yield
         finally:
+            # Order matters: drain the pool first so in-flight turns get
+            # a chance to settle while the scheduler is still alive,
+            # then close the scheduler, then the rest of the
+            # subsystems. Each step is guarded so a teardown failure
+            # downstream still runs the others.
+            if worker_pool is not None:
+                try:
+                    await worker_pool.drain_and_stop()
+                except Exception:
+                    logger.exception("worker_pool.drain_and_stop failed")
+            if scheduler is not None:
+                try:
+                    await scheduler.aclose()
+                except Exception:
+                    logger.exception("scheduler.aclose failed")
             ic_subsystem = app.state.internal_collections
             if ic_subsystem is not None:
                 await ic_subsystem.aclose()
@@ -142,10 +214,24 @@ def _build_storage_provider(config: AppConfig) -> "StorageProvider":  # pragma: 
     return StorageProviderFactory.create(sp_config)
 
 
-def _mount_routers(app: FastAPI) -> None:
-    """Mount every router under the API version prefix."""
+def _mount_routers(
+    app: FastAPI,
+    runtime_mode: RuntimeMode = RuntimeMode.API_PLUS_WORKER,
+) -> None:
+    """Mount routers under the API version prefix.
+
+    In :class:`RuntimeMode.WORKER` mode only the always-on observability
+    surface (``/v1/health`` and ``/v1/workers``) is mounted — entity
+    routers (workspaces, sessions, providers, knowledge, internal
+    collections, compute) are skipped because the worker process does
+    not serve external traffic.
+    """
     prefix = f"/{API_VERSION}"
+    # Always-on routers — health probes + worker observability/drain.
     app.include_router(health.router, prefix=prefix)
+    app.include_router(workers_router.router, prefix=prefix)
+    if runtime_mode == RuntimeMode.WORKER:
+        return
     # Phase 1 — providers + tools
     app.include_router(providers.llm_provider_router, prefix=prefix)
     app.include_router(providers.embedding_provider_router, prefix=prefix)
@@ -171,6 +257,12 @@ def _mount_routers(app: FastAPI) -> None:
     app.include_router(workspaces_router.sessions_router, prefix=prefix)
     app.include_router(workspaces_router.files_router, prefix=prefix)
     app.include_router(workspaces_router.log_router, prefix=prefix)
+    # Sessions: nested CREATE under /v1/workspaces/{wid}/sessions plus
+    # the (currently empty) top-level router. Task 20 fills the top
+    # router with cross-workspace list/get/find and the resume / pause /
+    # cancel sub-resources.
+    app.include_router(sessions_router.nested_session_router, prefix=prefix)
+    app.include_router(sessions_router.top_session_router, prefix=prefix)
 
 
 def create_app(config: AppConfig) -> FastAPI:
@@ -181,7 +273,7 @@ def create_app(config: AppConfig) -> FastAPI:
         lifespan=_make_lifespan(config),
         contact={"name": "matrix"},
     )
-    _mount_routers(app)
+    _mount_routers(app, runtime_mode=config.runtime_mode)
     register_error_handlers(app)
     return app
 
@@ -231,6 +323,11 @@ def create_test_app(
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
     app.state.search_toolset = None
+    # Attach an in-memory scheduler so the /workers router has something
+    # to depend on. The test app does not run a real WorkerPool.
+    from matrix.scheduler.in_memory import InMemoryScheduler
+    app.state.scheduler = InMemoryScheduler()
+    app.state.worker_pool = None
     _mount_routers(app)
     register_error_handlers(app)
     return app

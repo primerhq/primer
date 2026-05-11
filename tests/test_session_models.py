@@ -21,15 +21,18 @@ from matrix.model.session import (
 
 class TestSessionStatus:
     def test_enum_values(self) -> None:
+        assert SessionStatus.CREATED.value == "created"
         assert SessionStatus.RUNNING.value == "running"
         assert SessionStatus.WAITING.value == "waiting"
         assert SessionStatus.PAUSED.value == "paused"
         assert SessionStatus.ENDED.value == "ended"
 
     def test_member_count(self) -> None:
-        # Sanity: only the four documented statuses (waiting_input and
-        # waiting_approval were collapsed into a single waiting state).
+        # CREATED is the pre-execution state introduced when sessions
+        # became background-executed (see
+        # docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md).
         assert {s.value for s in SessionStatus} == {
+            "created",
             "running",
             "waiting",
             "paused",
@@ -278,3 +281,59 @@ class TestWaitingStateDiscriminatedUnion:
                     "queued_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
+
+
+# ---- Session entity (scheduler-visible) ----------------------------------
+
+
+from matrix.model.session import (  # noqa: E402
+    AgentSessionBinding,
+    GraphSessionBinding,
+    Session,
+)
+
+
+class TestSessionEntity:
+    def test_agent_session_binding_kind_is_literal(self):
+        b = AgentSessionBinding(agent_id="ag-1")
+        assert b.kind == "agent"
+
+    def test_graph_session_binding_kind_is_literal(self):
+        b = GraphSessionBinding(graph_id="gr-1")
+        assert b.kind == "graph"
+
+    def test_round_trip_with_agent_binding(self):
+        s = Session(
+            id="sess-1",
+            workspace_id="ws-1",
+            binding=AgentSessionBinding(agent_id="ag-1"),
+            status=SessionStatus.CREATED,
+            created_at=datetime(2026, 5, 10, tzinfo=timezone.utc),
+        )
+        again = Session.model_validate(s.model_dump(mode="json"))
+        assert again.binding.kind == "agent"
+        assert again.turn_no == 0
+        assert again.attempt_count == 0
+        assert again.cancel_requested is False
+        assert again.pause_requested is False
+
+    def test_round_trip_with_graph_binding(self):
+        s = Session(
+            id="sess-2",
+            workspace_id="ws-1",
+            binding=GraphSessionBinding(graph_id="gr-1"),
+            status=SessionStatus.CREATED,
+            created_at=datetime(2026, 5, 10, tzinfo=timezone.utc),
+        )
+        again = Session.model_validate(s.model_dump(mode="json"))
+        assert again.binding.kind == "graph"
+
+    def test_binding_discriminator_rejects_unknown_kind(self):
+        with pytest.raises(ValidationError):
+            Session.model_validate({
+                "id": "sess-3",
+                "workspace_id": "ws-1",
+                "binding": {"kind": "mystery"},
+                "status": "created",
+                "created_at": "2026-05-10T00:00:00+00:00",
+            })

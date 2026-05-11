@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Literal, Union
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field, HttpUrl, SecretStr, model_validator
 
@@ -194,6 +194,87 @@ class ResourceLimits(BaseModel):
 
 
 # ===========================================================================
+# Volume mounts (used by container/k8s template configs)
+# ===========================================================================
+
+
+class VolumeMount(BaseModel):
+    """Extra volume to mount into a sandbox.
+
+    The ``source`` field is backend-interpreted: host path for Container,
+    named PVC for K8s, etc.
+    """
+
+    source: str = Field(..., min_length=1)
+    target: str = Field(..., min_length=1)
+    read_only: bool = False
+
+
+# ===========================================================================
+# Per-backend template configs (discriminated by ``kind``)
+# ===========================================================================
+
+
+class _LocalTemplateConfig(BaseModel):
+    """Local-backend template config (no backend-specific fields today)."""
+
+    kind: Literal["local"] = "local"
+
+
+class _ContainerTemplateConfig(BaseModel):
+    """Container-backend template config."""
+
+    kind: Literal["container"] = "container"
+    image: str = Field(..., min_length=1)
+    entrypoint: list[str] | None = Field(
+        default=None,
+        description='Override container PID 1. Default ["sleep", "infinity"].',
+    )
+    user: str | None = Field(
+        default=None,
+        description=(
+            "Container user, e.g. 'root' or 'uid:gid'. Default = host UID:GID."
+        ),
+    )
+    workdir: str = Field(default="/workspace")
+    extra_mounts: list[VolumeMount] = Field(default_factory=list)
+    extra_volume_size: str | None = Field(
+        default=None,
+        description=(
+            "Workspace volume size hint (advisory; not all runtimes enforce)."
+        ),
+    )
+
+
+class _KubernetesTemplateConfig(BaseModel):
+    """Kubernetes-backend template config."""
+
+    kind: Literal["kubernetes"] = "kubernetes"
+    image: str = Field(..., min_length=1)
+    entrypoint: list[str] | None = None
+    args: list[str] | None = None
+    workdir: str = Field(default="/workspace")
+    pvc_size: str = Field(default="10Gi")
+    pvc_access_modes: list[str] = Field(
+        default_factory=lambda: ["ReadWriteOnce"]
+    )
+    extra_volume_mounts: list[dict[str, Any]] = Field(default_factory=list)
+    extra_volumes: list[dict[str, Any]] = Field(default_factory=list)
+    container_overrides: dict[str, Any] = Field(default_factory=dict)
+    pod_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+WorkspaceTemplateBackendConfig = Annotated[
+    Union[
+        _LocalTemplateConfig,
+        _ContainerTemplateConfig,
+        _KubernetesTemplateConfig,
+    ],
+    Field(discriminator="kind"),
+]
+
+
+# ===========================================================================
 # Workspace template
 # ===========================================================================
 
@@ -221,6 +302,13 @@ class WorkspaceTemplate(Describeable):
             "this template. Resolved at workspace-creation time; not "
             "validated here -- the runtime is responsible for matching "
             "the template against a configured provider."
+        ),
+    )
+    backend: WorkspaceTemplateBackendConfig = Field(
+        default_factory=lambda: _LocalTemplateConfig(),
+        description=(
+            "Per-backend recipe fields. Must match the provider type "
+            "the template targets."
         ),
     )
     packages: list[PackageSpec] = Field(
@@ -256,6 +344,15 @@ class WorkspaceTemplate(Describeable):
         default_factory=ResourceLimits,
         description="CPU / memory / network bounds the backend SHOULD enforce.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_backend_for_legacy(cls, data: Any) -> Any:
+        """Templates serialised before this change lack ``backend``; default
+        to the local recipe so old configs keep parsing."""
+        if isinstance(data, dict) and "backend" not in data:
+            data = {**data, "backend": {"kind": "local"}}
+        return data
 
 
 class WorkspaceTemplateOverrides(BaseModel):
@@ -310,6 +407,33 @@ class FileEntry(BaseModel):
 
 
 # ===========================================================================
+# Workspace status (universal across backends)
+# ===========================================================================
+
+
+class WorkspaceStatus(BaseModel):
+    """Backend-agnostic workspace health snapshot.
+
+    Returned from :meth:`matrix.int.workspace.Workspace.status`. The
+    ``state`` field is the universal vocabulary; ``detail`` carries
+    backend-specific extras (container id, pod phase, etc.) the caller
+    can render verbatim.
+    """
+
+    state: Literal[
+        "ready", "starting", "stopped", "unreachable", "destroyed"
+    ] = Field(..., description="Universal workspace state.")
+    backend: Literal["local", "container", "kubernetes"] = Field(
+        ...,
+        description="Which backend this workspace is materialised on.",
+    )
+    detail: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Backend-specific extras (image id, pod phase, ...).",
+    )
+
+
+# ===========================================================================
 # Workspace provider configuration
 # ===========================================================================
 
@@ -318,11 +442,12 @@ class WorkspaceProviderType(str, Enum):
     """Supported workspace backends.
 
     The string value is what gets serialised in configuration so it
-    must remain stable across releases. Today only ``local`` exists;
-    ``docker`` and ``kubernetes`` will land in future sub-projects.
+    must remain stable across releases.
     """
 
     LOCAL = "local"
+    CONTAINER = "container"
+    KUBERNETES = "kubernetes"
 
 
 class LocalWorkspaceConfig(BaseModel):
@@ -333,6 +458,10 @@ class LocalWorkspaceConfig(BaseModel):
     materialised; each workspace gets its own subdirectory beneath it.
     """
 
+    kind: Literal["local"] = Field(
+        default="local",
+        description="Discriminator tag for the provider-config union.",
+    )
     path: str = Field(
         ...,
         min_length=1,
@@ -342,6 +471,162 @@ class LocalWorkspaceConfig(BaseModel):
             "underneath."
         ),
     )
+
+
+# ---- Container runtime configs (discriminated by ``kind``) ----------------
+
+
+class _DockerRuntimeConfig(BaseModel):
+    kind: Literal["docker"] = "docker"
+    socket: str | None = Field(
+        default=None,
+        description=(
+            "Override Docker socket path/URL. None = $DOCKER_HOST else "
+            "/var/run/docker.sock."
+        ),
+    )
+    api_version: str | None = Field(
+        default=None,
+        description="Override Docker API version. None = client default.",
+    )
+
+
+class _PodmanRuntimeConfig(BaseModel):
+    kind: Literal["podman"] = "podman"
+    socket: str | None = Field(
+        default=None,
+        description=(
+            "Override Podman socket path. None = $XDG_RUNTIME_DIR/podman/"
+            "podman.sock else /run/user/$UID/podman/podman.sock."
+        ),
+    )
+
+
+class _ContainerdRuntimeConfig(BaseModel):
+    kind: Literal["containerd"] = "containerd"
+    socket: str = Field(
+        default="/run/containerd/containerd.sock",
+        description="Containerd CRI socket path.",
+    )
+    namespace: str = Field(
+        default="default",
+        description="Containerd namespace (NOT Kubernetes namespace).",
+    )
+
+
+ContainerRuntimeConfig = Annotated[
+    Union[_DockerRuntimeConfig, _PodmanRuntimeConfig, _ContainerdRuntimeConfig],
+    Field(discriminator="kind"),
+]
+
+
+class ContainerWorkspaceConfig(BaseModel):
+    """Settings for ContainerWorkspaceBackend."""
+
+    kind: Literal["container"] = "container"
+    runtime: ContainerRuntimeConfig = Field(
+        ...,
+        description="Which OCI runtime to use and how to reach it.",
+    )
+    default_image: str | None = Field(
+        default=None,
+        description=(
+            "Default container image used when the WorkspaceTemplate "
+            "does not supply one. None = templates MUST set image."
+        ),
+    )
+    name_prefix: str = Field(
+        default="matrix-ws-",
+        description="Container/volume name prefix.",
+    )
+    volume_driver: str | None = Field(
+        default=None,
+        description="Volume driver. None = runtime default.",
+    )
+    pull_policy: Literal["always", "if_missing", "never"] = Field(
+        default="if_missing",
+        description="Image pull policy applied at workspace create.",
+    )
+
+
+class KubernetesWorkspaceConfig(BaseModel):
+    """Settings for KubernetesWorkspaceBackend."""
+
+    kind: Literal["kubernetes"] = "kubernetes"
+    in_cluster: bool = Field(
+        default=False,
+        description="If True, use in-cluster kubeconfig.",
+    )
+    kubeconfig_path: str | None = Field(
+        default=None,
+        description="Path to a kubeconfig file. Ignored when in_cluster=True.",
+    )
+    context: str | None = Field(
+        default=None,
+        description="kubeconfig context name. None = current context.",
+    )
+    namespace: str = Field(
+        default="default",
+        description="Kubernetes namespace for all resources.",
+    )
+    name_prefix: str = Field(
+        default="matrix-ws-",
+        description="StatefulSet/PVC name prefix.",
+    )
+    storage_class: str | None = Field(
+        default=None,
+        description="StorageClass for PVCs. None = cluster default.",
+    )
+    default_pvc_size: str = Field(
+        default="10Gi",
+        description="Default PVC size when template does not override.",
+    )
+    service_account: str | None = Field(
+        default=None,
+        description="ServiceAccount for the workspace pods.",
+    )
+    image_pull_secrets: list[str] = Field(
+        default_factory=list,
+        description="Image pull secret names.",
+    )
+    pull_policy: Literal["Always", "IfNotPresent", "Never"] = Field(
+        default="IfNotPresent",
+        description="K8s container imagePullPolicy.",
+    )
+    pod_security_context: dict[str, Any] | None = Field(
+        default=None,
+        description="Passthrough to PodSpec.securityContext.",
+    )
+    container_security_context: dict[str, Any] | None = Field(
+        default=None,
+        description="Passthrough to Container.securityContext.",
+    )
+    node_selector: dict[str, str] = Field(
+        default_factory=dict,
+        description="Passthrough to PodSpec.nodeSelector.",
+    )
+    tolerations: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Passthrough to PodSpec.tolerations.",
+    )
+    annotations: dict[str, str] = Field(
+        default_factory=dict,
+        description="Annotations applied to StatefulSet + Pod.",
+    )
+    labels: dict[str, str] = Field(
+        default_factory=dict,
+        description="Labels applied to StatefulSet + Pod.",
+    )
+
+
+WorkspaceProviderConfig = Annotated[
+    Union[
+        LocalWorkspaceConfig,
+        ContainerWorkspaceConfig,
+        KubernetesWorkspaceConfig,
+    ],
+    Field(discriminator="kind"),
+]
 
 
 class WorkspaceProvider(Identifiable):
@@ -360,18 +645,22 @@ class WorkspaceProvider(Identifiable):
         ...,
         description="Which workspace backend this entry targets.",
     )
-    config: LocalWorkspaceConfig = Field(
+    config: WorkspaceProviderConfig = Field(
         ...,
         description="Backend-specific connection settings; must match ``provider``.",
     )
 
     @model_validator(mode="after")
     def _config_matches_provider(self) -> "WorkspaceProvider":
-        if self.provider == WorkspaceProviderType.LOCAL and not isinstance(
-            self.config, LocalWorkspaceConfig
-        ):
+        expected_kind = {
+            WorkspaceProviderType.LOCAL: "local",
+            WorkspaceProviderType.CONTAINER: "container",
+            WorkspaceProviderType.KUBERNETES: "kubernetes",
+        }[self.provider]
+        if self.config.kind != expected_kind:
             raise ValueError(
-                "provider='local' requires a LocalWorkspaceConfig in 'config'"
+                f"provider={self.provider.value!r} requires "
+                f"config.kind={expected_kind!r}, got {self.config.kind!r}"
             )
         return self
 
@@ -435,15 +724,21 @@ class Workspace(Identifiable):
 
 
 __all__ = [
+    "ContainerWorkspaceConfig",
     "FileEntry",
     "FileMount",
     "FileSource",
+    "KubernetesWorkspaceConfig",
     "LocalWorkspaceConfig",
     "PackageSpec",
     "ResourceLimits",
+    "VolumeMount",
     "Workspace",
     "WorkspaceProvider",
+    "WorkspaceProviderConfig",
     "WorkspaceProviderType",
+    "WorkspaceStatus",
     "WorkspaceTemplate",
+    "WorkspaceTemplateBackendConfig",
     "WorkspaceTemplateOverrides",
 ]

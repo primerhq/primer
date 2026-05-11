@@ -76,7 +76,7 @@ class TestProblemDetails:
         (ConflictError("dup id"), 409, "/errors/conflict"),
         (RateLimitError("rate limited"), 429, "/errors/rate-limited"),
         (UnsupportedContentError("nope"), 422, "/errors/unsupported-content"),
-        (ConfigError("bad setup"), 500, "/errors/misconfigured"),
+        (ConfigError("bad setup"), 503, "/errors/service-unavailable"),
         (ServerError("upstream 5xx"), 502, "/errors/provider-server-error"),
         (ProviderError("provider failed"), 502, "/errors/provider-error"),
         (NetworkError("dns failed"), 504, "/errors/network-error"),
@@ -97,6 +97,25 @@ def test_matrix_error_maps_to_problem_details(
     assert body["status"] == expected_status
     assert "title" in body and body["title"]
     assert "detail" in body and body["detail"]
+    assert body["instance"] == "/raise"
+
+
+def test_config_error_maps_to_503() -> None:
+    """ConfigError should map to 503 (service unavailable / not ready).
+
+    See spec docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md §12.
+    """
+    app = _make_app()
+    _mount_raiser(app, "/raise", ConfigError("scheduler not configured"))
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/raise")
+    assert response.status_code == 503
+    assert response.headers["content-type"] == PROBLEM_JSON_MEDIA_TYPE
+    body = response.json()
+    assert body["type"] == "/errors/service-unavailable"
+    assert body["title"] == "Service Unavailable"
+    assert body["status"] == 503
+    assert body["detail"] == "scheduler not configured"
     assert body["instance"] == "/raise"
 
 

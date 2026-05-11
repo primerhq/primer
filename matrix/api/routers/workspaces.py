@@ -337,48 +337,6 @@ async def get_session(
 
 
 @sessions_router.post(
-    "/workspaces/{workspace_id}/sessions/{session_id}/pause",
-    status_code=204,
-    summary="Request a session pause",
-    responses=common_responses(404, 409, 500),
-)
-async def pause_session(
-    workspace_id: str = Path(...),
-    session_id: str = Path(...),
-    registry: WorkspaceRegistry = Depends(get_workspace_registry),
-) -> None:
-    ws = await registry.get_workspace(workspace_id)
-    session = await ws.get_session(session_id)
-    if session is None:
-        raise NotFoundError(
-            f"Session {session_id!r} does not exist on workspace "
-            f"{workspace_id!r}"
-        )
-    await session.request_pause()
-
-
-@sessions_router.post(
-    "/workspaces/{workspace_id}/sessions/{session_id}/resume",
-    status_code=204,
-    summary="Request a session resume",
-    responses=common_responses(404, 409, 500),
-)
-async def resume_session(
-    workspace_id: str = Path(...),
-    session_id: str = Path(...),
-    registry: WorkspaceRegistry = Depends(get_workspace_registry),
-) -> None:
-    ws = await registry.get_workspace(workspace_id)
-    session = await ws.get_session(session_id)
-    if session is None:
-        raise NotFoundError(
-            f"Session {session_id!r} does not exist on workspace "
-            f"{workspace_id!r}"
-        )
-    await session.request_resume()
-
-
-@sessions_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/steer",
     summary="Append a steering user instruction",
     responses=common_responses(404, 409, 422, 500),

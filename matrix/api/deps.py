@@ -37,6 +37,7 @@ from matrix.model.provider import (
     LLMProvider,
     Toolset,
 )
+from matrix.model.session import Session
 from matrix.model.workspace import (
     Workspace,
     WorkspaceProvider,
@@ -45,8 +46,10 @@ from matrix.model.workspace import (
 
 
 if TYPE_CHECKING:
+    from matrix.int.scheduler import Scheduler
     from matrix.int.storage import Storage
     from matrix.int.storage_provider import StorageProvider
+    from matrix.worker.pool import WorkerPool
 
 
 PRINCIPAL_HEADER = "X-Matrix-Principal"
@@ -166,6 +169,12 @@ def get_workspace_storage(
     return sp.get_storage(Workspace)
 
 
+def get_session_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+) -> "Storage[Session]":
+    return sp.get_storage(Session)
+
+
 def get_internal_collections_config_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
 ) -> "Storage[InternalCollectionsConfig]":
@@ -198,6 +207,36 @@ def get_internal_collections_subsystem(request: Request):
     return subsystem
 
 
+def get_scheduler(request: Request) -> "Scheduler":
+    """Resolve the live :class:`Scheduler`.
+
+    Stashed by the lifespan handler / ``create_test_app`` on
+    ``app.state.scheduler``. Raises :class:`ConfigError` when absent.
+    """
+    sched = getattr(request.app.state, "scheduler", None)
+    if sched is None:
+        raise ConfigError(
+            "Scheduler not on app.state — configure scheduler in "
+            "AppConfig and re-launch."
+        )
+    return sched
+
+
+def get_worker_pool(request: Request) -> "WorkerPool":
+    """Resolve the live :class:`WorkerPool`.
+
+    Stashed by the lifespan handler when ``runtime_mode`` includes a
+    worker. Raises :class:`ConfigError` when absent.
+    """
+    pool = getattr(request.app.state, "worker_pool", None)
+    if pool is None:
+        raise ConfigError(
+            "WorkerPool not on app.state — set runtime_mode to "
+            "'worker' or 'api+worker' to start it."
+        )
+    return pool
+
+
 def get_principal(
     x_matrix_principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
 ) -> str | None:
@@ -219,9 +258,12 @@ __all__ = [
     "get_llm_provider_storage",
     "get_principal",
     "get_provider_registry",
+    "get_scheduler",
+    "get_session_storage",
     "get_storage_provider",
     "get_toolset_storage",
     "get_vector_store_registry",
+    "get_worker_pool",
     "get_workspace_provider_storage",
     "get_workspace_registry",
     "get_workspace_storage",

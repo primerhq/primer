@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from matrix.model.session import AgentBinding, SessionInfo, SessionStatus
 from matrix.model.workspace import (
     FileEntry,
+    WorkspaceStatus,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
     # TYPE_CHECKING so this module is importable without sub-project D
     # while still giving type checkers the right types.
     from matrix.workspace.session import AgentSession
-    from matrix.workspace.state import CommitInfo
+    from matrix.workspace.local.state import CommitInfo
     from matrix.workspace.tool import WorkspaceTool
 
 
@@ -98,6 +99,7 @@ class Workspace(ABC):
         self,
         agent_binding: AgentBinding,
         *,
+        id: str | None = None,
         instructions: str | None = None,
         parent_session_id: str | None = None,
     ) -> "AgentSession":
@@ -110,6 +112,11 @@ class Workspace(ABC):
         and records an initial ``attach`` commit. If ``instructions``
         is non-empty, writes them as the first user-role message in
         ``messages.jsonl`` -- the agent will see them on its first turn.
+
+        ``id``: If supplied, use as the session_id; otherwise generate a
+        fresh UUID. Lets the REST API allocate the id ahead of time so
+        the persisted Session row and the on-disk slot share the same
+        identifier.
 
         ``parent_session_id`` is set when the session was spawned by
         another session (the agent runtime's spawn meta-tool); used
@@ -221,6 +228,15 @@ class Workspace(ABC):
         ``X-Matrix-*`` trailers (workspace, session, agent, op, tool,
         call) so callers can render structured history without
         re-parsing the message body.
+        """
+
+    @abstractmethod
+    async def status(self) -> WorkspaceStatus:
+        """Return a snapshot of this workspace's runtime health.
+
+        See :class:`matrix.model.workspace.WorkspaceStatus`. The
+        ``backend`` field in the returned object identifies the
+        materialising backend ('local', 'container', 'kubernetes').
         """
 
     @abstractmethod

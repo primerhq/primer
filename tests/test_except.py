@@ -9,12 +9,15 @@ from matrix.model.except_ import (
     AuthRequiredError,
     BadRequestError,
     ConfigError,
+    LeaseLostError,
     MatrixError,
     ModelNotFoundError,
     NetworkError,
     ProviderError,
     RateLimitError,
     ServerError,
+    TransientError,
+    TurnConflictError,
     UnsupportedContentError,
 )
 
@@ -211,3 +214,25 @@ class TestAuthRequiredError:
         )
         assert e.cause is underlying
         assert e.__cause__ is underlying
+
+
+# ============================================================================
+# Background-execution scheduler error types
+# ============================================================================
+
+
+def test_transient_error_is_matrix_error():
+    assert issubclass(TransientError, MatrixError)
+
+
+def test_lease_lost_error_is_matrix_error():
+    assert issubclass(LeaseLostError, MatrixError)
+
+
+def test_turn_conflict_error_is_matrix_error():
+    assert issubclass(TurnConflictError, MatrixError)
+
+
+def test_transient_error_carries_message():
+    exc = TransientError("network blip")
+    assert "network blip" in str(exc)

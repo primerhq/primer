@@ -1,6 +1,6 @@
 """Provider-agnostic interface ABCs.
 
-Ten abstract base classes are exported:
+Eleven abstract base classes are exported:
 
 * :class:`LLM` -- streaming chat interface (text/multimodal in,
   :class:`StreamEvent` out).
@@ -24,6 +24,10 @@ Ten abstract base classes are exported:
   executions concurrently.
 * :class:`WorkspaceBackend` -- backend-agnostic factory + lifecycle
   for :class:`Workspace` instances.
+* :class:`Scheduler` -- distributed coordinator that decides which
+  worker runs which session; enqueues, leases, and atomically
+  completes turns. See
+  ``docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md``.
 
 See ``research/abc_interface.md`` for the design rationale and
 per-provider adapter mapping rules.
@@ -32,6 +36,7 @@ per-provider adapter mapping rules.
 from matrix.int.cross_encoder import CrossEncoder
 from matrix.int.embedder import Embedder
 from matrix.int.llm import LLM
+from matrix.int.scheduler import Scheduler
 from matrix.int.storage import Storage
 from matrix.int.storage_provider import StorageProvider
 from matrix.int.toolset import ToolsetProvider
@@ -48,6 +53,7 @@ __all__ = [
     "Embedder",
     "LLM",
     "MaintenanceReport",
+    "Scheduler",
     "Storage",
     "StorageProvider",
     "ToolsetProvider",

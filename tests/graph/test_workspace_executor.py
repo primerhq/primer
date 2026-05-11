@@ -35,7 +35,7 @@ from matrix.model.graph import (
     _TerminalNode,
 )
 from matrix.model.provider import LLMModel
-from matrix.workspace.state import StateRepo
+from matrix.workspace.local.state import LocalStateRepo as StateRepo
 
 
 # ===========================================================================

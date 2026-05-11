@@ -8,25 +8,19 @@ contract defined under :mod:`matrix.int.workspace`:
 * :class:`ToolCallContext` -- per-call context handed to a tool's
   ``execute()`` by the agent runtime.
 * :class:`ToolResult` -- what a workspace tool returns.
-* :class:`StateRepo` -- git-backed per-workspace state (sub-project B).
-* :class:`TruncationStore` -- per-session ``.tmp/`` cache (sub-project B).
-* :class:`AgentSession` -- per-execution state handle (sub-project D).
+* :class:`LocalStateRepo` -- git-backed per-workspace state (host-FS).
+* :class:`LocalTruncationStore` -- per-session ``.tmp/`` cache (host-FS).
+* :class:`AgentSession` -- per-execution state handle.
+* :class:`LocalWorkspace` / :class:`LocalWorkspaceBackend` -- the
+  host-FS workspace backend.
 
-The seven concrete :class:`WorkspaceTool` subclasses ship under
-:mod:`matrix.workspace.tools`.
-
-Future sub-projects extend this package with:
-
-* :class:`LocalWorkspaceProvider` (sub-project E) -- first concrete
-  backend.
-
-See ``docs/superpowers/specs/2026-05-02-workspace-design.md`` for the
-full design.
+See ``docs/superpowers/specs/2026-05-02-workspace-design.md`` and
+``docs/superpowers/specs/2026-05-11-workspace-backends-design.md``.
 """
 
-from matrix.workspace.cache import TruncatedOutput, TruncationStore
+from matrix.workspace.local.cache import LocalTruncationStore, TruncatedOutput
+from matrix.workspace.local.state import CommitInfo, LocalStateRepo
 from matrix.workspace.session import AgentSession
-from matrix.workspace.state import CommitInfo, StateRepo
 from matrix.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 
 
@@ -46,13 +40,13 @@ from matrix.workspace.factory import WorkspaceBackendFactory  # noqa: E402
 __all__ = [
     "AgentSession",
     "CommitInfo",
+    "LocalStateRepo",
+    "LocalTruncationStore",
     "LocalWorkspace",
     "LocalWorkspaceBackend",
-    "StateRepo",
     "ToolCallContext",
     "ToolResult",
     "TruncatedOutput",
-    "TruncationStore",
     "WorkspaceBackendFactory",
     "WorkspaceTool",
 ]

@@ -22,6 +22,11 @@ from pydantic_settings import (
 )
 
 from matrix.model.provider import VectorStoreProviderConfig
+from matrix.model.scheduler import (
+    RuntimeMode,
+    SchedulerProviderConfig,
+    WorkerConfig,
+)
 
 
 class AppConfig(BaseSettings):
@@ -74,6 +79,32 @@ class AppConfig(BaseSettings):
             "pgvectorscale). Required for the internal collections "
             "subsystem. ``None`` disables collection / search "
             "functionality at the API layer."
+        ),
+    )
+
+    # --- Background execution (scheduler + worker pool) ------------------
+    runtime_mode: RuntimeMode = Field(
+        default=RuntimeMode.API_PLUS_WORKER,
+        description=(
+            "What this process should do: serve HTTP only ('api'), run "
+            "the worker pool only ('worker'), or both ('api+worker'). "
+            "See docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md "
+            "§9 for the full lifespan-wiring contract."
+        ),
+    )
+    scheduler: SchedulerProviderConfig | None = Field(
+        default=None,
+        description=(
+            "Scheduler backend. REQUIRED when runtime_mode != 'api'. "
+            "Use 'postgres' for production (lease columns + LISTEN/NOTIFY), "
+            "'in_memory' for single-process dev or tests."
+        ),
+    )
+    worker: WorkerConfig = Field(
+        default_factory=WorkerConfig,
+        description=(
+            "Worker pool knobs (concurrency, lease TTL, heartbeat cadence, "
+            "retry policy). Ignored when runtime_mode == 'api'."
         ),
     )
 

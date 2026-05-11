@@ -385,6 +385,25 @@ class TestWorkspaceSessions:
         assert same is s
         assert await ws.get_session("nope") is None
 
+    async def test_start_session_with_explicit_id(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """When `id` is supplied, the session should use it instead of
+        generating a fresh UUID. Lets the REST API pre-allocate the id."""
+        ws = await provider.create(_template())
+        session = await ws.start_session(_binding(), id="sess-explicit-1")
+        assert session.session_id == "sess-explicit-1"
+
+    async def test_start_session_with_duplicate_id_raises(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        from matrix.model.except_ import ConflictError
+
+        ws = await provider.create(_template())
+        await ws.start_session(_binding(), id="dup")
+        with pytest.raises(ConflictError):
+            await ws.start_session(_binding(), id="dup")
+
 
 # ===========================================================================
 # LocalWorkspace — file browsing

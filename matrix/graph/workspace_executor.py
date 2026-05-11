@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from matrix.model.agent import Agent
     from matrix.model.provider import LLMModel
     from matrix.workspace.session import AgentSession
-    from matrix.workspace.state import StateRepo
+    from matrix.workspace.local.state import LocalStateRepo
 
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         graph: Graph,
         agent_resolver: Callable[[str], Awaitable["Agent"]],
         llm_resolver: Callable[["Agent"], Awaitable[tuple["LLM", "LLMModel"]]],
-        state_repo: "StateRepo",
+        state_repo: "LocalStateRepo",
         graph_session_id: str,
         workspace_session: "AgentSession | None" = None,
         tool_manager_resolver: Callable[
@@ -120,7 +120,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
     # ---- Public properties ----------------------------------------------
 
     @property
-    def state_repo(self) -> "StateRepo":
+    def state_repo(self) -> "LocalStateRepo":
         return self._state_repo
 
     @property

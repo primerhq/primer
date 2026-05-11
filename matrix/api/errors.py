@@ -30,6 +30,7 @@ from matrix.model.except_ import (
     RateLimitError,
     ServerError,
     UnsupportedContentError,
+    ValidationError,
 )
 
 
@@ -79,11 +80,12 @@ _MATRIX_ERROR_MAP: list[tuple[type[MatrixError], int, str, str]] = [
     (NotFoundError, 404, "/errors/not-found", "Not Found"),
     (ConflictError, 409, "/errors/conflict", "Conflict"),
     (RateLimitError, 429, "/errors/rate-limited", "Rate Limited"),
+    (ValidationError, 422, "/errors/validation-error", "Validation Error"),
     (UnsupportedContentError, 422, "/errors/unsupported-content", "Unsupported Content"),
     (ServerError, 502, "/errors/provider-server-error", "Provider Server Error"),
     (ProviderError, 502, "/errors/provider-error", "Provider Error"),
     (NetworkError, 504, "/errors/network-error", "Network Error"),
-    (ConfigError, 500, "/errors/misconfigured", "Misconfigured"),
+    (ConfigError, 503, "/errors/service-unavailable", "Service Unavailable"),
     (MatrixError, 500, "/errors/internal", "Internal Error"),
 ]
 
