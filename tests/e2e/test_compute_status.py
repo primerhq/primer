@@ -1,0 +1,156 @@
+"""E2E: Agent + Graph status reports for unresolved references.
+
+Covers backlog items T0022 (agent → missing LLMProvider),
+T0023 (agent → missing toolset), T0024 (graph → missing agent).
+
+Spec §9: ``/agents/{id}/status`` and ``/graphs/{id}/status`` return
+``{"ok": bool, "issues": [str, ...]}``. Issues are plain strings; the
+test inspects substrings rather than asserting exact wording so wording
+tweaks in the server do not flap the suite.
+"""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+
+
+def _llm_body(entity_id: str) -> dict:
+    return {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test-placeholder"},
+        "limits": {"max_concurrency": 1},
+    }
+
+
+def _agent_body(entity_id: str, *, provider_id: str, tools: list[str]) -> dict:
+    return {
+        "id": entity_id,
+        "description": "test agent",
+        "model": {"provider_id": provider_id, "model_name": "claude-sonnet-4-6"},
+        "tools": tools,
+    }
+
+
+def _graph_body(entity_id: str, *, agent_id: str) -> dict:
+    return {
+        "id": entity_id,
+        "description": "test graph",
+        "nodes": [
+            {"kind": "agent", "id": "n1", "agent_id": agent_id},
+        ],
+        "edges": [],
+        "entry_node_id": "n1",
+    }
+
+
+# ============================================================================
+# T0022 — Agent status flags missing LLMProvider
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0022_agent_status_missing_llm_provider(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    agent_id = f"agent-t0022-{unique_suffix}"
+    missing_provider_id = f"does-not-exist-{unique_suffix}"
+    create = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=missing_provider_id, tools=[]),
+    )
+    assert create.status_code == 201, create.text
+    try:
+        resp = await client.get(f"/v1/agents/{agent_id}/status")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is False, f"expected ok=false, got {body!r}"
+        issues = body["issues"]
+        assert isinstance(issues, list) and issues
+        # At least one issue must mention the missing provider id so an
+        # operator can act on it.
+        assert any(missing_provider_id in str(i) for i in issues), (
+            f"no issue references missing provider {missing_provider_id!r}: "
+            f"{issues!r}"
+        )
+    finally:
+        await client.delete(f"/v1/agents/{agent_id}")
+
+
+# ============================================================================
+# T0023 — Agent status flags missing toolset (with provider present)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0023_agent_status_missing_toolset(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    provider_id = f"llm-{unique_suffix}"
+    agent_id = f"agent-t0023-{unique_suffix}"
+    missing_toolset_id = f"missing-ts-{unique_suffix}"
+
+    # Real provider so the only issue is the toolset miss.
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        # Tool ids are scoped: "<toolset_id>__<bare_name>". The status
+        # check splits on '__' and resolves the toolset_id portion.
+        scoped_tool = f"{missing_toolset_id}__some_tool"
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                agent_id, provider_id=provider_id, tools=[scoped_tool],
+            ),
+        )
+        assert ag.status_code == 201, ag.text
+        try:
+            resp = await client.get(f"/v1/agents/{agent_id}/status")
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["ok"] is False, f"expected ok=false, got {body!r}"
+            issues = body["issues"]
+            assert any(missing_toolset_id in str(i) for i in issues), (
+                f"no issue references missing toolset "
+                f"{missing_toolset_id!r}: {issues!r}"
+            )
+            # Provider is present, so it must NOT appear in issues.
+            assert not any(provider_id in str(i) for i in issues), (
+                f"provider {provider_id!r} should not be flagged: {issues!r}"
+            )
+        finally:
+            await client.delete(f"/v1/agents/{agent_id}")
+    finally:
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0024 — Graph status flags missing agent reference
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0024_graph_status_missing_agent(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    graph_id = f"graph-t0024-{unique_suffix}"
+    missing_agent_id = f"missing-agent-{unique_suffix}"
+
+    create = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=missing_agent_id),
+    )
+    assert create.status_code == 201, create.text
+    try:
+        resp = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is False, f"expected ok=false, got {body!r}"
+        issues = body["issues"]
+        assert any(missing_agent_id in str(i) for i in issues), (
+            f"no issue references missing agent {missing_agent_id!r}: "
+            f"{issues!r}"
+        )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
