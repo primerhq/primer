@@ -38,3 +38,30 @@ async def test_t0029_workspace_provider_has_no_put(
     assert "PUT" not in allow.split(", "), (
         f"PUT should not appear in Allow header: {allow!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_t0052_delete_workspace_provider_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0052 — POST WorkspaceProvider, DELETE, GET = 404 with the
+    /errors/not-found envelope. Mirrors the standard CRUD-delete
+    contract (T0009) for the immutable-by-design WorkspaceProvider.
+    """
+    entity_id = f"wp-del-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "local",
+        "config": {"kind": "local", "path": "/tmp/matrix-e2e-t0052"},
+    }
+    create = await client.post("/v1/workspace_providers", json=body)
+    assert create.status_code == 201, create.text
+
+    rm = await client.delete(f"/v1/workspace_providers/{entity_id}")
+    assert rm.status_code == 204, rm.text
+
+    gone = await client.get(f"/v1/workspace_providers/{entity_id}")
+    assert gone.status_code == 404, gone.text
+    envelope = gone.json()
+    assert envelope["type"] == "/errors/not-found", envelope
+    assert envelope["status"] == 404

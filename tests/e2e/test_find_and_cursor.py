@@ -175,6 +175,52 @@ async def test_t0044_cursor_consistency_under_mid_walk_insert(
 
 
 @pytest.mark.asyncio
+async def test_t0043_find_order_by_asc_then_desc_reverses(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0043 — POST /v1/toolsets/find with order_by asc vs desc on the
+    `id` field returns the same items in reversed order.
+
+    The seeded ids are zero-padded so the lexical order is deterministic.
+    Filter by id-prefix so the sort applies only to seeded items
+    regardless of what other tests left in the table.
+    """
+    prefix = f"ts-t0043-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 4)
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+
+        async def _walk(direction: str) -> list[str]:
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "offset", "offset": 0, "length": 50},
+                "order_by": [{"field": "id", "direction": direction}],
+            }
+            resp = await client.post("/v1/toolsets/find", json=body)
+            assert resp.status_code == 200, resp.text
+            return [item["id"] for item in resp.json()["items"]]
+
+        ascending = await _walk("asc")
+        descending = await _walk("desc")
+
+        # Same set of items regardless of direction.
+        assert sorted(ascending) == sorted(descending) == sorted(ids), (
+            f"asc={ascending!r} desc={descending!r} expected={sorted(ids)!r}"
+        )
+        # Reversal: desc must equal ascending reversed, exactly.
+        assert descending == list(reversed(ascending)), (
+            f"desc {descending!r} is not the reverse of asc {ascending!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
 async def test_t0016_find_malformed_predicate_returns_422(
     client: httpx.AsyncClient,
 ) -> None:

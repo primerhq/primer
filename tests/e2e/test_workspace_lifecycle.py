@@ -289,6 +289,78 @@ async def test_t0031_workspace_download_content_disposition_sanitised(
 
 
 # ============================================================================
+# T0051 — anomaly pin: WorkspaceCreateBody.id is silently ignored
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0051_workspace_create_user_id_silently_ignored(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0051 — pin the documented anomaly in 01-app-spec.md §12.
+
+    POSTing /v1/workspaces with `id="..."` causes the server to:
+    - return 201 with that user id in the response body's id field, OR
+    - return 201 with a backend-generated id (the local backend
+      auto-generates one and ignores the user-supplied id).
+
+    Either way, follow-on file ops keyed on the user-supplied id will
+    404 because the in-memory backend cache is keyed on its own
+    auto-generated id.
+
+    This regression test pins the ANOMALOUS behaviour: the response
+    id MUST equal the user-supplied id (so the API at least preserves
+    it on the row), and a file PUT against the user-supplied id MUST
+    404 with /errors/not-found pointing at the "row exists but the
+    backend has no live instance" diagnostic. If a future fix wires
+    the id through to the backend, this test will start failing and
+    force the spec + this test to be updated together.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    user_supplied_id = f"ws-user-{unique_suffix}"
+    backend_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json={"id": user_supplied_id, "template_id": template_id},
+        )
+        assert ws.status_code == 201, ws.text
+        body = ws.json()
+        # Anomaly: the row's id is the user-supplied one, but the live
+        # backend instance is keyed under a different id.
+        assert body["id"] == user_supplied_id, (
+            f"anomaly broken — row no longer carries user-supplied id: {body!r}"
+        )
+
+        # File PUT keyed on the user-supplied id must 404 with the
+        # documented "row exists but backend has no live instance"
+        # diagnostic. If this assertion starts failing, the underlying
+        # bug has been fixed (or partially fixed); update both this
+        # test and the spec.
+        write = await client.put(
+            f"/v1/workspaces/{user_supplied_id}/files",
+            params={"path": "x.txt"},
+            json={"content": "noop", "encoding": "text"},
+        )
+        assert write.status_code == 404, (
+            f"anomaly broken — file PUT on user id no longer 404s: "
+            f"{write.status_code}: {write.text}"
+        )
+        assert "/errors/not-found" in write.text, write.text
+        assert "row exists" in write.text or "live instance" in write.text, (
+            f"diagnostic message changed; update this pin: {write.text}"
+        )
+    finally:
+        # Best-effort: row delete by user id may itself be funky; try anyway.
+        await client.delete(f"/v1/workspaces/{user_supplied_id}")
+        if backend_id is not None:
+            await client.delete(f"/v1/workspaces/{backend_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
 # T0046 — write to a nested path creates intermediate directories
 # ============================================================================
 

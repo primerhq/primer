@@ -46,6 +46,17 @@ def _graph_body(entity_id: str, *, agent_id: str) -> dict:
     }
 
 
+def _toolset_body(entity_id: str) -> dict:
+    return {
+        "id": entity_id,
+        "provider": "mcp",
+        "config": {
+            "transport": "stdio",
+            "config": {"command": ["echo"]},
+        },
+    }
+
+
 # ============================================================================
 # T0022 — Agent status flags missing LLMProvider
 # ============================================================================
@@ -122,6 +133,81 @@ async def test_t0023_agent_status_missing_toolset(
             )
         finally:
             await client.delete(f"/v1/agents/{agent_id}")
+    finally:
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0045 — Multi-toolset Agent status reports ONLY the missing toolset
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0045_agent_status_multi_toolset_only_missing_flagged(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0045 — when an Agent references two toolsets via scoped tool ids
+    and one toolset row exists while the other does not, the status
+    response must:
+
+    - report `ok=false`
+    - have exactly ONE issue (not two — the present toolset must not
+      be flagged)
+    - the single issue must reference the missing toolset_id
+    - it must NOT reference the present toolset_id
+    """
+    provider_id = f"llm-multi-{unique_suffix}"
+    present_toolset_id = f"ts-present-{unique_suffix}"
+    missing_toolset_id = f"ts-missing-{unique_suffix}"
+    agent_id = f"agent-multi-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        ts = await client.post("/v1/toolsets", json=_toolset_body(present_toolset_id))
+        assert ts.status_code == 201, ts.text
+        try:
+            ag = await client.post(
+                "/v1/agents",
+                json=_agent_body(
+                    agent_id,
+                    provider_id=provider_id,
+                    tools=[
+                        f"{present_toolset_id}__alpha",
+                        f"{missing_toolset_id}__beta",
+                    ],
+                ),
+            )
+            assert ag.status_code == 201, ag.text
+            try:
+                resp = await client.get(f"/v1/agents/{agent_id}/status")
+                assert resp.status_code == 200, resp.text
+                body = resp.json()
+                assert body["ok"] is False, body
+                issues = body["issues"]
+                assert isinstance(issues, list)
+                # Exactly ONE issue — for the missing toolset only.
+                # If the implementation accidentally surfaces the
+                # present toolset (e.g. by failing to short-circuit
+                # on hit), this assertion will catch it.
+                missing_count = sum(
+                    1 for i in issues if missing_toolset_id in str(i)
+                )
+                present_count = sum(
+                    1 for i in issues if present_toolset_id in str(i)
+                )
+                assert missing_count == 1, (
+                    f"expected exactly one issue mentioning missing toolset "
+                    f"{missing_toolset_id!r}, got {missing_count}: {issues!r}"
+                )
+                assert present_count == 0, (
+                    f"present toolset {present_toolset_id!r} must NOT appear "
+                    f"in issues: {issues!r}"
+                )
+            finally:
+                await client.delete(f"/v1/agents/{agent_id}")
+        finally:
+            await client.delete(f"/v1/toolsets/{present_toolset_id}")
     finally:
         await client.delete(f"/v1/llm_providers/{provider_id}")
 
