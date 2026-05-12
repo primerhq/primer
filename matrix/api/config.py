@@ -11,6 +11,7 @@ on demand.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr
@@ -127,6 +128,23 @@ class AppConfig(BaseSettings):
     log_level: Literal["debug", "info", "warning", "error"] = Field(
         default="info",
         description="Log level for both application logs and uvicorn access logs.",
+    )
+    log_file: Path | None = Field(
+        default=None,
+        description=(
+            "When set, application logs are written to this file (rotated "
+            "at 10 MB, 5 backups) instead of stderr. The parent directory "
+            "is created on demand. ``None`` (the default) keeps the "
+            "stdout/stderr behaviour."
+        ),
+    )
+    log_json: bool = Field(
+        default=True,
+        description=(
+            "When True (default) emit one JSON object per log line — "
+            "suitable for aggregators. Set False for the human-readable "
+            "single-line dev formatter."
+        ),
     )
 
     @classmethod

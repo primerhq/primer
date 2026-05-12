@@ -1,0 +1,50 @@
+# Local development infrastructure for matrix.
+#
+# Spins up a single Postgres instance with the pgvector extension
+# pre-installed. The internal collections subsystem and the production
+# scheduler both target this same database — there's no need for a
+# second container.
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f postgres
+#   docker compose down            # keeps the volume
+#   docker compose down -v         # drops the volume (wipes all data)
+#
+# After the container is healthy, point AppConfig at it. Either env vars:
+#   export MATRIX_DB_HOST=localhost
+#   export MATRIX_DB_PORT=5432
+#   export MATRIX_DB_DATABASE=matrix
+#   export MATRIX_DB_USER=matrix
+#   export MATRIX_DB_PASSWORD=matrix
+# Or matching keys in your config.yaml passed to ``matrix api --config``.
+#
+# The pgvector image is pinned to a Postgres major version so the
+# pgvector extension binary matches the server. Bump the tag together
+# (e.g. pg17 + the matching pgvector release).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: matrix-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${MATRIX_DB_USER:-matrix}
+      POSTGRES_PASSWORD: ${MATRIX_DB_PASSWORD:-matrix}
+      POSTGRES_DB: ${MATRIX_DB_DATABASE:-matrix}
+    ports:
+      - "${MATRIX_DB_PORT:-5432}:5432"
+    volumes:
+      - matrix-pgdata:/var/lib/postgresql/data
+      # Idempotent CREATE EXTENSION runs on first boot — needed by the
+      # vector store registry and the internal collections subsystem.
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${MATRIX_DB_USER:-matrix} -d ${MATRIX_DB_DATABASE:-matrix}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  matrix-pgdata:
+    name: matrix-pgdata

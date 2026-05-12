@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import logging.handlers
 
 import pytest
 
@@ -73,6 +74,41 @@ class TestConfigureLogging:
         configure_logging(json_format=False)
         root_handler = logging.getLogger().handlers[0]
         assert root_handler.formatter.__class__.__name__ == "_DevFormatter"
+
+    def test_default_handler_is_stream_handler(self):
+        configure_logging()
+        h = logging.getLogger().handlers[0]
+        assert isinstance(h, logging.StreamHandler)
+        assert not isinstance(h, logging.handlers.RotatingFileHandler)
+
+    def test_file_path_uses_rotating_file_handler(self, tmp_path):
+        log_file = tmp_path / "app.log"
+        configure_logging(file_path=log_file)
+        h = logging.getLogger().handlers[0]
+        assert isinstance(h, logging.handlers.RotatingFileHandler)
+        # Closing matters on Windows so the temp dir can be cleaned up.
+        h.close()
+
+    def test_file_path_writes_records(self, tmp_path):
+        log_file = tmp_path / "app.log"
+        configure_logging(file_path=log_file, json_format=True)
+        logger = logging.getLogger("matrix.test")
+        logger.info("hello-from-file")
+        for h in logging.getLogger().handlers:
+            h.flush()
+            h.close()
+        data = log_file.read_text(encoding="utf-8").strip()
+        record = json.loads(data)
+        assert record["message"] == "hello-from-file"
+
+    def test_file_path_creates_parent_directory(self, tmp_path):
+        log_file = tmp_path / "nested" / "deeper" / "app.log"
+        configure_logging(file_path=log_file)
+        logging.getLogger("matrix.test").info("create-parents")
+        for h in logging.getLogger().handlers:
+            h.flush()
+            h.close()
+        assert log_file.exists()
 
 
 # ============================================================================

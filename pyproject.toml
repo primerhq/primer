@@ -24,11 +24,23 @@ dependencies = [
     "pydantic>=2.13.3",
     "pydantic-settings>=2.6",
     "python-multipart>=0.0.12",
+    "pyyaml>=6.0",
     "sentence-transformers>=3.0.0",
     "transformers>=5.6.2",
+    "typer>=0.12",
     "tzdata>=2026.2",
     "uvicorn[standard]>=0.32",
 ]
+
+[project.scripts]
+matrix = "matrix.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["matrix"]
 
 [dependency-groups]
 dev = [
@@ -43,6 +55,10 @@ dev = [
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["."]
+# tests/e2e/ is skipped unless MATRIX_RUN_E2E=1 is set in the environment
+# (see tests/e2e/conftest.py). The harness sets the env var; default unit
+# runs do not, so contributors running `uv run pytest` aren't bothered by
+# the e2e tests' need for a live server.
 
 [tool.coverage.run]
 source = ["matrix"]
@@ -56,6 +72,11 @@ omit = [
     # CLI entry point — only invoked via `python -m matrix.api`; needs
     # a live Postgres to run, so not covered by the unit suite.
     "matrix/api/__main__.py",
+    # Typer CLI launcher — uvicorn invocation requires a live Postgres,
+    # so the no-cover lines are the uvicorn.run() and main() shims.
+    # The pure helpers (_load_config, _apply_logging) and the command
+    # functions are exercised by tests/test_cli.py via a CliRunner with
+    # uvicorn patched out.
     # Postgres scheduler — exercised by tests/scheduler/test_postgres.py
     # which gates on MATRIX_PG_TEST_DSN. Without a live Postgres the
     # tests skip and this file shows ~25% coverage; same treatment as

@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -83,6 +85,9 @@ def configure_logging(
     *,
     level: int = logging.INFO,
     json_format: bool = True,
+    file_path: str | Path | None = None,
+    file_max_bytes: int = 10 * 1024 * 1024,
+    file_backup_count: int = 5,
 ) -> None:
     """Idempotent root-logger configuration.
 
@@ -97,12 +102,32 @@ def configure_logging(
     json_format
         When True (default), use the JSON formatter. When False, use the
         human-readable dev formatter.
+    file_path
+        When provided, logs are written to a rotating file at this path
+        instead of stderr. The parent directory is created on demand.
+        When ``None`` (default), logs continue to go to stderr.
+    file_max_bytes
+        Per-file rotation size cap. Only consulted when ``file_path`` is set.
+    file_backup_count
+        Number of rotated backups to retain. Only consulted when
+        ``file_path`` is set.
     """
     root = logging.getLogger()
     # Idempotent — drop existing handlers rather than stacking new ones.
     for handler in list(root.handlers):
         root.removeHandler(handler)
-    handler = logging.StreamHandler(sys.stderr)
+    handler: logging.Handler
+    if file_path is not None:
+        path = Path(file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            path,
+            maxBytes=file_max_bytes,
+            backupCount=file_backup_count,
+            encoding="utf-8",
+        )
+    else:
+        handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(_JsonFormatter() if json_format else _DevFormatter())
     root.addHandler(handler)
     root.setLevel(level)

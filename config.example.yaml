@@ -1,0 +1,56 @@
+# Example config.yaml for `matrix api --config config.yaml` and
+# `matrix worker --config config.yaml`. Copy this to `config.yaml`
+# (which is gitignored by convention) and tweak.
+#
+# Defaults match the docker-compose service in this repo, so the only
+# thing you typically change is the password.
+
+# --- Storage (Postgres) ----------------------------------------------------
+db_host: localhost
+db_port: 5432
+db_database: matrix
+db_user: matrix
+db_password: matrix
+db_min_pool_size: 1
+db_max_pool_size: 10
+
+# --- HTTP server -----------------------------------------------------------
+host: 0.0.0.0
+port: 8000
+
+# --- Logging ---------------------------------------------------------------
+log_level: info       # one of: debug, info, warning, error
+log_json: true        # JSON lines (true) or human-readable (false)
+# log_file: ./logs/matrix.log   # uncomment to log to a rotating file
+
+# --- Vector store (optional, required for collections + search) ------------
+vector_store:
+  provider: pgvector
+  config:
+    hostname: localhost
+    port: 5432
+    database: matrix
+    username: matrix
+    password: matrix
+
+# --- Scheduler (required when running a worker; CLI overrides runtime_mode)
+scheduler:
+  provider: postgres
+  config: {}
+
+# --- Worker pool knobs -----------------------------------------------------
+worker:
+  concurrency: 8
+  claim_batch_size: 4
+  heartbeat_interval_seconds: 10
+  lease_ttl_seconds: 30
+  poll_interval_seconds: 2.0
+  drain_timeout_seconds: 120
+  max_attempts: 5
+  base_backoff_seconds: 2.0
+  max_backoff_seconds: 300.0
+
+# --- MCP stdio safety (recommended for multi-tenant) ----------------------
+# mcp_stdio_allowed_commands:
+#   - python
+#   - node
