@@ -224,5 +224,8 @@ docs/
 research/
 
 # E2E test harness runtime scratch (logs, rendered config, pidfile).
-# Test code under tests/e2e/ IS versioned; only the .e2e/ scratch dir is not.
+# Python test code under tests/e2e/ IS versioned; the .e2e/ scratch dir
+# and the markdown state file under tests/e2e/.state/ are not — per the
+# rule that only code and Python tests are committed.
 tests/.e2e/
+tests/e2e/.state/
