@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Bring up the matrix test environment.
 #
+# Container runtime: Podman (rootless or rootful — both work). The
+# compose file is the standard compose-spec format and is consumed by
+# `podman compose`. If you have Docker installed instead, the same
+# `docker compose <subcmd>` commands work against the same file —
+# substitute manually.
+#
 # Steps:
-#   1. docker compose up -d, wait for postgres healthcheck
+#   1. podman compose up -d, wait for postgres healthcheck
 #   2. drop+recreate the matrix_e2e database with the pgvector extension
 #   3. render tests/.e2e/config.yaml
 #   4. launch `uv run matrix api --run-worker` in the background
@@ -34,14 +40,14 @@ mkdir -p "$E2E_DIR" "$LOG_DIR"
 # ---- 1. Docker --------------------------------------------------------------
 
 echo "[bringup] starting postgres container..." >&2
-docker compose up -d postgres >&2
+podman compose up -d postgres >&2
 
 echo "[bringup] waiting for postgres healthcheck..." >&2
 deadline=$(( $(date +%s) + 60 ))
-until docker compose exec -T postgres pg_isready -U "$DB_USER" -d postgres -q; do
+until podman compose exec -T postgres pg_isready -U "$DB_USER" -d postgres -q; do
     if [[ $(date +%s) -ge $deadline ]]; then
         echo "[bringup] FATAL: postgres failed healthcheck within 60s" >&2
-        docker compose logs --tail=50 postgres >&2 || true
+        podman compose logs --tail=50 postgres >&2 || true
         exit 1
     fi
     sleep 1
@@ -51,11 +57,11 @@ echo "[bringup] postgres ready" >&2
 # ---- 2. Reset DB ------------------------------------------------------------
 
 echo "[bringup] resetting database $DB_NAME..." >&2
-docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
+podman compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
     psql -U "$DB_USER" -d postgres -v ON_ERROR_STOP=1 \
     -c "DROP DATABASE IF EXISTS $DB_NAME;" \
     -c "CREATE DATABASE $DB_NAME;" >&2
-docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
+podman compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
     psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
     -c "CREATE EXTENSION IF NOT EXISTS vector;" >&2
 echo "[bringup] database reset" >&2

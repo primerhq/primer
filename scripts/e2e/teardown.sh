@@ -34,8 +34,8 @@ fi
 
 # ---- 2. Bring Postgres down + drop its volume -------------------------------
 
-echo "[teardown] docker compose down -v" >&2
-docker compose down -v >&2 || true
+echo "[teardown] podman compose down -v (drops the matrix-pgdata volume)" >&2
+podman compose down -v >&2 || true
 
 echo "[teardown] done" >&2
 exit 0

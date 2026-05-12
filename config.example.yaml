@@ -2,7 +2,8 @@
 # `matrix worker --config config.yaml`. Copy this to `config.yaml`
 # (which is gitignored by convention) and tweak.
 #
-# Defaults match the docker-compose service in this repo, so the only
+# Defaults match the compose service in this repo (run with `podman
+# compose up -d` or `docker compose up -d`), so the only
 # thing you typically change is the password.
 
 # --- Storage (Postgres) ----------------------------------------------------

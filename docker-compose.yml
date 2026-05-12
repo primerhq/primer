@@ -5,11 +5,17 @@
 # scheduler both target this same database — there's no need for a
 # second container.
 #
-# Usage:
-#   docker compose up -d
-#   docker compose logs -f postgres
-#   docker compose down            # keeps the volume
-#   docker compose down -v         # drops the volume (wipes all data)
+# Container runtime: Podman is the default. The compose file follows the
+# compose-spec, so `docker compose` works against it too if you have
+# Docker instead. The e2e test harness assumes Podman.
+#
+# Usage (Podman):
+#   podman compose up -d
+#   podman compose logs -f postgres
+#   podman compose down            # keeps the volume
+#   podman compose down -v         # drops the volume (wipes all data)
+#
+# Docker users: substitute `docker` for `podman` in the commands above.
 #
 # After the container is healthy, point AppConfig at it. Either env vars:
 #   export MATRIX_DB_HOST=localhost
