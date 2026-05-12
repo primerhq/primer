@@ -1,7 +1,8 @@
 """E2E: workspace lifecycle on the local backend.
 
-Covers backlog items T0006, T0030, T0031. All three tests share the
-same Provider+Template+Workspace setup, so they live in one module.
+Covers backlog items T0006, T0030, T0031, T0046, T0047, T0048, T0051.
+All tests share the same Provider+Template+Workspace setup, so they
+live in one module.
 
 The local backend writes files into the host filesystem under the
 provider's configured ``path``. Each test uses pytest's ``tmp_path``
@@ -12,6 +13,7 @@ cleaned up automatically after the test exits.
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 
 import httpx
@@ -416,6 +418,127 @@ async def test_t0046_workspace_write_creates_parent_directories(
             name == "file.txt" or name.endswith("/file.txt") or name == nested
             for name in names
         ), f"file.txt not found in {names!r}"
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0047 — 1 MiB binary content survives base64 round-trip exactly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0047_workspace_large_binary_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0047 — write 1 MiB random bytes via base64 encoding, read back,
+    assert byte-for-byte equality. Pins the contract that the file API
+    is a transparent byte conduit (no encoding-mangling, no surprise
+    1 MiB cap)."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        path = "blob.bin"
+        # 1 MiB of true randomness — exercises every byte value with
+        # very high probability across the payload, so a regression
+        # that special-cases certain bytes is exposed across runs.
+        raw = os.urandom(1024 * 1024)
+        encoded = base64.b64encode(raw).decode("ascii")
+
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": encoded, "encoding": "base64"},
+            timeout=httpx.Timeout(60.0, connect=10.0),
+        )
+        assert write.status_code == 204, write.text
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": path, "encoding": "base64"},
+            timeout=httpx.Timeout(60.0, connect=10.0),
+        )
+        assert read.status_code == 200, read.text
+        body = read.json()
+        assert body["encoding"] == "base64"
+        assert body["size_bytes"] == len(raw)
+        decoded = base64.b64decode(body["content"])
+        assert len(decoded) == len(raw), (
+            f"size mismatch: expected {len(raw)}, got {len(decoded)}"
+        )
+        assert decoded == raw, (
+            "1 MiB round-trip differs; first divergent byte at index "
+            f"{next((i for i, (a, b) in enumerate(zip(raw, decoded)) if a != b), -1)}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0048 — security headers present on the streaming download endpoint
+# ============================================================================
+
+
+_DOWNLOAD_SECURITY_HEADERS = {
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "cross-origin-resource-policy": "same-origin",
+}
+
+
+@pytest.mark.asyncio
+async def test_t0048_security_headers_on_streaming_download(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0048 — `GET /files/download` returns a StreamingResponse, and
+    the security middleware must still attach all four §2 headers to
+    streaming responses (a common middleware bug — some frameworks
+    skip headers on streamed bodies)."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed a tiny file
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "small.txt"},
+            json={"content": "hello", "encoding": "text"},
+        )
+        assert write.status_code == 204, write.text
+
+        dl = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/download",
+            params={"path": "small.txt"},
+        )
+        assert dl.status_code == 200, dl.text
+        for name, expected in _DOWNLOAD_SECURITY_HEADERS.items():
+            actual = dl.headers.get(name)
+            assert actual == expected, (
+                f"streaming response missing/incorrect header {name!r}: "
+                f"expected {expected!r}, got {actual!r}"
+            )
     finally:
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
