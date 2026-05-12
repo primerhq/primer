@@ -286,3 +286,65 @@ async def test_t0031_workspace_download_content_disposition_sanitised(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0046 — write to a nested path creates intermediate directories
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0046_workspace_write_creates_parent_directories(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0046 — PUT /files at a path with non-existent parent dirs must
+    materialise those parents (no 404 / 500 for missing intermediate
+    directories) and the file must be readable back."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        nested = "a/b/c/file.txt"
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": nested},
+            json={"content": "deep", "encoding": "text"},
+        )
+        assert write.status_code == 204, (
+            f"PUT to nested path should auto-create parents, got "
+            f"{write.status_code}: {write.text}"
+        )
+
+        # Read back — exact content
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": nested},
+        )
+        assert read.status_code == 200, read.text
+        assert read.json()["content"] == "deep"
+
+        # Listing the deepest parent should show the file
+        listed = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "a/b/c"},
+        )
+        assert listed.status_code == 200, listed.text
+        names = [item["path"] for item in listed.json()["items"]]
+        # Items use either the basename or the workspace-relative path —
+        # check both for robustness against future formatting tweaks.
+        assert any(
+            name == "file.txt" or name.endswith("/file.txt") or name == nested
+            for name in names
+        ), f"file.txt not found in {names!r}"
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

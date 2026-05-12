@@ -107,6 +107,74 @@ async def test_t0015_find_empty_predicate_returns_offset_envelope(
 
 
 @pytest.mark.asyncio
+async def test_t0044_cursor_consistency_under_mid_walk_insert(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0044 — cursor pagination is stable under mid-walk inserts.
+
+    1. Seed N items with a unique id-prefix.
+    2. Open a cursor walk filtered by that prefix, fetch one page.
+    3. Insert a NEW row matching the prefix.
+    4. Continue the walk.
+    5. Assert: no item id appears twice across all pages, and every
+       item from the original snapshot appears at least once. The new
+       insert MAY appear (consistency model isn't snapshot-isolated)
+       or MAY NOT — but it must not corrupt the walk.
+    """
+    prefix = f"ts-t0044-{unique_suffix}"
+    seeded = await _seed_toolsets(client, prefix, 5)
+    inserted_id = f"{prefix}-99"
+    inserted = False
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+        seen: list[str] = []
+        cursor: str | None = None
+        page_no = 0
+        for _ in range(15):
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "cursor", "cursor": cursor, "length": 2},
+            }
+            resp = await client.post("/v1/toolsets/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            assert page["kind"] == "cursor"
+            seen.extend(item["id"] for item in page["items"])
+
+            # After the first page, insert one more matching row.
+            page_no += 1
+            if page_no == 1 and not inserted:
+                ins = await client.post(
+                    "/v1/toolsets", json=_toolset_body(inserted_id),
+                )
+                assert ins.status_code == 201, ins.text
+                inserted = True
+
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail(f"cursor walk did not terminate: seen={seen!r}")
+
+        # Invariant 1 — no id appears twice.
+        assert len(seen) == len(set(seen)), (
+            f"cursor walk yielded duplicate ids: {seen!r}"
+        )
+        # Invariant 2 — every snapshot item appears at least once.
+        for sid in seeded:
+            assert sid in seen, (
+                f"snapshot id {sid!r} missing from walk: {seen!r}"
+            )
+    finally:
+        await _delete_toolsets(client, [*seeded, inserted_id])
+
+
+@pytest.mark.asyncio
 async def test_t0016_find_malformed_predicate_returns_422(
     client: httpx.AsyncClient,
 ) -> None:

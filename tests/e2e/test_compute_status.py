@@ -127,6 +127,64 @@ async def test_t0023_agent_status_missing_toolset(
 
 
 # ============================================================================
+# T0033 — Agent status recovers after delete+recreate of its LLMProvider
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0033_agent_status_recovers_after_provider_recreate(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0033 — status walks the live row each call (no cached evaluation):
+
+    1. provider+agent → status ok
+    2. delete provider → status reports missing
+    3. recreate provider with same id → status ok again
+    """
+    provider_id = f"llm-rec-{unique_suffix}"
+    agent_id = f"agent-rec-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+        )
+        assert ag.status_code == 201, ag.text
+        try:
+            # Step 1: status ok with provider present
+            ok = await client.get(f"/v1/agents/{agent_id}/status")
+            assert ok.status_code == 200, ok.text
+            assert ok.json()["ok"] is True, ok.json()
+
+            # Step 2: provider deleted → status flags missing
+            rm = await client.delete(f"/v1/llm_providers/{provider_id}")
+            assert rm.status_code == 204, rm.text
+            broken = await client.get(f"/v1/agents/{agent_id}/status")
+            assert broken.status_code == 200, broken.text
+            broken_body = broken.json()
+            assert broken_body["ok"] is False, broken_body
+            assert any(
+                provider_id in str(i) for i in broken_body["issues"]
+            ), broken_body
+
+            # Step 3: provider recreated with same id → status ok again
+            recreated = await client.post(
+                "/v1/llm_providers", json=_llm_body(provider_id),
+            )
+            assert recreated.status_code == 201, recreated.text
+            healed = await client.get(f"/v1/agents/{agent_id}/status")
+            assert healed.status_code == 200, healed.text
+            assert healed.json()["ok"] is True, healed.json()
+        finally:
+            await client.delete(f"/v1/agents/{agent_id}")
+    finally:
+        # Best-effort: provider may already be re-deleted by step 3, that's fine
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
 # T0024 — Graph status flags missing agent reference
 # ============================================================================
 
