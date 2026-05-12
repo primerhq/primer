@@ -10,7 +10,7 @@ import pytest
 from matrix.model.workspace import (
     WorkspaceStatus,
     WorkspaceTemplate,
-    _ContainerTemplateConfig,
+    ContainerTemplateConfig,
 )
 from matrix.workspace.sandbox.fake import FakeSandbox
 from matrix.workspace.sandbox.workspace import SandboxWorkspace
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(
 def _template() -> WorkspaceTemplate:
     return WorkspaceTemplate(
         id="t1", provider_id="c1", description="",
-        backend=_ContainerTemplateConfig(image="python:3.13"),
+        backend=ContainerTemplateConfig(image="python:3.13"),
     )
 
 

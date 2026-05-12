@@ -115,16 +115,25 @@ class WorkspaceRegistry:
         return row
 
     async def get_workspace(self, workspace_id: str) -> "Workspace":
-        """Resolve the live :class:`Workspace` handle."""
+        """Resolve the live :class:`Workspace` handle.
+
+        After a process restart the backend may have an empty in-memory
+        cache. We load the persisted template and pass it to
+        ``backend.get`` so Container/K8s backends can re-attach to the
+        long-lived sandbox they materialised on a previous boot.
+        """
         row = await self.get_workspace_row(workspace_id)
         backend = await self.get_backend(row.provider_id)
-        ws = await backend.get(workspace_id)
+        template = await self._sp.get_storage(WorkspaceTemplate).get(
+            row.template_id,
+        )
+        ws = await backend.get(workspace_id, template=template)
         if ws is None:
             raise NotFoundError(
                 f"Workspace {workspace_id!r} row exists but the backend "
-                "has no live instance — the process may have been "
-                "restarted with an ephemeral backend, or the workspace "
-                "was destroyed out-of-band."
+                "has no live instance and re-attach failed — the "
+                "underlying container/pod may have been destroyed "
+                "out-of-band."
             )
         return ws
 

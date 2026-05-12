@@ -63,7 +63,23 @@ def _make_lifespan(config: AppConfig):
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
         # ``get_toolset('_system')`` to it.
-        provider_registry = ProviderRegistry(storage_provider)
+        # Resolve the MCP stdio allowlist from AppConfig and bake it into
+        # the toolset factory so every MCP provider built from a row is
+        # consistently constrained.
+        from matrix.api.registries.provider_registry import (
+            _build_default_toolset_factory,
+        )
+        allowlist: frozenset[str] | None = (
+            frozenset(config.mcp_stdio_allowed_commands)
+            if config.mcp_stdio_allowed_commands is not None
+            else None
+        )
+        provider_registry = ProviderRegistry(
+            storage_provider,
+            toolset_factory=_build_default_toolset_factory(
+                allowed_stdio_commands=allowlist,
+            ),
+        )
         system_toolset = build_system_toolset(
             storage_provider=storage_provider,
             provider_registry=provider_registry,
@@ -173,11 +189,28 @@ def _make_lifespan(config: AppConfig):
                     logger.exception("scheduler.aclose failed")
             ic_subsystem = app.state.internal_collections
             if ic_subsystem is not None:
-                await ic_subsystem.aclose()
-            await provider_registry.aclose()
-            await vector_store_registry.aclose()
-            await workspace_registry.aclose()
-            await storage_provider.aclose()
+                try:
+                    await ic_subsystem.aclose()
+                except Exception:
+                    logger.exception(
+                        "internal_collections.aclose failed"
+                    )
+            try:
+                await provider_registry.aclose()
+            except Exception:
+                logger.exception("provider_registry.aclose failed")
+            try:
+                await vector_store_registry.aclose()
+            except Exception:
+                logger.exception("vector_store_registry.aclose failed")
+            try:
+                await workspace_registry.aclose()
+            except Exception:
+                logger.exception("workspace_registry.aclose failed")
+            try:
+                await storage_provider.aclose()
+            except Exception:
+                logger.exception("storage_provider.aclose failed")
 
     return _lifespan
 
@@ -267,15 +300,45 @@ def _mount_routers(
 
 def create_app(config: AppConfig) -> FastAPI:
     """Production factory: builds the app + wires the lifespan handler."""
+    # Disable Swagger / ReDoc UIs unless the operator opts back in via
+    # the log_level=debug setting; the OpenAPI JSON stays available at
+    # /openapi.json for client-generation pipelines.
+    debug_docs = config.log_level == "debug"
     app = FastAPI(
         title="Matrix Microagents Framework API",
         version=APP_VERSION,
         lifespan=_make_lifespan(config),
         contact={"name": "matrix"},
+        docs_url="/docs" if debug_docs else None,
+        redoc_url="/redoc" if debug_docs else None,
     )
+    _install_security_headers(app)
     _mount_routers(app, runtime_mode=config.runtime_mode)
     register_error_handlers(app)
     return app
+
+
+def _install_security_headers(app: FastAPI) -> None:
+    """Set conservative defensive headers on every response.
+
+    The API is JSON-only, so a strict ``no-sniff`` + deny-frame policy
+    is safe by default. ``Cross-Origin-Resource-Policy: same-origin``
+    blocks no-CORS embeds from other origins. CSP is omitted (it has
+    no effect on JSON responses, and configuring it for the optional
+    debug-mode Swagger UI would add a maintenance surface).
+    """
+    @app.middleware("http")
+    async def _security_headers(request, call_next):  # noqa: ARG001
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Referrer-Policy", "strict-origin-when-cross-origin",
+        )
+        response.headers.setdefault(
+            "Cross-Origin-Resource-Policy", "same-origin",
+        )
+        return response
 
 
 def create_test_app(

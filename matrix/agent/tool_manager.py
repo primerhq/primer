@@ -30,6 +30,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 from matrix.int.toolset import ToolsetProvider
 from matrix.model.chat import Tool, ToolCallPart, ToolResultPart
 from matrix.model.except_ import (
@@ -273,7 +275,9 @@ class ToolExecutionManager:
 
         try:
             args_model = tool.parameters().model_validate(call.arguments)
-        except Exception as exc:  # noqa: BLE001
+        except ValidationError as exc:
+            # Genuine bad-args from the LLM: surface as a tool error so
+            # the model can correct itself.
             logger.warning(
                 "ToolExecutionManager: workspace-tool args validation failed",
                 extra={"tool": call.name, "error": str(exc)},
@@ -281,6 +285,22 @@ class ToolExecutionManager:
             return ToolResultPart(
                 id=call.id,
                 output=f"invalid arguments for {call.name}: {exc}",
+                error=True,
+            )
+        except Exception:
+            # Programming bug in tool.parameters() (e.g. NameError) -- log
+            # at ERROR with traceback so the operator sees it; still
+            # return a tool error so the agent doesn't loop forever.
+            logger.exception(
+                "ToolExecutionManager: tool.parameters() raised unexpectedly",
+                extra={"tool": call.name},
+            )
+            return ToolResultPart(
+                id=call.id,
+                output=(
+                    f"internal error preparing arguments for {call.name}; "
+                    "see server logs"
+                ),
                 error=True,
             )
 

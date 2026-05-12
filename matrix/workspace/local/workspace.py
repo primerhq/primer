@@ -18,7 +18,6 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from matrix.int.workspace import Workspace
 from matrix.model.except_ import BadRequestError, ConflictError, NotFoundError
@@ -28,19 +27,16 @@ from matrix.model.session import (
     SessionStatus,
 )
 from matrix.model.workspace import (
+    CommitInfo,
     FileEntry,
     WorkspaceStatus,
     WorkspaceTemplate,
 )
 from matrix.workspace.local.cache import LocalTruncationStore
 from matrix.workspace.local.state import LocalStateRepo
+from matrix.workspace.local.tools import Edit, Exec, Glob, Grep, Ls, Read, Write
 from matrix.workspace.session import AgentSession
 from matrix.workspace.tool import WorkspaceTool
-from matrix.workspace.local.tools import Edit, Exec, Glob, Grep, Ls, Read, Write
-
-
-if TYPE_CHECKING:
-    from matrix.workspace.local.state import CommitInfo
 
 
 _TAR_CHUNK_BYTES = 64 * 1024
@@ -269,7 +265,7 @@ class LocalWorkspace(Workspace):
         else:
             await asyncio.to_thread(target.unlink)
 
-    async def log(self, *, limit: int = 50) -> "list[CommitInfo]":
+    async def log(self, *, limit: int = 50) -> list[CommitInfo]:
         return await self._state.history(limit=limit)
 
     async def status(self) -> WorkspaceStatus:

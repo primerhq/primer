@@ -25,11 +25,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Retained for backwards compatibility with code that still references
-# the old in-storage row id; nothing in the API code path uses it now.
-ACTIVE_VECTOR_STORE_CONFIG_ID = "_active_vector_store"
-
-
 def _default_factory(
     config: VectorStoreProviderConfig,
 ) -> "VectorStoreProvider":  # pragma: no cover
@@ -101,4 +96,4 @@ class VectorStoreRegistry:
         await self.invalidate()
 
 
-__all__ = ["ACTIVE_VECTOR_STORE_CONFIG_ID", "VectorStoreRegistry"]
+__all__ = ["VectorStoreRegistry"]

@@ -126,8 +126,17 @@ async def run_agent_turn(
 
         try:
             assistant_msg = output_to_message(buffered)
-        except ValueError:
-            # Empty / error-only stream -- already emitted; nothing to persist.
+        except ValueError as exc:
+            # Empty / error-only stream. The events were already emitted to
+            # subscribers, so the user sees something, but the orchestrator
+            # would otherwise treat the turn as a quiet success and tight-loop
+            # the LLM. Log enough to make the situation diagnosable from
+            # production logs.
+            logger.warning(
+                "agent loop: LLM stream produced no assistant message; "
+                "ending turn without persisting (event_count=%d, error=%s)",
+                len(buffered), exc,
+            )
             return
 
         if messages_out is not None:

@@ -206,7 +206,7 @@ class _FakeWorkspace:
         del self._files[path]
 
     async def log(self, *, limit=50):
-        from matrix.workspace.local.state import CommitInfo
+        from matrix.model.workspace import CommitInfo
 
         return [
             CommitInfo(
@@ -258,7 +258,7 @@ class _FakeBackend:
         self._workspaces[wid] = ws
         return ws
 
-    async def get(self, workspace_id):
+    async def get(self, workspace_id, *, template=None):
         return self._workspaces.get(workspace_id)
 
     async def list(self):

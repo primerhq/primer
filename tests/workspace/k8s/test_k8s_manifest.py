@@ -9,12 +9,17 @@ from __future__ import annotations
 from matrix.model.workspace import (
     KubernetesWorkspaceConfig,
     WorkspaceTemplate,
-    _KubernetesTemplateConfig,
+    KubernetesTemplateConfig,
 )
+import pytest
+
+from matrix.model.except_ import ConfigError
 from matrix.workspace.k8s.backend import (
+    _assert_no_dangerous_keys,
     _build_statefulset_manifest,
     _deep_merge,
     _pvc_name_for,
+    _validate_template_overrides,
 )
 
 
@@ -64,7 +69,7 @@ def test_pvc_name_format() -> None:
 def _template(image: str = "python:3.13", **kwargs) -> WorkspaceTemplate:
     return WorkspaceTemplate(
         id="t1", provider_id="k1", description="",
-        backend=_KubernetesTemplateConfig(image=image, **kwargs),
+        backend=KubernetesTemplateConfig(image=image, **kwargs),
     )
 
 
@@ -160,3 +165,59 @@ def test_workspace_label_present() -> None:
     assert labels["team"] == "platform"
     annotations = m["metadata"]["annotations"]
     assert annotations["owner"] == "matrix"
+
+
+# ---- _validate_template_overrides ----------------------------------------
+
+
+def test_overrides_reject_privileged_security_context() -> None:
+    template = _template(
+        container_overrides={"securityContext": {"privileged": True}},
+    )
+    with pytest.raises(ConfigError, match="securityContext"):
+        _validate_template_overrides(template)
+
+
+def test_overrides_reject_host_path_volume() -> None:
+    template = _template(
+        extra_volumes=[
+            {"name": "h", "hostPath": {"path": "/"}},
+        ],
+    )
+    with pytest.raises(ConfigError, match="hostPath"):
+        _validate_template_overrides(template)
+
+
+def test_overrides_reject_host_network_in_pod_overrides() -> None:
+    template = _template(pod_overrides={"hostNetwork": True})
+    with pytest.raises(ConfigError, match="hostNetwork"):
+        _validate_template_overrides(template)
+
+
+def test_overrides_reject_nested_run_as_user() -> None:
+    template = _template(
+        pod_overrides={"securityContext": {"runAsUser": 0}},
+    )
+    with pytest.raises(ConfigError, match="securityContext"):
+        _validate_template_overrides(template)
+
+
+def test_overrides_accept_benign_keys() -> None:
+    template = _template(
+        pod_overrides={
+            "dnsPolicy": "ClusterFirst",
+            "restartPolicy": "Always",
+        },
+        container_overrides={
+            "imagePullPolicy": "Always",
+            "lifecycle": {"preStop": {"exec": {"command": ["echo", "bye"]}}},
+        },
+    )
+    # Should not raise.
+    _validate_template_overrides(template)
+
+
+def test_assert_no_dangerous_keys_path_in_message() -> None:
+    overlay = {"deeply": {"nested": {"hostPath": {"path": "/"}}}}
+    with pytest.raises(ConfigError, match=r"deeply\.nested\.hostPath"):
+        _assert_no_dangerous_keys(overlay, source="x")

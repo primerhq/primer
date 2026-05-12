@@ -42,7 +42,7 @@ from matrix.workspace.tool import WorkspaceTool
 
 
 if TYPE_CHECKING:
-    from matrix.workspace.local.state import CommitInfo
+    from matrix.model.workspace import CommitInfo
 
 
 logger = logging.getLogger(__name__)
@@ -138,6 +138,14 @@ class SandboxWorkspace(Workspace):
     @property
     def template(self) -> WorkspaceTemplate:
         return self._template
+
+    @property
+    def sandbox(self) -> Sandbox:
+        """The underlying :class:`Sandbox` handle.
+
+        Exposed so backends performing teardown (``destroy``) can stop +
+        remove the sandbox without reaching into private attributes."""
+        return self._sandbox
 
     def get_tools(self) -> list[WorkspaceTool]:
         return list(self._tools)
@@ -319,12 +327,25 @@ class SandboxWorkspace(Workspace):
         )
 
     async def aclose(self) -> None:
+        """Tear down every live session. Errors from any one session must
+        not skip the rest -- log and continue, mirroring
+        :meth:`LocalWorkspaceBackend.aclose`."""
         async with self._lock:
             for session in list(self._sessions.values()):
                 try:
                     await session.aclose()
                 except ConflictError:
+                    # Already ended; benign.
                     pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "SandboxWorkspace: aclose on session failed",
+                        extra={
+                            "workspace_id": self._workspace_id,
+                            "session_id": session.session_id,
+                            "error": str(exc),
+                        },
+                    )
             self._sessions.clear()
 
 

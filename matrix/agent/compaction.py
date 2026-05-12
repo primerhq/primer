@@ -258,20 +258,11 @@ class CompactionStrategy:
             )
 
         # Tier 2: full compaction.
-        compacted_messages, summary_msg, head_count = await self._full_compact(
-            history=pruned_history,
-            agent=agent,
-            llm=llm,
-            model=model,
-        )
-        after_full = self._estimate_tokens(compacted_messages)
-        return CompactedTurn(
-            new_messages=compacted_messages,
-            summary_message=summary_msg,
-            pruned_tool_outputs=pruned_count,
-            head_messages_replaced=head_count,
-            estimated_tokens_before=before,
-            estimated_tokens_after=after_full,
+        return await self._tier2(
+            pruned_history=pruned_history,
+            pruned_count=pruned_count,
+            before=before,
+            agent=agent, llm=llm, model=model,
         )
 
     async def force_compact(
@@ -289,6 +280,27 @@ class CompactionStrategy:
             per_output_threshold=self.prune_per_output_tokens,
             total_threshold=self.prune_total_threshold,
         )
+        return await self._tier2(
+            pruned_history=pruned_history,
+            pruned_count=pruned_count,
+            before=before,
+            agent=agent, llm=llm, model=model,
+        )
+
+    async def _tier2(
+        self,
+        *,
+        pruned_history: list[Message],
+        pruned_count: int,
+        before: int,
+        agent: "Agent",
+        llm: "LLM",
+        model: "LLMModel",
+    ) -> CompactedTurn:
+        """Run the full LLM-driven compaction pass and assemble the
+        :class:`CompactedTurn` result. Shared by :meth:`maybe_compact`
+        (tier-2 fall-through) and :meth:`force_compact` (always-tier-2)
+        to keep the result shape identical between the two paths."""
         compacted_messages, summary_msg, head_count = await self._full_compact(
             history=pruned_history,
             agent=agent,

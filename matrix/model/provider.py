@@ -12,6 +12,8 @@ Three top-level provider kinds are supported:
 * :class:`Toolset` — tool sources (internal registry or MCP server).
 """
 
+from __future__ import annotations
+
 from enum import Enum
 from typing import Literal
 

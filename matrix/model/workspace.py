@@ -211,17 +211,73 @@ class VolumeMount(BaseModel):
 
 
 # ===========================================================================
+# State-repo shared types (used by ABC + every concrete StateRepo impl)
+# ===========================================================================
+
+
+Op = Literal[
+    "attach",
+    "message",
+    "user_instruction",
+    "tool_call",
+    "tool_result",
+    "memory_write",
+    "todo_update",
+    "status_change",
+]
+"""Allowed values of the ``op`` trailer on state-repo commits."""
+
+
+class CommitInfo(BaseModel):
+    """One commit in the state repo, with trailers parsed.
+
+    Returned from :meth:`matrix.int.workspace.Workspace.log` and from
+    every concrete ``StateRepo.history`` implementation. Lives in the
+    model layer so both the ABC and the concrete impls depend on the
+    model rather than on each other.
+    """
+
+    sha: str = Field(..., description="Full 40-character commit SHA.")
+    subject: str = Field(..., description="Commit message subject line.")
+    committed_at: datetime = Field(..., description="Committer timestamp (UTC).")
+    workspace_id: str | None = Field(
+        default=None,
+        description="Value of the X-Matrix-Workspace trailer, if present.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Value of the X-Matrix-Session trailer, if present.",
+    )
+    agent_id: str | None = Field(
+        default=None,
+        description="Value of the X-Matrix-Agent trailer, if present.",
+    )
+    op: str | None = Field(
+        default=None,
+        description="Value of the X-Matrix-Op trailer, if present.",
+    )
+    tool: str | None = Field(
+        default=None,
+        description="Value of the X-Matrix-Tool trailer, if present.",
+    )
+    call_id: str | None = Field(
+        default=None,
+        description="Value of the X-Matrix-Call trailer, if present.",
+    )
+
+
+# ===========================================================================
 # Per-backend template configs (discriminated by ``kind``)
 # ===========================================================================
 
 
-class _LocalTemplateConfig(BaseModel):
+class LocalTemplateConfig(BaseModel):
     """Local-backend template config (no backend-specific fields today)."""
 
     kind: Literal["local"] = "local"
 
 
-class _ContainerTemplateConfig(BaseModel):
+class ContainerTemplateConfig(BaseModel):
     """Container-backend template config."""
 
     kind: Literal["container"] = "container"
@@ -246,7 +302,7 @@ class _ContainerTemplateConfig(BaseModel):
     )
 
 
-class _KubernetesTemplateConfig(BaseModel):
+class KubernetesTemplateConfig(BaseModel):
     """Kubernetes-backend template config."""
 
     kind: Literal["kubernetes"] = "kubernetes"
@@ -266,9 +322,9 @@ class _KubernetesTemplateConfig(BaseModel):
 
 WorkspaceTemplateBackendConfig = Annotated[
     Union[
-        _LocalTemplateConfig,
-        _ContainerTemplateConfig,
-        _KubernetesTemplateConfig,
+        LocalTemplateConfig,
+        ContainerTemplateConfig,
+        KubernetesTemplateConfig,
     ],
     Field(discriminator="kind"),
 ]
@@ -305,7 +361,7 @@ class WorkspaceTemplate(Describeable):
         ),
     )
     backend: WorkspaceTemplateBackendConfig = Field(
-        default_factory=lambda: _LocalTemplateConfig(),
+        default_factory=lambda: LocalTemplateConfig(),
         description=(
             "Per-backend recipe fields. Must match the provider type "
             "the template targets."
@@ -476,7 +532,7 @@ class LocalWorkspaceConfig(BaseModel):
 # ---- Container runtime configs (discriminated by ``kind``) ----------------
 
 
-class _DockerRuntimeConfig(BaseModel):
+class DockerRuntimeConfig(BaseModel):
     kind: Literal["docker"] = "docker"
     socket: str | None = Field(
         default=None,
@@ -491,7 +547,7 @@ class _DockerRuntimeConfig(BaseModel):
     )
 
 
-class _PodmanRuntimeConfig(BaseModel):
+class PodmanRuntimeConfig(BaseModel):
     kind: Literal["podman"] = "podman"
     socket: str | None = Field(
         default=None,
@@ -502,7 +558,7 @@ class _PodmanRuntimeConfig(BaseModel):
     )
 
 
-class _ContainerdRuntimeConfig(BaseModel):
+class ContainerdRuntimeConfig(BaseModel):
     kind: Literal["containerd"] = "containerd"
     socket: str = Field(
         default="/run/containerd/containerd.sock",
@@ -515,7 +571,7 @@ class _ContainerdRuntimeConfig(BaseModel):
 
 
 ContainerRuntimeConfig = Annotated[
-    Union[_DockerRuntimeConfig, _PodmanRuntimeConfig, _ContainerdRuntimeConfig],
+    Union[DockerRuntimeConfig, PodmanRuntimeConfig, ContainerdRuntimeConfig],
     Field(discriminator="kind"),
 ]
 
@@ -724,13 +780,22 @@ class Workspace(Identifiable):
 
 
 __all__ = [
+    "CommitInfo",
+    "ContainerdRuntimeConfig",
+    "ContainerRuntimeConfig",
+    "ContainerTemplateConfig",
     "ContainerWorkspaceConfig",
+    "DockerRuntimeConfig",
     "FileEntry",
     "FileMount",
     "FileSource",
+    "KubernetesTemplateConfig",
     "KubernetesWorkspaceConfig",
+    "LocalTemplateConfig",
     "LocalWorkspaceConfig",
+    "Op",
     "PackageSpec",
+    "PodmanRuntimeConfig",
     "ResourceLimits",
     "VolumeMount",
     "Workspace",

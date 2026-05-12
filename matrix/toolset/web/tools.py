@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 import httpx
@@ -36,8 +35,6 @@ logger = logging.getLogger(__name__)
 HttpMethod = Literal[
     "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"
 ]
-
-ToolHandler = Callable[[dict[str, Any]], Awaitable[ToolCallResult]]
 
 
 # ---- Argument models -------------------------------------------------------
@@ -245,7 +242,6 @@ def make_http_request_handler(
 __all__ = [
     "HttpMethod",
     "HttpRequestArgs",
-    "ToolHandler",
     "WebSearchArgs",
     "make_http_request_descriptor",
     "make_http_request_handler",

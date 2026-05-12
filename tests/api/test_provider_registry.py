@@ -150,10 +150,9 @@ class TestEmbedderResolution:
         assert ctor.call_count == 1
 
 
-class TestToolsetDispatchDeferred:
+class TestToolsetDispatchDefault:
     @pytest.mark.asyncio
-    async def test_default_toolset_factory_raises_config_error(self) -> None:
-        sp = _FakeStorageProvider()
+    async def test_default_factory_constructs_mcp_provider(self) -> None:
         from matrix.model.provider import (
             McpConfig,
             StdioConfig,
@@ -161,7 +160,9 @@ class TestToolsetDispatchDeferred:
             ToolsetProviderType,
             TransportType,
         )
+        from matrix.toolset.mcp import McpToolsetProvider
 
+        sp = _FakeStorageProvider()
         await sp.get_storage(Toolset).create(
             Toolset(
                 id="t1",
@@ -173,8 +174,8 @@ class TestToolsetDispatchDeferred:
             )
         )
         registry = ProviderRegistry(sp)
-        with pytest.raises(ConfigError, match="Phase 1"):
-            await registry.get_toolset("t1")
+        provider = await registry.get_toolset("t1")
+        assert isinstance(provider, McpToolsetProvider)
 
 
 class TestCrossEncoderResolution:

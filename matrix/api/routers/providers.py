@@ -42,24 +42,20 @@ from matrix.model.provider import (
 # ---- cascade-invalidation hooks --------------------------------------------
 
 
-async def _invalidate_llm(entity_id: str, request: Request) -> None:
-    registry: ProviderRegistry = request.app.state.provider_registry
-    await registry.invalidate_llm(entity_id)
+def _make_invalidator(method_name: str):
+    """Build a CRUD-router hook that invalidates the named cache slot
+    on the request's :class:`ProviderRegistry`."""
+    async def _hook(entity_id: str, request: Request) -> None:
+        registry: ProviderRegistry = request.app.state.provider_registry
+        await getattr(registry, method_name)(entity_id)
+    _hook.__name__ = f"_invalidate_{method_name.removeprefix('invalidate_')}"
+    return _hook
 
 
-async def _invalidate_embedder(entity_id: str, request: Request) -> None:
-    registry: ProviderRegistry = request.app.state.provider_registry
-    await registry.invalidate_embedder(entity_id)
-
-
-async def _invalidate_cross_encoder(entity_id: str, request: Request) -> None:
-    registry: ProviderRegistry = request.app.state.provider_registry
-    await registry.invalidate_cross_encoder(entity_id)
-
-
-async def _invalidate_toolset(entity_id: str, request: Request) -> None:
-    registry: ProviderRegistry = request.app.state.provider_registry
-    await registry.invalidate_toolset(entity_id)
+_invalidate_llm = _make_invalidator("invalidate_llm")
+_invalidate_embedder = _make_invalidator("invalidate_embedder")
+_invalidate_cross_encoder = _make_invalidator("invalidate_cross_encoder")
+_invalidate_toolset = _make_invalidator("invalidate_toolset")
 
 
 # ---- LLMProvider router ----------------------------------------------------

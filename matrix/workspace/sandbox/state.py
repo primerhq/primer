@@ -17,7 +17,7 @@ import logging
 from datetime import datetime, timezone
 
 from matrix.int.sandbox import Sandbox
-from matrix.workspace.local.state import CommitInfo, Op
+from matrix.model.workspace import CommitInfo, Op
 
 
 logger = logging.getLogger(__name__)

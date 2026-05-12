@@ -24,8 +24,14 @@ from matrix.api.deps import (
     get_document_storage,
 )
 from matrix.api.errors import common_responses
+from matrix.api.routers._cdc_hooks import make_cdc_hooks
 from matrix.api.routers._crud import make_crud_router
 from matrix.model.collection import Collection, Document
+
+
+_collection_create, _collection_update, _collection_delete = make_cdc_hooks(
+    "collection", Collection,
+)
 from matrix.model.except_ import NotFoundError
 from matrix.model.storage import (
     CursorPageResponse,
@@ -45,6 +51,9 @@ collection_router = make_crud_router(
     storage_dep=get_collection_storage,
     plural="collections",
     tag="collections",
+    on_create=_collection_create,
+    on_update=_collection_update,
+    on_delete=_collection_delete,
 )
 
 

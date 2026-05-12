@@ -19,7 +19,7 @@ from matrix.model.workspace import (
     KubernetesWorkspaceConfig,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
-    _KubernetesTemplateConfig,
+    KubernetesTemplateConfig,
 )
 from matrix.workspace.k8s.sandbox import K8sSandbox
 from matrix.workspace.sandbox.workspace import SandboxWorkspace
@@ -56,6 +56,75 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return out
 
 
+# Keys disallowed in any per-template ``container_overrides`` /
+# ``pod_overrides`` overlay because they would let a template author
+# escalate to host root or break out of the sandbox. Matched on any
+# nesting level via :func:`_assert_no_dangerous_keys`.
+_FORBIDDEN_OVERRIDE_KEYS = frozenset({
+    "securityContext",     # privileged: true, runAsUser: 0, capabilities, etc.
+    "hostPath",            # mount the host filesystem
+    "hostNetwork",         # share the host's network namespace
+    "hostPID",             # share the host's PID namespace
+    "hostIPC",             # share the host's IPC namespace
+    "hostUsers",
+    "privileged",
+    "allowPrivilegeEscalation",
+    "capabilities",
+    "procMount",
+    "runAsUser",
+    "runAsGroup",
+    "runAsNonRoot",
+})
+
+
+def _assert_no_dangerous_keys(
+    overlay: Any, *, source: str, path: str = "",
+) -> None:
+    """Refuse template overlays that try to set security-sensitive K8s
+    fields. The check walks dicts and lists recursively so nested
+    occurrences (``securityContext`` inside an ``initContainers`` entry,
+    ``hostPath`` inside an ``extra_volumes`` element, …) are caught.
+
+    Raises :class:`ConfigError` with a message naming the offending key
+    and its dotted path.
+    """
+    if isinstance(overlay, dict):
+        for k, v in overlay.items():
+            if k in _FORBIDDEN_OVERRIDE_KEYS:
+                raise ConfigError(
+                    f"{source} sets disallowed K8s field {k!r} "
+                    f"(at {path or '<root>'}.{k}); refused for safety."
+                )
+            _assert_no_dangerous_keys(v, source=source, path=f"{path}.{k}")
+    elif isinstance(overlay, list):
+        for i, item in enumerate(overlay):
+            _assert_no_dangerous_keys(
+                item, source=source, path=f"{path}[{i}]",
+            )
+
+
+def _validate_template_overrides(template: WorkspaceTemplate) -> None:
+    """Reject security-sensitive K8s fields in the template's overlay
+    dicts. Called before the manifest is built so a malicious template
+    fails loudly at create time rather than silently producing a
+    privileged Pod."""
+    if not isinstance(template.backend, KubernetesTemplateConfig):
+        return
+    tcfg = template.backend
+    _assert_no_dangerous_keys(
+        tcfg.container_overrides, source="container_overrides",
+    )
+    _assert_no_dangerous_keys(
+        tcfg.pod_overrides, source="pod_overrides",
+    )
+    _assert_no_dangerous_keys(
+        tcfg.extra_volumes, source="extra_volumes",
+    )
+    _assert_no_dangerous_keys(
+        tcfg.extra_volume_mounts, source="extra_volume_mounts",
+    )
+
+
 def _build_statefulset_manifest(
     *,
     sts_name: str,
@@ -66,7 +135,7 @@ def _build_statefulset_manifest(
 ) -> dict[str, Any]:
     """Compose the StatefulSet body with the template's recipe + any
     container/pod overrides deep-merged on top."""
-    assert isinstance(template.backend, _KubernetesTemplateConfig)
+    assert isinstance(template.backend, KubernetesTemplateConfig)
     tcfg = template.backend
     base_container: dict[str, Any] = {
         "name": "workspace",
@@ -219,11 +288,14 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         *,
         overrides: WorkspaceTemplateOverrides | None = None,
     ) -> Workspace:
-        if not isinstance(template.backend, _KubernetesTemplateConfig):
+        if not isinstance(template.backend, KubernetesTemplateConfig):
             raise ConfigError(
                 f"KubernetesWorkspaceBackend requires template backend kind "
                 f"'kubernetes', got {template.backend.kind!r}"
             )
+        # Refuse templates that try to set security-sensitive K8s fields
+        # via the override passthrough dicts (privileged, hostPath, ...).
+        _validate_template_overrides(template)
         if not self._initialised:
             await self.initialize()
         assert self._core_v1 is not None and self._apps_v1 is not None
@@ -306,8 +378,74 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
                 )
             await asyncio.sleep(1.0)
 
-    async def get(self, workspace_id: str) -> Workspace | None:
-        return self._workspaces.get(workspace_id)
+    async def get(
+        self,
+        workspace_id: str,
+        *,
+        template: WorkspaceTemplate | None = None,
+    ) -> Workspace | None:
+        cached = self._workspaces.get(workspace_id)
+        if cached is not None:
+            return cached
+        # Re-attach: the StatefulSet may exist from a previous process.
+        # We need a template to materialise the SandboxWorkspace wrapper;
+        # without one, return None and let the API layer re-issue with
+        # the template loaded from storage.
+        if template is None:
+            return None
+        if not isinstance(template.backend, KubernetesTemplateConfig):
+            raise ConfigError(
+                f"re-attach for workspace {workspace_id!r}: template "
+                f"backend kind is {template.backend.kind!r}, expected "
+                "'kubernetes'"
+            )
+        if not self._initialised:
+            await self.initialize()
+        assert self._core_v1 is not None and self._apps_v1 is not None
+        sts_name = f"{self._config.name_prefix}{workspace_id}"
+        try:
+            await self._apps_v1.read_namespaced_stateful_set(
+                sts_name, self._config.namespace,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if "404" in str(exc):
+                return None
+            raise
+        pod_name = f"{sts_name}-0"
+        # Make sure the Pod is up (the StatefulSet may have been scaled
+        # to 0 by a prior `K8sSandbox.stop`).
+        try:
+            await self._wait_for_pod_running(pod_name)
+        except ConfigError:
+            # Scaled down -- bring it back up.
+            await self._apps_v1.patch_namespaced_stateful_set_scale(
+                sts_name, self._config.namespace,
+                {"spec": {"replicas": 1}},
+            )
+            await self._wait_for_pod_running(pod_name)
+        sandbox = K8sSandbox(
+            core_v1=self._core_v1,
+            apps_v1=self._apps_v1,
+            ws_api=self._ws_api,
+            namespace=self._config.namespace,
+            sts_name=sts_name,
+            pod_name=pod_name,
+            sandbox_id=sts_name,
+            pvc_name=_pvc_name_for(sts_name),
+        )
+        ws = await SandboxWorkspace.materialise(
+            workspace_id=workspace_id,
+            template=template,
+            sandbox=sandbox,
+            backend_kind="kubernetes",
+            workspace_root=template.backend.workdir,
+        )
+        async with self._lock:
+            existing = self._workspaces.get(workspace_id)
+            if existing is not None:
+                return existing
+            self._workspaces[workspace_id] = ws
+        return ws
 
     async def list(self) -> list[str]:
         return list(self._workspaces)
@@ -317,7 +455,7 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
             ws = self._workspaces.pop(workspace_id, None)
         if ws is None:
             raise NotFoundError(f"workspace {workspace_id!r} not found")
-        sandbox = ws._sandbox  # noqa: SLF001
+        sandbox = ws.sandbox
         await sandbox.stop()
         await sandbox.remove()
 

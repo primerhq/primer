@@ -1,10 +1,9 @@
 """MCP-protocol :class:`ToolsetProvider` implementation.
 
-Connects to an MCP server over stdio (subprocess) or HTTP
-(streamable-http transport). The HTTP transport is added in a follow-up
-task; this module currently exposes the full constructor surface and
-the stdio code path. Both transports share the request-translation
-logic in this file.
+Connects to an MCP server over stdio (subprocess; long-lived session
+held for the provider's lifetime) or HTTP (streamable-http transport;
+one short-lived session per call). Both transports share the
+request-translation logic in this file.
 """
 
 from __future__ import annotations
@@ -60,18 +59,27 @@ class McpToolsetProvider(ToolsetProvider):
         oauth: MatrixOAuthHandler | None = None,
         client_name: str = "matrix",
         client_version: str = "0.0.1",
+        allowed_stdio_commands: frozenset[str] | None = None,
     ) -> None:
+        """``allowed_stdio_commands``: when set, ``stdio_cfg.command[0]``
+        must match one of these strings exactly or :meth:`_ensure_stdio_session`
+        raises :class:`ConfigError`. ``None`` (the default) means no
+        allowlist is enforced -- the caller has decided either that all
+        Toolset rows are operator-trusted or that the auth layer
+        upstream gates who can create stdio toolsets at all. Operators
+        running multi-tenant deployments SHOULD set an allowlist.
+        """
         self._toolset_id = toolset_id
         self._config = config
         self._oauth = oauth
         self._client_name = client_name
         self._client_version = client_version
+        self._allowed_stdio_commands = allowed_stdio_commands
 
         # Stdio long-lived state. Populated lazily on first use.
         self._stdio_lock = asyncio.Lock()
         self._stdio_session: ClientSession | None = None
         self._stdio_exit_stack: AsyncExitStack | None = None
-        self._oauth_principal: str | None = None
 
     # ---------- public API ------------------------------------------------
 
@@ -80,18 +88,14 @@ class McpToolsetProvider(ToolsetProvider):
         *,
         principal: str | None = None,
     ) -> AsyncIterator[Tool]:
-        self._oauth_principal = principal
-        try:
-            async with self._open_session() as session:
-                try:
-                    result = await session.list_tools()
-                except Exception as exc:
-                    raise classify_mcp_exception(exc) from exc
+        async with self._open_session(principal=principal) as session:
+            try:
+                result = await session.list_tools()
+            except Exception as exc:
+                raise classify_mcp_exception(exc) from exc
 
-            for mcp_tool in result.tools:
-                yield self._mcp_tool_to_matrix(mcp_tool)
-        finally:
-            self._oauth_principal = None
+        for mcp_tool in result.tools:
+            yield self._mcp_tool_to_matrix(mcp_tool)
 
     async def call(
         self,
@@ -100,17 +104,13 @@ class McpToolsetProvider(ToolsetProvider):
         arguments: dict[str, Any],
         principal: str | None = None,
     ) -> ToolCallResult:
-        self._oauth_principal = principal
-        try:
-            async with self._open_session() as session:
-                try:
-                    result = await session.call_tool(tool_name, arguments=arguments)
-                except Exception as exc:
-                    raise classify_mcp_exception(exc) from exc
+        async with self._open_session(principal=principal) as session:
+            try:
+                result = await session.call_tool(tool_name, arguments=arguments)
+            except Exception as exc:
+                raise classify_mcp_exception(exc) from exc
 
             return self._mcp_call_result_to_matrix(result)
-        finally:
-            self._oauth_principal = None
 
     async def complete_oauth(self, *, code: str, state: str) -> None:
         """Finish an OAuth flow started by an earlier AuthRequiredError."""
@@ -129,11 +129,15 @@ class McpToolsetProvider(ToolsetProvider):
     # ---------- session management ---------------------------------------
 
     @asynccontextmanager
-    async def _open_session(self):
+    async def _open_session(self, *, principal: str | None = None):
         """Yield a ready :class:`mcp.ClientSession` for one operation.
 
         Stdio: returns the single long-lived session (starting it on
-        first call). HTTP: opens a fresh session per call.
+        first call). HTTP: opens a fresh session per call. ``principal``
+        is forwarded into the OAuth flow for HTTP transports; passing it
+        as a parameter (rather than via an instance field) closes the
+        race where two concurrent requests would clobber each other's
+        principal.
 
         Subclasses may override this entirely (used in tests to inject a
         pre-built session over in-memory streams).
@@ -154,7 +158,7 @@ class McpToolsetProvider(ToolsetProvider):
             )
             if self._oauth is not None:
                 # May raise AuthRequiredError -- intended bubble-out.
-                auth_headers = await self._oauth.authorize(principal=self._oauth_principal)
+                auth_headers = await self._oauth.authorize(principal=principal)
                 base_headers.update(auth_headers)
 
             stack = AsyncExitStack()
@@ -198,6 +202,16 @@ class McpToolsetProvider(ToolsetProvider):
 
             assert isinstance(self._config.config, StdioConfig)
             stdio_cfg: StdioConfig = self._config.config
+            # Allowlist enforcement: when an operator-supplied allowlist
+            # is in effect, refuse to launch any binary not on it.
+            if self._allowed_stdio_commands is not None:
+                if stdio_cfg.command[0] not in self._allowed_stdio_commands:
+                    raise ConfigError(
+                        f"toolset {self._toolset_id!r}: stdio command "
+                        f"{stdio_cfg.command[0]!r} is not in the allowlist; "
+                        "set `allowed_stdio_commands` on the registry / "
+                        "AppConfig to permit it."
+                    )
             params = StdioServerParameters(
                 command=stdio_cfg.command[0],
                 args=list(stdio_cfg.command[1:]),

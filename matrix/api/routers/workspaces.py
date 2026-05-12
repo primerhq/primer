@@ -456,12 +456,12 @@ async def download_file(
     async def _gen():
         yield raw
 
-    filename = path.rsplit("/", 1)[-1] or "download"
+    filename = _safe_attachment_filename(path)
     return StreamingResponse(
         _gen(),
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": _content_disposition(filename),
             "Content-Length": str(len(raw)),
         },
     )
@@ -525,6 +525,43 @@ async def workspace_log(
     ws = await registry.get_workspace(workspace_id)
     commits = await ws.log(limit=limit)
     return {"commits": [c.model_dump(mode="json") for c in commits]}
+
+
+# ===========================================================================
+# Helpers
+# ===========================================================================
+
+
+import re as _re
+from urllib.parse import quote as _urlquote
+
+# RFC 6266: filenames in `Content-Disposition: attachment; filename=...`
+# must be quoted; characters outside this safe set get either stripped
+# (in the legacy ``filename=`` parameter) or percent-encoded (via
+# RFC 5987 ``filename*``). The strict ``filename=`` value uses only
+# this set so a malicious basename cannot inject a CR/LF (header
+# injection) or break out of the quoted string.
+_SAFE_FILENAME_CHARS = _re.compile(r"[^A-Za-z0-9._\- ]")
+
+
+def _safe_attachment_filename(path: str) -> str:
+    """Strip the basename of a workspace-relative path down to a
+    header-injection-proof ASCII slug. Empty results fall back to
+    ``"download"``."""
+    base = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    base = _SAFE_FILENAME_CHARS.sub("_", base).strip(". ")
+    return base or "download"
+
+
+def _content_disposition(filename: str) -> str:
+    """Build a Content-Disposition header that carries both the
+    ASCII-only ``filename=`` (for legacy clients) and an RFC 5987
+    ``filename*`` parameter (UTF-8) so non-ASCII filenames survive."""
+    encoded = _urlquote(filename, safe="")
+    return (
+        f'attachment; filename="{filename}"; '
+        f"filename*=UTF-8''{encoded}"
+    )
 
 
 __all__ = [

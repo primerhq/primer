@@ -62,6 +62,9 @@ class WorkerPool:
         self._tasks: list[asyncio.Task] = []
         self._active_scopes: dict[str, _CancelScope] = {}
         self._in_flight: set[str] = set()
+        # Strong references to in-flight per-turn tasks so the GC does not
+        # silently collect them between create_task and the first await.
+        self._turn_tasks: set[asyncio.Task] = set()
         self._wake = asyncio.Event()
         self._stopping = asyncio.Event()
         # ---- metrics (spec §14) ----
@@ -250,44 +253,82 @@ class WorkerPool:
                 self._claims_total += len(leases)
                 for lease in leases:
                     # Fire-and-forget: _run_one_turn manages its own
-                    # in_flight bookkeeping via the finally block.
-                    asyncio.create_task(
+                    # in_flight bookkeeping via the finally block. The
+                    # task is retained in self._turn_tasks so the GC
+                    # cannot silently drop it before it gets scheduled.
+                    task = asyncio.create_task(
                         self._run_one_turn(lease),
                         name=f"turn-{lease.session_id}",
                     )
+                    self._turn_tasks.add(task)
+                    task.add_done_callback(self._turn_tasks.discard)
         except asyncio.CancelledError:
             return
 
     async def _notify_loop(self) -> None:
         """Drain ready notifications from the scheduler. Each one wakes the
-        claim loop so it can attempt a fresh claim sooner than the poll."""
-        try:
-            async for _sid in self._scheduler.watch_ready(self._worker_id):
-                self._wake.set()
-                if self._stopping.is_set():
+        claim loop so it can attempt a fresh claim sooner than the poll.
+
+        Wraps the inner ``async for`` in a restart loop: if the scheduler's
+        watch generator raises an unexpected exception, log it and back off
+        rather than killing the loop for the lifetime of the process.
+        """
+        backoff = 1.0
+        while not self._stopping.is_set():
+            try:
+                async for _sid in self._scheduler.watch_ready(self._worker_id):
+                    self._wake.set()
+                    if self._stopping.is_set():
+                        return
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception(
+                    "notify_loop watch_ready raised; restarting in %.1fs",
+                    backoff,
+                )
+                try:
+                    await asyncio.sleep(backoff)
+                except asyncio.CancelledError:
                     return
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            logger.exception("notify_loop terminated unexpectedly")
+                backoff = min(backoff * 2, 30.0)
+            else:
+                # Generator exited cleanly (scheduler shutdown). Restart
+                # only if we ourselves are not stopping.
+                backoff = 1.0
 
     async def _cancel_loop(self) -> None:
         """Drain cancel notifications. When a sid arrives that this worker
         holds an active scope for, fire scope.cancel(reason). The reason
         string is informational; the worker re-loads the Session row inside
-        _handle_cancel to determine cancel-vs-pause routing."""
-        try:
-            cancel_iter = self._cancel_iter()
-            async for sid in cancel_iter:
-                scope = self._active_scopes.get(sid)
-                if scope is not None:
-                    scope.cancel("user_signal")
-                if self._stopping.is_set():
+        _handle_cancel to determine cancel-vs-pause routing.
+
+        Restart-on-failure pattern mirrors :meth:`_notify_loop`.
+        """
+        backoff = 1.0
+        while not self._stopping.is_set():
+            try:
+                cancel_iter = self._cancel_iter()
+                async for sid in cancel_iter:
+                    scope = self._active_scopes.get(sid)
+                    if scope is not None:
+                        scope.cancel("user_signal")
+                    if self._stopping.is_set():
+                        return
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception(
+                    "cancel_loop watch_cancel raised; restarting in %.1fs",
+                    backoff,
+                )
+                try:
+                    await asyncio.sleep(backoff)
+                except asyncio.CancelledError:
                     return
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            logger.exception("cancel_loop terminated unexpectedly")
+                backoff = min(backoff * 2, 30.0)
+            else:
+                backoff = 1.0
 
     def _cancel_iter(self):
         """Resolve the cancel iterator. Both InMemoryScheduler.watch_cancel
@@ -569,9 +610,19 @@ class WorkerPool:
                 outcome = "turn_conflict"
             else:
                 outcome = "success"
-            if result is not CompleteTurnResult.SUCCESS:
+            if result is CompleteTurnResult.TURN_CONFLICT:
+                # Two workers ran the same session turn -- the scheduler's
+                # claim/lease invariant has been violated. Promote to ERROR
+                # so this does not get lost in operational noise.
+                logger.error(
+                    "turn-complete TURN_CONFLICT for session %s "
+                    "(expected_turn_no=%d) -- claim/lease invariant violated",
+                    sid, lease.turn_no,
+                )
+            elif result is CompleteTurnResult.LEASE_LOST:
                 logger.warning(
-                    "turn-complete %s for session %s", result.value, sid,
+                    "turn-complete LEASE_LOST for session %s "
+                    "(another worker stole the lease)", sid,
                 )
         finally:
             duration = time.monotonic() - started
@@ -636,20 +687,33 @@ class WorkerPool:
     async def _handle_cancel(
         self, lease: Lease, session: Session,
     ) -> None:
-        """Mid-turn cancel arrived. session.cancel_requested -> ENDED;
-        otherwise (pause_requested OR scope.cancel without flag) -> PAUSED."""
+        """Mid-turn cancel arrived. ``session.cancel_requested`` -> ENDED;
+        otherwise (``pause_requested`` OR scope.cancel without a flag)
+        -> PAUSED.
+
+        The ``session`` argument is a snapshot from the start of the turn;
+        the user may have set ``cancel_requested`` after the turn began,
+        so we re-load the row and prefer the fresh state. The
+        ``complete_turn`` write is shielded from a second cancel so a
+        drain-timeout cannot leave the lease pinned to this worker.
+        """
+        fresh = await self._load_session(lease.session_id)
+        if fresh is not None:
+            session = fresh
         if session.cancel_requested:
             new_status = SessionStatus.ENDED
             ended_reason = "cancelled"
         else:
             new_status = SessionStatus.PAUSED
             ended_reason = None
-        await self._scheduler.complete_turn(
-            self._worker_id, lease.session_id,
-            expected_turn_no=lease.turn_no,
-            new_status=new_status,
-            ended_reason=ended_reason,
-            re_enqueue=False,
+        await asyncio.shield(
+            self._scheduler.complete_turn(
+                self._worker_id, lease.session_id,
+                expected_turn_no=lease.turn_no,
+                new_status=new_status,
+                ended_reason=ended_reason,
+                re_enqueue=False,
+            )
         )
 
 

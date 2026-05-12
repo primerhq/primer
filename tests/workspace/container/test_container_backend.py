@@ -21,8 +21,8 @@ from matrix.model.workspace import (
     ResourceLimits,
     VolumeMount,
     WorkspaceTemplate,
-    _ContainerTemplateConfig,
-    _DockerRuntimeConfig,
+    ContainerTemplateConfig,
+    DockerRuntimeConfig,
 )
 from matrix.workspace.container.backend import ContainerWorkspaceBackend
 from matrix.workspace.runtime.adapter import ContainerRuntimeAdapter
@@ -96,12 +96,12 @@ class _FakeAdapter(ContainerRuntimeAdapter):
 def _template() -> WorkspaceTemplate:
     return WorkspaceTemplate(
         id="t1", provider_id="c1", description="",
-        backend=_ContainerTemplateConfig(image="alpine:latest"),
+        backend=ContainerTemplateConfig(image="alpine:latest"),
     )
 
 
 def _config() -> ContainerWorkspaceConfig:
-    return ContainerWorkspaceConfig(runtime=_DockerRuntimeConfig())
+    return ContainerWorkspaceConfig(runtime=DockerRuntimeConfig())
 
 
 @pytest.mark.asyncio
@@ -170,7 +170,7 @@ async def test_init_command_failure_rolls_back(tmp_path: Path) -> None:
     await backend.initialize()
     template = WorkspaceTemplate(
         id="t1", provider_id="c1", description="",
-        backend=_ContainerTemplateConfig(image="alpine:latest"),
+        backend=ContainerTemplateConfig(image="alpine:latest"),
         init_commands=["false"],  # fails immediately
     )
     with pytest.raises(ConfigError, match="init command failed"):

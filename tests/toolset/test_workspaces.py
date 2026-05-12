@@ -189,7 +189,7 @@ class _LiveWorkspace:
 
     async def log(self, *, limit=50):
         from datetime import datetime, timezone
-        from matrix.workspace.local.state import CommitInfo
+        from matrix.model.workspace import CommitInfo
 
         return [
             CommitInfo(
@@ -228,7 +228,7 @@ class _StubBackend:
         self._workspaces[ws.id] = ws
         return ws
 
-    async def get(self, workspace_id):
+    async def get(self, workspace_id, *, template=None):
         return self._workspaces.get(workspace_id)
 
     async def list(self):

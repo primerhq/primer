@@ -18,8 +18,8 @@ from matrix.model.workspace import (
     LocalWorkspaceConfig,
     WorkspaceProvider,
     WorkspaceProviderType,
-    _DockerRuntimeConfig,
-    _PodmanRuntimeConfig,
+    DockerRuntimeConfig,
+    PodmanRuntimeConfig,
 )
 from matrix.workspace.factory import WorkspaceBackendFactory
 from matrix.workspace.local import LocalWorkspaceBackend
@@ -39,7 +39,7 @@ def test_factory_builds_container_docker() -> None:
     cfg = WorkspaceProvider(
         id="c1",
         provider=WorkspaceProviderType.CONTAINER,
-        config=ContainerWorkspaceConfig(runtime=_DockerRuntimeConfig()),
+        config=ContainerWorkspaceConfig(runtime=DockerRuntimeConfig()),
     )
     backend = WorkspaceBackendFactory.create(cfg)
     from matrix.workspace.container.backend import ContainerWorkspaceBackend
@@ -52,7 +52,7 @@ def test_factory_builds_container_podman_raises_stub() -> None:
     cfg = WorkspaceProvider(
         id="c1",
         provider=WorkspaceProviderType.CONTAINER,
-        config=ContainerWorkspaceConfig(runtime=_PodmanRuntimeConfig()),
+        config=ContainerWorkspaceConfig(runtime=PodmanRuntimeConfig()),
     )
     with pytest.raises(ConfigError, match="Podman"):
         WorkspaceBackendFactory.create(cfg)

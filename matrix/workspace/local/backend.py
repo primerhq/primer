@@ -139,7 +139,15 @@ class LocalWorkspaceBackend(WorkspaceBackend):
             self._workspaces[workspace_id] = ws
         return ws
 
-    async def get(self, workspace_id: str) -> Workspace | None:
+    async def get(
+        self,
+        workspace_id: str,
+        *,
+        template: WorkspaceTemplate | None = None,
+    ) -> Workspace | None:
+        # Local backend keeps every materialised workspace in memory; no
+        # re-attach path is needed (and no template is required).
+        del template
         return self._workspaces.get(workspace_id)
 
     async def list(self) -> list[str]:
@@ -200,7 +208,14 @@ class LocalWorkspaceBackend(WorkspaceBackend):
         command: str,
         env: dict[str, str],
     ) -> None:
-        proc_env = {**os.environ, **env} if env else None
+        # Same curation rule as the Exec tool: only safelisted parent
+        # variables, plus the workspace template's own env. Do NOT
+        # inherit the API server's full environment (would leak DB +
+        # provider credentials to the init shell).
+        from matrix.workspace.local.tools.exec_ import _curated_subprocess_env
+        proc_env = _curated_subprocess_env()
+        if env:
+            proc_env.update(env)
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=str(ws_root),

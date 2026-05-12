@@ -4,12 +4,6 @@ Holds one adapter instance per ``(LLMProvider, EmbeddingProvider,
 CrossEncoderProvider, Toolset)`` row id; constructs adapters on first
 read; drops the cached adapter (after calling its ``aclose``) when the
 underlying row is mutated or deleted.
-
-Toolset dispatch is **deferred to Phase 1** of the REST API rollout —
-the surface is here (``get_toolset`` / ``invalidate_toolset``) but the
-default factory raises ``ConfigError`` until Phase 1 ships the
-dispatch strategy. Tests inject a stub via the ``toolset_factory``
-constructor parameter.
 """
 
 from __future__ import annotations
@@ -100,12 +94,46 @@ _SEARCH_TOOLSET_ID = "_search"
 _WORKSPACES_TOOLSET_ID = "_workspaces"
 
 
-def _phase_one_only_toolset_factory(toolset: Toolset) -> ToolsetProvider:
-    raise ConfigError(
-        "toolset dispatch ships in Phase 1 of the REST API rollout; "
-        "supply a `toolset_factory` to ProviderRegistry to use this "
-        "registry surface in Phase 0 contexts (e.g. tests)"
-    )
+def _build_default_toolset_factory(
+    *,
+    allowed_stdio_commands: frozenset[str] | None = None,
+) -> Callable[[Toolset], ToolsetProvider]:
+    """Build the default ``toolset_factory`` closure.
+
+    ``allowed_stdio_commands`` is forwarded to every constructed
+    :class:`McpToolsetProvider` so stdio launches are restricted to the
+    operator-supplied safelist. ``None`` disables the check (acceptable
+    only when Toolset creation is operator-restricted upstream).
+    """
+    def _factory(toolset: Toolset) -> ToolsetProvider:  # pragma: no cover
+        from matrix.model.provider import ToolsetProviderType
+
+        if toolset.provider == ToolsetProviderType.MCP:
+            from matrix.toolset.mcp import McpToolsetProvider
+            return McpToolsetProvider(
+                toolset_id=toolset.id,
+                config=toolset.config,
+                allowed_stdio_commands=allowed_stdio_commands,
+            )
+        if toolset.provider == ToolsetProviderType.INTERNAL:
+            raise ConfigError(
+                f"toolset {toolset.id!r} declares provider='internal' "
+                "but internal toolsets are constructed by the app "
+                "lifespan, not from a row. Reserved internal toolset "
+                "ids start with '_'."
+            )
+        raise ConfigError(
+            f"unknown toolset provider type {toolset.provider!r}"
+        )
+
+    return _factory
+
+
+def _default_toolset_factory(toolset: Toolset) -> ToolsetProvider:  # pragma: no cover
+    """No-allowlist default. Tests use this directly; the production
+    lifespan calls :func:`_build_default_toolset_factory` with the
+    AppConfig allowlist instead."""
+    return _build_default_toolset_factory()(toolset)
 
 
 class ProviderRegistry:
@@ -131,7 +159,7 @@ class ProviderRegistry:
         self._cross_encoder_factory = (
             cross_encoder_factory or _default_cross_encoder_factory
         )
-        self._toolset_factory = toolset_factory or _phase_one_only_toolset_factory
+        self._toolset_factory = toolset_factory or _default_toolset_factory
         # Reserved id ``_system`` resolves to this immutable provider
         # without consulting storage. Set via app lifespan; tests
         # may leave it None and use the row-based path.

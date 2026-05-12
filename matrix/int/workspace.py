@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     # TYPE_CHECKING so this module is importable without sub-project D
     # while still giving type checkers the right types.
     from matrix.workspace.session import AgentSession
-    from matrix.workspace.local.state import CommitInfo
+    from matrix.model.workspace import CommitInfo
     from matrix.workspace.tool import WorkspaceTool
 
 
@@ -290,8 +290,22 @@ class WorkspaceBackend(ABC):
         """
 
     @abstractmethod
-    async def get(self, workspace_id: str) -> Workspace | None:
-        """Look up an existing workspace by id, or ``None`` if not found."""
+    async def get(
+        self,
+        workspace_id: str,
+        *,
+        template: WorkspaceTemplate | None = None,
+    ) -> Workspace | None:
+        """Look up an existing workspace by id, or ``None`` if not found.
+
+        ``template`` is the persisted recipe for this workspace; backends
+        that re-attach to a long-lived sandbox after a process restart
+        use it to materialise a fresh :class:`Workspace` handle. The
+        local backend ignores it (handles are kept in process memory
+        and there is no re-attach to perform). The API-layer
+        :class:`WorkspaceRegistry` reads the template from storage and
+        passes it down on every call so re-attach Just Works.
+        """
 
     @abstractmethod
     async def list(self) -> list[str]:

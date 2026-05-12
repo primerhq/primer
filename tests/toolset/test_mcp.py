@@ -83,7 +83,7 @@ class _InMemoryMcpToolsetProvider(McpToolsetProvider):
         self._injected_session = session
 
     @asynccontextmanager
-    async def _open_session(self):  # type: ignore[override]
+    async def _open_session(self, *, principal=None):  # type: ignore[override]
         yield self._injected_session
 
 

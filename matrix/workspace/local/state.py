@@ -28,15 +28,15 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import TypeAdapter
 
 from matrix.model.session import (
     AgentBinding,
     SessionInfo,
     WaitingState,
 )
+from matrix.model.workspace import CommitInfo, Op
 
 
 logger = logging.getLogger(__name__)
@@ -58,18 +58,8 @@ _TRAILER_OP = "X-Matrix-Op"
 _TRAILER_TOOL = "X-Matrix-Tool"
 _TRAILER_CALL = "X-Matrix-Call"
 
-# Allowed values of the ``op`` trailer; mirrors the AgentSession.commit_state
-# signature in the spec.
-Op = Literal[
-    "attach",
-    "message",
-    "user_instruction",
-    "tool_call",
-    "tool_result",
-    "memory_write",
-    "todo_update",
-    "status_change",
-]
+# Allowed values of the ``op`` trailer (canonical type lives in
+# ``matrix.model.workspace.Op``; this set is the runtime validator).
 _VALID_OPS: frozenset[str] = frozenset(
     [
         "attach",
@@ -82,43 +72,6 @@ _VALID_OPS: frozenset[str] = frozenset(
         "status_change",
     ]
 )
-
-
-# ===========================================================================
-# Result models
-# ===========================================================================
-
-
-class CommitInfo(BaseModel):
-    """One commit in the state repo, with trailers parsed."""
-
-    sha: str = Field(..., description="Full 40-character commit SHA.")
-    subject: str = Field(..., description="Commit message subject line.")
-    committed_at: datetime = Field(..., description="Committer timestamp (UTC).")
-    workspace_id: str | None = Field(
-        default=None,
-        description="Value of the X-Matrix-Workspace trailer, if present.",
-    )
-    session_id: str | None = Field(
-        default=None,
-        description="Value of the X-Matrix-Session trailer, if present.",
-    )
-    agent_id: str | None = Field(
-        default=None,
-        description="Value of the X-Matrix-Agent trailer, if present.",
-    )
-    op: str | None = Field(
-        default=None,
-        description="Value of the X-Matrix-Op trailer, if present.",
-    )
-    tool: str | None = Field(
-        default=None,
-        description="Value of the X-Matrix-Tool trailer, if present.",
-    )
-    call_id: str | None = Field(
-        default=None,
-        description="Value of the X-Matrix-Call trailer, if present.",
-    )
 
 
 # ===========================================================================
@@ -666,7 +619,5 @@ def _list_subdirs(root: Path) -> list[Path]:
 
 
 __all__ = [
-    "CommitInfo",
     "LocalStateRepo",
-    "Op",
 ]

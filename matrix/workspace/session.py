@@ -40,8 +40,9 @@ from matrix.model.session import (
 
 
 if TYPE_CHECKING:
+    from matrix.model.workspace import Op
     from matrix.workspace.local.cache import LocalTruncationStore
-    from matrix.workspace.local.state import LocalStateRepo, Op
+    from matrix.workspace.local.state import LocalStateRepo
     from matrix.workspace.tool import WorkspaceTool
 
 

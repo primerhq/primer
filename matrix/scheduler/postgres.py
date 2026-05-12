@@ -465,11 +465,25 @@ class PostgresScheduler(Scheduler):
         storage = self._storage
         scheduler = self
 
+        async def _safe_release(conn) -> None:
+            """Release the LISTEN connection back to the pool; log + swallow
+            failures so a release error doesn't mask the original cause."""
+            try:
+                await storage.pool.release(conn)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "scheduler LISTEN pool.release on %s failed: %s — "
+                    "connection may leak",
+                    channel, exc,
+                )
+
         async def _iter() -> AsyncIterator[str]:
             first_attempt = True
             while True:
                 try:
                     conn, queue = await self._open_listen_connection(channel)
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:
                     logger.warning(
                         "scheduler LISTEN reconnect on %s: %s", channel, exc,
@@ -477,7 +491,10 @@ class PostgresScheduler(Scheduler):
                     if not first_attempt:
                         scheduler._listen_reconnects_total += 1
                     first_attempt = False
-                    await asyncio.sleep(config.listen_reconnect_seconds)
+                    try:
+                        await asyncio.sleep(config.listen_reconnect_seconds)
+                    except asyncio.CancelledError:
+                        raise
                     continue
                 if not first_attempt:
                     scheduler._listen_reconnects_total += 1
@@ -488,21 +505,18 @@ class PostgresScheduler(Scheduler):
                         scheduler._notify_received_total += 1
                         yield payload
                 except asyncio.CancelledError:
-                    try:
-                        await storage.pool.release(conn)
-                    except Exception:
-                        pass
+                    await _safe_release(conn)
                     raise
                 except Exception as exc:
                     logger.warning(
                         "scheduler LISTEN dropped on %s: %s — reconnecting",
                         channel, exc,
                     )
+                    await _safe_release(conn)
                     try:
-                        await storage.pool.release(conn)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(config.listen_reconnect_seconds)
+                        await asyncio.sleep(config.listen_reconnect_seconds)
+                    except asyncio.CancelledError:
+                        raise
 
         return _iter()
 

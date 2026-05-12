@@ -22,7 +22,7 @@ from matrix.model.workspace import (
     ContainerWorkspaceConfig,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
-    _ContainerTemplateConfig,
+    ContainerTemplateConfig,
 )
 from matrix.workspace.runtime.adapter import ContainerRuntimeAdapter
 from matrix.workspace.sandbox.workspace import SandboxWorkspace
@@ -100,7 +100,7 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         *,
         overrides: WorkspaceTemplateOverrides | None = None,
     ) -> Workspace:
-        if not isinstance(template.backend, _ContainerTemplateConfig):
+        if not isinstance(template.backend, ContainerTemplateConfig):
             raise ConfigError(
                 f"ContainerWorkspaceBackend requires template backend kind "
                 f"'container', got {template.backend.kind!r}"
@@ -184,21 +184,52 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
             self._workspaces[workspace_id] = ws
         return ws
 
-    async def get(self, workspace_id: str) -> Workspace | None:
+    async def get(
+        self,
+        workspace_id: str,
+        *,
+        template: WorkspaceTemplate | None = None,
+    ) -> Workspace | None:
         cached = self._workspaces.get(workspace_id)
         if cached is not None:
             return cached
-        # Lazy re-attach: look up the sandbox by name. Reconstituting the
-        # full SandboxWorkspace requires the persisted template -- the API
-        # layer's WorkspaceRegistry handles that path. From here we only
-        # resurrect cached handles.
         name = f"{self._config.name_prefix}{workspace_id}"
         sandbox = await self._adapter.get_sandbox(name)
         if sandbox is None:
             return None
-        # Without persisted template, return None so callers go through
-        # the API-layer rehydration path.
-        return None
+        # Lazy re-attach: the sandbox is alive (started by the adapter
+        # if it had stopped). Without a persisted template we cannot
+        # rebuild the SandboxWorkspace wrapper; the caller will see
+        # None and can re-issue the call with the template.
+        if template is None:
+            logger.debug(
+                "ContainerWorkspaceBackend.get: sandbox %r exists but no "
+                "template supplied for re-attach; returning None",
+                name,
+            )
+            return None
+        if not isinstance(template.backend, ContainerTemplateConfig):
+            raise ConfigError(
+                f"re-attach for workspace {workspace_id!r}: template "
+                f"backend kind is {template.backend.kind!r}, expected "
+                "'container'"
+            )
+        ws = await SandboxWorkspace.materialise(
+            workspace_id=workspace_id,
+            template=template,
+            sandbox=sandbox,
+            backend_kind="container",
+            workspace_root=template.backend.workdir,
+        )
+        async with self._lock:
+            # Race: another caller may have built the same wrapper.
+            existing = self._workspaces.get(workspace_id)
+            if existing is not None:
+                # Discard our wrapper; theirs wins. Don't tear the
+                # sandbox down -- it's the same one.
+                return existing
+            self._workspaces[workspace_id] = ws
+        return ws
 
     async def list(self) -> list[str]:
         names = await self._adapter.list_sandboxes()
@@ -213,7 +244,7 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         name = f"{self._config.name_prefix}{workspace_id}"
         volume = f"{name}-data"
         if ws is not None:
-            sandbox = ws._sandbox  # noqa: SLF001 -- internal handle
+            sandbox = ws.sandbox
         else:
             sandbox = await self._adapter.get_sandbox(name)
         if sandbox is None:

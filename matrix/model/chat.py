@@ -36,6 +36,8 @@ the extended wrapper only when no reasonable subset equivalent captures the
 signal without information loss.
 """
 
+from __future__ import annotations
+
 from collections.abc import Iterable
 from typing import Annotated, Any, Literal
 

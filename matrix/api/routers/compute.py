@@ -28,10 +28,18 @@ from matrix.api.deps import (
     get_toolset_storage,
 )
 from matrix.api.errors import common_responses
+from matrix.api.routers._cdc_hooks import make_cdc_hooks
 from matrix.api.routers._crud import make_crud_router
 from matrix.model.agent import Agent
 from matrix.model.except_ import NotFoundError
 from matrix.model.graph import Graph
+
+
+# CDC hooks fan out create/update/delete events into the internal
+# collections vector store, so semantic search stays current between
+# bootstraps. The hooks no-op when the subsystem isn't activated.
+_agent_create, _agent_update, _agent_delete = make_cdc_hooks("agent", Agent)
+_graph_create, _graph_update, _graph_delete = make_cdc_hooks("graph", Graph)
 
 
 # ---- Agent router ----------------------------------------------------------
@@ -41,6 +49,9 @@ agent_router = make_crud_router(
     storage_dep=get_agent_storage,
     plural="agents",
     tag="agents",
+    on_create=_agent_create,
+    on_update=_agent_update,
+    on_delete=_agent_delete,
 )
 
 
@@ -70,9 +81,28 @@ async def agent_status(
     if await llm_providers.get(provider_id) is None:
         issues.append(f"LLMProvider {provider_id!r} does not exist")
 
+    # ``agent.tools`` carries scoped tool ids of the form
+    # ``<toolset_id>__<bare_name>`` (or, for tools with no scope prefix,
+    # the bare name itself). For each one we want to verify that the
+    # owning Toolset row exists. Group by toolset to avoid issuing the
+    # same lookup twice when an agent references several tools from one
+    # toolset.
+    seen_toolset_ids: set[str] = set()
+    missing_toolset_ids: set[str] = set()
     for tool_id in agent.tools:
-        if await toolsets.get(tool_id) is None:
-            issues.append(f"Toolset {tool_id!r} referenced by tools does not exist")
+        if "__" in tool_id:
+            toolset_id, _, _ = tool_id.partition("__")
+        else:
+            toolset_id = tool_id
+        if toolset_id in seen_toolset_ids:
+            continue
+        seen_toolset_ids.add(toolset_id)
+        if await toolsets.get(toolset_id) is None:
+            missing_toolset_ids.add(toolset_id)
+    for ts_id in sorted(missing_toolset_ids):
+        issues.append(
+            f"Toolset {ts_id!r} referenced by tools does not exist"
+        )
 
     return {"ok": not issues, "issues": issues}
 
@@ -84,6 +114,9 @@ graph_router = make_crud_router(
     storage_dep=get_graph_storage,
     plural="graphs",
     tag="graphs",
+    on_create=_graph_create,
+    on_update=_graph_update,
+    on_delete=_graph_delete,
 )
 
 

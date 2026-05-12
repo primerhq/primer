@@ -108,6 +108,21 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    # --- MCP toolset stdio safety ----------------------------------------
+    mcp_stdio_allowed_commands: list[str] | None = Field(
+        default=None,
+        description=(
+            "Safelist of executable names that an MCP Toolset row with "
+            "transport='stdio' is allowed to launch. ``None`` (the "
+            "default) disables the check, which is acceptable when "
+            "Toolset creation is operator-restricted; in any "
+            "multi-tenant or otherwise less-trusted deployment this "
+            "MUST be set to a tight allowlist (e.g. ['python', 'node']) "
+            "or stdio toolsets MUST be disabled at the upstream auth "
+            "layer."
+        ),
+    )
+
     # --- Misc ------------------------------------------------------------
     log_level: Literal["debug", "info", "warning", "error"] = Field(
         default="info",

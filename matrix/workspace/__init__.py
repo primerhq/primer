@@ -18,8 +18,9 @@ See ``docs/superpowers/specs/2026-05-02-workspace-design.md`` and
 ``docs/superpowers/specs/2026-05-11-workspace-backends-design.md``.
 """
 
+from matrix.model.workspace import CommitInfo
 from matrix.workspace.local.cache import LocalTruncationStore, TruncatedOutput
-from matrix.workspace.local.state import CommitInfo, LocalStateRepo
+from matrix.workspace.local.state import LocalStateRepo
 from matrix.workspace.session import AgentSession
 from matrix.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 

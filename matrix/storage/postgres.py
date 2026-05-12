@@ -45,7 +45,7 @@ from pydantic import BaseModel
 
 from matrix.int.storage import Storage
 from matrix.int.storage_provider import StorageProvider
-from matrix.model.common import Identifiable
+from matrix.model.common import Identifiable, dump_for_storage
 from matrix.model.except_ import (
     BadRequestError,
     ConfigError,
@@ -259,9 +259,12 @@ class PostgresStorage(Storage[ModelT]):
 
     def _to_row(self, entity: ModelT) -> tuple[str, str]:
         # Dump the full model, then strip ``id`` from the JSONB payload
-        # (the column carries it). ``mode="json"`` ensures Pydantic
-        # types like SecretStr, datetime, HttpUrl are JSON-friendly.
-        dumped = entity.model_dump(mode="json")
+        # (the column carries it). ``dump_for_storage`` performs a
+        # ``mode="json"`` dump and unmasks SecretStr fields back to
+        # their plaintext values so credentials round-trip correctly --
+        # the default ``model_dump(mode="json")`` would replace every
+        # SecretStr with ``"**********"``.
+        dumped = dump_for_storage(entity)
         entity_id = dumped.pop("id")
         return entity_id, json.dumps(dumped)
 

