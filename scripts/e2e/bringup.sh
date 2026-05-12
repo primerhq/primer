@@ -34,6 +34,10 @@ PORT="${MATRIX_E2E_PORT:-8765}"
 DB_USER="${MATRIX_DB_USER:-matrix}"
 DB_PASSWORD="${MATRIX_DB_PASSWORD:-matrix}"
 DB_NAME="matrix_e2e"
+# Set MATRIX_E2E_NO_VECTOR=1 to render an AppConfig without a vector_store
+# block. Used by gating tests that need to assert 503 behaviour on the
+# collection / document / search routes when the subsystem is disabled.
+NO_VECTOR="${MATRIX_E2E_NO_VECTOR:-0}"
 
 mkdir -p "$E2E_DIR" "$LOG_DIR"
 
@@ -89,6 +93,10 @@ scheduler:
   provider: postgres
   config: {}
 
+EOF
+
+if [[ "$NO_VECTOR" != "1" ]]; then
+    cat >> "$CONFIG" <<EOF
 vector_store:
   provider: pgvector
   config:
@@ -98,6 +106,12 @@ vector_store:
     username: $DB_USER
     password: $DB_PASSWORD
 
+EOF
+else
+    echo "[bringup] MATRIX_E2E_NO_VECTOR=1 — omitting vector_store block from config" >&2
+fi
+
+cat >> "$CONFIG" <<EOF
 worker:
   concurrency: 4
   heartbeat_interval_seconds: 5
