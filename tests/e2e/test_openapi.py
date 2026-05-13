@@ -64,3 +64,128 @@ async def test_t0050_swagger_docs_hidden_when_not_debug(
         f"/redoc should be 404 under non-debug config, got "
         f"{redoc.status_code}: {redoc.text[:200]}"
     )
+
+
+# ============================================================================
+# T0231 — OpenAPI paths cover every documented /v1 router
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0231_openapi_paths_cover_all_documented_routers(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0231 — Extends T0049 from spot-check to exhaustive: every router
+    documented in 01-app-spec.md must show up under /openapi.json paths.
+
+    Catches a regression where someone unwires a router or forgets to
+    mount a new one — without exhaustive coverage, the existing T0049
+    spot-check could pass with a partial surface.
+    """
+    resp = await client.get("/openapi.json")
+    assert resp.status_code == 200, resp.text
+    paths = (resp.json().get("paths") or {})
+    declared = list(paths.keys())
+
+    # Full list of router prefixes per spec
+    full_set = [
+        "/v1/health",
+        "/v1/workers",
+        # Generator CRUD entities (spec §5)
+        "/v1/llm_providers",
+        "/v1/embedding_providers",
+        "/v1/cross_encoder_providers",
+        "/v1/toolsets",
+        "/v1/agents",
+        "/v1/graphs",
+        "/v1/collections",
+        "/v1/documents",
+        "/v1/workspace_templates",
+        # Bespoke entities (spec §12)
+        "/v1/workspaces",
+        "/v1/workspace_providers",
+        # Sessions (spec §12 / §13)
+        "/v1/sessions",
+        # Internal collections subsystem (spec §11)
+        "/v1/internal_collections/config",
+        "/v1/internal_collections/bootstrap",
+    ]
+    for prefix in full_set:
+        assert any(p.startswith(prefix) for p in declared), (
+            f"router prefix {prefix!r} missing from /openapi.json paths; "
+            f"declared paths: {sorted(declared)!r}"
+        )
+
+
+# ============================================================================
+# T0232 — OpenAPI Problem schema is defined and referenced from error responses
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0232_openapi_problem_schema_referenced_from_errors(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0232 — Spec §3 defines a single RFC 7807 envelope for all
+    structured errors. The OpenAPI doc must reflect this: there must
+    be a component schema describing the Problem shape (with at
+    minimum type/title/status/detail properties) AND it must be
+    referenced from at least one 404 and one 422 response across the
+    CRUD entities.
+
+    This is a schema-level pin: if a renamed/missing Problem schema
+    breaks the documented contract, the test catches it before clients
+    rely on it.
+    """
+    resp = await client.get("/openapi.json")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    schemas = (body.get("components") or {}).get("schemas") or {}
+    paths = body.get("paths") or {}
+
+    # Find the Problem schema (FastAPI's default may name it
+    # 'ProblemDetail', 'Problem', or 'HTTPValidationError'-but-the-
+    # custom-handler overrides that). Pin: there exists at least one
+    # schema with the 4 documented RFC 7807 field names.
+    problem_schemas: list[str] = []
+    rfc7807_required = {"type", "title", "status", "detail"}
+    for name, schema in schemas.items():
+        props = (schema.get("properties") or {})
+        if rfc7807_required.issubset(props.keys()):
+            problem_schemas.append(name)
+
+    assert problem_schemas, (
+        f"no component schema with all of {sorted(rfc7807_required)!r} "
+        f"properties found in /openapi.json. Available schemas: "
+        f"{sorted(schemas.keys())!r}"
+    )
+
+    # Check that at least one 404 and one 422 response references one
+    # of those schemas via $ref. Walk paths→methods→responses.
+    has_404_ref = False
+    has_422_ref = False
+    for _path, methods in paths.items():
+        if not isinstance(methods, dict):
+            continue
+        for _method, op in methods.items():
+            if not isinstance(op, dict):
+                continue
+            responses = op.get("responses") or {}
+            for code, response_def in responses.items():
+                if not isinstance(response_def, dict):
+                    continue
+                ref_text = str(response_def)
+                if any(s in ref_text for s in problem_schemas):
+                    if str(code) == "404":
+                        has_404_ref = True
+                    if str(code) == "422":
+                        has_422_ref = True
+
+    assert has_404_ref, (
+        f"no 404 response in OpenAPI references any of the Problem "
+        f"schemas {problem_schemas!r}"
+    )
+    assert has_422_ref, (
+        f"no 422 response in OpenAPI references any of the Problem "
+        f"schemas {problem_schemas!r}"
+    )

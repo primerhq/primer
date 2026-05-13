@@ -68,3 +68,79 @@ async def test_t0154_cross_encoder_provider_crud_with_invalidate(
     gone = await client.get(f"{base}/{entity_id}")
     assert gone.status_code == 404, gone.text
     assert gone.json()["type"] == "/errors/not-found"
+
+
+# ============================================================================
+# T0234 — CrossEncoderProvider /models echoes configured names
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0234_cross_encoder_models_endpoint_is_row_cached(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0234 — Mirror of T0025 (LLM) and T0175 (Embedder) for the
+    CrossEncoder family: GET /v1/cross_encoder_providers/{id}/models
+    must echo the configured model names without touching the network.
+    """
+    entity_id = f"ce-row-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "huggingface",
+        "models": [
+            {"name": "BAAI/bge-reranker-v2-m3"},
+            {"name": "cross-encoder/ms-marco-MiniLM-L-6-v2"},
+        ],
+        "config": {"token": None},
+        "limits": {"max_concurrency": 1},
+    }
+    create = await client.post("/v1/cross_encoder_providers", json=body)
+    assert create.status_code == 201, create.text
+
+    try:
+        resp = await client.get(
+            f"/v1/cross_encoder_providers/{entity_id}/models",
+            timeout=httpx.Timeout(15.0, connect=5.0),
+        )
+        assert resp.status_code == 200, resp.text
+        body_out = resp.json()
+        assert "models" in body_out, body_out
+        assert sorted(body_out["models"]) == sorted([
+            "BAAI/bge-reranker-v2-m3",
+            "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        ]), body_out
+    finally:
+        await client.delete(f"/v1/cross_encoder_providers/{entity_id}")
+
+
+# ============================================================================
+# T0235 — CrossEncoderProvider /invalidate asymmetry with /models
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0235_cross_encoder_invalidate_and_models_asymmetry(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0235 — Mirror of T0187 + T0188 for the CrossEncoder family:
+    /invalidate on a missing row is silent 204 (unconditional cache
+    drop), while /models on the same missing id is 404. Pins the
+    asymmetric contract is consistent across all three provider families.
+    """
+    missing_id = f"missing-ce-{unique_suffix}"
+
+    inv = await client.post(
+        f"/v1/cross_encoder_providers/{missing_id}/invalidate",
+    )
+    assert inv.status_code == 204, (
+        f"invalidate on missing CE row should be 204; got "
+        f"{inv.status_code}: {inv.text}"
+    )
+    assert inv.content == b"", inv.content
+
+    models = await client.get(
+        f"/v1/cross_encoder_providers/{missing_id}/models",
+    )
+    assert models.status_code == 404, models.text
+    envelope = models.json()
+    assert envelope["type"] == "/errors/not-found", envelope
