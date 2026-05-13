@@ -2454,3 +2454,175 @@ async def test_t0220_workspace_files_put_three_writes_last_wins(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0221 — Workspace files listing paginates with limit=1 across 5 files
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0221_workspace_files_listing_pagination_limit_one(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0221 — Mirror of T0195 (toolsets limit=1) for the workspace
+    files listing. Seed 5 files, walk with limit=1 + variable offset,
+    assert each file appears exactly once across pages.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        file_paths = [f"file_{i:02d}.txt" for i in range(5)]
+        for p in file_paths:
+            r = await client.put(
+                f"/v1/workspaces/{workspace_id}/files?path={p}",
+                json={"content": p, "encoding": "text"},
+            )
+            assert r.status_code == 204, r.text
+
+        # Walk pages of 1
+        seen: list[str] = []
+        for offset in range(10):  # safety bound
+            page = await client.get(
+                f"/v1/workspaces/{workspace_id}/files"
+                f"?path=.&offset={offset}&limit=1",
+            )
+            assert page.status_code == 200, page.text
+            items = page.json().get("items", [])
+            if not items:
+                break
+            for it in items:
+                # The path field is the identifying handle
+                seen.append(it.get("path") or it.get("name"))
+
+        # Every seeded file appears exactly once (may be in any order;
+        # we only care about set equality + no duplicates)
+        seen_basenames = {Path(p).name for p in seen if p}
+        expected_basenames = set(file_paths)
+        # Some implementations may include "." itself or other entries —
+        # so check that every seeded file is present, not strict equality.
+        for expected in expected_basenames:
+            assert expected in seen_basenames, (
+                f"file {expected!r} missing from limit=1 walk: "
+                f"seen={sorted(seen)!r}"
+            )
+        # No duplicates among the seeded basenames within the walk
+        seeded_seen = [p for p in seen if Path(p or "").name in expected_basenames]
+        assert len(seeded_seen) == len(set(seeded_seen)), (
+            f"duplicates in limit=1 walk: {seeded_seen!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0222 — WorkspaceProvider DELETE then immediate re-POST with same id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0222_workspace_provider_delete_then_recreate_same_id(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0222 — DELETE a WorkspaceProvider, then immediately POST a new
+    one with the same id. Must succeed (201) — any orphaned backend
+    cache from the deleted instance must be invalidated cleanly.
+
+    Spec §12 says DELETE on a WorkspaceProvider invalidates the backend
+    cache and removes the row; the re-POST exercises that path.
+    """
+    provider_id = f"wp-t0222-{unique_suffix}"
+
+    # Create the first row
+    body = {
+        "id": provider_id,
+        "provider": "local",
+        "config": {"kind": "local", "path": str(tmp_path)},
+    }
+    first = await client.post("/v1/workspace_providers", json=body)
+    assert first.status_code == 201, first.text
+
+    # Delete it
+    rm = await client.delete(f"/v1/workspace_providers/{provider_id}")
+    assert rm.status_code == 204, rm.text
+
+    # Recreate with the same id
+    second = await client.post("/v1/workspace_providers", json=body)
+    assert second.status_code == 201, (
+        f"re-POST after DELETE must succeed (no orphan cache); got "
+        f"{second.status_code}: {second.text}"
+    )
+
+    # GET reads the new row
+    try:
+        got = await client.get(f"/v1/workspace_providers/{provider_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["id"] == provider_id
+    finally:
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0223 — WorkspaceTemplate DELETE while workspace exists; workspace OK
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0223_workspace_template_delete_with_active_workspace(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0223 — Spec §12 documents WorkspaceTemplate as a snapshot row.
+    Deleting the template while a workspace materialised from it is
+    still active must succeed (the workspace doesn't hold a live FK)
+    AND the workspace must remain readable / usable.
+
+    Companion contract: the workspace can still write/read files after
+    its parent template is gone.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # DELETE the template — must succeed
+        rm = await client.delete(f"/v1/workspace_templates/{template_id}")
+        assert rm.status_code == 204, rm.text
+
+        # The workspace is still accessible
+        got = await client.get(f"/v1/workspaces/{workspace_id}")
+        assert got.status_code == 200, got.text
+
+        # File ops still work on the orphan workspace
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=after_delete.txt",
+            json={"content": "still works", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read"
+            f"?path=after_delete.txt",
+        )
+        assert read.status_code == 200, read.text
+        assert read.json().get("content") == "still works"
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        # Template already deleted; clean up the provider only
+        await client.delete(f"/v1/workspace_providers/{provider_id}")

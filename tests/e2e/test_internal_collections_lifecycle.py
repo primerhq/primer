@@ -1365,3 +1365,137 @@ async def test_t0203_bootstrap_on_empty_db_returns_sane_envelope(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0224 — Bootstrap envelope counts shape
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0224_bootstrap_envelope_counts_shape(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0224 — Spec §11 documents bootstrap as "Returns counts". This
+    test pins the envelope shape: after seeding one Agent and one
+    Graph, calling bootstrap must return a dict whose values include
+    integers (the per-entity-type counts). T0167 only verified
+    idempotency, not the shape.
+    """
+    embedder_id = f"emb-t0224-{unique_suffix}"
+    llm_id = f"llm-t0224-{unique_suffix}"
+    agent_id = f"agent-t0224-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    agent_created = False
+    try:
+        # Activate config (PUT) — but do not call bootstrap yet
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        # Seed one Agent BEFORE bootstrap so the bootstrap counts it
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                agent_id, provider_id=llm_id,
+                description=f"agent-t0224-{unique_suffix}",
+            ),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        # Bootstrap and pin the shape
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        assert boot.status_code == 200, boot.text
+        body = boot.json()
+        assert isinstance(body, dict), body
+        # Shape: top-level dict with at least one int value (one count)
+        # The exact key names are implementation detail; pin "at least
+        # one int value present" and "no string error keys"
+        int_values = [
+            v for v in body.values() if isinstance(v, int)
+        ]
+        nested_int_values = []
+        for v in body.values():
+            if isinstance(v, dict):
+                nested_int_values.extend(
+                    iv for iv in v.values() if isinstance(iv, int)
+                )
+        assert int_values or nested_int_values, (
+            f"bootstrap envelope contains no integer counts: {body!r}"
+        )
+        # No "error" key indicating a failed-but-200-anyway path
+        for forbidden in ("error", "errors", "failed"):
+            assert forbidden not in body, (
+                f"bootstrap envelope unexpectedly carries {forbidden!r} "
+                f"on a clean run: {body!r}"
+            )
+    finally:
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0225 — GET /v1/internal_collections/config echoes the written values
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0225_get_config_after_put_echoes_written_values(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0225 — After PUT /v1/internal_collections/config, GET on the
+    same endpoint must echo the written embedding_provider_id and
+    embedding_model. Round-trip pin for the subsystem config row.
+
+    T0020 (404 on fresh DB) and T0169 (reconfigure) don't pin the
+    direct read-after-write echo.
+    """
+    embedder_id = f"emb-t0225-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        got = await client.get("/v1/internal_collections/config")
+        assert got.status_code == 200, got.text
+        row = got.json()
+        assert row.get("embedding_provider_id") == embedder_id, row
+        assert row.get("embedding_model") == (
+            "sentence-transformers/all-MiniLM-L6-v2"
+        ), row
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
