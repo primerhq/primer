@@ -417,3 +417,83 @@ async def test_t0177_collection_with_missing_embedder_provider_orphan_tolerated(
         envelope = resp.json()
         assert envelope["type"].startswith("/errors/"), envelope
         assert envelope["type"] != "/errors/internal", envelope
+
+
+# ============================================================================
+# T0204 — /v1/collections/{id}/documents honours offset and limit
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0204_collection_documents_paginates_with_offset_and_limit(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0204 — The bespoke `/v1/collections/{id}/documents` route is
+    documented as paginated per spec §10. Seed N=5 documents under one
+    real collection; walk with limit=2 + variable offset; assert each
+    document appears exactly once across pages.
+
+    NB: Unlike Document POST (T0068 — accepts orphan rows), the
+    documents-list route DOES gate on collection existence — it returns
+    404 /errors/not-found when the collection_id doesn't have a row.
+    Pinned in this test by creating the collection first.
+    """
+    collection_id = f"coll-t0204-{unique_suffix}"
+    doc_ids = [f"doc-t0204-{unique_suffix}-{i:02d}" for i in range(5)]
+    coll_created = False
+    created_docs: list[str] = []
+    try:
+        # Create the collection first (T0017 path: vector_store=null
+        # tolerated, embedder fields accepted)
+        coll = await client.post(
+            "/v1/collections",
+            json={
+                "id": collection_id,
+                "description": "T0204 pagination probe",
+                "embedder": {
+                    "provider_id": f"unused-emb-{unique_suffix}",
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                },
+            },
+        )
+        assert coll.status_code in (200, 201), coll.text
+        coll_created = True
+
+        for did in doc_ids:
+            r = await client.post(
+                "/v1/documents",
+                json={
+                    "id": did,
+                    "name": f"doc-{did}",
+                    "collection_id": collection_id,
+                    "meta": {"seq": int(did.split("-")[-1])},
+                },
+            )
+            assert r.status_code in (200, 201), r.text
+            created_docs.append(did)
+
+        # Walk pages of 2
+        seen: list[str] = []
+        for offset in (0, 2, 4):
+            page = await client.get(
+                f"/v1/collections/{collection_id}/documents"
+                f"?offset={offset}&limit=2",
+            )
+            assert page.status_code == 200, page.text
+            body = page.json()
+            items = body.get("items", [])
+            seen.extend(item["id"] for item in items)
+
+        # Every seeded id appears exactly once
+        assert sorted(seen) == sorted(doc_ids), (
+            f"pagination walk missed or duplicated docs. "
+            f"seeded={sorted(doc_ids)!r}, seen={sorted(seen)!r}"
+        )
+        assert len(seen) == len(set(seen)), (
+            f"duplicates across pages: {seen!r}"
+        )
+    finally:
+        for did in created_docs:
+            await client.delete(f"/v1/documents/{did}")
+        if coll_created:
+            await client.delete(f"/v1/collections/{collection_id}")

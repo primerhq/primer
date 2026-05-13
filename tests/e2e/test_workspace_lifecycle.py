@@ -2203,3 +2203,70 @@ async def test_t0200_workspace_files_download_on_directory_clean_envelope(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0201 — PUT /files at a path that's already a directory returns clean 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0201_workspace_files_put_on_directory_path_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0201 — Writing a file at a path that already exists as a
+    directory is a category error: the API can't replace a directory
+    with file content. The local backend must surface a clean envelope
+    (4xx), NOT a 5xx /errors/internal from an unhandled OSError.
+
+    Companion to T0199 / T0200 (read/download on a directory) — the
+    third corner of the directory-as-file edge cases.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Create subdir/inner.txt so subdir exists as a directory
+        seed = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=subdir/inner.txt",
+            json={"content": "hello", "encoding": "text"},
+        )
+        assert seed.status_code == 204, seed.text
+
+        # Now try to PUT a file AT the subdirectory path
+        resp = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=subdir",
+            json={"content": "OVERWRITE", "encoding": "text"},
+        )
+        assert resp.status_code != 500 or (
+            resp.json().get("type") != "/errors/internal"
+        ), f"/errors/internal leak: {resp.text}"
+        if resp.status_code >= 400:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+
+        # And the original subdir/inner.txt content is preserved
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read"
+            f"?path=subdir/inner.txt",
+        )
+        assert read.status_code == 200, read.text
+        # Content should still be "hello", not overwritten
+        body = read.json()
+        # The /read response shape carries 'content' (text or base64)
+        if "content" in body:
+            assert "hello" in body["content"] or body["content"] == "hello", (
+                f"original subdir/inner.txt content was clobbered: {body!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

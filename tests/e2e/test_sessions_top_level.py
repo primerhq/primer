@@ -1061,3 +1061,46 @@ async def test_t0180_sessions_find_cursor_with_status_predicate_covers_all_once(
                 )
             await client.delete(f"/v1/workspaces/{wid}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0205 — Session steer with empty instruction string returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0205_session_steer_empty_instruction_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0205 — POST /sessions/{sid}/steer with `instruction=""` is
+    degenerate input. The handler must produce a documented response —
+    either 204/200 (silently accepted) or 4xx (rejected as empty).
+    NEVER 5xx.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        resp = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": ""},
+        )
+        assert resp.status_code != 500, resp.text
+        if resp.status_code in (200, 204):
+            # Silently accepted: GET the session and verify it's still
+            # in a sane state (no row corruption)
+            got = await client.get(f"/v1/sessions/{session_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["id"] == session_id
+        else:
+            assert 400 <= resp.status_code < 500, resp.text
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

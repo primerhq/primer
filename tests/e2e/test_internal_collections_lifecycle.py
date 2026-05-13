@@ -1266,3 +1266,102 @@ async def test_t0169_put_config_reconfigure_embedder_works(
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_a}")
         await client.delete(f"/v1/embedding_providers/{embedder_b}")
+
+
+# ============================================================================
+# T0202 — POST /v1/agents/search with query="" returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0202_search_empty_query_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0202 — POST /v1/agents/search with `query=""` after bootstrap.
+    The SearchRequest has `query` with `min_length=1` per the model,
+    so Pydantic will reject this with 422 — pin that response. If a
+    future change relaxes the min_length, a 200 with empty hits is
+    also acceptable. NEVER 5xx.
+    """
+    embedder_id = f"emb-t0202-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        resp = await client.post(
+            "/v1/agents/search",
+            json={"query": "", "top_k": 5},
+        )
+        assert resp.status_code != 500, resp.text
+        if resp.status_code == 200:
+            assert isinstance(resp.json().get("hits"), list), resp.json()
+        else:
+            assert 400 <= resp.status_code < 500, resp.text
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0203 — Bootstrap on empty DB (no agents/graphs/collections/tools)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0203_bootstrap_on_empty_db_returns_sane_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0203 — Bootstrap on a freshly-activated subsystem against a DB
+    with zero agents/graphs/collections. Built-in tools (e.g. _system,
+    _workspaces) are present but no user entities exist. Bootstrap must
+    complete cleanly without error and return a sane envelope.
+    """
+    embedder_id = f"emb-t0203-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        assert boot.status_code == 200, (
+            f"bootstrap on empty DB should return 200, got "
+            f"{boot.status_code}: {boot.text}"
+        )
+        body = boot.json()
+        assert isinstance(body, dict), body
+        # Search endpoints work after bootstrap (no agents indexed yet)
+        s = await client.post(
+            "/v1/agents/search",
+            json={"query": "anything", "top_k": 3},
+        )
+        assert s.status_code == 200, s.text
+        # Hits list is present and is a list (zero entries are fine)
+        assert isinstance(s.json().get("hits"), list), s.json()
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
