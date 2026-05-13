@@ -123,3 +123,57 @@ async def test_t0175_embedding_provider_models_endpoint_is_row_cached(
         ]), body
     finally:
         await client.delete(f"/v1/embedding_providers/{entity_id}")
+
+
+# ============================================================================
+# T0187 — POST /invalidate on a missing provider returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0187_invalidate_on_missing_llm_provider_is_silent_204(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0187 — POST /v1/llm_providers/{missing}/invalidate on a row that
+    doesn't exist returns 204, not 404. The handler treats invalidate
+    as an unconditional "drop the cache for this id" operation; if
+    nothing is cached (because no row exists), the no-op still returns
+    success.
+
+    NB: This was reframed during the iteration that added the test —
+    the original wording assumed 404 referential integrity. The live
+    contract is silent 204. Spec §7 doesn't explicitly call this out;
+    the contract is documented here.
+
+    Companion contract: GET /models on the same missing id IS gated
+    (T0188 pins 404). The asymmetry is recorded but not corrected.
+    """
+    missing_id = f"missing-llm-{unique_suffix}"
+    resp = await client.post(f"/v1/llm_providers/{missing_id}/invalidate")
+    assert resp.status_code == 204, (
+        f"invalidate on missing row returned {resp.status_code}: "
+        f"{resp.text}"
+    )
+    # 204 carries no body
+    assert resp.content == b"", resp.content
+
+
+# ============================================================================
+# T0188 — GET /models on a missing provider returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0188_models_endpoint_on_missing_llm_provider_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0188 — GET /v1/llm_providers/{missing}/models returns 404
+    /errors/not-found. The endpoint is row-cached (T0025) so a missing
+    row has no models list to echo; the handler must reject cleanly.
+    """
+    missing_id = f"missing-models-llm-{unique_suffix}"
+    resp = await client.get(f"/v1/llm_providers/{missing_id}/models")
+    assert resp.status_code == 404, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/not-found", envelope
+    assert envelope["status"] == 404

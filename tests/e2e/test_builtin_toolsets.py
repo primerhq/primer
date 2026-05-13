@@ -131,3 +131,56 @@ async def test_t0176_mcp_stdio_unrunnable_command_clean_envelope(
             )
     finally:
         await client.delete(f"/v1/toolsets/{toolset_id}")
+
+
+# ============================================================================
+# T0189 — GET /v1/toolsets/{missing}/tools returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0189_tools_endpoint_on_missing_toolset_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0189 — GET /v1/toolsets/{missing}/tools on a non-existent toolset
+    id returns 404 /errors/not-found. Adjacent to T0140/T0141 which
+    cover the built-in success case; this is the negative envelope pin.
+    """
+    missing_id = f"missing-ts-{unique_suffix}"
+    resp = await client.get(f"/v1/toolsets/{missing_id}/tools")
+    assert resp.status_code == 404, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/not-found", envelope
+    assert envelope["status"] == 404
+
+
+# ============================================================================
+# T0190 — DELETE on built-in `_system` toolset returns clean 4xx envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0190_delete_builtin_system_toolset_clean_4xx(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0190 — `_system` is an always-on toolset built at lifespan
+    startup (no row in storage). DELETE on its id must produce a
+    documented envelope — either 404 because there's no storage row to
+    delete, or a different documented 4xx if the handler special-cases
+    the built-in id. The contract pin is "no /errors/internal, no 5xx".
+    """
+    resp = await client.delete("/v1/toolsets/_system")
+    assert resp.status_code < 500, resp.text
+    if resp.status_code >= 400:
+        envelope = resp.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["type"] != "/errors/internal", envelope
+
+    # Whether DELETE returned 404 or 204, the built-in MUST still be
+    # functional immediately after — its tools list still resolves.
+    after = await client.get("/v1/toolsets/_system/tools")
+    assert after.status_code == 200, (
+        f"DELETE attempt on built-in _system toolset must not disable "
+        f"the always-on provider; got {after.status_code}: {after.text}"
+    )
+    assert isinstance(after.json().get("tools"), list)

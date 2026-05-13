@@ -135,3 +135,33 @@ async def test_t0182_security_headers_present_on_422_validation_error(
             f"422 error response missing/incorrect header {name!r}: "
             f"expected {expected!r}, got {actual!r}"
         )
+
+
+# ============================================================================
+# T0186 — singular entity path returns a clean 404 (route not mounted)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0186_singular_entity_path_returns_clean_404(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0186 — All CRUD routes are mounted under the PLURAL entity name
+    (`/v1/llm_providers`, not `/v1/llm_provider`). A request to the
+    singular form must produce a 404 without leaking a 5xx and without
+    falling into a route handler that doesn't exist.
+
+    The contract: the request reaches the router and is rejected
+    cleanly; the body is JSON (default FastAPI 404 or RFC 7807 — either
+    is acceptable as long as status is 404 and no /errors/internal).
+    """
+    resp = await client.get("/v1/llm_provider/anything")
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    # Accept either RFC 7807 shape OR FastAPI's default {"detail": "..."}
+    if "type" in body:
+        assert body["type"].startswith("/errors/"), body
+        assert body["type"] != "/errors/internal", body
+    else:
+        # FastAPI default 404 envelope
+        assert "detail" in body, body
