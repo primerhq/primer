@@ -896,6 +896,119 @@ async def test_t0096_workspace_destroy_then_recreate_starts_clean(
 
 
 @pytest.mark.asyncio
+async def test_t0114_workspace_files_info_on_directory(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0114 — `GET /files/info?path=<dir>` for a directory must return
+    a sane response (not 5xx). The kind field should indicate it's a
+    directory (the FileEntry.kind enum is Literal["file","dir","symlink"]).
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Create a file in subdir so subdir exists
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "subdir/inside.txt"},
+            json={"content": "x", "encoding": "text"},
+        )
+        assert write.status_code == 204, write.text
+
+        info = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": "subdir"},
+        )
+        # Must not 5xx. Most likely 200 with kind=dir; some implementations
+        # might 404 on directories from /info. Accept either clean path.
+        assert info.status_code != 500, info.text
+        assert info.status_code < 500, (
+            f"expected clean 2xx/4xx, got {info.status_code}: {info.text}"
+        )
+        if info.status_code == 200:
+            body = info.json()
+            assert body["kind"] in ("dir", "directory"), body
+            assert body["path"] == "subdir", body
+        else:
+            # 4xx — must be a clean RFC 7807 envelope
+            envelope = info.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0115_workspace_files_delete_non_empty_directory(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0115 — DELETE on a directory containing files must reject with
+    a clean 4xx (not silently recursive-delete, not 5xx). The contained
+    file must remain readable afterwards.
+
+    The handler is documented as "Delete file or empty directory" —
+    so a non-empty directory must NOT be deleted.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed dir/x.txt
+        nested = "dir/x.txt"
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": nested},
+            json={"content": "stay-alive", "encoding": "text"},
+        )
+        assert write.status_code == 204, write.text
+
+        # Attempt to delete the non-empty directory
+        rm = await client.delete(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "dir"},
+        )
+        assert rm.status_code != 500, rm.text
+        assert 400 <= rm.status_code < 500, (
+            f"non-empty dir delete must reject with 4xx, got "
+            f"{rm.status_code}: {rm.text}"
+        )
+        envelope = rm.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+
+        # The contained file must still be readable
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": nested},
+        )
+        assert read.status_code == 200, (
+            f"file inside the rejected-delete dir should still exist: "
+            f"{read.text}"
+        )
+        assert read.json()["content"] == "stay-alive"
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
 async def test_t0067_workspace_template_overrides_merge(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:

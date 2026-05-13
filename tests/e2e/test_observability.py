@@ -91,6 +91,37 @@ async def test_t0100_openapi_spec_byte_stable_across_fetches(
 
 
 @pytest.mark.asyncio
+async def test_t0126_workers_list_shape_stable_under_50_gets(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0126 — `/v1/workers` is shape-stable across 50 sequential GETs:
+    same item count, same set of worker_ids. Catches a regression where
+    the worker pool re-registers under load, or where a transient
+    heartbeat-check leaks an extra row.
+    """
+    first = await client.get("/v1/workers")
+    assert first.status_code == 200, first.text
+    baseline_ids = {w["id"] for w in first.json()["items"]}
+    assert baseline_ids, "no workers registered — test prerequisite failed"
+
+    for i in range(50):
+        resp = await client.get("/v1/workers")
+        assert resp.status_code == 200, (
+            f"GET {i} returned {resp.status_code}: {resp.text}"
+        )
+        items = resp.json()["items"]
+        ids = {w["id"] for w in items}
+        assert len(items) == len(baseline_ids), (
+            f"worker count changed at iter {i}: {len(items)} vs "
+            f"baseline {len(baseline_ids)}"
+        )
+        assert ids == baseline_ids, (
+            f"worker id set changed at iter {i}: {ids!r} vs "
+            f"baseline {baseline_ids!r}"
+        )
+
+
+@pytest.mark.asyncio
 async def test_t0101_health_endpoint_stable_under_repeated_load(
     client: httpx.AsyncClient,
 ) -> None:

@@ -261,7 +261,12 @@ class LocalWorkspace(Workspace):
             raise BadRequestError("refusing to delete workspace root")
         self._refuse_reserved(target, path)
         if await asyncio.to_thread(target.is_dir):
-            await asyncio.to_thread(target.rmdir)  # rmdir => empty-only
+            try:
+                await asyncio.to_thread(target.rmdir)  # rmdir => empty-only
+            except OSError as exc:
+                raise BadRequestError(
+                    f"directory {path!r} is not empty"
+                ) from exc
         else:
             await asyncio.to_thread(target.unlink)
 

@@ -70,6 +70,56 @@ async def test_t0068_document_create_with_missing_collection_id_no_500(
 
 
 @pytest.mark.asyncio
+async def test_t0129_orphan_document_collection_documents_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0129 — when a Document references a collection_id that doesn't
+    exist (T0068 confirmed POST allows orphans), the read path that
+    enumerates documents by that collection must return cleanly:
+    either an empty list (the orphan is invisible there, treated as
+    if the collection itself doesn't exist) or 404 (no such
+    collection). Either is a clean envelope — the pin is "no 5xx".
+    """
+    orphan_cid = f"never-existed-{unique_suffix}"
+    doc_id = f"doc-orphan-{unique_suffix}"
+
+    create = await client.post(
+        "/v1/documents",
+        json={
+            "id": doc_id,
+            "name": "orphan",
+            "collection_id": orphan_cid,
+            "meta": {},
+        },
+    )
+    assert create.status_code in (200, 201), create.text
+    try:
+        # GET /v1/collections/{cid}/documents for the orphan id
+        resp = await client.get(f"/v1/collections/{orphan_cid}/documents")
+        assert resp.status_code != 500, resp.text
+        if resp.status_code == 200:
+            # Implementation enumerates by collection_id from storage —
+            # the orphan doc DOES carry this id, so it might appear,
+            # OR the route validates the collection exists first and
+            # the body's empty / items=[]. Either is clean.
+            page = resp.json()
+            # offset envelope shape regardless
+            assert "items" in page, page
+            # If the orphan does show up here, that's documented
+            # behaviour; if not, that's also documented. The strict
+            # invariant is "no internal-error envelope".
+        elif resp.status_code == 404:
+            envelope = resp.json()
+            assert envelope["type"] == "/errors/not-found", envelope
+        else:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        await client.delete(f"/v1/documents/{doc_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0108_document_put_replaces_name_and_metadata(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

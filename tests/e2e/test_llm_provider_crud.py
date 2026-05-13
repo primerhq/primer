@@ -143,6 +143,31 @@ async def test_t0125_provider_with_10kib_description_round_trips(
 
 
 @pytest.mark.asyncio
+async def test_t0127_invalidate_then_delete_leaves_no_orphaned_state(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0127 — sequence: POST → POST /invalidate (204) → DELETE (204)
+    → GET (404). After DELETE, no surprise 200 from a leftover cached
+    adapter and no 5xx from inconsistent state.
+    """
+    entity_id = f"llm-inv-del-{unique_suffix}"
+    base = "/v1/llm_providers"
+
+    create = await client.post(base, json=_llm_body(entity_id))
+    assert create.status_code == 201, create.text
+
+    inv = await client.post(f"{base}/{entity_id}/invalidate")
+    assert inv.status_code == 204, inv.text
+
+    rm = await client.delete(f"{base}/{entity_id}")
+    assert rm.status_code == 204, rm.text
+
+    gone = await client.get(f"{base}/{entity_id}")
+    assert gone.status_code == 404, gone.text
+    assert gone.json()["type"] == "/errors/not-found"
+
+
+@pytest.mark.asyncio
 async def test_t0098_crud_lookup_case_sensitive_on_id(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
