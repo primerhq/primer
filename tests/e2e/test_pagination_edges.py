@@ -89,6 +89,41 @@ async def test_t0012_pagination_limit_plus_one_spans_pages(
 
 
 @pytest.mark.asyncio
+async def test_t0077_pagination_offset_above_total_returns_empty(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0077 — when `offset` exceeds `total`, the response is a normal
+    OffsetPageResponse with `items=[]`, `length=0`, but `total`
+    reflects the true row count.
+
+    Filter via predicate so the assertion isn't disturbed by leftover
+    rows from a sibling test in the same iteration.
+    """
+    prefix = f"ts-t0077-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 2)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "offset", "offset": 10, "length": 5},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        page = resp.json()
+        assert page["kind"] == "offset"
+        assert page["items"] == []
+        assert page["length"] == 0
+        assert page["total"] == 2, page
+        assert page["offset"] == 10
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
 async def test_t0013_pagination_limit_out_of_range_rejected(
     client: httpx.AsyncClient,
 ) -> None:

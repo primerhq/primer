@@ -175,6 +175,38 @@ async def test_t0044_cursor_consistency_under_mid_walk_insert(
 
 
 @pytest.mark.asyncio
+async def test_t0069_predicate_eq_filters_to_named_row(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0069 — predicate `op="="` returns ONLY the row whose `id`
+    matches the literal value. No partial / prefix matches.
+    """
+    prefix = f"ts-t0069-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 2)
+    target = ids[0]
+    other = ids[1]
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": target},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = [item["id"] for item in resp.json()["items"]]
+        assert out_ids == [target], (
+            f"expected only {target!r}, got {out_ids!r}"
+        )
+        assert other not in out_ids
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
 async def test_t0043_find_order_by_asc_then_desc_reverses(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

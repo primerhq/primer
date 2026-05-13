@@ -501,6 +501,53 @@ _DOWNLOAD_SECURITY_HEADERS = {
 
 
 @pytest.mark.asyncio
+async def test_t0057_workspace_log_returns_documented_shape(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0057 — `GET /v1/workspaces/{id}/log` returns 200 with the
+    documented `{commits: [...]}` envelope immediately after the
+    workspace is materialised. The commit list may legitimately be
+    empty on the local backend (the .state repo is initialised lazily
+    by session activity, not by file writes — see backlog T0058).
+
+    NB: T0058 was deferred — file writes through the user-files API
+    do NOT commit to the workspace's .state repo. Growing the log
+    requires session-driven state mutations that the harness can't
+    produce without real LLM credentials.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        log = await client.get(f"/v1/workspaces/{workspace_id}/log")
+        assert log.status_code == 200, log.text
+        body = log.json()
+        assert "commits" in body, body
+        assert isinstance(body["commits"], list), body
+
+        # Default limit is 50 (the handler's Query default); explicit
+        # limit must be honoured too.
+        log_capped = await client.get(
+            f"/v1/workspaces/{workspace_id}/log",
+            params={"limit": 5},
+        )
+        assert log_capped.status_code == 200, log_capped.text
+        assert len(log_capped.json()["commits"]) <= 5
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
 async def test_t0048_security_headers_on_streaming_download(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:

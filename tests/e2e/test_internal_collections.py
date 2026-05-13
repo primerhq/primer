@@ -49,6 +49,38 @@ async def test_t0019_search_503_subsystem_inactive(
 
 
 @pytest.mark.asyncio
+async def test_t0060_search_top_k_zero_rejected(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0060 — Pydantic validates SearchRequest.top_k (ge=1) before the
+    handler runs, so top_k=0 yields 422 even when the subsystem is
+    inactive."""
+    resp = await client.post(
+        "/v1/agents/search", json={"query": "x", "top_k": 0},
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["type"] == "/errors/validation-error", body
+    assert body["status"] == 422
+
+
+@pytest.mark.asyncio
+async def test_t0061_search_top_k_above_cap_rejected(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0061 — top_k=101 is above the documented cap of 100 (le=100);
+    Pydantic body validation rejects it with 422 regardless of
+    subsystem state."""
+    resp = await client.post(
+        "/v1/agents/search", json={"query": "x", "top_k": 101},
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["type"] == "/errors/validation-error", body
+    assert body["status"] == 422
+
+
+@pytest.mark.asyncio
 async def test_t0021_bootstrap_404_when_no_config(
     client: httpx.AsyncClient,
 ) -> None:
