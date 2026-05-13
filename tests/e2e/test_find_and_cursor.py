@@ -1582,6 +1582,80 @@ async def test_t0248_predicate_like_empty_string_deterministic_clean(
 
 
 # ============================================================================
+# T0256 — predicate with right.kind="field" (field-vs-field compare)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0256_predicate_field_vs_field_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0256 — POST /find with a predicate where BOTH operands are
+    fields (no literal). Pins that the predicate validator either
+    accepts the shape (returning 200 with results) or cleanly rejects
+    it (4xx); never /errors/internal.
+
+    Many predicate translators only support field-vs-value; field-vs-
+    field requires a column-comparison codepath that often isn't
+    wired. Pin the no-crash invariant.
+    """
+    prefix = f"ts-t0256-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 2)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "field", "name": "provider"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"field-vs-field predicate leaked /errors/internal: {resp.text}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0257 — predicate with left.kind="value", right.kind="field" (swapped)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0257_predicate_swapped_operand_kinds_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0257 — Predicate with literal on the left and field on the
+    right (the reverse of the usual `field op value` shape). The
+    schema may accept this (mathematically equivalent) or reject it;
+    pin the no-/errors/internal invariant.
+    """
+    prefix = f"ts-t0257-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 2)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "value", "value": ids[0]},
+                "right": {"kind": "field", "name": "id"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"swapped operand predicate leaked /errors/internal: {resp.text}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
 # T0217 — find with order_by referencing unknown field returns clean 4xx
 # ============================================================================
 

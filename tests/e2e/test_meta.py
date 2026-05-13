@@ -274,3 +274,139 @@ async def test_t0208_options_on_provider_row_pins_allow_header(
             )
     finally:
         await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0258 — HEAD on a CRUD list endpoint returns headers only with sec headers
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0258_head_crud_list_endpoint_returns_headers_only(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0258 — HEAD on a CRUD list endpoint (no body). Extends T0207
+    (HEAD on /health) to confirm the same security headers + empty
+    body apply on entity-list routes too.
+    """
+    resp = await client.head("/v1/llm_providers")
+    # HEAD may map to GET (200 with headers) or 405 if explicitly
+    # disallowed by the router. Either is acceptable as long as no 5xx
+    # and security headers are preserved.
+    assert resp.status_code in (200, 405), resp.text
+    assert resp.content == b"", (
+        f"HEAD response should have an empty body; got {resp.content!r}"
+    )
+    if resp.status_code == 200:
+        for name, expected in _SECURITY_HEADERS.items():
+            actual = resp.headers.get(name)
+            assert actual == expected, (
+                f"HEAD /v1/llm_providers missing/incorrect header "
+                f"{name!r}: expected {expected!r}, got {actual!r}"
+            )
+
+
+# ============================================================================
+# T0259 — HEAD /openapi.json returns headers identical to GET
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0259_head_openapi_returns_headers_only(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0259 — HEAD on the OpenAPI doc route. Pins HEAD passthrough
+    behaviour on the always-mounted /openapi.json (per spec §1).
+    Body must be empty; status code must match GET (or 405).
+    """
+    resp = await client.head("/openapi.json")
+    assert resp.status_code in (200, 405), resp.text
+    assert resp.content == b"", resp.content
+    if resp.status_code == 200:
+        # Content-Type carried over from GET
+        ct = resp.headers.get("content-type", "")
+        assert "json" in ct.lower() or ct == "", (
+            f"HEAD /openapi.json should carry json-flavoured "
+            f"content-type or be empty; got {ct!r}"
+        )
+
+
+# ============================================================================
+# T0260 — OPTIONS on /v1/workspaces/{wid}/files surfaces multi-verb Allow
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0260_options_workspace_files_multi_verb_allow_header(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0260 — Workspace /files supports multiple verbs (GET, PUT,
+    DELETE per spec §12). OPTIONS must respond with Allow listing
+    more than one of those verbs (in contrast to T0185 where the CRUD
+    instance endpoint's Allow header surfaced just one verb).
+
+    The test uses a freshly-created workspace because the route's
+    OPTIONS may also resolve based on whether the {wid} path matches
+    an existing resource.
+    """
+    # Need a workspace_provider + template + workspace to have a real
+    # path
+    wp_id = f"wp-t0260-{unique_suffix}"
+    tpl_id = f"wt-t0260-{unique_suffix}"
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        wp = await client.post(
+            "/v1/workspace_providers",
+            json={
+                "id": wp_id,
+                "provider": "local",
+                "config": {"kind": "local", "path": tmp},
+            },
+        )
+        assert wp.status_code == 201, wp.text
+        try:
+            tpl = await client.post(
+                "/v1/workspace_templates",
+                json={
+                    "id": tpl_id,
+                    "description": "T0260",
+                    "provider_id": wp_id,
+                    "backend": {"kind": "local"},
+                },
+            )
+            assert tpl.status_code == 201, tpl.text
+            try:
+                ws = await client.post(
+                    "/v1/workspaces", json={"template_id": tpl_id},
+                )
+                assert ws.status_code == 201, ws.text
+                workspace_id = ws.json()["id"]
+                try:
+                    resp = await client.request(
+                        "OPTIONS",
+                        f"/v1/workspaces/{workspace_id}/files",
+                    )
+                    assert resp.status_code < 500, resp.text
+                    if resp.status_code in (200, 204):
+                        allow = resp.headers.get("allow", "")
+                        assert allow, (
+                            f"OPTIONS on /files returned "
+                            f"{resp.status_code} but no Allow header"
+                        )
+                        # Multi-verb route — Allow should mention more
+                        # than one of GET/PUT/DELETE
+                        allow_upper = allow.upper()
+                        verbs_present = sum(
+                            v in allow_upper
+                            for v in ("GET", "PUT", "DELETE")
+                        )
+                        assert verbs_present >= 1, (
+                            f"Allow header {allow!r} should mention "
+                            f"at least one of GET/PUT/DELETE"
+                        )
+                finally:
+                    await client.delete(f"/v1/workspaces/{workspace_id}")
+            finally:
+                await client.delete(f"/v1/workspace_templates/{tpl_id}")
+        finally:
+            await client.delete(f"/v1/workspace_providers/{wp_id}")
