@@ -41,6 +41,79 @@ async def test_t0029_workspace_provider_has_no_put(
 
 
 @pytest.mark.asyncio
+async def test_t0116_workspace_provider_container_kind_clean_response(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0116 — POST WorkspaceProvider with `provider=container` and
+    a docker-runtime config. The model must accept the variant
+    cleanly (no 5xx). Whether POST itself succeeds or the API
+    rejects with a clean 4xx (e.g. backend not configured at this
+    deployment) is documented; the contract pin is "no internal
+    error envelope".
+    """
+    entity_id = f"wp-container-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "container",
+        "config": {
+            "kind": "container",
+            "runtime": {"kind": "docker"},
+        },
+    }
+    resp = await client.post("/v1/workspace_providers", json=body)
+    try:
+        assert resp.status_code != 500, resp.text
+        if resp.status_code == 201:
+            # POST accepted — verify the row round-trips
+            got = await client.get(f"/v1/workspace_providers/{entity_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["provider"] == "container"
+        else:
+            # 4xx envelope per the documented error catalogue
+            assert 400 <= resp.status_code < 500, resp.text
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        await client.delete(f"/v1/workspace_providers/{entity_id}")
+
+
+@pytest.mark.asyncio
+async def test_t0117_workspace_provider_kubernetes_kind_clean_response(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0117 — same shape contract pin for `provider=kubernetes`.
+
+    Kubernetes config schema requires more fields than container; if
+    POST rejects, the test still passes as long as the rejection is
+    a clean 4xx envelope.
+    """
+    entity_id = f"wp-k8s-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "kubernetes",
+        "config": {
+            "kind": "kubernetes",
+            "namespace": "default",
+        },
+    }
+    resp = await client.post("/v1/workspace_providers", json=body)
+    try:
+        assert resp.status_code != 500, resp.text
+        if resp.status_code == 201:
+            got = await client.get(f"/v1/workspace_providers/{entity_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["provider"] == "kubernetes"
+        else:
+            assert 400 <= resp.status_code < 500, resp.text
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        await client.delete(f"/v1/workspace_providers/{entity_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0124_workspace_template_description_optional(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

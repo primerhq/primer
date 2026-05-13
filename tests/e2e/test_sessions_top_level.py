@@ -387,6 +387,135 @@ async def test_t0041_top_level_sessions_filter_intersects_agent_id_and_status(
 
 
 # ============================================================================
+# T0110 — Session steer accumulates: 3 sequential calls all 2xx, no rejection
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0110_session_steer_accumulates_three_calls(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0110 — three sequential POST /steer calls on the same session
+    must all succeed (2xx). Per the spec §12 finding, steer doesn't
+    gate on session status — even a CREATED session accepts steer.
+
+    The pin: each call returns a structured response (not a no-op,
+    not an error), with a distinct instruction body. If a future
+    change adds rate-limiting or rejects mid-stream, this test fails.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        instructions = [
+            f"first instruction {unique_suffix}",
+            f"second instruction {unique_suffix}",
+            f"third instruction {unique_suffix}",
+        ]
+        for i, inst in enumerate(instructions):
+            resp = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+                json={"instruction": inst},
+            )
+            assert 200 <= resp.status_code < 300, (
+                f"steer #{i} returned {resp.status_code}: {resp.text}"
+            )
+            # Response is `instruction.model_dump()` — a dict
+            body = resp.json()
+            assert isinstance(body, dict), body
+    finally:
+        if workspace_id is not None:
+            # cancel the session before destroying the workspace
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0130 — top-level /v1/sessions cursor walk visits every session once
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0130_top_level_sessions_cursor_walk_full_coverage(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0130 — seed 7 sessions on a single workspace and walk the
+    top-level /v1/sessions endpoint via cursor pagination in chunks
+    of 3. The walk must visit every seeded id exactly once (no
+    duplicates, no skipped ids).
+
+    The list endpoint is `GET /v1/sessions?cursor=...` (cursor mode
+    is opt-in via the `cursor` query param). Filter by workspace_id
+    so the walk is bounded to the seeded set.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    seeded_ids: list[str] = []
+    try:
+        workspace_id, first_sid = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+        seeded_ids.append(first_sid)
+        # Add 6 more sessions on the same workspace
+        for _ in range(6):
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json=_session_body(agent_id=env["agent_id"]),
+            )
+            assert sess.status_code == 201, sess.text
+            seeded_ids.append(sess.json()["id"])
+
+        # GET /v1/sessions opts into cursor mode by passing the
+        # cursor query param, but the codec rejects an empty/initial
+        # value (it expects the JSON token from a prior page). Use
+        # the POST /sessions/find endpoint with `{page: {kind: cursor,
+        # cursor: null, length: 3}}` to start the walk cleanly.
+        predicate = {
+            "kind": "predicate",
+            "op": "=",
+            "left": {"kind": "field", "name": "workspace_id"},
+            "right": {"kind": "value", "value": workspace_id},
+        }
+        seen: list[str] = []
+        cursor: str | None = None
+        for _ in range(10):
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "cursor", "cursor": cursor, "length": 3},
+            }
+            resp = await client.post("/v1/sessions/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            assert page["kind"] == "cursor", page
+            seen.extend(item["id"] for item in page["items"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail(f"cursor walk did not terminate; seen={seen!r}")
+
+        # Invariant 1: no duplicates
+        assert len(seen) == len(set(seen)), (
+            f"cursor walk yielded duplicates: {seen!r}"
+        )
+        # Invariant 2: every seeded id present (full coverage)
+        for sid in seeded_ids:
+            assert sid in seen, (
+                f"seeded session {sid!r} missing from walk: {sorted(seen)!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0089 — top-level /v1/sessions order_by created_at asc/desc are reverses
 # ============================================================================
 

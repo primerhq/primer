@@ -494,6 +494,60 @@ async def test_t0059_search_ranks_marker_match_above_noise(
 
 
 @pytest.mark.asyncio
+async def test_t0107_cdc_unicode_marker_searchable(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0107 — an Agent whose description contains a unique CJK + emoji
+    marker is findable via /v1/agents/search after CDC ingestion. Pins
+    that the embedder + vector store handle multi-byte unicode without
+    truncation or normalization-mismatch."""
+    embedder_id = f"emb-t0107-{unique_suffix}"
+    llm_id = f"llm-t0107-{unique_suffix}"
+    agent_id = f"agent-uni-{unique_suffix}"
+    # CJK + emoji marker. The unique_suffix at the end keeps this
+    # distinct from the (passing) plain-ascii T0034 marker.
+    marker = f"日本語マーカー 🎉 {unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    agent_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(agent_id, provider_id=llm_id, description=marker),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        ids = await _poll_search_for(
+            client, query=marker, expected_id=agent_id, present=True,
+        )
+        assert agent_id in ids, (
+            f"unicode-marker agent not indexed within poll window: {ids!r}"
+        )
+    finally:
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0090_cdc_burst_load_all_agents_indexed(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
