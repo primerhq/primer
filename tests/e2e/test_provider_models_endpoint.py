@@ -72,3 +72,54 @@ async def test_t0025_provider_models_endpoint_returns_configured_models(
         assert sorted(body["models"]) == ["configured-1", "configured-2"], body
     finally:
         await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+def _bad_url_embedding_provider_body(entity_id: str) -> dict:
+    """EmbeddingProvider whose config has no reachable upstream. The
+    HuggingFace embedder is a row-cached list_models too — see
+    matrix/embedder/huggingface.py:190 — so `list_models()` should never
+    touch the network."""
+    return {
+        "id": entity_id,
+        "provider": "huggingface",
+        "models": [
+            {"name": "sentence-transformers/all-MiniLM-L6-v2", "dim": 384},
+            {"name": "sentence-transformers/all-mpnet-base-v2", "dim": 768},
+        ],
+        "config": {"token": "hf-placeholder"},
+        "limits": {"max_concurrency": 1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_t0175_embedding_provider_models_endpoint_is_row_cached(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0175 — mirrors T0025 for the embedding family.
+    GET /v1/embedding_providers/{id}/models echoes the configured
+    ``models`` list without touching the network.
+    """
+    entity_id = f"emb-row-{unique_suffix}"
+    create = await client.post(
+        "/v1/embedding_providers",
+        json=_bad_url_embedding_provider_body(entity_id),
+    )
+    assert create.status_code == 201, create.text
+
+    try:
+        resp = await client.get(
+            f"/v1/embedding_providers/{entity_id}/models",
+            timeout=httpx.Timeout(15.0, connect=5.0),
+        )
+        assert resp.status_code == 200, (
+            f"expected 200 (row-cached), got {resp.status_code}: "
+            f"{resp.text}"
+        )
+        body = resp.json()
+        assert "models" in body, body
+        assert sorted(body["models"]) == sorted([
+            "sentence-transformers/all-MiniLM-L6-v2",
+            "sentence-transformers/all-mpnet-base-v2",
+        ]), body
+    finally:
+        await client.delete(f"/v1/embedding_providers/{entity_id}")

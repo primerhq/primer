@@ -467,3 +467,60 @@ async def test_t0024_graph_status_missing_agent(
         )
     finally:
         await client.delete(f"/v1/graphs/{graph_id}")
+
+
+# ============================================================================
+# T0171 — Graph status surfaces BOTH a missing agent and a missing sub-graph
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0171_graph_status_flags_multiple_missing_references(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0171 — extends T0024 to a graph with BOTH a missing agent node and
+    a missing sub-graph node. The status endpoint must surface BOTH
+    issues (not just the first one), so an operator can act on every
+    broken reference in a single round-trip.
+    """
+    graph_id = f"graph-t0171-{unique_suffix}"
+    missing_agent_id = f"missing-agent-{unique_suffix}"
+    missing_subgraph_id = f"missing-subgraph-{unique_suffix}"
+
+    create = await client.post(
+        "/v1/graphs",
+        json={
+            "id": graph_id,
+            "description": "multi-issue graph for T0171",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": missing_agent_id},
+                {"kind": "graph", "id": "n2", "graph_id": missing_subgraph_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "n2"},
+                {"kind": "static", "from_node": "n2", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+        },
+    )
+    assert create.status_code == 201, create.text
+    try:
+        resp = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is False, body
+        issues = body["issues"]
+        assert isinstance(issues, list) and issues, body
+
+        issues_text = " ".join(str(i) for i in issues)
+        assert missing_agent_id in issues_text, (
+            f"missing agent {missing_agent_id!r} not surfaced in any "
+            f"issue: {issues!r}"
+        )
+        assert missing_subgraph_id in issues_text, (
+            f"missing sub-graph {missing_subgraph_id!r} not surfaced in "
+            f"any issue: {issues!r}"
+        )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")

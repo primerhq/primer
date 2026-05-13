@@ -965,3 +965,49 @@ async def test_t0016_find_malformed_predicate_returns_422(
     envelope = resp.json()
     assert envelope["type"] == "/errors/validation-error"
     assert envelope["status"] == 422
+
+
+# ============================================================================
+# T0173 — predicate op="in" with an empty list returns a clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0173_predicate_in_with_empty_list_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0173 — predicate `op="in"` with `right.value=[]` must produce a
+    clean envelope (no /errors/internal). Semantically "x IN ()" is
+    always false, so a sensible API returns 200 with zero items. The
+    SQL builder may also reasonably reject the empty list with a 4xx.
+    Pin no 5xx, no internal error.
+    """
+    prefix = f"ts-t0173-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 2)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "in",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": []},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code != 500, resp.text
+        if resp.status_code == 200:
+            # "id IN ()" → no rows
+            out_ids = [item["id"] for item in resp.json()["items"]]
+            for seed_id in ids:
+                assert seed_id not in out_ids, (
+                    f"empty IN list should match nothing, but seed "
+                    f"{seed_id!r} is in the result: {out_ids!r}"
+                )
+        else:
+            assert 400 <= resp.status_code < 500, resp.text
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        await _delete_toolsets(client, ids)

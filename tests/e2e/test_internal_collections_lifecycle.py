@@ -994,6 +994,103 @@ async def test_t0165_tools_search_returns_200_after_bootstrap(
 
 
 # ============================================================================
+# T0174 — query-based discrimination of two agents (positive control)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0174_search_query_distinguishes_two_agents(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0174 — index two agents with disjoint descriptions; searching for
+    a marker unique to agent A must rank agent A above agent B.
+
+    NB: spec §11 documents `SearchRequest = { query, top_k?, filter? }`
+    but matrix/api/routers/internal_collections.py:97 actually only
+    accepts `{ query, top_k }` — the `filter` field is silently
+    ignored by Pydantic. This test pins the IMPLEMENTED behaviour
+    (semantic search via the query string) rather than the
+    unimplemented filter field. Sending a `filter` key in the body
+    must NOT crash the route.
+    """
+    embedder_id = f"emb-t0174-{unique_suffix}"
+    llm_id = f"llm-t0174-{unique_suffix}"
+    agent_a = f"agent-a-{unique_suffix}"
+    agent_b = f"agent-b-{unique_suffix}"
+    marker_a = f"marker-zebra-{unique_suffix}"
+    marker_b = f"marker-octopus-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    a_created = False
+    b_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        a = await client.post(
+            "/v1/agents",
+            json=_agent_body(agent_a, provider_id=llm_id, description=marker_a),
+        )
+        assert a.status_code == 201, a.text
+        a_created = True
+
+        b = await client.post(
+            "/v1/agents",
+            json=_agent_body(agent_b, provider_id=llm_id, description=marker_b),
+        )
+        assert b.status_code == 201, b.text
+        b_created = True
+
+        # Wait for both to be indexed
+        for _ in range(60):
+            s = await client.post(
+                "/v1/agents/search",
+                json={"query": marker_a, "top_k": 10},
+            )
+            assert s.status_code == 200, s.text
+            ids_seen = {h["document_id"] for h in s.json()["hits"]}
+            if {agent_a, agent_b}.issubset(ids_seen):
+                break
+            await asyncio.sleep(0.5)
+
+        # Search for marker_a — agent_a must rank above agent_b
+        s = await client.post(
+            "/v1/agents/search",
+            # Include an unsupported "filter" key to pin "no crash on
+            # extra body field" (spec §11 mentions it but it's unwired)
+            json={"query": marker_a, "top_k": 10, "filter": {"unused": True}},
+        )
+        assert s.status_code == 200, s.text
+        ranked = [h["document_id"] for h in s.json()["hits"]]
+        assert agent_a in ranked, f"agent_a not in results: {ranked!r}"
+        assert agent_b in ranked, f"agent_b not in results: {ranked!r}"
+        assert ranked.index(agent_a) < ranked.index(agent_b), (
+            f"search for marker_a should rank agent_a above agent_b; "
+            f"got {ranked!r}"
+        )
+    finally:
+        if a_created:
+            await client.delete(f"/v1/agents/{agent_a}")
+        if b_created:
+            await client.delete(f"/v1/agents/{agent_b}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
 # T0167 — bootstrap is idempotent (second call returns 200 cleanly)
 # ============================================================================
 

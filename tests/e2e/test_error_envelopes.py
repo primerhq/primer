@@ -169,3 +169,40 @@ async def test_t0009_delete_on_missing_returns_404(
     body = second_delete.json()
     assert body["type"] == "/errors/not-found"
     assert body["status"] == 404
+
+
+# ============================================================================
+# T0172 — PUT with body.id ≠ path id returns 409 /errors/conflict
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0172_put_with_mismatched_body_id_returns_409(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0172 — Spec §3 lists "mismatched body id" as a 409 trigger.
+    Verify against LLMProvider (a generator-CRUD entity): PUT to
+    /v1/llm_providers/<path-id> with body.id=<different-id> must
+    surface 409 /errors/conflict.
+    """
+    path_id = f"llm-mm-path-{unique_suffix}"
+    body_id = f"llm-mm-body-{unique_suffix}"
+
+    # Create the row at path_id so the PUT target exists (otherwise the
+    # mismatch could be masked by a 404 from the missing-row path).
+    created = await client.post("/v1/llm_providers", json=_llm_body(path_id))
+    assert created.status_code == 201, created.text
+    try:
+        mismatched = _llm_body(body_id)
+        resp = await client.put(
+            f"/v1/llm_providers/{path_id}", json=mismatched,
+        )
+        assert resp.status_code == 409, (
+            f"expected 409 for mismatched id, got {resp.status_code}: "
+            f"{resp.text}"
+        )
+        envelope = resp.json()
+        assert envelope["type"] == "/errors/conflict", envelope
+        assert envelope["status"] == 409
+    finally:
+        await client.delete(f"/v1/llm_providers/{path_id}")
