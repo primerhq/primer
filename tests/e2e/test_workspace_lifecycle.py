@@ -2270,3 +2270,70 @@ async def test_t0201_workspace_files_put_on_directory_path_clean_envelope(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0210 — Workspace download endpoint sets Content-Type for binary content
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0210_workspace_download_content_type_for_binary(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0210 — The streaming /files/download endpoint must set a
+    Content-Type header that signals binary streaming (not text/plain).
+    Most servers use `application/octet-stream` for unknown/binary
+    content; some may set a media-type guess from the extension. The
+    contract here is "Content-Type is present, is NOT text/plain on
+    a binary file, and is NOT JSON".
+
+    Extends T0031 / T0048 which only checked Content-Disposition and
+    security headers.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Write a small binary blob (no extension hint, all 256 byte values)
+        blob = bytes(range(256))
+        encoded = base64.b64encode(blob).decode("ascii")
+        seed = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=binary.bin",
+            json={"content": encoded, "encoding": "base64"},
+        )
+        assert seed.status_code == 204, seed.text
+
+        dl = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/download?path=binary.bin",
+        )
+        assert dl.status_code == 200, dl.text
+        ctype = dl.headers.get("content-type", "")
+        assert ctype, "download response missing Content-Type header"
+        # Must not be text/plain — that would prevent browsers from
+        # treating it as a file download
+        assert "text/plain" not in ctype.lower(), (
+            f"binary download Content-Type should not be text/plain; "
+            f"got {ctype!r}"
+        )
+        # Must not be JSON — the route streams raw bytes per spec §12
+        assert "json" not in ctype.lower(), (
+            f"binary download Content-Type should not be JSON-flavoured; "
+            f"got {ctype!r}"
+        )
+        # Bytes round-trip
+        assert dl.content == blob, (
+            f"download content mismatch: expected {len(blob)} bytes, "
+            f"got {len(dl.content)} bytes"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

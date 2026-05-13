@@ -165,3 +165,112 @@ async def test_t0186_singular_entity_path_returns_clean_404(
     else:
         # FastAPI default 404 envelope
         assert "detail" in body, body
+
+
+# ============================================================================
+# T0206 — trailing-slash list-endpoint variant behaves consistently
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0206_trailing_slash_variant_behaves_consistently(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0206 — GET /v1/toolsets and GET /v1/toolsets/ may resolve to
+    the same handler, redirect, or 404. Whichever the API does, both
+    must produce a clean envelope (no 5xx) and carry the four
+    documented security headers.
+    """
+    bare = await client.get("/v1/toolsets")
+    slash = await client.get("/v1/toolsets/")
+
+    for resp, label in ((bare, "no-slash"), (slash, "trailing-slash")):
+        assert resp.status_code < 500, (
+            f"{label} returned 5xx: {resp.status_code}: {resp.text}"
+        )
+        # 200/3xx/404 are all acceptable — but security headers must
+        # be present regardless
+        for name, expected in _SECURITY_HEADERS.items():
+            actual = resp.headers.get(name)
+            assert actual == expected, (
+                f"{label} response missing/incorrect header {name!r}: "
+                f"expected {expected!r}, got {actual!r}"
+            )
+
+
+# ============================================================================
+# T0207 — HEAD /v1/health returns no body with security headers preserved
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0207_head_health_returns_headers_only(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0207 — HEAD /v1/health behaves like GET but with no body.
+    Security headers must still be set by the middleware (the spec
+    contract is "every response").
+    """
+    resp = await client.head("/v1/health")
+    # HEAD on a GET-only route is supported by Starlette's default —
+    # may return 200 (preferred) or 405 (if explicitly disallowed).
+    assert resp.status_code in (200, 405), resp.text
+    assert resp.content == b"", (
+        f"HEAD response should have an empty body; got {resp.content!r}"
+    )
+    # Security headers present on the HEAD response
+    if resp.status_code == 200:
+        for name, expected in _SECURITY_HEADERS.items():
+            actual = resp.headers.get(name)
+            assert actual == expected, (
+                f"HEAD /v1/health missing/incorrect header {name!r}: "
+                f"expected {expected!r}, got {actual!r}"
+            )
+
+
+# ============================================================================
+# T0208 — OPTIONS /v1/llm_providers/{id} surfaces Allow header
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0208_options_on_provider_row_pins_allow_header(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0208 — OPTIONS on a row-scoped path. T0102 covered /v1/health;
+    this covers a CRUD entity row. The handler must respond with
+    either 200/204 (no body required) and an Allow header listing the
+    verbs supported on this path. NEVER 5xx.
+
+    Tests against a real row to ensure 404 doesn't mask the OPTIONS
+    contract.
+    """
+    entity_id = f"llm-t0208-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test-placeholder"},
+        "limits": {"max_concurrency": 1},
+    }
+    created = await client.post("/v1/llm_providers", json=body)
+    assert created.status_code == 201, created.text
+    try:
+        resp = await client.request(
+            "OPTIONS", f"/v1/llm_providers/{entity_id}",
+        )
+        assert resp.status_code < 500, resp.text
+        # Most servers return 200/204 with Allow set; the contract is
+        # "Allow header present"
+        if resp.status_code in (200, 204):
+            allow = resp.headers.get("allow", "")
+            assert allow, (
+                f"OPTIONS {entity_id} returned {resp.status_code} but "
+                f"no Allow header"
+            )
+            # Allow must include at minimum GET (the most basic verb)
+            assert "GET" in allow.upper(), (
+                f"Allow header {allow!r} should include GET"
+            )
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")

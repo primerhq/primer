@@ -302,3 +302,35 @@ async def test_t0185_patch_on_crud_entity_returns_405_with_allow_header(
         )
     finally:
         await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0209 — POST with Content-Type: text/plain on a JSON endpoint returns 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0209_post_with_wrong_content_type_returns_clean_4xx(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0209 — POST to a JSON endpoint with `Content-Type: text/plain`
+    must produce a clean 4xx envelope (typically 422 from Pydantic's
+    "expected json"). T0184 covered malformed JSON body; this covers
+    the wrong-content-type case where the body itself is even string
+    text, not JSON.
+
+    The hard contract: no 500 leak, RFC 7807 envelope present.
+    """
+    body = '{"id": "test", "provider": "anthropic"}'
+    resp = await client.post(
+        "/v1/llm_providers",
+        content=body.encode("utf-8"),
+        headers={"content-type": "text/plain"},
+    )
+    assert 400 <= resp.status_code < 500, resp.text
+    envelope = resp.json()
+    assert envelope["type"].startswith("/errors/"), envelope
+    assert envelope["type"] != "/errors/internal", envelope
+    # RFC 7807 shape sanity
+    for key in ("type", "title", "status", "detail"):
+        assert key in envelope, f"missing key {key!r}: {envelope!r}"
