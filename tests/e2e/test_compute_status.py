@@ -527,6 +527,68 @@ async def test_t0171_graph_status_flags_multiple_missing_references(
 
 
 # ============================================================================
+# T0240 — DELETE provider concurrent with /status: clean envelopes both ways
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0240_delete_provider_concurrent_with_status(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0240 — Race: DELETE /v1/llm_providers/{p} concurrent with
+    GET /v1/agents/{a}/status (which walks the provider reference).
+
+    Either order of events must produce a clean envelope on the
+    status call (200 with ok=true OR 200 with ok=false; either is
+    fine — never /errors/internal from a load-vanished-mid-handler
+    pattern). Mirrors T0104 (parallel GET+DELETE on toolset) at the
+    cross-resource boundary.
+
+    Distinct from T0033's sequential delete-then-status check.
+    """
+    provider_id = f"llm-race-{unique_suffix}"
+    agent_id = f"agent-race-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+        )
+        assert ag.status_code == 201, ag.text
+        try:
+            # Race: DELETE provider + GET agent status concurrently
+            import asyncio
+            delete_task = asyncio.create_task(
+                client.delete(f"/v1/llm_providers/{provider_id}"),
+            )
+            status_task = asyncio.create_task(
+                client.get(f"/v1/agents/{agent_id}/status"),
+            )
+            delete_resp, status_resp = await asyncio.gather(
+                delete_task, status_task,
+            )
+
+            # DELETE: 204 (winner) or 404 (already gone — shouldn't
+            # happen on first race iteration, but tolerate)
+            assert delete_resp.status_code in (204, 404), delete_resp.text
+
+            # Status call must produce a clean envelope; the value
+            # of `ok` depends on which task won the race
+            assert status_resp.status_code == 200, status_resp.text
+            body = status_resp.json()
+            assert "ok" in body, body
+            assert isinstance(body.get("issues"), list), body
+            assert body.get("type") != "/errors/internal", body
+        finally:
+            await client.delete(f"/v1/agents/{agent_id}")
+    finally:
+        # Provider may already be gone
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
 # T0192 — GET /v1/agents/{missing}/status returns 404
 # ============================================================================
 

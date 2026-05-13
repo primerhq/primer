@@ -2626,3 +2626,107 @@ async def test_t0223_workspace_template_delete_with_active_workspace(
             await client.delete(f"/v1/workspaces/{workspace_id}")
         # Template already deleted; clean up the provider only
         await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0241 — DELETE workspace while session exists: session ops return clean
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0241_destroy_workspace_with_active_session_clean_ops(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0241 — Spec §12 says DELETE workspace destroys the backend
+    instance + the row. With a session bound to the workspace still
+    alive, the subsequent signal verbs on the session must surface
+    clean envelopes (not 5xx) AND the top-level /v1/sessions/{S} read
+    must produce a clean response.
+
+    Pin: the cascade doesn't 500 anywhere; envelopes are RFC 7807.
+    """
+    # Need an LLMProvider + Agent for the session binding
+    provider_id = f"llm-t0241-{unique_suffix}"
+    agent_id = f"agent-t0241-{unique_suffix}"
+    pr = await client.post(
+        "/v1/llm_providers",
+        json={
+            "id": provider_id,
+            "provider": "anthropic",
+            "models": [
+                {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            ],
+            "config": {"api_key": "sk-placeholder"},
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json={
+            "id": agent_id,
+            "description": "T0241",
+            "model": {
+                "provider_id": provider_id,
+                "model_name": "claude-sonnet-4-6",
+            },
+            "tools": [],
+        },
+    )
+    assert ag.status_code == 201, ag.text
+
+    provider_id_ws, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Create a CREATED session bound to the workspace
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": agent_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # Destroy the workspace WITHOUT explicitly cancelling the session
+        rm = await client.delete(f"/v1/workspaces/{workspace_id}")
+        assert rm.status_code == 204, rm.text
+
+        # Session signal verbs on the destroyed workspace: must be 4xx
+        # (404 most likely — workspace gone), never 5xx
+        for verb in ("cancel", "pause", "resume"):
+            r = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/{verb}",
+            )
+            assert r.status_code < 500, (
+                f"{verb} on destroyed workspace leaked 5xx: {r.text}"
+            )
+            if r.status_code >= 400:
+                envelope = r.json()
+                assert envelope["type"].startswith("/errors/"), envelope
+                assert envelope["type"] != "/errors/internal", envelope
+
+        # Top-level /v1/sessions/{S} is workspace-agnostic — it may
+        # still return the row or 404. Either is fine.
+        top = await client.get(f"/v1/sessions/{session_id}")
+        assert top.status_code < 500, (
+            f"top-level /v1/sessions/{{S}} leaked 5xx: {top.text}"
+        )
+        if top.status_code >= 400:
+            envelope = top.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        await _teardown_provider_template(
+            client, provider_id_ws, template_id,
+        )
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")

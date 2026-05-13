@@ -1345,6 +1345,186 @@ async def test_t0216_predicate_like_sql_injection_shape_isolated(
 
 
 # ============================================================================
+# T0237 — predicate `=` with null literal returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0237_predicate_eq_null_returns_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0237 — find with `op=", right=null` against a nullable field
+    (LLMProvider has no documented nullable description-style field
+    on Identifiable, but Toolset has none either; use the universally-
+    present Toolset.config which is nullable for `provider="internal"`).
+
+    Pin: clean envelope (200 with possibly-empty hits OR 4xx); never
+    /errors/internal.
+    """
+    prefix = f"ts-t0237-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 2)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "config"},
+                "right": {"kind": "value", "value": None},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code != 500 or (
+            resp.json().get("type") != "/errors/internal"
+        ), f"/errors/internal leak: {resp.text}"
+        if resp.status_code >= 400:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+
+        # Same predicate against the non-nullable id field
+        body2 = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": None},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        r2 = await client.post("/v1/toolsets/find", json=body2)
+        assert r2.status_code != 500 or (
+            r2.json().get("type") != "/errors/internal"
+        ), f"/errors/internal leak on non-nullable: {r2.text}"
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0238 — predicate `in` with mixed-type list returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0238_predicate_in_mixed_type_list_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0238 — find with `op="in", right=[1, "two", null]` (mixed
+    types). The asyncpg driver may reject the type-coerce; the
+    handler must surface a clean envelope, never /errors/internal.
+    """
+    prefix = f"ts-t0238-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 2)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "in",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": [1, "two", None]},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        # Must NOT be /errors/internal regardless of status code
+        body_resp = resp.json() if resp.content else {}
+        assert body_resp.get("type") != "/errors/internal", (
+            f"/errors/internal leak from mixed-type IN: {resp.text}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0239 — cursor walk survives concurrent DELETE of a not-yet-visited row
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0239_cursor_walk_survives_concurrent_delete(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0239 — Seed 6 toolsets. Walk with cursor + length=2:
+
+      page 1 → 2 items
+      [DELETE one of the not-yet-visited ids]
+      page 2 → up to 2 items (the deleted one missing)
+      page 3 → final page
+
+    Pin: walk completes cleanly (no 5xx); no duplicates across pages;
+    total visited ids is at most 6 and at least 5 (the deleted one
+    may or may not appear depending on cursor snapshot semantics).
+    """
+    prefix = f"ts-t0239-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 6)
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+
+        # Page 1
+        body = {
+            "predicate": predicate,
+            "page": {"kind": "cursor", "cursor": None, "length": 2},
+            "order_by": [{"field": "id", "direction": "asc"}],
+        }
+        r1 = await client.post("/v1/toolsets/find", json=body)
+        assert r1.status_code == 200, r1.text
+        page1 = r1.json()
+        seen = [item["id"] for item in page1["items"]]
+        cursor = page1.get("next_cursor")
+        assert cursor is not None, page1
+
+        # Pick a not-yet-visited id and delete it.
+        not_visited = sorted(set(ids) - set(seen))
+        assert not_visited, f"page 1 already covered everything: {seen!r}"
+        target_to_delete = not_visited[-1]  # delete the LAST one
+        rm = await client.delete(f"/v1/toolsets/{target_to_delete}")
+        assert rm.status_code == 204, rm.text
+
+        # Continue the cursor walk
+        for _ in range(10):  # safety bound
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "cursor", "cursor": cursor, "length": 2},
+                "order_by": [{"field": "id", "direction": "asc"}],
+            }
+            resp = await client.post("/v1/toolsets/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            seen.extend(item["id"] for item in page["items"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail("cursor walk did not terminate after concurrent delete")
+
+        # No duplicates
+        assert len(seen) == len(set(seen)), (
+            f"duplicates across cursor walk: {seen!r}"
+        )
+        # All ids minus the deleted one are a subset of seen
+        # (deleted one may or may not appear depending on snapshot
+        # semantics — both are acceptable)
+        remaining = set(ids) - {target_to_delete}
+        assert remaining.issubset(set(seen) | {target_to_delete}), (
+            f"some non-deleted ids missing from walk: "
+            f"remaining={remaining!r}, seen={seen!r}"
+        )
+        assert len(seen) <= len(ids), (
+            f"walk returned MORE ids than seeded: {len(seen)} > "
+            f"{len(ids)}; seen={seen!r}"
+        )
+    finally:
+        # The deleted one is already gone; cleanup the rest
+        for tid in ids:
+            await client.delete(f"/v1/toolsets/{tid}")
+
+
+# ============================================================================
 # T0217 — find with order_by referencing unknown field returns clean 4xx
 # ============================================================================
 
