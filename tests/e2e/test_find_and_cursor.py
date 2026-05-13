@@ -1057,3 +1057,216 @@ async def test_t0197_get_cursor_non_json_garbage_returns_400(
     assert envelope["status"] == 400
     detail = envelope.get("detail", "").lower()
     assert "cursor" in detail, envelope
+
+
+# ============================================================================
+# T0212 — cursor pagination with order_by desc preserves order across pages
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0212_cursor_pagination_with_order_by_desc(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0212 — combines cursor mode (T0014) with order_by (T0043).
+    Walks 7 seeded toolsets ordered by `id desc` in pages of 3.
+    Pin: the concatenated id sequence is strictly descending and
+    contains exactly the seeded ids.
+    """
+    prefix = f"ts-t0212-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 7)
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+
+        seen: list[str] = []
+        cursor: str | None = None
+        for _ in range(10):
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "cursor", "cursor": cursor, "length": 3},
+                "order_by": [{"field": "id", "direction": "desc"}],
+            }
+            resp = await client.post("/v1/toolsets/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            seen.extend(item["id"] for item in page["items"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail(f"cursor walk did not terminate: {seen!r}")
+
+        assert sorted(seen) == sorted(ids), (
+            f"cursor+desc walk did not cover seeded set. "
+            f"seeded={sorted(ids)!r}, seen={sorted(seen)!r}"
+        )
+        # Strictly descending across pages — concatenation is sorted desc
+        assert seen == sorted(seen, reverse=True), (
+            f"cursor+desc walk did NOT preserve descending order across "
+            f"page boundaries: {seen!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0213 — cursor + order_by on a JSONB key preserves order across pages
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0213_cursor_pagination_with_order_by_jsonb_key(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0213 — extends T0088 (single-page JSONB ordering) to a multi-page
+    cursor walk. Seeds 5 Documents whose meta.tag is set to a unique
+    letter; walks ordered by meta.tag asc with page length 2. Pin
+    the concatenated sequence is sorted ascending by tag.
+    """
+    prefix = f"doc-t0213-{unique_suffix}"
+    rows = [
+        {"id": f"{prefix}-a", "tag": "alpha"},
+        {"id": f"{prefix}-b", "tag": "bravo"},
+        {"id": f"{prefix}-c", "tag": "charlie"},
+        {"id": f"{prefix}-d", "tag": "delta"},
+        {"id": f"{prefix}-e", "tag": "echo"},
+    ]
+    collection_id = f"coll-t0213-{unique_suffix}"
+    created: list[str] = []
+    try:
+        for r in rows:
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": r["id"],
+                    "name": r["tag"],
+                    "collection_id": collection_id,
+                    "meta": {"tag": r["tag"]},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(r["id"])
+
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+
+        seen_tags: list[str] = []
+        seen_ids: list[str] = []
+        cursor: str | None = None
+        for _ in range(10):
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "cursor", "cursor": cursor, "length": 2},
+                "order_by": [{"field": "meta.tag", "direction": "asc"}],
+            }
+            resp = await client.post("/v1/documents/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            for item in page["items"]:
+                seen_ids.append(item["id"])
+                seen_tags.append((item.get("meta") or {}).get("tag"))
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail(f"jsonb-cursor walk did not terminate: {seen_ids!r}")
+
+        assert sorted(seen_ids) == sorted(r["id"] for r in rows), (
+            f"missed/duplicated rows: {seen_ids!r}"
+        )
+        # Tags must be in ascending order across the walk
+        assert seen_tags == sorted(seen_tags), (
+            f"cursor walk did NOT preserve meta.tag asc ordering across "
+            f"page boundaries: {seen_tags!r}"
+        )
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0215 — triple-nested AND/OR/!= predicate returns the documented set
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0215_predicate_triple_nested_and_or_not_via_neq(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0215 — predicate-tree depth >2 not covered by T0072/T0073.
+
+    Build:  (id ~= prefix-%) AND ( (id = target) OR (id != exclude_a AND id != exclude_b) )
+
+    Seeds 4 toolsets: a, b, c, d (zero-padded).
+    Choose target=b, exclude_a=c, exclude_b=d → the inner OR matches
+    rows that are b OR (NOT c AND NOT d) → a, b
+    AND-ed with the prefix filter → a, b
+
+    Verifies nested AND/OR composition with `!=` operands behaves
+    consistently and never 5xx.
+    """
+    prefix = f"ts-t0215-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 4)
+    target = ids[1]      # "b"
+    exclude_a = ids[2]   # "c"
+    exclude_b = ids[3]   # "d"
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "or",
+                    "left": {
+                        "kind": "predicate",
+                        "op": "=",
+                        "left": {"kind": "field", "name": "id"},
+                        "right": {"kind": "value", "value": target},
+                    },
+                    "right": {
+                        "kind": "predicate",
+                        "op": "and",
+                        "left": {
+                            "kind": "predicate",
+                            "op": "!=",
+                            "left": {"kind": "field", "name": "id"},
+                            "right": {"kind": "value", "value": exclude_a},
+                        },
+                        "right": {
+                            "kind": "predicate",
+                            "op": "!=",
+                            "left": {"kind": "field", "name": "id"},
+                            "right": {"kind": "value", "value": exclude_b},
+                        },
+                    },
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = sorted(item["id"] for item in resp.json()["items"])
+        # Expected: target + every prefix-matching id that isn't an exclude
+        expected = sorted({target, *ids} - {exclude_a, exclude_b})
+        assert out_ids == expected, (
+            f"triple-nested predicate result mismatch. "
+            f"expected={expected!r}, got={out_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)

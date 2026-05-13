@@ -226,3 +226,32 @@ async def test_t0195_pagination_limit_one_walks_full_set_once(
         )
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0214 — pagination boundary: limit=200 (max) returns 200; limit=201 → 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0214_pagination_limit_at_documented_boundary(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0214 — Spec §4 says `limit` is bounded `1..200`. T0013 covers
+    far-out values (limit=500). This pins the off-by-one boundary:
+    limit=200 must succeed, limit=201 must reject as 422
+    /errors/validation-error.
+    """
+    # 200 is the documented maximum — must succeed
+    ok = await client.get("/v1/toolsets?limit=200&offset=0")
+    assert ok.status_code == 200, ok.text
+    page = ok.json()
+    # length is bounded by limit, not by available rows
+    assert page["length"] <= 200, page
+
+    # 201 is one past the maximum — must reject 422
+    over = await client.get("/v1/toolsets?limit=201&offset=0")
+    assert over.status_code == 422, over.text
+    body = over.json()
+    assert body["type"] == "/errors/validation-error", body
+    assert body["status"] == 422

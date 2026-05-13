@@ -87,3 +87,50 @@ async def test_t0027_provider_secrets_never_echoed(
         )
     finally:
         await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0211 — POST with unknown extra body field is silently accepted
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0211_post_with_unknown_extra_field_silently_accepted(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0211 — Pydantic's default config silently drops unknown fields
+    (extra="ignore"). POSTing /v1/llm_providers with an extra top-level
+    field must succeed (201) and the field must NOT appear on the
+    persisted row when GET-ed back.
+
+    Mirrors T0174's "extra fields ignored on /search" invariant for
+    the CRUD create path.
+    """
+    entity_id = f"llm-t0211-{unique_suffix}"
+    extra_field_name = f"x_unknown_{unique_suffix}"
+    body = _llm_body(entity_id)
+    body[extra_field_name] = "this-should-be-dropped"
+
+    create = await client.post("/v1/llm_providers", json=body)
+    # Either silently accepted (Pydantic extra="ignore", common default)
+    # or rejected (Pydantic extra="forbid"). Pin no 5xx.
+    assert create.status_code < 500, create.text
+    if create.status_code == 201:
+        try:
+            got = await client.get(f"/v1/llm_providers/{entity_id}")
+            assert got.status_code == 200, got.text
+            row = got.json()
+            assert extra_field_name not in row, (
+                f"unknown extra field {extra_field_name!r} survived "
+                f"the create + read round-trip: {row!r}"
+            )
+            assert "this-should-be-dropped" not in str(row), (
+                f"extra field value leaked into row body: {row!r}"
+            )
+        finally:
+            await client.delete(f"/v1/llm_providers/{entity_id}")
+    else:
+        assert 400 <= create.status_code < 500, create.text
+        envelope = create.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["type"] != "/errors/internal", envelope
