@@ -206,3 +206,99 @@ async def test_t0172_put_with_mismatched_body_id_returns_409(
         assert envelope["status"] == 409
     finally:
         await client.delete(f"/v1/llm_providers/{path_id}")
+
+
+# ============================================================================
+# T0183 — POST entity with empty `{}` body returns clean 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0183_post_entity_with_empty_body_returns_clean_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0183 — POSTing `{}` to /v1/llm_providers fails Pydantic validation
+    (the required fields are absent). Pin 422 + /errors/validation-error,
+    never 5xx.
+    """
+    resp = await client.post("/v1/llm_providers", json={})
+    assert resp.status_code == 422, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/validation-error", envelope
+    assert envelope["status"] == 422
+
+
+# ============================================================================
+# T0184 — POST entity with malformed JSON body returns clean 4xx envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0184_post_entity_with_malformed_json_body_clean_4xx(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0184 — Sending a non-JSON body to a JSON route. The middleware
+    must respond with 4xx (typically 400 /errors/bad-request or 422
+    /errors/validation-error) carrying the RFC 7807 envelope shape.
+    No 500 leak; the documented `instance` field present.
+    """
+    resp = await client.post(
+        "/v1/llm_providers",
+        content=b"this is not json {{",
+        headers={"content-type": "application/json"},
+    )
+    assert 400 <= resp.status_code < 500, resp.text
+    envelope = resp.json()
+    # RFC 7807 envelope shape
+    for key in ("type", "title", "status", "detail", "instance"):
+        assert key in envelope, f"missing key {key!r}: {envelope!r}"
+    assert envelope["type"].startswith("/errors/"), envelope
+    assert envelope["type"] != "/errors/internal", envelope
+
+
+# ============================================================================
+# T0185 — PATCH on a CRUD entity returns 405 with `Allow` header
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0185_patch_on_crud_entity_returns_405_with_allow_header(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0185 — PATCH is not a documented verb on the CRUD generator
+    (spec §5 lists POST/GET/PUT/DELETE). The router must respond with
+    405 Method Not Allowed and include an `Allow` header signalling
+    that other verbs ARE supported on this path.
+
+    NB: FastAPI's default 405 response populates Allow with the verbs
+    actually mounted at that path. In practice the header may only
+    list one of the available verbs (e.g. just "GET") rather than
+    the full set — the documented contract is just "405 with non-empty
+    Allow". The status code is the load-bearing pin; pin Allow only as
+    non-empty.
+
+    Tests against a real row so the 405 isn't masked by a 404 from
+    the missing-row path.
+    """
+    entity_id = f"llm-t0185-{unique_suffix}"
+    created = await client.post(
+        "/v1/llm_providers", json=_llm_body(entity_id),
+    )
+    assert created.status_code == 201, created.text
+    try:
+        resp = await client.request(
+            "PATCH",
+            f"/v1/llm_providers/{entity_id}",
+            json={"id": entity_id},
+        )
+        assert resp.status_code == 405, resp.text
+        allow = resp.headers.get("allow", "")
+        assert allow, (
+            f"405 response should set a non-empty Allow header; got {allow!r}"
+        )
+        # GET must be listed — it's the most basic instance-endpoint verb
+        assert "GET" in allow.upper(), (
+            f"Allow header {allow!r} should include GET"
+        )
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")
