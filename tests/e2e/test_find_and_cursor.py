@@ -1011,3 +1011,49 @@ async def test_t0173_predicate_in_with_empty_list_clean_envelope(
             assert envelope["type"] != "/errors/internal", envelope
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0196 — GET ?cursor= (empty string) returns 400 /errors/bad-request
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0196_get_cursor_empty_string_returns_400(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0196 — Spec §4 explicitly calls out the cursor-mode quirk:
+    `?cursor=` (empty string) and other non-JSON values are rejected
+    with 400 /errors/bad-request and the detail "malformed cursor".
+    """
+    resp = await client.get("/v1/toolsets?cursor=")
+    assert resp.status_code == 400, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/bad-request", envelope
+    assert envelope["status"] == 400
+    # Detail should reference malformed-cursor or similar; check
+    # cursor-related wording is present
+    detail = envelope.get("detail", "").lower()
+    assert "cursor" in detail, envelope
+
+
+# ============================================================================
+# T0197 — GET ?cursor=garbage returns 400 /errors/bad-request
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0197_get_cursor_non_json_garbage_returns_400(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0197 — A random non-JSON cursor string is rejected with 400
+    /errors/bad-request. Companion to T0196 for non-empty malformed
+    cursor values.
+    """
+    resp = await client.get("/v1/toolsets?cursor=abc-not-a-cursor")
+    assert resp.status_code == 400, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/bad-request", envelope
+    assert envelope["status"] == 400
+    detail = envelope.get("detail", "").lower()
+    assert "cursor" in detail, envelope

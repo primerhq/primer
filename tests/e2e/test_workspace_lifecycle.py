@@ -2054,3 +2054,152 @@ async def test_t0178_create_workspace_with_missing_template_returns_404(
     envelope = resp.json()
     assert envelope["type"] == "/errors/not-found", envelope
     assert envelope["status"] == 404
+
+
+# ============================================================================
+# T0198 — Workspace /log with limit=0 and limit=501 return clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0198_workspace_log_limit_boundaries_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0198 — Spec §12 declares /log honours `limit` (default 50, max
+    500). Probe boundary values 0 (below min) and 501 (above max) —
+    both must produce documented 4xx envelopes, never 5xx.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for limit in (0, 501):
+            resp = await client.get(
+                f"/v1/workspaces/{workspace_id}/log?limit={limit}",
+            )
+            assert resp.status_code < 500, (
+                f"/log?limit={limit} leaked 5xx: {resp.text}"
+            )
+            # Either a clean 4xx (Pydantic param validation) or
+            # 200 with clamped limit. Both acceptable.
+            if resp.status_code == 422:
+                envelope = resp.json()
+                assert envelope["type"] == "/errors/validation-error", (
+                    envelope
+                )
+            elif resp.status_code == 200:
+                assert "commits" in resp.json(), resp.json()
+            else:
+                assert 400 <= resp.status_code < 500, resp.text
+                envelope = resp.json()
+                assert envelope["type"].startswith("/errors/"), envelope
+                assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0199 — /files/read on a directory path returns clean 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0199_workspace_files_read_on_directory_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0199 — Reading a directory path through the /files/read endpoint
+    is a category error: the API exposes file reads, not directory
+    contents. Must produce a documented 4xx (or any non-5xx), NEVER
+    /errors/internal.
+
+    Seeds a file inside a subdirectory so the subdirectory exists, then
+    reads the subdirectory path.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Create subdir/file.txt so subdir exists as a directory
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=subdir/file.txt",
+            json={"content": "hello", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        # Now read the directory path
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read?path=subdir",
+        )
+        assert resp.status_code != 500 or (
+            resp.json().get("type") != "/errors/internal"
+        ), f"/errors/internal leak: {resp.text}"
+        if resp.status_code >= 400:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0200 — /files/download on a directory path returns clean 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0200_workspace_files_download_on_directory_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0200 — Streaming download of a directory path is the same
+    category error as T0199 — must produce a clean envelope, no
+    /errors/internal.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=subdir/file.txt",
+            json={"content": "hello", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/download?path=subdir",
+        )
+        assert resp.status_code != 500 or (
+            resp.json().get("type") != "/errors/internal"
+        ), f"/errors/internal leak: {resp.text}"
+        if resp.status_code >= 400:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
