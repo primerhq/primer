@@ -397,6 +397,89 @@ async def test_t0083_predicate_ge_and_lt_partition_set(
 
 
 @pytest.mark.asyncio
+async def test_t0122_predicate_always_true_returns_all_seeded(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0122 — predicate `id != ""` evaluates to true for every row
+    (no row has an empty id). Returns the full set.
+
+    Filters by id-prefix LIKE AND'd with `id != ""` to keep the
+    assertion deterministic against rows from sibling tests.
+    """
+    prefix = f"ts-t0122-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 4)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "!=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": ""},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = sorted(item["id"] for item in resp.json()["items"])
+        assert out_ids == sorted(ids), (
+            f"`id != \"\"` should be identity over seeded set; expected "
+            f"{sorted(ids)!r}, got {out_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
+async def test_t0123_predicate_eq_null_no_internal_error(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0123 — predicate `field = NULL` (literal None on the right)
+    must NOT leak as `/errors/internal`. Acceptable behaviours:
+
+    - 200 with empty items (the comparison evaluates false in SQL
+      semantics — `x = NULL` is always NULL, treated as false)
+    - 4xx with the documented validation/bad-request slug
+    - 502 with `/errors/provider-server-error` (asyncpg may reject
+      None at the bind site)
+
+    Any of these is a clean envelope; the contract pin is "no
+    catch-all 500".
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": None},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    if resp.status_code == 200:
+        page = resp.json()
+        assert page["kind"] == "offset"
+        assert page["items"] == []
+        return
+    envelope = resp.json()
+    for key in ("type", "title", "status", "detail"):
+        assert key in envelope, envelope
+    assert envelope["type"].startswith("/errors/"), envelope
+    assert envelope["type"] != "/errors/internal", (
+        f"predicate=null leaked as /errors/internal: {envelope!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_t0084_predicate_unknown_field_returns_4xx(
     client: httpx.AsyncClient,
 ) -> None:

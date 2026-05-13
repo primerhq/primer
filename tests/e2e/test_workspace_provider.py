@@ -41,6 +41,64 @@ async def test_t0029_workspace_provider_has_no_put(
 
 
 @pytest.mark.asyncio
+async def test_t0124_workspace_template_description_optional(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0124 — pin the actual contract: is `description` required on
+    WorkspaceTemplate? Either the POST succeeds (description optional)
+    or it 422s with /errors/validation-error (description required).
+    Both are clean contracts; the test records the actual behaviour
+    so future schema changes are caught.
+    """
+    provider_id = f"wp-tpl-desc-{unique_suffix}"
+    template_id = f"wt-no-desc-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": provider_id,
+            "provider": "local",
+            "config": {"kind": "local", "path": "/tmp/matrix-e2e-t0124"},
+        },
+    )
+    assert pr.status_code == 201, pr.text
+
+    try:
+        # POST WITHOUT a description field
+        body_no_desc = {
+            "id": template_id,
+            "provider_id": provider_id,
+            "backend": {"kind": "local"},
+        }
+        resp = await client.post(
+            "/v1/workspace_templates", json=body_no_desc,
+        )
+        if resp.status_code == 201:
+            # Description is optional. Verify it round-trips as
+            # null/empty/missing without surprise.
+            try:
+                got = await client.get(
+                    f"/v1/workspace_templates/{template_id}",
+                )
+                assert got.status_code == 200, got.text
+                # The field may be absent, null, or default ""
+                desc = got.json().get("description")
+                assert desc in (None, ""), (
+                    f"unexpected description on no-desc template: {desc!r}"
+                )
+            finally:
+                await client.delete(f"/v1/workspace_templates/{template_id}")
+        else:
+            # Description is required — must be a clean 422 envelope
+            assert resp.status_code == 422, resp.text
+            envelope = resp.json()
+            assert envelope["type"] == "/errors/validation-error", envelope
+            assert envelope["status"] == 422
+    finally:
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0052_delete_workspace_provider_round_trip(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

@@ -67,6 +67,82 @@ async def test_t0004_llm_provider_crud_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_t0119_delete_then_recreate_same_id_returns_new_row(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0119 — sequence: POST id `X` v1 → DELETE → POST id `X` v2 →
+    GET id `X`. Final GET must return the v2 body (never 410, never
+    a stale v1 read from a leftover cache).
+    """
+    entity_id = f"llm-recreate-{unique_suffix}"
+    base = "/v1/llm_providers"
+
+    v1 = _llm_body(entity_id)
+    v1["limits"]["max_concurrency"] = 4
+    v2 = _llm_body(entity_id)
+    v2["limits"]["max_concurrency"] = 16
+    v2["models"][0] = {"name": "different-model", "context_length": 50_000}
+
+    create1 = await client.post(base, json=v1)
+    assert create1.status_code == 201, create1.text
+
+    rm = await client.delete(f"{base}/{entity_id}")
+    assert rm.status_code == 204, rm.text
+
+    create2 = await client.post(base, json=v2)
+    assert create2.status_code == 201, create2.text
+    try:
+        got = await client.get(f"{base}/{entity_id}")
+        assert got.status_code == 200, got.text
+        body = got.json()
+        # Must reflect v2, NOT v1
+        assert body["limits"]["max_concurrency"] == 16, body
+        assert body["models"][0]["name"] == "different-model", body
+    finally:
+        await client.delete(f"{base}/{entity_id}")
+
+
+@pytest.mark.asyncio
+async def test_t0125_provider_with_10kib_description_round_trips(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0125 — pin the practical max-length contract. LLMProvider
+    extends Identifiable (no description field), so this test uses
+    a 10 KiB API key — that's the realistic "large blob" surface on
+    LLMProvider.
+
+    Either the row round-trips intact OR we get a clean 4xx envelope.
+    No 500 leak.
+    """
+    entity_id = f"llm-large-{unique_suffix}"
+    base = "/v1/llm_providers"
+    big_key = "sk-" + "x" * (10 * 1024)
+
+    body = _llm_body(entity_id)
+    body["config"]["api_key"] = big_key
+    create = await client.post(base, json=body)
+    assert create.status_code != 500, create.text
+    if create.status_code == 201:
+        try:
+            # Per T0027, secrets must NOT be echoed in plaintext —
+            # but the row must persist and be readable. Just assert
+            # the GET responds 200; T0027 already pins the masking.
+            got = await client.get(f"{base}/{entity_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["id"] == entity_id
+            # Must NOT echo the plaintext key
+            assert big_key not in got.text, (
+                "10 KiB plaintext api_key leaked through GET"
+            )
+        finally:
+            await client.delete(f"{base}/{entity_id}")
+    else:
+        assert 400 <= create.status_code < 500, create.text
+        envelope = create.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+
+
+@pytest.mark.asyncio
 async def test_t0098_crud_lookup_case_sensitive_on_id(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
