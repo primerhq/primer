@@ -207,6 +207,94 @@ async def test_t0069_predicate_eq_filters_to_named_row(
 
 
 @pytest.mark.asyncio
+async def test_t0070_predicate_ne_excludes_named_row(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0070 — predicate `op="!="` returns every prefix-matching row
+    EXCEPT the one whose id equals the literal value.
+
+    Filters by id-prefix (LIKE) AND'd with `id != target` so the
+    assertion isn't disturbed by toolsets created by other tests in
+    the same iteration.
+    """
+    prefix = f"ts-t0070-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    excluded = ids[0]
+    expected_remainder = sorted(ids[1:])
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "!=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": excluded},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = sorted(item["id"] for item in resp.json()["items"])
+        assert out_ids == expected_remainder, (
+            f"expected {expected_remainder!r}, got {out_ids!r}"
+        )
+        assert excluded not in out_ids
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
+async def test_t0078_find_no_predicate_with_page_returns_full_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0078 — `POST /v1/toolsets/find` with no predicate (predicate
+    omitted) BUT a valid `page` returns the unfiltered list.
+
+    NB: the original backlog wording said "empty body `{}` returns
+    full list". The actual contract requires `page` to be supplied
+    (FastAPI rejects `{}` with 422 for missing `page` field). This
+    test pins the closest meaningful contract: predicate is optional,
+    page is required.
+    """
+    prefix = f"ts-t0078-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        # predicate omitted; page supplied
+        resp = await client.post(
+            "/v1/toolsets/find",
+            json={"page": {"kind": "offset", "offset": 0, "length": 200}},
+        )
+        assert resp.status_code == 200, resp.text
+        page = resp.json()
+        assert page["kind"] == "offset"
+        assert page["offset"] == 0
+        assert page["total"] >= 3, page
+        out_ids = {item["id"] for item in page["items"]}
+        for sid in ids:
+            assert sid in out_ids, (
+                f"seeded id {sid!r} missing from page items: "
+                f"{sorted(out_ids)!r}"
+            )
+
+        # And confirm that the all-empty body IS rejected with 422 —
+        # this is the negative-case half of the contract pin.
+        empty = await client.post("/v1/toolsets/find", json={})
+        assert empty.status_code == 422, empty.text
+        assert empty.json()["type"] == "/errors/validation-error"
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
 async def test_t0043_find_order_by_asc_then_desc_reverses(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

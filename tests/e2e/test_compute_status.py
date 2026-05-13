@@ -271,6 +271,81 @@ async def test_t0033_agent_status_recovers_after_provider_recreate(
 
 
 # ============================================================================
+# T0076 — Agent PUT adding an unknown scoped tool id flips status.ok=false
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0076_agent_put_with_unknown_tool_flips_status(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0076 — start with an Agent referencing valid tools (status.ok),
+    PUT-update it adding a scoped tool id whose toolset doesn't exist,
+    and assert the status report flips to ok=false with a missing-toolset
+    issue.
+    """
+    provider_id = f"llm-put-{unique_suffix}"
+    present_toolset_id = f"ts-put-{unique_suffix}"
+    missing_toolset_id = f"missing-put-{unique_suffix}"
+    agent_id = f"agent-put-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        ts = await client.post("/v1/toolsets", json=_toolset_body(present_toolset_id))
+        assert ts.status_code == 201, ts.text
+        try:
+            # Step 1 — Agent referencing only the present toolset, status ok
+            ag = await client.post(
+                "/v1/agents",
+                json=_agent_body(
+                    agent_id,
+                    provider_id=provider_id,
+                    tools=[f"{present_toolset_id}__alpha"],
+                ),
+            )
+            assert ag.status_code == 201, ag.text
+            try:
+                ok = await client.get(f"/v1/agents/{agent_id}/status")
+                assert ok.status_code == 200, ok.text
+                assert ok.json()["ok"] is True, ok.json()
+
+                # Step 2 — PUT adding a scoped tool id with a missing
+                # toolset_id portion
+                put = await client.put(
+                    f"/v1/agents/{agent_id}",
+                    json=_agent_body(
+                        agent_id,
+                        provider_id=provider_id,
+                        tools=[
+                            f"{present_toolset_id}__alpha",
+                            f"{missing_toolset_id}__beta",
+                        ],
+                    ),
+                )
+                assert put.status_code == 200, put.text
+
+                # Step 3 — status now ok=false with the missing-toolset issue
+                broken = await client.get(f"/v1/agents/{agent_id}/status")
+                assert broken.status_code == 200, broken.text
+                body = broken.json()
+                assert body["ok"] is False, body
+                assert any(
+                    missing_toolset_id in str(i) for i in body["issues"]
+                ), body
+                # The present toolset must still NOT be flagged
+                assert not any(
+                    present_toolset_id in str(i) for i in body["issues"]
+                ), body
+            finally:
+                await client.delete(f"/v1/agents/{agent_id}")
+        finally:
+            await client.delete(f"/v1/toolsets/{present_toolset_id}")
+    finally:
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
 # T0024 — Graph status flags missing agent reference
 # ============================================================================
 
