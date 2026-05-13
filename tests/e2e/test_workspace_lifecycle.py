@@ -501,6 +501,60 @@ _DOWNLOAD_SECURITY_HEADERS = {
 
 
 @pytest.mark.asyncio
+async def test_t0063_workspace_empty_file_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0063 — empty content (`""`) is a valid file body per the spec
+    (FileWriteBody allows empty string). Write empty → read back returns
+    empty content with size_bytes=0; the entry appears in the list.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        path = "empty.txt"
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": "", "encoding": "text"},
+        )
+        assert write.status_code == 204, write.text
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": path},
+        )
+        assert read.status_code == 200, read.text
+        body = read.json()
+        assert body["content"] == "", body
+        assert body["size_bytes"] == 0, body
+        assert body["path"] == path
+
+        listed = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "."},
+        )
+        assert listed.status_code == 200, listed.text
+        names = [item["path"] for item in listed.json()["items"]]
+        assert any(
+            name == path or name.endswith(f"/{path}")
+            for name in names
+        ), f"empty file {path!r} not in list: {names!r}"
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
 async def test_t0057_workspace_log_returns_documented_shape(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:

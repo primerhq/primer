@@ -253,6 +253,124 @@ async def test_t0070_predicate_ne_excludes_named_row(
 
 
 @pytest.mark.asyncio
+async def test_t0071_predicate_in_returns_listed_values_only(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0071 — predicate `op="in"` matches rows whose `id` equals any
+    element of a literal list. Right operand is a Value carrying a
+    list of scalars per the documented IN semantics.
+    """
+    prefix = f"ts-t0071-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    selected = sorted(ids[:2])
+    excluded = ids[2]
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "in",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": selected},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = sorted(item["id"] for item in resp.json()["items"])
+        assert out_ids == selected, (
+            f"expected {selected!r}, got {out_ids!r}"
+        )
+        assert excluded not in out_ids
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
+async def test_t0072_predicate_and_narrows_to_intersection(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0072 — `op="and"` requires Predicate on both sides; only rows
+    satisfying BOTH clauses are returned. Compose `id LIKE prefix%`
+    with `id = target` — only target qualifies.
+    """
+    prefix = f"ts-t0072-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    target = ids[1]
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": target},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = [item["id"] for item in resp.json()["items"]]
+        assert out_ids == [target], (
+            f"AND should yield only {target!r}; got {out_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
+async def test_t0073_predicate_or_unions_matches_no_duplicates(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0073 — `op="or"` returns rows satisfying EITHER clause; rows
+    that satisfy both must NOT appear twice. Compose two distinct
+    `id = ...` clauses against two different rows.
+    """
+    prefix = f"ts-t0073-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    a, b = ids[0], ids[2]
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "or",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": a},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": b},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = [item["id"] for item in resp.json()["items"]]
+        assert sorted(out_ids) == sorted([a, b]), (
+            f"OR should yield exactly {{a, b}}, got {out_ids!r}"
+        )
+        assert len(out_ids) == len(set(out_ids)), (
+            f"OR yielded duplicates: {out_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
 async def test_t0078_find_no_predicate_with_page_returns_full_list(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
