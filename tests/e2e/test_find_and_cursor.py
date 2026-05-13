@@ -253,6 +253,150 @@ async def test_t0070_predicate_ne_excludes_named_row(
 
 
 @pytest.mark.asyncio
+async def test_t0081_predicate_gt_returns_strictly_greater(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0081 — predicate `op=">"` on the text `id` field returns only
+    rows whose id is lexically strictly-greater than the literal.
+    Strings ARE comparable in SQL, and `id` is a real text column
+    (no JSONB cast issues).
+    """
+    prefix = f"ts-t0081-{unique_suffix}"
+    # Suffix letters give a deterministic lexical order: a < b < c
+    ids = [f"{prefix}-{c}" for c in "abc"]
+    for sid in ids:
+        resp = await client.post("/v1/toolsets", json=_toolset_body(sid))
+        assert resp.status_code == 201, resp.text
+    try:
+        threshold = ids[1]  # "...-b"; expect only "...-c" above it
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": ">",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": threshold},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = sorted(item["id"] for item in resp.json()["items"])
+        assert out_ids == [ids[2]], (
+            f"expected only [{ids[2]!r}] strictly above threshold "
+            f"{threshold!r}, got {out_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
+async def test_t0082_predicate_le_inclusive_at_boundary(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0082 — `op="<="` is INCLUSIVE at the boundary. The row whose id
+    equals the literal must appear in the result set.
+    """
+    prefix = f"ts-t0082-{unique_suffix}"
+    ids = [f"{prefix}-{c}" for c in "abc"]
+    for sid in ids:
+        resp = await client.post("/v1/toolsets", json=_toolset_body(sid))
+        assert resp.status_code == 201, resp.text
+    try:
+        threshold = ids[1]  # "...-b"; expect "...-a" and "...-b"
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "<=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": threshold},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = sorted(item["id"] for item in resp.json()["items"])
+        assert out_ids == sorted([ids[0], ids[1]]), (
+            f"<= should include the boundary row; expected "
+            f"{[ids[0], ids[1]]!r}, got {out_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
+async def test_t0083_predicate_ge_and_lt_partition_set(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0083 — `>=N` and `<N` over the same field on the same set are
+    disjoint and union to the whole. Pins the exclusivity invariant
+    of the strict / non-strict pair across the boundary.
+    """
+    prefix = f"ts-t0083-{unique_suffix}"
+    ids = [f"{prefix}-{c}" for c in "abcd"]
+    for sid in ids:
+        resp = await client.post("/v1/toolsets", json=_toolset_body(sid))
+        assert resp.status_code == 201, resp.text
+    try:
+        threshold = ids[1]  # "...-b"
+
+        async def _walk(op: str) -> set[str]:
+            body = {
+                "predicate": {
+                    "kind": "predicate",
+                    "op": "and",
+                    "left": {
+                        "kind": "predicate",
+                        "op": "~=",
+                        "left": {"kind": "field", "name": "id"},
+                        "right": {"kind": "value", "value": f"{prefix}%"},
+                    },
+                    "right": {
+                        "kind": "predicate",
+                        "op": op,
+                        "left": {"kind": "field", "name": "id"},
+                        "right": {"kind": "value", "value": threshold},
+                    },
+                },
+                "page": {"kind": "offset", "offset": 0, "length": 50},
+            }
+            r = await client.post("/v1/toolsets/find", json=body)
+            assert r.status_code == 200, r.text
+            return {item["id"] for item in r.json()["items"]}
+
+        ge = await _walk(">=")
+        lt = await _walk("<")
+        # Disjoint
+        assert not (ge & lt), f"`>=` and `<` overlap on {ge & lt}"
+        # Cover the whole set
+        assert ge | lt == set(ids), (
+            f"union of `>=` ({ge}) and `<` ({lt}) does not equal "
+            f"the seeded set {set(ids)!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
 async def test_t0084_predicate_unknown_field_returns_4xx(
     client: httpx.AsyncClient,
 ) -> None:

@@ -625,6 +625,70 @@ async def test_t0063_workspace_empty_file_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_t0092_workspace_template_init_commands_run(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0092 — `WorkspaceTemplate.init_commands` execute on workspace
+    materialise. Build a template that runs a portable Python one-liner
+    writing a marker file; the file must be readable back via the
+    standard files API after the workspace is created.
+
+    Use python -c (rather than shell echo) for cross-OS reliability —
+    the local backend uses `asyncio.create_subprocess_shell` whose
+    quoting/redirection rules differ between cmd.exe and POSIX shells.
+    """
+    provider_id = f"wp-init-{unique_suffix}"
+    template_id = f"wt-init-{unique_suffix}"
+    workspace_id: str | None = None
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        # init_commands run with cwd=workspace_root, so the file lands
+        # at the workspace's root with no path-prefix needed.
+        init_cmd = (
+            'python -c "open(\'init_marker.txt\', \'w\').'
+            "write('init-was-here')\""
+        )
+        template_body = {
+            "id": template_id,
+            "description": "init_commands test template",
+            "provider_id": provider_id,
+            "backend": {"kind": "local"},
+            "init_commands": [init_cmd],
+        }
+        tpl = await client.post(
+            "/v1/workspace_templates", json=template_body,
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "init_marker.txt"},
+        )
+        assert read.status_code == 200, (
+            f"init_commands did not run / did not produce the marker "
+            f"file: {read.text}"
+        )
+        assert read.json()["content"] == "init-was-here", read.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0094_workspace_file_special_chars_round_trip(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:

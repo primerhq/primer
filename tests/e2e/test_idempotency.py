@@ -6,6 +6,8 @@ drain). DELETE is explicitly NOT idempotent — see T0009.
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -79,6 +81,64 @@ async def test_t0028_worker_drain_idempotent(
     statuses = {w["id"]: w["status"] for w in listed_after.json()["items"]}
     assert statuses.get(worker_id) == "draining", (
         f"expected status=draining for {worker_id!r}, got {statuses!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_t0104_parallel_get_and_delete_no_internal_error(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0104 — race a GET and a DELETE on the same toolset row. The
+    GET races against the DELETE in either order; both possibilities
+    must surface as clean responses (200 if GET wins the read, 404
+    if DELETE happened first), with no `/errors/internal` leak.
+
+    This catches handlers that do a "load → operate → save" pattern
+    without holding a lock, where the loaded object disappears
+    mid-handler. The contract pin is "no internal-error envelope under
+    the simplest possible race".
+    """
+    entity_id = f"ts-race-del-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "mcp",
+        "config": {
+            "transport": "stdio",
+            "config": {"command": ["echo"]},
+        },
+    }
+    create = await client.post("/v1/toolsets", json=body)
+    assert create.status_code == 201, create.text
+
+    # Fire GET and DELETE concurrently. Outcomes by ordering:
+    #   GET wins the race → GET 200, DELETE 204
+    #   DELETE wins → GET 404, DELETE 204
+    # Either way, no 500 envelope.
+    get_resp, del_resp = await asyncio.gather(
+        client.get(f"/v1/toolsets/{entity_id}"),
+        client.delete(f"/v1/toolsets/{entity_id}"),
+    )
+
+    for label, resp in (("GET", get_resp), ("DELETE", del_resp)):
+        assert resp.status_code != 500, (
+            f"{label} leaked /errors/internal under race: {resp.text}"
+        )
+        if 400 <= resp.status_code < 600:
+            assert resp.json().get("type") != "/errors/internal", (
+                f"{label} surfaced /errors/internal: {resp.text}"
+            )
+
+    # GET response is one of: 200 (saw the row), 404 (DELETE ran first)
+    assert get_resp.status_code in (200, 404), (
+        f"unexpected GET status under race: {get_resp.status_code}: "
+        f"{get_resp.text}"
+    )
+    # DELETE wins for the row: either it deleted (204) or someone else
+    # got there first (404). 204 is the typical outcome since it's the
+    # only writer in this race.
+    assert del_resp.status_code in (204, 404), (
+        f"unexpected DELETE status under race: {del_resp.status_code}: "
+        f"{del_resp.text}"
     )
 
 
