@@ -1330,3 +1330,27 @@ async def test_t0230_steer_with_64kib_instruction_clean_envelope(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0242 — /v1/sessions?status=running with no RUNNING session returns 200 empty
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0242_sessions_filter_status_running_returns_empty_when_none(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0242 — Mirror of T0229 for a status filter rather than agent
+    filter. With the bringup wiping the DB and no real worker activity
+    in this test, no session exists in RUNNING status; the filter must
+    return 200 with an empty `items` list.
+    """
+    resp = await client.get("/v1/sessions?status=running")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "items" in body, body
+    assert body["items"] == [], (
+        f"status=running filter should return [] on a quiet DB, "
+        f"got: {body['items']!r}"
+    )

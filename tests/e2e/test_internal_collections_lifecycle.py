@@ -1593,3 +1593,202 @@ async def test_t0226_agents_search_ranking_stable_across_calls(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0243 — Bootstrap counts envelope reflects per-collection seeded counts
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0243_bootstrap_counts_reflect_seeded_entities(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0243 — Seed 3 agents + 2 graphs + 1 collection BEFORE bootstrap.
+    The bootstrap response envelope's integer counts must sum to at
+    least 6 (the seeded entity total) — implementations may also count
+    built-in tools, so the sum is `>= 6` rather than `== 6`.
+
+    Distinct from T0224 (which only pinned "at least one int present");
+    this pins "the integers actually correspond to real entity counts".
+    """
+    embedder_id = f"emb-t0243-{unique_suffix}"
+    llm_id = f"llm-t0243-{unique_suffix}"
+    agent_ids = [f"agent-t0243-{unique_suffix}-{i}" for i in range(3)]
+    graph_ids = [f"graph-t0243-{unique_suffix}-{i}" for i in range(2)]
+    coll_id = f"coll-t0243-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    seeded: list[tuple[str, str]] = []
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        for aid in agent_ids:
+            r = await client.post(
+                "/v1/agents",
+                json=_agent_body(aid, provider_id=llm_id, description="x"),
+            )
+            assert r.status_code == 201, r.text
+            seeded.append(("agents", aid))
+
+        for gid in graph_ids:
+            r = await client.post(
+                "/v1/graphs",
+                json=_graph_body(gid, agent_id=agent_ids[0], description="x"),
+            )
+            assert r.status_code == 201, r.text
+            seeded.append(("graphs", gid))
+
+        coll = await client.post(
+            "/v1/collections",
+            json={
+                "id": coll_id,
+                "description": "T0243",
+                "embedder": {
+                    "provider_id": embedder_id,
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                },
+            },
+        )
+        assert coll.status_code in (200, 201), coll.text
+        seeded.append(("collections", coll_id))
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        assert boot.status_code == 200, boot.text
+        body = boot.json()
+
+        # Pull every integer value (top-level + one level of nesting)
+        all_ints: list[int] = []
+        for v in body.values():
+            if isinstance(v, int):
+                all_ints.append(v)
+            elif isinstance(v, dict):
+                for iv in v.values():
+                    if isinstance(iv, int):
+                        all_ints.append(iv)
+
+        seeded_total = len(seeded)  # 6
+        total = sum(all_ints)
+        assert total >= seeded_total, (
+            f"bootstrap integer counts sum to {total}; expected at "
+            f"least {seeded_total} from seeded entities. "
+            f"envelope: {body!r}"
+        )
+    finally:
+        for kind, eid in seeded:
+            await client.delete(f"/v1/{kind}/{eid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0244 — IC config DELETE then re-PUT (same embedder); search recovers
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0244_ic_config_delete_then_reput_search_recovers(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0244 — Activate → seed an Agent → DELETE config (subsystem
+    deactivates per T0053) → re-PUT same config → re-bootstrap →
+    /v1/agents/search returns 200; a NEW post-cycle Agent created
+    after the re-PUT is searchable within the poll window.
+    """
+    embedder_id = f"emb-t0244-{unique_suffix}"
+    llm_id = f"llm-t0244-{unique_suffix}"
+    pre_agent_id = f"agent-pre-{unique_suffix}"
+    post_agent_id = f"agent-post-{unique_suffix}"
+    pre_marker = f"pre-cycle-marker-{unique_suffix}"
+    post_marker = f"post-cycle-marker-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    llm_created = False
+    agents_created: list[str] = []
+    config_currently_active = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_currently_active = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        pre = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                pre_agent_id, provider_id=llm_id, description=pre_marker,
+            ),
+        )
+        assert pre.status_code == 201, pre.text
+        agents_created.append(pre_agent_id)
+
+        # DELETE config — subsystem deactivates
+        rm = await client.delete("/v1/internal_collections/config")
+        assert rm.status_code == 204, rm.text
+        config_currently_active = False
+
+        # Re-PUT and re-bootstrap
+        await _bootstrap_subsystem(client, embedder_id)
+        config_currently_active = True
+
+        # New agent post-cycle
+        post = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                post_agent_id, provider_id=llm_id, description=post_marker,
+            ),
+        )
+        assert post.status_code == 201, post.text
+        agents_created.append(post_agent_id)
+
+        # Poll search until post-cycle agent is indexed
+        found = False
+        for _ in range(60):
+            s = await client.post(
+                "/v1/agents/search",
+                json={"query": post_marker, "top_k": 10},
+            )
+            assert s.status_code == 200, s.text
+            ids = {h["document_id"] for h in s.json()["hits"]}
+            if post_agent_id in ids:
+                found = True
+                break
+            await asyncio.sleep(0.5)
+        assert found, (
+            f"post-cycle agent {post_agent_id!r} not indexed after "
+            f"DELETE+re-PUT cycle within 30s"
+        )
+    finally:
+        for aid in agents_created:
+            await client.delete(f"/v1/agents/{aid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_currently_active:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")

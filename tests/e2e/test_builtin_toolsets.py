@@ -227,3 +227,94 @@ async def test_t0191_put_builtin_system_toolset_clean_envelope(
         f"{after.text}"
     )
     assert isinstance(after.json().get("tools"), list)
+
+
+# ============================================================================
+# T0246 — DELETE built-in `_workspaces` toolset returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0246_delete_builtin_workspaces_toolset_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0246 — Mirror of T0190 (DELETE _system) for the second built-in
+    toolset. The always-on _workspaces provider has no storage row;
+    DELETE on its id must produce a clean envelope and the built-in
+    /tools endpoint must still work afterward.
+    """
+    resp = await client.delete("/v1/toolsets/_workspaces")
+    assert resp.status_code < 500, resp.text
+    if resp.status_code >= 400:
+        envelope = resp.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["type"] != "/errors/internal", envelope
+
+    after = await client.get("/v1/toolsets/_workspaces/tools")
+    assert after.status_code == 200, (
+        f"DELETE attempt on built-in _workspaces toolset must not "
+        f"disable the always-on provider; /tools got "
+        f"{after.status_code}: {after.text}"
+    )
+    assert isinstance(after.json().get("tools"), list)
+
+
+# ============================================================================
+# T0247 — DELETE _search toolset before subsystem activation
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0247_delete_search_toolset_before_activation_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0247 — `_search` is the third built-in toolset, but it's only
+    materialized once the internal-collections subsystem is active
+    (per spec §8). Before activation, attempting to DELETE it must
+    produce a clean envelope (no /errors/internal); subsequent
+    activation of the subsystem must still succeed.
+
+    The bringup never activates the subsystem at start-time, so this
+    test runs on the inactive state by default.
+    """
+    resp = await client.delete("/v1/toolsets/_search")
+    assert resp.status_code < 500, resp.text
+    if resp.status_code >= 400:
+        envelope = resp.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["type"] != "/errors/internal", envelope
+
+    # Activation must still succeed after the DELETE attempt
+    embedder_id = f"emb-t0247-{unique_suffix}"
+    pr = await client.post(
+        "/v1/embedding_providers",
+        json={
+            "id": embedder_id,
+            "provider": "huggingface",
+            "models": [
+                {"name": "sentence-transformers/all-MiniLM-L6-v2", "dim": 384},
+            ],
+            "config": {"token": "hf-placeholder"},
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json={
+                "embedding_provider_id": embedder_id,
+                "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+            },
+        )
+        assert put.status_code == 200, (
+            f"subsystem activation should succeed after the DELETE "
+            f"attempt on _search; got {put.status_code}: {put.text}"
+        )
+        config_created = True
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
