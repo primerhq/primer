@@ -1792,3 +1792,60 @@ async def test_t0244_ic_config_delete_then_reput_search_recovers(
         if config_currently_active:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0269 — IC config PUT with collections=[] (empty list) is accepted
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0269_ic_config_put_with_empty_collections_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0269 — Spec §11 mentioned `collections=[...]` as a body field
+    on PUT /v1/internal_collections/config. The actual model
+    (matrix/model/internal.py) does not have a `collections` field,
+    so passing `collections=[]` should be silently ignored by Pydantic
+    (extra=ignore default) and the PUT succeeds.
+
+    Bootstrap after this empty-list PUT must return cleanly with sane
+    envelope; search routes return 200 with empty hits.
+    """
+    embedder_id = f"emb-t0269-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        body = _ic_config_body(embedder_id=embedder_id)
+        body["collections"] = []  # extra field — should be ignored
+        put = await client.put(
+            "/v1/internal_collections/config", json=body,
+        )
+        assert put.status_code == 200, (
+            f"PUT with extra collections=[] should be silently "
+            f"accepted; got {put.status_code}: {put.text}"
+        )
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        assert boot.status_code == 200, boot.text
+        assert isinstance(boot.json(), dict), boot.json()
+
+        # Search returns clean envelope
+        s = await client.post(
+            "/v1/agents/search", json={"query": "anything", "top_k": 3},
+        )
+        assert s.status_code == 200, s.text
+        assert isinstance(s.json().get("hits"), list), s.json()
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")

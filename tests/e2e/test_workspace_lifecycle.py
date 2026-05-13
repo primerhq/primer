@@ -2812,3 +2812,104 @@ async def test_t0254_workspace_files_put_delete_put_round_trip(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0267 — WorkspaceTemplate PUT mutates row; description reflects update
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0267_workspace_template_put_mutates_row(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0267 — Spec §12 says WorkspaceTemplate is "a mutable snapshot
+    used by future create calls". Pin the mutability via PUT:
+    create template, GET reads original description, PUT replaces
+    description, GET reads the new description.
+
+    The "snapshot" semantics (already-materialised workspaces don't
+    pick up the mutation) are not testable cheaply without inspecting
+    backend state — this test pins only the PUT contract on the
+    template ROW itself.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        # Initial GET
+        got1 = await client.get(f"/v1/workspace_templates/{template_id}")
+        assert got1.status_code == 200, got1.text
+        orig_desc = got1.json()["description"]
+
+        # PUT with updated description
+        new_desc = f"updated-description-{unique_suffix}"
+        put_body = dict(got1.json())
+        put_body["description"] = new_desc
+        put = await client.put(
+            f"/v1/workspace_templates/{template_id}", json=put_body,
+        )
+        assert put.status_code == 200, put.text
+
+        # GET reflects the new description
+        got2 = await client.get(f"/v1/workspace_templates/{template_id}")
+        assert got2.status_code == 200, got2.text
+        assert got2.json()["description"] == new_desc, got2.json()
+        assert got2.json()["description"] != orig_desc
+    finally:
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0268 — DELETE WorkspaceProvider while a workspace from its template is alive
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0268_delete_workspace_provider_with_active_workspace(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0268 — DELETE WorkspaceProvider while a workspace materialised
+    from one of its templates is still alive. Provider DELETE returns
+    either 204 (no-FK semantics; cascade tolerated) or a 4xx
+    (referential check). Either way:
+      - no /errors/internal
+      - the existing workspace continues to respond cleanly to file
+        ops (or returns clean 4xx if the cascade also tore it down).
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+        try:
+            # DELETE the provider mid-flight
+            rm = await client.delete(f"/v1/workspace_providers/{provider_id}")
+            assert rm.status_code < 500, rm.text
+            if rm.status_code >= 400:
+                envelope = rm.json()
+                assert envelope["type"].startswith("/errors/"), envelope
+                assert envelope["type"] != "/errors/internal", envelope
+
+            # File op on existing workspace must return cleanly
+            r = await client.put(
+                f"/v1/workspaces/{workspace_id}/files?path=after.txt",
+                json={"content": "x", "encoding": "text"},
+            )
+            assert r.status_code < 500, r.text
+            envelope = r.json() if (r.content and r.status_code >= 400) else {}
+            if envelope:
+                assert envelope.get("type", "/errors/").startswith(
+                    "/errors/"
+                ), envelope
+                assert envelope.get("type") != "/errors/internal", envelope
+        finally:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+    finally:
+        # Provider may already be gone
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")

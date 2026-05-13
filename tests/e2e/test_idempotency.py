@@ -183,6 +183,65 @@ async def test_t0250_concurrent_invalidate_calls_all_204(
 
 
 @pytest.mark.asyncio
+async def test_t0266_parallel_puts_same_row_one_body_wins(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0266 — Two parallel PUTs to the same LLMProvider row with
+    DIFFERENT bodies. Both must return 2xx (or one wins and the other
+    409 — both are documented); the GET after the race returns one of
+    the two bodies (no row corruption); never /errors/internal.
+    """
+    entity_id = f"llm-race-put-{unique_suffix}"
+    body_a = {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test-A"},
+        "limits": {"max_concurrency": 1},
+    }
+    body_b = {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [
+            {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            {"name": "claude-haiku-4-5", "context_length": 100_000},
+        ],
+        "config": {"api_key": "sk-test-B"},
+        "limits": {"max_concurrency": 4},
+    }
+
+    # Initial create
+    created = await client.post("/v1/llm_providers", json=body_a)
+    assert created.status_code == 201, created.text
+    try:
+        # Race two PUTs concurrently
+        r_a, r_b = await asyncio.gather(
+            client.put(f"/v1/llm_providers/{entity_id}", json=body_a),
+            client.put(f"/v1/llm_providers/{entity_id}", json=body_b),
+        )
+        for r, label in ((r_a, "PUT A"), (r_b, "PUT B")):
+            assert r.status_code < 500, (
+                f"{label} leaked 5xx: {r.status_code}: {r.text}"
+            )
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label} returned /errors/internal: {r.text}"
+            )
+
+        # GET the row — must return one of the two bodies cleanly
+        got = await client.get(f"/v1/llm_providers/{entity_id}")
+        assert got.status_code == 200, got.text
+        row = got.json()
+        winner_models = [m["name"] for m in row["models"]]
+        assert winner_models in (
+            ["claude-sonnet-4-6"],
+            ["claude-sonnet-4-6", "claude-haiku-4-5"],
+        ), f"row corrupted across PUT race: {row!r}"
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0104_parallel_get_and_delete_no_internal_error(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

@@ -826,3 +826,61 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
         if coll_created:
             await client.delete(f"/v1/collections/{coll_id}")
         # Provider already deleted
+
+
+# ============================================================================
+# T0270 — Collection DELETE then re-POST same id with different embedder
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0270_collection_delete_then_recreate_with_different_embedder(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0270 — Mirror of T0119 (LLMProvider re-create) for the
+    Collection entity. After DELETE, POSTing the same id with a
+    different embedder body must succeed (201); GET reads the new
+    body; no stale-cache rejection.
+    """
+    coll_id = f"coll-t0270-{unique_suffix}"
+    body_a = {
+        "id": coll_id,
+        "description": "first incarnation",
+        "embedder": {
+            "provider_id": f"emb-a-{unique_suffix}",
+            "model": "sentence-transformers/all-MiniLM-L6-v2",
+        },
+    }
+    body_b = {
+        "id": coll_id,
+        "description": "second incarnation",
+        "embedder": {
+            "provider_id": f"emb-b-{unique_suffix}",
+            "model": "sentence-transformers/all-mpnet-base-v2",
+        },
+    }
+
+    create_a = await client.post("/v1/collections", json=body_a)
+    assert create_a.status_code in (200, 201), create_a.text
+
+    rm = await client.delete(f"/v1/collections/{coll_id}")
+    assert rm.status_code == 204, rm.text
+
+    create_b = await client.post("/v1/collections", json=body_b)
+    assert create_b.status_code in (200, 201), (
+        f"re-POST after DELETE with different body should succeed; "
+        f"got {create_b.status_code}: {create_b.text}"
+    )
+    try:
+        got = await client.get(f"/v1/collections/{coll_id}")
+        assert got.status_code == 200, got.text
+        row = got.json()
+        assert row["description"] == "second incarnation", row
+        assert row["embedder"]["provider_id"] == f"emb-b-{unique_suffix}", (
+            row
+        )
+        assert row["embedder"]["model"] == (
+            "sentence-transformers/all-mpnet-base-v2"
+        ), row
+    finally:
+        await client.delete(f"/v1/collections/{coll_id}")
