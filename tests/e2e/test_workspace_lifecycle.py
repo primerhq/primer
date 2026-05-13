@@ -625,6 +625,188 @@ async def test_t0063_workspace_empty_file_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_t0111_workspace_template_env_propagates_to_init_commands(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0111 — `WorkspaceTemplate.env` is merged into the init_commands
+    subprocess environment. An init_command that reads `os.environ['MARKER']`
+    and writes it to a file recovers the configured value.
+    """
+    provider_id = f"wp-env-{unique_suffix}"
+    template_id = f"wt-env-{unique_suffix}"
+    workspace_id: str | None = None
+    marker_value = f"env-marker-{unique_suffix}"
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        init_cmd = (
+            'python -c "import os; '
+            "open('marker.txt','w').write(os.environ['MARKER'])\""
+        )
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "env propagation test",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "env": {"MARKER": marker_value},
+                "init_commands": [init_cmd],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "marker.txt"},
+        )
+        assert read.status_code == 200, read.text
+        assert read.json()["content"] == marker_value, read.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+@pytest.mark.asyncio
+async def test_t0112_workspace_overrides_env_wins_over_template_env(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0112 — `WorkspaceTemplateOverrides.env` keys overlay the
+    template's env (caller wins on conflict). Same fixture as T0111
+    with template MARKER=A and overrides MARKER=B; the marker file
+    contains B.
+    """
+    provider_id = f"wp-envo-{unique_suffix}"
+    template_id = f"wt-envo-{unique_suffix}"
+    workspace_id: str | None = None
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        init_cmd = (
+            'python -c "import os; '
+            "open('marker.txt','w').write(os.environ['MARKER'])\""
+        )
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "env override test",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "env": {"MARKER": "from-template-A"},
+                "init_commands": [init_cmd],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        override_value = f"from-override-B-{unique_suffix}"
+        ws = await client.post(
+            "/v1/workspaces",
+            json={
+                "template_id": template_id,
+                "overrides": {"env": {"MARKER": override_value}},
+            },
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "marker.txt"},
+        )
+        assert read.status_code == 200, read.text
+        assert read.json()["content"] == override_value, read.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+@pytest.mark.asyncio
+async def test_t0113_workspace_overrides_init_commands_extend_template(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0113 — `WorkspaceTemplateOverrides.init_commands` EXTENDS
+    (template runs first, then caller). Both marker files exist
+    in the fresh workspace.
+    """
+    provider_id = f"wp-cmds-{unique_suffix}"
+    template_id = f"wt-cmds-{unique_suffix}"
+    workspace_id: str | None = None
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        template_cmd = (
+            'python -c "open(\'t.txt\',\'w\').write(\'from-template\')"'
+        )
+        override_cmd = (
+            'python -c "open(\'o.txt\',\'w\').write(\'from-override\')"'
+        )
+
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "init_commands extend test",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "init_commands": [template_cmd],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces",
+            json={
+                "template_id": template_id,
+                "overrides": {"init_commands": [override_cmd]},
+            },
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for path, expected in (
+            ("t.txt", "from-template"),
+            ("o.txt", "from-override"),
+        ):
+            read = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": path},
+            )
+            assert read.status_code == 200, (
+                f"file {path!r} missing — extend semantic broken: {read.text}"
+            )
+            assert read.json()["content"] == expected, read.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0092_workspace_template_init_commands_run(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:

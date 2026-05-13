@@ -516,6 +516,99 @@ async def test_t0130_top_level_sessions_cursor_walk_full_coverage(
 
 
 # ============================================================================
+# T0120 — three-way filter (workspace_id + agent_id + status) is intersection
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0120_top_level_sessions_three_way_filter_intersects(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0120 — seed sessions across two workspaces and two agents in
+    four combinations (wsA+agA, wsA+agB, wsB+agA, wsB+agB), cancel
+    one of them to flip its status, and verify the three-way filter
+    `workspace_id=wsA & agent_id=agA & status=created` returns the
+    single matching session.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_a: str | None = None
+    workspace_b: str | None = None
+    agent_b_id = f"agent-b-{unique_suffix}"
+    try:
+        # Second agent — same provider
+        ag_b = await client.post(
+            "/v1/agents",
+            json=_agent_body(agent_b_id, provider_id=env["provider_id"]),
+        )
+        assert ag_b.status_code == 201, ag_b.text
+
+        # Two workspaces from the same template
+        ws_a = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws_a.status_code == 201, ws_a.text
+        workspace_a = ws_a.json()["id"]
+        ws_b = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws_b.status_code == 201, ws_b.text
+        workspace_b = ws_b.json()["id"]
+
+        # Four sessions in the four (workspace, agent) combinations.
+        async def _mk_sess(wid: str, aid: str) -> str:
+            r = await client.post(
+                f"/v1/workspaces/{wid}/sessions",
+                json=_session_body(agent_id=aid),
+            )
+            assert r.status_code == 201, r.text
+            return r.json()["id"]
+
+        sid_AA = await _mk_sess(workspace_a, env["agent_id"])
+        sid_AB = await _mk_sess(workspace_a, agent_b_id)
+        sid_BA = await _mk_sess(workspace_b, env["agent_id"])
+        sid_BB = await _mk_sess(workspace_b, agent_b_id)
+
+        # Flip sid_BA to ENDED so the agent-A-on-ws-A vs agent-A-on-ws-B
+        # filter intersection is more interesting.
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_b}/sessions/{sid_BA}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+
+        # Triple filter: ws=A, agent=env["agent_id"], status=created
+        # Expected: only sid_AA
+        resp = await client.get(
+            "/v1/sessions",
+            params={
+                "workspace_id": workspace_a,
+                "agent_id": env["agent_id"],
+                "status": "created",
+                "limit": 50,
+                "offset": 0,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        ids = {item["id"] for item in resp.json()["items"]}
+        assert ids == {sid_AA}, (
+            f"triple filter (ws=A, agent=A, status=created) expected "
+            f"{{sid_AA}}, got {sorted(ids)!r}"
+        )
+        # Sanity: confirm the other three are excluded
+        for sid_other in (sid_AB, sid_BA, sid_BB):
+            assert sid_other not in ids, sid_other
+    finally:
+        # Cancel + delete sessions
+        for wid, sids in (
+            (workspace_a, ["sid_AA", "sid_AB"]),
+            (workspace_b, ["sid_BA", "sid_BB"]),
+        ):
+            if wid is not None:
+                await client.delete(f"/v1/workspaces/{wid}")
+        await client.delete(f"/v1/agents/{agent_b_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0089 — top-level /v1/sessions order_by created_at asc/desc are reverses
 # ============================================================================
 

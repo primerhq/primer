@@ -494,6 +494,78 @@ async def test_t0059_search_ranks_marker_match_above_noise(
 
 
 @pytest.mark.asyncio
+async def test_t0128_collection_with_marker_searchable(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0128 — after bootstrap, a Collection whose description contains
+    a unique marker is findable via `/v1/collections/search`.
+
+    NB: the original backlog wording said "create collection + document,
+    search finds the document marker" — but there's no
+    `/v1/documents/search` endpoint, and `/v1/collections/search`
+    searches over Collection rows (not their documents). Reframed to
+    pin the Collection-search path through the internal-collections
+    subsystem, mirroring T0034 for Agent.
+    """
+    embedder_id = f"emb-t0128-{unique_suffix}"
+    coll_id = f"col-t0128-{unique_suffix}"
+    marker = f"collection-marker-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    coll_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        # Create the Collection AFTER bootstrap so the CDC create-hook
+        # is responsible for indexing it (mirror of T0034).
+        coll = await client.post(
+            "/v1/collections",
+            json={
+                "id": coll_id,
+                "description": marker,
+                "embedder": {
+                    "provider_id": embedder_id,
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                },
+            },
+        )
+        assert coll.status_code == 201, coll.text
+        coll_created = True
+
+        # Poll /v1/collections/search until the new collection appears
+        deadline_iters = 60  # ~30 s at 0.5 s cadence
+        found = False
+        last_ids: list[str] = []
+        for _ in range(deadline_iters):
+            search = await client.post(
+                "/v1/collections/search",
+                json={"query": marker, "top_k": 5},
+            )
+            assert search.status_code == 200, search.text
+            last_ids = [h["document_id"] for h in search.json()["hits"]]
+            if coll_id in last_ids:
+                found = True
+                break
+            await asyncio.sleep(0.5)
+        assert found, (
+            f"new collection not indexed within 30s; "
+            f"last hits={last_ids!r}"
+        )
+    finally:
+        if coll_created:
+            await client.delete(f"/v1/collections/{coll_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0107_cdc_unicode_marker_searchable(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
