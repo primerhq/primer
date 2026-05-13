@@ -344,6 +344,74 @@ async def test_t0035_cdc_deleted_agent_removed_from_search(
 
 
 @pytest.mark.asyncio
+async def test_t0062_search_top_k_caps_result_count(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0062 — search with top_k=1 returns at most 1 hit even when
+    multiple agents would otherwise match. Pins the upper-bound
+    semantics of the top_k parameter (Pydantic enforces ge=1, le=100;
+    the search runtime must honour the cap).
+    """
+    embedder_id = f"emb-t0062-{unique_suffix}"
+    llm_id = f"llm-t0062-{unique_suffix}"
+    shared_marker = f"shared-marker-{unique_suffix}"
+    agent_ids = [f"agent-t0062-{unique_suffix}-{i}" for i in range(3)]
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    created_agents: list[str] = []
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        # Three agents sharing the same description marker so all three
+        # would qualify on lexical match alone.
+        for aid in agent_ids:
+            ag = await client.post(
+                "/v1/agents",
+                json=_agent_body(
+                    aid, provider_id=llm_id, description=shared_marker,
+                ),
+            )
+            assert ag.status_code == 201, ag.text
+            created_agents.append(aid)
+
+        # Wait for all three to be indexed (CDC).
+        await _poll_search_for(
+            client, query=shared_marker, expected_id=agent_ids[-1], present=True,
+        )
+
+        # top_k=1 must cap the response, even though multiple match.
+        resp = await client.post(
+            "/v1/agents/search",
+            json={"query": shared_marker, "top_k": 1},
+        )
+        assert resp.status_code == 200, resp.text
+        hits = resp.json()["hits"]
+        assert len(hits) <= 1, (
+            f"top_k=1 was not honoured; got {len(hits)} hits: "
+            f"{[h['document_id'] for h in hits]!r}"
+        )
+    finally:
+        for aid in created_agents:
+            await client.delete(f"/v1/agents/{aid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0036_cdc_updated_agent_description_indexed(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

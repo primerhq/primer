@@ -67,3 +67,65 @@ async def test_t0068_document_create_with_missing_collection_id_no_500(
             )
         assert envelope["status"] == resp.status_code
         assert envelope["type"].startswith("/errors/"), envelope
+
+
+@pytest.mark.asyncio
+async def test_t0074_order_by_jsonb_nested_path_sorts_deterministically(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0074 — find with `order_by=[{field: "meta.tag", direction: ...}]`
+    sorts rows lexicographically by the JSONB-nested `meta.tag` value.
+
+    Documents are the simplest entity with a free-form `meta` dict.
+    Insert three rows with `meta.tag` deliberately out of order; the
+    asc walk must put them in lexical order.
+
+    Filters by id-prefix LIKE so the sort applies to the seeded set
+    only. Per T0068 the referential integrity isn't enforced, so the
+    `collection_id` doesn't need to point at a real row.
+    """
+    prefix = f"doc-t0074-{unique_suffix}"
+    docs = [
+        {"id": f"{prefix}-c", "tag": "ccc"},
+        {"id": f"{prefix}-a", "tag": "aaa"},
+        {"id": f"{prefix}-b", "tag": "bbb"},
+    ]
+    # Insert in non-sorted order so the test exercises the sort, not
+    # insertion order leakage.
+    created: list[str] = []
+    try:
+        for d in docs:
+            body = {
+                "id": d["id"],
+                "name": f"doc {d['tag']}",
+                "collection_id": f"unenforced-{unique_suffix}",
+                "text": "ignored",
+                "meta": {"tag": d["tag"]},
+            }
+            resp = await client.post("/v1/documents", json=body)
+            assert resp.status_code in (200, 201), resp.text
+            created.append(d["id"])
+
+        find_body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+            "order_by": [{"field": "meta.tag", "direction": "asc"}],
+        }
+        resp = await client.post("/v1/documents/find", json=find_body)
+        assert resp.status_code == 200, resp.text
+        items = resp.json()["items"]
+        tags = [item["meta"]["tag"] for item in items]
+        assert tags == ["aaa", "bbb", "ccc"], (
+            f"expected ['aaa','bbb','ccc'] sorted, got {tags!r}"
+        )
+        # Sanity: corresponding ids are in matching order.
+        ids = [item["id"] for item in items]
+        assert ids == [f"{prefix}-a", f"{prefix}-b", f"{prefix}-c"], ids
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
