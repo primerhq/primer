@@ -1078,6 +1078,236 @@ async def test_t0096_workspace_destroy_then_recreate_starts_clean(
 
 
 @pytest.mark.asyncio
+async def test_t0142_workspace_file_text_base64_round_trip_consistent(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0142 — write content via PUT, then read via both encodings.
+    The base64-decoded bytes must equal the text-encoding's UTF-8
+    bytes — same file, two views.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        content = f"hello-{unique_suffix}-world"
+        path = "round_trip.txt"
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": content, "encoding": "text"},
+        )
+        assert write.status_code == 204, write.text
+
+        # Read as text
+        text_resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": path},
+        )
+        assert text_resp.status_code == 200, text_resp.text
+        text_body = text_resp.json()
+        assert text_body["content"] == content
+        assert text_body["encoding"] == "text"
+
+        # Read as base64
+        b64_resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": path, "encoding": "base64"},
+        )
+        assert b64_resp.status_code == 200, b64_resp.text
+        b64_body = b64_resp.json()
+        assert b64_body["encoding"] == "base64"
+
+        # Decode and compare
+        decoded = base64.b64decode(b64_body["content"])
+        assert decoded == content.encode("utf-8"), (
+            f"base64 round-trip mismatch: text={content!r}, "
+            f"decoded={decoded!r}"
+        )
+        # size_bytes is consistent across both reads
+        assert text_body["size_bytes"] == b64_body["size_bytes"]
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0143_workspace_file_put_malformed_base64_rejected(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0143 — PUT with `encoding=base64` and malformed base64 content
+    returns a clean 4xx envelope. No 500 leak."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "bad.bin"},
+            json={
+                "content": "not!!base64@@@",  # invalid alphabet
+                "encoding": "base64",
+            },
+        )
+        assert write.status_code != 500, write.text
+        assert 400 <= write.status_code < 500, (
+            f"expected 4xx on malformed base64, got "
+            f"{write.status_code}: {write.text}"
+        )
+        envelope = write.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["status"] == write.status_code
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0146_workspace_file_put_root_path_rejected(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0146 — PUT with `path="."` (workspace root) is rejected with
+    a clean 4xx. The workspace root is not a writable destination —
+    writing there would either overwrite the root dir or 500."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "."},
+            json={"content": "x", "encoding": "text"},
+        )
+        assert write.status_code != 500, write.text
+        assert 400 <= write.status_code < 500, (
+            f"PUT to workspace root must reject, got "
+            f"{write.status_code}: {write.text}"
+        )
+        envelope = write.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0147_workspace_file_put_empty_path_rejected(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0147 — empty `path` query param returns a clean 4xx.
+    Either validation rejects it (422) or the handler returns a
+    bad-request. No 500."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": ""},
+            json={"content": "x", "encoding": "text"},
+        )
+        assert write.status_code != 500, write.text
+        assert 400 <= write.status_code < 500, (
+            f"empty path must reject, got "
+            f"{write.status_code}: {write.text}"
+        )
+        envelope = write.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0148_workspace_file_put_path_traversal_rejected(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0148 — path traversal via `..` must be rejected with a clean
+    4xx, and the file must NOT materialise outside the workspace.
+
+    Probe the second condition by:
+    1. attempting the traversal write
+    2. listing the workspace root — nothing carrying the marker should
+       appear
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        marker = f"escape-{unique_suffix}"
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "../escape.txt"},
+            json={"content": marker, "encoding": "text"},
+        )
+        assert write.status_code != 500, write.text
+        assert 400 <= write.status_code < 500, (
+            f"`..` traversal must reject, got "
+            f"{write.status_code}: {write.text}"
+        )
+        envelope = write.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+
+        # And nothing carrying the marker leaked into the workspace
+        listed = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "."},
+        )
+        assert listed.status_code == 200, listed.text
+        names = [item["path"] for item in listed.json()["items"]]
+        assert not any("escape" in name for name in names), (
+            f"`..` traversal write should not have materialised: {names!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
 async def test_t0144_workspace_files_info_on_missing_path_returns_404(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
