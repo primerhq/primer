@@ -412,6 +412,88 @@ async def test_t0062_search_top_k_caps_result_count(
 
 
 @pytest.mark.asyncio
+async def test_t0059_search_ranks_marker_match_above_noise(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0059 — semantic search ranks the agent whose description
+    contains the queried marker strictly higher than an unrelated
+    agent's. Uses two distinct distinctive markers and queries one;
+    asserts the marker-A agent's score > marker-B agent's score.
+
+    Sentence-transformers cosine similarity gives a clear margin
+    between exact-marker match and an unrelated description, so this
+    pin is robust without a tight tolerance.
+    """
+    embedder_id = f"emb-t0059-{unique_suffix}"
+    llm_id = f"llm-t0059-{unique_suffix}"
+    agent_a = f"agent-a-{unique_suffix}"
+    agent_b = f"agent-b-{unique_suffix}"
+    marker_a = f"marker-aaa-{unique_suffix}"
+    marker_b = f"marker-bbb-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    created_agents: list[str] = []
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        # Two agents with completely distinct descriptions
+        for aid, desc in ((agent_a, marker_a), (agent_b, marker_b)):
+            ag = await client.post(
+                "/v1/agents",
+                json=_agent_body(aid, provider_id=llm_id, description=desc),
+            )
+            assert ag.status_code == 201, ag.text
+            created_agents.append(aid)
+
+        # Wait for both to be indexed
+        await _poll_search_for(
+            client, query=marker_a, expected_id=agent_a, present=True,
+        )
+        await _poll_search_for(
+            client, query=marker_b, expected_id=agent_b, present=True,
+        )
+
+        # Query for marker A — both agents are eligible (they share
+        # the trailing unique_suffix), but agent_a's description is
+        # the one that contains marker_a verbatim, so it MUST rank
+        # strictly higher.
+        resp = await client.post(
+            "/v1/agents/search",
+            json={"query": marker_a, "top_k": 10},
+        )
+        assert resp.status_code == 200, resp.text
+        hits = {h["document_id"]: h["score"] for h in resp.json()["hits"]}
+        assert agent_a in hits, hits
+        assert agent_b in hits, hits
+        score_a = hits[agent_a]
+        score_b = hits[agent_b]
+        assert score_a is not None and score_b is not None, hits
+        assert score_a > score_b, (
+            f"expected agent_a (marker match) to outrank agent_b; "
+            f"got score_a={score_a}, score_b={score_b}"
+        )
+    finally:
+        for aid in created_agents:
+            await client.delete(f"/v1/agents/{aid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0036_cdc_updated_agent_description_indexed(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

@@ -555,6 +555,84 @@ async def test_t0063_workspace_empty_file_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_t0067_workspace_template_overrides_merge(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0067 — `WorkspaceTemplateOverrides.files` extends the template's
+    files list (both apply; later entries win on path conflict). Spec
+    §12 / WorkspaceTemplateOverrides docstring.
+
+    Concrete check: build a template seeding `from-template.txt` via
+    inline content; create a workspace with overrides seeding
+    `from-overrides.txt`. Both files must exist + read back with the
+    expected content.
+    """
+    provider_id = f"wp-merge-{unique_suffix}"
+    template_id = f"wt-merge-{unique_suffix}"
+    workspace_id: str | None = None
+    try:
+        # Provider
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        # Template with one inline-source file
+        template_body = {
+            "id": template_id,
+            "description": "merge test template",
+            "provider_id": provider_id,
+            "backend": {"kind": "local"},
+            "files": [
+                {
+                    "path": "from-template.txt",
+                    "source": {"kind": "inline", "content": "from-template"},
+                }
+            ],
+        }
+        tpl = await client.post(
+            "/v1/workspace_templates", json=template_body,
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        # Workspace with overrides adding a SECOND file
+        ws_body = {
+            "template_id": template_id,
+            "overrides": {
+                "files": [
+                    {
+                        "path": "from-overrides.txt",
+                        "source": {"kind": "inline", "content": "from-overrides"},
+                    }
+                ],
+            },
+        }
+        ws = await client.post("/v1/workspaces", json=ws_body)
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Both files must exist and read back with the right content
+        for path, expected in (
+            ("from-template.txt", "from-template"),
+            ("from-overrides.txt", "from-overrides"),
+        ):
+            read = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": path},
+            )
+            assert read.status_code == 200, (
+                f"expected {path!r} to exist after merge: {read.text}"
+            )
+            assert read.json()["content"] == expected, read.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0064_workspace_deeply_nested_path_round_trip(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
