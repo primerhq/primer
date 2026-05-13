@@ -144,3 +144,63 @@ async def test_t0235_cross_encoder_invalidate_and_models_asymmetry(
     assert models.status_code == 404, models.text
     envelope = models.json()
     assert envelope["type"] == "/errors/not-found", envelope
+
+
+# ============================================================================
+# T0263 — PUT /v1/cross_encoder_providers/{id} replaces row; /models updates
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0263_put_cross_encoder_replaces_models_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0263 — Mirror of T0032/T0262 for the cross-encoder family.
+    PUT replaces the row's `models` list; subsequent /models reflects
+    the new list. Closes the shared-CRUD PUT pin across all 3
+    provider families.
+    """
+    entity_id = f"ce-put-{unique_suffix}"
+    initial = {
+        "id": entity_id,
+        "provider": "huggingface",
+        "models": [{"name": "BAAI/bge-reranker-v2-m3"}],
+        "config": {"token": None},
+        "limits": {"max_concurrency": 1},
+    }
+    create = await client.post("/v1/cross_encoder_providers", json=initial)
+    assert create.status_code == 201, create.text
+
+    try:
+        replacement = {
+            "id": entity_id,
+            "provider": "huggingface",
+            "models": [
+                {"name": "BAAI/bge-reranker-v2-m3"},
+                {"name": "cross-encoder/ms-marco-MiniLM-L-6-v2"},
+            ],
+            "config": {"token": None},
+            "limits": {"max_concurrency": 2},
+        }
+        put = await client.put(
+            f"/v1/cross_encoder_providers/{entity_id}", json=replacement,
+        )
+        assert put.status_code == 200, put.text
+
+        # Invalidate then read /models
+        inv = await client.post(
+            f"/v1/cross_encoder_providers/{entity_id}/invalidate",
+        )
+        assert inv.status_code == 204, inv.text
+
+        models = await client.get(
+            f"/v1/cross_encoder_providers/{entity_id}/models",
+        )
+        assert models.status_code == 200, models.text
+        names = sorted(models.json()["models"])
+        assert names == sorted([
+            "BAAI/bge-reranker-v2-m3",
+            "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        ]), models.json()
+    finally:
+        await client.delete(f"/v1/cross_encoder_providers/{entity_id}")

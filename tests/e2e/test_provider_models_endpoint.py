@@ -126,6 +126,68 @@ async def test_t0175_embedding_provider_models_endpoint_is_row_cached(
 
 
 # ============================================================================
+# T0262 — PUT /v1/embedding_providers/{id} replaces row; /models updates
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0262_put_embedding_provider_replaces_models_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0262 — Mirror of T0032 for the embedding family. PUT replaces
+    the row's `models` list; subsequent GET /models reflects the new
+    list (proving the row-cached endpoint reads fresh from storage).
+    """
+    entity_id = f"emb-put-{unique_suffix}"
+    initial = {
+        "id": entity_id,
+        "provider": "huggingface",
+        "models": [
+            {"name": "sentence-transformers/all-MiniLM-L6-v2", "dim": 384},
+        ],
+        "config": {"token": "hf-placeholder"},
+        "limits": {"max_concurrency": 1},
+    }
+    create = await client.post("/v1/embedding_providers", json=initial)
+    assert create.status_code == 201, create.text
+
+    try:
+        # PUT with a different models list
+        replacement = {
+            "id": entity_id,
+            "provider": "huggingface",
+            "models": [
+                {"name": "sentence-transformers/all-MiniLM-L6-v2", "dim": 384},
+                {"name": "sentence-transformers/all-mpnet-base-v2", "dim": 768},
+            ],
+            "config": {"token": "hf-placeholder"},
+            "limits": {"max_concurrency": 1},
+        }
+        put = await client.put(
+            f"/v1/embedding_providers/{entity_id}", json=replacement,
+        )
+        assert put.status_code == 200, put.text
+
+        # Invalidate to drop any cached adapter, then read /models
+        inv = await client.post(
+            f"/v1/embedding_providers/{entity_id}/invalidate",
+        )
+        assert inv.status_code == 204, inv.text
+
+        models = await client.get(
+            f"/v1/embedding_providers/{entity_id}/models",
+        )
+        assert models.status_code == 200, models.text
+        names = sorted(models.json()["models"])
+        assert names == sorted([
+            "sentence-transformers/all-MiniLM-L6-v2",
+            "sentence-transformers/all-mpnet-base-v2",
+        ]), models.json()
+    finally:
+        await client.delete(f"/v1/embedding_providers/{entity_id}")
+
+
+# ============================================================================
 # T0187 — POST /invalidate on a missing provider returns 404
 # ============================================================================
 

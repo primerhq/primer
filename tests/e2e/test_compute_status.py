@@ -589,6 +589,56 @@ async def test_t0240_delete_provider_concurrent_with_status(
 
 
 # ============================================================================
+# T0265 — DELETE LLMProvider then create Agent referencing the deleted id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0265_create_agent_referencing_deleted_provider_permissive(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0265 — Create LLMProvider, then DELETE it. Then POST an Agent
+    that references the now-deleted provider id. Pin: Agent create
+    succeeds (orphan-tolerated like T0068/T0157); /agents/{id}/status
+    flips ok=false with the missing-llm-provider issue.
+
+    Distinct from T0033 (which deletes the provider AFTER creating
+    the agent) — this exercises the create-with-already-missing-ref
+    path.
+    """
+    provider_id = f"llm-deleted-{unique_suffix}"
+    agent_id = f"agent-t0265-{unique_suffix}"
+
+    # Create then delete the provider
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    rm = await client.delete(f"/v1/llm_providers/{provider_id}")
+    assert rm.status_code == 204, rm.text
+
+    # Now create the agent referencing the deleted id — must succeed
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, (
+        f"agent create with missing-provider ref should succeed (orphan-"
+        f"tolerated); got {ag.status_code}: {ag.text}"
+    )
+    try:
+        # /status flips to ok=false with missing-provider issue
+        status = await client.get(f"/v1/agents/{agent_id}/status")
+        assert status.status_code == 200, status.text
+        body = status.json()
+        assert body["ok"] is False, body
+        issues = body["issues"]
+        assert any(
+            provider_id in str(i) for i in issues
+        ), f"no issue references missing provider {provider_id!r}: {issues!r}"
+    finally:
+        await client.delete(f"/v1/agents/{agent_id}")
+
+
+# ============================================================================
 # T0192 — GET /v1/agents/{missing}/status returns 404
 # ============================================================================
 

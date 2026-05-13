@@ -756,3 +756,73 @@ async def test_t0253_collection_documents_items_carry_collection_id(
             await client.delete(f"/v1/documents/{did}")
         if coll_created:
             await client.delete(f"/v1/collections/{coll_id}")
+
+
+# ============================================================================
+# T0264 — DELETE EmbeddingProvider while a Collection references it
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0264_delete_embedder_with_referencing_collection_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0264 — Cascade orphan-tolerance pin. Create EmbeddingProvider
+    + Collection that references it; DELETE the provider; the
+    Collection row remains readable with its now-orphaned embedder
+    reference (mirror of T0177 for the negative path — this time the
+    referencing row is created first).
+    """
+    embedder_id = f"emb-t0264-{unique_suffix}"
+    coll_id = f"coll-t0264-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers",
+        json={
+            "id": embedder_id,
+            "provider": "huggingface",
+            "models": [
+                {"name": "sentence-transformers/all-MiniLM-L6-v2", "dim": 384},
+            ],
+            "config": {"token": "hf-placeholder"},
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    assert pr.status_code == 201, pr.text
+
+    coll_created = False
+    try:
+        coll = await client.post(
+            "/v1/collections",
+            json={
+                "id": coll_id,
+                "description": "T0264 referencing-collection",
+                "embedder": {
+                    "provider_id": embedder_id,
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                },
+            },
+        )
+        assert coll.status_code in (200, 201), coll.text
+        coll_created = True
+
+        # DELETE the embedder while the collection still references it
+        rm = await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        assert rm.status_code == 204, rm.text
+
+        # Collection row remains readable
+        got = await client.get(f"/v1/collections/{coll_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["embedder"]["provider_id"] == embedder_id, (
+            got.json()
+        )
+
+        # Documents listing under the orphaned collection still responds
+        # cleanly (no 5xx)
+        docs = await client.get(f"/v1/collections/{coll_id}/documents")
+        assert docs.status_code != 500, docs.text
+        assert docs.status_code < 500, docs.text
+    finally:
+        if coll_created:
+            await client.delete(f"/v1/collections/{coll_id}")
+        # Provider already deleted

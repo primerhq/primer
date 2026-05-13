@@ -410,3 +410,30 @@ async def test_t0260_options_workspace_files_multi_verb_allow_header(
                 await client.delete(f"/v1/workspace_templates/{tpl_id}")
         finally:
             await client.delete(f"/v1/workspace_providers/{wp_id}")
+
+
+# ============================================================================
+# T0261 — OPTIONS on a POST-only search route returns clean response
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0261_options_search_route_clean_response(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0261 — POST /v1/agents/search is the only verb mounted on this
+    route. OPTIONS must respond cleanly (typically 200/204 with Allow
+    listing POST, or 405 if the framework doesn't auto-respond to
+    OPTIONS). NEVER /errors/internal.
+    """
+    resp = await client.request("OPTIONS", "/v1/agents/search")
+    assert resp.status_code < 500, resp.text
+    if resp.status_code in (200, 204):
+        allow = resp.headers.get("allow", "")
+        assert allow, (
+            f"OPTIONS {resp.status_code} but no Allow header"
+        )
+        # POST is the only handler — Allow must include it
+        assert "POST" in allow.upper(), (
+            f"Allow header {allow!r} should include POST"
+        )
