@@ -65,3 +65,69 @@ async def test_t0141_workspaces_toolset_lists_tools(
     # Each tool also reports the toolset_id consistently
     for tool in tools:
         assert tool.get("toolset_id") == "_workspaces", tool
+
+
+# ============================================================================
+# T0176 — MCP stdio toolset with unrunnable command surfaces clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0176_mcp_stdio_unrunnable_command_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0176 — Spec §8 says stdio MCP commands are constrained by
+    `AppConfig.mcp_stdio_allowed_commands`. The bringup config doesn't
+    set the allow-list (default null = anything goes), so we probe the
+    adjacent failure path instead: an MCP stdio Toolset configured
+    with a binary that doesn't exist on PATH.
+
+    Either path yields a ConfigError-class failure inside the provider
+    that the API must surface as a clean envelope (any 4xx / 502 / 503,
+    NEVER 500 /errors/internal). The exact mapping is implementation
+    detail; this test just pins the no-/errors/internal invariant.
+    """
+    toolset_id = f"mcp-bad-{unique_suffix}"
+    body = {
+        "id": toolset_id,
+        "provider": "mcp",
+        "config": {
+            "transport": "stdio",
+            "config": {
+                # A binary that doesn't exist on PATH inside the
+                # container. Doesn't matter what — the stdio_client
+                # spawn must fail.
+                "command": [
+                    f"nonexistent-binary-xyz-{unique_suffix}",
+                    "--serve",
+                ],
+            },
+        },
+    }
+    create = await client.post("/v1/toolsets", json=body)
+    assert create.status_code == 201, create.text
+    try:
+        # Now hit /tools — this is where the provider actually tries
+        # to launch the stdio process. With the allow-list null and a
+        # missing binary, this should fail at session-open and produce
+        # a documented envelope, NOT /errors/internal.
+        resp = await client.get(
+            f"/v1/toolsets/{toolset_id}/tools",
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+        assert resp.status_code != 500 or (
+            resp.json().get("type") != "/errors/internal"
+        ), f"unexpected /errors/internal leak: {resp.text}"
+        if resp.status_code >= 400:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+            # Status code should be 4xx or 5xx-non-internal
+            assert resp.status_code in (
+                400, 401, 404, 422, 502, 503, 504,
+            ), (
+                f"unexpected status {resp.status_code} for unrunnable "
+                f"MCP stdio command: {resp.text}"
+            )
+    finally:
+        await client.delete(f"/v1/toolsets/{toolset_id}")

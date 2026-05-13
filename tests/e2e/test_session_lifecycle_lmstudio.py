@@ -1320,3 +1320,103 @@ async def test_t0170_top_level_sessions_filter_by_status_ended(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0179 — concurrent steer + cancel: cancel converges to terminal cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0179_concurrent_steer_and_cancel_no_5xx(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0179 — race a steer instruction against a cancel on the same
+    RUNNING session. Pin §17.8 invariant:
+
+      - cancel returns 200 or 409 (never 5xx)
+      - steer returns 200/204 (no status-gate per spec §12) or 409
+        if the runtime starts gating against terminal — but never 5xx
+      - the session converges to a terminal status
+
+    Uses asyncio.gather to fire both calls without an ordered wait
+    between them. The exact race outcome is non-deterministic; only
+    the no-5xx + eventual-terminal invariants are deterministic.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Heavy prompt so the worker is busy long enough for the race
+        # to actually be a race
+        long_prompt = (
+            "List the first 30 prime numbers and explain why each is "
+            "prime. Take your time and think carefully."
+        )
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "initial_instructions": long_prompt,
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 200, resume.text
+
+        # Brief pause so the worker has a chance to claim
+        await asyncio.sleep(0.5)
+
+        # Fire steer + cancel without ordering
+        steer_task = asyncio.create_task(client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": "Stop and reply 'DONE'."},
+        ))
+        cancel_task = asyncio.create_task(client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        ))
+        steer_resp, cancel_resp = await asyncio.gather(
+            steer_task, cancel_task,
+        )
+
+        # No 5xx anywhere
+        assert steer_resp.status_code < 500, steer_resp.text
+        assert cancel_resp.status_code < 500, cancel_resp.text
+
+        # Each call lands one of its documented codes
+        assert steer_resp.status_code in (200, 204, 404, 409), (
+            f"steer race: unexpected code {steer_resp.status_code}: "
+            f"{steer_resp.text}"
+        )
+        assert cancel_resp.status_code in (200, 409), (
+            f"cancel race: unexpected code {cancel_resp.status_code}: "
+            f"{cancel_resp.text}"
+        )
+
+        # The session converges to terminal
+        final = await _wait_for_terminal(
+            client, workspace_id=workspace_id, session_id=session_id,
+            timeout_s=120.0,
+        )
+        assert final.get("status") == "ended", (
+            f"race winner did not push session to terminal: {final!r}"
+        )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

@@ -362,3 +362,58 @@ async def test_t0074_order_by_jsonb_nested_path_sorts_deterministically(
     finally:
         for did in created:
             await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0177 — Collection POST with missing embedder.provider_id orphan-tolerated
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0177_collection_with_missing_embedder_provider_orphan_tolerated(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0177 — mirror of T0068 for Collection→EmbeddingProvider. The
+    Collection.embedder.provider_id is a foreign-key-like reference; the
+    API may or may not enforce it at POST time.
+
+    Hard contract: no 500 leak. If accepted, the orphan row is visible
+    through GET and the documents-list path; if rejected, the envelope
+    is a clean 4xx.
+    """
+    coll_id = f"coll-t0177-{unique_suffix}"
+    missing_embedder = f"never-existed-emb-{unique_suffix}"
+    body = {
+        "id": coll_id,
+        "description": "orphan-embedder probe",
+        "embedder": {
+            "provider_id": missing_embedder,
+            "model": "sentence-transformers/all-MiniLM-L6-v2",
+        },
+    }
+
+    resp = await client.post("/v1/collections", json=body)
+    assert resp.status_code != 500, resp.text
+    assert resp.status_code < 500, resp.text
+
+    if resp.status_code in (200, 201):
+        # Permissive: orphan accepted
+        try:
+            # GET the row back
+            got = await client.get(f"/v1/collections/{coll_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["embedder"]["provider_id"] == missing_embedder
+
+            # Document list under the orphan collection must respond
+            # cleanly (empty list OR a clean 4xx)
+            docs = await client.get(f"/v1/collections/{coll_id}/documents")
+            assert docs.status_code != 500, docs.text
+            assert docs.status_code < 500, docs.text
+            if docs.status_code == 200:
+                assert isinstance(docs.json().get("items"), list), docs.json()
+        finally:
+            await client.delete(f"/v1/collections/{coll_id}")
+    else:
+        envelope = resp.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["type"] != "/errors/internal", envelope

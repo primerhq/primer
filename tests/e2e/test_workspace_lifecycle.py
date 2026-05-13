@@ -2027,3 +2027,30 @@ async def test_t0163_file_ops_on_destroyed_workspace_return_404(
             )
     finally:
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0178 — POST /v1/workspaces with missing template_id returns clean 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0178_create_workspace_with_missing_template_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0178 — POST /v1/workspaces referencing a non-existent template_id.
+    The workspace materialise path is bespoke (not the CRUD generator),
+    so referential integrity must be enforced here — without it, the
+    handler would 5xx trying to dereference a missing template row.
+    """
+    missing_template = f"missing-tpl-{unique_suffix}"
+    resp = await client.post(
+        "/v1/workspaces", json={"template_id": missing_template},
+    )
+    assert resp.status_code == 404, (
+        f"expected 404 for missing template_id, got {resp.status_code}: "
+        f"{resp.text}"
+    )
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/not-found", envelope
+    assert envelope["status"] == 404

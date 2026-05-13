@@ -223,6 +223,20 @@ class McpToolsetProvider(ToolsetProvider):
                 read, write = await stack.enter_async_context(stdio_client(params))
                 session = await stack.enter_async_context(ClientSession(read, write))
                 await session.initialize()
+            except FileNotFoundError as exc:
+                await stack.aclose()
+                raise ConfigError(
+                    f"toolset {self._toolset_id!r}: stdio command "
+                    f"{stdio_cfg.command[0]!r} could not be launched "
+                    f"(executable not found on PATH)"
+                ) from exc
+            except PermissionError as exc:
+                await stack.aclose()
+                raise ConfigError(
+                    f"toolset {self._toolset_id!r}: stdio command "
+                    f"{stdio_cfg.command[0]!r} could not be launched "
+                    f"(permission denied)"
+                ) from exc
             except Exception:
                 await stack.aclose()
                 raise

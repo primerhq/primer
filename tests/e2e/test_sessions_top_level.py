@@ -964,3 +964,100 @@ async def test_t0161_pause_on_cancelled_session_returns_409(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0180 — /v1/sessions/find with cursor + predicate visits each row once
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0180_sessions_find_cursor_with_status_predicate_covers_all_once(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0180 — Combine cursor pagination with a predicate on a Session
+    field (status='created') over multiple pages. Each matching session
+    must appear exactly once across the cursor walk; no row is skipped
+    or duplicated.
+
+    Seeds 7 sessions across 2 workspaces (all CREATED — no worker
+    auto_start), then walks /v1/sessions/find with predicate
+    `status = "created" AND workspace_id IN [w1, w2]` at page length 3
+    so the walk spans 3 pages (3 + 3 + 1).
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_ids: list[str] = []
+    seeded_session_ids: list[str] = []
+    try:
+        # Two workspaces
+        for _ in range(2):
+            ws = await client.post(
+                "/v1/workspaces", json={"template_id": env["tpl_id"]},
+            )
+            assert ws.status_code == 201, ws.text
+            workspace_ids.append(ws.json()["id"])
+
+        # 7 sessions distributed across the two workspaces
+        for i in range(7):
+            wid = workspace_ids[i % 2]
+            sess = await client.post(
+                f"/v1/workspaces/{wid}/sessions",
+                json=_session_body(agent_id=env["agent_id"]),
+            )
+            assert sess.status_code == 201, sess.text
+            seeded_session_ids.append(sess.json()["id"])
+
+        predicate = {
+            "kind": "predicate",
+            "op": "and",
+            "left": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "status"},
+                "right": {"kind": "value", "value": "created"},
+            },
+            "right": {
+                "kind": "predicate",
+                "op": "in",
+                "left": {"kind": "field", "name": "workspace_id"},
+                "right": {"kind": "value", "value": workspace_ids},
+            },
+        }
+
+        # Cursor walk with page length 3 — initial cursor must be null
+        # (per spec §4 GET-cursor-mode quirk; POST /find with kind=cursor
+        # accepts cursor=null as the start sentinel).
+        seen_ids: list[str] = []
+        cursor: str | None = None
+        for _ in range(10):  # safety bound
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "cursor", "cursor": cursor, "length": 3},
+            }
+            resp = await client.post("/v1/sessions/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            items = page.get("items", [])
+            seen_ids.extend(item["id"] for item in items)
+            cursor = page.get("next_cursor")
+            if not cursor:
+                break
+
+        # Each seeded session appears exactly once
+        assert sorted(seen_ids) == sorted(seeded_session_ids), (
+            f"cursor walk did not cover each session exactly once. "
+            f"seeded={sorted(seeded_session_ids)!r}, "
+            f"seen={sorted(seen_ids)!r}"
+        )
+        # No duplicates within the walk
+        assert len(seen_ids) == len(set(seen_ids)), (
+            f"duplicates in cursor walk: {seen_ids!r}"
+        )
+    finally:
+        for wid in workspace_ids:
+            for sid in seeded_session_ids:
+                await client.post(
+                    f"/v1/workspaces/{wid}/sessions/{sid}/cancel",
+                )
+            await client.delete(f"/v1/workspaces/{wid}")
+        await _teardown_setup(client, env)
