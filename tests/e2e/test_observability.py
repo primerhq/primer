@@ -71,6 +71,51 @@ _REQUIRED_WORKER_FIELDS = (
 
 
 @pytest.mark.asyncio
+async def test_t0100_openapi_spec_byte_stable_across_fetches(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0100 — `GET /openapi.json` must return byte-identical bodies on
+    repeated calls. A nondeterministic key ordering (e.g. dict
+    insertion order leaking from a runtime-built spec) would break
+    SDK code-generators that diff the schema between releases.
+    """
+    first = await client.get("/openapi.json")
+    assert first.status_code == 200, first.text
+    second = await client.get("/openapi.json")
+    assert second.status_code == 200, second.text
+    # Byte-exact comparison; no whitespace tolerance.
+    assert first.content == second.content, (
+        "OpenAPI spec is not byte-stable across two fetches; "
+        f"first len={len(first.content)}, second len={len(second.content)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_t0101_health_endpoint_stable_under_repeated_load(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0101 — 100 sequential `GET /v1/health` calls all return 200
+    with the documented envelope keys. Catches schema drift mid-run
+    (e.g. metrics keys appearing/disappearing) and any 5xx leakage
+    from a metrics-snapshot call that throws.
+    """
+    expected_keys = {"status", "version", "scheduler", "worker_pool"}
+    for i in range(100):
+        resp = await client.get("/v1/health")
+        assert resp.status_code == 200, (
+            f"health request {i} failed: {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert expected_keys.issubset(body.keys()), (
+            f"health request {i} missing keys; got {sorted(body.keys())!r}"
+        )
+        assert body["status"] == "ok", body
+        # Scheduler / worker_pool sub-shapes are pinned by T0079;
+        # here we only check that the top-level keys remain stable
+        # across the whole burst.
+
+
+@pytest.mark.asyncio
 async def test_t0080_workers_list_carries_required_heartbeat_fields(
     client: httpx.AsyncClient,
 ) -> None:

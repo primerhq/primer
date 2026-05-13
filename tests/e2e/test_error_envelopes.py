@@ -73,6 +73,27 @@ async def test_t0008_duplicate_toolset_id_returns_409(
 
 
 @pytest.mark.asyncio
+async def test_t0097_llm_provider_empty_models_rejected_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0097 — `LLMProvider.models` has `min_length=1`. POSTing with
+    `models: []` must yield 422 `/errors/validation-error`, with a
+    detail mentioning the constraint."""
+    body = {
+        "id": f"llm-empty-{unique_suffix}",
+        "provider": "anthropic",
+        "models": [],
+        "config": {"api_key": "sk-test-placeholder"},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/llm_providers", json=body)
+    assert resp.status_code == 422, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/validation-error", envelope
+    assert envelope["status"] == 422
+
+
+@pytest.mark.asyncio
 async def test_t0009_delete_on_missing_returns_404(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

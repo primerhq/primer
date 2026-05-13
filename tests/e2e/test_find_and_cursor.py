@@ -253,6 +253,90 @@ async def test_t0070_predicate_ne_excludes_named_row(
 
 
 @pytest.mark.asyncio
+async def test_t0084_predicate_unknown_field_returns_4xx(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0084 — predicate referencing a field that doesn't exist on the
+    model returns a clean 4xx envelope, not 500.
+
+    The predicate translator raises ``BadRequestError`` when
+    ``model_class.model_fields.get(parts[0])`` is None, which the
+    error mapper serialises as 400 ``/errors/bad-request``.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "=",
+            "left": {"kind": "field", "name": "nope_xyz_field"},
+            "right": {"kind": "value", "value": "anything"},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    assert resp.status_code != 500, (
+        f"unhandled exception leaked through as 500: {resp.text}"
+    )
+    assert 400 <= resp.status_code < 500, (
+        f"expected 4xx envelope on unknown field, got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    envelope = resp.json()
+    for key in ("type", "title", "status", "detail"):
+        assert key in envelope, envelope
+    assert envelope["status"] == resp.status_code
+    assert envelope["type"].startswith("/errors/"), envelope
+    # The detail should mention the bogus field name so an operator
+    # can fix the request.
+    assert "nope_xyz_field" in envelope["detail"], envelope
+
+
+@pytest.mark.asyncio
+async def test_t0085_predicate_type_mismatch_no_internal_error(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0085 — comparing a string field (`id`) against an integer
+    literal must NOT leak through as `/errors/internal` (the
+    catch-all 500). Acceptable behaviour:
+
+    - 200 with empty items (storage accepts the comparison and finds
+      no matches)
+    - 4xx with the documented validation/bad-request slug
+    - 502 with `/errors/provider-server-error` (asyncpg rejects the
+      bind: "invalid input for query argument $1: 42 (expected str,
+      got int)") — this is a clean envelope, just surfacing the
+      Postgres-level type mismatch as an upstream-provider failure
+
+    Pin the invariant: the response must be a clean RFC 7807 envelope
+    and the slug must NOT be `/errors/internal`.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": 42},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    if resp.status_code == 200:
+        page = resp.json()
+        assert page["kind"] == "offset"
+        assert page["items"] == []
+        return
+    # Any non-200 must be a documented error envelope, NOT the
+    # catch-all /errors/internal.
+    envelope = resp.json()
+    for key in ("type", "title", "status", "detail"):
+        assert key in envelope, envelope
+    assert envelope["status"] == resp.status_code
+    assert envelope["type"].startswith("/errors/"), envelope
+    assert envelope["type"] != "/errors/internal", (
+        f"type-mismatch predicate leaked as /errors/internal: {envelope!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_t0086_predicate_like_uppercase_rejected_422(
     client: httpx.AsyncClient,
 ) -> None:
