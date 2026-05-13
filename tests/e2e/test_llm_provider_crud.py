@@ -67,6 +67,70 @@ async def test_t0004_llm_provider_crud_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_t0098_crud_lookup_case_sensitive_on_id(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0098 — entity ids are case-sensitive. An LLMProvider created
+    as `Foo<suffix>` is NOT findable via `foo<suffix>`."""
+    cased_id = f"Foo-{unique_suffix}"
+    base = "/v1/llm_providers"
+
+    create = await client.post(base, json=_llm_body(cased_id))
+    assert create.status_code == 201, create.text
+    try:
+        # Same case → 200
+        same = await client.get(f"{base}/{cased_id}")
+        assert same.status_code == 200, same.text
+        assert same.json()["id"] == cased_id
+
+        # Lower-cased → 404
+        lower = await client.get(f"{base}/{cased_id.lower()}")
+        assert lower.status_code == 404, (
+            f"expected case-sensitive 404 on lowercase lookup, got "
+            f"{lower.status_code}: {lower.text}"
+        )
+        assert lower.json()["type"] == "/errors/not-found"
+    finally:
+        await client.delete(f"{base}/{cased_id}")
+
+
+@pytest.mark.asyncio
+async def test_t0105_invalidate_does_not_delete_row(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0105 — `POST /llm_providers/{id}/invalidate` only drops the
+    cached adapter; it must NOT remove the persisted row. Subsequent
+    GET still returns 200 with the same id and config."""
+    entity_id = f"llm-inv-row-{unique_suffix}"
+    base = "/v1/llm_providers"
+
+    create = await client.post(base, json=_llm_body(entity_id))
+    assert create.status_code == 201, create.text
+    try:
+        # Capture the row pre-invalidate
+        before = await client.get(f"{base}/{entity_id}")
+        assert before.status_code == 200, before.text
+
+        inv = await client.post(f"{base}/{entity_id}/invalidate")
+        assert inv.status_code == 204, inv.text
+
+        # Row must still exist with identical body
+        after = await client.get(f"{base}/{entity_id}")
+        assert after.status_code == 200, (
+            f"invalidate appears to have deleted the row: {after.text}"
+        )
+        assert after.json()["id"] == entity_id
+        # Compare the entire response body for stability — invalidate
+        # should be a no-op as far as the persisted row is concerned.
+        assert after.json() == before.json(), (
+            "invalidate altered the persisted row (it should only "
+            "drop the cached adapter)"
+        )
+    finally:
+        await client.delete(f"{base}/{entity_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0032_put_then_invalidate_reflects_update(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

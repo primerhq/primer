@@ -501,6 +501,76 @@ _DOWNLOAD_SECURITY_HEADERS = {
 
 
 @pytest.mark.asyncio
+async def test_t0093_workspace_put_overwrites_existing_content(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0093 — two PUTs to the same workspace path: the second write
+    fully replaces the first. Read returns the second body, listing
+    shows a single entry whose size matches the new content.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        path = "overwrite.txt"
+        first_body = "first-write-content"
+        second_body = "the-replacement-body-which-is-longer"
+        # First PUT
+        w1 = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": first_body, "encoding": "text"},
+        )
+        assert w1.status_code == 204, w1.text
+        # Second PUT to the same path
+        w2 = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": second_body, "encoding": "text"},
+        )
+        assert w2.status_code == 204, w2.text
+
+        # Read returns the second content, not the first
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": path},
+        )
+        assert read.status_code == 200, read.text
+        body = read.json()
+        assert body["content"] == second_body, body
+        assert body["size_bytes"] == len(second_body.encode("utf-8"))
+
+        # Listing shows ONE entry, not two duplicates
+        listed = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "."},
+        )
+        assert listed.status_code == 200, listed.text
+        items = [
+            item for item in listed.json()["items"]
+            if item["path"] == path or item["path"].endswith(f"/{path}")
+        ]
+        assert len(items) == 1, (
+            f"expected a single entry for {path!r}, got {len(items)}: "
+            f"{items!r}"
+        )
+        # And the listing's size matches the new body, too.
+        assert items[0]["size_bytes"] == len(second_body.encode("utf-8")), items
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
 async def test_t0063_workspace_empty_file_round_trip(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:

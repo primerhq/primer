@@ -253,6 +253,31 @@ async def test_t0070_predicate_ne_excludes_named_row(
 
 
 @pytest.mark.asyncio
+async def test_t0086_predicate_like_uppercase_rejected_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0086 — pin the wire op contract: `op="LIKE"` (uppercase, the
+    SQL-symbol form) is REJECTED with 422. The valid wire value is
+    `"~="`. The Op enum's *internal name* is LIKE; serialising as the
+    name instead of the value is a common client mistake.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "LIKE",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": "ts-%"},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    assert resp.status_code == 422, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/validation-error", envelope
+    assert envelope["status"] == 422
+
+
+@pytest.mark.asyncio
 async def test_t0071_predicate_in_returns_listed_values_only(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

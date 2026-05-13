@@ -80,3 +80,37 @@ async def test_t0028_worker_drain_idempotent(
     assert statuses.get(worker_id) == "draining", (
         f"expected status=draining for {worker_id!r}, got {statuses!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_t0099_worker_drain_nonexistent_id_is_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0099 — `POST /v1/workers/<bogus>/drain` must NOT 500.
+
+    The handler delegates to `Scheduler.drain_worker(worker_id)`. The
+    worker doesn't exist, so the delegate may raise NotFoundError (→
+    404 envelope) or treat it as a no-op (→ 204). Both are clean
+    behaviours; the contract pin is "no 5xx leaks through".
+    """
+    bogus = f"worker-does-not-exist-{unique_suffix}"
+    resp = await client.post(f"/v1/workers/{bogus}/drain")
+    assert resp.status_code != 500, (
+        f"unhandled exception leaked through as 500: {resp.text}"
+    )
+    assert resp.status_code < 500, (
+        f"unexpected 5xx on drain of missing worker: "
+        f"{resp.status_code}: {resp.text}"
+    )
+
+    if resp.status_code == 204:
+        # Treated as no-op — acceptable per scheduler discretion.
+        return
+    # 4xx — must carry the documented RFC 7807 envelope shape.
+    envelope = resp.json()
+    for key in ("type", "title", "status", "detail"):
+        assert key in envelope, (
+            f"problem-details key {key!r} missing in {envelope!r}"
+        )
+    assert envelope["status"] == resp.status_code
+    assert envelope["type"].startswith("/errors/"), envelope
