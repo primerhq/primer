@@ -625,6 +625,213 @@ async def test_t0063_workspace_empty_file_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_t0094_workspace_file_special_chars_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0094 — file paths with spaces, `+`, `&`, and unicode characters
+    round-trip through PUT/READ/LIST/DELETE without corruption.
+
+    Regression-detector for any URL-encoding mishandling: the path
+    travels as a query parameter, then needs to land on the actual
+    filesystem with the same bytes. A double-decode or wrong-charset
+    interpretation would break this.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Spaces, +, &, Cyrillic — none of these are in `[A-Za-z0-9._\- ]`
+        # except the space. The httpx client handles URL encoding of
+        # the query-param path; the server must decode and use the
+        # raw bytes for the filesystem write.
+        weird_path = "dir with space/файл +&.txt"
+        body = "weird-name-content"
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": weird_path},
+            json={"content": body, "encoding": "text"},
+        )
+        assert write.status_code == 204, write.text
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": weird_path},
+        )
+        assert read.status_code == 200, read.text
+        assert read.json()["content"] == body
+        assert read.json()["path"] == weird_path
+
+        listed = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "dir with space"},
+        )
+        assert listed.status_code == 200, listed.text
+        names = [item["path"] for item in listed.json()["items"]]
+        # The basename should appear somewhere in the listing
+        assert any(
+            name == weird_path
+            or name.endswith("файл +&.txt")
+            for name in names
+        ), f"weird filename missing from list: {names!r}"
+
+        rm = await client.delete(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": weird_path},
+        )
+        assert rm.status_code == 204, rm.text
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0095_workspace_files_list_root_vs_subdir(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0095 — listing at the workspace root and at a nested subdir
+    each return their own contents and don't leak entries across
+    directories.
+
+    Setup:  root_marker.txt  AND  sub/dir/nested_marker.txt
+    Asserts:
+      - root listing contains root_marker, NOT nested_marker
+      - sub/dir listing contains nested_marker, NOT root_marker
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for path in ("root_marker.txt", "sub/dir/nested_marker.txt"):
+            w = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": path},
+                json={"content": "x", "encoding": "text"},
+            )
+            assert w.status_code == 204, w.text
+
+        # Root listing
+        root_resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "."},
+        )
+        assert root_resp.status_code == 200, root_resp.text
+        root_names = [item["path"] for item in root_resp.json()["items"]]
+        assert any(
+            name == "root_marker.txt" or name.endswith("/root_marker.txt")
+            for name in root_names
+        ), f"root_marker missing from root listing: {root_names!r}"
+        assert not any(
+            "nested_marker" in name for name in root_names
+        ), f"nested_marker leaked into root listing: {root_names!r}"
+
+        # Subdir listing
+        sub_resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "sub/dir"},
+        )
+        assert sub_resp.status_code == 200, sub_resp.text
+        sub_names = [item["path"] for item in sub_resp.json()["items"]]
+        assert any(
+            "nested_marker.txt" in name for name in sub_names
+        ), f"nested_marker missing from sub/dir listing: {sub_names!r}"
+        assert not any(
+            "root_marker" in name for name in sub_names
+        ), f"root_marker leaked into sub/dir listing: {sub_names!r}"
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0096_workspace_destroy_then_recreate_starts_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0096 — DELETE a workspace then create another from the same
+    template; the new workspace's files listing must NOT carry over
+    artefacts from the destroyed one.
+
+    Pins the destroy semantic: tear-down is real (not just a row
+    removal), and a freshly materialised workspace from the same
+    template is a clean slate.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_a: str | None = None
+    workspace_b: str | None = None
+    try:
+        # Workspace A — write a marker file then destroy
+        ws_a = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws_a.status_code == 201, ws_a.text
+        workspace_a = ws_a.json()["id"]
+        marker = "carry_over_marker.txt"
+        w = await client.put(
+            f"/v1/workspaces/{workspace_a}/files",
+            params={"path": marker},
+            json={"content": "from-A", "encoding": "text"},
+        )
+        assert w.status_code == 204, w.text
+        rm = await client.delete(f"/v1/workspaces/{workspace_a}")
+        assert rm.status_code == 204, rm.text
+        workspace_a = None
+
+        # Workspace B — same template, different id (the local backend
+        # generates its own per the documented anomaly T0051)
+        ws_b = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws_b.status_code == 201, ws_b.text
+        workspace_b = ws_b.json()["id"]
+
+        # B must NOT see A's marker
+        listed = await client.get(
+            f"/v1/workspaces/{workspace_b}/files",
+            params={"path": "."},
+        )
+        assert listed.status_code == 200, listed.text
+        names = [item["path"] for item in listed.json()["items"]]
+        assert not any(marker in name for name in names), (
+            f"workspace B inherited file from A: {names!r}"
+        )
+
+        # And reading A's marker on B explicitly returns 404
+        read = await client.get(
+            f"/v1/workspaces/{workspace_b}/files/read",
+            params={"path": marker},
+        )
+        assert read.status_code == 404, (
+            f"workspace B should not have A's file: {read.text}"
+        )
+    finally:
+        for wid in (workspace_a, workspace_b):
+            if wid is not None:
+                await client.delete(f"/v1/workspaces/{wid}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
 async def test_t0067_workspace_template_overrides_merge(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:

@@ -6,6 +6,8 @@ T0009 (DELETE idempotency).
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -91,6 +93,52 @@ async def test_t0097_llm_provider_empty_models_rejected_422(
     envelope = resp.json()
     assert envelope["type"] == "/errors/validation-error", envelope
     assert envelope["status"] == 422
+
+
+@pytest.mark.asyncio
+async def test_t0103_parallel_create_same_id_yields_201_and_409(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0103 — race two POSTs of the same Toolset id concurrently.
+    Exactly one must win 201; the other must lose 409 with the
+    documented `/errors/conflict` slug.
+
+    NB: there's a separate cold-start concurrency bug — when the
+    backing table doesn't exist yet, two concurrent CREATE-TABLE
+    operations race on the Postgres `pg_type` catalog, producing
+    502 `/errors/provider-error` instead of a clean 409. To pin
+    the INSERT-level uniqueness contract specifically, this test
+    first warms the table by creating + deleting a sentinel row
+    sequentially. After that, the race is purely on INSERT and the
+    documented 201/409 split holds.
+    """
+    # Warm-up: ensure the toolset table exists so the race is
+    # purely on the row-level unique-key path.
+    warmup_id = f"ts-warmup-{unique_suffix}"
+    warmup = await client.post(
+        "/v1/toolsets", json=_toolset_body(warmup_id),
+    )
+    assert warmup.status_code == 201, warmup.text
+    await client.delete(f"/v1/toolsets/{warmup_id}")
+
+    entity_id = f"ts-race-{unique_suffix}"
+    body = _toolset_body(entity_id)
+    try:
+        a, b = await asyncio.gather(
+            client.post("/v1/toolsets", json=body),
+            client.post("/v1/toolsets", json=body),
+            return_exceptions=False,
+        )
+        statuses = sorted([a.status_code, b.status_code])
+        assert statuses == [201, 409], (
+            f"expected one winner (201) and one loser (409), got "
+            f"{a.status_code} + {b.status_code}: {a.text} / {b.text}"
+        )
+        loser = a if a.status_code == 409 else b
+        assert loser.json()["type"] == "/errors/conflict", loser.json()
+        assert loser.json()["status"] == 409
+    finally:
+        await client.delete(f"/v1/toolsets/{entity_id}")
 
 
 @pytest.mark.asyncio

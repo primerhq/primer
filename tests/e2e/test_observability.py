@@ -116,6 +116,52 @@ async def test_t0101_health_endpoint_stable_under_repeated_load(
 
 
 @pytest.mark.asyncio
+async def test_t0102_options_preflight_pins_documented_behaviour(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0102 — `OPTIONS /v1/health` with an `Origin` header. The matrix
+    server doesn't install CORS middleware (none is in the spec or
+    `app.py`), so OPTIONS resolves through Starlette's default
+    method-handling. This test pins the actual behaviour:
+
+    - the response is NOT a 5xx
+    - if the route allows OPTIONS, the body is empty / 200/204 with
+      an `Allow` header
+    - if not, 405 Method Not Allowed (with `Allow` header listing
+      the supported verbs and `OPTIONS` itself often included)
+
+    Both are clean responses — the contract is "no internal error
+    leaks through middleware on a preflight-shaped request".
+    """
+    resp = await client.request(
+        "OPTIONS",
+        "/v1/health",
+        headers={
+            "Origin": "https://example.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert resp.status_code != 500, (
+        f"OPTIONS preflight leaked 500: {resp.text}"
+    )
+    assert resp.status_code < 500, (
+        f"unexpected 5xx on OPTIONS preflight: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    # Whichever path Starlette took, the response should be small/empty
+    # and there should be at least one of the documented preflight
+    # accommodation headers OR an Allow header listing methods.
+    has_allow = "allow" in {k.lower() for k in resp.headers}
+    has_cors_methods = any(
+        k.lower() == "access-control-allow-methods" for k in resp.headers
+    )
+    assert has_allow or has_cors_methods or resp.status_code == 200, (
+        f"OPTIONS response carried neither Allow nor CORS headers: "
+        f"status={resp.status_code}, headers={dict(resp.headers)!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_t0080_workers_list_carries_required_heartbeat_fields(
     client: httpx.AsyncClient,
 ) -> None:
