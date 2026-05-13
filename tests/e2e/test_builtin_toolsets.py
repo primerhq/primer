@@ -184,3 +184,46 @@ async def test_t0190_delete_builtin_system_toolset_clean_4xx(
         f"the always-on provider; got {after.status_code}: {after.text}"
     )
     assert isinstance(after.json().get("tools"), list)
+
+
+# ============================================================================
+# T0191 — PUT on built-in `_system` toolset returns clean 4xx envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0191_put_builtin_system_toolset_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0191 — PUT on the always-on `_system` toolset id. The handler
+    must not crash on the built-in identifier — must surface either a
+    clean 4xx (rejection) or 200/204 (silently accepted). NEVER 500
+    /errors/internal.
+
+    Companion contract: after the PUT, the built-in /tools endpoint
+    MUST still resolve — replacing the row must not disable the
+    always-on provider.
+    """
+    body = {
+        "id": "_system",
+        "provider": "mcp",
+        "config": {
+            "transport": "stdio",
+            "config": {"command": ["echo"]},
+        },
+    }
+    resp = await client.put("/v1/toolsets/_system", json=body)
+    assert resp.status_code < 500, resp.text
+    if resp.status_code >= 400:
+        envelope = resp.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["type"] != "/errors/internal", envelope
+
+    # Built-in must still resolve its tools regardless
+    after = await client.get("/v1/toolsets/_system/tools")
+    assert after.status_code == 200, (
+        f"PUT attempt on built-in _system must not disable the "
+        f"always-on provider; /tools got {after.status_code}: "
+        f"{after.text}"
+    )
+    assert isinstance(after.json().get("tools"), list)

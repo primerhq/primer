@@ -174,3 +174,55 @@ async def test_t0013_pagination_limit_out_of_range_rejected(
     body = resp.json()
     assert body["type"] == "/errors/validation-error"
     assert body["status"] == 422
+
+
+# ============================================================================
+# T0195 — pagination with limit=1 visits every seeded row exactly once
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0195_pagination_limit_one_walks_full_set_once(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0195 — Seed N=5 rows with a shared prefix, walk the pages with
+    `limit=1` using offset pagination scoped to the prefix via POST
+    /find. Each seeded id must appear exactly once across the walk;
+    the page count equals N (since limit=1).
+    """
+    prefix = f"ts-t0195-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 5)
+    try:
+        seen: list[str] = []
+        offset = 0
+        # Limit walk to a safety bound much larger than the seed
+        for _ in range(20):
+            body = {
+                "predicate": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}-%"},
+                },
+                "page": {"kind": "offset", "offset": offset, "length": 1},
+            }
+            resp = await client.post("/v1/toolsets/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            items = page["items"]
+            if not items:
+                break
+            assert len(items) == 1, page
+            seen.append(items[0]["id"])
+            offset += 1
+
+        assert sorted(seen) == sorted(ids), (
+            f"limit=1 walk did not cover each seeded id exactly once. "
+            f"seeded={sorted(ids)!r}, seen={sorted(seen)!r}"
+        )
+        # No duplicates within the walk
+        assert len(seen) == len(set(seen)), (
+            f"duplicates in limit=1 walk: {seen!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)

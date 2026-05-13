@@ -524,3 +524,94 @@ async def test_t0171_graph_status_flags_multiple_missing_references(
         )
     finally:
         await client.delete(f"/v1/graphs/{graph_id}")
+
+
+# ============================================================================
+# T0192 — GET /v1/agents/{missing}/status returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0192_agent_status_on_missing_agent_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0192 — GET /v1/agents/{missing}/status on a non-existent agent id
+    must return 404 /errors/not-found. T0022 covers the case where the
+    agent exists but its provider doesn't; this is the agent-itself-
+    missing variant.
+    """
+    missing_id = f"missing-agent-{unique_suffix}"
+    resp = await client.get(f"/v1/agents/{missing_id}/status")
+    assert resp.status_code == 404, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/not-found", envelope
+    assert envelope["status"] == 404
+
+
+# ============================================================================
+# T0193 — GET /v1/graphs/{missing}/status returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0193_graph_status_on_missing_graph_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0193 — GET /v1/graphs/{missing}/status on a non-existent graph id
+    must return 404 /errors/not-found. Symmetric with T0192 for the
+    graph-status endpoint.
+    """
+    missing_id = f"missing-graph-{unique_suffix}"
+    resp = await client.get(f"/v1/graphs/{missing_id}/status")
+    assert resp.status_code == 404, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/not-found", envelope
+    assert envelope["status"] == 404
+
+
+# ============================================================================
+# T0194 — Graph with a node pointing at the graph's own id (cycle) is clean
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0194_self_referential_graph_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0194 — A graph whose `agent_id` node refers to the graph's OWN
+    id (not an Agent row). This is a degenerate / mistaken configuration
+    that should not crash the validator or the status endpoint.
+
+    The status endpoint must produce a clean envelope (any 4xx or 200
+    with issues populated). No /errors/internal leak.
+    """
+    graph_id = f"graph-self-{unique_suffix}"
+    # Use the graph's own id as the agent_id — undocumented edge case
+    create = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=graph_id),
+    )
+    # Create may accept it (no FK enforcement; T0157/T0068 pattern) or
+    # reject 4xx. Either is fine. No 5xx.
+    assert create.status_code < 500, create.text
+    if create.status_code in (200, 201):
+        try:
+            status_resp = await client.get(
+                f"/v1/graphs/{graph_id}/status",
+            )
+            assert status_resp.status_code < 500, status_resp.text
+            if status_resp.status_code == 200:
+                body = status_resp.json()
+                # Self-reference should typically flag ok=false (the
+                # agent_id doesn't resolve to an Agent), but the only
+                # invariant here is the envelope is clean.
+                assert "ok" in body, body
+            else:
+                envelope = status_resp.json()
+                assert envelope["type"].startswith("/errors/"), envelope
+                assert envelope["type"] != "/errors/internal", envelope
+        finally:
+            await client.delete(f"/v1/graphs/{graph_id}")
+    else:
+        envelope = create.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["type"] != "/errors/internal", envelope
