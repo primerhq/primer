@@ -602,6 +602,73 @@ async def test_t0121_find_explicit_null_predicate_equivalent_to_omitting(
 
 
 @pytest.mark.asyncio
+async def test_t0152_predicate_on_list_item_field_no_internal_error(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0152 — pin the actual behaviour of a predicate that targets a
+    field nested inside a list (`models.name`). The storage layer's
+    JSONB extraction may or may not descend into list items — both
+    branches are acceptable as long as the response is a clean
+    envelope and not `/errors/internal`.
+
+    Setup: create an LLMProvider with two models named gpt-foo and
+    gpt-bar. Predicate `models.name LIKE %foo%`. Whatever the API
+    does (matches the row, returns empty, or 4xx), it must surface
+    as a documented envelope.
+    """
+    entity_id = f"llm-models-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [
+            {"name": "gpt-foo", "context_length": 8192},
+            {"name": "gpt-bar", "context_length": 8192},
+        ],
+        "config": {"api_key": "sk-test"},
+        "limits": {"max_concurrency": 1},
+    }
+    create = await client.post("/v1/llm_providers", json=body)
+    assert create.status_code == 201, create.text
+    try:
+        find_body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": entity_id},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "models.name"},
+                    "right": {"kind": "value", "value": "%foo%"},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 5},
+        }
+        resp = await client.post("/v1/llm_providers/find", json=find_body)
+        # The contract pin: not 500, not /errors/internal.
+        assert resp.status_code != 500, resp.text
+        if resp.status_code == 200:
+            page = resp.json()
+            assert page["kind"] == "offset"
+            # Items list is a clean shape regardless of count
+            assert isinstance(page["items"], list)
+        else:
+            assert 400 <= resp.status_code < 500, resp.text
+            envelope = resp.json()
+            for key in ("type", "title", "status", "detail"):
+                assert key in envelope, envelope
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0149_predicate_like_with_sql_keywords_parameterised(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

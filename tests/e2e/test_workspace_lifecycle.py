@@ -1078,6 +1078,81 @@ async def test_t0096_workspace_destroy_then_recreate_starts_clean(
 
 
 @pytest.mark.asyncio
+async def test_t0155_workspace_template_50_init_commands_all_run(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0155 — a WorkspaceTemplate with 50 distinct init_commands runs
+    every command on materialise; all 50 marker files exist after
+    workspace creation. Pins "no truncation / no batch-size cap" on
+    the init_commands list.
+
+    Each command is a tiny `python -c` one-liner. 50 subprocess
+    invocations against cmd.exe / sh take a few seconds total.
+    """
+    provider_id = f"wp-50-{unique_suffix}"
+    template_id = f"wt-50-{unique_suffix}"
+    workspace_id: str | None = None
+    n = 50
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        init_commands = [
+            f'python -c "open(\'m{i:02d}.txt\',\'w\').write(\'{i:02d}\')"'
+            for i in range(n)
+        ]
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": f"50 init_commands test {unique_suffix}",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "init_commands": init_commands,
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+            timeout=httpx.Timeout(120.0, connect=10.0),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Listing should show all 50 marker files at the workspace root
+        listed = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": ".", "limit": 200, "offset": 0},
+        )
+        assert listed.status_code == 200, listed.text
+        names = [item["path"] for item in listed.json()["items"]]
+        for i in range(n):
+            mname = f"m{i:02d}.txt"
+            assert any(
+                name == mname or name.endswith(f"/{mname}")
+                for name in names
+            ), f"marker {mname!r} missing from listing: {names!r}"
+
+        # Spot-check the content of the last file
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": f"m{n-1:02d}.txt"},
+        )
+        assert read.status_code == 200, read.text
+        assert read.json()["content"] == f"{n-1:02d}"
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0142_workspace_file_text_base64_round_trip_consistent(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:

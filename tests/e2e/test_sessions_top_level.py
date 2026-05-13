@@ -609,6 +609,102 @@ async def test_t0120_top_level_sessions_three_way_filter_intersects(
 
 
 # ============================================================================
+# T0151 — POST /v1/sessions/find returns Session with full binding details
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0151_sessions_find_returns_full_binding(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0151 — /v1/sessions/find returns the full Session row, including
+    `binding.kind` and the appropriate `agent_id` / `graph_id` field."""
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+        # Filter by workspace_id so the assertion is deterministic
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "workspace_id"},
+                "right": {"kind": "value", "value": workspace_id},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 5},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        assert resp.status_code == 200, resp.text
+        items = resp.json()["items"]
+        assert len(items) == 1, items
+        s = items[0]
+        assert s["id"] == session_id
+        binding = s.get("binding")
+        assert isinstance(binding, dict), s
+        assert binding.get("kind") == "agent", binding
+        assert binding.get("agent_id") == env["agent_id"], binding
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0153 — top-level /v1/sessions filter by parent_session_id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0153_sessions_filter_by_parent_session_id(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0153 — create two sessions where session-B.parent_session_id =
+    session-A.id, then filter `/v1/sessions?parent_session_id=A.id`.
+    Session-B (the child) must appear; session-A must NOT."""
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, sid_a = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+        # Session B with parent = A
+        sb = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "parent_session_id": sid_a,
+                "auto_start": False,
+            },
+        )
+        assert sb.status_code == 201, sb.text
+        sid_b = sb.json()["id"]
+
+        resp = await client.get(
+            "/v1/sessions",
+            params={
+                "parent_session_id": sid_a,
+                "limit": 50,
+                "offset": 0,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        ids = {item["id"] for item in resp.json()["items"]}
+        assert sid_b in ids, (
+            f"child session {sid_b!r} missing from filter: {sorted(ids)!r}"
+        )
+        assert sid_a not in ids, (
+            f"parent {sid_a!r} should not match its own parent_session_id "
+            f"filter: {sorted(ids)!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0089 — top-level /v1/sessions order_by created_at asc/desc are reverses
 # ============================================================================
 
