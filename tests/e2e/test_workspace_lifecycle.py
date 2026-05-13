@@ -1920,3 +1920,110 @@ async def test_t0048_security_headers_on_streaming_download(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0162 — Workspace DELETE behaviour: idempotent or NOT? (spec §12 vs §5)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0162_workspace_delete_behaviour_pin(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0162 — Spec §12 says workspace DELETE is idempotent (so a second
+    call returns 204), while spec §5 says generic CRUD DELETE returns 404
+    on missing rows (T0009). Workspace is a bespoke endpoint so it could
+    follow either contract — pin whichever the live API actually does.
+
+    Either outcome is acceptable as long as the second DELETE does NOT
+    leak a 5xx. The recorded outcome lets future iterations cite this
+    test when the spec needs to be reconciled with code.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # First DELETE — must succeed
+        first = await client.delete(f"/v1/workspaces/{workspace_id}")
+        assert first.status_code == 204, first.text
+
+        # Second DELETE on the now-missing workspace — 204 (idempotent
+        # per §12) or 404 (per §5). Pin no 5xx.
+        second = await client.delete(f"/v1/workspaces/{workspace_id}")
+        assert second.status_code in (204, 404), second.text
+        if second.status_code == 404:
+            assert second.json()["type"] == "/errors/not-found", (
+                second.json()
+            )
+    finally:
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0163 — file ops on a destroyed workspace return clean 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0163_file_ops_on_destroyed_workspace_return_404(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0163 — after DELETE /v1/workspaces/{wid}, every file sub-resource
+    returns 404 with a clean envelope. Catches in-memory backend cache
+    leaks where a stale handle could allow ops on a destroyed workspace.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Destroy the workspace
+        rm = await client.delete(f"/v1/workspaces/{workspace_id}")
+        assert rm.status_code == 204, rm.text
+
+        # Every file sub-resource path must 404 cleanly
+        # NB: PUT /files takes `path` as a query string param, NOT in the
+        # body (body is just {content, encoding?}). Spec §12 is slightly
+        # wrong on this — confirmed against matrix/api/routers/workspaces.py.
+        ops: list[tuple[str, str, dict | None]] = [
+            ("GET", f"/v1/workspaces/{workspace_id}/files?path=.", None),
+            ("GET", f"/v1/workspaces/{workspace_id}/files/info?path=foo", None),
+            ("GET", f"/v1/workspaces/{workspace_id}/files/read?path=foo", None),
+            ("GET", f"/v1/workspaces/{workspace_id}/files/download?path=foo", None),
+            ("PUT", f"/v1/workspaces/{workspace_id}/files?path=foo",
+                {"content": "bar", "encoding": "text"}),
+            ("DELETE", f"/v1/workspaces/{workspace_id}/files?path=foo", None),
+            ("GET", f"/v1/workspaces/{workspace_id}/log", None),
+        ]
+        for method, url, json_body in ops:
+            if method == "GET":
+                resp = await client.get(url)
+            elif method == "PUT":
+                resp = await client.put(url, json=json_body)
+            elif method == "DELETE":
+                resp = await client.delete(url)
+            else:
+                pytest.fail(f"unhandled method {method}")
+            assert resp.status_code == 404, (
+                f"{method} {url} on destroyed workspace expected 404, "
+                f"got {resp.status_code}: {resp.text}"
+            )
+            envelope = resp.json()
+            assert envelope["type"] == "/errors/not-found", (
+                f"{method} {url} on destroyed workspace returned "
+                f"unexpected envelope: {envelope!r}"
+            )
+    finally:
+        await _teardown_provider_template(client, provider_id, template_id)

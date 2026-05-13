@@ -834,3 +834,160 @@ async def test_t0036_cdc_updated_agent_description_indexed(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0164 — CDC for Graph: new Graph appears in /v1/graphs/search
+# ============================================================================
+
+
+def _graph_body(entity_id: str, *, agent_id: str, description: str) -> dict:
+    return {
+        "id": entity_id,
+        "description": description,
+        "nodes": [
+            {"kind": "agent", "id": "n1", "agent_id": agent_id},
+            {"kind": "terminal", "id": "end"},
+        ],
+        "edges": [
+            {"kind": "static", "from_node": "n1", "to_node": "end"},
+        ],
+        "entry_node_id": "n1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_t0164_cdc_new_graph_appears_in_search(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0164 — after bootstrap, creating a new Graph via the CRUD route
+    triggers the CDC hook and the graph becomes findable via
+    `/v1/graphs/search` within a bounded poll window. Mirror of T0034
+    (Agent CDC) for the third CDC-mirrored entity kind.
+    """
+    embedder_id = f"emb-t0164-{unique_suffix}"
+    llm_id = f"llm-t0164-{unique_suffix}"
+    agent_id = f"agent-t0164-{unique_suffix}"
+    graph_id = f"graph-cdc-{unique_suffix}"
+    distinctive = f"graph-marker-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    agent_created = False
+    graph_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        # Need an LLMProvider + Agent for the Graph's agent node reference
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                agent_id, provider_id=llm_id,
+                description=f"agent-for-{graph_id}",
+            ),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        # Create the graph — CDC hook should embed + ingest its description
+        gr = await client.post(
+            "/v1/graphs",
+            json=_graph_body(
+                graph_id, agent_id=agent_id, description=distinctive,
+            ),
+        )
+        assert gr.status_code == 201, gr.text
+        graph_created = True
+
+        # Poll /v1/graphs/search for the marker
+        deadline_iters = 60  # ~30 s at 0.5 s cadence
+        found = False
+        last_ids: list[str] = []
+        for _ in range(deadline_iters):
+            search = await client.post(
+                "/v1/graphs/search",
+                json={"query": distinctive, "top_k": 5},
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+            assert search.status_code == 200, search.text
+            last_ids = [h["document_id"] for h in search.json()["hits"]]
+            if graph_id in last_ids:
+                found = True
+                break
+            await asyncio.sleep(0.5)
+        assert found, (
+            f"graph {graph_id!r} did not appear in /v1/graphs/search "
+            f"results within 30 s; last hits={last_ids!r}"
+        )
+    finally:
+        if graph_created:
+            await client.delete(f"/v1/graphs/{graph_id}")
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0165 — /v1/tools/search returns 200 after bootstrap (positive control)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0165_tools_search_returns_200_after_bootstrap(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0165 — after bootstrap, POST /v1/tools/search returns 200 with a
+    non-error envelope (the fourth internal collection per spec §11
+    is `_internal_tools`). Built-in tools (e.g. `_system`, `_workspaces`)
+    are indexed at bootstrap time.
+
+    NB: Spec §11 lists Tool as one of four CDC-mirrored entity kinds,
+    but matrix/api/routers/_cdc_hooks.py only wires hooks for
+    agent / graph / collection — Toolset CRUD does NOT live-update
+    the tools index. This test pins the positive-control bootstrap
+    path; live CDC for Toolsets is out of scope.
+    """
+    embedder_id = f"emb-t0165-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        # /v1/tools/search must return 200 with a SearchResponse envelope.
+        # Built-in tool descriptions like "exec" or "list files" should
+        # at least produce some hits (or zero hits, but not 5xx) for a
+        # well-known generic query.
+        search = await client.post(
+            "/v1/tools/search",
+            json={"query": "execute shell command", "top_k": 5},
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+        assert search.status_code == 200, search.text
+        body = search.json()
+        assert "hits" in body, f"missing 'hits' key: {body!r}"
+        # hits is a list (possibly empty if no built-in matched)
+        assert isinstance(body["hits"], list), body
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")

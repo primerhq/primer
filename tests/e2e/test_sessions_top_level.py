@@ -925,3 +925,42 @@ async def test_t0160_resume_on_cancelled_session_returns_409(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0161 — pause on cancelled (terminal) session returns 409
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0161_pause_on_cancelled_session_returns_409(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0161 — symmetric to T0160 but for pause. The illegal
+    CANCELLED→PAUSED transition must surface as 409 /errors/conflict.
+
+    Together with T0160 this gives full pause/resume coverage of the
+    illegal-from-terminal transition matrix.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+        assert cancel.json()["status"] == "ended"
+
+        pause = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        assert pause.status_code == 409, pause.text
+        assert pause.json()["type"] == "/errors/conflict"
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
