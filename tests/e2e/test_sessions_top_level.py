@@ -1354,3 +1354,29 @@ async def test_t0242_sessions_filter_status_running_returns_empty_when_none(
         f"status=running filter should return [] on a quiet DB, "
         f"got: {body['items']!r}"
     )
+
+
+# ============================================================================
+# T0252 — Session resume on a non-existent workspace returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0252_session_resume_on_missing_workspace_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0252 — POST /v1/workspaces/{bogus}/sessions/{bogus}/resume on
+    BOTH non-existent workspace AND non-existent session id must
+    return 404 /errors/not-found cleanly. Complements T0158 (POST
+    sessions on missing workspace) and T0159 (signal verbs on missing
+    session under existing workspace) by combining both negatives.
+    """
+    bogus_ws = f"missing-ws-{unique_suffix}"
+    bogus_sid = f"missing-sess-{unique_suffix}"
+    resp = await client.post(
+        f"/v1/workspaces/{bogus_ws}/sessions/{bogus_sid}/resume",
+    )
+    assert resp.status_code == 404, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/not-found", envelope
+    assert envelope["status"] == 404

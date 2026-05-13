@@ -140,6 +140,49 @@ async def test_t0218_drain_third_call_does_not_toggle_state(
 
 
 @pytest.mark.asyncio
+async def test_t0250_concurrent_invalidate_calls_all_204(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0250 — Five parallel POSTs to /v1/llm_providers/{id}/invalidate.
+    Every response must be 204 (no race-induced 5xx); the row body
+    after the burst is unchanged from before. Stress-tests the
+    invalidate path's concurrency safety beyond T0026's two-call
+    sequential idempotency.
+    """
+    entity_id = f"llm-conc-{unique_suffix}"
+    created = await client.post("/v1/llm_providers", json=_llm_body(entity_id))
+    assert created.status_code == 201, created.text
+    try:
+        before = await client.get(f"/v1/llm_providers/{entity_id}")
+        assert before.status_code == 200, before.text
+        before_body = before.json()
+
+        # Fire 5 invalidate calls concurrently
+        results = await asyncio.gather(*[
+            client.post(f"/v1/llm_providers/{entity_id}/invalidate")
+            for _ in range(5)
+        ])
+        for i, r in enumerate(results):
+            assert r.status_code == 204, (
+                f"concurrent invalidate call {i} did not return 204: "
+                f"{r.status_code}: {r.text}"
+            )
+
+        # Row body unchanged
+        after = await client.get(f"/v1/llm_providers/{entity_id}")
+        assert after.status_code == 200, after.text
+        after_body = after.json()
+        for field in ("id", "provider", "models"):
+            assert after_body.get(field) == before_body.get(field), (
+                f"field {field!r} changed across concurrent invalidates: "
+                f"before={before_body.get(field)!r}, "
+                f"after={after_body.get(field)!r}"
+            )
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0104_parallel_get_and_delete_no_internal_error(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

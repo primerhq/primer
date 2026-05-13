@@ -1525,6 +1525,63 @@ async def test_t0239_cursor_walk_survives_concurrent_delete(
 
 
 # ============================================================================
+# T0248 — predicate `~=` with empty-string value: deterministic clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0248_predicate_like_empty_string_deterministic_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0248 — find with `op="~=", right=""` is a degenerate LIKE
+    pattern. SQL semantics: `LIKE ''` matches only empty strings (no
+    rows have empty id). The contract pin is:
+      - response is 200 OR a clean 4xx (no /errors/internal)
+      - two sequential calls return the same status code AND same
+        item set (deterministic, not flaky)
+    """
+    prefix = f"ts-t0248-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 2)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": ""},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        r1 = await client.post("/v1/toolsets/find", json=body)
+        r2 = await client.post("/v1/toolsets/find", json=body)
+
+        # No /errors/internal on either call
+        for r, label in ((r1, "first"), (r2, "second")):
+            try:
+                envelope = r.json()
+            except Exception:
+                envelope = {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label} call leaked /errors/internal: {r.text}"
+            )
+
+        # Determinism: same status code
+        assert r1.status_code == r2.status_code, (
+            f"empty-LIKE response is non-deterministic: "
+            f"r1={r1.status_code}, r2={r2.status_code}"
+        )
+        if r1.status_code == 200:
+            ids1 = sorted(item["id"] for item in r1.json()["items"])
+            ids2 = sorted(item["id"] for item in r2.json()["items"])
+            assert ids1 == ids2, (
+                f"empty-LIKE item set is non-deterministic: "
+                f"r1={ids1!r} vs r2={ids2!r}"
+            )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
 # T0217 — find with order_by referencing unknown field returns clean 4xx
 # ============================================================================
 

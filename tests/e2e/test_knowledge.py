@@ -579,3 +579,180 @@ async def test_t0236_predicate_gt_on_jsonb_nested_numeric(
     finally:
         for did in created:
             await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0249 — composite order_by on two JSONB nested keys
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0249_order_by_two_jsonb_keys_composite(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0249 — Seed Documents with overlapping meta.tag and varying
+    meta.score; find with order_by [meta.tag asc, meta.score desc]
+    must return the documented composite sort sequence.
+
+    Extension of T0087 (order_by depth-2 with two scalar keys) to
+    nested JSONB-only keys.
+
+    Hard contract: clean envelope (no /errors/internal). Soft
+    contract: if the implementation returns 200, the items are
+    sorted by tag asc THEN by score desc. If it returns 4xx (e.g.
+    JSONB ordering not yet wired), accept that too.
+    """
+    prefix = f"doc-t0249-{unique_suffix}"
+    rows = [
+        {"id": f"{prefix}-1", "tag": "alpha", "score": 1},
+        {"id": f"{prefix}-2", "tag": "alpha", "score": 5},
+        {"id": f"{prefix}-3", "tag": "beta",  "score": 3},
+        {"id": f"{prefix}-4", "tag": "beta",  "score": 9},
+        {"id": f"{prefix}-5", "tag": "alpha", "score": 3},
+        {"id": f"{prefix}-6", "tag": "beta",  "score": 1},
+    ]
+    created: list[str] = []
+    try:
+        for r in rows:
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": r["id"],
+                    "name": r["tag"],
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"tag": r["tag"], "score": r["score"]},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(r["id"])
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+            "order_by": [
+                {"field": "meta.tag", "direction": "asc"},
+                {"field": "meta.score", "direction": "desc"},
+            ],
+        }
+        resp = await client.post("/v1/documents/find", json=body)
+        body_resp = resp.json() if resp.content else {}
+        assert body_resp.get("type") != "/errors/internal", (
+            f"composite JSONB order_by leaked /errors/internal: {resp.text}"
+        )
+        if resp.status_code == 200:
+            items = resp.json()["items"]
+            tags = [(it.get("meta") or {}).get("tag") for it in items]
+            scores = [(it.get("meta") or {}).get("score") for it in items]
+            # Tags must be ascending
+            assert tags == sorted(tags), (
+                f"primary sort (tag asc) violated: tags={tags!r}"
+            )
+            # Within each tag group, scores must be descending. NB:
+            # JSONB scores may surface as strings (T0236-class issue);
+            # only check ordering when they are real ints.
+            from itertools import groupby
+            for tag, group in groupby(zip(tags, scores), key=lambda p: p[0]):
+                grp_scores = [s for (_t, s) in group]
+                if all(isinstance(s, int) for s in grp_scores):
+                    assert grp_scores == sorted(grp_scores, reverse=True), (
+                        f"secondary sort (score desc) violated within "
+                        f"tag={tag!r}: scores={grp_scores!r}"
+                    )
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0253 — /v1/collections/{id}/documents items all carry the path's coll_id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0253_collection_documents_items_carry_collection_id(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0253 — Seed Collection C with 3 Documents; the items returned
+    by /v1/collections/{C}/documents must all have collection_id=C.
+    Cross-checks that the gating in T0204 also constrains item
+    membership (not just access).
+    """
+    coll_id = f"coll-t0253-{unique_suffix}"
+    doc_ids = [f"doc-t0253-{unique_suffix}-{i}" for i in range(3)]
+    coll_created = False
+    docs_created: list[str] = []
+    try:
+        coll = await client.post(
+            "/v1/collections",
+            json={
+                "id": coll_id,
+                "description": "T0253",
+                "embedder": {
+                    "provider_id": f"unused-emb-{unique_suffix}",
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                },
+            },
+        )
+        assert coll.status_code in (200, 201), coll.text
+        coll_created = True
+
+        for did in doc_ids:
+            r = await client.post(
+                "/v1/documents",
+                json={
+                    "id": did,
+                    "name": did,
+                    "collection_id": coll_id,
+                    "meta": {},
+                },
+            )
+            assert r.status_code in (200, 201), r.text
+            docs_created.append(did)
+
+        # Also seed an unrelated document under a different collection
+        # (which is orphan-tolerated per T0068) — must NOT appear in
+        # the listing for coll_id
+        unrelated = f"doc-unrelated-{unique_suffix}"
+        await client.post(
+            "/v1/documents",
+            json={
+                "id": unrelated,
+                "name": unrelated,
+                "collection_id": f"other-{unique_suffix}",
+                "meta": {},
+            },
+        )
+        docs_created.append(unrelated)
+
+        page = await client.get(
+            f"/v1/collections/{coll_id}/documents?offset=0&limit=50",
+        )
+        assert page.status_code == 200, page.text
+        items = page.json().get("items", [])
+        # Every returned item must carry collection_id == coll_id
+        for it in items:
+            assert it["collection_id"] == coll_id, (
+                f"listing for {coll_id!r} contains item with wrong "
+                f"collection_id: {it!r}"
+            )
+        # And the unrelated document is NOT present
+        returned_ids = {it["id"] for it in items}
+        assert unrelated not in returned_ids, (
+            f"unrelated doc {unrelated!r} (different collection_id) "
+            f"surfaced in {coll_id!r} listing: {returned_ids!r}"
+        )
+        # All 3 seeded docs ARE present
+        for did in doc_ids:
+            assert did in returned_ids, (
+                f"seeded doc {did!r} missing from listing: {returned_ids!r}"
+            )
+    finally:
+        for did in docs_created:
+            await client.delete(f"/v1/documents/{did}")
+        if coll_created:
+            await client.delete(f"/v1/collections/{coll_id}")
