@@ -1259,3 +1259,64 @@ async def test_t0156_graph_bound_session_terminates_cleanly(
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await client.delete(f"/v1/graphs/{graph_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0170 — top-level /v1/sessions filter by status=ended after real run
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0170_top_level_sessions_filter_by_status_ended(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0170 — after a real LM Studio worker turn brings a session to
+    terminal, GET /v1/sessions?status=ended must include the completed
+    session id. Pins that the status filter alone is sufficient (T0041
+    only proves it intersects with agent_id; this isolates the status
+    parameter).
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        final = await _run_one_session_to_terminal(
+            client,
+            workspace_id=workspace_id,
+            agent_id=env["agent_id"],
+        )
+        assert final["status"] == "ended"
+        session_id = final["id"]
+
+        # Filter by status=ended only — paginate until we find the row
+        # or exhaust. The bringup wipes the DB so older rows can't
+        # outnumber our window, but be defensive with cursor pagination.
+        found = False
+        cursor: str | None = None
+        for _ in range(20):  # at most ~20 pages of 50 = 1000 rows
+            url = "/v1/sessions?status=ended&limit=50"
+            if cursor is not None:
+                url = f"/v1/sessions?status=ended&limit=50&cursor={cursor}"
+            page = await client.get(url)
+            assert page.status_code == 200, page.text
+            body = page.json()
+            ids = {item["id"] for item in body.get("items", [])}
+            if session_id in ids:
+                found = True
+                break
+            cursor = body.get("next_cursor")
+            if not cursor:
+                break
+        assert found, (
+            f"completed session {session_id!r} not returned by "
+            f"status=ended filter within paginated walk"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

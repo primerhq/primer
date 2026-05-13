@@ -100,3 +100,32 @@ async def test_t0021_bootstrap_404_when_no_config(
         "configured" in envelope["detail"].lower()
         or "PUT" in envelope["detail"]
     )
+
+
+@pytest.mark.asyncio
+async def test_t0166_graphs_and_tools_search_503_subsystem_inactive(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0166 — extends T0019's agent-side gating proof to the other two
+    search routes. Both `/v1/graphs/search` and `/v1/tools/search` must
+    return 503 with `/errors/subsystem-inactive` when the
+    internal-collections subsystem hasn't been bootstrapped.
+
+    `/v1/collections/search` is the fourth search route; T0019 already
+    pins the agent route. Together with this test, three of the four
+    search routes are explicitly gated. The collections route is
+    expected to behave the same way; future iteration may add the
+    fourth pin if needed.
+    """
+    body = {"query": "anything", "top_k": 5}
+    for path in ("/v1/graphs/search", "/v1/tools/search"):
+        resp = await client.post(path, json=body)
+        assert resp.status_code == 503, (
+            f"{path} expected 503 before bootstrap, got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        envelope = resp.json()
+        assert envelope["type"] == "/errors/subsystem-inactive", (
+            f"{path}: {envelope!r}"
+        )
+        assert envelope["status"] == 503

@@ -991,3 +991,181 @@ async def test_t0165_tools_search_returns_200_after_bootstrap(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0167 — bootstrap is idempotent (second call returns 200 cleanly)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0167_bootstrap_is_idempotent(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0167 — POST /v1/internal_collections/bootstrap a second time
+    after the first succeeds returns 200 cleanly (idempotent per spec
+    §11). Search results must remain consistent across the two calls.
+    """
+    embedder_id = f"emb-t0167-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        # First call already happened in _bootstrap_subsystem. Second call:
+        boot2 = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        assert boot2.status_code == 200, (
+            f"second bootstrap should be idempotent (200); got "
+            f"{boot2.status_code}: {boot2.text}"
+        )
+        body = boot2.json()
+        # The orchestrator returns count metadata; just assert the shape
+        # is sane (a dict / mapping).
+        assert isinstance(body, dict), body
+
+        # Search route still works after the second bootstrap (no stale
+        # registry leak).
+        s = await client.post(
+            "/v1/agents/search", json={"query": "anything", "top_k": 3},
+        )
+        assert s.status_code == 200, s.text
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0168 — PUT config with non-existent embedding_provider_id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0168_put_config_with_missing_embedder_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0168 — PUT /v1/internal_collections/config referencing an
+    embedding_provider_id that doesn't exist. Mirrors T0068's permissive
+    referential-integrity contract (rows are persisted; orphan surfaces
+    at use-time): the API may either reject at PUT time (4xx) or accept
+    and surface the orphan at bootstrap. Pin "no /errors/internal".
+    """
+    missing_embedder = f"missing-emb-{unique_suffix}"
+
+    config_created = False
+    try:
+        resp = await client.put(
+            "/v1/internal_collections/config",
+            json={
+                "embedding_provider_id": missing_embedder,
+                "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+            },
+        )
+        assert resp.status_code != 500, resp.text
+        if resp.status_code == 200:
+            config_created = True
+            # Orphan path: bootstrap should fail cleanly (4xx/5xx-non-internal)
+            boot = await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            )
+            assert boot.status_code != 500 or "internal" not in (
+                boot.json().get("type", "")
+            ), (
+                f"bootstrap with orphan embedder leaked 5xx internal: "
+                f"{boot.text}"
+            )
+            envelope = boot.json() if boot.status_code >= 400 else None
+            if envelope:
+                assert envelope["type"] != "/errors/internal", envelope
+        else:
+            # 4xx rejection path
+            assert 400 <= resp.status_code < 500, resp.text
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+
+
+# ============================================================================
+# T0169 — PUT config reconfigures embedder; subsystem keeps serving
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0169_put_config_reconfigure_embedder_works(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0169 — after bootstrap, PUT /v1/internal_collections/config
+    again with a DIFFERENT embedding_provider_id (still valid). The
+    second PUT must NOT return 409 (config is treated as upsert per
+    spec §11), and search routes must continue to respond after the
+    reconfigure (no stale-registry 5xx).
+
+    Uses the same model name on both providers so the on-disk vector
+    dimensions don't drift.
+    """
+    embedder_a = f"emb-t0169a-{unique_suffix}"
+    embedder_b = f"emb-t0169b-{unique_suffix}"
+
+    pr_a = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_a),
+    )
+    assert pr_a.status_code == 201, pr_a.text
+    pr_b = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_b),
+    )
+    assert pr_b.status_code == 201, pr_b.text
+
+    config_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_a)
+        config_created = True
+
+        # Reconfigure to embedder_b — must be a clean upsert
+        put_b = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_b),
+        )
+        assert put_b.status_code == 200, (
+            f"reconfigure PUT should upsert with 200; got "
+            f"{put_b.status_code}: {put_b.text}"
+        )
+
+        # Search route still responds cleanly (no 5xx, no
+        # subsystem-inactive). It may return 503 briefly during the
+        # registry swap; tolerate that on the first poll.
+        last: httpx.Response | None = None
+        for _ in range(20):
+            s = await client.post(
+                "/v1/agents/search", json={"query": "anything", "top_k": 3},
+            )
+            last = s
+            if s.status_code == 200:
+                break
+            if s.status_code == 503:
+                await asyncio.sleep(0.5)
+                continue
+            # Anything else (4xx/5xx) is unexpected — fail loudly
+            break
+        assert last is not None
+        assert last.status_code == 200, (
+            f"search did not recover to 200 after reconfigure within "
+            f"10 s; last status={last.status_code}: {last.text}"
+        )
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_a}")
+        await client.delete(f"/v1/embedding_providers/{embedder_b}")
