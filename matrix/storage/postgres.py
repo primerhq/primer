@@ -102,8 +102,18 @@ def _table_name_for(model_class: type[BaseModel]) -> str:
     a different mapping (pluralisation, namespacing) can wrap
     ``get_storage`` in their own factory; this convention is
     deterministic and obvious.
+
+    One historic exception: the ``Session`` model is stored in a
+    ``sessions`` (plural) table. The scheduler layer
+    (``matrix.scheduler.postgres``) hard-codes ``sessions`` in its
+    JOINs and FK constraints, and the scheduler unit tests assume the
+    same name. Mapping ``Session`` -> ``sessions`` here keeps both
+    sides in sync without rewriting every SQL string in the scheduler.
     """
-    return model_class.__name__.lower()
+    name = model_class.__name__.lower()
+    if name == "session":
+        return "sessions"
+    return name
 
 
 # ===========================================================================
