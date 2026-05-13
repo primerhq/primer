@@ -1499,3 +1499,97 @@ async def test_t0225_get_config_after_put_echoes_written_values(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0226 — /v1/agents/search ranking is stable across two sequential calls
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0226_agents_search_ranking_stable_across_calls(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0226 — Two sequential POST /v1/agents/search with the same query
+    must return the SAME ordered hit list. Pins ranking determinism
+    distinct from T0059 (which checks relative ordering of two
+    specific agents). Probes the embedder + vector store + score
+    aggregator chain for any nondeterminism.
+
+    Seeds 3 agents with distinct descriptions, queries with one
+    marker, captures the order, calls again, compares.
+    """
+    embedder_id = f"emb-t0226-{unique_suffix}"
+    llm_id = f"llm-t0226-{unique_suffix}"
+    agent_ids = [f"agent-t0226-{unique_suffix}-{i}" for i in range(3)]
+    markers = [
+        f"data analysis pipeline {unique_suffix}",
+        f"customer support email {unique_suffix}",
+        f"code review assistant {unique_suffix}",
+    ]
+    query = f"customer help {unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    created_agents: list[str] = []
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        for aid, marker in zip(agent_ids, markers):
+            ag = await client.post(
+                "/v1/agents",
+                json=_agent_body(aid, provider_id=llm_id, description=marker),
+            )
+            assert ag.status_code == 201, ag.text
+            created_agents.append(aid)
+
+        # Wait until all three agents are indexed
+        for _ in range(60):
+            s = await client.post(
+                "/v1/agents/search", json={"query": query, "top_k": 10},
+            )
+            assert s.status_code == 200, s.text
+            ids_seen = {h["document_id"] for h in s.json()["hits"]}
+            if all(aid in ids_seen for aid in agent_ids):
+                break
+            await asyncio.sleep(0.5)
+
+        # Two sequential calls — order must match
+        r1 = await client.post(
+            "/v1/agents/search", json={"query": query, "top_k": 10},
+        )
+        assert r1.status_code == 200, r1.text
+        r2 = await client.post(
+            "/v1/agents/search", json={"query": query, "top_k": 10},
+        )
+        assert r2.status_code == 200, r2.text
+
+        ranked_1 = [h["document_id"] for h in r1.json()["hits"]]
+        ranked_2 = [h["document_id"] for h in r2.json()["hits"]]
+        # Filter to seeded agents (other tests may have leftovers
+        # earlier in the iteration — they're rare since bringup wipes
+        # the DB, but be defensive)
+        ranked_1_seeded = [a for a in ranked_1 if a in created_agents]
+        ranked_2_seeded = [a for a in ranked_2 if a in created_agents]
+        assert ranked_1_seeded == ranked_2_seeded, (
+            f"ranking unstable between two sequential calls. "
+            f"first={ranked_1_seeded!r}, second={ranked_2_seeded!r}"
+        )
+    finally:
+        for aid in created_agents:
+            await client.delete(f"/v1/agents/{aid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")

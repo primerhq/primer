@@ -1104,3 +1104,229 @@ async def test_t0205_session_steer_empty_instruction_clean_envelope(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0227 — Session metadata field round-trips through POST → GET → list
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0227_session_metadata_round_trips(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0227 — SessionCreateBody.metadata must persist through:
+      - POST (create returns body with metadata)
+      - GET /v1/sessions/{id} (read echoes metadata)
+      - GET /v1/sessions?workspace_id=... (list echoes metadata on items)
+
+    Pins persistence of an opaque-blob field that no other test
+    currently covers.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        metadata = {
+            "owner": f"user-{unique_suffix}",
+            "purpose": "T0227 round-trip probe",
+            "tags": ["alpha", "beta"],
+            "nested": {"k1": 42, "k2": True},
+        }
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "metadata": metadata,
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+        # POST response carries metadata
+        assert sess.json().get("metadata") == metadata, sess.json()
+
+        # GET echoes it
+        got = await client.get(f"/v1/sessions/{session_id}")
+        assert got.status_code == 200, got.text
+        assert got.json().get("metadata") == metadata, got.json()
+
+        # List endpoint carries it on the item
+        listed = await client.get(
+            f"/v1/sessions?workspace_id={workspace_id}&limit=50&offset=0",
+        )
+        assert listed.status_code == 200, listed.text
+        matching = [
+            item for item in listed.json()["items"]
+            if item["id"] == session_id
+        ]
+        assert matching, f"session {session_id!r} missing from listing"
+        assert matching[0].get("metadata") == metadata, matching[0]
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0228 — parent_session_id filter is direct-only (not transitive)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0228_parent_session_id_filter_is_direct_not_transitive(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0228 — Build a 3-deep chain: A → B → C (B.parent=A, C.parent=B).
+    The filter /v1/sessions?parent_session_id=A must return ONLY B,
+    not C — the filter is direct-parent, not transitive descent.
+
+    Extends T0153 (single-level parent filter) to verify the filter
+    semantics under chained sessions.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    sess_a: str | None = None
+    sess_b: str | None = None
+    sess_c: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Session A — root
+        a = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json=_session_body(agent_id=env["agent_id"]),
+        )
+        assert a.status_code == 201, a.text
+        sess_a = a.json()["id"]
+
+        # Session B — child of A
+        b = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "parent_session_id": sess_a,
+                "auto_start": False,
+            },
+        )
+        assert b.status_code == 201, b.text
+        sess_b = b.json()["id"]
+
+        # Session C — child of B (grandchild of A)
+        c = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "parent_session_id": sess_b,
+                "auto_start": False,
+            },
+        )
+        assert c.status_code == 201, c.text
+        sess_c = c.json()["id"]
+
+        # Filter by parent=A must return ONLY B (the direct child)
+        resp = await client.get(
+            f"/v1/sessions?parent_session_id={sess_a}",
+        )
+        assert resp.status_code == 200, resp.text
+        ids = {item["id"] for item in resp.json()["items"]}
+        assert sess_b in ids, (
+            f"direct child B={sess_b!r} missing from "
+            f"parent_session_id={sess_a!r} filter: {ids!r}"
+        )
+        assert sess_c not in ids, (
+            f"grandchild C={sess_c!r} unexpectedly returned by "
+            f"parent_session_id={sess_a!r} filter (filter should be "
+            f"direct-only, not transitive): {ids!r}"
+        )
+        assert sess_a not in ids, (
+            f"root A={sess_a!r} unexpectedly returned by its own "
+            f"parent_session_id filter: {ids!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            for sid in (sess_c, sess_b, sess_a):
+                if sid:
+                    await client.post(
+                        f"/v1/workspaces/{workspace_id}/sessions/{sid}/cancel",
+                    )
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0229 — /v1/sessions filter with bogus agent_id returns empty list
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0229_sessions_filter_bogus_agent_id_returns_empty_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0229 — /v1/sessions?agent_id=<missing> on a non-existent agent
+    must return 200 with `items: []`, NOT 404. List-endpoint filters
+    are "narrowing" semantics, not validation — referencing a missing
+    value yields zero rows, not an error.
+    """
+    missing_agent = f"missing-agent-{unique_suffix}"
+    resp = await client.get(f"/v1/sessions?agent_id={missing_agent}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "items" in body, body
+    assert body["items"] == [], (
+        f"filter by missing agent_id should yield empty list, got: "
+        f"{body['items']!r}"
+    )
+
+
+# ============================================================================
+# T0230 — Steer with a 64 KiB instruction body is handled cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0230_steer_with_64kib_instruction_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0230 — POST /sessions/{sid}/steer with a 64 KiB instruction
+    body. The handler must produce a documented response — either
+    accept (204/200) or reject (4xx); never 5xx. Boundary probe
+    for instruction-size handling, distinct from T0205 (empty string).
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # 64 KiB instruction string (single character repeated)
+        instruction = "x" * (64 * 1024)
+        resp = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": instruction},
+        )
+        assert resp.status_code != 500, resp.text
+        if resp.status_code in (200, 204):
+            # Silently accepted — verify session still readable
+            got = await client.get(f"/v1/sessions/{session_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["id"] == session_id
+        else:
+            assert 400 <= resp.status_code < 500, resp.text
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
