@@ -481,6 +481,44 @@ async def test_t0085_predicate_type_mismatch_no_internal_error(
 
 
 @pytest.mark.asyncio
+async def test_t0121_find_explicit_null_predicate_equivalent_to_omitting(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0121 — `{"predicate": null, "page": ...}` must be equivalent
+    to omitting the predicate field entirely. The set of returned
+    item ids is identical between the two forms.
+    """
+    prefix = f"ts-t0121-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        page = {"kind": "offset", "offset": 0, "length": 200}
+
+        with_null = await client.post(
+            "/v1/toolsets/find", json={"predicate": None, "page": page},
+        )
+        assert with_null.status_code == 200, with_null.text
+
+        without = await client.post(
+            "/v1/toolsets/find", json={"page": page},
+        )
+        assert without.status_code == 200, without.text
+
+        # Compare item-id SETS (ordering may not be guaranteed without
+        # an order_by, but membership must match).
+        ids_a = {item["id"] for item in with_null.json()["items"]}
+        ids_b = {item["id"] for item in without.json()["items"]}
+        assert ids_a == ids_b, (
+            f"explicit null predicate diverges from omitted: "
+            f"with_null={sorted(ids_a)!r}, without={sorted(ids_b)!r}"
+        )
+        # And both contain the seeded set
+        for sid in ids:
+            assert sid in ids_a, sid
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
 async def test_t0086_predicate_like_uppercase_rejected_422(
     client: httpx.AsyncClient,
 ) -> None:

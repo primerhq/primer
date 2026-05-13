@@ -89,6 +89,47 @@ async def test_t0012_pagination_limit_plus_one_spans_pages(
 
 
 @pytest.mark.asyncio
+async def test_t0118_pagination_total_stable_across_pages(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0118 — walking 7 seeded items in chunks of 3 (offsets 0/3/6),
+    every page must report `total=7`. Catches any total-recomputation
+    drift between pages, e.g. if the count query were to ignore the
+    predicate filter while the items query honoured it.
+    """
+    prefix = f"ts-t0118-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 7)
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+        seen: list[str] = []
+        for offset in (0, 3, 6):
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "offset", "offset": offset, "length": 3},
+            }
+            resp = await client.post("/v1/toolsets/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            assert page["total"] == 7, (
+                f"total drifted at offset={offset}: {page['total']}"
+            )
+            seen.extend(item["id"] for item in page["items"])
+        # No duplicates, full coverage
+        assert len(seen) == 7, seen
+        assert sorted(seen) == sorted(ids), (
+            f"walk did not cover seeded set: walked={sorted(seen)!r}, "
+            f"expected={sorted(ids)!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
 async def test_t0077_pagination_offset_above_total_returns_empty(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

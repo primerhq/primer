@@ -213,6 +213,53 @@ async def test_t0045_agent_status_multi_toolset_only_missing_flagged(
 
 
 # ============================================================================
+# T0109 — Agent status ok=true when all references resolve (positive path)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0109_agent_status_ok_when_all_references_resolve(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0109 — positive control: an Agent that references a real
+    LLMProvider AND a real Toolset (via a scoped tool id) returns
+    `{"ok": true, "issues": []}`. The test crew so far has covered
+    every NEGATIVE branch of agent_status; this one pins the happy
+    path so a future regression that always-flags-an-issue is caught."""
+    provider_id = f"llm-ok-{unique_suffix}"
+    toolset_id = f"ts-ok-{unique_suffix}"
+    agent_id = f"agent-ok-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        ts = await client.post("/v1/toolsets", json=_toolset_body(toolset_id))
+        assert ts.status_code == 201, ts.text
+        try:
+            ag = await client.post(
+                "/v1/agents",
+                json=_agent_body(
+                    agent_id,
+                    provider_id=provider_id,
+                    tools=[f"{toolset_id}__alpha"],
+                ),
+            )
+            assert ag.status_code == 201, ag.text
+            try:
+                resp = await client.get(f"/v1/agents/{agent_id}/status")
+                assert resp.status_code == 200, resp.text
+                body = resp.json()
+                assert body["ok"] is True, body
+                assert body["issues"] == [], body
+            finally:
+                await client.delete(f"/v1/agents/{agent_id}")
+        finally:
+            await client.delete(f"/v1/toolsets/{toolset_id}")
+    finally:
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
 # T0033 — Agent status recovers after delete+recreate of its LLMProvider
 # ============================================================================
 
@@ -267,6 +314,53 @@ async def test_t0033_agent_status_recovers_after_provider_recreate(
             await client.delete(f"/v1/agents/{agent_id}")
     finally:
         # Best-effort: provider may already be re-deleted by step 3, that's fine
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0106 — Unicode marker in Agent description round-trips byte-exact
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0106_agent_unicode_description_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0106 — POST an Agent whose description contains CJK + emoji +
+    RTL chars; GET returns the same NFC code points byte-exact, and
+    the entry shows up in LIST with an identical description."""
+    provider_id = f"llm-uni-{unique_suffix}"
+    agent_id = f"agent-uni-{unique_suffix}"
+    # CJK + emoji + Arabic (RTL) — all valid NFC code points
+    distinctive = f"日本語 🎉 العربية {unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                agent_id, provider_id=provider_id, tools=[],
+            ) | {"description": distinctive},
+        )
+        assert ag.status_code == 201, ag.text
+        try:
+            # GET returns identical bytes
+            got = await client.get(f"/v1/agents/{agent_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["description"] == distinctive
+
+            # LIST contains the same description bytes
+            listed = await client.get("/v1/agents?limit=200&offset=0")
+            assert listed.status_code == 200, listed.text
+            descs = {
+                item["id"]: item["description"]
+                for item in listed.json()["items"]
+            }
+            assert descs.get(agent_id) == distinctive, descs.get(agent_id)
+        finally:
+            await client.delete(f"/v1/agents/{agent_id}")
+    finally:
         await client.delete(f"/v1/llm_providers/{provider_id}")
 
 

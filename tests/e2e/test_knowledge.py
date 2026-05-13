@@ -70,6 +70,50 @@ async def test_t0068_document_create_with_missing_collection_id_no_500(
 
 
 @pytest.mark.asyncio
+async def test_t0108_document_put_replaces_name_and_metadata(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0108 — PUT a Document with new `name` + `meta`; subsequent GET
+    reflects the new body, id is unchanged.
+
+    NB: the `Document` Pydantic model only declares `id`,
+    `collection_id`, `name`, `meta` — `text` was not an actual model
+    field, so this test focuses on the fields the API actually
+    persists and echoes back.
+
+    Per T0068 the API doesn't enforce referential integrity at create-
+    time, so we use a placeholder collection_id.
+    """
+    doc_id = f"doc-t0108-{unique_suffix}"
+    initial = {
+        "id": doc_id,
+        "name": "initial",
+        "collection_id": f"unenforced-{unique_suffix}",
+        "meta": {"version": 1, "tag": "old"},
+    }
+    create = await client.post("/v1/documents", json=initial)
+    assert create.status_code in (200, 201), create.text
+    try:
+        replacement = {
+            "id": doc_id,
+            "name": "replaced",
+            "collection_id": f"unenforced-{unique_suffix}",
+            "meta": {"version": 2, "tag": "new"},
+        }
+        put = await client.put(f"/v1/documents/{doc_id}", json=replacement)
+        assert put.status_code == 200, put.text
+
+        got = await client.get(f"/v1/documents/{doc_id}")
+        assert got.status_code == 200, got.text
+        body = got.json()
+        assert body["id"] == doc_id  # id unchanged
+        assert body["name"] == "replaced", body
+        assert body["meta"] == {"version": 2, "tag": "new"}, body
+    finally:
+        await client.delete(f"/v1/documents/{doc_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0087_multi_key_order_by_breaks_ties(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
