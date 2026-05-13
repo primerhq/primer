@@ -1380,3 +1380,83 @@ async def test_t0252_session_resume_on_missing_workspace_returns_404(
     envelope = resp.json()
     assert envelope["type"] == "/errors/not-found", envelope
     assert envelope["status"] == 404
+
+
+# ============================================================================
+# T0272 — Session create with binding kind="invalid" returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0272_session_create_invalid_binding_kind_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0272 — Session.binding is a discriminated union by `kind`
+    (per spec §12). A binding with kind="invalid" must fail the
+    discriminator check and return 422 /errors/validation-error;
+    never /errors/internal.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        resp = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {
+                    "kind": "invalid",
+                    "agent_id": env["agent_id"],
+                },
+                "auto_start": False,
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        envelope = resp.json()
+        assert envelope["type"] == "/errors/validation-error", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0273 — Session create with binding lacking `kind` field returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0273_session_create_binding_missing_kind_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0273 — Session.binding has `kind` as the discriminator.
+    Omitting it entirely must produce 422 /errors/validation-error
+    cleanly; never /errors/internal.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        resp = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"agent_id": env["agent_id"]},
+                "auto_start": False,
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        envelope = resp.json()
+        assert envelope["type"] == "/errors/validation-error", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

@@ -2913,3 +2913,140 @@ async def test_t0268_delete_workspace_provider_with_active_workspace(
         # Provider may already be gone
         await client.delete(f"/v1/workspace_templates/{template_id}")
         await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0274 — GET /v1/workspaces/{wid}/files with no `path` returns root listing
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0274_workspace_files_no_path_returns_root_listing(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0274 — Spec §12 documents `path=<dir>` as a query param on the
+    files-list endpoint, but doesn't pin behaviour when omitted. The
+    contract pin: a missing `path` returns the workspace root listing
+    cleanly (200 with items), not a 422 missing-required-param.
+
+    If the API actually requires `path`, the response is 422 with
+    /errors/validation-error and the test records that contract
+    instead.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed one file at the root so the listing has something
+        seed = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=root_marker.txt",
+            json={"content": "hello", "encoding": "text"},
+        )
+        assert seed.status_code == 204, seed.text
+
+        # GET without path query param
+        resp = await client.get(f"/v1/workspaces/{workspace_id}/files")
+        assert resp.status_code in (200, 422), resp.text
+        if resp.status_code == 200:
+            items = resp.json().get("items", [])
+            paths = {it.get("path") for it in items}
+            # The seeded file should be visible at the root
+            assert any("root_marker.txt" in (p or "") for p in paths), (
+                f"root_marker.txt not in default-path listing: "
+                f"items={items!r}"
+            )
+        else:
+            envelope = resp.json()
+            assert envelope["type"] == "/errors/validation-error", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0275 — Workspace files listing is non-recursive on a deep tree
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0275_workspace_files_listing_is_non_recursive(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0275 — Seed a deep file tree:
+        a/b/c/leaf.txt
+        a/b/sibling.txt
+        a/peer.txt
+    Then GET /files?path=a/b. Pin: returns ONLY immediate children
+    of `a/b` (i.e. `c/` directory entry + `sibling.txt` file), NOT
+    the transitively-nested `leaf.txt` or the up-level `peer.txt`.
+
+    Catches a regression where the listing accidentally walks
+    recursively (which would surface as a wrong directory size or
+    confuse clients showing a folder view).
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed three files at different depths
+        files_to_create = [
+            ("a/b/c/leaf.txt", "leaf"),
+            ("a/b/sibling.txt", "sibling"),
+            ("a/peer.txt", "peer"),
+        ]
+        for fpath, content in files_to_create:
+            r = await client.put(
+                f"/v1/workspaces/{workspace_id}/files?path={fpath}",
+                json={"content": content, "encoding": "text"},
+            )
+            assert r.status_code == 204, r.text
+
+        # List a/b
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files?path=a/b",
+        )
+        assert resp.status_code == 200, resp.text
+        items = resp.json().get("items", [])
+        item_paths = {it.get("path", "") for it in items}
+
+        # sibling.txt MUST appear (immediate child)
+        assert any("sibling.txt" in p for p in item_paths), (
+            f"immediate child sibling.txt missing from a/b listing: "
+            f"{sorted(item_paths)!r}"
+        )
+        # peer.txt MUST NOT appear (it's at a higher level)
+        assert not any(
+            "peer.txt" in p and "a/b/" not in p for p in item_paths
+        ), (
+            f"up-level peer.txt unexpectedly in a/b listing: "
+            f"{sorted(item_paths)!r}"
+        )
+        # leaf.txt itself MUST NOT appear at this level (it's at
+        # a/b/c/leaf.txt — recursive walk would surface it)
+        assert not any(
+            p.endswith("a/b/c/leaf.txt") or p.endswith("c/leaf.txt")
+            for p in item_paths
+        ), (
+            f"transitively-nested leaf.txt unexpectedly in a/b "
+            f"listing (recursive walk regression): "
+            f"{sorted(item_paths)!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

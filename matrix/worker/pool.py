@@ -251,6 +251,14 @@ class WorkerPool:
                         pass
                     continue
                 self._claims_total += len(leases)
+                # Reserve in_flight slots for the about-to-dispatch leases
+                # BEFORE the next claim_loop iteration runs. Without this,
+                # asyncio.create_task() returns immediately but the task
+                # body's `_in_flight.add(sid)` happens later, so a fast
+                # next iteration sees stale free-capacity and over-claims.
+                # The duplicate `_in_flight.add` inside _run_one_turn is
+                # idempotent on a set, so this is safe.
+                self._in_flight.update(lease.session_id for lease in leases)
                 for lease in leases:
                     # Fire-and-forget: _run_one_turn manages its own
                     # in_flight bookkeeping via the finally block. The

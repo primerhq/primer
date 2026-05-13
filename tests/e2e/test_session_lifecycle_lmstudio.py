@@ -1323,6 +1323,117 @@ async def test_t0170_top_level_sessions_filter_by_status_ended(
 
 
 # ============================================================================
+# T0271 — Six concurrent LM Studio sessions on concurrency=4 worker pool
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0271_six_concurrent_sessions_on_capacity_four_terminate(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0271 — Submit 6 concurrent sessions on a worker pool whose
+    documented concurrency is 4 (per tests/.e2e/config.yaml). All 6
+    must reach a terminal status within a generous timeout. Pin the
+    capacity-cap behaviour: the pool serialises beyond 4, no session
+    is starved.
+
+    Sampled /v1/health snapshots during the run must NEVER report
+    `worker_pool.in_flight > capacity`.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_ids: list[str] = []
+    session_ids: list[str] = []
+    try:
+        # Create 6 separate workspaces and sessions
+        for _ in range(6):
+            ws = await client.post(
+                "/v1/workspaces", json={"template_id": env["tpl_id"]},
+            )
+            assert ws.status_code == 201, ws.text
+            workspace_ids.append(ws.json()["id"])
+
+        for wid in workspace_ids:
+            sess = await client.post(
+                f"/v1/workspaces/{wid}/sessions",
+                json={
+                    "binding": {
+                        "kind": "agent", "agent_id": env["agent_id"],
+                    },
+                    "initial_instructions": "Reply with 'OK'.",
+                    "auto_start": False,
+                },
+            )
+            assert sess.status_code == 201, sess.text
+            session_ids.append(sess.json()["id"])
+
+        # Resume all six concurrently
+        resumes = await asyncio.gather(*[
+            client.post(
+                f"/v1/workspaces/{wid}/sessions/{sid}/resume",
+            )
+            for wid, sid in zip(workspace_ids, session_ids)
+        ])
+        for r in resumes:
+            assert r.status_code == 200, r.text
+
+        # Sample /v1/health a few times during the run; record max
+        # in_flight observed
+        max_in_flight = 0
+        capacity_observed: int | None = None
+
+        async def _sample_health() -> None:
+            nonlocal max_in_flight, capacity_observed
+            for _ in range(20):
+                h = await client.get("/v1/health")
+                if h.status_code == 200:
+                    pool = h.json().get("worker_pool", {})
+                    inf = pool.get("in_flight")
+                    cap = pool.get("capacity")
+                    if isinstance(inf, int):
+                        max_in_flight = max(max_in_flight, inf)
+                    if isinstance(cap, int) and capacity_observed is None:
+                        capacity_observed = cap
+                await asyncio.sleep(0.5)
+
+        # Sample concurrently with the wait-for-terminal loop
+        sampler = asyncio.create_task(_sample_health())
+
+        # Wait for each session to reach terminal
+        for wid, sid in zip(workspace_ids, session_ids):
+            final = await _wait_for_terminal(
+                client, workspace_id=wid, session_id=sid,
+                timeout_s=180.0,
+            )
+            assert final.get("status") == "ended", (
+                f"session {sid!r} did not terminate cleanly: {final!r}"
+            )
+
+        # Cancel the sampler — we have all the data we need
+        sampler.cancel()
+        try:
+            await sampler
+        except (asyncio.CancelledError, Exception):
+            pass
+
+        # Capacity-cap pin: in_flight never exceeded capacity in any
+        # snapshot we caught
+        if capacity_observed is not None:
+            assert max_in_flight <= capacity_observed, (
+                f"observed in_flight={max_in_flight} > "
+                f"capacity={capacity_observed}; the worker pool "
+                f"breached its own concurrency cap"
+            )
+    finally:
+        for wid, sid in zip(workspace_ids, session_ids):
+            await client.post(
+                f"/v1/workspaces/{wid}/sessions/{sid}/cancel",
+            )
+        for wid in workspace_ids:
+            await client.delete(f"/v1/workspaces/{wid}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0179 — concurrent steer + cancel: cancel converges to terminal cleanly
 # ============================================================================
 
