@@ -2730,3 +2730,85 @@ async def test_t0241_destroy_workspace_with_active_session_clean_ops(
         )
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0254 — Workspace /files PUT → DELETE → PUT round-trip is consistent
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0254_workspace_files_put_delete_put_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0254 — Three-step rapid sequence on the same workspace path
+    (PUT → DELETE → PUT). Each step returns 2xx; final read returns
+    the third write's body; listing has exactly one entry for the
+    path. Distinct from T0220 (three sequential PUTs) by inserting
+    a DELETE in the middle — exercises the create→destroy→create
+    flow on the local backend.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": template_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        path = "cycle.txt"
+
+        # PUT #1
+        put1 = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path={path}",
+            json={"content": "first", "encoding": "text"},
+        )
+        assert put1.status_code == 204, put1.text
+
+        # DELETE
+        rm = await client.delete(
+            f"/v1/workspaces/{workspace_id}/files?path={path}",
+        )
+        assert rm.status_code == 204, rm.text
+
+        # Confirm intermediate DELETE state — read returns 404
+        gone = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read?path={path}",
+        )
+        assert gone.status_code == 404, gone.text
+
+        # PUT #2 (third op, different body)
+        put2 = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path={path}",
+            json={"content": "third", "encoding": "text"},
+        )
+        assert put2.status_code == 204, put2.text
+
+        # Final read returns the third body
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read?path={path}",
+        )
+        assert read.status_code == 200, read.text
+        assert read.json().get("content") == "third", read.json()
+
+        # Listing has exactly one entry for this path
+        lst = await client.get(
+            f"/v1/workspaces/{workspace_id}/files?path=.",
+        )
+        assert lst.status_code == 200, lst.text
+        items = lst.json().get("items", [])
+        matching = [
+            it for it in items
+            if it.get("path") == path or it.get("path", "").endswith(path)
+        ]
+        assert len(matching) == 1, (
+            f"expected exactly one listing entry after PUT→DELETE→PUT, "
+            f"got {len(matching)}: items={items!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

@@ -189,3 +189,64 @@ async def test_t0232_openapi_problem_schema_referenced_from_errors(
         f"no 422 response in OpenAPI references any of the Problem "
         f"schemas {problem_schemas!r}"
     )
+
+
+# ============================================================================
+# T0255 — OpenAPI components include pagination envelope schemas
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0255_openapi_includes_pagination_envelope_schemas(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0255 — Spec §4 declares two pagination envelope shapes:
+      - OffsetPageResponse with {items, offset, length, total}
+      - CursorPageResponse with {items, next_cursor, length}
+
+    Both must show up as component schemas in /openapi.json so client
+    SDK generators can describe the paginated list contracts. Pin
+    "at least one schema matches each shape" rather than a specific
+    schema name — FastAPI/Pydantic may emit different class names.
+    """
+    resp = await client.get("/openapi.json")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    schemas = (body.get("components") or {}).get("schemas") or {}
+
+    # Pydantic generics (`OffsetPageResponse[T]`) emit a base generic
+    # schema PLUS one concretization per usage (e.g. `OffsetPage`,
+    # `OffsetPageResponse_Any_`). The pin: at least one schema whose
+    # NAME signals each envelope, AND whose properties cover the
+    # required envelope fields.
+    #
+    # NB: spec §4 originally listed CursorPageResponse as carrying
+    # `length`, but the actual schema is {kind, next_cursor, items}
+    # — `length` is only on the REQUEST (CursorPage), not the
+    # response. Spec was corrected in the iteration that landed
+    # this test.
+    offset_response_fields = {"offset", "length", "total"}  # excl items
+    cursor_response_fields = {"next_cursor"}                # excl items
+
+    offset_matches: list[str] = []
+    cursor_matches: list[str] = []
+    for name, schema in schemas.items():
+        props = set((schema.get("properties") or {}).keys())
+        name_l = name.lower()
+        if "offsetpageresponse" in name_l:
+            if offset_response_fields.issubset(props):
+                offset_matches.append(name)
+        if "cursorpageresponse" in name_l:
+            if cursor_response_fields.issubset(props):
+                cursor_matches.append(name)
+
+    assert offset_matches, (
+        f"no OpenAPI OffsetPageResponse-style schema with properties "
+        f"{sorted(offset_response_fields)!r} found. Available: "
+        f"{sorted(schemas.keys())!r}"
+    )
+    assert cursor_matches, (
+        f"no OpenAPI CursorPageResponse-style schema with properties "
+        f"{sorted(cursor_response_fields)!r} found. Available: "
+        f"{sorted(schemas.keys())!r}"
+    )
