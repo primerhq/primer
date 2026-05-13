@@ -2,7 +2,8 @@
 
 Covers backlog items T0038 (resume idempotency), T0039 (cancel from
 CREATED returns terminal row), T0040 (filter by workspace_id),
-T0041 (filter intersection agent_id + status), T0042 (top-level GET).
+T0041 (filter intersection agent_id + status), T0042 (top-level GET),
+T0089 (top-level ordering by created_at).
 
 Setup chain in every test: LLMProvider → Agent → WorkspaceProvider →
 WorkspaceTemplate → Workspace(s) → Session(s) (binding=agent, no
@@ -12,6 +13,7 @@ the worker pool never has to actually process a turn.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -378,6 +380,70 @@ async def test_t0041_top_level_sessions_filter_intersects_agent_id_and_status(
         ids2 = [item["id"] for item in resp2.json()["items"]]
         assert sid_ended in ids2, ids2
         assert sid_created not in ids2, ids2
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0089 — top-level /v1/sessions order_by created_at asc/desc are reverses
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0089_top_level_sessions_order_by_created_at_reverses(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0089 — `GET /v1/sessions?order_by=created_at:asc` and
+    `?order_by=created_at:desc` over the same set return the
+    sessions in reversed order. Pin the basic ordering invariant
+    on the cross-workspace surface.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, _ = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+        # Create 2 more sessions with brief gaps so created_at differs.
+        # asyncio.sleep(0.05) is plenty — Postgres timestamptz has
+        # microsecond resolution.
+        await asyncio.sleep(0.05)
+        s2 = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json=_session_body(agent_id=env["agent_id"]),
+        )
+        assert s2.status_code == 201, s2.text
+        await asyncio.sleep(0.05)
+        s3 = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json=_session_body(agent_id=env["agent_id"]),
+        )
+        assert s3.status_code == 201, s3.text
+
+        # Filter by workspace_id so the assertion is over only OUR sessions
+        async def _walk(direction: str) -> list[str]:
+            r = await client.get(
+                "/v1/sessions",
+                params={
+                    "workspace_id": workspace_id,
+                    "order_by": f"created_at:{direction}",
+                    "limit": 50,
+                    "offset": 0,
+                },
+            )
+            assert r.status_code == 200, r.text
+            return [item["id"] for item in r.json()["items"]]
+
+        ascending = await _walk("asc")
+        descending = await _walk("desc")
+        assert sorted(ascending) == sorted(descending), (
+            f"asc/desc returned different sets: {ascending!r} vs {descending!r}"
+        )
+        assert descending == list(reversed(ascending)), (
+            f"desc {descending!r} is not the reverse of asc {ascending!r}"
+        )
     finally:
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")

@@ -70,6 +70,145 @@ async def test_t0068_document_create_with_missing_collection_id_no_500(
 
 
 @pytest.mark.asyncio
+async def test_t0087_multi_key_order_by_breaks_ties(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0087 — `order_by` with multiple keys applies them left-to-right.
+    Two rows tied on the primary key are ordered by the secondary,
+    and reversing the secondary's direction flips just the tied pair.
+    """
+    prefix = f"doc-t0087-{unique_suffix}"
+    # Two docs share name "alpha" (the tie); a third has "bravo"
+    rows = [
+        {"id": f"{prefix}-1", "name": "alpha"},
+        {"id": f"{prefix}-2", "name": "alpha"},
+        {"id": f"{prefix}-3", "name": "bravo"},
+    ]
+    created: list[str] = []
+    try:
+        for r in rows:
+            body = {
+                "id": r["id"],
+                "name": r["name"],
+                "collection_id": f"unenforced-{unique_suffix}",
+                "text": "x",
+                "meta": {},
+            }
+            resp = await client.post("/v1/documents", json=body)
+            assert resp.status_code in (200, 201), resp.text
+            created.append(r["id"])
+
+        find_body_template = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+
+        # Primary asc by name; secondary desc by id
+        body_a = {
+            **find_body_template,
+            "order_by": [
+                {"field": "name", "direction": "asc"},
+                {"field": "id", "direction": "desc"},
+            ],
+        }
+        resp_a = await client.post("/v1/documents/find", json=body_a)
+        assert resp_a.status_code == 200, resp_a.text
+        ids_a = [item["id"] for item in resp_a.json()["items"]]
+        # Tie on "alpha": the two alpha rows ordered by id desc → -2, -1
+        # Then the "bravo" row → -3
+        assert ids_a == [
+            f"{prefix}-2", f"{prefix}-1", f"{prefix}-3",
+        ], f"unexpected order with [name asc, id desc]: {ids_a!r}"
+
+        # Now flip secondary to id asc: only the tied pair flips
+        body_b = {
+            **find_body_template,
+            "order_by": [
+                {"field": "name", "direction": "asc"},
+                {"field": "id", "direction": "asc"},
+            ],
+        }
+        resp_b = await client.post("/v1/documents/find", json=body_b)
+        assert resp_b.status_code == 200, resp_b.text
+        ids_b = [item["id"] for item in resp_b.json()["items"]]
+        assert ids_b == [
+            f"{prefix}-1", f"{prefix}-2", f"{prefix}-3",
+        ], f"unexpected order with [name asc, id asc]: {ids_b!r}"
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+
+
+@pytest.mark.asyncio
+async def test_t0088_order_by_jsonb_null_path_is_stable(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0088 — ordering on a JSONB nested key (`meta.tag`) where some
+    rows have it set and others don't must:
+    - not 500
+    - produce a deterministic ordering across two consecutive calls
+
+    Postgres' default `NULLS LAST` for asc / `NULLS FIRST` for desc
+    is the conventional placement, but this test pins only stability,
+    not the specific position.
+    """
+    prefix = f"doc-t0088-{unique_suffix}"
+    rows = [
+        {"id": f"{prefix}-1", "meta": {"tag": "z"}},
+        {"id": f"{prefix}-2", "meta": {}},  # no tag
+        {"id": f"{prefix}-3", "meta": {"tag": "a"}},
+        {"id": f"{prefix}-4", "meta": {}},  # no tag
+    ]
+    created: list[str] = []
+    try:
+        for r in rows:
+            body = {
+                "id": r["id"],
+                "name": "x",
+                "collection_id": f"unenforced-{unique_suffix}",
+                "text": "x",
+                "meta": r["meta"],
+            }
+            resp = await client.post("/v1/documents", json=body)
+            assert resp.status_code in (200, 201), resp.text
+            created.append(r["id"])
+
+        find_body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+            "order_by": [{"field": "meta.tag", "direction": "asc"}],
+        }
+
+        first = await client.post("/v1/documents/find", json=find_body)
+        assert first.status_code == 200, first.text
+        ids_first = [item["id"] for item in first.json()["items"]]
+
+        second = await client.post("/v1/documents/find", json=find_body)
+        assert second.status_code == 200, second.text
+        ids_second = [item["id"] for item in second.json()["items"]]
+
+        # Same set of ids, identical ordering across the two calls.
+        assert sorted(ids_first) == sorted([r["id"] for r in rows]), ids_first
+        assert ids_first == ids_second, (
+            f"order_by on a nullable JSONB key is unstable across calls: "
+            f"first={ids_first!r}, second={ids_second!r}"
+        )
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+
+
+@pytest.mark.asyncio
 async def test_t0074_order_by_jsonb_nested_path_sorts_deterministically(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

@@ -494,6 +494,153 @@ async def test_t0059_search_ranks_marker_match_above_noise(
 
 
 @pytest.mark.asyncio
+async def test_t0090_cdc_burst_load_all_agents_indexed(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0090 — after bootstrap, POST 10 agents back-to-back with a
+    shared marker; ALL 10 must surface in `/agents/search` within
+    a bounded poll window. Catches CDC-queue dropping or coalescing
+    under burst load.
+    """
+    embedder_id = f"emb-t0090-{unique_suffix}"
+    llm_id = f"llm-t0090-{unique_suffix}"
+    shared_marker = f"burst-marker-{unique_suffix}"
+    n_agents = 10
+    agent_ids = [f"agent-burst-{unique_suffix}-{i:02d}" for i in range(n_agents)]
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    created_agents: list[str] = []
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        # Burst-create all 10 agents concurrently
+        responses = await asyncio.gather(
+            *[
+                client.post(
+                    "/v1/agents",
+                    json=_agent_body(
+                        aid, provider_id=llm_id, description=shared_marker,
+                    ),
+                )
+                for aid in agent_ids
+            ]
+        )
+        for r in responses:
+            assert r.status_code == 201, r.text
+        created_agents.extend(agent_ids)
+
+        # Poll up to 60s for ALL 10 ids to appear
+        deadline_iters = 120  # 60s @ 0.5s
+        last_ids: set[str] = set()
+        for _ in range(deadline_iters):
+            search = await client.post(
+                "/v1/agents/search",
+                json={"query": shared_marker, "top_k": n_agents + 5},
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+            assert search.status_code == 200, search.text
+            last_ids = {h["document_id"] for h in search.json()["hits"]}
+            if set(agent_ids).issubset(last_ids):
+                break
+            await asyncio.sleep(0.5)
+        missing = set(agent_ids) - last_ids
+        assert not missing, (
+            f"CDC dropped {len(missing)}/{n_agents} agents after 60s poll: "
+            f"missing={sorted(missing)!r}, present={sorted(last_ids)!r}"
+        )
+    finally:
+        for aid in created_agents:
+            await client.delete(f"/v1/agents/{aid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+@pytest.mark.asyncio
+async def test_t0091_cdc_reactivation_cycle_works(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0091 — full deactivation + reactivation cycle:
+    PUT config → bootstrap → DELETE config (subsystem inactive) →
+    PUT config → bootstrap → freshly-created Agent surfaces in search.
+
+    Catches state leakage between activation cycles (e.g. stale CDC
+    workers, stale subsystem references in the registry).
+    """
+    embedder_id = f"emb-t0091-{unique_suffix}"
+    llm_id = f"llm-t0091-{unique_suffix}"
+    agent_id = f"agent-cycle-{unique_suffix}"
+    marker = f"cycle-marker-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_active = False
+    llm_created = False
+    agent_created = False
+    try:
+        # First activation cycle
+        await _bootstrap_subsystem(client, embedder_id)
+        config_active = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        # Deactivate
+        rm = await client.delete("/v1/internal_collections/config")
+        assert rm.status_code == 204, rm.text
+        config_active = False
+        # Confirm subsystem is inactive (search 503)
+        check = await client.post(
+            "/v1/agents/search", json={"query": "anything", "top_k": 3},
+        )
+        assert check.status_code == 503, check.text
+
+        # Re-activate
+        await _bootstrap_subsystem(client, embedder_id)
+        config_active = True
+
+        # Create a new agent AFTER re-activation; CDC must work again
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(agent_id, provider_id=llm_id, description=marker),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        ids = await _poll_search_for(
+            client, query=marker, expected_id=agent_id, present=True,
+        )
+        assert agent_id in ids, (
+            f"after reactivation, CDC did not re-index the new agent: {ids!r}"
+        )
+    finally:
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_active:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0036_cdc_updated_agent_description_indexed(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
