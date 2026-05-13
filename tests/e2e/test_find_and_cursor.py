@@ -602,6 +602,57 @@ async def test_t0121_find_explicit_null_predicate_equivalent_to_omitting(
 
 
 @pytest.mark.asyncio
+async def test_t0149_predicate_like_with_sql_keywords_parameterised(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0149 — predicate `LIKE` (`~=`) with a value containing
+    Postgres-reserved-keyword fragments (`select`, `from`) does NOT
+    produce a SQL-syntax error. Confirms that the storage layer is
+    parameterising the value rather than splicing it into the query
+    string.
+
+    Two seeded ids contain the keyword fragments; the predicate
+    matches only one of them.
+    """
+    prefix = f"ts-t0149-{unique_suffix}"
+    a = f"{prefix}-select-x"
+    b = f"{prefix}-from-y"
+    ids = [a, b]
+    for sid in ids:
+        resp = await client.post("/v1/toolsets", json=_toolset_body(sid))
+        assert resp.status_code == 201, resp.text
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": "%select%"},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = sorted(item["id"] for item in resp.json()["items"])
+        assert out_ids == [a], (
+            f"keyword-bearing predicate value should match only "
+            f"{a!r}; got {out_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+@pytest.mark.asyncio
 async def test_t0086_predicate_like_uppercase_rejected_422(
     client: httpx.AsyncClient,
 ) -> None:

@@ -1078,6 +1078,71 @@ async def test_t0096_workspace_destroy_then_recreate_starts_clean(
 
 
 @pytest.mark.asyncio
+async def test_t0144_workspace_files_info_on_missing_path_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0144 — `GET /files/info?path=<missing>` on a fresh workspace
+    returns 404 with the documented `/errors/not-found` envelope."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": "does/not/exist.txt"},
+        )
+        assert resp.status_code == 404, resp.text
+        body = resp.json()
+        assert body["type"] == "/errors/not-found", body
+        assert body["status"] == 404
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0145_workspace_files_delete_on_missing_path_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0145 — `DELETE /files?path=<missing>` returns 404
+    `/errors/not-found`. Matches the T0009 CRUD-DELETE contract — a
+    second/missing delete is NOT idempotent."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        resp = await client.delete(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "ghost.txt"},
+        )
+        assert resp.status_code == 404, resp.text
+        body = resp.json()
+        assert body["type"] == "/errors/not-found", body
+        assert body["status"] == 404
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
 async def test_t0114_workspace_files_info_on_directory(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
