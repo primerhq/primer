@@ -579,9 +579,9 @@ class WorkerPool:
                 return
 
             workspace = await self._load_workspace_for_persist(session.workspace_id)
-            executor = await self._build_executor(session, workspace)
 
             try:
+                executor = await self._build_executor(session, workspace)
                 async with scope:
                     await executor.invoke([])
             except asyncio.CancelledError:

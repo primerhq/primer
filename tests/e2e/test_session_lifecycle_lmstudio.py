@@ -1160,3 +1160,102 @@ async def test_t0139_agent_with_empty_tools_list_still_completes_turn(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0156 — Session bound to a Graph fails cleanly until graph executor lands
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0156_graph_bound_session_terminates_cleanly(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0156 — bind a session via `binding={kind:"graph", graph_id:…}`.
+
+    Graph executor wiring is explicitly DEFERRED in v1
+    (matrix/worker/pool.py:_build_graph_executor raises NotImplementedError
+    by design — see the docstring there: "graph executor wiring is the
+    next sub-project"). The contract this test pins is therefore the
+    failure path: the worker must surface that NotImplementedError as a
+    clean session-row update (status=ended, last_error populated) rather
+    than letting the exception bubble out of the turn loop and leave
+    the session stuck in RUNNING. (The original "stuck-in-RUNNING"
+    behaviour was the bug fixed in this iteration's matrix/ change.)
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    graph_id = f"lmgraph-{unique_suffix}"
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        # Build the one-agent graph
+        gr = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_id,
+                "description": "single-agent graph for T0156",
+                "nodes": [
+                    {"kind": "agent", "id": "n1", "agent_id": env["agent_id"]},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            },
+        )
+        assert gr.status_code == 201, gr.text
+
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "initial_instructions": "Reply with exactly 'OK'.",
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+        assert sess.json()["binding"]["kind"] == "graph"
+        assert sess.json()["binding"]["graph_id"] == graph_id
+
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 200, resume.text
+
+        # Wait for the worker to either succeed (when graph wiring lands)
+        # or fail cleanly to terminal (current behaviour). EITHER outcome
+        # is acceptable; what is NOT is sticking in RUNNING forever.
+        final = await _wait_for_terminal(
+            client, workspace_id=workspace_id, session_id=session_id,
+            timeout_s=60.0,
+        )
+        assert final.get("status") == "ended", (
+            f"graph-bound session did not converge to terminal within 60s; "
+            f"the worker pool must surface NotImplementedError as a clean "
+            f"failure on the session row instead of leaving it stuck: "
+            f"{final!r}"
+        )
+        # When the graph path is unimplemented, last_error should
+        # carry the NotImplementedError text. When it lands, this
+        # would be None on a successful turn.
+        if final.get("ended_reason") == "failed":
+            assert final.get("last_error"), (
+                f"failed graph session must populate last_error: {final!r}"
+            )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await _teardown_setup(client, env)

@@ -766,3 +766,162 @@ async def test_t0089_top_level_sessions_order_by_created_at_reverses(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0157 — session create with binding kind=graph + missing graph_id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0157_session_create_with_missing_graph_id_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0157 — POST a session with binding={kind:"graph", graph_id:<missing>}.
+    The current API may either reject at create-time (4xx /errors/not-found)
+    OR accept the row and surface the broken reference later (mirroring
+    T0068 — Document orphan-tolerated). Either is acceptable; what is NOT
+    is a 5xx leak. Pin the no-/errors/internal contract.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        missing_graph_id = f"missing-graph-{unique_suffix}"
+        resp = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": missing_graph_id},
+                "auto_start": False,
+            },
+        )
+        # Anything but 5xx is documentable behaviour; pin no internal-error
+        assert resp.status_code != 500, resp.text
+        assert resp.status_code < 500, resp.text
+        if resp.status_code >= 400:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+        else:
+            # Accepted — verify the row roundtrips cleanly through GET
+            session_id = resp.json()["id"]
+            get = await client.get(f"/v1/sessions/{session_id}")
+            assert get.status_code == 200, get.text
+            assert get.json()["binding"]["graph_id"] == missing_graph_id
+            # Cancel for clean teardown
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0158 — POST sessions on missing workspace returns clean 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0158_post_session_on_missing_workspace_clean_4xx(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0158 — POST /v1/workspaces/<missing>/sessions with a structurally-
+    valid body. Workspace doesn't exist so the create must reject with a
+    4xx envelope and NOT 5xx.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    try:
+        missing_ws = f"missing-ws-{unique_suffix}"
+        resp = await client.post(
+            f"/v1/workspaces/{missing_ws}/sessions",
+            json=_session_body(agent_id=env["agent_id"]),
+        )
+        assert 400 <= resp.status_code < 500, resp.text
+        envelope = resp.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0159 — cancel/pause/resume on missing session id all return 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0159_signals_on_missing_session_all_return_404(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0159 — every signal verb (cancel, pause, resume) on a non-existent
+    session id returns 404 /errors/not-found. Cross-verb consistency check.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        missing_sid = f"missing-sess-{unique_suffix}"
+        for verb in ("cancel", "pause", "resume"):
+            resp = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{missing_sid}/{verb}",
+            )
+            assert resp.status_code == 404, (
+                f"{verb} on missing sid expected 404, got "
+                f"{resp.status_code}: {resp.text}"
+            )
+            assert resp.json()["type"] == "/errors/not-found", resp.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0160 — resume on cancelled (terminal) session returns 409
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0160_resume_on_cancelled_session_returns_409(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0160 — cancel a CREATED session (T0039 proves it goes terminal),
+    then attempt resume. The illegal CANCELLED→RUNNING transition must
+    surface as 409 /errors/conflict.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Cancel from CREATED — proven terminal by T0039
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+        assert cancel.json()["status"] == "ended"
+
+        # Attempt resume on the now-terminal session
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 409, resume.text
+        assert resume.json()["type"] == "/errors/conflict"
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
