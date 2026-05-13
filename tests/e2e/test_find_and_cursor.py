@@ -1270,3 +1270,122 @@ async def test_t0215_predicate_triple_nested_and_or_not_via_neq(
         )
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0216 — LIKE predicate with SQL-injection-shaped value is parameterized
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0216_predicate_like_sql_injection_shape_isolated(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0216 — Send `~=` (LIKE) with a value that looks like SQL syntax
+    (semicolons, DROP TABLE, comments). The predicate path must
+    parameterize the value so the syntax is treated as literal pattern
+    text, not SQL. Concretely:
+
+      - A value with `%` is wildcard-expanded (documented behavior)
+        but only within the intended pattern semantics — `id ~= "%"`
+        matches rows but does NOT execute arbitrary SQL.
+      - A value with `; DROP TABLE x; --` returns either 0 hits or a
+        clean envelope; never 5xx; the toolsets table still has all
+        seeded rows after.
+    """
+    prefix = f"ts-t0216-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        # Pattern with SQL-injection shape (literal text after the prefix)
+        attack_value = f"{prefix}-; DROP TABLE toolsets; --"
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": attack_value},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        # Parameterized → 200 with zero hits (no row matches that literal)
+        # OR a clean 4xx if validation rejects. NEVER 5xx.
+        assert resp.status_code < 500, resp.text
+        if resp.status_code == 200:
+            # No row matches the literal injection pattern
+            assert resp.json()["items"] == [], resp.json()
+        else:
+            assert 400 <= resp.status_code < 500, resp.text
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+
+        # Sanity: the seeded toolsets table still has all 3 seeded rows
+        # (the "DROP TABLE" wasn't executed)
+        survive = await client.post(
+            "/v1/toolsets/find",
+            json={
+                "predicate": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "page": {"kind": "offset", "offset": 0, "length": 50},
+            },
+        )
+        assert survive.status_code == 200, survive.text
+        survive_ids = sorted(item["id"] for item in survive.json()["items"])
+        assert survive_ids == sorted(ids), (
+            f"seeded rows missing after injection-shape probe! "
+            f"seeded={sorted(ids)!r}, surviving={survive_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0217 — find with order_by referencing unknown field returns clean 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0217_find_order_by_unknown_field_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0217 — POST /v1/toolsets/find with order_by referencing a column
+    that doesn't exist on Toolset. Must produce a clean envelope (4xx
+    or 5xx-non-internal); never /errors/internal.
+
+    Mirrors T0084 (unknown predicate field) for the order_by path.
+    """
+    prefix = f"ts-t0217-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 2)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+            "order_by": [
+                {"field": f"nonexistent_field_{unique_suffix}",
+                 "direction": "asc"},
+            ],
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code != 500 or (
+            resp.json().get("type") != "/errors/internal"
+        ), f"/errors/internal leak: {resp.text}"
+        # Implementations vary: some validate at request-time (422),
+        # some at SQL-build time (4xx /errors/bad-request), some are
+        # lenient and order non-deterministically (200). Accept any
+        # non-internal outcome.
+        if resp.status_code >= 400:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        await _delete_toolsets(client, ids)

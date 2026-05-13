@@ -85,6 +85,61 @@ async def test_t0028_worker_drain_idempotent(
 
 
 @pytest.mark.asyncio
+async def test_t0218_drain_third_call_does_not_toggle_state(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0218 — Distinct from T0028's two-call idempotency. After the
+    second drain leaves status=draining, a THIRD drain must still
+    return 204 AND the worker row's identifying fields (id, host, pid)
+    must remain stable across the call — no field toggling.
+
+    Catches a regression where the drain handler does a "load row →
+    flip a boolean → write back" that could cycle the state if the
+    field is interpreted as a toggle rather than an idempotent set.
+    """
+    listed = await client.get("/v1/workers")
+    assert listed.status_code == 200, listed.text
+    items = listed.json()["items"]
+    assert items
+    worker_id = items[0]["id"]
+
+    # Two drains to reach "already draining" state
+    await client.post(f"/v1/workers/{worker_id}/drain")
+    await client.post(f"/v1/workers/{worker_id}/drain")
+
+    # Snapshot before third drain
+    before = await client.get("/v1/workers")
+    assert before.status_code == 200
+    row_before = next(
+        (w for w in before.json()["items"] if w["id"] == worker_id), None,
+    )
+    assert row_before is not None
+    assert row_before["status"] == "draining"
+
+    # Third drain — must remain 204 and not flip state
+    third = await client.post(f"/v1/workers/{worker_id}/drain")
+    assert third.status_code == 204, third.text
+
+    after = await client.get("/v1/workers")
+    assert after.status_code == 200
+    row_after = next(
+        (w for w in after.json()["items"] if w["id"] == worker_id), None,
+    )
+    assert row_after is not None
+    assert row_after["status"] == "draining", (
+        f"third drain toggled status off: before={row_before!r}, "
+        f"after={row_after!r}"
+    )
+    # Identity fields stable
+    for field in ("id", "host", "pid"):
+        assert row_after.get(field) == row_before.get(field), (
+            f"field {field!r} changed across the third drain call: "
+            f"before={row_before.get(field)!r}, "
+            f"after={row_after.get(field)!r}"
+        )
+
+
+@pytest.mark.asyncio
 async def test_t0104_parallel_get_and_delete_no_internal_error(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

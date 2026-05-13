@@ -2337,3 +2337,120 @@ async def test_t0210_workspace_download_content_type_for_binary(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0219 — /files/info size_bytes matches the actual written byte length
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0219_workspace_files_info_size_matches_write(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0219 — Write a binary blob of known length, then GET /files/info
+    and assert size_bytes equals exactly the number of bytes written.
+    T0063 covered size on an empty file; T0114 covered info on a
+    directory; this is the binary-blob round-trip pin.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        blob = bytes(range(256)) * 3  # 768 bytes, deterministic content
+        encoded = base64.b64encode(blob).decode("ascii")
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=binary.bin",
+            json={"content": encoded, "encoding": "base64"},
+        )
+        assert put.status_code == 204, put.text
+
+        info = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info?path=binary.bin",
+        )
+        assert info.status_code == 200, info.text
+        body = info.json()
+        assert body.get("size_bytes") == len(blob), (
+            f"size_bytes mismatch: wrote {len(blob)}, info reports "
+            f"{body.get('size_bytes')!r}; body={body!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0220 — three sequential PUTs to same path: last-writer-wins; one listing entry
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0220_workspace_files_put_three_writes_last_wins(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0220 — Three sequential writes to the same workspace-relative
+    path. Pin two invariants:
+
+      - The final read returns the THIRD body (last-writer-wins, not
+        append).
+      - The directory listing contains exactly ONE entry for the path
+        (writes don't accumulate as separate rows).
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": template_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        path = "overwrite.txt"
+        bodies = ("alpha", "bravo", "charlie")
+        for body in bodies:
+            r = await client.put(
+                f"/v1/workspaces/{workspace_id}/files?path={path}",
+                json={"content": body, "encoding": "text"},
+            )
+            assert r.status_code == 204, r.text
+
+        # Final read returns the third body
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read?path={path}",
+        )
+        assert read.status_code == 200, read.text
+        content = read.json().get("content", "")
+        assert content == bodies[-1], (
+            f"last-writer-wins violated: expected {bodies[-1]!r}, "
+            f"got {content!r}"
+        )
+
+        # Listing shows exactly one entry for this path
+        # NB: FileEntry uses `path` as its identifying field, not `name`
+        lst = await client.get(
+            f"/v1/workspaces/{workspace_id}/files?path=.",
+        )
+        assert lst.status_code == 200, lst.text
+        items = lst.json().get("items", [])
+        matching = [
+            it for it in items
+            if it.get("path") == path or it.get("path", "").endswith(path)
+        ]
+        assert len(matching) == 1, (
+            f"expected exactly one listing entry for {path!r}, got "
+            f"{len(matching)}: items={items!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
