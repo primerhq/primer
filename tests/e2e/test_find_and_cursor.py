@@ -1962,6 +1962,124 @@ async def test_t0311_predicate_like_is_case_sensitive(
 
 
 # ============================================================================
+# T0327 — Cursor token from /v1/toolsets reused on /v1/llm_providers
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0327_cross_entity_cursor_token_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0327 — Get a valid cursor token by paginating /v1/toolsets,
+    then reuse it on /v1/llm_providers. The cursor decoder may
+    treat tokens as opaque (accepting any well-formed token) OR as
+    entity-scoped (rejecting cross-entity reuse). Either is fine —
+    pin no /errors/internal leak.
+    """
+    prefix = f"ts-t0327-{unique_suffix}"
+    seeded = await _seed_toolsets(client, prefix, 4)
+    try:
+        # Get a cursor by paginating toolsets
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "cursor", "cursor": None, "length": 2},
+        }
+        first = await client.post("/v1/toolsets/find", json=body)
+        assert first.status_code == 200, first.text
+        cursor = first.json().get("next_cursor")
+        if not cursor:
+            pytest.skip(
+                "first toolsets page didn't return a cursor — can't "
+                "test cross-entity reuse"
+            )
+
+        # Reuse on /v1/llm_providers
+        resp = await client.get(f"/v1/llm_providers?cursor={cursor}")
+        assert resp.status_code != 500, resp.text
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"cross-entity cursor reuse leaked /errors/internal: "
+            f"{resp.text}"
+        )
+    finally:
+        await _delete_toolsets(client, seeded)
+
+
+# ============================================================================
+# T0328 — Predicate `~=` with literal `%` (escaped) matches literal-percent rows
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0328_predicate_like_escaped_percent_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0328 — Pin behaviour when the LIKE pattern includes a
+    backslash-escaped `%`. The predicate translator may either:
+      - support SQL LIKE escape semantics (`\\%` matches literal %)
+      - treat `\\` as a literal char (no escape support)
+      - reject the pattern with a clean 4xx
+
+    Hard pin: no /errors/internal regardless. Documents the actual
+    behaviour for future reference.
+    """
+    # Seed a toolset with a literal `%` in its id
+    pct_id = f"ts-t0328-{unique_suffix}-%pct%"
+    plain_id = f"ts-t0328-{unique_suffix}-plain"
+
+    import urllib.parse
+
+    try:
+        # Create both rows
+        for entity_id in (pct_id, plain_id):
+            r = await client.post(
+                "/v1/toolsets",
+                json={
+                    "id": entity_id,
+                    "provider": "mcp",
+                    "config": {
+                        "transport": "stdio",
+                        "config": {"command": ["echo"]},
+                    },
+                },
+            )
+            # The literal-% id may or may not be allowed by the
+            # validator; tolerate either
+            assert r.status_code in (201, 422), r.text
+
+        # Try predicate `~=` with `\%` escape
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {
+                    "kind": "value",
+                    "value": f"ts-t0328-{unique_suffix}-\\%pct\\%",
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code != 500, resp.text
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"escaped-percent LIKE leaked /errors/internal: {resp.text}"
+        )
+    finally:
+        for entity_id in (pct_id, plain_id):
+            # Use urllib quote since id has special chars
+            await client.delete(
+                f"/v1/toolsets/{urllib.parse.quote(entity_id, safe='')}",
+            )
+
+
+# ============================================================================
 # T0217 — find with order_by referencing unknown field returns clean 4xx
 # ============================================================================
 

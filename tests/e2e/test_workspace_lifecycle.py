@@ -3624,3 +3624,24 @@ async def test_t0317_workspace_files_list_on_fresh_workspace_empty(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0325 — GET /v1/workspaces/{missing}/log returns 404 /errors/not-found
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0325_workspace_log_on_missing_workspace_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0325 — Missing-workspace contract on the bespoke /log
+    endpoint. T0057 covers fresh-workspace shape; this pins the
+    missing-workspace path with the documented 404 envelope.
+    """
+    missing_ws = f"missing-ws-t0325-{unique_suffix}"
+    resp = await client.get(f"/v1/workspaces/{missing_ws}/log")
+    assert resp.status_code == 404, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/not-found", envelope
+    assert envelope["status"] == 404

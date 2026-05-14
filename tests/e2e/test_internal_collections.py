@@ -196,3 +196,25 @@ async def test_t0319_search_with_oversize_query_string_clean_envelope(
         f"unexpected status for oversize query: {resp.status_code}: "
         f"{resp.text}"
     )
+
+
+# ============================================================================
+# T0326 — DELETE /internal_collections/config before any PUT clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0326_ic_config_delete_before_put_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0326 — DELETE /v1/internal_collections/config when no config
+    row exists. The handler must produce a clean envelope (404
+    /errors/not-found OR 204 silent no-op like T0187 invalidate);
+    NEVER /errors/internal.
+    """
+    resp = await client.delete("/v1/internal_collections/config")
+    assert resp.status_code < 500, resp.text
+    if resp.status_code >= 400:
+        envelope = resp.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["type"] != "/errors/internal", envelope
