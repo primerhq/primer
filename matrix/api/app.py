@@ -30,6 +30,7 @@ from matrix.api.version import API_VERSION, APP_VERSION
 from matrix.internal_collections import build_subsystem, load_config_or_none
 from matrix.model.except_ import ConfigError
 from matrix.model.scheduler import RuntimeMode, SchedulerProviderType
+from matrix.toolset.misc import build_misc_toolset
 from matrix.toolset.search import build_search_toolset
 from matrix.toolset.system import build_system_toolset
 from matrix.toolset.workspaces import build_workspaces_toolset
@@ -92,12 +93,16 @@ def _make_lifespan(config: AppConfig):
             workspace_registry=workspace_registry,
         )
         provider_registry._workspaces_toolset_provider = ws_toolset  # noqa: SLF001
+        # Build the always-on _misc toolset (stateless utilities).
+        misc_toolset = build_misc_toolset()
+        provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
         app.state.storage_provider = storage_provider
         app.state.provider_registry = provider_registry
         app.state.vector_store_registry = vector_store_registry
         app.state.workspace_registry = workspace_registry
         app.state.system_toolset = system_toolset
         app.state.workspaces_toolset = ws_toolset
+        app.state.misc_toolset = misc_toolset
         app.state.internal_collections = None
         app.state.search_toolset = None
 
@@ -157,6 +162,7 @@ def _make_lifespan(config: AppConfig):
                 toolset_providers={
                     "_system": system_toolset,
                     "_workspaces": ws_toolset,
+                    "_misc": misc_toolset,
                 },
             )
             search_toolset = build_search_toolset(ic_subsystem)
@@ -349,13 +355,15 @@ def create_test_app(
     workspace_registry: WorkspaceRegistry | None = None,
     system_toolset=None,
     workspaces_toolset=None,
+    misc_toolset=None,
 ) -> FastAPI:
     """Test factory: skips the lifespan; stashes pre-built dependencies.
 
-    If any of ``system_toolset``, ``workspace_registry``, or
-    ``workspaces_toolset`` is omitted the factory builds one against
-    the supplied registries — the same wiring the production lifespan
-    performs. Pass an explicit instance to inject a stub.
+    If any of ``system_toolset``, ``workspace_registry``,
+    ``workspaces_toolset``, or ``misc_toolset`` is omitted the factory
+    builds one against the supplied registries — the same wiring the
+    production lifespan performs. Pass an explicit instance to inject
+    a stub.
     """
     app = FastAPI(
         title="Matrix Microagents Framework API (test)",
@@ -375,14 +383,18 @@ def create_test_app(
             storage_provider=storage_provider,
             workspace_registry=workspace_registry,
         )
+    if misc_toolset is None:
+        misc_toolset = build_misc_toolset()
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001
+    provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
     app.state.storage_provider = storage_provider
     app.state.provider_registry = provider_registry
     app.state.vector_store_registry = vector_store_registry
     app.state.workspace_registry = workspace_registry
     app.state.system_toolset = system_toolset
     app.state.workspaces_toolset = workspaces_toolset
+    app.state.misc_toolset = misc_toolset
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
     app.state.search_toolset = None

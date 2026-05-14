@@ -265,6 +265,12 @@ async def bootstrap(
         sys_ts = getattr(request.app.state, "system_toolset", None)
         if sys_ts is not None:
             toolsets["_system"] = sys_ts
+        ws_ts = getattr(request.app.state, "workspaces_toolset", None)
+        if ws_ts is not None:
+            toolsets["_workspaces"] = ws_ts
+        misc_ts = getattr(request.app.state, "misc_toolset", None)
+        if misc_ts is not None:
+            toolsets["_misc"] = misc_ts
         subsystem = build_subsystem(
             config=cfg,
             storage_provider=storage_provider,

@@ -92,6 +92,7 @@ def _default_cross_encoder_factory(  # pragma: no cover
 _SYSTEM_TOOLSET_ID = "_system"
 _SEARCH_TOOLSET_ID = "_search"
 _WORKSPACES_TOOLSET_ID = "_workspaces"
+_MISC_TOOLSET_ID = "_misc"
 
 
 def _build_default_toolset_factory(
@@ -152,6 +153,7 @@ class ProviderRegistry:
         system_toolset_provider: ToolsetProvider | None = None,
         search_toolset_provider: ToolsetProvider | None = None,
         workspaces_toolset_provider: ToolsetProvider | None = None,
+        misc_toolset_provider: ToolsetProvider | None = None,
     ) -> None:
         self._sp = storage_provider
         self._llm_factory = llm_factory or _default_llm_factory
@@ -174,6 +176,10 @@ class ProviderRegistry:
         # provider — always built at app startup. Mirrors ``_system``:
         # its tools dogfood the workspace REST API to agents.
         self._workspaces_toolset_provider = workspaces_toolset_provider
+        # Reserved id ``_misc`` resolves to this immutable provider —
+        # always built at app startup. Stateless utilities
+        # (get_datetime, sleep, uuid_v4, hash, calculate).
+        self._misc_toolset_provider = misc_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -247,6 +253,13 @@ class ProviderRegistry:
             and toolset_id == _WORKSPACES_TOOLSET_ID
         ):
             return self._workspaces_toolset_provider
+        # Reserved id `_misc` resolves to the always-on misc utility
+        # toolset built at app startup.
+        if (
+            self._misc_toolset_provider is not None
+            and toolset_id == _MISC_TOOLSET_ID
+        ):
+            return self._misc_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -288,6 +301,7 @@ class ProviderRegistry:
             _SYSTEM_TOOLSET_ID,
             _SEARCH_TOOLSET_ID,
             _WORKSPACES_TOOLSET_ID,
+            _MISC_TOOLSET_ID,
         ):
             return
         async with self._lock:
