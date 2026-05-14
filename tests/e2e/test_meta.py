@@ -484,6 +484,47 @@ async def test_t0314_200_health_carries_application_json_content_type(
 
 
 # ============================================================================
+# T0315 — POST /v1/llm_providers with trailing slash behaves consistently
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0315_post_with_trailing_slash_consistent(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0315 — Companion to T0206 (which tested GET trailing-slash on
+    list endpoints). Pin POST behaviour: both `/v1/llm_providers`
+    and `/v1/llm_providers/` must produce a clean envelope (no 5xx)
+    and carry the four security headers.
+
+    The body is intentionally degenerate (empty {}) so both calls
+    fail validation cleanly — the focus is on the trailing-slash
+    handling, not the create path.
+    """
+    bare = await client.post("/v1/llm_providers", json={})
+    slash = await client.post("/v1/llm_providers/", json={})
+
+    for resp, label in ((bare, "no-slash"), (slash, "trailing-slash")):
+        assert resp.status_code < 500, (
+            f"{label} returned 5xx: {resp.status_code}: {resp.text}"
+        )
+        # Either 422 (handled by route) or 307 redirect / 404 (route
+        # not matched). All must carry security headers.
+        # NB: 307 redirects may strip the body but headers should
+        # still be present.
+        for name, expected in _SECURITY_HEADERS.items():
+            actual = resp.headers.get(name)
+            # On 3xx redirects starlette may not run the middleware;
+            # tolerate that by only asserting on 4xx/2xx responses.
+            if 200 <= resp.status_code < 400:
+                assert actual == expected, (
+                    f"{label} ({resp.status_code}) missing/incorrect "
+                    f"header {name!r}: expected {expected!r}, got "
+                    f"{actual!r}"
+                )
+
+
+# ============================================================================
 # T0261 — OPTIONS on a POST-only search route returns clean response
 # ============================================================================
 

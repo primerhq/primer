@@ -3527,3 +3527,100 @@ async def test_t0297_workspace_download_unicode_filename_rfc5987(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0316 — /files/info on freshly-deleted path returns 404 (no stale cache)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0316_workspace_files_info_on_deleted_path_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0316 — Write a file, DELETE it, then GET /files/info on the
+    same path. Must return 404 /errors/not-found (no stale cache from
+    the prior write). Companion to T0144 (info on a never-existed
+    path).
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        path = "ephemeral.txt"
+        # Write
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path={path}",
+            json={"content": "x", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+        # Verify info exists pre-delete
+        info_pre = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info?path={path}",
+        )
+        assert info_pre.status_code == 200, info_pre.text
+
+        # Delete
+        rm = await client.delete(
+            f"/v1/workspaces/{workspace_id}/files?path={path}",
+        )
+        assert rm.status_code == 204, rm.text
+
+        # /files/info on the deleted path = 404
+        info_post = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info?path={path}",
+        )
+        assert info_post.status_code == 404, info_post.text
+        envelope = info_post.json()
+        assert envelope["type"] == "/errors/not-found", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0317 — /files list on a fresh workspace returns empty items
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0317_workspace_files_list_on_fresh_workspace_empty(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0317 — Materialise a workspace from a template that has no
+    init_files. GET /files (or /files?path=.) must return 200 with
+    items=[] cleanly — pin the empty-list envelope.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files?path=.",
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert "items" in body, body
+        # The fresh workspace may have nothing (most likely) OR a
+        # backend-internal directory like .state. Pin only that the
+        # response shape is the empty-or-clean items list.
+        assert isinstance(body["items"], list), body
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

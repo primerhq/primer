@@ -129,3 +129,70 @@ async def test_t0166_graphs_and_tools_search_503_subsystem_inactive(
             f"{path}: {envelope!r}"
         )
         assert envelope["status"] == 503
+
+
+# ============================================================================
+# T0318 — search top_k=100 (documented max) accepted before bootstrap
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0318_search_top_k_at_documented_max_accepted(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0318 — Spec §11 / T0061 say top_k is bounded `1..100`. T0061
+    rejects 101; T0062 covers top_k=1. This pins the upper boundary
+    (100 itself) is accepted: the request passes Pydantic validation
+    and reaches the subsystem check (returning 503 since the
+    subsystem isn't bootstrapped in this test).
+
+    The contract pin is "top_k=100 is NOT a 422" — distinguishing
+    Pydantic body validation from subsystem-inactive gating.
+    """
+    resp = await client.post(
+        "/v1/agents/search",
+        json={"query": "anything", "top_k": 100},
+    )
+    # Pydantic accepts 100 → reaches subsystem-inactive check → 503
+    assert resp.status_code == 503, (
+        f"top_k=100 should reach the subsystem check (503), not be "
+        f"rejected as 422: got {resp.status_code}: {resp.text}"
+    )
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/subsystem-inactive", envelope
+
+
+# ============================================================================
+# T0319 — search with very long query string returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0319_search_with_oversize_query_string_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0319 — POST /v1/agents/search with a 10000-character query
+    string. Must produce a clean envelope (no /errors/internal): if
+    the route accepts large queries, response is 503 (subsystem
+    inactive) or 200 (if active); if there's a documented size cap,
+    response is a clean 4xx.
+
+    Catches a regression where a giant query string crashes the
+    embedder or the SQL query builder.
+    """
+    huge_query = "x" * 10000
+    resp = await client.post(
+        "/v1/agents/search",
+        json={"query": huge_query, "top_k": 5},
+    )
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"oversize query leaked /errors/internal: {resp.text}"
+    )
+    # Acceptable codes: 503 (subsystem-inactive — most likely on
+    # this iteration), 200 (subsystem active — unlikely without
+    # bootstrap), or 4xx (size cap rejection)
+    assert resp.status_code in (200, 422, 503) or 400 <= resp.status_code < 500, (
+        f"unexpected status for oversize query: {resp.status_code}: "
+        f"{resp.text}"
+    )
