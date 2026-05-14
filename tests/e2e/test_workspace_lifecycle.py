@@ -5184,3 +5184,189 @@ async def test_t0463_workspace_files_info_posix_mode_documented(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0476 — /files/info on freshly-written file in NEW subdir reports correct path
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0476_workspace_files_info_in_new_subdir_correct_path(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0476 — PUT a file at `newdir/foo.txt` (subdir does not exist
+    yet — local backend must create intermediate directories per
+    T0046). Then GET /files/info: the response `path` field must
+    equal the input path exactly, and `kind` must be `file`.
+
+    Pin: subdir creation does not corrupt the path field; /info
+    correctly identifies file vs directory.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        new_path = "newdir/foo.txt"
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": new_path},
+            json={"content": "subdir-probe", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        info = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": new_path},
+        )
+        assert info.status_code == 200, info.text
+        info_body = info.json()
+        assert info_body.get("path") == new_path, (
+            f"path field corrupted: sent={new_path!r}, "
+            f"got={info_body.get('path')!r}"
+        )
+        assert info_body.get("kind") == "file", (
+            f"kind should be 'file' for a freshly-written file; "
+            f"got {info_body.get('kind')!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0477 — DELETE /files?path=/ returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0477_workspace_files_delete_root_path_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0477 — Parallel of T0146 (PUT root path rejected) for the
+    DELETE verb. DELETE /v1/workspaces/{wid}/files?path=/ must
+    reject cleanly (4xx with /errors/* envelope) — never destroy
+    the workspace root, never 5xx. The workspace itself stays
+    functional after the rejected DELETE.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Try several root-shaped paths
+        for root_shape in ("/", ".", ""):
+            resp = await client.delete(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": root_shape},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"DELETE root path={root_shape!r} leaked "
+                f"/errors/internal: {resp.text}"
+            )
+            assert resp.status_code < 500, resp.text
+            # Either rejected (404/4xx) or maybe accepted as no-op,
+            # but NEVER destroys the workspace root. Accept any
+            # non-5xx; we'll verify the workspace is still usable
+            # at the end.
+            assert resp.status_code in (204, 400, 404, 422), (
+                f"DELETE path={root_shape!r}: unexpected "
+                f"{resp.status_code}: {resp.text}"
+            )
+
+        # Workspace still functional — listing root succeeds
+        listed = await client.get(f"/v1/workspaces/{workspace_id}/files")
+        assert listed.status_code == 200, (
+            f"workspace root listing broken after DELETE attempts: "
+            f"{listed.status_code}: {listed.text}"
+        )
+        assert isinstance(listed.json().get("items"), list), listed.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0478 — /files PUT to a path containing NUL byte rejected cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0478_workspace_files_put_nul_byte_path_rejected_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0478 — Filenames containing NUL bytes are illegal on every
+    POSIX filesystem (NUL terminates C strings) and on NTFS. The
+    HTTP layer doesn't have a special interpretation of NUL but the
+    on-disk write WILL fail. Pin: 4xx clean envelope (ideally 400
+    /errors/bad-request); never 5xx, never /errors/internal; no
+    listing entry leaked.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # NUL byte in the basename. URL-encoded as %00 over the wire;
+        # the server's URL decoder must NOT collapse it silently.
+        nul_path = "before\x00after.txt"
+
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": nul_path},
+            json={"content": "nul-probe", "encoding": "text"},
+        )
+        envelope = write.json() if write.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"NUL-byte path leaked /errors/internal: {write.text}"
+        )
+        # Hard pin: never 5xx
+        assert write.status_code < 500, write.text
+        # Documented rejection codes
+        assert write.status_code in (400, 422), (
+            f"NUL-byte path should be 4xx; got "
+            f"{write.status_code}: {write.text}"
+        )
+        assert envelope.get("type", "").startswith("/errors/"), envelope
+
+        # Defence: no leaked entry in the root listing
+        listed = await client.get(f"/v1/workspaces/{workspace_id}/files")
+        assert listed.status_code == 200, listed.text
+        names = [item.get("path", "") for item in listed.json()["items"]]
+        for name in names:
+            assert "\x00" not in name, (
+                f"NUL byte leaked into listing: {name!r}"
+            )
+            assert "after.txt" not in name, (
+                f"NUL-rejected filename appears in listing as "
+                f"{name!r}; the rejection may have been bypassed."
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

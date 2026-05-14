@@ -1847,3 +1847,192 @@ async def test_t0473_put_graph_with_live_session_clean_envelope(
             await client.delete(f"/v1/workspace_providers/{wp_id}")
             await client.delete(f"/v1/agents/{agent_id}")
             await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0474 — DELETE Graph while a session is bound to it returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0474_delete_graph_with_bound_session_orphan_tolerated(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0474 — Mirror of T0157/T0265 (orphan-tolerated cascades) for
+    the Graph→Session FK. DELETE a graph while a session is bound
+    to it. Pin: DELETE returns 204 (graph gone); subsequent GET on
+    the session row still returns 200 with the orphaned binding
+    intact; never /errors/internal anywhere.
+
+    Catches a regression where the graph DELETE cascade tries to
+    walk bound sessions and either 5xxs or silently corrupts the
+    session row.
+    """
+    import tempfile
+    provider_id = f"llm-t0474-{unique_suffix}"
+    agent_id = f"agent-t0474-{unique_suffix}"
+    graph_id = f"graph-t0474-{unique_suffix}"
+    wp_id = f"wp-t0474-{unique_suffix}"
+    tpl_id = f"wt-t0474-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            wp = await client.post(
+                "/v1/workspace_providers",
+                json={
+                    "id": wp_id,
+                    "provider": "local",
+                    "config": {"kind": "local", "path": tmp},
+                },
+            )
+            assert wp.status_code == 201, wp.text
+            tpl = await client.post(
+                "/v1/workspace_templates",
+                json={
+                    "id": tpl_id,
+                    "description": "T0474",
+                    "provider_id": wp_id,
+                    "backend": {"kind": "local"},
+                },
+            )
+            assert tpl.status_code == 201, tpl.text
+
+            gr = await client.post(
+                "/v1/graphs",
+                json=_graph_body(graph_id, agent_id=agent_id),
+            )
+            assert gr.status_code == 201, gr.text
+
+            ws = await client.post(
+                "/v1/workspaces", json={"template_id": tpl_id},
+            )
+            assert ws.status_code == 201, ws.text
+            workspace_id = ws.json()["id"]
+
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json={
+                    "binding": {"kind": "graph", "graph_id": graph_id},
+                    "auto_start": False,
+                },
+            )
+            assert sess.status_code == 201, sess.text
+            session_id = sess.json()["id"]
+
+            # DELETE the bound graph
+            rm = await client.delete(f"/v1/graphs/{graph_id}")
+            envelope = rm.json() if rm.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"DELETE graph with bound session leaked /errors/internal: "
+                f"{rm.text}"
+            )
+            assert rm.status_code == 204, (
+                f"DELETE graph should be orphan-tolerated 204; got "
+                f"{rm.status_code}: {rm.text}"
+            )
+
+            # Session row still readable; orphaned binding intact
+            got = await client.get(f"/v1/sessions/{session_id}")
+            assert got.status_code == 200, got.text
+            body = got.json()
+            assert body["id"] == session_id
+            assert body["binding"]["kind"] == "graph"
+            assert body["binding"]["graph_id"] == graph_id, (
+                f"orphaned binding lost graph_id: {body['binding']!r}"
+            )
+        finally:
+            if session_id is not None and workspace_id is not None:
+                await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+                )
+            if workspace_id is not None:
+                await client.delete(f"/v1/workspaces/{workspace_id}")
+            await client.delete(f"/v1/graphs/{graph_id}")
+            await client.delete(f"/v1/workspace_templates/{tpl_id}")
+            await client.delete(f"/v1/workspace_providers/{wp_id}")
+            await client.delete(f"/v1/agents/{agent_id}")
+            await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0475 — Graph subgraph node referencing missing graph_id flips ok=false
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0475_graph_subgraph_node_missing_graph_id_status_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0475 — Per matrix/api/routers/compute.py:152-155, /graphs/
+    {id}/status walks each node and surfaces a missing-Graph issue
+    for any subgraph_ref whose target id doesn't exist. Mirror of
+    T0413 (missing-toolset on Agent) for the Graph→subgraph path.
+
+    Pin: orphan-tolerated 201 at create; /status returns ok=false
+    with an issue mentioning the missing graph_id; never
+    /errors/internal.
+    """
+    provider_id = f"llm-t0475-{unique_suffix}"
+    agent_id = f"agent-t0475-{unique_suffix}"
+    graph_id = f"graph-t0475-{unique_suffix}"
+    missing_subgraph_id = f"missing-sub-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0475",
+            "nodes": [
+                {
+                    "kind": "graph", "id": "subnode",
+                    "graph_id": missing_subgraph_id,
+                },
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "subnode", "to_node": "end"},
+            ],
+            "entry_node_id": "subnode",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, (
+            f"subgraph reference is orphan-tolerated; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        # /status returns ok=false with the missing subgraph surfaced
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        body_status = status.json()
+        assert body_status.get("ok") is False, (
+            f"expected ok=false for missing subgraph; got {body_status!r}"
+        )
+        issues = body_status.get("issues", [])
+        assert isinstance(issues, list) and issues, body_status
+        assert any(
+            missing_subgraph_id in str(i) for i in issues
+        ), (
+            f"no issue references missing subgraph "
+            f"{missing_subgraph_id!r}: {issues!r}"
+        )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
