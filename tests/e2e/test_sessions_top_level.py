@@ -3124,3 +3124,78 @@ async def test_t0433_top_level_get_reflects_fatal_ended_reason(
         if graph_created:
             await client.delete(f"/v1/graphs/{graph_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0441 — Sequential pause → cancel → steer: documented behaviour
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0441_session_pause_then_cancel_then_steer_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0441 — Sibling of T0399 (cancel→steer where steer 200s due
+    to stale in-memory Session view). T0441 walks pause→cancel→steer:
+
+      1. CREATED → pause (204) → PAUSED
+      2. PAUSED → cancel (200) → ENDED/cancelled
+      3. ENDED → steer
+
+    Two cache layers are at play here:
+      - sessions_storage (the row): definitely ENDED after step 2
+      - WorkspaceRegistry's in-memory AgentSession (`_info.status`):
+        may still show PAUSED (stale) until refreshed
+
+    Hard pin: never 5xx, never `/errors/internal`, and the row
+    persisted in storage stays ENDED/cancelled regardless of which
+    code path the steer takes (200 stale-cache, or 409 fresh-view).
+    Subsequent reads must show the terminal state — no flapping.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # 1. pause from CREATED
+        pause = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        assert pause.status_code == 204, pause.text
+
+        # 2. cancel from PAUSED (sessions.py:287-296 transitions
+        # PAUSED → ENDED directly)
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+        assert cancel.json()["status"] == "ended", cancel.json()
+        assert cancel.json()["ended_reason"] == "cancelled", cancel.json()
+
+        # 3. steer on ENDED — pin no 5xx, accept 200 (stale-cache
+        # let it through, T0399 sibling) or 409 (fresh view rejected)
+        steer = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": "post-pause-cancel-steer"},
+        )
+        assert steer.status_code < 500, steer.text
+        assert steer.status_code == 200 or 400 <= steer.status_code < 500, (
+            f"unexpected steer status: {steer.status_code}: {steer.text}"
+        )
+        if steer.status_code >= 400:
+            envelope = steer.json()
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+            assert envelope.get("type") != "/errors/internal", envelope
+
+        # Defence: row stays ENDED/cancelled (no flapping) regardless
+        # of which steer outcome
+        after = await client.get(f"/v1/sessions/{session_id}")
+        assert after.status_code == 200, after.text
+        assert after.json()["status"] == "ended", after.json()
+        assert after.json()["ended_reason"] == "cancelled", after.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

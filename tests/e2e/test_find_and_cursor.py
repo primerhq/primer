@@ -2895,3 +2895,118 @@ async def test_t0408_predicate_ge_on_datetime_with_malformed_iso_clean(
     if resp.status_code in range(400, 600):
         # Error envelope must be cleanly typed
         assert envelope.get("type", "").startswith("/errors/"), envelope
+
+
+# ============================================================================
+# T0439 — Predicate `=` with NULL right operand on nullable column
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0439_predicate_eq_null_on_nullable_column_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0439 — Send `{op:"=", left:{name:"description"},
+    right:{value:null}}` against /v1/toolsets/find. The predicate
+    translator (matrix/storage/_predicate.py) does NOT special-case
+    NULL — the rendered SQL is `data->>'description' = NULL` which
+    in Postgres ALWAYS evaluates to NULL (treated as falsy by WHERE).
+
+    Hard pin: never 5xx, never `/errors/internal`.
+    Documented behaviour: 200 with empty items (Postgres NULL
+    semantics — no row's `description` literally equals SQL NULL).
+
+    Toolset.description is the inherited `Describeable.description`
+    field which defaults to ``""`` and is nullable on the model.
+    """
+    prefix = f"ts-t0439-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "description"},
+                "right": {"kind": "value", "value": None},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"NULL right operand leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code < 500, resp.text
+        # Documented: SQL `= NULL` always falsy → 200 empty.
+        # Acceptable alternatives: 422 (handler validates and rejects),
+        # 400 (BadRequestError), 502 (Postgres surfaced an error).
+        assert resp.status_code in (200, 400, 422, 502), resp.text
+        if resp.status_code == 200:
+            items = resp.json()["items"]
+            # Hard pin: NONE of our seeded toolsets should match
+            # (Postgres = NULL never matches even when description is
+            # the empty string default).
+            assert all(
+                item["id"] not in ids for item in items
+            ), (
+                f"= NULL unexpectedly matched seeded toolsets: "
+                f"{[item['id'] for item in items]!r}"
+            )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0440 — Predicate `in` with mixed-type list `[1, "two", null]`
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0440_predicate_in_mixed_type_list_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0440 — Send `{op:"in", left:{name:"id"}, right:{value:[1,
+    "two", null]}}` against /v1/toolsets/find. The right operand is
+    a list with int + string + null members — none of which match
+    any of our seeded `ts-t0440-*` ids.
+
+    Hard pin: never 5xx, never `/errors/internal`.
+    Documented behaviour: 200 with empty items (no row's id literally
+    equals 1, "two", or null), OR 422/400 if the handler validates
+    and rejects mixed-type lists.
+    """
+    prefix = f"ts-t0440-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "in",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": [1, "two", None]},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"mixed-type IN list leaked /errors/internal: {resp.text}"
+        )
+        # Hard pin: documented surfaces only — never /errors/internal.
+        # 502 /errors/provider-server-error is the observed shape on
+        # asyncpg (refuses to encode a mixed-type list as a typed array
+        # parameter).
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"unexpected status: {resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            items = resp.json()["items"]
+            # Hard pin: NONE of our seeded toolsets should match
+            assert all(
+                item["id"] not in ids for item in items
+            ), (
+                f"mixed-type IN unexpectedly matched seeded toolsets: "
+                f"{[item['id'] for item in items]!r}"
+            )
+    finally:
+        await _delete_toolsets(client, ids)

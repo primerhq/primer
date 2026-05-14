@@ -3014,3 +3014,194 @@ async def test_t0412_cdc_burst_create_with_concurrent_delete_config_clean(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0442 — Burst PUT on /internal_collections/config (10 concurrent)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0442_burst_put_config_converges_last_write_wins(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0442 — Fire 10 concurrent PUTs against
+    /v1/internal_collections/config with the SAME embedder_id (so
+    each call is independently valid). Pin: every call returns
+    < 500 with no /errors/internal; the subsequent GET reflects
+    one of the submitted bodies (last-write-wins, no half-merged
+    state); the subsystem stays usable (search 503 if not bootstrapped,
+    or 200 if bootstrapped).
+    """
+    embedder_id = f"emb-t0442-{unique_suffix}"
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_created = False
+    try:
+        body = _ic_config_body(embedder_id=embedder_id)
+
+        # 10 concurrent PUTs of the same body
+        tasks = [
+            asyncio.create_task(client.put(
+                "/v1/internal_collections/config", json=body,
+            ))
+            for _ in range(10)
+        ]
+        results = await asyncio.gather(*tasks)
+        config_created = True
+
+        # Every call clean
+        for i, r in enumerate(results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"PUT[{i}] leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"PUT[{i}] returned 5xx: {r.status_code}: {r.text}"
+            )
+            # Documented success codes for PUT config
+            assert r.status_code in (200, 201, 204, 409), (
+                f"PUT[{i}]: unexpected status {r.status_code}: {r.text}"
+            )
+
+        # GET reflects one of the submitted bodies (no half-merged state)
+        got = await client.get("/v1/internal_collections/config")
+        assert got.status_code == 200, got.text
+        body_got = got.json()
+        # Field round-trips
+        assert body_got.get("embedding_provider_id") == embedder_id, body_got
+        assert (
+            body_got.get("embedding_model")
+            == "sentence-transformers/all-MiniLM-L6-v2"
+        ), body_got
+
+        # Subsystem state is observable: search either 200
+        # (bootstrapped concurrently) or 503 (not-yet documented
+        # /errors/subsystem-inactive). 503 IS the contract here, not
+        # a 5xx leak — pin shape directly without a sub-500 gate.
+        s = await client.post(
+            "/v1/agents/search",
+            json={"query": "anything", "top_k": 3},
+        )
+        envelope = s.json() if s.content else {}
+        assert envelope.get("type") != "/errors/internal", s.text
+        assert s.status_code in (200, 503), (
+            f"search after burst PUT: unexpected {s.status_code}: {s.text}"
+        )
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0443 — Rapid 3-cycle deactivate/reactivate completes cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0443_rapid_deactivate_reactivate_cycles_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0443 — T0091 covers a single deactivate→reactivate happy
+    path with one agent involved. T0443 stresses RESOURCE leakage
+    by running 3 rapid cycles back-to-back with no agents created
+    between them: PUT config → bootstrap → search 200 → DELETE
+    config → search 503 → repeat 3 times.
+
+    Catches a regression where each activation cycle leaks a CDC
+    worker, registry handle, or background task that eventually
+    crashes the API server. Hard pin: no 5xx anywhere; each cycle's
+    final search converges to 200; final teardown reaches 503.
+    """
+    embedder_id = f"emb-t0443-{unique_suffix}"
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_active = False
+    try:
+        for cycle in range(3):
+            put = await client.put(
+                "/v1/internal_collections/config",
+                json=_ic_config_body(embedder_id=embedder_id),
+            )
+            assert put.status_code == 200, (
+                f"cycle {cycle}: PUT config failed: {put.text}"
+            )
+            config_active = True
+
+            boot = await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=httpx.Timeout(180.0, connect=10.0),
+            )
+            if boot.status_code != 200:
+                pytest.skip(
+                    f"cycle {cycle}: bootstrap returned {boot.status_code}; "
+                    f"embedder model may be unavailable: "
+                    f"{boot.text[:300]}"
+                )
+
+            # Subsystem active — search returns 200 within 5s.
+            # 503 is the documented inactive signal, not a 5xx leak,
+            # so the only "5xx leak" check is /errors/internal.
+            search_active: httpx.Response | None = None
+            for _ in range(10):
+                s = await client.post(
+                    "/v1/agents/search",
+                    json={"query": "anything", "top_k": 3},
+                )
+                search_active = s
+                envelope = s.json() if s.content else {}
+                assert envelope.get("type") != "/errors/internal", (
+                    f"cycle {cycle}: search leaked /errors/internal: "
+                    f"{s.text}"
+                )
+                if s.status_code == 200:
+                    break
+                await asyncio.sleep(0.5)
+            assert search_active is not None
+            assert search_active.status_code == 200, (
+                f"cycle {cycle}: search did not become active: "
+                f"{search_active.text}"
+            )
+
+            # Deactivate
+            rm = await client.delete("/v1/internal_collections/config")
+            assert rm.status_code == 204, (
+                f"cycle {cycle}: DELETE config failed: {rm.text}"
+            )
+            config_active = False
+
+            # Subsystem inactive — search returns 503 within 5s
+            search_inactive: httpx.Response | None = None
+            for _ in range(10):
+                s = await client.post(
+                    "/v1/agents/search",
+                    json={"query": "anything", "top_k": 3},
+                )
+                search_inactive = s
+                envelope = s.json() if s.content else {}
+                assert envelope.get("type") != "/errors/internal", (
+                    f"cycle {cycle}: search leaked /errors/internal: "
+                    f"{s.text}"
+                )
+                if s.status_code == 503:
+                    break
+                await asyncio.sleep(0.5)
+            assert search_inactive is not None
+            assert search_inactive.status_code == 503, (
+                f"cycle {cycle}: search did not become inactive after "
+                f"DELETE config: {search_inactive.text}"
+            )
+
+        # After 3 cycles the API is still healthy
+        h = await client.get("/v1/health")
+        assert h.status_code == 200, h.text
+        assert h.json()["status"] == "ok", h.json()
+    finally:
+        if config_active:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
