@@ -1802,6 +1802,199 @@ async def test_t0351_sessions_find_three_way_filter_with_graph_id(
 
 
 # ============================================================================
+# T0371 — Session auto_start=true transitions out of CREATED quickly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0371_session_auto_start_transitions_out_of_created(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0371 — POST a session with auto_start=true. Pin that the
+    response immediately reflects worker enqueue (status not
+    "created" anymore, OR the GET shortly after shows transition).
+
+    The agent uses the placeholder anthropic provider (no real LLM
+    call), so the worker may end up in "ended" status after a failed
+    upstream call — that's still an observable transition out of
+    CREATED. NEVER /errors/internal.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "auto_start": True,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # Poll briefly — within a few seconds should observe a status
+        # that's not "created" any more
+        observed_non_created = False
+        envelope: dict = {}
+        for _ in range(30):
+            r = await client.get(f"/v1/sessions/{session_id}")
+            assert r.status_code == 200, r.text
+            envelope = r.json()
+            assert envelope.get("type") != "/errors/internal", envelope
+            if envelope["status"] != "created":
+                observed_non_created = True
+                break
+            await asyncio.sleep(0.2)
+
+        assert observed_non_created, (
+            f"auto_start=true session still 'created' after polling — "
+            f"final state: {envelope!r}"
+        )
+    finally:
+        if session_id and workspace_id:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0372 — Top-level filter status=created excludes auto-started sessions
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0372_status_created_filter_excludes_auto_started(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0372 — Create one auto_start=true and one auto_start=false
+    session in the same workspace; wait briefly for the auto-started
+    one to leave CREATED; filter by status=created — only the manual
+    one should appear.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    auto_sid: str | None = None
+    manual_sid: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        auto = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "auto_start": True,
+            },
+        )
+        assert auto.status_code == 201, auto.text
+        auto_sid = auto.json()["id"]
+
+        manual = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json=_session_body(agent_id=env["agent_id"]),
+        )
+        assert manual.status_code == 201, manual.text
+        manual_sid = manual.json()["id"]
+
+        # Wait for the auto-started one to leave CREATED
+        for _ in range(30):
+            r = await client.get(f"/v1/sessions/{auto_sid}")
+            if r.status_code == 200 and r.json().get("status") != "created":
+                break
+            await asyncio.sleep(0.2)
+
+        listing = await client.get(
+            f"/v1/sessions?workspace_id={workspace_id}&status=created",
+        )
+        assert listing.status_code == 200, listing.text
+        ids = {item["id"] for item in listing.json()["items"]}
+        assert manual_sid in ids, (
+            f"manual (auto_start=false) session should be in "
+            f"created-filter results: {ids!r}"
+        )
+        assert auto_sid not in ids, (
+            f"auto-started session should NOT be in created-filter "
+            f"results: {ids!r}"
+        )
+    finally:
+        if workspace_id:
+            for sid in (auto_sid, manual_sid):
+                if sid:
+                    await client.post(
+                        f"/v1/workspaces/{workspace_id}/sessions/{sid}/cancel",
+                    )
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0373 — Session metadata accepts deeply nested dict (3 levels)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0373_session_metadata_deeply_nested_round_trips(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0373 — POST with metadata containing 3 nested dict levels +
+    leaves of various types. GET returns the same shape; pin JSONB
+    serialisation depth.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        nested = {
+            "level_1": {
+                "level_2": {
+                    "level_3": {
+                        "leaf_str": f"v-{unique_suffix}",
+                        "leaf_int": 42,
+                        "leaf_list": ["a", "b", "c"],
+                    },
+                },
+            },
+        }
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "metadata": nested,
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+        assert sess.json().get("metadata") == nested, sess.json()
+
+        got = await client.get(f"/v1/sessions/{session_id}")
+        assert got.status_code == 200, got.text
+        assert got.json().get("metadata") == nested, got.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0359 — Predicate `>` with negative integer literal on Session.turn_no
 # ============================================================================
 

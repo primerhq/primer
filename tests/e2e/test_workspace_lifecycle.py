@@ -3648,6 +3648,113 @@ async def test_t0325_workspace_log_on_missing_workspace_returns_404(
 
 
 # ============================================================================
+# T0369 — Workspace files PUT with absolute path returns clean 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0369_workspace_files_put_absolute_path_returns_4xx(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0369 — Sibling of T0148 (`..` traversal) for absolute paths.
+    PUT /files?path=<absolute> must reject cleanly with 4xx envelope;
+    no traversal allowed; never 5xx /errors/internal.
+
+    Test both POSIX (/etc/passwd) and Windows (C:\\Windows\\foo)
+    style absolute paths to cover both platforms.
+    """
+    import urllib.parse
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for absolute_path in ("/etc/passwd", "C:\\Windows\\foo.txt"):
+            encoded = urllib.parse.quote(absolute_path, safe="")
+            resp = await client.put(
+                f"/v1/workspaces/{workspace_id}/files?path={encoded}",
+                json={"content": "PWNED", "encoding": "text"},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"absolute path {absolute_path!r} leaked /errors/internal: "
+                f"{resp.text}"
+            )
+            # Should reject as 4xx (likely 422 or 400 for malformed
+            # path) — never 5xx
+            assert 400 <= resp.status_code < 500, (
+                f"absolute path {absolute_path!r} should be rejected "
+                f"4xx; got {resp.status_code}: {resp.text}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0370 — Workspace whose host directory was deleted externally
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0370_workspace_files_after_external_dir_delete_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0370 — Probe out-of-sync local backend: shutil.rmtree the
+    workspace's underlying directory on the host, then call GET
+    /files. The handler must produce a clean envelope (4xx or 200
+    with empty items if the backend re-creates the dir; never
+    /errors/internal).
+    """
+    import shutil
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed a file so there's something to "lose"
+        await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=marker.txt",
+            json={"content": "x", "encoding": "text"},
+        )
+
+        # Find the workspace's host directory under tmp_path and rm it
+        # The local backend layout puts each workspace under
+        # <provider.path>/<workspace_id>
+        ws_dir = tmp_path / workspace_id
+        if ws_dir.exists():
+            shutil.rmtree(ws_dir)
+
+        # Now GET /files — must not 5xx
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files?path=.",
+        )
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"GET /files after external rmtree leaked /errors/internal: "
+            f"{resp.text}"
+        )
+    finally:
+        if workspace_id is not None:
+            # DELETE may fail since the dir is already gone; tolerate
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
 # T0334 — Workspace /log without limit + with limit=1
 # ============================================================================
 
