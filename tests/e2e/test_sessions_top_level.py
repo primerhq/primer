@@ -1333,6 +1333,82 @@ async def test_t0230_steer_with_64kib_instruction_clean_envelope(
 
 
 # ============================================================================
+# T0298 — POST /v1/sessions/find with order_by created_at desc
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0298_sessions_find_order_by_created_at_desc(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0298 — Pin that POST /v1/sessions/find honours `order_by` for
+    the `created_at` field in descending direction. T0089 covered
+    GET /v1/sessions ordering; this extends to the predicate-based
+    variant.
+
+    Seeds 3 sessions (with brief sleep between to ensure distinct
+    timestamps), then queries /find with order_by created_at desc
+    scoped by workspace_id. Result sequence is the seeded ids in
+    reverse insertion order.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    seeded_ids: list[str] = []
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for _ in range(3):
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json=_session_body(agent_id=env["agent_id"]),
+            )
+            assert sess.status_code == 201, sess.text
+            seeded_ids.append(sess.json()["id"])
+            # Brief sleep to ensure created_at separation
+            await asyncio.sleep(0.05)
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "workspace_id"},
+                "right": {"kind": "value", "value": workspace_id},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+            "order_by": [
+                {"field": "created_at", "direction": "desc"},
+            ],
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        assert resp.status_code == 200, resp.text
+        result_ids = [item["id"] for item in resp.json()["items"]]
+
+        # Result has all seeded ids
+        assert sorted(result_ids) == sorted(seeded_ids), (
+            f"missed seeded sessions: result={sorted(result_ids)!r}, "
+            f"seeded={sorted(seeded_ids)!r}"
+        )
+        # Order is reverse-insertion (newest first)
+        expected_desc = list(reversed(seeded_ids))
+        assert result_ids == expected_desc, (
+            f"order_by created_at desc returned wrong sequence: "
+            f"got {result_ids!r}, expected {expected_desc!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            for sid in seeded_ids:
+                await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions/{sid}/cancel",
+                )
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0242 — /v1/sessions?status=running with no RUNNING session returns 200 empty
 # ============================================================================
 

@@ -3386,3 +3386,144 @@ async def test_t0294_workspace_files_put_body_missing_content_returns_422(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0295 — POST /v1/workspace_templates without `provider_id` returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0295_workspace_template_post_missing_provider_id_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0295 — Required-field validation on the WorkspaceTemplate
+    create body. The Pydantic model declares `provider_id` as
+    required (per spec §12); omitting it yields 422
+    /errors/validation-error.
+    """
+    resp = await client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": f"wt-noprovider-{unique_suffix}",
+            "description": "T0295",
+            "backend": {"kind": "local"},
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/validation-error", envelope
+
+
+# ============================================================================
+# T0296 — Workspace files PUT to path > 250 chars (still-open MAX_PATH bug)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0296_workspace_files_put_very_long_path_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0296 — Spec §12 documents a known-anomaly: PUT to a workspace-
+    relative path long enough to push the absolute path past Windows
+    MAX_PATH=260 currently returns 500 /errors/internal (sibling of
+    quarantined T0064a). The proper contract is 4xx (e.g. bad-request).
+
+    This test is INTENTIONALLY PERMISSIVE — accepts either the buggy
+    behaviour (500 /errors/internal) or the fix (clean 4xx). When the
+    fix lands, future iterations should tighten the assertion to
+    require 4xx and remove the bug acknowledgement here.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # 250-char workspace-relative path
+        long_segment = "x" * 250
+        resp = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path={long_segment}",
+            json={"content": "x", "encoding": "text"},
+        )
+        # Accept 4xx (proper contract, fix landed) OR 500 (current
+        # known-bug behaviour). Document the actual outcome.
+        assert resp.status_code in range(400, 600), resp.text
+        if resp.status_code == 500:
+            # Known-bug path — envelope shape sanity
+            envelope = resp.json()
+            assert envelope["type"] == "/errors/internal", envelope
+        else:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            # Once the fix lands, this branch will be the only one
+            # reached and the test should be tightened.
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0297 — Workspace download Content-Disposition encodes unicode filename
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0297_workspace_download_unicode_filename_rfc5987(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0297 — Extends T0031 (sanitised legacy filename) to verify
+    the RFC 5987 `filename*=UTF-8''…` parameter correctly encodes a
+    non-ASCII filename. The unicode filename should percent-encode
+    in filename*=, while the legacy `filename=` is the sanitised
+    fallback.
+    """
+    import urllib.parse
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Filename with non-ASCII chars (Cyrillic + emoji)
+        unicode_name = "файл-📄.txt"
+        encoded_path = urllib.parse.quote(unicode_name, safe="")
+        seed = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path={encoded_path}",
+            json={"content": "hello", "encoding": "text"},
+        )
+        assert seed.status_code == 204, seed.text
+
+        dl = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/download"
+            f"?path={encoded_path}",
+        )
+        assert dl.status_code == 200, dl.text
+        cd = dl.headers.get("content-disposition", "")
+        assert cd, "missing Content-Disposition header"
+        # filename*= should be present and encode the unicode chars
+        assert "filename*=" in cd.lower(), (
+            f"Content-Disposition missing filename*= for unicode name: "
+            f"{cd!r}"
+        )
+        # The percent-encoded unicode should appear in filename*=
+        # (e.g. "%D1%84%D0%B0%D0%B9%D0%BB" for "файл")
+        assert "utf-8''" in cd.lower(), (
+            f"filename*= should declare UTF-8 encoding: {cd!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

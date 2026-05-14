@@ -2279,3 +2279,115 @@ async def test_t0289_concurrent_cdc_ingest_and_search_clean(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0299 — search concurrent with PUT Agent description: search reflects update
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0299_search_concurrent_with_agent_update_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0299 — Cross-op CDC race: while /v1/agents/search is being
+    called, simultaneously PUT a new description on an indexed agent.
+    All calls return clean envelopes (no /errors/internal). After the
+    dust settles, search by the NEW marker finds the agent.
+    """
+    embedder_id = f"emb-t0299-{unique_suffix}"
+    llm_id = f"llm-t0299-{unique_suffix}"
+    agent_id = f"agent-t0299-{unique_suffix}"
+    initial_marker = f"initial-marker-{unique_suffix}"
+    updated_marker = f"updated-marker-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    agent_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                agent_id, provider_id=llm_id, description=initial_marker,
+            ),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        # Wait for initial indexing
+        for _ in range(60):
+            s = await client.post(
+                "/v1/agents/search",
+                json={"query": initial_marker, "top_k": 5},
+            )
+            assert s.status_code == 200, s.text
+            ids = {h["document_id"] for h in s.json()["hits"]}
+            if agent_id in ids:
+                break
+            await asyncio.sleep(0.5)
+
+        # Race PUT (new description) concurrently with multiple search calls
+        async def _put_update() -> httpx.Response:
+            return await client.put(
+                f"/v1/agents/{agent_id}",
+                json=_agent_body(
+                    agent_id, provider_id=llm_id,
+                    description=updated_marker,
+                ),
+            )
+
+        async def _search_call() -> httpx.Response:
+            return await client.post(
+                "/v1/agents/search",
+                json={"query": initial_marker, "top_k": 5},
+            )
+
+        tasks = [asyncio.create_task(_put_update())]
+        for _ in range(4):
+            tasks.append(asyncio.create_task(_search_call()))
+        results = await asyncio.gather(*tasks)
+        for i, r in enumerate(results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"task {i} returned /errors/internal: {r.text}"
+            )
+
+        # PUT must have succeeded
+        assert results[0].status_code == 200, results[0].text
+
+        # After load, search by NEW marker finds the agent
+        for _ in range(60):
+            s = await client.post(
+                "/v1/agents/search",
+                json={"query": updated_marker, "top_k": 5},
+            )
+            assert s.status_code == 200, s.text
+            ids = {h["document_id"] for h in s.json()["hits"]}
+            if agent_id in ids:
+                break
+            await asyncio.sleep(0.5)
+        else:
+            pytest.fail(
+                f"agent not re-indexed with updated marker after "
+                f"concurrent PUT+search load"
+            )
+    finally:
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
