@@ -2287,3 +2287,128 @@ async def test_t0273_session_create_binding_missing_kind_returns_422(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0397 — pause from CREATED transitions to PAUSED; second pause idempotent
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0397_session_pause_from_created_idempotent(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0397 — Per matrix/api/routers/sessions.py:251, pause on a
+    CREATED/WAITING session (no worker holding a lease) transitions
+    directly to PAUSED with status_code=204. Pin two contracts:
+
+      1. First pause from CREATED → 204 + observable PAUSED status
+      2. Second pause on the now-PAUSED session is idempotent —
+         either 204 again (no-op set) or 409 (some implementations
+         reject already-paused). Both shapes are acceptable; the
+         hard pin is "no 5xx".
+
+    Extends T0159 (cancel/pause/resume on missing id all 404) into
+    the pause-before-resume happy path.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # First pause from CREATED → 204 (per spec §11 table)
+        first = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        assert first.status_code == 204, first.text
+
+        # Observable: GET shows status=paused
+        got = await client.get(f"/v1/sessions/{session_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["status"] == "paused", got.json()
+
+        # Second pause on PAUSED — pin no-5xx; accept 204 (idempotent
+        # no-op) or 409 (rejected as already-paused)
+        second = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        assert second.status_code < 500, second.text
+        assert second.status_code in (204, 409), (
+            f"second pause should be 204 (idempotent) or 409 "
+            f"(already paused); got {second.status_code}: {second.text}"
+        )
+
+        # Status must still be paused after the second call
+        got2 = await client.get(f"/v1/sessions/{session_id}")
+        assert got2.status_code == 200, got2.text
+        assert got2.json()["status"] == "paused", got2.json()
+    finally:
+        if workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0398 — cancel from PAUSED-via-pre-resume-pause converges to terminal
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0398_session_cancel_while_paused_converges_to_terminal(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0398 — Cancel signal on a PAUSED session (where the pause
+    happened pre-resume, i.e. no worker ever held a lease) MUST
+    converge cleanly to ENDED/cancelled. Per the cancel handler
+    (sessions.py:271-277) cancellation on PAUSED transitions
+    directly to ENDED.
+
+    Pins:
+      1. cancel returns 200 with the updated row
+      2. status == "ended", ended_reason == "cancelled"
+      3. ended_at is non-null (terminal-state invariant)
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # CREATED → PAUSED (pre-resume pause)
+        pause = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        assert pause.status_code == 204, pause.text
+
+        # Confirm we're actually in PAUSED
+        before = await client.get(f"/v1/sessions/{session_id}")
+        assert before.status_code == 200, before.text
+        assert before.json()["status"] == "paused", before.json()
+
+        # Cancel from PAUSED → 200 with ENDED/cancelled body
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+        body = cancel.json()
+        assert body["id"] == session_id, body
+        assert body["status"] == "ended", body
+        assert body["ended_reason"] == "cancelled", body
+        assert body.get("ended_at") is not None, body
+
+        # Subsequent GET still shows the terminal state (no flapping)
+        after = await client.get(f"/v1/sessions/{session_id}")
+        assert after.status_code == 200, after.text
+        assert after.json()["status"] == "ended", after.json()
+        assert after.json()["ended_reason"] == "cancelled", after.json()
+    finally:
+        if workspace_id is not None:
+            # Already-terminal cancel is 409 (per T0039); ignore
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

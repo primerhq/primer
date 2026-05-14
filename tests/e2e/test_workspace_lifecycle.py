@@ -4191,3 +4191,216 @@ async def test_t0393_workspace_files_put_trailing_slash_path_clean_envelope(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0394 — file path with mixed `\\` and `/` separators returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0394_workspace_files_mixed_separators_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0394 — A path like `dir\\sub/file.txt` mixes Windows (`\\`)
+    and POSIX (`/`) separators. The local backend ultimately writes
+    via Python `pathlib`, but the path arrives as an HTTP query
+    parameter — backslashes have no special meaning in URL paths.
+
+    Hard contract: never 5xx. Either:
+      * accepted (204) — the API normalised separators (and the file
+        is then readable via the original or canonical path), OR
+      * rejected (4xx) — clean RFC 7807 envelope, no /errors/internal
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        mixed_path = "dir\\sub/file.txt"
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": mixed_path},
+            json={"content": "mixed-sep", "encoding": "text"},
+        )
+        # Hard pin: never 5xx
+        assert put.status_code < 500, (
+            f"PUT with mixed separators returned 5xx: "
+            f"{put.status_code}: {put.text}"
+        )
+
+        if put.status_code == 204:
+            # Accepted — the file should be readable somewhere.
+            # Try the original path first; if 404, accept that the
+            # backend canonicalised to a different form.
+            read = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": mixed_path},
+            )
+            assert read.status_code in (200, 404), read.text
+            if read.status_code == 200:
+                assert read.json()["content"] == "mixed-sep"
+        else:
+            # Rejected — must be a clean envelope, never internal
+            assert put.status_code in range(400, 500), put.text
+            envelope = put.json()
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+            assert envelope.get("type") != "/errors/internal", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0395 — WorkspaceTemplate state_path override materialises and /log works
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0395_workspace_template_state_path_override_works(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0395 — WorkspaceTemplate.state_path defaults to `.state` (per
+    matrix/model/workspace.py). Pin that overriding it to a custom
+    path (e.g. `.matrix-state`) still produces a working workspace:
+    materialise succeeds, /log finds the repo at the new location,
+    and the file ops surface still works.
+    """
+    provider_id = f"wp-t0395-{unique_suffix}"
+    template_id = f"wt-t0395-{unique_suffix}"
+    custom_state = ".matrix-state"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    try:
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0395 — custom state_path",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "state_path": custom_state,
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+        # Confirm the override round-tripped through the create call
+        assert tpl.json().get("state_path") == custom_state, tpl.json()
+
+        workspace_id: str | None = None
+        try:
+            ws = await client.post(
+                "/v1/workspaces",
+                json=_workspace_body(template_id=template_id),
+            )
+            assert ws.status_code == 201, ws.text
+            workspace_id = ws.json()["id"]
+
+            # /log on a fresh workspace should return commits=[] (or
+            # a small list) cleanly — proves the state repo was found
+            # at the custom path.
+            log = await client.get(
+                f"/v1/workspaces/{workspace_id}/log",
+            )
+            assert log.status_code == 200, log.text
+            assert isinstance(log.json().get("commits"), list)
+
+            # File ops sanity — write/read works as usual
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": "user-file.txt"},
+                json={"content": "hello", "encoding": "text"},
+            )
+            assert put.status_code == 204, put.text
+            read = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": "user-file.txt"},
+            )
+            assert read.status_code == 200, read.text
+            assert read.json()["content"] == "hello"
+        finally:
+            if workspace_id is not None:
+                await client.delete(f"/v1/workspaces/{workspace_id}")
+            await client.delete(f"/v1/workspace_templates/{template_id}")
+    finally:
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0396 — state_path collision with user-files PUT returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0396_workspace_state_path_user_files_collision_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0396 — User/state isolation: a PUT to a user-file path that
+    falls inside the template's `state_path` (e.g. `.state/foo`) MUST
+    NOT clobber the state repo. The local backend (per
+    matrix/workspace/local/workspace.py L293) blocks writes / deletes
+    inside `.state` and `.tmp`. The contract is a clean 4xx envelope,
+    never a 5xx and never a silent overwrite of internal state.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Default state_path is ".state". Try writing inside it.
+        for collide_path in (".state/intruder.txt", ".tmp/intruder.txt"):
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": collide_path},
+                json={"content": "should-not-land", "encoding": "text"},
+            )
+            # Hard pin: never 5xx
+            assert put.status_code < 500, (
+                f"PUT into reserved {collide_path!r} returned 5xx: "
+                f"{put.status_code}: {put.text}"
+            )
+            # Should be rejected (403/409/422) with a clean envelope
+            assert put.status_code in range(400, 500), (
+                f"PUT into reserved {collide_path!r} should be 4xx; "
+                f"got {put.status_code}: {put.text}"
+            )
+            envelope = put.json()
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+            assert envelope.get("type") != "/errors/internal", envelope
+
+            # Defence-in-depth: even if the 4xx slipped, the file
+            # must NOT be readable back (state isolation upheld)
+            read = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": collide_path},
+            )
+            # /files/read on a non-existent (or hidden) reserved path
+            # should be 404 or a similar clean 4xx, never a 200 with
+            # our injected content.
+            if read.status_code == 200:
+                assert read.json().get("content") != "should-not-land", (
+                    f"reserved path {collide_path!r} was clobbered: "
+                    f"{read.json()!r}"
+                )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
