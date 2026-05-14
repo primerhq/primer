@@ -984,3 +984,163 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
         assert envelope.get("type") != "/errors/internal", listing.text
     finally:
         await client.delete(f"/v1/documents/{doc_id}")
+
+
+# ============================================================================
+# T0347 — POST /v1/documents/find with predicate on collection_id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0347_documents_find_predicate_by_collection_id(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0347 — Seed two collections × 3 documents each. POST
+    /v1/documents/find with predicate `collection_id = X` returns
+    exactly the 3 documents under collection X.
+    """
+    coll_a = f"coll-t0347-a-{unique_suffix}"
+    coll_b = f"coll-t0347-b-{unique_suffix}"
+    docs_a = [f"doc-a-{unique_suffix}-{i}" for i in range(3)]
+    docs_b = [f"doc-b-{unique_suffix}-{i}" for i in range(3)]
+    created: list[str] = []
+    try:
+        for did in docs_a + docs_b:
+            collection = coll_a if did in docs_a else coll_b
+            r = await client.post(
+                "/v1/documents",
+                json={
+                    "id": did,
+                    "name": did,
+                    "collection_id": collection,
+                    "meta": {},
+                },
+            )
+            assert r.status_code in (200, 201), r.text
+            created.append(did)
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "collection_id"},
+                "right": {"kind": "value", "value": coll_a},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/documents/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = sorted(item["id"] for item in resp.json()["items"])
+        # Filter must return exactly docs_a (NOT docs_b)
+        assert out_ids == sorted(docs_a), (
+            f"collection_id filter wrong: expected {sorted(docs_a)!r}, "
+            f"got {out_ids!r}"
+        )
+        for db in docs_b:
+            assert db not in out_ids, (
+                f"docs_b row {db!r} unexpectedly in collection_a "
+                f"filter results"
+            )
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0348 — POST /v1/documents/find cursor over orphan + non-orphan documents
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0348_documents_find_cursor_over_orphan_and_real(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0348 — Build a Collection (real parent) + several Documents
+    referencing it AND several Documents referencing a missing
+    collection_id (orphans, per T0068 tolerance). POST
+    /v1/documents/find with cursor pagination filtered by id-prefix
+    walks ALL the seeded docs exactly once regardless of whether
+    their parent exists.
+    """
+    coll_id = f"coll-t0348-{unique_suffix}"
+    prefix = f"doc-t0348-{unique_suffix}"
+    real_docs = [f"{prefix}-real-{i}" for i in range(2)]
+    orphan_docs = [f"{prefix}-orphan-{i}" for i in range(3)]
+    all_docs = real_docs + orphan_docs
+
+    coll = await client.post(
+        "/v1/collections",
+        json={
+            "id": coll_id,
+            "description": "T0348",
+            "embedder": {
+                "provider_id": f"unused-{unique_suffix}",
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+            },
+        },
+    )
+    assert coll.status_code in (200, 201), coll.text
+
+    created: list[str] = []
+    try:
+        # Real-parent docs
+        for did in real_docs:
+            r = await client.post(
+                "/v1/documents",
+                json={
+                    "id": did, "name": did,
+                    "collection_id": coll_id, "meta": {},
+                },
+            )
+            assert r.status_code in (200, 201), r.text
+            created.append(did)
+        # Orphan-parent docs
+        for did in orphan_docs:
+            r = await client.post(
+                "/v1/documents",
+                json={
+                    "id": did, "name": did,
+                    "collection_id": f"missing-coll-{unique_suffix}",
+                    "meta": {},
+                },
+            )
+            assert r.status_code in (200, 201), r.text
+            created.append(did)
+
+        # Cursor walk filtered by id prefix
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+        seen: list[str] = []
+        cursor: str | None = None
+        for _ in range(10):
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "cursor", "cursor": cursor, "length": 2},
+                "order_by": [{"field": "id", "direction": "asc"}],
+            }
+            resp = await client.post("/v1/documents/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            seen.extend(item["id"] for item in page["items"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail("cursor walk did not terminate")
+
+        # Every seeded doc visited exactly once
+        assert sorted(seen) == sorted(all_docs), (
+            f"missed/duplicated docs: seeded={sorted(all_docs)!r}, "
+            f"seen={sorted(seen)!r}"
+        )
+        assert len(seen) == len(set(seen)), (
+            f"duplicates in cursor walk: {seen!r}"
+        )
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+        await client.delete(f"/v1/collections/{coll_id}")

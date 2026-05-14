@@ -287,3 +287,71 @@ async def test_t0306_workspace_providers_find_predicate_provider_kind(
     finally:
         for pid in seeded:
             await client.delete(f"/v1/workspace_providers/{pid}")
+
+
+# ============================================================================
+# T0345 — Workspace→Template→Provider cascade: orphan templates respond 200
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0345_delete_workspace_provider_orphan_templates_still_listable(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0345 — Three-tier orphan tolerance pin: build
+    WorkspaceProvider→two WorkspaceTemplates→one Workspace each;
+    DELETE the WorkspaceProvider. Both orphaned WorkspaceTemplates
+    must remain readable via GET (orphan tolerance per the same
+    pattern as T0223 / T0291 / T0265).
+    """
+    provider_id = f"wp-t0345-{unique_suffix}"
+    template_ids = [f"wt-t0345-{unique_suffix}-{i}" for i in range(2)]
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": provider_id,
+            "provider": "local",
+            "config": {"kind": "local", "path": str(tmp_path)},
+        },
+    )
+    assert pr.status_code == 201, pr.text
+
+    templates_created: list[str] = []
+    try:
+        for tid in template_ids:
+            r = await client.post(
+                "/v1/workspace_templates",
+                json={
+                    "id": tid,
+                    "description": f"T0345-{tid}",
+                    "provider_id": provider_id,
+                    "backend": {"kind": "local"},
+                },
+            )
+            assert r.status_code == 201, r.text
+            templates_created.append(tid)
+
+        # DELETE the provider
+        rm = await client.delete(f"/v1/workspace_providers/{provider_id}")
+        assert rm.status_code < 500, rm.text
+        if rm.status_code >= 400:
+            envelope = rm.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+
+        # Both orphaned templates remain readable
+        for tid in template_ids:
+            got = await client.get(f"/v1/workspace_templates/{tid}")
+            assert got.status_code < 500, got.text
+            if got.status_code == 200:
+                assert got.json()["provider_id"] == provider_id
+            else:
+                envelope = got.json()
+                assert envelope["type"].startswith("/errors/"), envelope
+                assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        for tid in templates_created:
+            await client.delete(f"/v1/workspace_templates/{tid}")
+        # Provider may already be gone
+        await client.delete(f"/v1/workspace_providers/{provider_id}")

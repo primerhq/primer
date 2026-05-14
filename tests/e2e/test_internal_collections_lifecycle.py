@@ -2491,6 +2491,81 @@ async def test_t0333_search_filter_field_silently_ignored(
 
 
 # ============================================================================
+# T0346 — Embedder→Collection cascade: search after embedder DELETE clean
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0346_search_after_embedder_delete_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0346 — Build embedder→subsystem→collection chain, then DELETE
+    the underlying embedder while the subsystem references it.
+    Subsequent /v1/collections/search must return a clean envelope
+    (200 if cached results survive, 503 if subsystem detects the
+    broken reference, or 4xx). NEVER /errors/internal.
+    """
+    embedder_id = f"emb-t0346-{unique_suffix}"
+    coll_id = f"coll-t0346-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    coll_created = False
+    embedder_deleted = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        coll = await client.post(
+            "/v1/collections",
+            json={
+                "id": coll_id,
+                "description": f"T0346-{unique_suffix}",
+                "embedder": {
+                    "provider_id": embedder_id,
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                },
+            },
+        )
+        assert coll.status_code in (200, 201), coll.text
+        coll_created = True
+
+        # Wait briefly for indexing
+        await asyncio.sleep(1.0)
+
+        # DELETE the embedder while subsystem references it
+        rm = await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        # The DELETE might fail if the subsystem holds a reference;
+        # accept either 204 or clean 4xx
+        assert rm.status_code < 500, rm.text
+        if rm.status_code == 204:
+            embedder_deleted = True
+
+        # Search must produce a clean envelope
+        s = await client.post(
+            "/v1/collections/search",
+            json={"query": "anything", "top_k": 3},
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+        envelope = s.json() if s.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"search after embedder DELETE leaked /errors/internal: "
+            f"{s.text}"
+        )
+    finally:
+        if coll_created:
+            await client.delete(f"/v1/collections/{coll_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        if not embedder_deleted:
+            await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
 # T0303 — Bootstrap concurrent with /v1/agents/search returns clean envelopes
 # ============================================================================
 
