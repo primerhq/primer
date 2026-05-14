@@ -603,6 +603,84 @@ async def test_t0368_etag_header_absent_on_instance_get(
 
 
 # ============================================================================
+# T0374 — POST with Content-Type: application/json; charset=utf-8
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0374_post_with_charset_suffixed_json_content_type(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0374 — Pin that the parameter-suffixed Content-Type
+    `application/json; charset=utf-8` is accepted (companion to
+    T0209 which rejects `text/plain`). FastAPI's default body parser
+    matches by media-type prefix, ignoring charset parameters.
+    """
+    import json
+    entity_id = f"llm-t0374-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test"},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post(
+        "/v1/llm_providers",
+        content=json.dumps(body).encode("utf-8"),
+        headers={"content-type": "application/json; charset=utf-8"},
+    )
+    assert resp.status_code == 201, (
+        f"POST with charset-suffixed Content-Type should succeed; "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    try:
+        # Confirm the row was created
+        got = await client.get(f"/v1/llm_providers/{entity_id}")
+        assert got.status_code == 200, got.text
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0375 — RFC 7807 `instance` field echoes the full request path
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0375_rfc7807_instance_echoes_full_request_path(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0375 — Per spec §3, the RFC 7807 envelope's `instance` field
+    must echo the request path. Pin this on both 404 (GET missing
+    LLMProvider) and 422 (POST malformed body) responses.
+    """
+    # 404 path
+    missing_id = f"missing-t0375-{unique_suffix}"
+    r404 = await client.get(f"/v1/llm_providers/{missing_id}")
+    assert r404.status_code == 404, r404.text
+    body_404 = r404.json()
+    assert "instance" in body_404, body_404
+    # The instance field should END with the request path
+    assert body_404["instance"].endswith(
+        f"/v1/llm_providers/{missing_id}"
+    ), (
+        f"404 instance field {body_404['instance']!r} does not echo "
+        f"request path /v1/llm_providers/{missing_id}"
+    )
+
+    # 422 path
+    r422 = await client.post("/v1/llm_providers", json={})
+    assert r422.status_code == 422, r422.text
+    body_422 = r422.json()
+    assert "instance" in body_422, body_422
+    assert body_422["instance"].endswith("/v1/llm_providers"), (
+        f"422 instance field {body_422['instance']!r} does not echo "
+        f"request path /v1/llm_providers"
+    )
+
+
+# ============================================================================
 # T0261 — OPTIONS on a POST-only search route returns clean response
 # ============================================================================
 

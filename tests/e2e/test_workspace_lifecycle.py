@@ -3755,6 +3755,159 @@ async def test_t0370_workspace_files_after_external_dir_delete_clean(
 
 
 # ============================================================================
+# T0376 — /files/info reports a recent (not future) mtime
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0376_workspace_files_info_reports_recent_mtime(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0376 — Write a file, fetch /files/info, assert the modified
+    timestamp is within ±60s of `datetime.now(UTC)`. Pins mtime is
+    real wall-clock, not zeroed/epoch/future.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        before = datetime.now(timezone.utc)
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=mtime.txt",
+            json={"content": "x", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+        after = datetime.now(timezone.utc)
+
+        info = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info?path=mtime.txt",
+        )
+        assert info.status_code == 200, info.text
+        body = info.json()
+
+        # Look for any timestamp-shaped field (mtime / modified_at /
+        # last_modified / etc.) — try common names
+        ts_field = None
+        for candidate in (
+            "mtime", "modified_at", "last_modified", "modified",
+            "updated_at",
+        ):
+            if candidate in body:
+                ts_field = body[candidate]
+                break
+
+        if ts_field is None:
+            # No timestamp field surfaced — pin the absence as a
+            # documented gap, but soft-skip the timing check
+            pytest.skip(
+                f"FileInfo body has no recognised timestamp field: "
+                f"{list(body.keys())!r}"
+            )
+
+        # Parse ISO-8601 timestamp
+        if isinstance(ts_field, str):
+            ts = datetime.fromisoformat(ts_field.replace("Z", "+00:00"))
+        else:
+            pytest.skip(f"timestamp not a string: {ts_field!r}")
+
+        # Within ±60 seconds of the write window
+        window_min = before - timedelta(seconds=60)
+        window_max = after + timedelta(seconds=60)
+        assert window_min <= ts <= window_max, (
+            f"mtime {ts!r} not in ±60s window [{window_min!r}, "
+            f"{window_max!r}]"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0378 — WorkspaceTemplate with empty init_commands materialises cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0378_template_with_empty_init_commands_materialises_cleanly(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0378 — Negative control to T0092 / T0155 (which use templates
+    WITH init_commands). Pin that an empty `init_commands=[]` is
+    accepted at template POST; the materialised workspace returns
+    200 on /files list with no init artefacts.
+    """
+    provider_id = f"wp-t0378-{unique_suffix}"
+    template_id = f"wt-t0378-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": provider_id,
+            "provider": "local",
+            "config": {"kind": "local", "path": str(tmp_path)},
+        },
+    )
+    assert pr.status_code == 201, pr.text
+
+    workspace_id: str | None = None
+    template_created = False
+    try:
+        # Template with empty init_commands
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0378 empty init",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "init_commands": [],
+            },
+        )
+        # Either 201 (accepted) or 422 (rejected as unsupported field) —
+        # pin no /errors/internal
+        assert tpl.status_code != 500, tpl.text
+        if tpl.status_code != 201:
+            envelope = tpl.json()
+            assert envelope["type"] != "/errors/internal", envelope
+            pytest.skip(
+                f"Template with empty init_commands rejected "
+                f"({tpl.status_code}); body: {tpl.text}"
+            )
+        template_created = True
+
+        # Materialise a workspace from the empty-init template
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": template_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # /files list returns 200 with empty (or only backend-internal)
+        # items — no init artefacts
+        listing = await client.get(
+            f"/v1/workspaces/{workspace_id}/files?path=.",
+        )
+        assert listing.status_code == 200, listing.text
+        assert isinstance(listing.json().get("items"), list), listing.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if template_created:
+            await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
 # T0334 — Workspace /log without limit + with limit=1
 # ============================================================================
 

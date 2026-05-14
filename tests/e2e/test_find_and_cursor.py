@@ -2630,3 +2630,72 @@ async def test_t0352_predicate_like_empty_vs_percent_consistent(
                 )
     finally:
         await _delete_toolsets(client, seeded)
+
+
+# ============================================================================
+# T0377 — Predicate `~=` with leading `%` wildcard matches by suffix
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0377_predicate_like_leading_wildcard_matches_suffix(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0377 — Companion to T0283 (trailing `_` wildcard) for the
+    leading `%` wildcard. Seed rows with ids ending in a unique
+    suffix; query `~= "%suffix"` returns exactly those rows.
+    """
+    suffix_marker = f"-marker-{unique_suffix}"
+    seeded = []
+    other = f"ts-other-{unique_suffix}"
+    try:
+        for i in range(3):
+            entity_id = f"ts-suffix-{i}{suffix_marker}"
+            r = await client.post(
+                "/v1/toolsets",
+                json={
+                    "id": entity_id,
+                    "provider": "mcp",
+                    "config": {
+                        "transport": "stdio",
+                        "config": {"command": ["echo"]},
+                    },
+                },
+            )
+            assert r.status_code == 201, r.text
+            seeded.append(entity_id)
+        # Other row that doesn't have the suffix
+        r = await client.post(
+            "/v1/toolsets",
+            json={
+                "id": other,
+                "provider": "mcp",
+                "config": {
+                    "transport": "stdio",
+                    "config": {"command": ["echo"]},
+                },
+            },
+        )
+        assert r.status_code == 201, r.text
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"%{suffix_marker}"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out = sorted(item["id"] for item in resp.json()["items"])
+        assert out == sorted(seeded), (
+            f"leading-wildcard LIKE pattern `%{suffix_marker}` should "
+            f"match exactly the suffix-ending rows; expected "
+            f"{sorted(seeded)!r}, got {out!r}"
+        )
+        assert other not in out
+    finally:
+        for entity_id in seeded + [other]:
+            await client.delete(f"/v1/toolsets/{entity_id}")
