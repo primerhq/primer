@@ -2123,3 +2123,322 @@ async def test_t0492_agent_status_with_malformed_provider_url_clean(
             await client.delete(f"/v1/agents/{agent_id}")
     finally:
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0495 — Graph max_iterations=0 rejected with 422 (PositiveInt lower bound)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0495_graph_max_iterations_zero_rejected_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0495 — Graph.max_iterations is `PositiveInt | None` per
+    matrix/model/graph.py:379. PositiveInt forbids 0 and negatives.
+    Pin: 0 is rejected with 422 /errors/validation-error; row not
+    created.
+    """
+    provider_id = f"llm-t0495-{unique_suffix}"
+    agent_id = f"agent-t0495-{unique_suffix}"
+    graph_id = f"graph-t0495-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0495",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+            "max_iterations": 0,
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code != 500, resp.text
+        assert resp.status_code == 422, (
+            f"max_iterations=0 should be 422; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        envelope = resp.json()
+        assert envelope.get("type") == "/errors/validation-error", envelope
+        # Row not created
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 404, got.text
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0496 — Graph max_iterations=-5 rejected with 422 (PositiveInt sign)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0496_graph_max_iterations_negative_rejected_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0496 — Sibling of T0495 for the negative-int boundary.
+    PositiveInt also forbids negatives. Pin: -5 → 422.
+    """
+    provider_id = f"llm-t0496-{unique_suffix}"
+    agent_id = f"agent-t0496-{unique_suffix}"
+    graph_id = f"graph-t0496-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0496",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+            "max_iterations": -5,
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 422, (
+            f"max_iterations=-5 should be 422; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        envelope = resp.json()
+        assert envelope.get("type") == "/errors/validation-error", envelope
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0497 — Graph max_iterations=2**31 accepted; round-trips through GET
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0497_graph_max_iterations_very_large_accepted_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0497 — PositiveInt in Pydantic v2 has no upper bound (Python
+    int is unbounded). Pin: a very large value (2**31 = 2147483648)
+    is accepted and round-trips byte-exact through GET.
+    """
+    provider_id = f"llm-t0497-{unique_suffix}"
+    agent_id = f"agent-t0497-{unique_suffix}"
+    graph_id = f"graph-t0497-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    very_large = 2**31  # 2_147_483_648 — beyond a 32-bit signed range
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0497",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+            "max_iterations": very_large,
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, (
+            f"max_iterations={very_large} should be accepted; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        # Round-trip via GET
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["max_iterations"] == very_large, (
+            f"max_iterations corrupted on round-trip: "
+            f"sent={very_large}, got={got.json().get('max_iterations')!r}"
+        )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0498 — Graph with conditional edge + callable router accepted at create
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0498_graph_with_callable_router_create_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0498 — Per matrix/model/graph.py:285-302, _CallableRouter has
+    `kind="callable"` + `callable_id: str`. The topology validator
+    does NOT resolve the callable at create time (per the docstring,
+    "The callable signature is ... the returned string MUST be the
+    id of an existing node" — runtime check).
+
+    Pin: a graph with a conditional edge whose router is a callable
+    referencing a non-existent callable_id is accepted at create
+    (201); GET round-trips the edge shape; a bound session
+    terminates ENDED/failed cleanly via the executor's fatal path
+    (T0429 sibling — graph executor itself is NotImplemented).
+
+    NB: this test does NOT bind a session to keep it under 30s; the
+    fatal-path convergence is already covered by T0429 for any
+    graph shape.
+    """
+    provider_id = f"llm-t0498-{unique_suffix}"
+    agent_id = f"agent-t0498-{unique_suffix}"
+    graph_id = f"graph-t0498-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0498 callable router",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {
+                    "kind": "conditional", "from_node": "n1",
+                    "router": {
+                        "kind": "callable",
+                        "callable_id": f"router-not-registered-{unique_suffix}",
+                    },
+                },
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, (
+            f"graph with callable router should be accepted at create "
+            f"(callable resolution is runtime); got "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        # GET round-trips the edge shape verbatim
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        edges = got.json()["edges"]
+        assert len(edges) == 1, edges
+        edge = edges[0]
+        assert edge.get("kind") == "conditional", edge
+        router = edge.get("router")
+        assert isinstance(router, dict), edge
+        assert router.get("kind") == "callable", router
+        assert router.get("callable_id") == (
+            f"router-not-registered-{unique_suffix}"
+        ), router
+
+        # /status returns clean envelope (no resolution issues
+        # surfaced — callable refs aren't validated by the agent
+        # status walk)
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        body_status = status.json()
+        assert "ok" in body_status, body_status
+        assert isinstance(body_status.get("issues"), list), body_status
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0499 — PUT /v1/graphs/{path-id} with body.id mismatch returns 409
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0499_put_graph_body_id_mismatch_returns_409(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0499 — Per matrix/api/routers/_crud.py:152-155, PUT raises
+    ConflictError when path id != body id. Pin: 409
+    /errors/conflict; existing row not corrupted by the rejected
+    PUT. Mirror of the same pattern across all entity types — this
+    pins it specifically for the Graph CRUD route.
+    """
+    provider_id = f"llm-t0499-{unique_suffix}"
+    agent_id = f"agent-t0499-{unique_suffix}"
+    graph_id = f"graph-t0499-{unique_suffix}"
+    wrong_id = f"graph-t0499-other-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    gr = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+    )
+    assert gr.status_code == 201, gr.text
+
+    try:
+        # PUT with body.id != path id
+        body = _graph_body(graph_id, agent_id=agent_id)
+        body["id"] = wrong_id  # body's id mismatches the path id
+        body["description"] = "T0499 mismatched body id"
+        resp = await client.put(f"/v1/graphs/{graph_id}", json=body)
+        assert resp.status_code != 500, resp.text
+        assert resp.status_code == 409, (
+            f"id mismatch should be 409 conflict; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        envelope = resp.json()
+        assert envelope.get("type") == "/errors/conflict", envelope
+
+        # Existing row not corrupted — description is the original
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        assert got.json().get("description") == "test graph", (
+            f"row corrupted by rejected PUT: {got.json()!r}"
+        )
+        # Wrong-id row was not created
+        got_wrong = await client.get(f"/v1/graphs/{wrong_id}")
+        assert got_wrong.status_code == 404, got_wrong.text
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/graphs/{wrong_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
