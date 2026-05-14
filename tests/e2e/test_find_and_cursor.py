@@ -3317,3 +3317,327 @@ async def test_t0483_predicate_like_underscore_matches_single_char_tail(
         )
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0484 — Predicate ~= with `\%` escape returns deterministic clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0484_predicate_like_escaped_percent_deterministic(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0484 — Sharper than T0328 (which only pinned no-/errors/internal
+    on a single call). Pin DETERMINISM: the same `\\%`-escaped LIKE
+    predicate must return the same status code, the same envelope
+    type, and the same matched-id set across two consecutive calls.
+    Catches a regression where the translator non-deterministically
+    accepts/rejects the escape sequence (e.g. cache pollution from
+    a stateful translator instance).
+    """
+    prefix = f"ts-t0484-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 4)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {
+                    "kind": "value",
+                    "value": f"{prefix}\\%no-such-row\\%",
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+
+        # Two consecutive calls
+        r1 = await client.post("/v1/toolsets/find", json=body)
+        r2 = await client.post("/v1/toolsets/find", json=body)
+
+        # Hard pin: never /errors/internal, never 5xx (other than
+        # documented 502 provider-server-error)
+        for r, label in ((r1, "call-1"), (r2, "call-2")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label}: escaped-% LIKE leaked /errors/internal: "
+                f"{r.text}"
+            )
+            assert r.status_code in (200, 400, 422, 502), (
+                f"{label}: unexpected {r.status_code}: {r.text}"
+            )
+
+        # Determinism: same status code AND same envelope type
+        assert r1.status_code == r2.status_code, (
+            f"non-deterministic status: {r1.status_code} vs "
+            f"{r2.status_code}"
+        )
+        env1 = r1.json() if r1.content else {}
+        env2 = r2.json() if r2.content else {}
+        assert env1.get("type") == env2.get("type"), (
+            f"non-deterministic envelope type: {env1.get('type')!r} "
+            f"vs {env2.get('type')!r}"
+        )
+
+        # If 200, the matched-id sets must be identical too
+        if r1.status_code == 200:
+            ids_1 = sorted(item["id"] for item in r1.json()["items"])
+            ids_2 = sorted(item["id"] for item in r2.json()["items"])
+            assert ids_1 == ids_2, (
+                f"non-deterministic matched set: {ids_1!r} vs {ids_2!r}"
+            )
+            # `\%no-such-row\%` should not match any seeded id whose
+            # body doesn't contain a literal `%`
+            for matched in ids_1:
+                assert matched not in ids, (
+                    f"escape-% pattern unexpectedly matched seeded id "
+                    f"{matched!r} (no seeded id contains literal %)"
+                )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0485 — Predicate `>` on Session.metadata dotted path absent on most rows
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0485_predicate_gt_on_sparse_metadata_path_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0485 — Seed 5 sessions where only one carries
+    `metadata.score = 5`. Predicate `metadata.score > 0` should
+    return ≤1 row (the one with the field present and > 0). Pin:
+    no /errors/internal even when most rows have NULL at the
+    JSONB dotted path (mostly-NULL JSONB cells are the documented
+    Postgres edge case).
+
+    Inline workspace setup since this file doesn't import the
+    session helpers from test_sessions_top_level.py.
+    """
+    import tempfile
+
+    provider_id = f"llm-t0485-{unique_suffix}"
+    agent_id = f"agent-t0485-{unique_suffix}"
+    wp_id = f"wp-t0485-{unique_suffix}"
+    tpl_id = f"wt-t0485-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/llm_providers",
+        json={
+            "id": provider_id,
+            "provider": "anthropic",
+            "models": [
+                {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            ],
+            "config": {"api_key": "sk-test"},
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json={
+            "id": agent_id,
+            "description": "T0485",
+            "model": {
+                "provider_id": provider_id,
+                "model_name": "claude-sonnet-4-6",
+            },
+            "tools": [],
+        },
+    )
+    assert ag.status_code == 201, ag.text
+
+    workspace_id: str | None = None
+    session_ids: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            wp = await client.post(
+                "/v1/workspace_providers",
+                json={
+                    "id": wp_id,
+                    "provider": "local",
+                    "config": {"kind": "local", "path": tmp},
+                },
+            )
+            assert wp.status_code == 201, wp.text
+            tpl = await client.post(
+                "/v1/workspace_templates",
+                json={
+                    "id": tpl_id,
+                    "description": "T0485",
+                    "provider_id": wp_id,
+                    "backend": {"kind": "local"},
+                },
+            )
+            assert tpl.status_code == 201, tpl.text
+            ws = await client.post(
+                "/v1/workspaces", json={"template_id": tpl_id},
+            )
+            assert ws.status_code == 201, ws.text
+            workspace_id = ws.json()["id"]
+
+            # 4 sessions with no `score` in metadata
+            for i in range(4):
+                sess = await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions",
+                    json={
+                        "binding": {"kind": "agent", "agent_id": agent_id},
+                        "metadata": {"tag": f"plain-{i}"},
+                        "auto_start": False,
+                    },
+                )
+                assert sess.status_code == 201, sess.text
+                session_ids.append(sess.json()["id"])
+
+            # 1 session WITH metadata.score = 5
+            sess_scored = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json={
+                    "binding": {"kind": "agent", "agent_id": agent_id},
+                    "metadata": {"tag": "scored", "score": 5},
+                    "auto_start": False,
+                },
+            )
+            assert sess_scored.status_code == 201, sess_scored.text
+            scored_id = sess_scored.json()["id"]
+            session_ids.append(scored_id)
+
+            # Predicate metadata.score > 0 — most rows have NULL at
+            # this dotted path
+            body = {
+                "predicate": {
+                    "kind": "predicate",
+                    "op": "and",
+                    "left": {
+                        "kind": "predicate",
+                        "op": "=",
+                        "left": {
+                            "kind": "field", "name": "workspace_id",
+                        },
+                        "right": {
+                            "kind": "value", "value": workspace_id,
+                        },
+                    },
+                    "right": {
+                        "kind": "predicate",
+                        "op": ">",
+                        "left": {
+                            "kind": "field", "name": "metadata.score",
+                        },
+                        "right": {"kind": "value", "value": 0},
+                    },
+                },
+                "page": {"kind": "offset", "offset": 0, "length": 50},
+            }
+            resp = await client.post("/v1/sessions/find", json=body)
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"sparse-metadata `>` leaked /errors/internal: "
+                f"{resp.text}"
+            )
+            # Acceptable: 200 (filtered correctly) or 502
+            # (provider-server-error from the JSONB-coercion bug
+            # documented in T0236/T0361 area)
+            assert resp.status_code in (200, 400, 422, 502), (
+                f"unexpected status: {resp.status_code}: {resp.text}"
+            )
+            if resp.status_code == 200:
+                returned = {item["id"] for item in resp.json()["items"]}
+                # Mostly-NULL paths should NOT match. The scored
+                # session may or may not match depending on whether
+                # the backend honors metadata-typed comparisons; the
+                # hard pin is "no row WITHOUT score is returned".
+                for plain_id in session_ids[:4]:
+                    assert plain_id not in returned, (
+                        f"row {plain_id!r} (no metadata.score) "
+                        f"unexpectedly matched `>` predicate: "
+                        f"{returned!r}"
+                    )
+        finally:
+            if workspace_id is not None:
+                for sid in session_ids:
+                    await client.post(
+                        f"/v1/workspaces/{workspace_id}/sessions/{sid}/cancel",
+                    )
+                await client.delete(f"/v1/workspaces/{workspace_id}")
+            await client.delete(f"/v1/workspace_templates/{tpl_id}")
+            await client.delete(f"/v1/workspace_providers/{wp_id}")
+            await client.delete(f"/v1/agents/{agent_id}")
+            await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0486 — Predicate OR of two LIKE clauses unions matches without dedupe
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0486_predicate_or_of_two_likes_unions_no_dedupe_issues(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0486 — Build the OR predicate `or(id ~= "<a>%", id ~= "<b>")`
+    where the two clauses' match-sets overlap is empty. Seed 4
+    toolsets a-1, a-2, b-1, b-2. Result must be exactly {a-1, a-2,
+    b-1} — b-2 absent (matches neither clause), no row appears
+    twice. Pin: stable sort + no duplicate id in the items list.
+    """
+    prefix = f"ts-t0486-{unique_suffix}"
+    a1 = f"{prefix}-a-1"
+    a2 = f"{prefix}-a-2"
+    b1 = f"{prefix}-b-1"
+    b2 = f"{prefix}-b-2"
+    all_ids = [a1, a2, b1, b2]
+    expected = sorted([a1, a2, b1])
+
+    for entity_id in all_ids:
+        r = await client.post(
+            "/v1/toolsets", json=_toolset_body(entity_id),
+        )
+        assert r.status_code == 201, r.text
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "or",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {
+                        "kind": "value", "value": f"{prefix}-a-%",
+                    },
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": b1},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        items = resp.json()["items"]
+        out_ids = sorted(item["id"] for item in items)
+        assert out_ids == expected, (
+            f"OR union mismatch: expected {expected!r}, got "
+            f"{out_ids!r}"
+        )
+        # No duplicates: same length pre-set-vs-post-set (catches a
+        # JOIN-without-DISTINCT regression that would emit b-1 once
+        # per matching clause)
+        raw_ids = [item["id"] for item in items]
+        assert len(raw_ids) == len(set(raw_ids)), (
+            f"OR result contains duplicate ids: {raw_ids!r}"
+        )
+        # b-2 absent
+        assert b2 not in out_ids, (
+            f"unexpected b-2 in OR result: {out_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, all_ids)

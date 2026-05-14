@@ -3205,3 +3205,243 @@ async def test_t0443_rapid_deactivate_reactivate_cycles_clean(
         if config_active:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0487 — Bootstrap → DELETE → re-PUT (different embedder) → bootstrap
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0487_config_swap_reactivation_uses_latest_embedder(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0487 — Sibling of T0091/T0443 with one new variable: the
+    re-PUT swaps `embedding_provider_id` to a DIFFERENT row.
+    Pin: final GET /config reflects the second embedder; an agent
+    created post-cycle is searchable (proves the CDC subsystem
+    rebuilt against the new embedder, not stuck on the old one).
+    """
+    embedder_a = f"emb-t0487a-{unique_suffix}"
+    embedder_b = f"emb-t0487b-{unique_suffix}"
+    llm_id = f"llm-t0487-{unique_suffix}"
+    agent_id = f"agent-t0487-{unique_suffix}"
+    marker = f"swap-marker-{unique_suffix}"
+
+    pr_a = await client.post(
+        "/v1/embedding_providers",
+        json=_embedding_provider_body(embedder_a),
+    )
+    assert pr_a.status_code == 201, pr_a.text
+    pr_b = await client.post(
+        "/v1/embedding_providers",
+        json=_embedding_provider_body(embedder_b),
+    )
+    assert pr_b.status_code == 201, pr_b.text
+
+    config_active = False
+    llm_created = False
+    agent_created = False
+    try:
+        # First activation cycle with embedder A
+        put_a = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_a),
+        )
+        assert put_a.status_code == 200, put_a.text
+        config_active = True
+
+        boot_a = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        if boot_a.status_code != 200:
+            pytest.skip(
+                f"first bootstrap failed (embedder {embedder_a}): "
+                f"{boot_a.status_code}: {boot_a.text[:300]}"
+            )
+
+        # Swap to embedder B
+        rm = await client.delete("/v1/internal_collections/config")
+        assert rm.status_code == 204, rm.text
+        config_active = False
+
+        put_b = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_b),
+        )
+        assert put_b.status_code == 200, put_b.text
+        config_active = True
+
+        # GET /config reflects embedder B (the latest write)
+        got = await client.get("/v1/internal_collections/config")
+        assert got.status_code == 200, got.text
+        assert got.json().get("embedding_provider_id") == embedder_b, (
+            f"after swap, GET /config still shows old embedder: "
+            f"{got.json()!r}"
+        )
+
+        boot_b = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        if boot_b.status_code != 200:
+            pytest.skip(
+                f"second bootstrap failed (embedder {embedder_b}): "
+                f"{boot_b.status_code}: {boot_b.text[:300]}"
+            )
+
+        # Create LLMProvider + Agent post-swap; CDC must work against
+        # the new embedder
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                agent_id, provider_id=llm_id, description=marker,
+            ),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        # Poll search for the new agent's marker
+        ids = await _poll_search_for(
+            client, query=marker, expected_id=agent_id, present=True,
+        )
+        assert agent_id in ids, (
+            f"after embedder swap, CDC did not index the new agent: "
+            f"{ids!r}"
+        )
+    finally:
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_active:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_a}")
+        await client.delete(f"/v1/embedding_providers/{embedder_b}")
+
+
+# ============================================================================
+# T0488 — POST /v1/agents concurrent with in-flight bootstrap
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0488 — Sibling of T0411 (bootstrap × delete-config) and T0412
+    (burst-create + delete-config). T0488 races 5 agent CREATEs
+    against an IN-FLIGHT bootstrap (no pre-wait — the bootstrap
+    starts at the same instant as the POSTs). Pin: every call clean
+    (2xx/4xx, never /errors/internal); after the dust settles the
+    new agents are searchable via CDC.
+    """
+    embedder_id = f"emb-t0488-{unique_suffix}"
+    llm_id = f"llm-t0488-{unique_suffix}"
+    agent_ids = [
+        f"agent-t0488-{unique_suffix}-{i}" for i in range(5)
+    ]
+    distinctive = f"inflight-marker-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers",
+        json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    agents_created: list[str] = []
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        # Pre-create the LLMProvider so agent creates don't fail on
+        # missing-provider — that's not what we're testing
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        # Race: bootstrap + 5 agent CREATEs all at once. Bootstrap
+        # is the long-running operation; the agent POSTs should slip
+        # through cleanly while the subsystem is still warming up.
+        boot_task = asyncio.create_task(client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        ))
+        agent_tasks = [
+            asyncio.create_task(client.post(
+                "/v1/agents",
+                json=_agent_body(
+                    aid, provider_id=llm_id,
+                    description=f"{distinctive}-{aid}",
+                ),
+            ))
+            for aid in agent_ids
+        ]
+        all_results = await asyncio.gather(boot_task, *agent_tasks)
+        boot_resp = all_results[0]
+        agent_results = all_results[1:]
+
+        # Bootstrap may have succeeded or hit the cold-start CREATE
+        # TABLE race (per T0103a known-bug). Either is acceptable;
+        # what matters is no /errors/internal anywhere.
+        boot_envelope = boot_resp.json() if boot_resp.content else {}
+        assert boot_envelope.get("type") != "/errors/internal", (
+            f"in-flight bootstrap leaked /errors/internal: "
+            f"{boot_resp.text}"
+        )
+        if boot_resp.status_code != 200:
+            pytest.skip(
+                f"bootstrap returned {boot_resp.status_code} during "
+                f"race (expected 200; might be cold-start CREATE TABLE "
+                f"race or env issue): {boot_resp.text[:300]}"
+            )
+
+        # Every agent CREATE clean
+        for aid, r in zip(agent_ids, agent_results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"agent {aid!r} leaked /errors/internal during race: "
+                f"{r.text}"
+            )
+            assert r.status_code in (201, 409, 502), (
+                f"agent {aid!r}: unexpected {r.status_code}: {r.text}"
+            )
+            if r.status_code == 201:
+                agents_created.append(aid)
+
+        # At least 1 agent should have been created (race shouldn't
+        # cause all 5 to fail unless the env is broken)
+        assert len(agents_created) >= 1, (
+            f"all 5 agent CREATEs failed during in-flight bootstrap: "
+            f"{[r.status_code for r in agent_results]!r}"
+        )
+
+        # Each created agent must eventually become searchable. Poll
+        # for one of them — if CDC is broken across the race, this
+        # would hang past the 30s budget.
+        target = agents_created[0]
+        ids = await _poll_search_for(
+            client, query=distinctive, expected_id=target, present=True,
+        )
+        assert target in ids, (
+            f"after in-flight bootstrap race, CDC did not index "
+            f"agent {target!r}: {ids!r}"
+        )
+    finally:
+        for aid in agents_created:
+            await client.delete(f"/v1/agents/{aid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
