@@ -383,3 +383,68 @@ async def test_t0281_patch_on_toolsets_list_endpoint_returns_405(
     assert "GET" in allow_upper or "POST" in allow_upper, (
         f"Allow header {allow!r} should mention GET or POST"
     )
+
+
+# ============================================================================
+# T0292 — Two parallel POSTs to /v1/agents with same id (warmed table)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0292_parallel_create_same_agent_id_yields_201_and_409(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0292 — Mirror of T0103 (which raced Toolsets) for the Agent
+    entity. Two concurrent POSTs of the same agent_id with the table
+    pre-warmed must produce exactly one 201 and one 409
+    /errors/conflict — never both 201 (would corrupt) nor 502
+    /errors/provider-error (cold-start CREATE TABLE race).
+    """
+    # Pre-warm Agent + LLMProvider tables
+    warmup_llm = f"llm-warmup-{unique_suffix}"
+    warmup_agent = f"agent-warmup-{unique_suffix}"
+    pr = await client.post(
+        "/v1/llm_providers", json=_llm_body(warmup_llm),
+    )
+    assert pr.status_code == 201, pr.text
+    ag_warm = await client.post(
+        "/v1/agents",
+        json={
+            "id": warmup_agent,
+            "description": "warmup",
+            "model": {
+                "provider_id": warmup_llm,
+                "model_name": "claude-sonnet-4-6",
+            },
+            "tools": [],
+        },
+    )
+    assert ag_warm.status_code == 201, ag_warm.text
+    await client.delete(f"/v1/agents/{warmup_agent}")
+
+    entity_id = f"agent-race-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "description": "race",
+        "model": {
+            "provider_id": warmup_llm,
+            "model_name": "claude-sonnet-4-6",
+        },
+        "tools": [],
+    }
+    try:
+        a, b = await asyncio.gather(
+            client.post("/v1/agents", json=body),
+            client.post("/v1/agents", json=body),
+            return_exceptions=False,
+        )
+        statuses = sorted([a.status_code, b.status_code])
+        assert statuses == [201, 409], (
+            f"expected one 201 and one 409, got "
+            f"{a.status_code} + {b.status_code}: {a.text} / {b.text}"
+        )
+        loser = a if a.status_code == 409 else b
+        assert loser.json()["type"] == "/errors/conflict", loser.json()
+    finally:
+        await client.delete(f"/v1/agents/{entity_id}")
+        await client.delete(f"/v1/llm_providers/{warmup_llm}")

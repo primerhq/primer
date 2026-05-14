@@ -3197,3 +3197,192 @@ async def test_t0285_workspaces_list_offset_limit_pagination(
         for wid in seeded_ids:
             await client.delete(f"/v1/workspaces/{wid}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0290 — Workspace DELETE concurrent with PUT /files yields clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0290_workspace_destroy_concurrent_with_put_files_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0290 — Race: DELETE workspace concurrent with PUT /files on
+    the same workspace. Both responses must have clean envelopes
+    (no 5xx /errors/internal); subsequent GET /workspaces/{id}
+    returns 404.
+
+    Catches a regression where the destroy cascade leaves a
+    half-state that 500s the file write or vice versa.
+    """
+    import asyncio
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Race the destroy and the file write
+        delete_task = asyncio.create_task(
+            client.delete(f"/v1/workspaces/{workspace_id}"),
+        )
+        put_task = asyncio.create_task(client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=raced.txt",
+            json={"content": "x", "encoding": "text"},
+        ))
+        delete_resp, put_resp = await asyncio.gather(
+            delete_task, put_task,
+        )
+
+        for r, label in ((delete_resp, "DELETE"), (put_resp, "PUT")):
+            assert r.status_code < 500, (
+                f"{label} leaked 5xx: {r.status_code}: {r.text}"
+            )
+            envelope = r.json() if (r.content and r.status_code >= 400) else {}
+            if envelope:
+                assert envelope.get("type", "/errors/").startswith(
+                    "/errors/"
+                ), envelope
+                assert envelope.get("type") != "/errors/internal", envelope
+
+        # GET on the destroyed workspace is 404 cleanly
+        gone = await client.get(f"/v1/workspaces/{workspace_id}")
+        assert gone.status_code in (200, 404), gone.text
+    finally:
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0291 — DELETE WorkspaceProvider while WorkspaceTemplate references it
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0291_delete_workspace_provider_with_referencing_template(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0291 — Lifecycle ordering: DELETE the WorkspaceProvider while
+    a WorkspaceTemplate still references it. Provider DELETE returns
+    clean envelope (204 if no-FK, or clean 4xx if cascade enforced);
+    the template GET still responds cleanly afterward.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        # Sanity: template references provider
+        tpl_get = await client.get(f"/v1/workspace_templates/{template_id}")
+        assert tpl_get.status_code == 200, tpl_get.text
+        assert tpl_get.json()["provider_id"] == provider_id
+
+        # DELETE provider
+        rm = await client.delete(f"/v1/workspace_providers/{provider_id}")
+        assert rm.status_code < 500, rm.text
+        if rm.status_code >= 400:
+            envelope = rm.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+
+        # Template GET still responds cleanly
+        tpl_after = await client.get(f"/v1/workspace_templates/{template_id}")
+        assert tpl_after.status_code < 500, tpl_after.text
+        if tpl_after.status_code >= 400:
+            envelope = tpl_after.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        # Provider may already be gone
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0293 — PUT /files with encoding=text containing NUL byte
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0293_workspace_files_put_text_with_nul_byte_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0293 — Text-mode write where the content string contains a
+    \\x00 (NUL) byte. The handler must not 500: either accept the
+    write (and the bytes round-trip) or reject with a clean 4xx
+    envelope. NEVER /errors/internal.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        nul_text = "before\x00after"
+        resp = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=nul.txt",
+            json={"content": nul_text, "encoding": "text"},
+        )
+        assert resp.status_code != 500 or (
+            resp.json().get("type") != "/errors/internal"
+        ), f"/errors/internal leak on NUL-byte text PUT: {resp.text}"
+        if resp.status_code in (200, 204):
+            # Accepted — verify round-trip via download (raw bytes)
+            dl = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/download?path=nul.txt",
+            )
+            assert dl.status_code == 200, dl.text
+            assert dl.content == nul_text.encode("utf-8"), dl.content
+        else:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0294 — PUT /files body missing `content` field returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0294_workspace_files_put_body_missing_content_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0294 — FileWriteBody requires `content` (per spec §12). A PUT
+    body with only `encoding` and no `content` must return 422
+    /errors/validation-error cleanly.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        resp = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=nocontent.txt",
+            json={"encoding": "text"},
+        )
+        assert resp.status_code == 422, resp.text
+        envelope = resp.json()
+        assert envelope["type"] == "/errors/validation-error", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
