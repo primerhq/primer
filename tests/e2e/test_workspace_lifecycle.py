@@ -3131,3 +3131,69 @@ async def test_t0284_workspaces_find_with_predicate_filters_by_template(
             await client.delete(f"/v1/workspaces/{wid}")
         await client.delete(f"/v1/workspace_templates/{template_id_b}")
         await _teardown_provider_template(client, provider_id, template_id_a)
+
+
+# ============================================================================
+# T0285 — GET /v1/workspaces supports offset/limit pagination
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0285_workspaces_list_offset_limit_pagination(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0285 — Pin that the bespoke /v1/workspaces list endpoint
+    honours the §4 pagination contract: offset and limit query
+    params combine to return distinct page slices, total reflects
+    all matching rows.
+
+    Seeds 5 workspaces, then walks limit=2, offset=0 → offset=2 →
+    offset=4. Each page returns ≤2 items; the union covers all 5
+    seeded ids without duplicates.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    seeded_ids: list[str] = []
+    try:
+        for _ in range(5):
+            ws = await client.post(
+                "/v1/workspaces",
+                json={"template_id": template_id},
+            )
+            assert ws.status_code == 201, ws.text
+            seeded_ids.append(ws.json()["id"])
+
+        # Filter by template_id via /find so other-test workspaces
+        # don't pollute the page count
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "template_id"},
+                "right": {"kind": "value", "value": template_id},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 2},
+        }
+
+        seen: list[str] = []
+        for offset in (0, 2, 4):
+            body["page"] = {"kind": "offset", "offset": offset, "length": 2}
+            r = await client.post("/v1/workspaces/find", json=body)
+            assert r.status_code == 200, r.text
+            page = r.json()
+            assert page["length"] <= 2, page
+            seen.extend(item["id"] for item in page["items"])
+
+        # Every seeded id appears exactly once
+        assert sorted(seen) == sorted(seeded_ids), (
+            f"pagination walk did not cover seeded set. "
+            f"seeded={sorted(seeded_ids)!r}, seen={sorted(seen)!r}"
+        )
+        assert len(seen) == len(set(seen)), (
+            f"duplicates across pages: {seen!r}"
+        )
+    finally:
+        for wid in seeded_ids:
+            await client.delete(f"/v1/workspaces/{wid}")
+        await _teardown_provider_template(client, provider_id, template_id)

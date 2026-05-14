@@ -1935,3 +1935,347 @@ async def test_t0277_concurrent_bootstraps_during_fresh_put_clean_envelope(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0286 — GET /v1/internal_collections/config and `collections` field
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0286_get_config_collections_field_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0286 — Subsystem config introspection: pin GET response shape
+    after PUT with an explicit `collections` field. The actual model
+    (matrix/model/internal.py) does NOT define a `collections` field,
+    so it's silently ignored on PUT (T0269 confirmed) and absent on
+    GET. This test pins that the GET response does NOT include
+    `collections` (so callers know not to depend on it), AND the
+    documented fields ARE echoed.
+    """
+    embedder_id = f"emb-t0286-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        body = _ic_config_body(embedder_id=embedder_id)
+        body["collections"] = ["agent", "graph"]
+        put = await client.put(
+            "/v1/internal_collections/config", json=body,
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        got = await client.get("/v1/internal_collections/config")
+        assert got.status_code == 200, got.text
+        row = got.json()
+
+        assert row.get("embedding_provider_id") == embedder_id, row
+        assert row.get("embedding_model") == (
+            "sentence-transformers/all-MiniLM-L6-v2"
+        ), row
+        assert "collections" not in row, (
+            f"unexpected `collections` field in GET response — the "
+            f"model doesn't define it: {row!r}"
+        )
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0287 — CDC: PUT Collection description updates /collections/search
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0287_cdc_put_collection_updates_search(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0287 — Mirror of T0036 (PUT Agent re-indexed) for the Collection
+    entity. Create + index, then PUT with new marker, search by new
+    marker — same collection_id surfaces in the poll window.
+    """
+    embedder_id = f"emb-t0287-{unique_suffix}"
+    coll_id = f"coll-upd-{unique_suffix}"
+    initial_marker = f"initial-coll-marker-{unique_suffix}"
+    updated_marker = f"updated-coll-marker-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    coll_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        coll = await client.post(
+            "/v1/collections",
+            json={
+                "id": coll_id,
+                "description": initial_marker,
+                "embedder": {
+                    "provider_id": embedder_id,
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                },
+            },
+        )
+        assert coll.status_code in (200, 201), coll.text
+        coll_created = True
+
+        # Wait for initial indexing
+        for _ in range(60):
+            s = await client.post(
+                "/v1/collections/search",
+                json={"query": initial_marker, "top_k": 5},
+            )
+            assert s.status_code == 200, s.text
+            ids = {h["document_id"] for h in s.json()["hits"]}
+            if coll_id in ids:
+                break
+            await asyncio.sleep(0.5)
+
+        # PUT with new description
+        put = await client.put(
+            f"/v1/collections/{coll_id}",
+            json={
+                "id": coll_id,
+                "description": updated_marker,
+                "embedder": {
+                    "provider_id": embedder_id,
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                },
+            },
+        )
+        assert put.status_code == 200, put.text
+
+        found = False
+        last_ids: list[str] = []
+        for _ in range(60):
+            s = await client.post(
+                "/v1/collections/search",
+                json={"query": updated_marker, "top_k": 5},
+            )
+            assert s.status_code == 200, s.text
+            last_ids = [h["document_id"] for h in s.json()["hits"]]
+            if coll_id in last_ids:
+                found = True
+                break
+            await asyncio.sleep(0.5)
+        assert found, (
+            f"update-hook did not re-index collection: "
+            f"last hits={last_ids!r}"
+        )
+    finally:
+        if coll_created:
+            await client.delete(f"/v1/collections/{coll_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0288 — CDC: DELETE Graph removes it from /v1/graphs/search
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0288_cdc_delete_graph_removes_from_search(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0288 — Mirror of T0035 (DELETE Agent removed) for the Graph
+    entity. Create + index, DELETE it, search no longer returns the
+    id within the poll window.
+    """
+    embedder_id = f"emb-t0288-{unique_suffix}"
+    llm_id = f"llm-t0288-{unique_suffix}"
+    agent_id = f"agent-t0288-{unique_suffix}"
+    graph_id = f"graph-rm-{unique_suffix}"
+    distinctive = f"removable-graph-marker-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    agent_created = False
+    graph_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(agent_id, provider_id=llm_id, description="x"),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        gr = await client.post(
+            "/v1/graphs",
+            json=_graph_body(
+                graph_id, agent_id=agent_id, description=distinctive,
+            ),
+        )
+        assert gr.status_code == 201, gr.text
+        graph_created = True
+
+        # Wait for indexing
+        for _ in range(60):
+            s = await client.post(
+                "/v1/graphs/search",
+                json={"query": distinctive, "top_k": 5},
+            )
+            assert s.status_code == 200, s.text
+            ids = {h["document_id"] for h in s.json()["hits"]}
+            if graph_id in ids:
+                break
+            await asyncio.sleep(0.5)
+
+        # DELETE
+        rm = await client.delete(f"/v1/graphs/{graph_id}")
+        assert rm.status_code == 204, rm.text
+        graph_created = False
+
+        # Wait for removal
+        gone = False
+        last_ids: list[str] = []
+        for _ in range(60):
+            s = await client.post(
+                "/v1/graphs/search",
+                json={"query": distinctive, "top_k": 10},
+            )
+            assert s.status_code == 200, s.text
+            last_ids = [h["document_id"] for h in s.json()["hits"]]
+            if graph_id not in last_ids:
+                gone = True
+                break
+            await asyncio.sleep(0.5)
+        assert gone, (
+            f"deleted graph {graph_id!r} still present in search "
+            f"after 30s: {last_ids!r}"
+        )
+    finally:
+        if graph_created:
+            await client.delete(f"/v1/graphs/{graph_id}")
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0289 — Concurrent CDC ingest of 5 Agents + 5 search calls
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0289_concurrent_cdc_ingest_and_search_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0289 — Cross-entity concurrency: fire 5 Agent POSTs and 5
+    /v1/agents/search calls concurrently. All responses have clean
+    envelopes (no /errors/internal); after the dust settles, all 5
+    seeded agents are findable in search.
+    """
+    embedder_id = f"emb-t0289-{unique_suffix}"
+    llm_id = f"llm-t0289-{unique_suffix}"
+    agent_ids = [f"agent-conc-{unique_suffix}-{i}" for i in range(5)]
+    common_marker = f"concurrent-cdc-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    agents_created: list[str] = []
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        async def _post(i: int) -> httpx.Response:
+            return await client.post(
+                "/v1/agents",
+                json=_agent_body(
+                    agent_ids[i], provider_id=llm_id,
+                    description=f"{common_marker}-{i}",
+                ),
+            )
+
+        async def _search() -> httpx.Response:
+            return await client.post(
+                "/v1/agents/search",
+                json={"query": common_marker, "top_k": 10},
+            )
+
+        tasks: list = []
+        for i in range(5):
+            tasks.append(asyncio.create_task(_post(i)))
+        for _ in range(5):
+            tasks.append(asyncio.create_task(_search()))
+
+        results = await asyncio.gather(*tasks)
+        for i, r in enumerate(results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"task {i} returned /errors/internal: {r.text}"
+            )
+
+        for i in range(5):
+            if results[i].status_code == 201:
+                agents_created.append(agent_ids[i])
+
+        assert len(agents_created) == 5, (
+            f"only {len(agents_created)}/5 agent POSTs succeeded: "
+            f"{agents_created!r}"
+        )
+
+        # After load, all 5 indexed
+        last_ids: set[str] = set()
+        for _ in range(60):
+            s = await client.post(
+                "/v1/agents/search",
+                json={"query": common_marker, "top_k": 10},
+            )
+            assert s.status_code == 200, s.text
+            last_ids = {h["document_id"] for h in s.json()["hits"]}
+            if all(aid in last_ids for aid in agent_ids):
+                break
+            await asyncio.sleep(0.5)
+        else:
+            pytest.fail(
+                f"not all 5 agents indexed after concurrent load: "
+                f"last hits={last_ids!r}"
+            )
+    finally:
+        for aid in agents_created:
+            await client.delete(f"/v1/agents/{aid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
