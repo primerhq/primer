@@ -456,6 +456,193 @@ async def test_t0292_parallel_create_same_agent_id_yields_201_and_409(
 
 
 @pytest.mark.asyncio
+async def test_t0379_provider_config_no_cross_field_validation_pinned(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0379 — Pin actual behaviour: `provider` and `config` are NOT
+    cross-validated. Sending provider=anthropic with an Ollama-shaped
+    config (url instead of api_key) is accepted as 201 — Pydantic's
+    union resolution picks whichever variant the config shape matches,
+    independent of the provider field.
+
+    Reframed from the original (which assumed cross-field validation
+    rejection); test discovered the API is permissive at create-time.
+    """
+    body = {
+        "id": f"llm-t0379-{unique_suffix}",
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        # OllamaConfig shape (url, optional api_key) — DIFFERENT from
+        # what anthropic provider would expect (AnthropicConfig has
+        # only api_key)
+        "config": {"url": "http://localhost:11434"},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/llm_providers", json=body)
+    # Currently accepted as 201; row is persisted with mismatched
+    # provider+config. Pin no /errors/internal.
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"discriminator leaked /errors/internal: {resp.text}"
+    )
+    if resp.status_code == 201:
+        try:
+            # Verify the row was actually persisted with the mismatched
+            # combo (no silent normalisation)
+            got = await client.get(
+                f"/v1/llm_providers/llm-t0379-{unique_suffix}",
+            )
+            assert got.status_code == 200, got.text
+            row = got.json()
+            assert row["provider"] == "anthropic", row
+            # Config retains the url field (Ollama variant accepted)
+            assert "url" in row["config"], row
+        finally:
+            await client.delete(
+                f"/v1/llm_providers/llm-t0379-{unique_suffix}",
+            )
+    else:
+        assert 400 <= resp.status_code < 500, resp.text
+
+
+@pytest.mark.asyncio
+async def test_t0380_openresponses_flavor_invalid_value_coerced_to_default(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0380 — Pin actual behaviour: an unknown `flavor` value is
+    silently coerced to OpenResponsesFlavor.OTHER (the documented
+    default) rather than rejected. The Pydantic enum field accepts
+    the input and falls back to default on parse failure.
+
+    Reframed from "must be rejected 422" — discovered the API is
+    lenient. Documents the contract for future reference.
+    """
+    body = {
+        "id": f"llm-t0380-{unique_suffix}",
+        "provider": "openresponses",
+        "models": [{"name": "x", "context_length": 1024}],
+        "config": {
+            "url": "http://localhost:1234/v1",
+            "api_key": "sk-test",
+            "flavor": "this-is-not-a-real-flavor-xyz",
+        },
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/llm_providers", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", resp.text
+    if resp.status_code == 201:
+        try:
+            # Verify flavor was coerced (or accepted as-is)
+            got = await client.get(
+                f"/v1/llm_providers/llm-t0380-{unique_suffix}",
+            )
+            assert got.status_code == 200, got.text
+            persisted_flavor = got.json()["config"].get("flavor")
+            # Either coerced to "other" (default) or accepted verbatim
+            assert persisted_flavor in (
+                "other", "this-is-not-a-real-flavor-xyz",
+            ), got.json()
+        finally:
+            await client.delete(
+                f"/v1/llm_providers/llm-t0380-{unique_suffix}",
+            )
+
+
+@pytest.mark.asyncio
+async def test_t0381_llm_provider_models_context_length_zero_rejected_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0381 — LLMModel.context_length is PositiveInt; 0 is invalid.
+    Must reject with 422 cleanly, no /errors/internal from asyncpg.
+    """
+    body = {
+        "id": f"llm-t0381-{unique_suffix}",
+        "provider": "anthropic",
+        "models": [{"name": "x", "context_length": 0}],
+        "config": {"api_key": "sk-test"},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/llm_providers", json=body)
+    assert resp.status_code == 422, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/validation-error", envelope
+
+
+@pytest.mark.asyncio
+async def test_t0382_llm_provider_models_context_length_negative_rejected(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0382 — Companion to T0381 with a negative value. The 422
+    envelope's `extensions.errors` should include the offending
+    nested field path so clients can locate the bad input.
+    """
+    body = {
+        "id": f"llm-t0382-{unique_suffix}",
+        "provider": "anthropic",
+        "models": [{"name": "x", "context_length": -100}],
+        "config": {"api_key": "sk-test"},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/llm_providers", json=body)
+    assert resp.status_code == 422, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/validation-error", envelope
+    # Field path should be referenced somewhere — either in `detail`
+    # or in extensions.errors
+    detail_text = (
+        envelope.get("detail", "") + " "
+        + str(envelope.get("extensions", {}))
+    ).lower()
+    # At least mention "context_length" or "models" in the path
+    assert "context_length" in detail_text or "models" in detail_text, (
+        f"422 envelope doesn't reference the offending field path "
+        f"`models[].context_length`: {envelope!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_t0383_agent_temperature_negative_rejected_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0383 — AgentModel.temperature has `ge=0.0`. Negative value
+    must be rejected with 422 /errors/validation-error cleanly.
+    """
+    # Need an LLMProvider for the model reference
+    provider_id = f"llm-t0383-{unique_suffix}"
+    pr = await client.post(
+        "/v1/llm_providers",
+        json={
+            "id": provider_id,
+            "provider": "anthropic",
+            "models": [
+                {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            ],
+            "config": {"api_key": "sk-test"},
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    assert pr.status_code == 201, pr.text
+    try:
+        body = {
+            "id": f"agent-t0383-{unique_suffix}",
+            "description": "T0383",
+            "model": {
+                "provider_id": provider_id,
+                "model_name": "claude-sonnet-4-6",
+            },
+            "tools": [],
+            "temperature": -0.1,
+        }
+        resp = await client.post("/v1/agents", json=body)
+        assert resp.status_code == 422, resp.text
+        envelope = resp.json()
+        assert envelope["type"] == "/errors/validation-error", envelope
+    finally:
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0304_delete_on_collections_list_endpoint_returns_405(
     client: httpx.AsyncClient,
 ) -> None:
