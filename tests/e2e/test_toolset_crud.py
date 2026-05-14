@@ -178,3 +178,42 @@ async def test_t0451_toolset_mcp_http_url_variations_round_trip(
     finally:
         for entity_id in created_ids:
             await client.delete(f"/v1/toolsets/{entity_id}")
+
+
+# ============================================================================
+# T0509 — POST entity with id=42 (integer, not string) returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0509_post_entity_with_integer_id_returns_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0509 — Identifiable.id is `str` (with min_length=1). POSTing
+    an integer in the id field must be rejected by Pydantic strict
+    string validation as 422 /errors/validation-error. Catches a
+    regression where a permissive coercion accidentally turned an
+    integer id into the string "42".
+    """
+    body = {
+        "id": 42,  # integer, not string
+        "provider": "mcp",
+        "config": {
+            "transport": "stdio",
+            "config": {"command": ["echo"]},
+        },
+    }
+    resp = await client.post("/v1/toolsets", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"integer id leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code == 422, (
+        f"integer id should be 422 /errors/validation-error; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type") == "/errors/validation-error", envelope
+
+    # Defence: no row was created under the coerced "42" string id
+    got = await client.get("/v1/toolsets/42")
+    assert got.status_code == 404, got.text

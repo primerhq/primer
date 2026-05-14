@@ -3641,3 +3641,200 @@ async def test_t0486_predicate_or_of_two_likes_unions_no_dedupe_issues(
         )
     finally:
         await _delete_toolsets(client, all_ids)
+
+
+# ============================================================================
+# T0505 — Predicate `=` against list-typed `models` field returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0505_predicate_eq_on_list_typed_field_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0505 — LLMProvider.models is a `list[LLMModel]` (JSONB array
+    in storage). Send `{op:"=", left:{name:"models"}, right:{value:
+    [{"name":"x", "context_length": 100}]}}` against
+    /v1/llm_providers/find. Pin: clean envelope (200 / 4xx / 502),
+    never /errors/internal — list-vs-scalar coercion in JSONB is a
+    documented edge (T0236/T0361 area).
+    """
+    entity_id = f"llm-t0505-{unique_suffix}"
+    pr = await client.post(
+        "/v1/llm_providers",
+        json={
+            "id": entity_id,
+            "provider": "anthropic",
+            "models": [
+                {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            ],
+            "config": {"api_key": "sk-test"},
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    assert pr.status_code == 201, pr.text
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "models"},
+                "right": {
+                    "kind": "value",
+                    "value": [
+                        {"name": "claude-sonnet-4-6", "context_length": 200_000},
+                    ],
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/llm_providers/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"list-typed `=` leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"unexpected status: {resp.status_code}: {resp.text[:300]}"
+        )
+        if resp.status_code == 200:
+            # Whatever rows match (the predicate translator may stringify
+            # the JSONB on both sides), the result list must be sane
+            assert isinstance(resp.json().get("items"), list), resp.text
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0506 — Predicate `~=` LIKE with right operand value=null
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0506_predicate_like_with_null_right_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0506 — `~=` (LIKE) with `right.value=null` is a degenerate
+    pattern. SQL `... LIKE NULL` always evaluates to NULL (treated
+    as falsy by WHERE — same semantics as T0439 for `=`). Pin:
+    never /errors/internal; either 200 (no rows match) or 4xx (the
+    handler validator rejects null-as-LIKE-pattern).
+
+    Catches a regression where the asyncpg parameter binding
+    surfaces a type-mismatch as 500 instead of mapping it to the
+    documented 502 /errors/provider-server-error envelope.
+    """
+    prefix = f"ts-t0506-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": None},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"LIKE NULL leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"unexpected status: {resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            # SQL `LIKE NULL` is always NULL/false — no seeded rows
+            # should match
+            out_ids = [item["id"] for item in resp.json()["items"]]
+            for i in ids:
+                assert i not in out_ids, (
+                    f"LIKE NULL unexpectedly matched seeded id "
+                    f"{i!r}: {out_ids!r}"
+                )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0507 — Predicate AND with value-kind operand returns clean 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0507_predicate_and_with_value_operand_returns_4xx(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0507 — Per matrix/storage/_predicate.py:225-228, the
+    predicate translator requires both operands of a logical AND/OR
+    to be Predicate sub-trees. Pydantic accepts `kind:"value"` as a
+    valid Operand (it's in the discriminated union), so the body
+    parses, but the translator raises BadRequestError.
+
+    Pin: 400 /errors/bad-request (or 422 if a future schema-level
+    check rejects it earlier); never /errors/internal.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "and",
+            "left": {"kind": "value", "value": True},  # wrong kind
+            "right": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": "anything"},
+            },
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 50},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"AND with value operand leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code in (400, 422), (
+        f"AND with value operand should be 4xx; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type", "").startswith("/errors/"), envelope
+
+
+# ============================================================================
+# T0508 — Predicate `<` UUID-string left vs integer right: clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0508_predicate_lt_uuid_string_vs_int_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0508 — Type mismatch on a typed-comparison op: left side
+    is the `id` field (string-typed UUID-shaped), right side is an
+    integer. Postgres' JSONB type coercion documented bug
+    (T0236/T0361) surfaces as 502 /errors/provider-server-error
+    rather than 200-empty. Pin: never /errors/internal.
+    """
+    prefix = f"ts-t0508-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "<",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": 42},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"`<` on string-vs-int leaked /errors/internal: "
+            f"{resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"unexpected status: {resp.status_code}: {resp.text}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
