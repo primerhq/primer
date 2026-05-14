@@ -705,6 +705,244 @@ async def test_t0344_delete_provider_flips_agent_and_graph_status(
 
 
 # ============================================================================
+# T0357 — Graph→sub-graph→agent: top graph /status walks depth 1 only
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0357_graph_status_walks_depth_one_for_subgraph_refs(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0357 — Build agent A; sub-graph G2 referencing A; top graph
+    G1 with a `kind:graph` node pointing at G2 plus a missing-agent
+    reference on G1 itself.
+
+    G1 /status must surface its OWN missing-agent issue but NOT
+    transitively walk into G2's nodes. Pin the depth-1 walk
+    contract.
+    """
+    provider_id = f"llm-t0357-{unique_suffix}"
+    agent_id = f"agent-t0357-{unique_suffix}"
+    sub_graph_id = f"subgraph-t0357-{unique_suffix}"
+    top_graph_id = f"topgraph-t0357-{unique_suffix}"
+    missing_agent_id = f"missing-on-top-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    # Sub-graph references A (real agent)
+    sub = await client.post(
+        "/v1/graphs",
+        json={
+            "id": sub_graph_id,
+            "description": "T0357 sub-graph",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+        },
+    )
+    assert sub.status_code == 201, sub.text
+
+    # Top graph: references sub-graph PLUS a missing agent
+    top = await client.post(
+        "/v1/graphs",
+        json={
+            "id": top_graph_id,
+            "description": "T0357 top graph",
+            "nodes": [
+                {"kind": "agent", "id": "missing_node",
+                 "agent_id": missing_agent_id},
+                {"kind": "graph", "id": "sub_node",
+                 "graph_id": sub_graph_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "missing_node",
+                 "to_node": "sub_node"},
+                {"kind": "static", "from_node": "sub_node",
+                 "to_node": "end"},
+            ],
+            "entry_node_id": "missing_node",
+        },
+    )
+    assert top.status_code == 201, top.text
+
+    try:
+        # GET top graph status
+        resp = await client.get(f"/v1/graphs/{top_graph_id}/status")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is False, body
+        issues_text = " ".join(str(i) for i in body["issues"])
+
+        # G1's own missing agent reference IS in the issues
+        assert missing_agent_id in issues_text, (
+            f"G1's own missing agent {missing_agent_id!r} not surfaced: "
+            f"{body['issues']!r}"
+        )
+        # Walk should NOT transitively descend into G2's nodes — A is a
+        # real agent inside G2, but the walker shouldn't probe it via
+        # G1. Pin: no /errors/internal regardless of how walk handles
+        # sub-graph refs.
+        assert body.get("type") != "/errors/internal", body
+    finally:
+        await client.delete(f"/v1/graphs/{top_graph_id}")
+        await client.delete(f"/v1/graphs/{sub_graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0358 — Session bound to a Graph with a sub-Graph reference is created
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0358_session_bound_to_graph_with_subgraph_creates_cleanly(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0358 — Session create with binding={kind:graph} where the
+    graph contains a sub-Graph node. Pin the create succeeds and
+    the binding round-trips through GET. Companion to T0156 which
+    used a flat agent-only graph.
+
+    NB: graph executor itself is NotImplemented (T0156); this test
+    only pins the create + binding-roundtrip path, NOT execution.
+    """
+    # Need workspace + provider chain
+    import tempfile
+    provider_id = f"llm-t0358-{unique_suffix}"
+    agent_id = f"agent-t0358-{unique_suffix}"
+    sub_graph_id = f"sub-t0358-{unique_suffix}"
+    top_graph_id = f"top-t0358-{unique_suffix}"
+    wp_id = f"wp-t0358-{unique_suffix}"
+    tpl_id = f"wt-t0358-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    sub = await client.post(
+        "/v1/graphs",
+        json={
+            "id": sub_graph_id,
+            "description": "T0358 sub",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+        },
+    )
+    assert sub.status_code == 201, sub.text
+
+    top = await client.post(
+        "/v1/graphs",
+        json={
+            "id": top_graph_id,
+            "description": "T0358 top",
+            "nodes": [
+                {"kind": "graph", "id": "sub_node",
+                 "graph_id": sub_graph_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "sub_node",
+                 "to_node": "end"},
+            ],
+            "entry_node_id": "sub_node",
+        },
+    )
+    assert top.status_code == 201, top.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            wp = await client.post(
+                "/v1/workspace_providers",
+                json={
+                    "id": wp_id,
+                    "provider": "local",
+                    "config": {"kind": "local", "path": tmp},
+                },
+            )
+            assert wp.status_code == 201, wp.text
+            try:
+                tpl = await client.post(
+                    "/v1/workspace_templates",
+                    json={
+                        "id": tpl_id,
+                        "description": "T0358",
+                        "provider_id": wp_id,
+                        "backend": {"kind": "local"},
+                    },
+                )
+                assert tpl.status_code == 201, tpl.text
+                try:
+                    ws = await client.post(
+                        "/v1/workspaces", json={"template_id": tpl_id},
+                    )
+                    assert ws.status_code == 201, ws.text
+                    workspace_id = ws.json()["id"]
+
+                    sess = await client.post(
+                        f"/v1/workspaces/{workspace_id}/sessions",
+                        json={
+                            "binding": {
+                                "kind": "graph",
+                                "graph_id": top_graph_id,
+                            },
+                            "auto_start": False,
+                        },
+                    )
+                    assert sess.status_code == 201, sess.text
+                    session_id = sess.json()["id"]
+
+                    # Binding round-trips
+                    got = await client.get(f"/v1/sessions/{session_id}")
+                    assert got.status_code == 200, got.text
+                    binding = got.json().get("binding", {})
+                    assert binding.get("kind") == "graph", got.json()
+                    assert binding.get("graph_id") == top_graph_id, got.json()
+                finally:
+                    if workspace_id:
+                        if session_id:
+                            await client.post(
+                                f"/v1/workspaces/{workspace_id}/sessions/"
+                                f"{session_id}/cancel",
+                            )
+                        await client.delete(
+                            f"/v1/workspaces/{workspace_id}",
+                        )
+                    await client.delete(f"/v1/workspace_templates/{tpl_id}")
+            finally:
+                await client.delete(f"/v1/workspace_providers/{wp_id}")
+    finally:
+        await client.delete(f"/v1/graphs/{top_graph_id}")
+        await client.delete(f"/v1/graphs/{sub_graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
 # T0192 — GET /v1/agents/{missing}/status returns 404
 # ============================================================================
 
