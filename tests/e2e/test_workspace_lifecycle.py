@@ -5370,3 +5370,276 @@ async def test_t0478_workspace_files_put_nul_byte_path_rejected_clean(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0479 — WorkspaceTemplate with empty packages list materialises cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0479_workspace_template_empty_packages_materialises_cleanly(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0479 — WorkspaceTemplate.packages defaults to `[]` per
+    matrix/model/workspace.py:370. Pin: explicitly setting
+    `packages: []` materialises a workspace cleanly (no fallback to
+    a "default packages" set or 5xx). /files and /log respond 200
+    on the materialised workspace.
+    """
+    provider_id = f"wp-t0479-{unique_suffix}"
+    template_id = f"wt-t0479-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    workspace_id: str | None = None
+    try:
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0479 explicit empty packages",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "packages": [],  # explicitly empty
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": template_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        files = await client.get(f"/v1/workspaces/{workspace_id}/files")
+        assert files.status_code == 200, files.text
+        assert isinstance(files.json().get("items"), list), files.json()
+
+        log = await client.get(f"/v1/workspaces/{workspace_id}/log")
+        assert log.status_code == 200, log.text
+        assert isinstance(log.json().get("commits"), list), log.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0480 — Workspace destroy fired twice in rapid succession converges cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0480_workspace_destroy_concurrent_double_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0480 — Race-sibling of T0162 (sequential destroy idempotency).
+    Fire two concurrent DELETE /v1/workspaces/{wid} requests. Pin:
+    both clean envelopes (one 204 winner + one 204/404 loser); never
+    /errors/internal; final GET on the workspace is 404.
+    """
+    import asyncio
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Fire two concurrent destroys
+        d1_task = asyncio.create_task(client.delete(
+            f"/v1/workspaces/{workspace_id}",
+        ))
+        d2_task = asyncio.create_task(client.delete(
+            f"/v1/workspaces/{workspace_id}",
+        ))
+        d1, d2 = await asyncio.gather(d1_task, d2_task)
+
+        # No /errors/internal
+        for r, label in ((d1, "first"), (d2, "second")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label} destroy leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"{label} destroy 5xx: {r.status_code}: {r.text}"
+            )
+            # Documented codes: 204 (won) or 404 (lost)
+            assert r.status_code in (204, 404), (
+                f"{label} destroy: unexpected {r.status_code}: {r.text}"
+            )
+
+        # At least one 204 winner; the other may be 204 (if both
+        # observed an existing row before either committed) or 404
+        winners = sum(1 for r in (d1, d2) if r.status_code == 204)
+        assert winners >= 1, (
+            f"both destroys 404 — workspace was never destroyed? "
+            f"first={d1.status_code}, second={d2.status_code}"
+        )
+
+        # Final GET returns 404
+        gone = await client.get(f"/v1/workspaces/{workspace_id}")
+        assert gone.status_code == 404, gone.text
+    finally:
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0481 — /files/info reports kind=file vs kind=directory correctly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0481_workspace_files_info_file_vs_directory_kind(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0481 — Both /files/info on a directory AND on a file in the
+    same workspace must report the correct `kind`. T0114 (dir) and
+    T0476 (file in new subdir) cover each in isolation; this pins
+    that the same /info handler distinguishes them on the same
+    workspace, never confusing one for the other.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed a file inside a subdir — creates both
+        write = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "dir/leaf.txt"},
+            json={"content": "leaf-content", "encoding": "text"},
+        )
+        assert write.status_code == 204, write.text
+
+        # /info on the file
+        info_file = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": "dir/leaf.txt"},
+        )
+        assert info_file.status_code == 200, info_file.text
+        body_file = info_file.json()
+        assert body_file.get("kind") == "file", (
+            f"expected kind=file for dir/leaf.txt; got {body_file!r}"
+        )
+        assert body_file.get("path") == "dir/leaf.txt", body_file
+
+        # /info on the directory
+        info_dir = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": "dir"},
+        )
+        assert info_dir.status_code != 500, info_dir.text
+        assert info_dir.status_code < 500, info_dir.text
+        if info_dir.status_code == 200:
+            body_dir = info_dir.json()
+            assert body_dir.get("kind") in ("dir", "directory"), (
+                f"expected kind=dir for 'dir'; got {body_dir!r}"
+            )
+            assert body_dir.get("path") == "dir", body_dir
+        else:
+            # Some implementations 404 on dirs from /info; clean
+            # envelope is the contract
+            envelope = info_dir.json()
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+
+        # Repeat both calls to confirm consistency
+        info_file_2 = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": "dir/leaf.txt"},
+        )
+        assert info_file_2.json().get("kind") == "file", info_file_2.text
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0482 — PUT binary base64 then READ as text returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0482_workspace_files_put_binary_read_as_text_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0482 — PUT raw binary bytes (0x00..0xff) via base64 encoding,
+    then GET /files/read with encoding=text. The bytes are not
+    valid UTF-8, so the text-decode either succeeds with replacement
+    chars (200 with the body containing U+FFFD) or rejects (4xx).
+    Pin: never 5xx, never /errors/internal.
+    """
+    import base64
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # All 256 byte values — not valid UTF-8
+        raw_bytes = bytes(range(256))
+        b64 = base64.b64encode(raw_bytes).decode("ascii")
+
+        path = "binary-blob.bin"
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": b64, "encoding": "base64"},
+        )
+        assert put.status_code == 204, put.text
+
+        # Sanity: read as base64 round-trips byte-exact
+        read_b64 = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": path, "encoding": "base64"},
+        )
+        assert read_b64.status_code == 200, read_b64.text
+        decoded = base64.b64decode(read_b64.json()["content"])
+        assert decoded == raw_bytes, (
+            f"binary content corrupted on base64 round-trip: "
+            f"len_sent={len(raw_bytes)}, len_got={len(decoded)}"
+        )
+
+        # The probe: read as text — must NOT 5xx
+        read_text = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": path, "encoding": "text"},
+        )
+        envelope = read_text.json() if read_text.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"binary-as-text leaked /errors/internal: {read_text.text}"
+        )
+        assert read_text.status_code < 500, read_text.text
+        # Acceptable: 200 (with replacement chars in body) OR 4xx
+        # (rejected as undecodable)
+        assert read_text.status_code in (200, 400, 422), (
+            f"unexpected status: {read_text.status_code}: "
+            f"{read_text.text[:300]}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

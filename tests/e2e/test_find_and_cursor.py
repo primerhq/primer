@@ -3258,3 +3258,62 @@ async def test_t0455_predicate_nested_100_levels_clean_envelope(
             )
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0483 — Predicate ~= with `_` wildcard matches single-char tail only
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0483_predicate_like_underscore_matches_single_char_tail(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0483 — Per matrix/storage.Op.LIKE docstring, `~=` follows
+    SQL LIKE semantics: `%` matches any sequence, `_` matches a
+    single character. Pin: predicate `id ~= "<prefix>-_"` on rows
+    {prefix-a, prefix-aa, prefix-b} matches exactly the two
+    one-char-suffix rows (prefix-a, prefix-b) and excludes the
+    two-char-suffix row (prefix-aa).
+
+    The matched-set semantics are deterministic and a strong
+    regression-detector for any backend that interprets `_` as a
+    literal underscore instead of a single-char wildcard.
+    """
+    prefix = f"ts-t0483-{unique_suffix}"
+    # Construct ids manually to control suffix shape
+    ids = [
+        f"{prefix}-a",   # one-char tail — should match
+        f"{prefix}-aa",  # two-char tail — should NOT match
+        f"{prefix}-b",   # one-char tail — should match
+    ]
+    for entity_id in ids:
+        resp = await client.post(
+            "/v1/toolsets", json=_toolset_body(entity_id),
+        )
+        assert resp.status_code == 201, resp.text
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}-_"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = sorted(item["id"] for item in resp.json()["items"])
+        expected = sorted([f"{prefix}-a", f"{prefix}-b"])
+        assert out_ids == expected, (
+            f"`_` wildcard should match exactly the one-char-suffix "
+            f"rows; expected {expected!r}, got {out_ids!r}"
+        )
+        # Defence: explicit exclusion of the two-char tail
+        assert f"{prefix}-aa" not in out_ids, (
+            f"`_` wildcard incorrectly matched two-char tail "
+            f"{prefix}-aa"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
