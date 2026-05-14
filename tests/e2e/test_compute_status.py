@@ -2036,3 +2036,90 @@ async def test_t0475_graph_subgraph_node_missing_graph_id_status_clean(
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0492 — Agent referencing openresponses provider with malformed url
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0492_agent_status_with_malformed_provider_url_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0492 — Create an LLMProvider with provider=openresponses
+    whose url passes Pydantic but is structurally malformed (e.g.
+    "http://" — empty host). Then create an Agent referencing it.
+    Pin: both POSTs return clean envelopes (201 or 4xx); GET
+    /agents/{id}/status returns 200 with a documented {ok, issues}
+    body; never /errors/internal at create or status walk.
+
+    The status walk only checks REFERENCE existence (per
+    matrix/api/routers/compute.py:142-156), not adapter
+    constructability — so even if the provider's url couldn't
+    actually connect, the agent /status should still report
+    ok=true (the LLMProvider row exists). The hard pin is the
+    no-/errors/internal invariant either way.
+    """
+    provider_id = f"llm-t0492-{unique_suffix}"
+    agent_id = f"agent-t0492-{unique_suffix}"
+    malformed_url = "http://"  # passes Pydantic str but is a no-op host
+
+    pr = await client.post(
+        "/v1/llm_providers",
+        json={
+            "id": provider_id,
+            "provider": "openresponses",
+            "models": [
+                {"name": "any-model", "context_length": 4096},
+            ],
+            "config": {
+                "url": malformed_url,
+                "api_key": "sk-not-used",
+                "flavor": "other",
+            },
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    pr_envelope = pr.json() if pr.content else {}
+    assert pr_envelope.get("type") != "/errors/internal", (
+        f"create with malformed url leaked /errors/internal: {pr.text}"
+    )
+    # Either accepted (201) or rejected with clean envelope (422 if
+    # the validator catches the empty host)
+    assert pr.status_code in (201, 422), (
+        f"unexpected provider create status: {pr.status_code}: "
+        f"{pr.text}"
+    )
+    if pr.status_code != 201:
+        # Provider rejected at create — nothing more to test
+        return
+
+    try:
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+        )
+        ag_envelope = ag.json() if ag.content else {}
+        assert ag_envelope.get("type") != "/errors/internal", (
+            f"agent create with malformed-url provider leaked "
+            f"/errors/internal: {ag.text}"
+        )
+        assert ag.status_code == 201, ag.text
+
+        try:
+            status = await client.get(f"/v1/agents/{agent_id}/status")
+            status_envelope = (
+                status.json() if status.content else {}
+            )
+            assert status_envelope.get("type") != "/errors/internal", (
+                f"/status walk leaked /errors/internal: {status.text}"
+            )
+            assert status.status_code == 200, status.text
+            body = status.json()
+            assert "ok" in body, body
+            assert isinstance(body.get("issues"), list), body
+        finally:
+            await client.delete(f"/v1/agents/{agent_id}")
+    finally:
+        await client.delete(f"/v1/llm_providers/{provider_id}")

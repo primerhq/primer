@@ -3342,3 +3342,172 @@ async def test_t0458_session_metadata_8_level_nested_dict_round_trip(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0489 — resume → cancel → resume → cancel state machine sequence
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0489_session_cancel_resume_cancel_resume_post_terminal_sticky(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0489 — Pin post-terminal stickiness across multiple signal
+    types on a CREATED session (deterministic — does not require
+    worker activity, so works without LM Studio):
+
+      1. cancel — CREATED → ENDED/cancelled (200, direct
+         short-circuit per matrix/api/routers/sessions.py:287-296)
+      2. resume — on ENDED — 409 /errors/conflict
+      3. cancel — already ended — 409 /errors/conflict
+      4. resume — still ended — 409 /errors/conflict
+
+    Pin: documented codes at each step; row's ended_reason and
+    ended_at NEVER change across the post-terminal noise;
+    never /errors/internal.
+
+    The "resume first" sequence (which would actually engage a
+    worker) is covered by T0037 / T0179 in the LM Studio test file.
+    T0489's load-bearing assertion is post-terminal stickiness
+    across multiple signal types, which is independent of worker
+    behaviour and would otherwise be flaky against the placeholder
+    Anthropic provider used in this file.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Step 1: cancel CREATED → direct ENDED/cancelled
+        c1 = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        envelope_c1 = c1.json() if c1.content else {}
+        assert envelope_c1.get("type") != "/errors/internal", c1.text
+        assert c1.status_code == 200, c1.text
+        body_c1 = c1.json()
+        assert body_c1["status"] == "ended", body_c1
+        assert body_c1["ended_reason"] == "cancelled", body_c1
+        terminal_reason = body_c1["ended_reason"]
+        terminal_ended_at = body_c1.get("ended_at")
+        assert terminal_ended_at is not None, body_c1
+
+        # Step 2: resume on ENDED — must be 409 conflict
+        r1 = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        envelope_r1 = r1.json() if r1.content else {}
+        assert envelope_r1.get("type") != "/errors/internal", r1.text
+        assert r1.status_code == 409, (
+            f"resume on ENDED should be 409 conflict; got "
+            f"{r1.status_code}: {r1.text}"
+        )
+        assert envelope_r1.get("type") == "/errors/conflict", envelope_r1
+
+        # Step 3: cancel on already-ended — also 409 (per T0039 sibling)
+        c2 = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        envelope_c2 = c2.json() if c2.content else {}
+        assert envelope_c2.get("type") != "/errors/internal", c2.text
+        assert c2.status_code == 409, (
+            f"cancel on already-ended should be 409; got "
+            f"{c2.status_code}: {c2.text}"
+        )
+        assert envelope_c2.get("type") == "/errors/conflict", envelope_c2
+
+        # Step 4: a second resume on the (still ended) row — 409
+        r2 = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        envelope_r2 = r2.json() if r2.content else {}
+        assert envelope_r2.get("type") != "/errors/internal", r2.text
+        assert r2.status_code == 409, (
+            f"second resume on ENDED should still 409; got "
+            f"{r2.status_code}: {r2.text}"
+        )
+
+        # Defence: row state preserved across all four post-terminal
+        # signals — same ended_reason, same ended_at (no flapping)
+        after = await client.get(f"/v1/sessions/{session_id}")
+        assert after.status_code == 200, after.text
+        assert after.json()["status"] == "ended", after.json()
+        assert after.json()["ended_reason"] == terminal_reason, after.json()
+        assert after.json().get("ended_at") == terminal_ended_at, after.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0491 — Three rapid-fire concurrent cancel calls on a CREATED session
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0491_three_concurrent_cancel_on_created_session_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0491 — Fire 3 concurrent POST /cancel on the same CREATED
+    session. Pin: never /errors/internal anywhere; the documented
+    outcome is one 200 winner + two 409 losers (per the cancel
+    handler's "if status==ENDED → ConflictError" path), but
+    stale-cache (T0399 family) may let multiple 200s through if
+    they all observe the pre-cancel state. Either is acceptable;
+    final row stays ended/cancelled.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Three concurrent cancels
+        tasks = [
+            asyncio.create_task(client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            ))
+            for _ in range(3)
+        ]
+        results = await asyncio.gather(*tasks)
+
+        # No /errors/internal anywhere
+        for i, r in enumerate(results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"cancel[{i}] leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, r.text
+            # Documented codes: 200 (won) or 409 (already ended)
+            assert r.status_code in (200, 409), (
+                f"cancel[{i}]: unexpected {r.status_code}: {r.text}"
+            )
+
+        # At least one 200 winner — otherwise the session never
+        # actually got cancelled
+        winners = [r for r in results if r.status_code == 200]
+        assert len(winners) >= 1, (
+            f"no cancel won the race: statuses="
+            f"{[r.status_code for r in results]!r}"
+        )
+
+        # All 409 losers carry /errors/conflict
+        for r in results:
+            if r.status_code == 409:
+                envelope = r.json()
+                assert envelope.get("type") == "/errors/conflict", envelope
+
+        # Final row stays ended/cancelled
+        after = await client.get(f"/v1/sessions/{session_id}")
+        assert after.status_code == 200, after.text
+        assert after.json()["status"] == "ended", after.json()
+        assert after.json()["ended_reason"] == "cancelled", after.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

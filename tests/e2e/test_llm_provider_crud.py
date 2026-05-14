@@ -455,3 +455,76 @@ async def test_t0460_llm_provider_create_with_sixteen_mib_body_clean(
             await client.delete(f"/v1/llm_providers/{entity_id}")
         except Exception:  # noqa: BLE001 — best-effort cleanup
             pass
+
+
+# ============================================================================
+# T0493 — POST /v1/llm_providers with deeply-nested unicode-escape in config
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0493_llm_provider_create_with_deep_unicode_escapes_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0493 — POST a body whose config.api_key field is a string
+    containing 100+ stacked `\\u` escape sequences. The wire form
+    is well-formed JSON (each escape resolves to a single
+    character), and the server must round-trip the parsed string
+    cleanly (Pydantic + json + asyncpg pipeline). Pin: 201 (accepted
+    byte-exact) OR clean 4xx; never /errors/internal from a JSON
+    re-encoding crash anywhere in the pipeline.
+    """
+    import json
+
+    # Build a string of 200 stacked unicode escapes — each `\`
+    # decodes to `\` (backslash) and `u` decodes to `u`. The
+    # decoded string is 200 chars of `\u\u\u...` — a stress test
+    # for any layer that re-serializes the value.
+    unicode_pairs = "\\u005c\\u0075" * 100  # 200 chars when decoded
+    entity_id = f"llm-t0493-{unique_suffix}"
+
+    # Construct the JSON body manually so the escape sequences land
+    # in the wire format exactly as written (httpx's json= would
+    # re-encode them to literal backslash-u sequences anyway, but
+    # this is more explicit).
+    raw_body = json.dumps(
+        {
+            "id": entity_id,
+            "provider": "anthropic",
+            "models": [
+                {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            ],
+            # Escapes nested inside the api_key value
+            "config": {"api_key": f"sk-{unicode_pairs}-end"},
+            "limits": {"max_concurrency": 1},
+        }
+    )
+
+    resp = await client.post(
+        "/v1/llm_providers",
+        content=raw_body.encode("utf-8"),
+        headers={"content-type": "application/json"},
+        timeout=httpx.Timeout(30.0, connect=10.0),
+    )
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"deep-unicode-escape body leaked /errors/internal: "
+        f"{resp.text[:500]}"
+    )
+    assert resp.status_code < 500, resp.text[:500]
+    # Documented surfaces: 201 (accepted), or 4xx if the validator
+    # catches an issue (none expected — the string is valid)
+    assert resp.status_code in (201, 400, 422), (
+        f"unexpected status: {resp.status_code}: {resp.text[:500]}"
+    )
+
+    if resp.status_code == 201:
+        try:
+            # Round-trip via GET — the row should be readable. The
+            # api_key is masked per T0027 so we don't compare it
+            # byte-exact, but the GET MUST not crash.
+            got = await client.get(f"/v1/llm_providers/{entity_id}")
+            assert got.status_code == 200, got.text[:500]
+            assert got.json()["id"] == entity_id, got.json()
+        finally:
+            await client.delete(f"/v1/llm_providers/{entity_id}")

@@ -1788,3 +1788,103 @@ async def test_t0462_workspace_state_log_grows_after_session_turn(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0490 — Two pause calls in quick succession on RUNNING (LM Studio) session
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0490_two_pause_calls_on_running_session_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0490 — Resume a session against LM Studio, give the worker
+    a moment to claim and start running, then fire two pause calls
+    without delay. Both must return 204 (the pause handler sets
+    pause_requested=True idempotently for RUNNING per
+    matrix/api/routers/sessions.py:255). Pin: never /errors/internal;
+    session converges to a terminal status; both pause calls < 500.
+
+    LM-Studio dependent — module-level skip applies if LM Studio
+    isn't reachable.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Heavy prompt so the worker is busy long enough for the
+        # pause to actually land while RUNNING (mirrors T0179)
+        long_prompt = (
+            "List 20 prime numbers and explain why each is prime. "
+            "Take your time."
+        )
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "initial_instructions": long_prompt,
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 200, resume.text
+
+        # Brief pause so the worker claims the session
+        await asyncio.sleep(0.5)
+
+        # Two pause calls in quick succession (no await between
+        # them — let httpx serialize the connection writes)
+        p1_task = asyncio.create_task(client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        ))
+        p2_task = asyncio.create_task(client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        ))
+        p1, p2 = await asyncio.gather(p1_task, p2_task)
+
+        # Both calls clean
+        for r, label in ((p1, "pause-1"), (p2, "pause-2")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label} leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"{label}: {r.status_code}: {r.text}"
+            )
+            # Documented codes: 204 (won the race against worker),
+            # or 409 (worker already drove session to ENDED)
+            assert r.status_code in (204, 409), (
+                f"{label}: unexpected {r.status_code}: {r.text}"
+            )
+
+        # Session converges to a terminal status within the polling
+        # window (worker either honors pause then we cancel it, or
+        # finishes its only turn naturally)
+        final = await _wait_for_terminal(
+            client, workspace_id=workspace_id, session_id=session_id,
+            timeout_s=120.0,
+        )
+        assert final.get("status") == "ended", (
+            f"session did not reach terminal after two-pause race: "
+            f"{final!r}"
+        )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
