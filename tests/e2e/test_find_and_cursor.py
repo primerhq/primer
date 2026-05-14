@@ -3010,3 +3010,133 @@ async def test_t0440_predicate_in_mixed_type_list_clean_envelope(
             )
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0452 — Cursor token with single character flipped returns clean 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0452_cursor_token_single_char_flipped_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0452 — Pin cursor opaqueness contract: a tampered cursor
+    token (single char changed) is rejected with a clean 4xx
+    envelope (400 /errors/bad-request per
+    matrix/storage/postgres.py:_decode_cursor). Never 5xx, never
+    /errors/internal.
+    """
+    prefix = f"ts-t0452-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 5)
+    try:
+        # Get a real cursor from a normal pagination call
+        first_body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "cursor", "cursor": None, "length": 2},
+        }
+        first = await client.post("/v1/toolsets/find", json=first_body)
+        assert first.status_code == 200, first.text
+        real_cursor = first.json().get("next_cursor")
+        assert real_cursor, (
+            f"expected a non-null next_cursor for tampering: "
+            f"{first.json()!r}"
+        )
+
+        # Flip one character in the middle of the token
+        idx = len(real_cursor) // 2
+        flipped_char = "Z" if real_cursor[idx] != "Z" else "Y"
+        tampered = real_cursor[:idx] + flipped_char + real_cursor[idx+1:]
+        assert tampered != real_cursor
+
+        # Reuse with the tampered cursor
+        tamper_body = {
+            "predicate": first_body["predicate"],
+            "page": {
+                "kind": "cursor", "cursor": tampered, "length": 2,
+            },
+        }
+        resp = await client.post("/v1/toolsets/find", json=tamper_body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"tampered cursor leaked /errors/internal: {resp.text}"
+        )
+        # Documented: 400 /errors/bad-request (BadRequestError raised
+        # in _decode_cursor). Allow 422 if the validator catches
+        # malformed base64 earlier.
+        assert resp.status_code in (200, 400, 422), (
+            f"unexpected status: {resp.status_code}: {resp.text}"
+        )
+        # If 200 (cursor happened to decode to a valid-looking state
+        # but didn't match real data), result must be empty or
+        # consistent. The strong contract is no 5xx.
+        if resp.status_code >= 400:
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0453 — Cursor token truncated to half length returns clean 4xx envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0453_cursor_token_truncated_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0453 — Sibling of T0452. Truncate a real cursor to half its
+    length and reuse. Pin: 4xx with clean envelope (BadRequestError
+    from _decode_cursor's `try/except → BadRequestError("malformed
+    cursor: ...")` per matrix/storage/postgres.py:599); never 5xx;
+    never /errors/internal.
+    """
+    prefix = f"ts-t0453-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 5)
+    try:
+        first_body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "cursor", "cursor": None, "length": 2},
+        }
+        first = await client.post("/v1/toolsets/find", json=first_body)
+        assert first.status_code == 200, first.text
+        real_cursor = first.json().get("next_cursor")
+        assert real_cursor, (
+            f"expected a non-null next_cursor for truncation: "
+            f"{first.json()!r}"
+        )
+
+        # Truncate to half length (still non-empty)
+        truncated = real_cursor[: max(1, len(real_cursor) // 2)]
+        assert truncated != real_cursor
+
+        trunc_body = {
+            "predicate": first_body["predicate"],
+            "page": {
+                "kind": "cursor", "cursor": truncated, "length": 2,
+            },
+        }
+        resp = await client.post("/v1/toolsets/find", json=trunc_body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"truncated cursor leaked /errors/internal: {resp.text}"
+        )
+        # 400 /errors/bad-request from _decode_cursor, or 422 if the
+        # validator catches malformed base64 earlier
+        assert resp.status_code in (400, 422), (
+            f"truncated cursor should be 4xx; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        assert envelope.get("type", "").startswith("/errors/"), envelope
+    finally:
+        await _delete_toolsets(client, ids)

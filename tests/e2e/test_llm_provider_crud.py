@@ -311,3 +311,38 @@ async def test_t0448_llm_provider_models_endpoint_single_item(
         )
     finally:
         await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0449 — LLMProvider create with empty models list returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0449_llm_provider_create_with_empty_models_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0449 — Per matrix/model/provider.py:334-337, the LLMProvider
+    `models` field has `min_length=1`. Pin that POST with `models: []`
+    is rejected with a 422 /errors/validation-error envelope; row is
+    not created.
+    """
+    entity_id = f"llm-t0449-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [],
+        "config": {"api_key": "sk-test-placeholder"},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/llm_providers", json=body)
+    assert resp.status_code != 500, resp.text
+    assert resp.status_code == 422, (
+        f"empty models list should be 422; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    envelope = resp.json()
+    assert envelope.get("type") == "/errors/validation-error", envelope
+    # Row was not created
+    got = await client.get(f"/v1/llm_providers/{entity_id}")
+    assert got.status_code == 404, got.text

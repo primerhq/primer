@@ -119,3 +119,62 @@ async def test_t0402_toolset_post_stdio_with_http_config_shape_422(
         f"toolset {entity_id!r} unexpectedly created despite 422: "
         f"{got.text}"
     )
+
+
+# ============================================================================
+# T0451 — MCP HTTP toolset url variations round-trip on CRUD
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0451_toolset_mcp_http_url_variations_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0451 — McpHttpConfig.url is a free-form `str` (min_length=1)
+    per matrix/model/provider.py:511. Pin that several legitimate
+    URL shapes round-trip byte-identically through CRUD: trailing
+    slash, query string, port-only host, fragment, and a path with
+    embedded spaces (URL-encoded). All accepted at create; GET
+    echoes the url field unchanged. Never /errors/internal.
+    """
+    url_variations = [
+        "https://example.invalid/",  # trailing slash
+        "https://example.invalid/mcp?api=v1&debug=true",  # query string
+        "http://127.0.0.1:9999",  # port-only host
+        "https://example.invalid/mcp#frag",  # fragment
+        "https://example.invalid/path%20with%20spaces",  # URL-encoded spaces
+    ]
+    created_ids: list[str] = []
+    try:
+        for i, url in enumerate(url_variations):
+            entity_id = f"ts-t0451-{unique_suffix}-{i}"
+            body = {
+                "id": entity_id,
+                "provider": "mcp",
+                "config": {
+                    "transport": "http",
+                    "config": {"url": url},
+                },
+            }
+            resp = await client.post("/v1/toolsets", json=body)
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"url={url!r} leaked /errors/internal: {resp.text}"
+            )
+            assert resp.status_code == 201, (
+                f"url={url!r}: unexpected status "
+                f"{resp.status_code}: {resp.text}"
+            )
+            created_ids.append(entity_id)
+
+            # GET echoes url byte-identical
+            got = await client.get(f"/v1/toolsets/{entity_id}")
+            assert got.status_code == 200, got.text
+            body_got = got.json()
+            got_url = body_got["config"]["config"]["url"]
+            assert got_url == url, (
+                f"url not byte-identical: sent={url!r}, got={got_url!r}"
+            )
+    finally:
+        for entity_id in created_ids:
+            await client.delete(f"/v1/toolsets/{entity_id}")

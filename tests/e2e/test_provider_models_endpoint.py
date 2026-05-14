@@ -239,3 +239,59 @@ async def test_t0188_models_endpoint_on_missing_llm_provider_returns_404(
     envelope = resp.json()
     assert envelope["type"] == "/errors/not-found", envelope
     assert envelope["status"] == 404
+
+
+# ============================================================================
+# T0450 — EmbeddingProvider model entry with extra `dim` field is silently dropped
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0450_embedding_model_extra_dim_field_silently_dropped(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0450 — Pin that EmbeddingProvider has NO row-level dim
+    cross-validation. Per matrix/model/provider.py:290-307,
+    EmbeddingModel only carries `name`. Extra fields like `dim`
+    sent at create time are silently dropped (Pydantic v2's
+    default `extra=ignore` behaviour as documented in spec §7).
+
+    The original backlog framing assumed config.dim vs model.dim
+    cross-validation — neither field exists at the row level. This
+    test pins the actual contract: extra fields are accepted at
+    create time, silently dropped on storage, and absent on GET.
+    Useful as a guard so a future schema change that ADDS `dim` to
+    EmbeddingModel deliberately breaks this test.
+    """
+    entity_id = f"emb-t0450-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "huggingface",
+        "models": [
+            {
+                "name": "sentence-transformers/all-MiniLM-L6-v2",
+                "dim": 384,  # extra field — should be silently dropped
+            },
+        ],
+        "config": {"token": "hf-placeholder"},
+        "limits": {"max_concurrency": 1},
+    }
+    create = await client.post("/v1/embedding_providers", json=body)
+    assert create.status_code == 201, create.text
+
+    try:
+        # Round-trip: GET should NOT echo back `dim`
+        got = await client.get(f"/v1/embedding_providers/{entity_id}")
+        assert got.status_code == 200, got.text
+        body_got = got.json()
+        models = body_got.get("models", [])
+        assert len(models) == 1, body_got
+        model_entry = models[0]
+        assert model_entry["name"] == "sentence-transformers/all-MiniLM-L6-v2"
+        assert "dim" not in model_entry, (
+            f"`dim` was preserved on round-trip — schema may have "
+            f"silently grown a `dim` field, breaking the documented "
+            f"row-level dim-free contract: {model_entry!r}"
+        )
+    finally:
+        await client.delete(f"/v1/embedding_providers/{entity_id}")
