@@ -26,7 +26,14 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field, HttpUrl, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    HttpUrl,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from matrix.model.common import Describeable, Identifiable
 
@@ -400,6 +407,34 @@ class WorkspaceTemplate(Describeable):
         default_factory=ResourceLimits,
         description="CPU / memory / network bounds the backend SHOULD enforce.",
     )
+
+    @field_validator("state_path", "tmp_path")
+    @classmethod
+    def _validate_workspace_relative_path(cls, value: str) -> str:
+        # state_path and tmp_path MUST land INSIDE the workspace root.
+        # Reject absolute paths (pathlib's `root / "/etc/foo"` returns
+        # `/etc/foo`, escaping the root) and any `..` segments (would
+        # walk up out of the workspace root). Templates may be authored
+        # on one OS and materialised on another, so we reject both
+        # POSIX and Windows absolute shapes regardless of platform.
+        from pathlib import PurePosixPath, PureWindowsPath
+        if (
+            PurePosixPath(value).is_absolute()
+            or PureWindowsPath(value).is_absolute()
+        ):
+            raise ValueError(
+                f"workspace path {value!r} must be relative to the "
+                f"workspace root, not absolute"
+            )
+        # Normalise separators then split so `foo\..\bar` is rejected
+        # alongside `foo/../bar`.
+        parts = value.replace("\\", "/").split("/")
+        if any(p == ".." for p in parts):
+            raise ValueError(
+                f"workspace path {value!r} must not contain '..' "
+                f"segments (would escape the workspace root)"
+            )
+        return value
 
     @model_validator(mode="before")
     @classmethod

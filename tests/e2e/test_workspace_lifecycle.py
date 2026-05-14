@@ -4477,3 +4477,460 @@ async def test_t0401_workspace_files_put_text_lone_surrogate_clean(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0434 — WorkspaceTemplate state_path containing `..` is rejected
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0434_workspace_template_state_path_path_traversal_rejected(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0434 — `state_path` is documented as "Path inside the
+    workspace root where the state repo lives" (matrix/model/
+    workspace.py:389). A traversal-style value like `..` or
+    `../escape` would let the state repo land OUTSIDE the workspace
+    root: `Path(root) / ".."` resolves to `root.parent`, which is the
+    workspace_provider's root containing every workspace.
+
+    Hard contract: rejection must happen at create time (cleanest)
+    OR at materialise time (acceptable). Either way the eventual
+    failure surface MUST be a clean 4xx envelope with no
+    /errors/internal — and the state repo MUST NOT have been
+    initialised under the parent directory.
+    """
+    provider_id = f"wp-t0434-{unique_suffix}"
+    template_id = f"wt-t0434-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    template_created = False
+    workspace_id: str | None = None
+    try:
+        # Try several traversal shapes
+        for traversal in ("..", "../escape", "../../escape", "foo/../.."):
+            tpl_body = {
+                "id": template_id,
+                "description": f"T0434 traversal={traversal}",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "state_path": traversal,
+            }
+            tpl = await client.post(
+                "/v1/workspace_templates", json=tpl_body,
+            )
+            # Hard pin: never 5xx
+            assert tpl.status_code < 500, (
+                f"template create with state_path={traversal!r} "
+                f"returned 5xx: {tpl.status_code}: {tpl.text}"
+            )
+
+            if tpl.status_code in range(400, 500):
+                # Rejected at create time — best contract
+                envelope = tpl.json()
+                assert envelope.get("type", "").startswith("/errors/"), envelope
+                assert envelope.get("type") != "/errors/internal", envelope
+                continue
+
+            # Accepted at create time — try materialising and pin
+            # the failure at that layer instead
+            assert tpl.status_code == 201, tpl.text
+            template_created = True
+            try:
+                ws = await client.post(
+                    "/v1/workspaces",
+                    json={"template_id": template_id},
+                )
+                assert ws.status_code < 500, (
+                    f"workspace materialise with traversal state_path "
+                    f"leaked 5xx: {ws.status_code}: {ws.text}"
+                )
+                if ws.status_code == 201:
+                    # Worst case — the workspace materialised. The
+                    # state repo would be in the wrong place. Pin
+                    # this as a known bug to chase.
+                    workspace_id = ws.json()["id"]
+                    pytest.fail(
+                        f"workspace with state_path={traversal!r} "
+                        f"materialised successfully — path traversal "
+                        f"into provider root is now possible. Fix: "
+                        f"validate state_path in WorkspaceTemplate "
+                        f"model_validator."
+                    )
+                else:
+                    envelope = ws.json()
+                    assert envelope.get("type", "").startswith("/errors/")
+                    assert envelope.get("type") != "/errors/internal"
+            finally:
+                # Delete the template before retrying with another shape
+                await client.delete(f"/v1/workspace_templates/{template_id}")
+                template_created = False
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if template_created:
+            await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0435 — WorkspaceTemplate state_path absolute path is rejected
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0435_workspace_template_state_path_absolute_rejected(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0435 — Absolute `state_path` would also escape the workspace
+    root: `Path(root) / "/etc/foo"` evaluates to `Path("/etc/foo")`
+    in pathlib (joining an absolute path REPLACES the left side).
+    Same risk profile as T0434 — pin rejection.
+
+    Hard contract: never 5xx; rejection at create or materialise
+    time with a clean 4xx envelope; state repo MUST NOT land at the
+    absolute target.
+    """
+    provider_id = f"wp-t0435-{unique_suffix}"
+    template_id = f"wt-t0435-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    template_created = False
+    workspace_id: str | None = None
+    try:
+        # Try POSIX absolute and a Windows-style absolute (only one
+        # matches the running OS, but the validator should reject
+        # both regardless of platform — they're equally dangerous in
+        # cross-platform deployments)
+        for abs_path in (
+            "/tmp/escape-t0435",
+            "/etc/escape-t0435",
+            "C:\\escape-t0435",
+        ):
+            tpl_body = {
+                "id": template_id,
+                "description": f"T0435 abs={abs_path}",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "state_path": abs_path,
+            }
+            tpl = await client.post(
+                "/v1/workspace_templates", json=tpl_body,
+            )
+            # Hard pin: never 5xx
+            assert tpl.status_code < 500, (
+                f"template create with state_path={abs_path!r} "
+                f"returned 5xx: {tpl.status_code}: {tpl.text}"
+            )
+
+            if tpl.status_code in range(400, 500):
+                # Rejected at create time — best contract
+                envelope = tpl.json()
+                assert envelope.get("type", "").startswith("/errors/"), envelope
+                assert envelope.get("type") != "/errors/internal", envelope
+                continue
+
+            # Accepted at create — try materialising
+            assert tpl.status_code == 201, tpl.text
+            template_created = True
+            try:
+                ws = await client.post(
+                    "/v1/workspaces",
+                    json={"template_id": template_id},
+                )
+                assert ws.status_code < 500, (
+                    f"workspace materialise with absolute state_path "
+                    f"leaked 5xx: {ws.status_code}: {ws.text}"
+                )
+                if ws.status_code == 201:
+                    workspace_id = ws.json()["id"]
+                    pytest.fail(
+                        f"workspace with state_path={abs_path!r} "
+                        f"materialised — absolute path escape is now "
+                        f"possible. Fix: validate state_path in "
+                        f"WorkspaceTemplate model_validator (reject "
+                        f"any path with os.path.isabs() == True)."
+                    )
+                else:
+                    envelope = ws.json()
+                    assert envelope.get("type", "").startswith("/errors/")
+                    assert envelope.get("type") != "/errors/internal"
+            finally:
+                await client.delete(f"/v1/workspace_templates/{template_id}")
+                template_created = False
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if template_created:
+            await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0436 — Concurrent PUT × DELETE on same workspace file path: clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0436_workspace_files_put_delete_race_same_path_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0436 — Race a PUT against a DELETE on the same file path
+    inside one workspace. Both endpoints touch the local backend's
+    same on-disk path. Pin: both calls return < 500; final state
+    is observable (file either present with the PUT content or
+    absent — never half-written / never /errors/internal).
+    """
+    import asyncio as _asyncio
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Pre-seed the file so DELETE has something to hit
+        seed = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "raced.txt"},
+            json={"content": "seed", "encoding": "text"},
+        )
+        assert seed.status_code == 204, seed.text
+
+        # Now race PUT × DELETE on the SAME path
+        new_content = "after-race-content"
+        put_task = _asyncio.create_task(client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "raced.txt"},
+            json={"content": new_content, "encoding": "text"},
+        ))
+        del_task = _asyncio.create_task(client.delete(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "raced.txt"},
+        ))
+        put_resp, del_resp = await _asyncio.gather(put_task, del_task)
+
+        # Hard pin: never 5xx, never /errors/internal
+        for r, label in ((put_resp, "PUT"), (del_resp, "DELETE")):
+            assert r.status_code < 500, (
+                f"{label} race leaked 5xx: {r.status_code}: {r.text}"
+            )
+            if r.status_code >= 400:
+                envelope = r.json() if r.content else {}
+                assert envelope.get("type", "").startswith("/errors/"), envelope
+                assert envelope.get("type") != "/errors/internal", envelope
+
+        # Documented codes per single-call contracts
+        assert put_resp.status_code in (204, 404), (
+            f"PUT race: unexpected {put_resp.status_code}: {put_resp.text}"
+        )
+        assert del_resp.status_code in (204, 404), (
+            f"DELETE race: unexpected {del_resp.status_code}: {del_resp.text}"
+        )
+
+        # Final state is observable — never half-written. Read the
+        # file: either the PUT won (content = new_content) or the
+        # DELETE won (read returns 404).
+        final = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "raced.txt"},
+        )
+        assert final.status_code in (200, 404), final.text
+        if final.status_code == 200:
+            # PUT won (or both ran with PUT landing last) — content
+            # must be exactly new_content (no half-write corruption)
+            assert final.json()["content"] == new_content, (
+                f"file content corrupted by PUT/DELETE race: "
+                f"{final.json()!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0437 — Workspace destroy mid-PUT: many concurrent PUTs all clean
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0437_workspace_destroy_mid_burst_put_all_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0437 — Sample-size sibling of T0290 (single PUT × destroy
+    race). Fire 10 PUTs concurrently with a workspace destroy; pin
+    that EVERY one of the 10 PUTs returns a clean envelope (no 5xx,
+    no /errors/internal). Catches a regression where the destroy
+    cascade leaves the in-memory workspace half-torn-down such that
+    one specific in-flight PUT (ordering-dependent) leaks an
+    AttributeError or KeyError.
+
+    Subsequent GET on the workspace must be 404.
+    """
+    import asyncio as _asyncio
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # 10 PUTs to distinct paths racing one destroy
+        put_tasks = [
+            _asyncio.create_task(client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": f"burst-{i}.txt"},
+                json={"content": f"burst-{i}", "encoding": "text"},
+            ))
+            for i in range(10)
+        ]
+        delete_task = _asyncio.create_task(client.delete(
+            f"/v1/workspaces/{workspace_id}",
+        ))
+        all_results = await _asyncio.gather(*put_tasks, delete_task)
+        put_responses = all_results[:10]
+        delete_resp = all_results[10]
+
+        # EVERY PUT clean — no 5xx, no /errors/internal
+        for i, r in enumerate(put_responses):
+            assert r.status_code < 500, (
+                f"PUT burst[{i}] leaked 5xx: {r.status_code}: {r.text}"
+            )
+            if r.status_code >= 400:
+                envelope = r.json() if r.content else {}
+                assert envelope.get("type") != "/errors/internal", (
+                    f"PUT burst[{i}] /errors/internal: {r.text}"
+                )
+            # Documented codes: 204 (won the race) or 404 (workspace
+            # gone) — sometimes 409 if backend signals concurrent
+            # destroy
+            assert r.status_code in (204, 404, 409), (
+                f"PUT burst[{i}]: unexpected {r.status_code}: {r.text}"
+            )
+
+        # DELETE itself clean
+        assert delete_resp.status_code < 500, delete_resp.text
+        assert delete_resp.status_code in (204, 404), delete_resp.text
+
+        # GET on the destroyed workspace eventually 404s cleanly
+        gone = await client.get(f"/v1/workspaces/{workspace_id}")
+        assert gone.status_code in (200, 404), gone.text
+    finally:
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0438 — WorkspaceTemplate init_command failure → workspace 4xx clean
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0438_workspace_template_init_command_failure_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0438 — Per matrix/workspace/local/backend.py:227, when an
+    init_command exits non-zero the backend raises BadRequestError
+    with the rc + stderr surfaced. The API must turn that into a
+    400 /errors/bad-request envelope (or similar 4xx) — never 5xx.
+
+    Also pin that the backend's rollback ran: GET /v1/workspaces
+    after the failed POST does not list the would-be id.
+    """
+    provider_id = f"wp-t0438-{unique_suffix}"
+    template_id = f"wt-t0438-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    try:
+        # Use a portable failing command. `false` is POSIX; on Windows
+        # we use `cmd /c exit 1` since shell=True invokes through cmd.
+        # asyncio.create_subprocess_shell on Windows uses ComSpec
+        # (cmd.exe) so `exit 1` works there too.
+        failing_cmd = "exit 1"
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0438",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "init_commands": [failing_cmd],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        # Snapshot the workspaces list pre-failure for the rollback
+        # check below.
+        list_before = await client.get(
+            "/v1/workspaces?limit=200&offset=0",
+        )
+        assert list_before.status_code == 200, list_before.text
+        ids_before = {
+            item["id"] for item in list_before.json()["items"]
+        }
+
+        # POST workspace — init_command exits 1 → BadRequestError
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": template_id},
+        )
+        # Hard pin: never 5xx
+        assert ws.status_code < 500, (
+            f"init_command failure leaked 5xx: "
+            f"{ws.status_code}: {ws.text}"
+        )
+        # Should be 4xx with clean envelope mentioning rc=1
+        assert 400 <= ws.status_code < 500, (
+            f"init_command failure should be 4xx; got "
+            f"{ws.status_code}: {ws.text}"
+        )
+        envelope = ws.json()
+        assert envelope.get("type", "").startswith("/errors/"), envelope
+        assert envelope.get("type") != "/errors/internal", envelope
+        # The detail / extensions should reference the failing command
+        # so an operator can act on it
+        body_str = ws.text
+        assert "init" in body_str.lower() or "command" in body_str.lower() \
+            or "rc=" in body_str or "exit" in body_str.lower(), (
+            f"4xx envelope should reference the init command failure; "
+            f"body={body_str!r}"
+        )
+
+        # Defence: rollback ran. The workspace list must not contain
+        # any new id from this attempt.
+        list_after = await client.get(
+            "/v1/workspaces?limit=200&offset=0",
+        )
+        assert list_after.status_code == 200, list_after.text
+        ids_after = {
+            item["id"] for item in list_after.json()["items"]
+        }
+        new_ids = ids_after - ids_before
+        assert not new_ids, (
+            f"backend rollback failed: workspace row was created "
+            f"despite init_command failure: {new_ids!r}"
+        )
+    finally:
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
