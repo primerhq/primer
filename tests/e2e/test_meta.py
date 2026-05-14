@@ -525,6 +525,84 @@ async def test_t0315_post_with_trailing_slash_consistent(
 
 
 # ============================================================================
+# T0366 — Cache-Control header is absent on GET /v1/health
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0366_cache_control_header_absent_on_health(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0366 — Spec doesn't promise Cache-Control on /v1/health. Pin
+    no inadvertent middleware leak — the header should NOT be set,
+    so clients/proxies don't accidentally cache the health probe.
+    """
+    resp = await client.get("/v1/health")
+    assert resp.status_code == 200, resp.text
+    cc = resp.headers.get("cache-control")
+    assert cc is None, (
+        f"Cache-Control header unexpectedly set on /v1/health: {cc!r}"
+    )
+
+
+# ============================================================================
+# T0367 — Vary header is absent on GET /v1/llm_providers
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0367_vary_header_absent_on_list_endpoint(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0367 — Pin no Vary header on a list endpoint. CORS / Accept-
+    Encoding negotiation could fragment caches inadvertently;
+    matrix doesn't promise this header so it shouldn't be set by
+    accident.
+    """
+    resp = await client.get("/v1/llm_providers")
+    assert resp.status_code == 200, resp.text
+    vary = resp.headers.get("vary")
+    assert vary is None, (
+        f"Vary header unexpectedly set on /v1/llm_providers: {vary!r}"
+    )
+
+
+# ============================================================================
+# T0368 — ETag header absent on GET /v1/llm_providers/{id}
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0368_etag_header_absent_on_instance_get(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0368 — Pin no implicit ETag generation by FastAPI/middleware
+    on instance GETs. Conditional GET semantics aren't part of the
+    matrix contract; an inadvertent ETag would mislead clients into
+    using If-None-Match.
+    """
+    entity_id = f"llm-t0368-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test-placeholder"},
+        "limits": {"max_concurrency": 1},
+    }
+    create = await client.post("/v1/llm_providers", json=body)
+    assert create.status_code == 201, create.text
+    try:
+        resp = await client.get(f"/v1/llm_providers/{entity_id}")
+        assert resp.status_code == 200, resp.text
+        etag = resp.headers.get("etag")
+        assert etag is None, (
+            f"ETag header unexpectedly set on instance GET: {etag!r}"
+        )
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
 # T0261 — OPTIONS on a POST-only search route returns clean response
 # ============================================================================
 

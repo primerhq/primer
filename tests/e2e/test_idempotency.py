@@ -226,6 +226,98 @@ async def test_t0250_concurrent_invalidate_calls_all_204(
 
 
 @pytest.mark.asyncio
+async def test_t0364_concurrent_invalidate_and_delete_same_provider(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0364 — Race POST /invalidate + DELETE on the same LLMProvider
+    id concurrently. The invalidate is unconditional (T0187 — silent
+    204 even on missing rows), so it succeeds regardless. The DELETE
+    succeeds (204) the first time. Both must produce clean envelopes;
+    subsequent GET returns 404.
+    """
+    entity_id = f"llm-race-id-{unique_suffix}"
+    created = await client.post("/v1/llm_providers", json=_llm_body(entity_id))
+    assert created.status_code == 201, created.text
+
+    inv_resp, del_resp = await asyncio.gather(
+        client.post(f"/v1/llm_providers/{entity_id}/invalidate"),
+        client.delete(f"/v1/llm_providers/{entity_id}"),
+    )
+
+    # Invalidate is unconditional — always 204
+    assert inv_resp.status_code == 204, inv_resp.text
+    # DELETE is 204 (success) — never 404 (race-induced) because we
+    # held the row at race start
+    assert del_resp.status_code == 204, del_resp.text
+
+    # Subsequent GET returns 404
+    got = await client.get(f"/v1/llm_providers/{entity_id}")
+    assert got.status_code == 404, got.text
+    assert got.json()["type"] == "/errors/not-found"
+
+
+@pytest.mark.asyncio
+async def test_t0365_concurrent_find_calls_return_identical_item_sets(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0365 — Six parallel POST /v1/toolsets/find calls with the
+    SAME body must all return the EXACT same set of ids. Pins
+    determinism on a quiet table — no race-induced drift.
+    """
+    prefix = f"ts-t0365-{unique_suffix}"
+    ids: list[str] = []
+    try:
+        for i in range(4):
+            entity_id = f"{prefix}-{i:02d}"
+            r = await client.post(
+                "/v1/toolsets",
+                json={
+                    "id": entity_id,
+                    "provider": "mcp",
+                    "config": {
+                        "transport": "stdio",
+                        "config": {"command": ["echo"]},
+                    },
+                },
+            )
+            assert r.status_code == 201, r.text
+            ids.append(entity_id)
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+
+        # Fire 6 in parallel
+        results = await asyncio.gather(*[
+            client.post("/v1/toolsets/find", json=body) for _ in range(6)
+        ])
+        for r in results:
+            assert r.status_code == 200, r.text
+
+        sets = [
+            frozenset(item["id"] for item in r.json()["items"])
+            for r in results
+        ]
+        # All sets identical
+        assert len(set(sets)) == 1, (
+            f"concurrent /find returned different sets: {sets!r}"
+        )
+        assert sorted(sets[0]) == sorted(ids), (
+            f"set didn't match seeded: expected {sorted(ids)!r}, "
+            f"got {sorted(sets[0])!r}"
+        )
+    finally:
+        for entity_id in ids:
+            await client.delete(f"/v1/toolsets/{entity_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0278_put_with_body_omitting_id_uses_path_id(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
