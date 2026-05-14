@@ -1700,3 +1700,91 @@ async def test_t0179_concurrent_steer_and_cancel_no_5xx(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0462 — Workspace .state git log records commit after a session lifecycle turn
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0462_workspace_state_log_grows_after_session_turn(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0462 — T0058 (deferred) showed user-files PUT does NOT
+    create a /log commit. The workspace `.state` git repo tracks
+    SESSION/AGENT state, so a real session lifecycle turn (creates
+    transcript + status updates inside .state) MUST grow the log.
+
+    Pin: baseline log length (immediately after workspace create)
+    is captured; after a session reaches terminal, the log length
+    grows by ≥ 1.
+
+    LM-Studio dependent — module-level skip applies if LM Studio
+    is not reachable.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Baseline log length right after materialise
+        baseline = await client.get(f"/v1/workspaces/{workspace_id}/log")
+        assert baseline.status_code == 200, baseline.text
+        baseline_commits = baseline.json().get("commits", [])
+        baseline_count = len(baseline_commits)
+
+        # Create a session with a tiny instruction, run it to terminal
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "initial_instructions": "Reply with exactly 'OK'.",
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 200, resume.text
+
+        # Wait for terminal; if LM Studio is misbehaving the test
+        # will skip rather than fail (the contract being pinned is
+        # "log grows after a turn", not "LLM works").
+        final = await _wait_for_terminal(
+            client, workspace_id=workspace_id, session_id=session_id,
+            timeout_s=120.0,
+        )
+        if final.get("status") != "ended":
+            pytest.skip(
+                f"session did not reach terminal in 120s; LM Studio "
+                f"may be misconfigured. Final state: {final!r}"
+            )
+
+        # Re-read /log: must have grown by at least 1 commit
+        after = await client.get(f"/v1/workspaces/{workspace_id}/log")
+        assert after.status_code == 200, after.text
+        after_commits = after.json().get("commits", [])
+        after_count = len(after_commits)
+        assert after_count > baseline_count, (
+            f"workspace .state log did not grow after a session turn: "
+            f"baseline={baseline_count}, after={after_count}. "
+            f"Either CDC/state writes are not committing, or the "
+            f"agent never produced any state changes."
+        )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

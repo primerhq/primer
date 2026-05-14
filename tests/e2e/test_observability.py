@@ -544,3 +544,72 @@ async def test_t0444_worker_heartbeat_advances_monotonically(
         f"heartbeat did not advance across 12s window — heartbeat "
         f"loop may be stuck. Samples: {samples!r}"
     )
+
+
+# ============================================================================
+# T0461 — Worker info shape stable across drain transition
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0461_worker_info_shape_stable_across_drain(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0461 — Drain is non-destructive (T0028/T0218 pin idempotency
+    of the drain endpoint itself). This test extends those by pinning
+    that the WORKER ROW's identifying fields stay stable across the
+    drain transition: only `status` flips active→draining; id, host,
+    pid, started_at, capacity all unchanged. No new fields appear or
+    disappear.
+
+    Catches a regression where the drain handler accidentally
+    rewrites identifying columns (e.g. updates `started_at = now()`
+    when it should leave it alone).
+    """
+    # Snapshot the worker row before drain
+    before_resp = await client.get("/v1/workers")
+    assert before_resp.status_code == 200, before_resp.text
+    before_items = before_resp.json()["items"]
+    assert before_items, before_resp.json()
+    before = before_items[0]
+    worker_id = before["id"]
+    before_keys = set(before.keys())
+
+    # Sanity: worker is initially active (or draining if a prior test
+    # in the same run drained it; either is acceptable as a starting
+    # condition — what matters is the field-set stability).
+    initial_status = before["status"]
+    assert initial_status in ("active", "draining"), before
+
+    # Drain (idempotent if already draining)
+    drain_resp = await client.post(f"/v1/workers/{worker_id}/drain")
+    assert drain_resp.status_code == 204, drain_resp.text
+
+    # Snapshot after
+    after_resp = await client.get("/v1/workers")
+    assert after_resp.status_code == 200, after_resp.text
+    after_items = after_resp.json()["items"]
+    after = next(
+        (w for w in after_items if w["id"] == worker_id), None,
+    )
+    assert after is not None, (
+        f"worker {worker_id!r} disappeared after drain: {after_items!r}"
+    )
+
+    # Status is now draining
+    assert after["status"] == "draining", after
+
+    # Identifying fields unchanged across the drain transition
+    for field in ("id", "host", "pid", "started_at", "capacity"):
+        assert after.get(field) == before.get(field), (
+            f"field {field!r} changed across drain transition: "
+            f"before={before.get(field)!r}, after={after.get(field)!r}"
+        )
+
+    # Field set is identical — no fields appeared or disappeared
+    after_keys = set(after.keys())
+    assert after_keys == before_keys, (
+        f"worker info field set changed across drain: "
+        f"added={after_keys - before_keys!r}, "
+        f"removed={before_keys - after_keys!r}"
+    )

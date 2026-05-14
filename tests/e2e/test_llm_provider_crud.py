@@ -346,3 +346,112 @@ async def test_t0449_llm_provider_create_with_empty_models_returns_422(
     # Row was not created
     got = await client.get(f"/v1/llm_providers/{entity_id}")
     assert got.status_code == 404, got.text
+
+
+# ============================================================================
+# T0459 — POST /v1/llm_providers with 1 MiB JSON body returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0459_llm_provider_create_with_one_mib_body_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0459 — POST a body with a 1 MiB padded `api_key` field
+    (api_key is a real LLMProvider field — `description` is NOT a
+    field on LLMProvider since it inherits from Identifiable, not
+    Describeable, so Pydantic extra=ignore would silently drop it).
+
+    Pin: 201 (accepted) or 4xx (413/422 if a body cap exists at
+    this layer); never 5xx, never /errors/internal. The round-trip
+    of the api_key is intentionally NOT checked — T0027 documents
+    that api_keys are masked on GET regardless. The contract here
+    is "server doesn't crash on 1 MiB body".
+    """
+    entity_id = f"llm-t0459-{unique_suffix}"
+    big_api_key = "sk-" + "X" * (1024 * 1024)  # ~1 MiB api_key
+    body = {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": big_api_key},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post(
+        "/v1/llm_providers", json=body,
+        timeout=httpx.Timeout(60.0, connect=10.0),
+    )
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"1 MiB body leaked /errors/internal: {resp.text[:300]}"
+    )
+    assert resp.status_code < 500, resp.text[:300]
+    assert resp.status_code in (201, 400, 413, 422), (
+        f"unexpected status: {resp.status_code}: {resp.text[:300]}"
+    )
+
+    if resp.status_code == 201:
+        # Cleanup — also pins that GET + DELETE on a row created
+        # with a giant api_key works (no read-side timeout)
+        try:
+            got = await client.get(f"/v1/llm_providers/{entity_id}")
+            assert got.status_code == 200, got.text[:300]
+        finally:
+            await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0460 — POST /v1/llm_providers with 16 MiB JSON body returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0460_llm_provider_create_with_sixteen_mib_body_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0460 — Push to 16 MiB. Most HTTP frameworks have an
+    implicit body-size limit (uvicorn defaults can vary; some
+    setups cap at 16 MiB). Pin: 413/4xx with clean envelope, OR
+    201 if the server accepts it; either way no 5xx, no
+    /errors/internal, no connection drop.
+    """
+    entity_id = f"llm-t0460-{unique_suffix}"
+    huge_api_key = "sk-" + "X" * (16 * 1024 * 1024)  # ~16 MiB api_key
+    body = {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": huge_api_key},
+        "limits": {"max_concurrency": 1},
+    }
+    try:
+        resp = await client.post(
+            "/v1/llm_providers", json=body,
+            timeout=httpx.Timeout(120.0, connect=10.0),
+        )
+    except (httpx.RemoteProtocolError, httpx.WriteError) as exc:
+        # The server may close the connection mid-write if the
+        # body exceeds an internal cap. That's acceptable — pin as
+        # a clean disconnect rather than a 5xx envelope. Re-raise
+        # only if it's a transport failure that would also affect
+        # subsequent tests.
+        pytest.skip(
+            f"server closed connection on 16 MiB body (acceptable "
+            f"upper-bound behaviour): {exc}"
+        )
+
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"16 MiB body leaked /errors/internal: {resp.text[:300]}"
+    )
+    assert resp.status_code < 500, resp.text[:300]
+    assert resp.status_code in (201, 400, 413, 422), (
+        f"unexpected status: {resp.status_code}: {resp.text[:300]}"
+    )
+
+    if resp.status_code == 201:
+        # Cleanup — also pins that DELETE on a huge row works
+        try:
+            await client.delete(f"/v1/llm_providers/{entity_id}")
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            pass

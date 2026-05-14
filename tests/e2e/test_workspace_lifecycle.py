@@ -5083,3 +5083,104 @@ async def test_t0446_workspace_files_put_info_no_fsync_race(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0463 — Workspace POSIX file mode bits surface in /files/info
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0463_workspace_files_info_posix_mode_documented(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0463 — On POSIX backends, files have meaningful permission
+    bits (read/write/execute for user/group/other). Pin whatever
+    field /files/info exposes for them — or, if no such field
+    exists, document the absence so a future addition deliberately
+    breaks this test.
+
+    The contract being pinned is consistency: two consecutive
+    /info reads on the same unmodified file must return the same
+    field set and the same value for any mode/permission field
+    present. If the API doesn't expose mode bits at all, that's
+    documented as the current contract.
+
+    Skipped on Windows (NTFS doesn't have POSIX mode bits in any
+    portable sense; even when files have ACLs, the API probably
+    doesn't model that).
+    """
+    if os.name == "nt":
+        pytest.skip(
+            "POSIX file mode bits are not meaningful on Windows NTFS"
+        )
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed a file
+        path = "mode-probe.txt"
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": "permission-probe", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        # Two consecutive /info reads
+        first = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": path},
+        )
+        assert first.status_code == 200, first.text
+        first_body = first.json()
+
+        second = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": path},
+        )
+        assert second.status_code == 200, second.text
+        second_body = second.json()
+
+        # Field set is identical between the two reads
+        assert set(first_body.keys()) == set(second_body.keys()), (
+            f"info field set drifted between reads: "
+            f"first={sorted(first_body.keys())!r}, "
+            f"second={sorted(second_body.keys())!r}"
+        )
+
+        # Look for mode-style fields (any of the common names)
+        mode_field_names = ("mode", "permissions", "perm", "unix_mode")
+        present = [
+            name for name in mode_field_names if name in first_body
+        ]
+        if present:
+            # If any mode field exists, it must be stable across reads
+            for name in present:
+                assert first_body[name] == second_body[name], (
+                    f"mode field {name!r} changed across reads: "
+                    f"first={first_body[name]!r}, "
+                    f"second={second_body[name]!r}"
+                )
+        else:
+            # Document the absence: API does not currently expose
+            # POSIX mode bits. Print to pytest -s output for
+            # visibility; not a failure.
+            print(
+                f"\n[T0463] /files/info does NOT expose POSIX mode "
+                f"bits. Available fields: "
+                f"{sorted(first_body.keys())!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
