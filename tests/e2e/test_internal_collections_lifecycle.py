@@ -2566,6 +2566,78 @@ async def test_t0346_search_after_embedder_delete_clean_envelope(
 
 
 # ============================================================================
+# T0349 — IC config GET after DELETE returns 404 (lifecycle round-trip)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0349_ic_config_get_after_delete_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0349 — Subsystem config lifecycle: PUT→GET(200)→DELETE(204)→
+    GET(404). Mirror of T0020 (404 on fresh DB) from a different
+    angle: the post-delete state is also 404 even though the row
+    once existed.
+    """
+    embedder_id = f"emb-t0349-{unique_suffix}"
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    try:
+        # PUT → 200
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+
+        # GET → 200
+        get1 = await client.get("/v1/internal_collections/config")
+        assert get1.status_code == 200, get1.text
+
+        # DELETE → 204
+        rm = await client.delete("/v1/internal_collections/config")
+        assert rm.status_code == 204, rm.text
+
+        # GET → 404 with /errors/not-found
+        get2 = await client.get("/v1/internal_collections/config")
+        assert get2.status_code == 404, get2.text
+        envelope = get2.json()
+        assert envelope["type"] == "/errors/not-found", envelope
+    finally:
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0350 — Bootstrap before PUT returns 404 with full RFC 7807 envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0350_bootstrap_before_put_envelope_shape(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0350 — Extends T0021 (which only pins the slug). Pin the
+    full RFC 7807 envelope shape on the bootstrap-without-config
+    response: type/title/status/detail/instance all present and
+    consistent.
+    """
+    resp = await client.post("/v1/internal_collections/bootstrap")
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    for key in ("type", "title", "status", "detail", "instance"):
+        assert key in body, f"RFC 7807 key {key!r} missing: {body!r}"
+    assert body["type"] == "/errors/not-found", body
+    assert body["status"] == 404
+    # `instance` must echo the request path
+    assert body["instance"].endswith("/v1/internal_collections/bootstrap"), (
+        body
+    )
+
+
+# ============================================================================
 # T0303 — Bootstrap concurrent with /v1/agents/search returns clean envelopes
 # ============================================================================
 

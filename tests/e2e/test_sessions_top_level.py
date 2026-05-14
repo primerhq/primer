@@ -1660,6 +1660,148 @@ async def test_t0324_steer_on_missing_session_returns_404(
 
 
 # ============================================================================
+# T0351 — POST /v1/sessions/find with workspace_id+graph_id+status combo
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0351_sessions_find_three_way_filter_with_graph_id(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0351 — Sibling of T0120 (which used agent_id) for graph-bound
+    sessions. Build two workspaces × two graphs (= four sessions);
+    POST /find with predicate filtering by workspace_id+graph_id+
+    status returns exactly the one session matching all three
+    criteria (intersection).
+
+    NB: graph-bound sessions don't run (per spec §13 known limitation
+    pinned by T0156), but the predicate filter operates on the row's
+    binding metadata which is set at create-time. So the find still
+    works regardless of worker behaviour.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    graph_a = f"graph-a-{unique_suffix}"
+    graph_b = f"graph-b-{unique_suffix}"
+    workspace_ids: list[str] = []
+    session_ids: list[tuple[str, str, str]] = []  # (sid, wid, gid)
+    graphs_created: list[str] = []
+    try:
+        # Create two graphs
+        for gid in (graph_a, graph_b):
+            r = await client.post(
+                "/v1/graphs",
+                json={
+                    "id": gid,
+                    "description": f"T0351-{gid}",
+                    "nodes": [
+                        {"kind": "agent", "id": "n1",
+                         "agent_id": env["agent_id"]},
+                        {"kind": "terminal", "id": "end"},
+                    ],
+                    "edges": [
+                        {"kind": "static", "from_node": "n1",
+                         "to_node": "end"},
+                    ],
+                    "entry_node_id": "n1",
+                },
+            )
+            assert r.status_code == 201, r.text
+            graphs_created.append(gid)
+
+        # Create two workspaces
+        for _ in range(2):
+            ws = await client.post(
+                "/v1/workspaces", json={"template_id": env["tpl_id"]},
+            )
+            assert ws.status_code == 201, ws.text
+            workspace_ids.append(ws.json()["id"])
+
+        # 4 sessions: each (workspace, graph) combination
+        for wid in workspace_ids:
+            for gid in (graph_a, graph_b):
+                sess = await client.post(
+                    f"/v1/workspaces/{wid}/sessions",
+                    json={
+                        "binding": {"kind": "graph", "graph_id": gid},
+                        "auto_start": False,
+                    },
+                )
+                assert sess.status_code == 201, sess.text
+                session_ids.append((sess.json()["id"], wid, gid))
+
+        # Pick target combination: workspace_ids[0] + graph_a + created
+        target_wid = workspace_ids[0]
+        target_gid = graph_a
+        # Find the matching session id
+        target_sid = next(
+            sid for (sid, wid, gid) in session_ids
+            if wid == target_wid and gid == target_gid
+        )
+
+        # POST /find with three-way filter
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "and",
+                    "left": {
+                        "kind": "predicate",
+                        "op": "=",
+                        "left": {"kind": "field", "name": "workspace_id"},
+                        "right": {"kind": "value", "value": target_wid},
+                    },
+                    "right": {
+                        "kind": "predicate",
+                        "op": "=",
+                        "left": {"kind": "field", "name": "status"},
+                        "right": {"kind": "value", "value": "created"},
+                    },
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {
+                        "kind": "field", "name": "binding.graph_id",
+                    },
+                    "right": {"kind": "value", "value": target_gid},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"three-way filter leaked /errors/internal: {resp.text}"
+        )
+        if resp.status_code == 200:
+            ids = {item["id"] for item in resp.json()["items"]}
+            assert target_sid in ids, (
+                f"target session {target_sid!r} missing from "
+                f"three-way filter: {ids!r}"
+            )
+            # Other sessions (different workspace OR different graph)
+            # should NOT be present
+            for (sid, wid, gid) in session_ids:
+                if (wid, gid) != (target_wid, target_gid):
+                    assert sid not in ids, (
+                        f"non-matching session {sid!r} (wid={wid!r}, "
+                        f"gid={gid!r}) unexpectedly in results: {ids!r}"
+                    )
+    finally:
+        for (sid, wid, _gid) in session_ids:
+            await client.post(
+                f"/v1/workspaces/{wid}/sessions/{sid}/cancel",
+            )
+        for wid in workspace_ids:
+            await client.delete(f"/v1/workspaces/{wid}")
+        for gid in graphs_created:
+            await client.delete(f"/v1/graphs/{gid}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0242 — /v1/sessions?status=running with no RUNNING session returns 200 empty
 # ============================================================================
 

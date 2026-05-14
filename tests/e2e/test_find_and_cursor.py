@@ -2569,3 +2569,64 @@ async def test_t0217_find_order_by_unknown_field_clean_envelope(
             assert envelope["type"] != "/errors/internal", envelope
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0352 — Predicate `~=` with "" pattern vs "%" returns documented sets
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0352_predicate_like_empty_vs_percent_consistent(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0352 — Compare LIKE behaviour for `""` (empty pattern) and
+    `"%"` (any-string wildcard). Pin both responses are clean
+    (no /errors/internal); document whether they match the same
+    set or different sets.
+
+    Postgres semantics: `LIKE ''` matches only empty strings (no
+    rows have empty id); `LIKE '%'` matches all rows. So they
+    SHOULD return different sets — `%` is a strict superset.
+    """
+    prefix = f"ts-t0352-{unique_suffix}"
+    seeded = await _seed_toolsets(client, prefix, 3)
+    try:
+        async def _find_with_pattern(pattern: str) -> tuple[int, set[str]]:
+            body = {
+                "predicate": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": pattern},
+                },
+                "page": {"kind": "offset", "offset": 0, "length": 200},
+            }
+            r = await client.post("/v1/toolsets/find", json=body)
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"LIKE pattern={pattern!r} leaked /errors/internal: "
+                f"{r.text}"
+            )
+            if r.status_code == 200:
+                return r.status_code, {item["id"] for item in r.json()["items"]}
+            return r.status_code, set()
+
+        empty_status, empty_ids = await _find_with_pattern("")
+        pct_status, pct_ids = await _find_with_pattern("%")
+
+        # If both 200, % must match a strict superset of "" (since
+        # % matches everything, "" matches at most empty strings).
+        if empty_status == 200 and pct_status == 200:
+            assert empty_ids.issubset(pct_ids), (
+                f"empty-LIKE result not a subset of `%` result: "
+                f"empty={empty_ids!r}, pct={pct_ids!r}"
+            )
+            # Seeded ids must be in the `%` set (which matches all)
+            for sid in seeded:
+                assert sid in pct_ids, (
+                    f"seeded id {sid!r} missing from %-LIKE result: "
+                    f"{pct_ids!r}"
+                )
+    finally:
+        await _delete_toolsets(client, seeded)
