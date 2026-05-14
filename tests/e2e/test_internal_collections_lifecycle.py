@@ -3445,3 +3445,113 @@ async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0501 — Bootstrap-without-config: envelope determinism + RFC 7807 Content-Type
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0501_bootstrap_without_config_envelope_deterministic(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0501 — Sibling of T0021 (bootstrap-no-config returns 404).
+    T0021 only checked the first call. T0501 sharpens by pinning:
+
+      1. Two consecutive no-config bootstrap calls return identical
+         envelopes (status, type, and detail string all stable —
+         no first-call vs cached-call drift)
+      2. The 404 response carries `Content-Type: application/
+         problem+json` per RFC 7807 (sibling of T0312/T0313 for
+         this specific error path)
+    """
+    # Two consecutive calls with no config row in storage
+    r1 = await client.post("/v1/internal_collections/bootstrap")
+    r2 = await client.post("/v1/internal_collections/bootstrap")
+
+    # Both 404 with the documented envelope
+    for r, label in ((r1, "call-1"), (r2, "call-2")):
+        assert r.status_code == 404, f"{label}: {r.text}"
+        envelope = r.json()
+        assert envelope["type"] == "/errors/not-found", envelope
+        assert envelope["status"] == 404, envelope
+        # Content-Type is application/problem+json per RFC 7807
+        ct = r.headers.get("content-type", "")
+        assert "problem+json" in ct.lower(), (
+            f"{label}: bootstrap-no-config 404 should carry "
+            f"problem+json content-type; got {ct!r}"
+        )
+
+    # Determinism: status, type, and detail are byte-stable across
+    # the two calls (no caching artefact, no per-call timestamp leak)
+    assert r1.status_code == r2.status_code, (
+        f"non-deterministic status: {r1.status_code} vs {r2.status_code}"
+    )
+    env1, env2 = r1.json(), r2.json()
+    assert env1["type"] == env2["type"], (
+        f"type drift: {env1['type']!r} vs {env2['type']!r}"
+    )
+    assert env1["detail"] == env2["detail"], (
+        f"detail drift: {env1['detail']!r} vs {env2['detail']!r}"
+    )
+
+
+# ============================================================================
+# T0502 — Three consecutive bootstraps return identically-shaped envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0502_three_consecutive_bootstraps_identical_shape(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0502 — T0167 covers the second bootstrap returning 200
+    cleanly; T0502 extends to a third call AND pins the envelope
+    SHAPE is identical across all three (same set of top-level
+    keys; values may differ if the orchestrator reports per-call
+    counts but key presence/absence is stable).
+    """
+    embedder_id = f"emb-t0502-{unique_suffix}"
+    pr = await client.post(
+        "/v1/embedding_providers",
+        json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_created = False
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        # Three consecutive bootstraps
+        envelopes: list[dict] = []
+        for i in range(3):
+            r = await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=httpx.Timeout(180.0, connect=10.0),
+            )
+            if r.status_code != 200:
+                pytest.skip(
+                    f"bootstrap[{i}] returned {r.status_code}; embedder "
+                    f"may be unavailable: {r.text[:300]}"
+                )
+            assert isinstance(r.json(), dict), r.text
+            envelopes.append(r.json())
+
+        # All three responses share the same top-level key set —
+        # orchestrator schema stable across no-op repeats
+        keys = [frozenset(env.keys()) for env in envelopes]
+        assert keys[0] == keys[1] == keys[2], (
+            f"bootstrap envelope shape drifted across 3 calls:\n"
+            f"  call-1 keys: {sorted(keys[0])!r}\n"
+            f"  call-2 keys: {sorted(keys[1])!r}\n"
+            f"  call-3 keys: {sorted(keys[2])!r}"
+        )
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")

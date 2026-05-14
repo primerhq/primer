@@ -3511,3 +3511,135 @@ async def test_t0491_three_concurrent_cancel_on_created_session_clean(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0503 — Steer empty then valid: rejection doesn't pollute session state
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0503_steer_empty_then_valid_both_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0503 — Sibling of T0205 (empty steer alone) and T0399
+    (post-cancel steer cache state). T0503 specifically pins that
+    a REJECTED empty-instruction steer doesn't pollute session
+    state — a SUBSEQUENT valid steer on the same session works.
+    Catches a regression where the rejected first call leaves
+    transient state on the session that breaks the next call.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Step 1: empty instruction — Pydantic min_length=1 → 422
+        # (per matrix/api/routers/workspaces.py:120-130 SteerBody)
+        empty = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": ""},
+        )
+        envelope_e = empty.json() if empty.content else {}
+        assert envelope_e.get("type") != "/errors/internal", empty.text
+        assert empty.status_code < 500, empty.text
+        # Either 422 (validation reject — strict path) or 200/204
+        # (handler accepted — permissive path per T0205's tolerance)
+        assert empty.status_code in (200, 204, 400, 422), empty.text
+
+        # Step 2: valid instruction — must succeed (200/204) cleanly
+        valid_text = f"valid-instruction-{unique_suffix}"
+        valid = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": valid_text},
+        )
+        envelope_v = valid.json() if valid.content else {}
+        assert envelope_v.get("type") != "/errors/internal", valid.text
+        assert valid.status_code in (200, 204), (
+            f"valid steer after rejected empty steer should succeed; "
+            f"got {valid.status_code}: {valid.text}"
+        )
+
+        # Defence: session row still readable + identifiable; no
+        # state corruption from the rejected call
+        got = await client.get(f"/v1/sessions/{session_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["id"] == session_id, got.json()
+        # Status remains a valid SessionStatus literal
+        assert got.json()["status"] in (
+            "created", "running", "paused", "ended",
+        ), got.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0504 — Pause CREATED → PAUSED → resume returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0504_pause_then_resume_on_created_session_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0504 — Walk pause→resume on a CREATED session (the
+    pause-handler short-circuits CREATED → PAUSED per
+    matrix/api/routers/sessions.py:251-254). Pin: each step returns
+    a documented code; the row goes through observable state
+    transitions (CREATED→PAUSED→running-or-ended); never
+    /errors/internal.
+
+    Reframed from the original "resume on pause-requested
+    transient" angle — that variant requires a RUNNING session
+    (only RUNNING sets pause_requested instead of transitioning
+    to PAUSED), which needs LM Studio. This deterministic walk
+    pins the same boundary contracts without that dependency.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Step 1: pause CREATED → PAUSED (204, direct transition)
+        pause = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        assert pause.status_code == 204, pause.text
+
+        # Observable: status is PAUSED (per matrix/api/routers/
+        # sessions.py:252)
+        before_resume = await client.get(f"/v1/sessions/{session_id}")
+        assert before_resume.status_code == 200, before_resume.text
+        assert before_resume.json()["status"] == "paused", (
+            before_resume.json()
+        )
+
+        # Step 2: resume PAUSED → running (200; resume is idempotent
+        # per spec §11)
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        envelope_r = resume.json() if resume.content else {}
+        assert envelope_r.get("type") != "/errors/internal", resume.text
+        assert resume.status_code == 200, (
+            f"resume on PAUSED should be 200 idempotent; got "
+            f"{resume.status_code}: {resume.text}"
+        )
+        # Status is running or ended (worker may finish before we
+        # observe — placeholder Anthropic creds typically fail-fast)
+        body_r = resume.json()
+        assert body_r["id"] == session_id, body_r
+        assert body_r["status"] in ("running", "ended"), body_r
+    finally:
+        if workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

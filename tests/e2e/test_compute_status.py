@@ -2442,3 +2442,116 @@ async def test_t0499_put_graph_body_id_mismatch_returns_409(
         await client.delete(f"/v1/graphs/{wrong_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0500 — POST /v1/graphs then immediate concurrent PUT on same id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0500_post_graph_concurrent_put_same_id_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0500 — Race a POST /v1/graphs against a PUT to the same id
+    (the POST establishes the row; the PUT mutates it). Pin: both
+    return clean envelopes (no /errors/internal); subsequent GET
+    returns ONE non-corrupt body whose description matches one of
+    the two writers' values; no aliased duplicate row.
+    """
+    import asyncio
+    provider_id = f"llm-t0500-{unique_suffix}"
+    agent_id = f"agent-t0500-{unique_suffix}"
+    graph_id = f"graph-t0500-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        # Pre-warm the graphs table so concurrent writers don't hit
+        # the cold-start CREATE TABLE race documented as T0103a
+        # (both transactions try to CREATE TABLE simultaneously and
+        # one loses with pg_type_typname_nsp_index unique violation,
+        # surfaced as 502 /errors/provider-error).
+        warmup_id = f"graph-warmup-t0500-{unique_suffix}"
+        warm = await client.post(
+            "/v1/graphs", json=_graph_body(warmup_id, agent_id=agent_id),
+        )
+        assert warm.status_code == 201, warm.text
+        await client.delete(f"/v1/graphs/{warmup_id}")
+
+        post_body = _graph_body(graph_id, agent_id=agent_id)
+        post_body["description"] = "from-POST"
+        put_body = _graph_body(graph_id, agent_id=agent_id)
+        put_body["description"] = "from-PUT"
+
+        # Race the create with the update; PUT will fail with 404
+        # if it lands first (no row to update), or succeed otherwise
+        post_task = asyncio.create_task(
+            client.post("/v1/graphs", json=post_body),
+        )
+        put_task = asyncio.create_task(
+            client.put(f"/v1/graphs/{graph_id}", json=put_body),
+        )
+        post_resp, put_resp = await asyncio.gather(post_task, put_task)
+
+        # Hard pin: never /errors/internal. 502 /errors/provider-error
+        # is a documented outcome (T0103a — two writers serialised by
+        # Postgres unique-key constraint on the row insert).
+        for r, label in ((post_resp, "POST"), (put_resp, "PUT")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label} race leaked /errors/internal: {r.text}"
+            )
+
+        # POST: 201 (won) or 409 (PUT got there first — but PUT
+        # would 404 in that case) or 502 (provider-error from
+        # concurrent insert)
+        assert post_resp.status_code in (201, 409, 502), (
+            f"POST race: unexpected {post_resp.status_code}: "
+            f"{post_resp.text}"
+        )
+        # PUT: 200 (POST landed first, PUT updated), 404 (PUT first,
+        # no row), or 502 (concurrent-insert provider-error)
+        assert put_resp.status_code in (200, 404, 409, 502), (
+            f"PUT race: unexpected {put_resp.status_code}: "
+            f"{put_resp.text}"
+        )
+
+        # Final GET — either the row exists (one writer won) or 404
+        # (both writers lost the provider-error race). If it exists,
+        # the description must come from one of the two writers and
+        # only one row should carry the id (no aliased duplicates).
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code in (200, 404), got.text
+        if got.status_code == 200:
+            final_body = got.json()
+            assert final_body["id"] == graph_id, final_body
+            assert final_body.get("description") in (
+                "from-POST", "from-PUT", "test graph",
+            ), (
+                f"final description not from any writer: "
+                f"{final_body.get('description')!r}"
+            )
+
+            listed = await client.get(
+                "/v1/graphs", params={"limit": 200, "offset": 0},
+            )
+            assert listed.status_code == 200, listed.text
+            matching = [
+                item for item in listed.json()["items"]
+                if item["id"] == graph_id
+            ]
+            assert len(matching) == 1, (
+                f"race produced {len(matching)} rows with "
+                f"id={graph_id!r}"
+            )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
