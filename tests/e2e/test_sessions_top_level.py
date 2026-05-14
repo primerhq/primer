@@ -2412,3 +2412,219 @@ async def test_t0398_session_cancel_while_paused_converges_to_terminal(
             # Already-terminal cancel is 409 (per T0039); ignore
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0399 — Session steer after terminal returns 4xx with clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0399_session_steer_after_terminal_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0399 — Spec §11 line 493 documents steer as "Does NOT gate on
+    session status — instructions can be queued on a CREATED, PAUSED,
+    or RUNNING session". ENDED is not in that list. Meanwhile
+    matrix/workspace/session.py:352 raises ConflictError on ENDED.
+    There's a known stale-cache between the two: the WorkspaceRegistry
+    holds an in-memory Session view whose `_info.status` doesn't
+    refresh from storage right after cancel, so the 200/409 outcome
+    depends on cache state.
+
+    Hard contract pinned here: never 5xx, never /errors/internal,
+    and the session row stays in the terminal ENDED state regardless
+    of which path the steer takes (no flapping). Status code may be
+    200 (succeeded against stale view) or 409 (rejected against
+    refreshed view) — both are acceptable until the cache drift is
+    resolved.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Drive the session to ENDED via cancel
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+        assert cancel.json()["status"] == "ended", cancel.json()
+
+        # Steer on the now-ended session
+        steer = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": "post-terminal-steer"},
+        )
+        # Hard pin: never 5xx
+        assert steer.status_code < 500, steer.text
+        # Permissive: 200 (stale-cache let it through) or 4xx
+        assert steer.status_code == 200 or 400 <= steer.status_code < 500, (
+            f"unexpected status: {steer.status_code}: {steer.text}"
+        )
+        if steer.status_code >= 400:
+            envelope = steer.json()
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+            assert envelope.get("type") != "/errors/internal", envelope
+
+        # Defence: session row remains in ENDED state (no flapping back
+        # to RUNNING/PAUSED no matter which steer outcome).
+        after = await client.get(f"/v1/sessions/{session_id}")
+        assert after.status_code == 200, after.text
+        assert after.json()["status"] == "ended", after.json()
+        assert after.json()["ended_reason"] == "cancelled", after.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0403 — POST /v1/sessions/find predicate on `binding.kind`
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0403_sessions_find_predicate_on_binding_kind(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0403 — Sessions/find supports JSONB-discriminator-tag
+    predicate paths (companion to T0351 which used `binding.graph_id`).
+    Build one agent-bound + one graph-bound session in the same
+    workspace, then `find` filtered by `binding.kind = "agent"`.
+    The agent-bound session must appear; the graph-bound one must NOT.
+
+    Pins that the predicate translator handles JSONB discriminator
+    tags (string-valued `kind` fields), not just leaf-id columns like
+    graph_id / agent_id.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    graph_id = f"graph-t0403-{unique_suffix}"
+    graph_created = False
+    try:
+        # Workspace
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Graph (so we can graph-bind a session)
+        gr = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_id,
+                "description": "T0403",
+                "nodes": [
+                    {"kind": "agent", "id": "n1",
+                     "agent_id": env["agent_id"]},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            },
+        )
+        assert gr.status_code == 201, gr.text
+        graph_created = True
+
+        # Agent-bound session
+        sa = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "auto_start": False,
+            },
+        )
+        assert sa.status_code == 201, sa.text
+        sid_agent = sa.json()["id"]
+
+        # Graph-bound session
+        sg = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sg.status_code == 201, sg.text
+        sid_graph = sg.json()["id"]
+
+        # find by workspace_id AND binding.kind == "agent"
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "workspace_id"},
+                    "right": {"kind": "value", "value": workspace_id},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "binding.kind"},
+                    "right": {"kind": "value", "value": "agent"},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"binding.kind predicate leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code == 200, resp.text
+        ids = {item["id"] for item in resp.json()["items"]}
+        assert sid_agent in ids, (
+            f"agent-bound session {sid_agent!r} missing from "
+            f"binding.kind=agent filter: {ids!r}"
+        )
+        assert sid_graph not in ids, (
+            f"graph-bound session {sid_graph!r} should NOT match "
+            f"binding.kind=agent filter: {ids!r}"
+        )
+
+        # Inverse pin: binding.kind = "graph" returns only the graph
+        # session (and excludes the agent session).
+        body_inv = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "workspace_id"},
+                    "right": {"kind": "value", "value": workspace_id},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "binding.kind"},
+                    "right": {"kind": "value", "value": "graph"},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        inv = await client.post("/v1/sessions/find", json=body_inv)
+        assert inv.status_code == 200, inv.text
+        ids_inv = {item["id"] for item in inv.json()["items"]}
+        assert sid_graph in ids_inv, (
+            f"graph-bound session {sid_graph!r} missing from "
+            f"binding.kind=graph filter: {ids_inv!r}"
+        )
+        assert sid_agent not in ids_inv, (
+            f"agent-bound session {sid_agent!r} should NOT match "
+            f"binding.kind=graph filter: {ids_inv!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if graph_created:
+            await client.delete(f"/v1/graphs/{graph_id}")
+        await _teardown_setup(client, env)

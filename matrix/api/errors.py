@@ -168,18 +168,25 @@ def _make_matrix_error_handler(status: int, type_uri: str, title: str):
 def _jsonable(value: object) -> object:
     """Recursively coerce a Pydantic-error value tree into JSON-safe
     types. Pydantic's `errors()` may surface raw `bytes` (e.g. when
-    the request body could not be decoded as JSON) which would crash
-    JSONEncoder when the envelope is rendered."""
+    the request body could not be decoded as JSON) or exception
+    objects inside `ctx` (when a model_validator raised ValueError)
+    which would crash JSONEncoder when the envelope is rendered."""
     if isinstance(value, bytes):
         try:
             return value.decode("utf-8")
         except UnicodeDecodeError:
             return repr(value)
+    if isinstance(value, BaseException):
+        return str(value)
     if isinstance(value, dict):
         return {k: _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
-    return value
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    # Anything else (custom objects) — fall back to repr to avoid
+    # crashing the response renderer.
+    return repr(value)
 
 
 async def _validation_error_handler(

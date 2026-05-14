@@ -496,7 +496,15 @@ async def write_file(
 ) -> None:
     ws = await registry.get_workspace(workspace_id)
     if body.encoding == "text":
-        raw = body.content.encode("utf-8")
+        try:
+            raw = body.content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            # Lone surrogates and other unencodable characters arrive
+            # via JSON `\uXXXX` escapes; reject as invalid input rather
+            # than crashing the request.
+            raise BadRequestError(
+                f"text content is not valid UTF-8: {exc}"
+            ) from exc
     else:
         try:
             raw = base64.b64decode(body.content, validate=True)

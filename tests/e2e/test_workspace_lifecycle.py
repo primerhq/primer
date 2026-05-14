@@ -4404,3 +4404,76 @@ async def test_t0396_workspace_state_path_user_files_collision_clean(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0401 — PUT encoding=text with a lone-surrogate string returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0401_workspace_files_put_text_lone_surrogate_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0401 — A `content` string containing a lone surrogate (e.g.
+    `"\\ud800"`) is degenerate: lone surrogates are valid in JSON
+    string literals but invalid in UTF-8 (orjson and Python's
+    str.encode("utf-8") both reject them).
+
+    The contract: never 5xx. Either the API rejects the body cleanly
+    (4xx envelope, ideally 422) OR it accepts and persists some
+    canonicalised form (round-trip via /files/read returns SOMETHING
+    sane). The hard pin is the absence of /errors/internal.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Build raw JSON wire bytes containing a lone surrogate. The
+        # JSON spec allows `\uXXXX` escapes inside strings, so this is
+        # a well-formed JSON document; whether it can be ROUND-TRIPPED
+        # to a Python str depends on the parser.
+        raw_body = b'{"content":"prefix-\\ud800-suffix","encoding":"text"}'
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "lone-surrogate.txt"},
+            content=raw_body,
+            headers={"content-type": "application/json"},
+        )
+        # Hard pin: never 5xx
+        assert put.status_code < 500, (
+            f"PUT with lone-surrogate content returned 5xx: "
+            f"{put.status_code}: {put.text}"
+        )
+        # Either accepted (204 / 200) or rejected (4xx)
+        assert put.status_code in (200, 204) or 400 <= put.status_code < 500, (
+            f"unexpected status: {put.status_code}: {put.text}"
+        )
+
+        if put.status_code in range(400, 500):
+            envelope = put.json()
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+            assert envelope.get("type") != "/errors/internal", envelope
+        else:
+            # If the API accepted, /files/read on the path must not 5xx
+            # (and the file should ideally be readable in some form).
+            read = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": "lone-surrogate.txt"},
+            )
+            assert read.status_code < 500, (
+                f"READ after lone-surrogate PUT returned 5xx: "
+                f"{read.status_code}: {read.text}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

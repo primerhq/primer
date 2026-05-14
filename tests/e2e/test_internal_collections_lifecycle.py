@@ -2696,3 +2696,114 @@ async def test_t0303_bootstrap_concurrent_with_search_clean(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0400 — CDC ingestion latency for Agent POST → /agents/search empirical pin
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0400_cdc_agent_to_search_latency_recorded(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0400 — Empirical-pin: measure how long it takes from Agent POST
+    to first /agents/search hit, and assert it sits inside a generous
+    upper bound. Catches gross regressions (CDC queue stall, embedder
+    misconfiguration) without flaking on legitimate slowness.
+
+    Sibling of T0034 (CDC happy-path correctness) but with timing as
+    the assertion. Bound: 30 s — same poll budget T0034 uses.
+    """
+    import time
+
+    embedder_id = f"emb-t0400-{unique_suffix}"
+    llm_id = f"llm-t0400-{unique_suffix}"
+    agent_id = f"agent-t0400-{unique_suffix}"
+    distinctive = f"latency-marker-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    agent_created = False
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        if boot.status_code != 200:
+            pytest.skip(
+                f"bootstrap returned {boot.status_code}; embedder model "
+                f"may be unavailable. Body: {boot.text[:300]}"
+            )
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        # T0=just before POST /v1/agents
+        t_post = time.monotonic()
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                agent_id, provider_id=llm_id, description=distinctive,
+            ),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        # Poll search until the agent appears
+        upper_bound_seconds = 30.0
+        deadline = t_post + upper_bound_seconds
+        observed_latency: float | None = None
+        last_hits: list = []
+        while time.monotonic() < deadline:
+            search = await client.post(
+                "/v1/agents/search",
+                json={"query": distinctive, "top_k": 5},
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+            assert search.status_code == 200, search.text
+            last_hits = search.json()["hits"]
+            ids = [h["document_id"] for h in last_hits]
+            if agent_id in ids:
+                observed_latency = time.monotonic() - t_post
+                break
+            await asyncio.sleep(0.2)
+
+        assert observed_latency is not None, (
+            f"agent {agent_id!r} did not appear in /agents/search within "
+            f"{upper_bound_seconds}s (last hits={last_hits!r}) — gross "
+            f"CDC ingestion regression"
+        )
+        # The hard pin is the upper bound (regression guard).
+        assert observed_latency < upper_bound_seconds, (
+            f"observed latency {observed_latency:.2f}s exceeded upper "
+            f"bound {upper_bound_seconds}s"
+        )
+        # Empirical record (visible in pytest -v output) so future runs
+        # can compare. Not asserted as a tight bound to avoid flakes.
+        # ASCII-only to survive Windows cp1252 stdout when run with -s.
+        print(
+            f"\n[T0400] CDC POST /agents -> /agents/search hit latency: "
+            f"{observed_latency:.3f}s (bound={upper_bound_seconds}s)"
+        )
+    finally:
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
