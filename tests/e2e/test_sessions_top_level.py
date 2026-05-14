@@ -1575,6 +1575,91 @@ async def test_t0310_predicate_gte_on_session_created_at_inclusive(
 
 
 # ============================================================================
+# T0320 — /v1/sessions with status="" and agent_id="" returns 200 list
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0320_sessions_filter_empty_status_string_rejected_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0320 — Empty-string filter values are NOT degraded to "no
+    filter" — Pydantic enum validation strictly rejects `status=""`
+    with 422 /errors/validation-error (since "" is not a valid
+    SessionStatus). This pins the strict-validation contract for
+    typed query params.
+
+    Reframed from the original wording (which assumed graceful
+    degradation); test discovered the API actually validates.
+    """
+    resp = await client.get("/v1/sessions?status=")
+    assert resp.status_code == 422, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/validation-error", envelope
+
+
+# ============================================================================
+# T0321 — /v1/sessions?graph_id=<missing> returns 200 with empty items
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0321_sessions_filter_bogus_graph_id_returns_empty_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0321 — Mirror of T0229 (bogus agent_id filter) for the
+    graph_id filter. Filtering by a non-existent graph_id must yield
+    200 with empty items (narrowing semantics, not validation).
+    """
+    missing = f"missing-graph-{unique_suffix}"
+    resp = await client.get(f"/v1/sessions?graph_id={missing}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "items" in body, body
+    assert body["items"] == [], (
+        f"filter by missing graph_id should yield empty list, got: "
+        f"{body['items']!r}"
+    )
+
+
+# ============================================================================
+# T0324 — POST /v1/workspaces/{wid}/sessions/{missing}/steer returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0324_steer_on_missing_session_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0324 — T0159 covers cancel/pause/resume on a missing session
+    id; steer was not pinned. Pin: steer on a missing session id
+    returns 404 /errors/not-found cleanly, completing the signal-verb
+    coverage matrix.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        missing_sid = f"missing-sess-{unique_suffix}"
+        resp = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{missing_sid}/steer",
+            json={"instruction": "this won't matter"},
+        )
+        assert resp.status_code == 404, resp.text
+        envelope = resp.json()
+        assert envelope["type"] == "/errors/not-found", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0242 — /v1/sessions?status=running with no RUNNING session returns 200 empty
 # ============================================================================
 

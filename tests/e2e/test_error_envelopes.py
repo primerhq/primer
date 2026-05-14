@@ -472,3 +472,52 @@ async def test_t0304_delete_on_collections_list_endpoint_returns_405(
     assert "GET" in allow_upper or "POST" in allow_upper, (
         f"Allow header {allow!r} should mention GET or POST"
     )
+
+
+# ============================================================================
+# T0322 — DELETE on /v1/sessions list endpoint returns 405 with Allow
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0322_delete_on_sessions_list_endpoint_returns_405(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0322 — Mirror of T0280/T0304 for the cross-workspace
+    /v1/sessions router. DELETE on the list path is not a documented
+    verb (per spec §12: top-level Sessions is GET + POST /find +
+    GET /{id} only). 405 with non-empty Allow.
+    """
+    resp = await client.request("DELETE", "/v1/sessions")
+    assert resp.status_code == 405, resp.text
+    allow = resp.headers.get("allow", "")
+    assert allow, f"405 should set Allow header; got {allow!r}"
+    allow_upper = allow.upper()
+    assert "GET" in allow_upper or "POST" in allow_upper, (
+        f"Allow header {allow!r} should mention GET or POST"
+    )
+
+
+# ============================================================================
+# T0323 — PATCH on /v1/workers list endpoint returns 405 with Allow
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0323_patch_on_workers_list_endpoint_returns_405(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0323 — Mirror of T0281 for the read-only /v1/workers router.
+    PATCH on the list path is not a documented verb (per spec §6:
+    workers is GET only at the list path; only POST /{id}/drain is
+    mounted on instance paths). 405 with non-empty Allow.
+    """
+    resp = await client.request("PATCH", "/v1/workers", json={})
+    assert resp.status_code == 405, resp.text
+    allow = resp.headers.get("allow", "")
+    assert allow, f"405 should set Allow header; got {allow!r}"
+    allow_upper = allow.upper()
+    assert "GET" in allow_upper, (
+        f"Allow header {allow!r} should mention GET (the only "
+        f"documented verb on /v1/workers list)"
+    )
