@@ -1891,6 +1891,77 @@ async def test_t0302_workspaces_get_cursor_empty_returns_400(
 
 
 # ============================================================================
+# T0311 — Predicate `~=` LIKE is case-sensitive
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0311_predicate_like_is_case_sensitive(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0311 — Pin Postgres LIKE semantics (vs ILIKE): the `~=`
+    operator should be case-sensitive. Seed a toolset with a
+    lowercase id; an uppercase pattern returns 0 rows, the lowercase
+    pattern returns the row.
+    """
+    # Use predictable lowercase suffix
+    base = f"ts-t0311-{unique_suffix}"
+    lowercase_id = f"{base}-alpha"
+    try:
+        r = await client.post(
+            "/v1/toolsets",
+            json={
+                "id": lowercase_id,
+                "provider": "mcp",
+                "config": {
+                    "transport": "stdio",
+                    "config": {"command": ["echo"]},
+                },
+            },
+        )
+        assert r.status_code == 201, r.text
+
+        # Uppercase LIKE pattern
+        upper_body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{base.upper()}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        upper_resp = await client.post("/v1/toolsets/find", json=upper_body)
+        assert upper_resp.status_code == 200, upper_resp.text
+        upper_ids = [item["id"] for item in upper_resp.json()["items"]]
+        assert lowercase_id not in upper_ids, (
+            f"uppercase LIKE pattern should NOT match lowercase id "
+            f"if LIKE is case-sensitive (Postgres LIKE). "
+            f"Got matches: {upper_ids!r}"
+        )
+
+        # Lowercase pattern matches
+        lower_body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{base}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        lower_resp = await client.post("/v1/toolsets/find", json=lower_body)
+        assert lower_resp.status_code == 200, lower_resp.text
+        lower_ids = [item["id"] for item in lower_resp.json()["items"]]
+        assert lowercase_id in lower_ids, (
+            f"lowercase LIKE pattern should match lowercase id: "
+            f"got {lower_ids!r}"
+        )
+    finally:
+        await client.delete(f"/v1/toolsets/{lowercase_id}")
+
+
+# ============================================================================
 # T0217 — find with order_by referencing unknown field returns clean 4xx
 # ============================================================================
 

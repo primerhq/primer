@@ -1496,6 +1496,85 @@ async def test_t0309_predicate_gt_on_session_created_at_datetime(
 
 
 # ============================================================================
+# T0310 — Predicate `>=` on Session.created_at is inclusive at boundary
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0310_predicate_gte_on_session_created_at_inclusive(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0310 — Symmetric to T0309. Predicate `>=` with the boundary
+    timestamp must INCLUDE the boundary session. Pin inclusive
+    semantics on the datetime path.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    seeded: list[tuple[str, str]] = []
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for _ in range(2):
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json=_session_body(agent_id=env["agent_id"]),
+            )
+            assert sess.status_code == 201, sess.text
+            seeded.append((sess.json()["id"], sess.json()["created_at"]))
+            await asyncio.sleep(0.1)
+
+        first_id, first_ts = seeded[0]
+        second_id, _ = seeded[1]
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "workspace_id"},
+                    "right": {"kind": "value", "value": workspace_id},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": ">=",
+                    "left": {"kind": "field", "name": "created_at"},
+                    "right": {"kind": "value", "value": first_ts},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"datetime >= leaked /errors/internal: {resp.text}"
+        )
+        if resp.status_code == 200:
+            ids = {item["id"] for item in resp.json()["items"]}
+            assert first_id in ids, (
+                f"created_at >= first_ts should INCLUDE the boundary "
+                f"session: {ids!r}"
+            )
+            assert second_id in ids, (
+                f"created_at >= first_ts should include the later "
+                f"session: {ids!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            for (sid, _ts) in seeded:
+                await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions/{sid}/cancel",
+                )
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0242 — /v1/sessions?status=running with no RUNNING session returns 200 empty
 # ============================================================================
 

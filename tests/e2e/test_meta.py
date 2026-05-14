@@ -413,6 +413,77 @@ async def test_t0260_options_workspace_files_multi_verb_allow_header(
 
 
 # ============================================================================
+# T0312 — 404 error response carries Content-Type: application/problem+json
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0312_404_error_carries_problem_json_content_type(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0312 — Spec §3 says all structured errors are RFC 7807
+    problem-details JSON. The Content-Type header on those responses
+    should be `application/problem+json` per the RFC, not generic
+    `application/json`.
+    """
+    resp = await client.get("/v1/agents/missing-agent-t0312")
+    assert resp.status_code == 404, resp.text
+    ct = resp.headers.get("content-type", "")
+    assert "problem+json" in ct.lower(), (
+        f"404 response should carry application/problem+json "
+        f"Content-Type per RFC 7807; got {ct!r}"
+    )
+
+
+# ============================================================================
+# T0313 — 422 validation-error response carries problem+json Content-Type
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0313_422_error_carries_problem_json_content_type(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0313 — Same RFC 7807 media type pin for the 422 path
+    (Pydantic-overridden validation envelope per spec §3).
+    """
+    resp = await client.post("/v1/llm_providers", json={})
+    assert resp.status_code == 422, resp.text
+    ct = resp.headers.get("content-type", "")
+    assert "problem+json" in ct.lower(), (
+        f"422 response should carry application/problem+json "
+        f"Content-Type; got {ct!r}"
+    )
+
+
+# ============================================================================
+# T0314 — 200 GET /v1/health carries Content-Type: application/json
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0314_200_health_carries_application_json_content_type(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0314 — Pin the success-path Content-Type so a future regression
+    that flips problem+json on 200s is caught. /v1/health is the
+    canonical 200 JSON endpoint.
+    """
+    resp = await client.get("/v1/health")
+    assert resp.status_code == 200, resp.text
+    ct = resp.headers.get("content-type", "")
+    # Must be json (e.g. "application/json" or
+    # "application/json; charset=utf-8") and NOT problem+json
+    assert "json" in ct.lower(), (
+        f"200 health response missing json content-type: {ct!r}"
+    )
+    assert "problem+json" not in ct.lower(), (
+        f"200 success response should NOT carry problem+json "
+        f"Content-Type; got {ct!r}"
+    )
+
+
+# ============================================================================
 # T0261 — OPTIONS on a POST-only search route returns clean response
 # ============================================================================
 
