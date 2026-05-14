@@ -856,3 +856,41 @@ async def test_t0390_problem_json_404_body_parses_as_json(
     assert isinstance(body.get("title"), str) and body["title"], body
     assert isinstance(body.get("detail"), str), body
     assert isinstance(body.get("instance"), str), body
+
+
+# ============================================================================
+# T0466 — OPTIONS on /sessions/{sid}/steer returns clean response with Allow
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0466_options_steer_route_clean_allow_header(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0466 — OPTIONS verb-table pin for the nested session steer
+    sub-resource. /v1/workspaces/{wid}/sessions/{sid}/steer is a
+    POST-only route (per spec §11). OPTIONS must respond cleanly
+    (200/204 with Allow listing POST, or 405 if the framework
+    doesn't auto-respond). NEVER /errors/internal.
+
+    The steer route is a deeply-nested sub-resource (4 path
+    segments) — this catches a regression where the OPTIONS
+    handler chokes on the nested workspace_id/session_id
+    placeholders.
+    """
+    # Use placeholder ids — OPTIONS doesn't need them to resolve to
+    # real rows; the verb-table check happens at the route layer.
+    resp = await client.request(
+        "OPTIONS",
+        "/v1/workspaces/any-wid/sessions/any-sid/steer",
+    )
+    assert resp.status_code < 500, resp.text
+    if resp.status_code in (200, 204):
+        allow = resp.headers.get("allow", "")
+        assert allow, (
+            f"OPTIONS {resp.status_code} but no Allow header"
+        )
+        # POST is the documented verb on this route
+        assert "POST" in allow.upper(), (
+            f"Allow header {allow!r} should include POST"
+        )

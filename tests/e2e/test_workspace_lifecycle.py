@@ -5749,3 +5749,284 @@ async def test_t0514_workspace_files_delete_missing_parent_dir_clean_404(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0515 — WorkspaceTemplate with explicit `files: []` materialises cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0515_workspace_template_explicit_empty_files_materialises(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0515 — Pin that explicitly setting `files: []` (empty
+    FileMount list) on a template materialises a workspace cleanly
+    — same outcome as omitting the field entirely (T0479 covers
+    explicit empty packages list; this is the FileMount complement).
+    /files list returns 200 (with the auto-created .state/.tmp dirs
+    plus zero seeded files).
+    """
+    provider_id = f"wp-t0515-{unique_suffix}"
+    template_id = f"wt-t0515-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    workspace_id: str | None = None
+    try:
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0515 explicit empty files",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "files": [],  # explicitly empty
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        files = await client.get(f"/v1/workspaces/{workspace_id}/files")
+        assert files.status_code == 200, files.text
+        items = files.json().get("items")
+        assert isinstance(items, list), files.json()
+
+        log = await client.get(f"/v1/workspaces/{workspace_id}/log")
+        assert log.status_code == 200, log.text
+        assert isinstance(log.json().get("commits"), list), log.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0516 — WorkspaceTemplate env value with special chars round-trips
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0516_workspace_template_env_special_chars_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0516 — Sibling of T0111 (env propagation with a simple
+    value). Pin: an env value containing shell-special characters
+    `${}"'\\n` survives through Pydantic SecretStr → JSONB storage
+    → subprocess env → init_command observation byte-exact.
+
+    The init_command writes os.environ['MARKER'] verbatim to a
+    file via Python's `open().write()` (no shell interpolation),
+    so we read back the exact bytes the runtime received.
+    """
+    provider_id = f"wp-t0516-{unique_suffix}"
+    template_id = f"wt-t0516-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    workspace_id: str | None = None
+
+    # Special-char marker — combination of $ } { " ' newline literal
+    # (escaped here so the JSON wire form preserves it), backslash
+    special_marker = (
+        f"sp-{unique_suffix}::dollar=$VAR::brace={{a}}::quote=\"::"
+        "apos='::backslash=\\\\::tab=\t"
+    )
+    try:
+        # Init command uses Python (no shell interpolation) to
+        # capture os.environ['MARKER'] verbatim
+        init_cmd = (
+            'python -c "import os; '
+            "open('marker.txt','w').write(os.environ['MARKER'])\""
+        )
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0516 special-char env",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "env": {"MARKER": special_marker},
+                "init_commands": [init_cmd],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "marker.txt"},
+        )
+        assert read.status_code == 200, read.text
+        observed = read.json()["content"]
+        assert observed == special_marker, (
+            f"env value corrupted across template→materialise→subprocess "
+            f"chain.\n  sent (len={len(special_marker)}): "
+            f"{special_marker!r}\n  got  (len={len(observed)}): "
+            f"{observed!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0517 — Two workspaces from same template are on-disk isolated
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0517_two_workspaces_same_template_isolated(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0517 — Materialise two workspaces from the same template,
+    write a file to A's workspace, then list B's workspace files.
+    Pin: A's file does NOT appear in B's listing — workspaces are
+    on-disk isolated, even when sharing the same template config.
+    Catches a regression where the local backend accidentally shared
+    a single root across instances.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    ws_a_id: str | None = None
+    ws_b_id: str | None = None
+    try:
+        ws_a = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws_a.status_code == 201, ws_a.text
+        ws_a_id = ws_a.json()["id"]
+
+        ws_b = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws_b.status_code == 201, ws_b.text
+        ws_b_id = ws_b.json()["id"]
+
+        # Sanity: distinct workspace ids
+        assert ws_a_id != ws_b_id, (ws_a_id, ws_b_id)
+
+        # Write a uniquely-named file in A
+        a_file = f"only-in-a-{unique_suffix}.txt"
+        put = await client.put(
+            f"/v1/workspaces/{ws_a_id}/files",
+            params={"path": a_file},
+            json={"content": "for-a-only", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        # B's listing must not contain that file
+        list_b = await client.get(f"/v1/workspaces/{ws_b_id}/files")
+        assert list_b.status_code == 200, list_b.text
+        b_paths = [item["path"] for item in list_b.json()["items"]]
+        assert a_file not in b_paths, (
+            f"workspace isolation broken: file {a_file!r} from "
+            f"ws-A appears in ws-B listing: {b_paths!r}"
+        )
+
+        # B's /files/read on the A-only path 404s
+        read_b = await client.get(
+            f"/v1/workspaces/{ws_b_id}/files/read",
+            params={"path": a_file},
+        )
+        assert read_b.status_code == 404, read_b.text
+
+        # Defence: A's listing DOES contain the file (proves the
+        # PUT actually landed somewhere)
+        list_a = await client.get(f"/v1/workspaces/{ws_a_id}/files")
+        assert list_a.status_code == 200, list_a.text
+        a_paths = [item["path"] for item in list_a.json()["items"]]
+        assert a_file in a_paths, (
+            f"PUT to ws-A didn't land in A's listing either: {a_paths!r}"
+        )
+    finally:
+        if ws_a_id is not None:
+            await client.delete(f"/v1/workspaces/{ws_a_id}")
+        if ws_b_id is not None:
+            await client.delete(f"/v1/workspaces/{ws_b_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0518 — Workspace files /download Content-Length matches body byte length
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0518_workspace_files_download_content_length_matches_body(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0518 — PUT a 1 MiB file then GET /files/download. Pin:
+    if the response carries a Content-Length header (StreamingResponse
+    may omit it depending on the backend), it equals the body byte
+    length exactly. Catches a regression where streaming download
+    emits a stale or off-by-one length.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # 1 MiB body — large enough to engage streaming if any
+        path = "downloadable-1mib.bin"
+        size = 1024 * 1024
+        body_text = "X" * size
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": body_text, "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        dl = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/download",
+            params={"path": path},
+        )
+        assert dl.status_code == 200, dl.text
+        # Body byte length matches what we wrote
+        assert len(dl.content) == size, (
+            f"download body size mismatch: expected {size}, got "
+            f"{len(dl.content)}"
+        )
+        # Content-Length header (if present) matches body byte length
+        cl = dl.headers.get("content-length")
+        if cl is not None:
+            assert int(cl) == size, (
+                f"Content-Length header {cl!r} doesn't match body "
+                f"byte length {size}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
