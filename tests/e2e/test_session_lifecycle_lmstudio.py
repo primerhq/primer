@@ -1434,6 +1434,80 @@ async def test_t0271_six_concurrent_sessions_on_capacity_four_terminate(
 
 
 # ============================================================================
+# T0282 — Predicate >= and <= on integer Session.turn_no after LM Studio run
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0282_predicate_gte_lte_on_session_turn_no(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0282 — Extends T0150 (only `>` pinned) to inclusive comparison
+    operators `>=` and `<=` on the integer Session.turn_no column.
+    After a session runs a real turn (turn_no > 0), the predicate
+    `turn_no >= 1` returns it; `turn_no <= 0` does NOT.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        final = await _run_one_session_to_terminal(
+            client,
+            workspace_id=workspace_id,
+            agent_id=env["agent_id"],
+        )
+        assert final["turn_no"] > 0  # T0131 invariant; sanity here
+        session_id = final["id"]
+
+        def _make_body(op: str, rhs: int) -> dict:
+            return {
+                "predicate": {
+                    "kind": "predicate",
+                    "op": "and",
+                    "left": {
+                        "kind": "predicate",
+                        "op": "=",
+                        "left": {"kind": "field", "name": "workspace_id"},
+                        "right": {"kind": "value", "value": workspace_id},
+                    },
+                    "right": {
+                        "kind": "predicate",
+                        "op": op,
+                        "left": {"kind": "field", "name": "turn_no"},
+                        "right": {"kind": "value", "value": rhs},
+                    },
+                },
+                "page": {"kind": "offset", "offset": 0, "length": 5},
+            }
+
+        # turn_no >= 1 should INCLUDE the session
+        gte = await client.post("/v1/sessions/find", json=_make_body(">=", 1))
+        assert gte.status_code == 200, gte.text
+        gte_ids = {item["id"] for item in gte.json()["items"]}
+        assert session_id in gte_ids, (
+            f"turn_no >= 1 should include the run session: {gte.json()!r}"
+        )
+
+        # turn_no <= 0 should NOT include the session
+        lte = await client.post("/v1/sessions/find", json=_make_body("<=", 0))
+        assert lte.status_code == 200, lte.text
+        lte_ids = {item["id"] for item in lte.json()["items"]}
+        assert session_id not in lte_ids, (
+            f"turn_no <= 0 should NOT include the run session "
+            f"(turn_no={final['turn_no']}): {lte.json()!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0179 — concurrent steer + cancel: cancel converges to terminal cleanly
 # ============================================================================
 

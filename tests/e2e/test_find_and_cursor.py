@@ -1777,6 +1777,62 @@ async def test_t0279_predicate_and_with_identical_clauses_idempotent(
 
 
 # ============================================================================
+# T0283 — Predicate `~=` with `_` single-char wildcard
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0283_predicate_like_underscore_single_char_wildcard(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0283 — Spec §4 says `~=` is SQL LIKE with `%` (any) and `_`
+    (single char). T0012 covers `%`; this pins `_`. Seed 3 toolsets
+    with prefix-suffix-1, prefix-suffix-22, prefix-suffix-3; LIKE
+    pattern `prefix-suffix-_` matches only the single-digit ones.
+    """
+    base = f"ts-t0283-{unique_suffix}"
+    one_char_ids = [f"{base}-1", f"{base}-3"]
+    two_char_id = f"{base}-22"
+    all_ids = one_char_ids + [two_char_id]
+    try:
+        for entity_id in all_ids:
+            r = await client.post(
+                "/v1/toolsets",
+                json={
+                    "id": entity_id,
+                    "provider": "mcp",
+                    "config": {
+                        "transport": "stdio",
+                        "config": {"command": ["echo"]},
+                    },
+                },
+            )
+            assert r.status_code == 201, r.text
+
+        # LIKE pattern with one trailing _ — matches only single-char tails
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{base}-_"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out = sorted(item["id"] for item in resp.json()["items"])
+        assert out == sorted(one_char_ids), (
+            f"`_` wildcard should match single-char only; "
+            f"expected {sorted(one_char_ids)!r}, got {out!r}"
+        )
+        assert two_char_id not in out
+    finally:
+        for entity_id in all_ids:
+            await client.delete(f"/v1/toolsets/{entity_id}")
+
+
+# ============================================================================
 # T0217 — find with order_by referencing unknown field returns clean 4xx
 # ============================================================================
 

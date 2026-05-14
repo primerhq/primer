@@ -334,3 +334,52 @@ async def test_t0209_post_with_wrong_content_type_returns_clean_4xx(
     # RFC 7807 shape sanity
     for key in ("type", "title", "status", "detail"):
         assert key in envelope, f"missing key {key!r}: {envelope!r}"
+
+
+# ============================================================================
+# T0280 — DELETE on /v1/llm_providers list endpoint returns 405 with Allow
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0280_delete_on_llm_providers_list_endpoint_returns_405(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0280 — DELETE on the entity-collection path (no `{id}`) is not
+    a documented verb. Per spec §5, the generator mounts POST/GET on
+    the collection path and only DELETE on `/{id}`. Pin: 405 with
+    non-empty Allow header listing the actual collection-level verbs.
+    """
+    resp = await client.request("DELETE", "/v1/llm_providers")
+    assert resp.status_code == 405, resp.text
+    allow = resp.headers.get("allow", "")
+    assert allow, f"405 response should set Allow header; got {allow!r}"
+    # Collection endpoint supports GET (list) and POST (create) at
+    # minimum — Allow must mention at least one of those
+    allow_upper = allow.upper()
+    assert "GET" in allow_upper or "POST" in allow_upper, (
+        f"Allow header {allow!r} should mention GET or POST"
+    )
+
+
+# ============================================================================
+# T0281 — PATCH on /v1/toolsets list endpoint returns 405 with non-empty Allow
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0281_patch_on_toolsets_list_endpoint_returns_405(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0281 — PATCH on the list endpoint is not documented. Mirror
+    of T0185 (which covered PATCH on the instance endpoint) for the
+    collection-list path.
+    """
+    resp = await client.request("PATCH", "/v1/toolsets", json={})
+    assert resp.status_code == 405, resp.text
+    allow = resp.headers.get("allow", "")
+    assert allow, f"405 response should set Allow header; got {allow!r}"
+    allow_upper = allow.upper()
+    assert "GET" in allow_upper or "POST" in allow_upper, (
+        f"Allow header {allow!r} should mention GET or POST"
+    )

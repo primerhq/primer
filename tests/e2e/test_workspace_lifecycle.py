@@ -3050,3 +3050,84 @@ async def test_t0275_workspace_files_listing_is_non_recursive(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0284 — POST /v1/workspaces/find with predicate filters by template_id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0284_workspaces_find_with_predicate_filters_by_template(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0284 — The bespoke /v1/workspaces router exposes /find for
+    predicate-based filtering (per spec §12). Seed 2 templates +
+    workspaces from each; POST /find filtering by template_id returns
+    only the workspaces from the targeted template.
+    """
+    provider_id, template_id_a = await _setup_provider_template(
+        client, suffix=f"{unique_suffix}-a", root=tmp_path,
+    )
+    # Use a separate suffix to get a second template; reuse provider
+    template_id_b = f"wt-{unique_suffix}-b"
+    tpl_b = await client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": template_id_b,
+            "description": "T0284 second template",
+            "provider_id": provider_id,
+            "backend": {"kind": "local"},
+        },
+    )
+    assert tpl_b.status_code == 201, tpl_b.text
+
+    workspaces_a: list[str] = []
+    workspaces_b: list[str] = []
+    try:
+        # 2 workspaces from template_a, 1 from template_b
+        for _ in range(2):
+            ws = await client.post(
+                "/v1/workspaces",
+                json={"template_id": template_id_a},
+            )
+            assert ws.status_code == 201, ws.text
+            workspaces_a.append(ws.json()["id"])
+
+        ws_b = await client.post(
+            "/v1/workspaces",
+            json={"template_id": template_id_b},
+        )
+        assert ws_b.status_code == 201, ws_b.text
+        workspaces_b.append(ws_b.json()["id"])
+
+        # POST /find with predicate template_id = template_id_a
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "template_id"},
+                "right": {"kind": "value", "value": template_id_a},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/workspaces/find", json=body)
+        assert resp.status_code == 200, resp.text
+        ids = {item["id"] for item in resp.json()["items"]}
+        # All template_a workspaces present
+        for wid in workspaces_a:
+            assert wid in ids, (
+                f"workspace {wid!r} from template_a missing from /find "
+                f"results: {ids!r}"
+            )
+        # template_b workspace NOT present
+        for wid in workspaces_b:
+            assert wid not in ids, (
+                f"workspace {wid!r} from template_b unexpectedly in "
+                f"template_a /find results: {ids!r}"
+            )
+    finally:
+        for wid in workspaces_a + workspaces_b:
+            await client.delete(f"/v1/workspaces/{wid}")
+        await client.delete(f"/v1/workspace_templates/{template_id_b}")
+        await _teardown_provider_template(client, provider_id, template_id_a)
