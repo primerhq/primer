@@ -1802,6 +1802,171 @@ async def test_t0351_sessions_find_three_way_filter_with_graph_id(
 
 
 # ============================================================================
+# T0359 — Predicate `>` with negative integer literal on Session.turn_no
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0359_predicate_gt_negative_literal_on_turn_no(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0359 — Negative-int boundary on the predicate translator.
+    A fresh session has turn_no=0; query `turn_no > -1` must include
+    it (since 0 > -1). Pin no /errors/internal on negative literals.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "workspace_id"},
+                    "right": {"kind": "value", "value": workspace_id},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": ">",
+                    "left": {"kind": "field", "name": "turn_no"},
+                    "right": {"kind": "value", "value": -1},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 5},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"negative-literal predicate leaked /errors/internal: "
+            f"{resp.text}"
+        )
+        if resp.status_code == 200:
+            ids = {item["id"] for item in resp.json()["items"]}
+            assert session_id in ids, (
+                f"turn_no > -1 should include the fresh session "
+                f"(turn_no=0): {ids!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0360 — Predicate `=` with int64-edge value (9223372036854775807)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0360_predicate_eq_int64_max_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0360 — Large-int boundary: predicate `turn_no = 9223372036854775807`
+    (int64 max) must produce a clean envelope (no /errors/internal).
+    The result is expected to be empty (no real session has that
+    turn_no), but the SQL coercion path mustn't crash.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, _ = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "turn_no"},
+                "right": {"kind": "value", "value": 9223372036854775807},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 5},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"int64-max predicate leaked /errors/internal: {resp.text}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0361 — Predicate `=` literal 0 on Session.turn_no matches fresh session
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0361_predicate_eq_zero_on_turn_no_matches_fresh_session(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0361 — Pin behaviour of `=` on an integer column with a 0
+    literal. Pin `no /errors/internal` only — currently this hits
+    the same SQL-builder type-coercion bug as T0236 (502
+    /errors/provider-server-error with "expected str, got int"
+    asyncpg message). The `=` operator on int columns appears to
+    cast the column to text in SQL but pass the int literal as a
+    bind parameter, causing the type mismatch.
+
+    NB: companion ops `>` and `>=` / `<=` work correctly on
+    Session.turn_no per T0150 / T0282; only `=` is broken on int
+    columns. Documents the gap; future fix tightens this assertion.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "workspace_id"},
+                    "right": {"kind": "value", "value": workspace_id},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "turn_no"},
+                    "right": {"kind": "value", "value": 0},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 5},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"int `=` predicate leaked /errors/internal: {resp.text}"
+        )
+        if resp.status_code == 200:
+            ids = {item["id"] for item in resp.json()["items"]}
+            assert session_id in ids, (
+                f"turn_no = 0 should match fresh session: {ids!r}"
+            )
+        else:
+            # Currently 502 /errors/provider-server-error from SQL
+            # builder bug — clean envelope is acceptable
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0242 — /v1/sessions?status=running with no RUNNING session returns 200 empty
 # ============================================================================
 

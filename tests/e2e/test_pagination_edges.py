@@ -275,3 +275,75 @@ async def test_t0300_pagination_limit_zero_rejected_422(
     body = resp.json()
     assert body["type"] == "/errors/validation-error", body
     assert body["status"] == 422
+
+
+# ============================================================================
+# T0362 — OffsetPageResponse.total is a non-null integer for CRUD entities
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0362_offset_page_total_is_non_null_int_for_crud_entities(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0362 — Spec §4 says the cheap-count backend MAY return None
+    for `total` if it can't supply a count cheaply. Pin that the
+    standard CRUD entities (Toolset, LLMProvider) DO return a real
+    int total in the offset envelope (the Postgres backend is
+    cheap-count for these tables).
+    """
+    for url in ("/v1/toolsets", "/v1/llm_providers"):
+        resp = await client.get(f"{url}?limit=10&offset=0")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert "total" in body, body
+        total = body["total"]
+        assert isinstance(total, int), (
+            f"{url} `total` should be an int (cheap-count backend), "
+            f"got {total!r} (type={type(total).__name__})"
+        )
+        assert total >= 0, (
+            f"{url} `total` should be >= 0, got {total}"
+        )
+
+
+# ============================================================================
+# T0363 — OffsetPageResponse.length equals len(items) on partial last page
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0363_offset_page_length_equals_items_count_on_partial_page(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0363 — Stricter than T0118 (total stability). Pin that
+    `length` exactly mirrors `len(items)` even on a partial last
+    page (where length < the requested limit).
+
+    Seed 7 toolsets, walk in chunks of 3 → final page has 1 entry,
+    so length=1 and len(items)=1.
+    """
+    prefix = f"ts-t0363-{unique_suffix}"
+    seeded = await _seed_toolsets(client, prefix, 7)
+    try:
+        for offset in (0, 3, 6):
+            body = {
+                "predicate": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "page": {"kind": "offset", "offset": offset, "length": 3},
+            }
+            resp = await client.post("/v1/toolsets/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            assert "length" in page, page
+            assert "items" in page, page
+            assert page["length"] == len(page["items"]), (
+                f"page at offset={offset} mismatch: length={page['length']} "
+                f"vs len(items)={len(page['items'])}; page={page!r}"
+            )
+    finally:
+        await _delete_toolsets(client, seeded)
