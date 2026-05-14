@@ -1656,6 +1656,127 @@ async def test_t0257_predicate_swapped_operand_kinds_clean_envelope(
 
 
 # ============================================================================
+# T0276 — order_by on JSONB list-item path returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0276_order_by_jsonb_list_item_path_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0276 — Predicate/order-builder edge case: order_by on a path
+    that includes a list index (`models.0.name`). The predicate
+    builder may not support list-index syntax; the contract pin is
+    "no /errors/internal" — accept either a 200 (sort applied) or
+    a clean 4xx/5xx-non-internal.
+    """
+    prefix = f"llm-t0276-{unique_suffix}"
+    ids = []
+    try:
+        for i in range(3):
+            entity_id = f"{prefix}-{i}"
+            r = await client.post(
+                "/v1/llm_providers",
+                json={
+                    "id": entity_id,
+                    "provider": "anthropic",
+                    "models": [{"name": f"model-z-{i}",
+                                 "context_length": 200_000}],
+                    "config": {"api_key": "sk-test"},
+                    "limits": {"max_concurrency": 1},
+                },
+            )
+            assert r.status_code == 201, r.text
+            ids.append(entity_id)
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+            "order_by": [{"field": "models.0.name", "direction": "asc"}],
+        }
+        resp = await client.post("/v1/llm_providers/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"order_by JSONB list-index leaked /errors/internal: "
+            f"{resp.text}"
+        )
+    finally:
+        for entity_id in ids:
+            await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0279 — predicate `and` with identical left/right returns single-clause set
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0279_predicate_and_with_identical_clauses_idempotent(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0279 — `op="and"` is binary (left+right per spec §4). When
+    left and right are the SAME predicate, the result MUST equal the
+    result of evaluating either lone clause. Pins boolean operator
+    idempotency / no double-counting.
+
+    NB: spec doesn't define a "single-element clauses array" since
+    and/or take left+right; this test reframes T0279's original
+    wording to the spec-compatible variant.
+    """
+    prefix = f"ts-t0279-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        like_clause = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+
+        # Single-clause baseline
+        baseline = await client.post(
+            "/v1/toolsets/find",
+            json={
+                "predicate": like_clause,
+                "page": {"kind": "offset", "offset": 0, "length": 50},
+            },
+        )
+        assert baseline.status_code == 200, baseline.text
+        baseline_ids = sorted(item["id"] for item in baseline.json()["items"])
+
+        # AND with the same clause on both sides
+        andthe = await client.post(
+            "/v1/toolsets/find",
+            json={
+                "predicate": {
+                    "kind": "predicate",
+                    "op": "and",
+                    "left": like_clause,
+                    "right": like_clause,
+                },
+                "page": {"kind": "offset", "offset": 0, "length": 50},
+            },
+        )
+        assert andthe.status_code == 200, andthe.text
+        and_ids = sorted(item["id"] for item in andthe.json()["items"])
+
+        assert baseline_ids == and_ids, (
+            f"AND of identical clauses should be idempotent: "
+            f"baseline={baseline_ids!r} vs AND={and_ids!r}"
+        )
+        assert sorted(ids) == baseline_ids, (
+            f"baseline missed seeded rows: {baseline_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
 # T0217 — find with order_by referencing unknown field returns clean 4xx
 # ============================================================================
 

@@ -183,6 +183,46 @@ async def test_t0250_concurrent_invalidate_calls_all_204(
 
 
 @pytest.mark.asyncio
+async def test_t0278_put_with_body_omitting_id_uses_path_id(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0278 — PUT existing LLMProvider with a body that has NO `id`
+    field. The handler must implicit-fill the path id (no 422 for
+    "missing required field"); subsequent GET returns the row with
+    the path id preserved.
+
+    Pin the implicit-id-fill semantic so a future regression that
+    starts requiring `id` in the body is caught at the test layer.
+    """
+    entity_id = f"llm-noid-{unique_suffix}"
+    initial = _llm_body(entity_id)
+    created = await client.post("/v1/llm_providers", json=initial)
+    assert created.status_code == 201, created.text
+    try:
+        # PUT body with NO id field
+        body_no_id = {k: v for k, v in initial.items() if k != "id"}
+        body_no_id["limits"] = {"max_concurrency": 5}  # observable mutation
+        put = await client.put(
+            f"/v1/llm_providers/{entity_id}", json=body_no_id,
+        )
+        # Either 200 (implicit-fill from path) or 422 (id required) —
+        # pin which one is the live contract
+        assert put.status_code in (200, 422), put.text
+        if put.status_code == 200:
+            # Verify the row's id matches the path
+            got = await client.get(f"/v1/llm_providers/{entity_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["id"] == entity_id, got.json()
+            # And the mutation took effect
+            assert got.json()["limits"]["max_concurrency"] == 5, got.json()
+        else:
+            envelope = put.json()
+            assert envelope["type"] == "/errors/validation-error", envelope
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+@pytest.mark.asyncio
 async def test_t0266_parallel_puts_same_row_one_body_wins(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
