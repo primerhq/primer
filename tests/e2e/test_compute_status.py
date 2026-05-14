@@ -1031,3 +1031,63 @@ async def test_t0194_self_referential_graph_clean_envelope(
         envelope = create.json()
         assert envelope["type"].startswith("/errors/"), envelope
         assert envelope["type"] != "/errors/internal", envelope
+
+
+# ============================================================================
+# T0384 — Agent referencing model name not in provider.models flips ok=false
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0384_agent_status_flags_model_not_in_provider_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0384 — Create LLMProvider with models=["model-a"]; create
+    Agent referencing the SAME provider but with model_name="model-b"
+    (not in the provider's list). Pin: status returns clean envelope
+    (no /errors/internal). The walker may or may not enforce model
+    membership — record the observed contract.
+    """
+    provider_id = f"llm-t0384-{unique_suffix}"
+    agent_id = f"agent-t0384-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/llm_providers",
+        json={
+            "id": provider_id,
+            "provider": "anthropic",
+            "models": [{"name": "model-a", "context_length": 1024}],
+            "config": {"api_key": "sk-test"},
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    assert pr.status_code == 201, pr.text
+
+    ag = await client.post(
+        "/v1/agents",
+        json={
+            "id": agent_id,
+            "description": "T0384",
+            "model": {
+                "provider_id": provider_id,
+                "model_name": "model-b",
+            },
+            "tools": [],
+        },
+    )
+    assert ag.status_code == 201, ag.text
+    try:
+        status = await client.get(f"/v1/agents/{agent_id}/status")
+        assert status.status_code == 200, status.text
+        body = status.json()
+        assert body.get("type") != "/errors/internal", body
+        assert "ok" in body, body
+        assert isinstance(body.get("issues"), list), body
+        # Soft pin — log observed behaviour for spec
+        print(
+            f"[T0384] agent referencing model 'model-b' (not in provider): "
+            f"ok={body['ok']}, issues={body['issues']!r}"
+        )
+    finally:
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")

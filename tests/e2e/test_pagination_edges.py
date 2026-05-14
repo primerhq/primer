@@ -347,3 +347,92 @@ async def test_t0363_offset_page_length_equals_items_count_on_partial_page(
             )
     finally:
         await _delete_toolsets(client, seeded)
+
+
+# ============================================================================
+# T0385 — Pagination `total` reflects the filtered set, not the table
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0385_pagination_total_reflects_filtered_set(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0385 — POST /find with a LIKE predicate must report `total`
+    equal to the count of MATCHING rows, not the whole table size.
+    Seed N matching rows + M unrelated rows; total should be N.
+    """
+    prefix = f"ts-t0385-{unique_suffix}"
+    other_prefix = f"ts-other-t0385-{unique_suffix}"
+    matching_n = 4
+    unrelated_m = 3
+
+    matching_ids = await _seed_toolsets(client, prefix, matching_n)
+    unrelated_ids = await _seed_toolsets(
+        client, other_prefix, unrelated_m,
+    )
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        page = resp.json()
+        assert page["total"] == matching_n, (
+            f"total should reflect filtered set ({matching_n}), got "
+            f"{page['total']}; page={page!r}"
+        )
+    finally:
+        await _delete_toolsets(client, matching_ids)
+        await _delete_toolsets(client, unrelated_ids)
+
+
+# ============================================================================
+# T0386 — Cursor walk does NOT have `total`; offset walk does
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0386_cursor_response_omits_total_offset_includes_it(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0386 — Pin runtime: the same predicate evaluated with cursor
+    pagination must NOT carry `total` (per spec §4 CursorPageResponse
+    shape; corrected in T0255), while offset pagination MUST carry it.
+    """
+    prefix = f"ts-t0386-{unique_suffix}"
+    seeded = await _seed_toolsets(client, prefix, 3)
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+
+        offset_body = {
+            "predicate": predicate,
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        offset_resp = await client.post("/v1/toolsets/find", json=offset_body)
+        assert offset_resp.status_code == 200, offset_resp.text
+        assert "total" in offset_resp.json(), offset_resp.json()
+
+        cursor_body = {
+            "predicate": predicate,
+            "page": {"kind": "cursor", "cursor": None, "length": 50},
+        }
+        cursor_resp = await client.post("/v1/toolsets/find", json=cursor_body)
+        assert cursor_resp.status_code == 200, cursor_resp.text
+        assert "total" not in cursor_resp.json(), (
+            f"CursorPageResponse should NOT carry `total` (per spec §4); "
+            f"got {cursor_resp.json()!r}"
+        )
+    finally:
+        await _delete_toolsets(client, seeded)

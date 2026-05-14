@@ -681,6 +681,67 @@ async def test_t0375_rfc7807_instance_echoes_full_request_path(
 
 
 # ============================================================================
+# T0387 — DELETE 204 response body is empty and Content-Length=0
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0387_delete_204_body_empty_content_length_zero(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0387 — Pin the documented DELETE response shape: 204 with
+    empty body. Content-Length should be 0 (or absent — both are
+    valid HTTP for 204).
+    """
+    entity_id = f"ts-t0387-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "mcp",
+        "config": {
+            "transport": "stdio",
+            "config": {"command": ["echo"]},
+        },
+    }
+    create = await client.post("/v1/toolsets", json=body)
+    assert create.status_code == 201, create.text
+
+    resp = await client.delete(f"/v1/toolsets/{entity_id}")
+    assert resp.status_code == 204, resp.text
+    assert resp.content == b"", (
+        f"DELETE 204 should have empty body; got {resp.content!r}"
+    )
+    cl = resp.headers.get("content-length")
+    # Content-Length is 0 if present (not required for 204)
+    if cl is not None:
+        assert cl == "0", (
+            f"DELETE 204 Content-Length should be 0; got {cl!r}"
+        )
+
+
+# ============================================================================
+# T0388 — GET response Content-Length matches body byte length
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0388_get_content_length_matches_body_bytes(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0388 — Sanity-check the framework isn't emitting a stale
+    Content-Length on a list endpoint. If Content-Length is present,
+    it must equal the actual body byte length.
+    """
+    resp = await client.get("/v1/llm_providers")
+    assert resp.status_code == 200, resp.text
+    cl = resp.headers.get("content-length")
+    if cl is not None:
+        assert int(cl) == len(resp.content), (
+            f"Content-Length mismatch: header={cl}, "
+            f"body bytes={len(resp.content)}"
+        )
+
+
+# ============================================================================
 # T0261 — OPTIONS on a POST-only search route returns clean response
 # ============================================================================
 
