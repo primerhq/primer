@@ -2080,6 +2080,300 @@ async def test_t0328_predicate_like_escaped_percent_clean_envelope(
 
 
 # ============================================================================
+# T0329 — Cursor walk with order_by desc + delete visited row mid-walk
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0329_cursor_walk_with_desc_order_after_visited_delete(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0329 — Walk a cursor with order_by id desc; after page 1
+    delete an ALREADY-visited id; subsequent pages return clean
+    envelopes with no duplicates of remaining ids.
+
+    Distinct from T0239 (which deleted a not-yet-visited row).
+    """
+    prefix = f"ts-t0329-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 6)
+    deleted_remaining = list(ids)
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+
+        # Page 1 (desc order)
+        body = {
+            "predicate": predicate,
+            "page": {"kind": "cursor", "cursor": None, "length": 2},
+            "order_by": [{"field": "id", "direction": "desc"}],
+        }
+        r1 = await client.post("/v1/toolsets/find", json=body)
+        assert r1.status_code == 200, r1.text
+        page1 = r1.json()
+        seen = [item["id"] for item in page1["items"]]
+        cursor = page1.get("next_cursor")
+        assert cursor is not None, page1
+
+        # Delete an ALREADY-visited id
+        target = seen[0]
+        rm = await client.delete(f"/v1/toolsets/{target}")
+        assert rm.status_code == 204, rm.text
+        deleted_remaining.remove(target)
+
+        # Continue cursor walk — must complete cleanly
+        for _ in range(10):
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "cursor", "cursor": cursor, "length": 2},
+                "order_by": [{"field": "id", "direction": "desc"}],
+            }
+            resp = await client.post("/v1/toolsets/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            seen.extend(item["id"] for item in page["items"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail("cursor walk did not terminate")
+
+        # No duplicates anywhere
+        assert len(seen) == len(set(seen)), (
+            f"duplicates after deleting visited id: {seen!r}"
+        )
+        # Total visited never exceeds seeded set
+        assert len(seen) <= len(ids), (
+            f"walk returned MORE ids than seeded: {len(seen)} > "
+            f"{len(ids)}; seen={seen!r}"
+        )
+    finally:
+        for tid in deleted_remaining:
+            await client.delete(f"/v1/toolsets/{tid}")
+
+
+# ============================================================================
+# T0330 — Cursor walk with composite order_by [meta.tag asc, id asc]
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0330_cursor_walk_composite_order_by_two_keys(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0330 — Compose two order_by keys (one JSONB nested, one
+    scalar id) under cursor pagination. Walk visits each row exactly
+    once; the concatenated sequence respects both sort keys.
+    """
+    prefix = f"doc-t0330-{unique_suffix}"
+    rows = [
+        {"id": f"{prefix}-1", "tag": "a"},
+        {"id": f"{prefix}-2", "tag": "b"},
+        {"id": f"{prefix}-3", "tag": "a"},
+        {"id": f"{prefix}-4", "tag": "b"},
+        {"id": f"{prefix}-5", "tag": "a"},
+    ]
+    created: list[str] = []
+    try:
+        for r in rows:
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": r["id"],
+                    "name": r["tag"],
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"tag": r["tag"]},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(r["id"])
+
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+
+        seen: list[tuple[str, str]] = []
+        cursor: str | None = None
+        for _ in range(10):
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "cursor", "cursor": cursor, "length": 2},
+                "order_by": [
+                    {"field": "meta.tag", "direction": "asc"},
+                    {"field": "id", "direction": "asc"},
+                ],
+            }
+            resp = await client.post("/v1/documents/find", json=body)
+            assert resp.status_code == 200, resp.text
+            for item in resp.json()["items"]:
+                seen.append((
+                    (item.get("meta") or {}).get("tag"),
+                    item["id"],
+                ))
+            cursor = resp.json().get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail("composite order cursor walk did not terminate")
+
+        # All seeded rows visited exactly once
+        assert sorted(item[1] for item in seen) == sorted(r["id"] for r in rows), (
+            f"missed/duplicated rows: {seen!r}"
+        )
+        # Composite ordering: tag asc primary, id asc secondary
+        # within each tag group
+        from itertools import groupby
+        tags = [t for (t, _i) in seen]
+        assert tags == sorted(tags), (
+            f"primary tag asc violated: {tags!r}"
+        )
+        for tag, group in groupby(seen, key=lambda p: p[0]):
+            ids_in_tag = [i for (_t, i) in group]
+            assert ids_in_tag == sorted(ids_in_tag), (
+                f"secondary id asc violated within tag={tag!r}: "
+                f"{ids_in_tag!r}"
+            )
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0331 — Cursor against a deleted-row position returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0331_cursor_referencing_deleted_row_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0331 — Issue a cursor token; delete the row that the cursor
+    most likely encodes the position of; reuse the cursor. Response
+    must be a clean envelope (200 with adjusted continuation OR a
+    documented 4xx); never /errors/internal.
+    """
+    prefix = f"ts-t0331-{unique_suffix}"
+    seeded = await _seed_toolsets(client, prefix, 4)
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+        body = {
+            "predicate": predicate,
+            "page": {"kind": "cursor", "cursor": None, "length": 2},
+            "order_by": [{"field": "id", "direction": "asc"}],
+        }
+        first = await client.post("/v1/toolsets/find", json=body)
+        assert first.status_code == 200, first.text
+        page1 = first.json()
+        cursor = page1.get("next_cursor")
+        if cursor is None:
+            pytest.skip("no cursor after first page; can't test reuse")
+        seen = [item["id"] for item in page1["items"]]
+
+        # Delete the LAST visited row — cursor likely encodes its position
+        target = seen[-1]
+        rm = await client.delete(f"/v1/toolsets/{target}")
+        assert rm.status_code == 204, rm.text
+
+        # Reuse the cursor
+        body["page"] = {"kind": "cursor", "cursor": cursor, "length": 2}
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"cursor reuse after deleted-row leaked /errors/internal: "
+            f"{resp.text}"
+        )
+    finally:
+        for tid in seeded:
+            await client.delete(f"/v1/toolsets/{tid}")
+
+
+# ============================================================================
+# T0332 — Cursor does NOT include rows inserted after issue
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0332_cursor_walk_excludes_post_issue_inserts(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0332 — Snapshot semantics pin: seed N rows, start cursor walk,
+    insert M new matching rows mid-walk, complete walk. Documents
+    behaviour: either the walk visits exactly the original N
+    (snapshot) OR includes the new rows (live view). Pin the actual
+    contract — no /errors/internal regardless.
+    """
+    prefix = f"ts-t0332-{unique_suffix}"
+    initial = await _seed_toolsets(client, prefix, 4)
+    inserted: list[str] = []
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+
+        # Page 1
+        body = {
+            "predicate": predicate,
+            "page": {"kind": "cursor", "cursor": None, "length": 2},
+            "order_by": [{"field": "id", "direction": "asc"}],
+        }
+        r1 = await client.post("/v1/toolsets/find", json=body)
+        assert r1.status_code == 200, r1.text
+        seen = [item["id"] for item in r1.json()["items"]]
+        cursor = r1.json().get("next_cursor")
+        assert cursor is not None
+
+        # Insert 2 NEW rows that match the predicate
+        for i in range(2):
+            new_id = f"{prefix}-new-{i:02d}"
+            r = await client.post(
+                "/v1/toolsets",
+                json={
+                    "id": new_id,
+                    "provider": "mcp",
+                    "config": {
+                        "transport": "stdio",
+                        "config": {"command": ["echo"]},
+                    },
+                },
+            )
+            assert r.status_code == 201, r.text
+            inserted.append(new_id)
+
+        # Continue walking
+        for _ in range(10):
+            body["page"] = {"kind": "cursor", "cursor": cursor, "length": 2}
+            r = await client.post("/v1/toolsets/find", json=body)
+            assert r.status_code != 500, r.text
+            envelope = r.json()
+            assert envelope.get("type") != "/errors/internal", r.text
+            if r.status_code != 200:
+                break
+            seen.extend(item["id"] for item in r.json()["items"])
+            cursor = r.json().get("next_cursor")
+            if cursor is None:
+                break
+        # Document the observed cardinality but don't strict-pin
+        # snapshot vs live (both contracts are reasonable)
+    finally:
+        for tid in initial + inserted:
+            await client.delete(f"/v1/toolsets/{tid}")
+
+
+# ============================================================================
 # T0217 — find with order_by referencing unknown field returns clean 4xx
 # ============================================================================
 

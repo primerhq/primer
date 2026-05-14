@@ -2394,6 +2394,103 @@ async def test_t0299_search_concurrent_with_agent_update_clean(
 
 
 # ============================================================================
+# T0333 — POST /v1/agents/search with `filter` body field is silently ignored
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0333_search_filter_field_silently_ignored(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0333 — Spec §11 mentioned `filter?` on SearchRequest, but the
+    actual model only has `query` + `top_k` (T0174 documented this).
+    This test extends T0174 by confirming a `filter` body that WOULD
+    be restrictive (if implemented) yields the IDENTICAL result set
+    as a call without filter — proving the field is silently
+    dropped, not partially applied.
+    """
+    embedder_id = f"emb-t0333-{unique_suffix}"
+    llm_id = f"llm-t0333-{unique_suffix}"
+    agent_id = f"agent-t0333-{unique_suffix}"
+    marker = f"filter-ignored-marker-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    llm_created = False
+    agent_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(agent_id, provider_id=llm_id, description=marker),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        # Wait for indexing
+        for _ in range(60):
+            s = await client.post(
+                "/v1/agents/search",
+                json={"query": marker, "top_k": 5},
+            )
+            assert s.status_code == 200, s.text
+            ids = {h["document_id"] for h in s.json()["hits"]}
+            if agent_id in ids:
+                break
+            await asyncio.sleep(0.5)
+
+        # Search WITHOUT filter
+        no_filter = await client.post(
+            "/v1/agents/search",
+            json={"query": marker, "top_k": 10},
+        )
+        assert no_filter.status_code == 200, no_filter.text
+        no_filter_ids = sorted(
+            h["document_id"] for h in no_filter.json()["hits"]
+        )
+
+        # Search WITH a restrictive filter that, IF honoured, would
+        # exclude everything (impossible-id match)
+        with_filter = await client.post(
+            "/v1/agents/search",
+            json={
+                "query": marker,
+                "top_k": 10,
+                "filter": {"id": "definitely-no-match-xyz"},
+            },
+        )
+        assert with_filter.status_code == 200, with_filter.text
+        with_filter_ids = sorted(
+            h["document_id"] for h in with_filter.json()["hits"]
+        )
+
+        # Identical result sets — filter was silently dropped
+        assert no_filter_ids == with_filter_ids, (
+            f"filter field was applied (changed result set) — pin "
+            f"expected silent ignore: no_filter={no_filter_ids!r}, "
+            f"with_filter={with_filter_ids!r}"
+        )
+    finally:
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
 # T0303 — Bootstrap concurrent with /v1/agents/search returns clean envelopes
 # ============================================================================
 
