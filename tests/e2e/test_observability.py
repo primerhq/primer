@@ -489,3 +489,58 @@ async def test_t0356_log_file_grows_monotonically(
     assert size_after < 10 * 1024 * 1024, (
         f"log file exceeded 10 MiB cap unexpectedly: {size_after} bytes"
     )
+
+
+# ============================================================================
+# T0444 — Worker heartbeat advances monotonically across sequential samples
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0444_worker_heartbeat_advances_monotonically(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0444 — Sample /v1/workers every 2s for 12s (6 samples). The
+    bringup config sets `heartbeat_interval_seconds: 5`, so the
+    worker MUST advance `last_heartbeat` at least once during the
+    window. Pin three invariants:
+
+      - last_heartbeat is non-null on every sample
+      - timestamps are non-decreasing (no clock-skew or NULL→older
+        regression)
+      - at least one sample shows a strictly later timestamp than
+        the first (proves the heartbeat loop is running, not stuck)
+    """
+    import asyncio
+    from datetime import datetime
+
+    samples: list[str] = []
+    for i in range(6):
+        if i > 0:
+            await asyncio.sleep(2.0)
+        resp = await client.get("/v1/workers")
+        assert resp.status_code == 200, resp.text
+        items = resp.json()["items"]
+        assert items, f"sample {i}: no workers registered: {resp.text}"
+        worker = items[0]
+        hb = worker.get("last_heartbeat")
+        assert hb is not None, (
+            f"sample {i}: last_heartbeat is null: {worker!r}"
+        )
+        samples.append(hb)
+
+    # Parse all samples to datetimes for ordered comparison
+    parsed = [datetime.fromisoformat(s.replace("Z", "+00:00")) for s in samples]
+
+    # Non-decreasing across the window
+    for i in range(1, len(parsed)):
+        assert parsed[i] >= parsed[i - 1], (
+            f"heartbeat went backwards between sample {i-1} and {i}: "
+            f"{samples[i-1]!r} -> {samples[i]!r}"
+        )
+
+    # At least one strict advance (heartbeat loop is alive)
+    assert parsed[-1] > parsed[0], (
+        f"heartbeat did not advance across 12s window — heartbeat "
+        f"loop may be stuck. Samples: {samples!r}"
+    )

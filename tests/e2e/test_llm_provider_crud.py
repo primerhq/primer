@@ -261,3 +261,53 @@ async def test_t0032_put_then_invalidate_reflects_update(
         assert got.json()["limits"]["max_concurrency"] == 32
     finally:
         await client.delete(f"{base}/{entity_id}")
+
+
+# ============================================================================
+# T0448 — LLMProvider /models with single-item models list
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0448_llm_provider_models_endpoint_single_item(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0448 — Pin the singular case of GET /v1/llm_providers/{id}/
+    models. T0025 reframed pinned that this endpoint is row-cached
+    (returns configured names, NOT a live upstream call). With a
+    single-item models list, the response body must be
+    `{"models": ["<the only name>"]}` — exactly one entry.
+    """
+    # Use the openresponses provider pattern from T0025 — adapter
+    # construction needs a typed config and we don't want network
+    # hits, so point url at an unreachable port (the /models endpoint
+    # is row-cached per T0025 and never makes upstream calls).
+    entity_id = f"llm-t0448-{unique_suffix}"
+    only_name = "only-configured-model"
+    body = {
+        "id": entity_id,
+        "provider": "openresponses",
+        "models": [{"name": only_name, "context_length": 4096}],
+        "config": {
+            "url": "http://127.0.0.1:1",
+            "api_key": "sk-not-used",
+            "flavor": "other",
+        },
+        "limits": {"max_concurrency": 1},
+    }
+    create = await client.post("/v1/llm_providers", json=body)
+    assert create.status_code == 201, create.text
+    try:
+        resp = await client.get(f"/v1/llm_providers/{entity_id}/models")
+        assert resp.status_code == 200, resp.text
+        models = resp.json().get("models")
+        assert isinstance(models, list), resp.text
+        assert len(models) == 1, (
+            f"single-item models list should yield exactly one entry; "
+            f"got {models!r}"
+        )
+        assert models[0] == only_name, (
+            f"models[0]={models[0]!r}, expected {only_name!r}"
+        )
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")

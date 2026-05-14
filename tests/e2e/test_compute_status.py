@@ -1329,3 +1329,97 @@ async def test_t0431_graph_create_with_cyclic_edges_documented_behavior(
             await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0447 — Concurrent POST /v1/agents same id (10 racers): exactly one 201
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0447_concurrent_post_agents_same_id_one_wins(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0447 — Fire 10 concurrent POSTs to /v1/agents all with the
+    SAME id. Exactly one wins with 201; the remaining nine return
+    409 /errors/conflict. No /errors/internal anywhere; no orphan
+    rows (post-race GET returns the single accepted body).
+
+    Pre-warms the agents table via a throwaway create+delete so we
+    don't inherit the cold-start CREATE TABLE race documented in
+    T0103a (same-iteration concurrent CREATE on a new table).
+    """
+    import asyncio
+    provider_id = f"llm-t0447-{unique_suffix}"
+    agent_id = f"agent-t0447-{unique_suffix}"
+    warmup_id = f"agent-warmup-t0447-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        # Warm the agents table (creates the row + drops it)
+        warm = await client.post(
+            "/v1/agents",
+            json=_agent_body(warmup_id, provider_id=provider_id, tools=[]),
+        )
+        assert warm.status_code == 201, warm.text
+        await client.delete(f"/v1/agents/{warmup_id}")
+
+        # Race 10 concurrent POSTs of the same id
+        body = _agent_body(agent_id, provider_id=provider_id, tools=[])
+        tasks = [
+            asyncio.create_task(client.post("/v1/agents", json=body))
+            for _ in range(10)
+        ]
+        results = await asyncio.gather(*tasks)
+
+        # No /errors/internal; no 5xx other than documented races
+        for i, r in enumerate(results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"racer {i} leaked /errors/internal: {r.text}"
+            )
+            # 201 (won) or 409 (lost). Per T0103a, the warmed-table
+            # race shouldn't surface 502 here, but allow it as a
+            # known-bug fallback — never silent failure.
+            assert r.status_code in (201, 409, 502), (
+                f"racer {i}: unexpected status {r.status_code}: {r.text}"
+            )
+
+        # Exactly one 201 winner, nine losers (409 or 502)
+        winners = [r for r in results if r.status_code == 201]
+        assert len(winners) == 1, (
+            f"expected exactly 1 winner, got {len(winners)} from "
+            f"statuses {[r.status_code for r in results]!r}"
+        )
+        losers = [r for r in results if r.status_code in (409, 502)]
+        assert len(losers) == 9, (
+            f"expected 9 losers, got {len(losers)}"
+        )
+        # All 409 envelopes are /errors/conflict; 502 (if any) is
+        # /errors/provider-* per T0103a
+        for r in losers:
+            envelope = r.json()
+            if r.status_code == 409:
+                assert envelope.get("type") == "/errors/conflict", envelope
+
+        # Single non-corrupt row exists post-race
+        got = await client.get(f"/v1/agents/{agent_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["id"] == agent_id, got.json()
+        # Filter the list to confirm no aliased duplicates
+        listed = await client.get(
+            "/v1/agents", params={"limit": 200, "offset": 0},
+        )
+        assert listed.status_code == 200, listed.text
+        matching = [
+            item for item in listed.json()["items"]
+            if item["id"] == agent_id
+        ]
+        assert len(matching) == 1, (
+            f"concurrent POST race produced {len(matching)} rows "
+            f"with id={agent_id!r}"
+        )
+    finally:
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")

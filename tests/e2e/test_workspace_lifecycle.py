@@ -4934,3 +4934,152 @@ async def test_t0438_workspace_template_init_command_failure_clean_envelope(
     finally:
         await client.delete(f"/v1/workspace_templates/{template_id}")
         await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0445 — Workspace file PUT→READ→PUT preserves mtime advancement
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0445_workspace_files_mtime_advances_across_two_puts(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0445 — Two PUTs to the same path with a 1.5s sleep between
+    them. The second /files/info `mtime` field must be strictly
+    greater than the first; the size field must reflect the second
+    body. Filesystem mtime resolution is at most 1s on every common
+    filesystem we'd run on (NTFS, ext4, APFS), so 1.5s is safely
+    above the floor.
+    """
+    import asyncio
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        path = "mtime-probe.txt"
+        first_body = "first"
+        second_body = "second-body-much-longer"
+
+        # First PUT
+        put1 = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": first_body, "encoding": "text"},
+        )
+        assert put1.status_code == 204, put1.text
+        info1 = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": path},
+        )
+        assert info1.status_code == 200, info1.text
+        info1_body = info1.json()
+        mtime1 = info1_body.get("modified_at")
+        size1 = info1_body.get("size_bytes")
+        assert mtime1 is not None, info1_body
+        assert size1 == len(first_body.encode("utf-8")), info1_body
+
+        # Sleep across the filesystem mtime resolution boundary
+        await asyncio.sleep(1.5)
+
+        # Second PUT to the same path
+        put2 = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": second_body, "encoding": "text"},
+        )
+        assert put2.status_code == 204, put2.text
+        info2 = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": path},
+        )
+        assert info2.status_code == 200, info2.text
+        info2_body = info2.json()
+        mtime2 = info2_body.get("modified_at")
+        size2 = info2_body.get("size_bytes")
+
+        # mtime advanced (strictly greater)
+        from datetime import datetime
+        m1 = datetime.fromisoformat(mtime1.replace("Z", "+00:00"))
+        m2 = datetime.fromisoformat(mtime2.replace("Z", "+00:00"))
+        assert m2 > m1, (
+            f"mtime did not advance across two PUTs separated by 1.5s: "
+            f"first={mtime1!r}, second={mtime2!r}"
+        )
+        # size reflects the second body
+        assert size2 == len(second_body.encode("utf-8")), (
+            f"size_bytes did not reflect second PUT body: "
+            f"got={size2}, expected={len(second_body.encode('utf-8'))}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0446 — Workspace files PUT → /info reports written size_bytes (no race)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0446_workspace_files_put_info_no_fsync_race(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0446 — Tight loop: PUT N-byte body, immediately GET /files/
+    info, assert size_bytes == N. Repeat 20 iterations across 3
+    distinct sizes (small/medium/large). Catches a regression where
+    /info reads before the kernel has flushed, returning 0 or a
+    stale size from a previous write.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sizes = [16, 4096, 65536]
+        for iteration in range(20):
+            for size in sizes:
+                body = "x" * size
+                path = f"probe-{iteration}-{size}.txt"
+                put = await client.put(
+                    f"/v1/workspaces/{workspace_id}/files",
+                    params={"path": path},
+                    json={"content": body, "encoding": "text"},
+                )
+                assert put.status_code == 204, (
+                    f"iter {iteration} size {size}: PUT failed: {put.text}"
+                )
+                info = await client.get(
+                    f"/v1/workspaces/{workspace_id}/files/info",
+                    params={"path": path},
+                )
+                assert info.status_code == 200, (
+                    f"iter {iteration} size {size}: info failed: "
+                    f"{info.text}"
+                )
+                reported = info.json().get("size_bytes")
+                assert reported == size, (
+                    f"iter {iteration} size {size}: /info reported "
+                    f"size_bytes={reported} (expected {size}). "
+                    f"Possible fsync/cache race."
+                )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
