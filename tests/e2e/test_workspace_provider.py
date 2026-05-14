@@ -8,6 +8,8 @@ a generic 422 or 404.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -196,3 +198,92 @@ async def test_t0052_delete_workspace_provider_round_trip(
     envelope = gone.json()
     assert envelope["type"] == "/errors/not-found", envelope
     assert envelope["status"] == 404
+
+
+# ============================================================================
+# T0305 — WorkspaceProvider GET echoes full local config (no masking)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0305_workspace_provider_get_echoes_local_config(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0305 — Local-kind WorkspaceProvider config has no SecretStr
+    fields (just `kind` + `path`). GET response must echo both
+    fields byte-identical to the create body — pin that the provider
+    config introspection works for non-secret backends.
+    """
+    provider_id = f"wp-t0305-{unique_suffix}"
+    config = {"kind": "local", "path": str(tmp_path)}
+    create = await client.post(
+        "/v1/workspace_providers",
+        json={"id": provider_id, "provider": "local", "config": config},
+    )
+    assert create.status_code == 201, create.text
+    try:
+        got = await client.get(f"/v1/workspace_providers/{provider_id}")
+        assert got.status_code == 200, got.text
+        row = got.json()
+        assert row["provider"] == "local", row
+        assert row["config"]["kind"] == "local", row
+        assert row["config"]["path"] == str(tmp_path), row
+    finally:
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0306 — WorkspaceProvider /find predicate provider="local"
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0306_workspace_providers_find_predicate_provider_kind(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0306 — WorkspaceProvider supports POST /find with predicate
+    filtering. Seed two local providers; POST /find with predicate
+    `provider = "local"` AND `id ~= prefix%` returns both seeded ids.
+    """
+    prefix = f"wp-t0306-{unique_suffix}"
+    seeded = [f"{prefix}-{i}" for i in range(2)]
+    try:
+        for pid in seeded:
+            r = await client.post(
+                "/v1/workspace_providers",
+                json={
+                    "id": pid,
+                    "provider": "local",
+                    "config": {"kind": "local", "path": str(tmp_path)},
+                },
+            )
+            assert r.status_code == 201, r.text
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "provider"},
+                    "right": {"kind": "value", "value": "local"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/workspace_providers/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out = sorted(item["id"] for item in resp.json()["items"])
+        assert out == sorted(seeded), (
+            f"expected {sorted(seeded)!r}, got {out!r}"
+        )
+    finally:
+        for pid in seeded:
+            await client.delete(f"/v1/workspace_providers/{pid}")

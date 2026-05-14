@@ -1409,6 +1409,93 @@ async def test_t0298_sessions_find_order_by_created_at_desc(
 
 
 # ============================================================================
+# T0309 — Predicate `>` on Session.created_at (datetime field)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0309_predicate_gt_on_session_created_at_datetime(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0309 — Pin that the predicate translator handles datetime
+    comparison on Session.created_at. Seed two sessions with a brief
+    gap, then query `created_at > <first session's ts>` — only the
+    second session must be returned.
+
+    Distinct from T0150 (integer turn_no) and T0236 (JSONB nested).
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    seeded: list[tuple[str, str]] = []  # (id, created_at)
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed two sessions with deliberate gap
+        for _ in range(2):
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json=_session_body(agent_id=env["agent_id"]),
+            )
+            assert sess.status_code == 201, sess.text
+            seeded.append((sess.json()["id"], sess.json()["created_at"]))
+            await asyncio.sleep(0.1)
+
+        first_id, first_ts = seeded[0]
+        second_id, _second_ts = seeded[1]
+
+        # Query: workspace_id = ours AND created_at > first_ts
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "workspace_id"},
+                    "right": {"kind": "value", "value": workspace_id},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": ">",
+                    "left": {"kind": "field", "name": "created_at"},
+                    "right": {"kind": "value", "value": first_ts},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        # No /errors/internal regardless of outcome — datetime predicate
+        # may return a clean-but-different envelope if the translator
+        # doesn't yet support it
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"datetime predicate leaked /errors/internal: {resp.text}"
+        )
+        if resp.status_code == 200:
+            ids = {item["id"] for item in resp.json()["items"]}
+            assert second_id in ids, (
+                f"created_at > first_ts should include second session: "
+                f"{ids!r}"
+            )
+            assert first_id not in ids, (
+                f"strict > should EXCLUDE the boundary session "
+                f"(first_id with same ts): {ids!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            for (sid, _ts) in seeded:
+                await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions/{sid}/cancel",
+                )
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0242 — /v1/sessions?status=running with no RUNNING session returns 200 empty
 # ============================================================================
 

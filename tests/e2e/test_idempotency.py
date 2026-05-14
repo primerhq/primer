@@ -140,6 +140,49 @@ async def test_t0218_drain_third_call_does_not_toggle_state(
 
 
 @pytest.mark.asyncio
+async def test_t0307_worker_capacity_started_at_stable_across_drain(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0307 — Extends T0218 to cover the `capacity` and `started_at`
+    fields specifically. After a drain, these worker-identity fields
+    must remain unchanged.
+    """
+    listed = await client.get("/v1/workers")
+    assert listed.status_code == 200, listed.text
+    items = listed.json()["items"]
+    assert items
+    worker_id = items[0]["id"]
+
+    # Snapshot before any drain
+    row_before = items[0]
+    assert "capacity" in row_before, row_before
+    assert "started_at" in row_before, row_before
+    capacity_before = row_before["capacity"]
+    started_at_before = row_before["started_at"]
+
+    # Drain
+    rd = await client.post(f"/v1/workers/{worker_id}/drain")
+    assert rd.status_code == 204, rd.text
+
+    # Snapshot after
+    after = await client.get("/v1/workers")
+    assert after.status_code == 200
+    row_after = next(
+        (w for w in after.json()["items"] if w["id"] == worker_id), None,
+    )
+    assert row_after is not None
+    assert row_after.get("capacity") == capacity_before, (
+        f"capacity changed across drain: "
+        f"before={capacity_before!r}, after={row_after.get('capacity')!r}"
+    )
+    assert row_after.get("started_at") == started_at_before, (
+        f"started_at changed across drain: "
+        f"before={started_at_before!r}, "
+        f"after={row_after.get('started_at')!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_t0250_concurrent_invalidate_calls_all_204(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:

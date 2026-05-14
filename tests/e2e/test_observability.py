@@ -215,3 +215,27 @@ async def test_t0080_workers_list_carries_required_heartbeat_fields(
     # `status` is a Literal["active", "draining", "dead"]; on a fresh
     # bringup the only valid initial value is "active".
     assert worker["status"] in ("active", "draining", "dead"), worker
+
+
+@pytest.mark.asyncio
+async def test_t0308_worker_capacity_is_positive_integer(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0308 — Pin that every worker row in /v1/workers has a
+    `capacity` field that's a positive integer. Catches a regression
+    where capacity is omitted, null, or 0.
+    """
+    resp = await client.get("/v1/workers")
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    assert items, "expected at least one worker"
+    for w in items:
+        assert "capacity" in w, w
+        cap = w["capacity"]
+        assert isinstance(cap, int), (
+            f"worker {w.get('id')!r} capacity is not int: {cap!r} "
+            f"(type={type(cap).__name__})"
+        )
+        assert cap >= 1, (
+            f"worker {w.get('id')!r} capacity should be >=1, got {cap}"
+        )
