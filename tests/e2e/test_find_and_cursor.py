@@ -3140,3 +3140,121 @@ async def test_t0453_cursor_token_truncated_clean_envelope(
         assert envelope.get("type", "").startswith("/errors/"), envelope
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0454 — Predicate AND/OR nested 10 levels deep returns clean envelope
+# ============================================================================
+
+
+def _build_nested_and_predicate(depth: int, prefix: str) -> dict:
+    """Build a left-balanced AND tree of `depth` levels.
+
+    The leaf at every level is a `~=` LIKE comparison on the toolset
+    `id` field — `id ~= '<prefix>%'` — so the tree resolves to the
+    same row set as a single LIKE predicate would.
+    """
+    leaf = {
+        "kind": "predicate",
+        "op": "~=",
+        "left": {"kind": "field", "name": "id"},
+        "right": {"kind": "value", "value": f"{prefix}%"},
+    }
+    node = leaf
+    for _ in range(depth - 1):
+        node = {
+            "kind": "predicate",
+            "op": "and",
+            "left": node,
+            "right": leaf,
+        }
+    return node
+
+
+@pytest.mark.asyncio
+async def test_t0454_predicate_nested_10_levels_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0454 — Builds a 10-level left-balanced AND tree of identical
+    LIKE clauses. Each level resolves to the same row set, so the
+    semantically-correct outcome is the LIKE prefix matched (the
+    seeded toolsets). Pin: 200 with the seeded ids returned, OR
+    4xx (handler rejected the depth) — never 5xx, never
+    /errors/internal.
+
+    Builds on T0338 (4-level case) — pushes the depth to a less
+    trivial value where Python recursion limits could plausibly
+    matter.
+    """
+    prefix = f"ts-t0454-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        body = {
+            "predicate": _build_nested_and_predicate(10, prefix),
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"10-level AND leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422), (
+            f"unexpected status: {resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            out_ids = sorted(item["id"] for item in resp.json()["items"])
+            assert out_ids == sorted(ids), (
+                f"10-level AND of identical clauses should match the "
+                f"same row set as the lone clause: expected "
+                f"{sorted(ids)!r}, got {out_ids!r}"
+            )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0455 — Predicate AND/OR nested 100 levels deep returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0455_predicate_nested_100_levels_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0455 — Push the depth to 100 levels — well above any natural
+    use case but below Python's default recursion limit (1000).
+    Pin: 200, 400, or 422 — but ABSOLUTELY never /errors/internal
+    from a RecursionError leaking through the predicate translator's
+    recursive `_render_predicate` call.
+
+    If a future version adds a hard depth cap (e.g. 32 levels),
+    the expected outcome is 422 with a documented
+    /errors/validation-error or /errors/bad-request — both are fine
+    so long as the envelope is clean.
+    """
+    prefix = f"ts-t0455-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        body = {
+            "predicate": _build_nested_and_predicate(100, prefix),
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        # Hard pin: never /errors/internal (RecursionError leak)
+        assert envelope.get("type") != "/errors/internal", (
+            f"100-level AND leaked /errors/internal "
+            f"(possible RecursionError): {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422), (
+            f"unexpected status: {resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            out_ids = sorted(item["id"] for item in resp.json()["items"])
+            assert out_ids == sorted(ids), (
+                f"100-level AND of identical clauses should match the "
+                f"same row set: expected {sorted(ids)!r}, got "
+                f"{out_ids!r}"
+            )
+    finally:
+        await _delete_toolsets(client, ids)

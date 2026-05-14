@@ -436,3 +436,63 @@ async def test_t0386_cursor_response_omits_total_offset_includes_it(
         )
     finally:
         await _delete_toolsets(client, seeded)
+
+
+# ============================================================================
+# T0456 — POST /v1/sessions/find with page.length=10000 returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0456_find_with_excessive_length_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0456 — Per matrix/model/storage.py:237/261, OffsetPage.length
+    and CursorPage.length both have `ge=1` but NO upper bound on the
+    model. T0214 confirmed the GET list endpoints enforce the
+    documented max=200 via 422; the find POST endpoints accept the
+    raw model.
+
+    Pin observed behaviour for length=10000:
+      - 200 with items list bounded to ≤ 10000 (and likely much
+        smaller — there are not 10000 sessions in the test DB), OR
+      - 4xx if a size cap exists at the find layer too.
+
+    Hard contract: never 5xx, never /errors/internal — even on a
+    request that asks for 10× the documented max.
+    """
+    body = {
+        "predicate": None,
+        "page": {"kind": "offset", "offset": 0, "length": 10000},
+    }
+    # Some find endpoints require a non-null predicate. /v1/sessions/find
+    # accepts None per spec §4. If it doesn't, fall back to a trivial
+    # always-true clause.
+    resp = await client.post("/v1/sessions/find", json=body)
+    if resp.status_code == 422 and "predicate" in resp.text.lower():
+        body["predicate"] = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": "%"},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"length=10000 leaked /errors/internal: {resp.text}"
+    )
+    # 200 (accepted; possibly clamped server-side) or 4xx (rejected
+    # with documented validation/bad-request envelope).
+    assert resp.status_code in (200, 400, 422), (
+        f"length=10000 unexpected status: {resp.status_code}: "
+        f"{resp.text}"
+    )
+    if resp.status_code == 200:
+        body_got = resp.json()
+        items = body_got.get("items", [])
+        assert isinstance(items, list), body_got
+        # Whatever items came back must be bounded by the request.
+        assert len(items) <= 10000, (
+            f"items exceeded requested length: got {len(items)}"
+        )

@@ -3199,3 +3199,146 @@ async def test_t0441_session_pause_then_cancel_then_steer_clean(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0457 — Session metadata with 1 MiB string field round-trips
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0457_session_metadata_one_mib_string_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0457 — POST a session with metadata containing a 1 MiB string
+    field. Pin: either accepted byte-exact (200/201 with the exact
+    value preserved through GET) OR rejected with a clean 4xx
+    envelope (e.g. 413 Payload Too Large or 422). Never 5xx, never
+    /errors/internal.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        big_blob = "X" * (1024 * 1024)  # exactly 1 MiB
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "metadata": {"big_blob": big_blob, "tag": unique_suffix},
+                "auto_start": False,
+            },
+        )
+        envelope = sess.json() if sess.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"1 MiB metadata leaked /errors/internal: {sess.text}"
+        )
+        assert sess.status_code < 500, sess.text
+
+        if sess.status_code == 201:
+            session_id = sess.json()["id"]
+            # Round-trip via top-level GET
+            got = await client.get(f"/v1/sessions/{session_id}")
+            assert got.status_code == 200, got.text
+            md = got.json().get("metadata", {})
+            assert md.get("tag") == unique_suffix, md.get("tag")
+            assert md.get("big_blob") == big_blob, (
+                f"1 MiB string corrupted on round-trip: "
+                f"sent_len={len(big_blob)}, got_len="
+                f"{len(md.get('big_blob') or '')!r}"
+            )
+        else:
+            # Rejected — must be a clean 4xx envelope
+            assert sess.status_code in (400, 413, 422), (
+                f"unexpected rejection status: {sess.status_code}: "
+                f"{sess.text}"
+            )
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0458 — Session metadata 8-level deeply-nested dict round-trips
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0458_session_metadata_8_level_nested_dict_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0458 — Pin nested-JSON depth handling beyond T0227 (1-level)
+    and T0373 (3-level). Build an 8-level nested dict with a marker
+    leaf at the bottom. Pin: 201 + GET round-trip preserves the full
+    structure byte-exact, OR 4xx with clean envelope. Never 5xx.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Build {"l0": {"l1": {"l2": ... {"l7": {"leaf": <marker>}}}}}
+        marker = f"deep-marker-{unique_suffix}"
+        nested: dict = {"leaf": marker}
+        for level in range(7, -1, -1):
+            nested = {f"l{level}": nested}
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "metadata": nested,
+                "auto_start": False,
+            },
+        )
+        envelope = sess.json() if sess.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"8-level nested metadata leaked /errors/internal: "
+            f"{sess.text}"
+        )
+        assert sess.status_code < 500, sess.text
+
+        if sess.status_code == 201:
+            session_id = sess.json()["id"]
+            try:
+                got = await client.get(f"/v1/sessions/{session_id}")
+                assert got.status_code == 200, got.text
+                md = got.json().get("metadata")
+                assert md == nested, (
+                    f"8-level nested metadata corrupted on round-trip: "
+                    f"sent={nested!r}, got={md!r}"
+                )
+                # Walk down to confirm the leaf survives intact
+                cur: object = md
+                for level in range(8):
+                    assert isinstance(cur, dict), (
+                        f"level {level} is not a dict: {cur!r}"
+                    )
+                    cur = cur[f"l{level}"]
+                assert cur == {"leaf": marker}, (
+                    f"deepest leaf corrupted: {cur!r}"
+                )
+            finally:
+                await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions/"
+                    f"{session_id}/cancel",
+                )
+        else:
+            assert sess.status_code in (400, 413, 422), sess.text
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
