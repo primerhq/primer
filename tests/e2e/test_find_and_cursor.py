@@ -2699,3 +2699,199 @@ async def test_t0377_predicate_like_leading_wildcard_matches_suffix(
     finally:
         for entity_id in seeded + [other]:
             await client.delete(f"/v1/toolsets/{entity_id}")
+
+
+# ============================================================================
+# T0404 — Predicate `op="not"` operator behaviour pinned
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0404_predicate_op_not_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0404 — The Op enum (matrix/model/storage.py:35) does NOT
+    include a NOT operator; the wire vocabulary is `=`, `!=`, `~=`,
+    `>`, `<`, `>=`, `<=`, `in`, `and`, `or`. Per spec contract,
+    `op="not"` MUST be rejected with 422 — never accepted as a
+    logical NOT, never `/errors/internal`.
+
+    Companion to T0086 (uppercase LIKE rejected): pin that any future
+    addition of a NOT op would deliberately break this test.
+    """
+    # Try with right operand present (NOT-as-binary, like `a NOT b`)
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "not",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": "anything"},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    assert resp.status_code != 500, resp.text
+    assert resp.status_code == 422, (
+        f"op='not' should be rejected with 422; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/validation-error", envelope
+
+
+# ============================================================================
+# T0405 — Predicate `op="=="` (unknown operator) returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0405_predicate_op_double_equals_rejected_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0405 — The wire equality op is `=` (single). The ASCII
+    double-equals `==` is not a member of the Op enum and MUST be
+    rejected with 422. Companion to T0086 (uppercase LIKE).
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "==",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": "anything"},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    assert resp.status_code != 500, resp.text
+    assert resp.status_code == 422, (
+        f"op='==' should be rejected with 422; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/validation-error", envelope
+
+
+# ============================================================================
+# T0406 — Predicate `op=""` (empty operator) returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0406_predicate_op_empty_rejected_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0406 — Pin blank-operator rejection separate from the
+    unknown-op T0086 path. Blank string is a distinct wire condition
+    from any legal Op enum value; the validator must reject with 422
+    (not silently default).
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": "anything"},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    assert resp.status_code != 500, resp.text
+    assert resp.status_code == 422, (
+        f"op='' should be rejected with 422; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/validation-error", envelope
+
+
+# ============================================================================
+# T0407 — Predicate boolean literal on a string field returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0407_predicate_boolean_literal_on_string_field_clean(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0407 — Type-coercion edge: send `{op:"=", left:{name:"id"},
+    right:{value:true}}` against a string-typed `id` column. Postgres
+    is strict about type coercion; the JSONB-comparison-bug callout
+    in spec §4 documents that some type mismatches surface as 502
+    /errors/provider-server-error instead of 200-empty. Either way:
+    never 5xx /errors/internal leak; never silent acceptance that
+    matches arbitrary rows.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": True},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    # Hard pin: never /errors/internal
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"boolean-on-string predicate leaked /errors/internal: "
+        f"{resp.text}"
+    )
+    # Acceptable outcomes: 200 (empty/no rows match — id is never the
+    # boolean True), 422 (Pydantic/handler rejected the type
+    # mismatch), 400 (handler raised BadRequestError), or 502
+    # (Postgres surfaced the JSONB coercion bug).
+    assert resp.status_code in (200, 400, 422, 502), (
+        f"unexpected status: {resp.status_code}: {resp.text}"
+    )
+    if resp.status_code == 200:
+        items = resp.json()["items"]
+        # Soft pin: a string `id` should never literally match the
+        # boolean True, so the result set must be empty.
+        assert items == [], (
+            f"boolean-on-string predicate matched non-empty results: "
+            f"{items!r}"
+        )
+
+
+# ============================================================================
+# T0408 — Predicate `>=` on Session.created_at with malformed datetime
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0408_predicate_ge_on_datetime_with_malformed_iso_clean(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0408 — `created_at` is a datetime column on Session. Pass a
+    malformed ISO literal as the right operand. Pin: clean envelope,
+    never `/errors/internal`. Acceptable: 422 (Pydantic / handler
+    parsed and rejected), 400 (BadRequestError from backend), 502
+    (provider-server-error — Postgres wrapped a parse failure), or
+    even 200-empty if the backend treats the literal as a string and
+    the comparison naturally yields zero rows.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": ">=",
+            "left": {"kind": "field", "name": "created_at"},
+            "right": {
+                "kind": "value",
+                "value": "not-a-real-datetime-2026-99-99T99:99:99Z",
+            },
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/sessions/find", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"malformed-datetime predicate leaked /errors/internal: "
+        f"{resp.text}"
+    )
+    assert resp.status_code in (200, 400, 422, 502), (
+        f"unexpected status: {resp.status_code}: {resp.text}"
+    )
+    if resp.status_code in range(400, 600):
+        # Error envelope must be cleanly typed
+        assert envelope.get("type", "").startswith("/errors/"), envelope
