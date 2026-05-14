@@ -1091,3 +1091,71 @@ async def test_t0384_agent_status_flags_model_not_in_provider_list(
     finally:
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0413 — DELETE Toolset referenced by Agent flips Agent /status ok=false
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0413_delete_toolset_flips_agent_status_ok_false(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0413 — Mirror of T0265 (LLMProvider→Agent FK) for the
+    Toolset→Agent FK path. Build LLMProvider, Toolset, Agent
+    referencing the toolset by id. Sanity: pre-delete /status ok=true.
+    Then DELETE the toolset (succeeds — orphan-tolerated like other
+    cascades), then GET /agents/{id}/status: must flip ok=false with
+    an issue mentioning the now-missing toolset id.
+    """
+    provider_id = f"llm-t0413-{unique_suffix}"
+    toolset_id = f"ts-t0413-{unique_suffix}"
+    agent_id = f"agent-t0413-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ts = await client.post("/v1/toolsets", json=_toolset_body(toolset_id))
+    assert ts.status_code == 201, ts.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(
+            agent_id, provider_id=provider_id, tools=[toolset_id],
+        ),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        # Sanity: pre-delete the agent is healthy
+        pre = await client.get(f"/v1/agents/{agent_id}/status")
+        assert pre.status_code == 200, pre.text
+        assert pre.json()["ok"] is True, (
+            f"pre-delete agent should be ok=true; got {pre.json()!r}"
+        )
+
+        # DELETE the referenced toolset (orphan-tolerated)
+        rm = await client.delete(f"/v1/toolsets/{toolset_id}")
+        assert rm.status_code == 204, rm.text
+
+        # Agent /status must now flip ok=false, with the missing
+        # toolset id surfaced in issues so an operator can act.
+        post = await client.get(f"/v1/agents/{agent_id}/status")
+        assert post.status_code == 200, post.text
+        body = post.json()
+        assert body["ok"] is False, (
+            f"after DELETE toolset, agent should be ok=false; "
+            f"got {body!r}"
+        )
+        issues = body["issues"]
+        assert isinstance(issues, list) and issues, body
+        assert any(
+            toolset_id in str(i) for i in issues
+        ), (
+            f"no issue references missing toolset {toolset_id!r}: "
+            f"{issues!r}"
+        )
+    finally:
+        await client.delete(f"/v1/agents/{agent_id}")
+        # Toolset already deleted (or never created on a failure path)
+        await client.delete(f"/v1/toolsets/{toolset_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")

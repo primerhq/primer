@@ -2628,3 +2628,144 @@ async def test_t0403_sessions_find_predicate_on_binding_kind(
         if graph_created:
             await client.delete(f"/v1/graphs/{graph_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0409 — Concurrent pause + cancel on same session: convergence to terminal
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0409_concurrent_pause_and_cancel_converges_terminal(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0409 — Race a pause against a cancel on the same CREATED
+    session. Distinct from T0179 (steer+cancel on RUNNING via LM
+    Studio): no real worker is needed because pause/cancel both
+    short-circuit on CREATED via the storage layer.
+
+    Pin §17.8 invariant:
+      - both calls return < 500 (no internal leaks)
+      - pause returns 204 (won) or 409 (cancel landed first → ENDED)
+      - cancel returns 200 (won) or 409 (pause landed first → PAUSED
+        is allowed by cancel handler so cancel can also still 200
+        from PAUSED — both 200 outcomes are valid)
+      - the session converges to ENDED/cancelled
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        pause_task = asyncio.create_task(client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        ))
+        cancel_task = asyncio.create_task(client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        ))
+        pause_resp, cancel_resp = await asyncio.gather(
+            pause_task, cancel_task,
+        )
+
+        # Hard pin: never 5xx
+        assert pause_resp.status_code < 500, pause_resp.text
+        assert cancel_resp.status_code < 500, cancel_resp.text
+
+        # Documented outcomes
+        assert pause_resp.status_code in (204, 409), (
+            f"pause race: unexpected code {pause_resp.status_code}: "
+            f"{pause_resp.text}"
+        )
+        assert cancel_resp.status_code in (200, 409), (
+            f"cancel race: unexpected code {cancel_resp.status_code}: "
+            f"{cancel_resp.text}"
+        )
+
+        # At least one of them succeeded (both 409 would mean neither
+        # transition won — that's a stuck-state regression).
+        assert (
+            pause_resp.status_code == 204 or cancel_resp.status_code == 200
+        ), (
+            f"both pause and cancel returned 409 — state machine "
+            f"stuck: pause={pause_resp.text}, cancel={cancel_resp.text}"
+        )
+
+        # Final convergence — push to terminal (in case pause won;
+        # then the session is PAUSED and we need to cancel from there).
+        if cancel_resp.status_code != 200:
+            final = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+            # Already ENDED → 409, or PAUSED → 200; both fine
+            assert final.status_code in (200, 409), final.text
+
+        got = await client.get(f"/v1/sessions/{session_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["status"] == "ended", got.json()
+        assert got.json()["ended_reason"] == "cancelled", got.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0410 — Concurrent double-resume on same CREATED session: both 200
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0410_concurrent_double_resume_both_200(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0410 — Resume is documented as idempotent (T0038 sequential).
+    Pin the concurrent variant: two simultaneous /resume calls both
+    return 200 (not 5xx, not one-success-one-409). The session row
+    must be intact (single non-corrupt row) and observable.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        r1_task = asyncio.create_task(client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        ))
+        r2_task = asyncio.create_task(client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        ))
+        r1, r2 = await asyncio.gather(r1_task, r2_task)
+
+        # Hard pin: never 5xx
+        assert r1.status_code < 500, r1.text
+        assert r2.status_code < 500, r2.text
+        # Both succeed (idempotent semantics under concurrency)
+        assert r1.status_code == 200, (
+            f"first concurrent resume: {r1.status_code}: {r1.text}"
+        )
+        assert r2.status_code == 200, (
+            f"second concurrent resume: {r2.status_code}: {r2.text}"
+        )
+        # Both report the same session id (no aliasing / row split)
+        assert r1.json()["id"] == session_id, r1.json()
+        assert r2.json()["id"] == session_id, r2.json()
+
+        # Subsequent GET shows a single non-corrupt row
+        got = await client.get(f"/v1/sessions/{session_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["id"] == session_id, got.json()
+        # Status is observable (running or whatever the worker drove
+        # it to without LM Studio); the hard pin is "no row corruption"
+        assert isinstance(got.json().get("status"), str), got.json()
+    finally:
+        if workspace_id is not None:
+            # Cancel to release any worker lease before workspace destroy
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

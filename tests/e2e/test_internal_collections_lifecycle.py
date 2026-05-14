@@ -2807,3 +2807,210 @@ async def test_t0400_cdc_agent_to_search_latency_recorded(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0411 — Concurrent bootstrap + DELETE config returns clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0411_concurrent_bootstrap_and_delete_config_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0411 — Race a POST /bootstrap against a DELETE /config on the
+    internal-collections subsystem. Pin: both calls return 2xx/4xx
+    (no 5xx, no `/errors/internal`). The subsequent search route
+    converges to a deterministic state — either 503 (DELETE won, or
+    bootstrap completed and was then torn down) or 200 (bootstrap
+    won and config still present after the DELETE attempt).
+
+    Distinct from T0277 (concurrent bootstrap × bootstrap on a brand-
+    new DB) — this races bootstrap against teardown.
+    """
+    embedder_id = f"emb-t0411-{unique_suffix}"
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_created = False
+    try:
+        # PUT config so /bootstrap is meaningful
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        # Race bootstrap × delete-config
+        boot_task = asyncio.create_task(client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        ))
+        rm_task = asyncio.create_task(client.delete(
+            "/v1/internal_collections/config",
+        ))
+        boot, rm = await asyncio.gather(boot_task, rm_task)
+        config_created = False  # delete fired regardless
+
+        for r, label in ((boot, "bootstrap"), (rm, "delete-config")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label} race leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"{label} race returned 5xx: {r.status_code}: {r.text}"
+            )
+
+        # bootstrap: 200 (succeeded before the delete) or 409/503
+        # (subsystem already gone)
+        assert boot.status_code in (200, 409, 503), (
+            f"bootstrap race: unexpected code {boot.status_code}: "
+            f"{boot.text}"
+        )
+        # delete: 204 (succeeded) or 404 (already gone)
+        assert rm.status_code in (204, 404), (
+            f"delete-config race: unexpected code {rm.status_code}: "
+            f"{rm.text}"
+        )
+
+        # Subsequent search must be deterministic — converge briefly
+        last: httpx.Response | None = None
+        for _ in range(10):
+            s = await client.post(
+                "/v1/agents/search",
+                json={"query": "anything", "top_k": 3},
+            )
+            last = s
+            if s.status_code in (200, 503):
+                break
+            await asyncio.sleep(0.2)
+        assert last is not None
+        assert last.status_code in (200, 503), (
+            f"search after race: unexpected code {last.status_code}: "
+            f"{last.text}"
+        )
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0412 — CDC enqueue race: agent burst-create + immediate DELETE config
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0412_cdc_burst_create_with_concurrent_delete_config_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0412 — After bootstrap, fire 5 agent CREATEs concurrently with
+    a DELETE config. Pin: subsystem ends up cleanly inactive
+    (search → 503), every call returns 2xx/4xx (no /errors/internal),
+    and no leftover ingestion task crashes the worker pool.
+
+    Companion to T0411 (bootstrap × delete) — this races CDC
+    ingestion against teardown.
+    """
+    embedder_id = f"emb-t0412-{unique_suffix}"
+    llm_id = f"llm-t0412-{unique_suffix}"
+    agent_ids = [
+        f"agent-t0412-{unique_suffix}-{i}" for i in range(5)
+    ]
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_created = False
+    llm_created = False
+    agents_created: list[str] = []
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        if boot.status_code != 200:
+            pytest.skip(
+                f"bootstrap returned {boot.status_code}; embedder model "
+                f"may be unavailable. Body: {boot.text[:300]}"
+            )
+
+        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        # Burst-create 5 agents concurrent with DELETE config
+        agent_tasks = [
+            asyncio.create_task(client.post(
+                "/v1/agents",
+                json=_agent_body(
+                    aid, provider_id=llm_id,
+                    description=f"t0412-{aid}",
+                ),
+            ))
+            for aid in agent_ids
+        ]
+        rm_task = asyncio.create_task(client.delete(
+            "/v1/internal_collections/config",
+        ))
+        all_results = await asyncio.gather(*agent_tasks, rm_task)
+        agent_results = all_results[:5]
+        rm_resp = all_results[5]
+        config_created = False  # rm fired
+
+        # Track which agents were created so we clean up
+        for aid, r in zip(agent_ids, agent_results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"agent create {aid!r} leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"agent create {aid!r} returned 5xx: "
+                f"{r.status_code}: {r.text}"
+            )
+            if r.status_code == 201:
+                agents_created.append(aid)
+
+        # Delete is unconditional — should always 204 (or 404 if some
+        # other test already removed the config concurrently — not
+        # possible in this isolated test).
+        assert rm_resp.status_code < 500, rm_resp.text
+        assert rm_resp.status_code in (204, 404), rm_resp.text
+
+        # Subsystem ends up inactive — search returns 503
+        last: httpx.Response | None = None
+        for _ in range(20):
+            s = await client.post(
+                "/v1/agents/search",
+                json={"query": "anything", "top_k": 3},
+            )
+            last = s
+            if s.status_code == 503:
+                break
+            await asyncio.sleep(0.2)
+        assert last is not None, "search never returned"
+        assert last.status_code == 503, (
+            f"after burst-create + DELETE config, search should be "
+            f"503 inactive; got {last.status_code}: {last.text}"
+        )
+        assert last.json()["type"] == "/errors/subsystem-inactive", (
+            last.json()
+        )
+    finally:
+        for aid in agents_created:
+            await client.delete(f"/v1/agents/{aid}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
