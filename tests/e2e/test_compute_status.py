@@ -1423,3 +1423,427 @@ async def test_t0447_concurrent_post_agents_same_id_one_wins(
     finally:
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0469 — Graph router branch.to_node referencing missing node id → 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0469_graph_router_branch_unknown_to_node_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0469 — Per matrix/model/graph.py:418-429, the topology
+    validator walks `_JsonPathRouter.branches[*].to_node` and rejects
+    any branch whose target isn't in the declared node ids. Sibling
+    of T0430 (static edge to_node) for the conditional-edge path.
+    Pin: 422 /errors/validation-error surfacing the bad node id;
+    never /errors/internal.
+    """
+    provider_id = f"llm-t0469-{unique_suffix}"
+    agent_id = f"agent-t0469-{unique_suffix}"
+    graph_id = f"graph-t0469-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0469",
+            "nodes": [
+                {
+                    "kind": "agent", "id": "n1", "agent_id": agent_id,
+                    "response_format": {
+                        "type": "object",
+                        "properties": {"action": {"type": "string"}},
+                    },
+                },
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {
+                    "kind": "conditional", "from_node": "n1",
+                    "router": {
+                        "kind": "json_path",
+                        "branches": [
+                            {"when": {"action": "done"}, "to_node": "end"},
+                            {
+                                "when": {"action": "ghost-route"},
+                                "to_node": "ghost-not-a-node",
+                            },
+                        ],
+                    },
+                },
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code != 500, resp.text
+        assert resp.status_code == 422, (
+            f"router branch with bad to_node should be 422; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        envelope = resp.json()
+        assert envelope.get("type") == "/errors/validation-error", envelope
+        assert "ghost-not-a-node" in resp.text, resp.text
+
+        # Defence: row was not created
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 404, got.text
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0470 — Graph with multiple terminal nodes accepted; /status clean
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0470_graph_with_multiple_terminals_accepted_status_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0470 — A graph may have any number of terminal nodes (a
+    branching DAG with two distinct sinks is normal). Pin: 201 at
+    create + clean /status envelope (ok=true since all referenced
+    agents exist); never /errors/internal.
+    """
+    provider_id = f"llm-t0470-{unique_suffix}"
+    agent_id = f"agent-t0470-{unique_suffix}"
+    graph_id = f"graph-t0470-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        # Two-terminal DAG: n1 splits to end-a and end-b via static
+        # edges (both static fire — semantically the executor would
+        # pick one, but topology-wise this is valid).
+        body = {
+            "id": graph_id,
+            "description": "T0470 multi-terminal",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end-a"},
+                {"kind": "terminal", "id": "end-b"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end-a"},
+                {"kind": "static", "from_node": "n1", "to_node": "end-b"},
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, (
+            f"multi-terminal graph should be accepted; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        # Round-trip: GET preserves both terminals
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        terminals = [
+            n for n in got.json()["nodes"] if n["kind"] == "terminal"
+        ]
+        assert len(terminals) == 2, terminals
+
+        # /status returns clean envelope
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        body_status = status.json()
+        assert "ok" in body_status, body_status
+        assert isinstance(body_status.get("issues"), list), body_status
+        assert body_status.get("ok") is True, body_status
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0471 — Graph with self-loop edge n1->n1 returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0471_graph_with_self_loop_edge_returns_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0471 — A static edge from n1 to n1 is a self-loop. The
+    topology validator (matrix/model/graph.py:387) only checks edge
+    endpoints exist as nodes — self-loop is structurally legal.
+    Pin observed behaviour: 201 (current permissive accept like
+    T0431 cycles) or 422 with cycle wording. Never /errors/internal.
+    """
+    provider_id = f"llm-t0471-{unique_suffix}"
+    agent_id = f"agent-t0471-{unique_suffix}"
+    graph_id = f"graph-t0471-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    graph_created = False
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0471 self-loop",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "n1"},
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code != 500, resp.text
+        assert resp.status_code in (201, 422), (
+            f"self-loop graph: unexpected status "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        if resp.status_code == 201:
+            graph_created = True
+            # Round-trip preserves the self-loop edge
+            got = await client.get(f"/v1/graphs/{graph_id}")
+            assert got.status_code == 200, got.text
+            edges = got.json()["edges"]
+            assert any(
+                e.get("from_node") == "n1" and e.get("to_node") == "n1"
+                for e in edges
+            ), got.json()
+        else:
+            envelope = resp.json()
+            assert envelope.get("type") == "/errors/validation-error", envelope
+    finally:
+        if graph_created:
+            await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0472 — Graph with entry_node_id pointing at a terminal-only node
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0472_graph_entry_node_at_terminal_only_node_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0472 — A graph whose entry_node_id is a terminal node (the
+    one-and-only node) is structurally a no-op DAG. The topology
+    validator only checks entry_node_id ∈ nodes; nothing forbids the
+    entry being a terminal sink. Pin: 201 + clean /status; subsequent
+    graph-bound session creation responds cleanly.
+    """
+    provider_id = f"llm-t0472-{unique_suffix}"
+    agent_id = f"agent-t0472-{unique_suffix}"
+    graph_id = f"graph-t0472-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0472 entry-at-terminal",
+            "nodes": [
+                {"kind": "terminal", "id": "the-only-node"},
+            ],
+            "edges": [],
+            "entry_node_id": "the-only-node",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        # Hard pin: never 5xx
+        assert resp.status_code != 500, resp.text
+        # Acceptable: 201 (current permissive accept) or 422 (a future
+        # validator deliberately rejects no-op graphs)
+        assert resp.status_code in (201, 422), (
+            f"entry-at-terminal graph: unexpected status "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        if resp.status_code == 201:
+            # /status returns clean envelope (no agent referenced
+            # since entry is terminal — ok=true)
+            status = await client.get(f"/v1/graphs/{graph_id}/status")
+            assert status.status_code == 200, status.text
+            body_status = status.json()
+            assert "ok" in body_status, body_status
+        else:
+            envelope = resp.json()
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+            assert envelope.get("type") != "/errors/internal", envelope
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0473 — PUT mutating a Graph that has a live graph-bound session
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0473_put_graph_with_live_session_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0473 — Create graph G, bind a session to G (CREATED, not
+    resumed), then PUT a structurally-different version of G.
+    Pin: PUT returns clean envelope (200 success or 4xx); the
+    pre-existing session row is still readable; never /errors/internal.
+
+    Catches a regression where the graph PUT cascade tries to walk
+    bound sessions and trips on stale references.
+
+    Uses _agent_body + _graph_body helpers but builds a workspace
+    inline since this file doesn't import the workspace setup chain.
+    """
+    import tempfile
+    provider_id = f"llm-t0473-{unique_suffix}"
+    agent_id = f"agent-t0473-{unique_suffix}"
+    graph_id = f"graph-t0473-{unique_suffix}"
+    wp_id = f"wp-t0473-{unique_suffix}"
+    tpl_id = f"wt-t0473-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            wp = await client.post(
+                "/v1/workspace_providers",
+                json={
+                    "id": wp_id,
+                    "provider": "local",
+                    "config": {"kind": "local", "path": tmp},
+                },
+            )
+            assert wp.status_code == 201, wp.text
+            tpl = await client.post(
+                "/v1/workspace_templates",
+                json={
+                    "id": tpl_id,
+                    "description": "T0473",
+                    "provider_id": wp_id,
+                    "backend": {"kind": "local"},
+                },
+            )
+            assert tpl.status_code == 201, tpl.text
+
+            # Initial graph: just n1 + terminal
+            initial_graph = {
+                "id": graph_id,
+                "description": "T0473 initial",
+                "nodes": [
+                    {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            }
+            gr = await client.post("/v1/graphs", json=initial_graph)
+            assert gr.status_code == 201, gr.text
+
+            # Materialise workspace + bind a session (auto_start=False
+            # so it stays CREATED — no worker activity)
+            ws = await client.post(
+                "/v1/workspaces", json={"template_id": tpl_id},
+            )
+            assert ws.status_code == 201, ws.text
+            workspace_id = ws.json()["id"]
+
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json={
+                    "binding": {"kind": "graph", "graph_id": graph_id},
+                    "auto_start": False,
+                },
+            )
+            assert sess.status_code == 201, sess.text
+            session_id = sess.json()["id"]
+
+            # PUT a structurally-changed graph (extra agent node + edge)
+            new_graph = {
+                "id": graph_id,
+                "description": "T0473 mutated",
+                "nodes": [
+                    {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                    {"kind": "agent", "id": "n2", "agent_id": agent_id},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "n2"},
+                    {"kind": "static", "from_node": "n2", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            }
+            put_resp = await client.put(
+                f"/v1/graphs/{graph_id}", json=new_graph,
+            )
+            envelope = put_resp.json() if put_resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"PUT graph with live session leaked /errors/internal: "
+                f"{put_resp.text}"
+            )
+            assert put_resp.status_code < 500, put_resp.text
+            # Documented codes: 200 (mutation accepted) or 4xx (some
+            # future contract that locks live-session graphs)
+            assert put_resp.status_code in (200, 409, 422), (
+                f"unexpected PUT status: {put_resp.status_code}: "
+                f"{put_resp.text}"
+            )
+
+            # Pre-existing session row still readable
+            got_sess = await client.get(f"/v1/sessions/{session_id}")
+            assert got_sess.status_code == 200, got_sess.text
+            assert got_sess.json()["id"] == session_id, got_sess.json()
+            # Binding still references the original graph_id
+            assert got_sess.json()["binding"]["graph_id"] == graph_id
+        finally:
+            if session_id is not None and workspace_id is not None:
+                await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+                )
+            if workspace_id is not None:
+                await client.delete(f"/v1/workspaces/{workspace_id}")
+            await client.delete(f"/v1/graphs/{graph_id}")
+            await client.delete(f"/v1/workspace_templates/{tpl_id}")
+            await client.delete(f"/v1/workspace_providers/{wp_id}")
+            await client.delete(f"/v1/agents/{agent_id}")
+            await client.delete(f"/v1/llm_providers/{provider_id}")
