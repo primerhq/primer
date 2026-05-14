@@ -448,3 +448,27 @@ async def test_t0292_parallel_create_same_agent_id_yields_201_and_409(
     finally:
         await client.delete(f"/v1/agents/{entity_id}")
         await client.delete(f"/v1/llm_providers/{warmup_llm}")
+
+
+# ============================================================================
+# T0304 — DELETE on /v1/collections list endpoint returns 405 with Allow
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0304_delete_on_collections_list_endpoint_returns_405(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0304 — Mirror of T0280 (DELETE on /v1/llm_providers list) for
+    the Collections router. Pins per-router method handling parity:
+    every CRUD-generator entity rejects DELETE on the collection-
+    plural path with 405 + non-empty Allow.
+    """
+    resp = await client.request("DELETE", "/v1/collections")
+    assert resp.status_code == 405, resp.text
+    allow = resp.headers.get("allow", "")
+    assert allow, f"405 should set Allow header; got {allow!r}"
+    allow_upper = allow.upper()
+    assert "GET" in allow_upper or "POST" in allow_upper, (
+        f"Allow header {allow!r} should mention GET or POST"
+    )

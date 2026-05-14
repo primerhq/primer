@@ -1833,6 +1833,64 @@ async def test_t0283_predicate_like_underscore_single_char_wildcard(
 
 
 # ============================================================================
+# T0301 — Predicate `op="in"` with single-element value list
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0301_predicate_in_with_single_element_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0301 — Between T0173 (empty IN list) and T0071 (multi-element
+    IN list). Pin that a single-element IN list returns exactly that
+    one row (no off-by-one in the SQL builder).
+    """
+    prefix = f"ts-t0301-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    target = ids[1]
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "in",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": [target]},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out_ids = sorted(item["id"] for item in resp.json()["items"])
+        assert out_ids == [target], (
+            f"single-element IN list should match exactly the target; "
+            f"got {out_ids!r}"
+        )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0302 — GET /v1/workspaces?cursor= (empty) returns 400
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0302_workspaces_get_cursor_empty_returns_400(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0302 — Mirror of T0196 / T0197 cursor-malformed handling on
+    the bespoke /v1/workspaces router. Empty cursor must be rejected
+    with 400 /errors/bad-request.
+    """
+    resp = await client.get("/v1/workspaces?cursor=")
+    assert resp.status_code == 400, resp.text
+    envelope = resp.json()
+    assert envelope["type"] == "/errors/bad-request", envelope
+    detail = envelope.get("detail", "").lower()
+    assert "cursor" in detail, envelope
+
+
+# ============================================================================
 # T0217 — find with order_by referencing unknown field returns clean 4xx
 # ============================================================================
 

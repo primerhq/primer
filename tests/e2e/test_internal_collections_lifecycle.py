@@ -2391,3 +2391,64 @@ async def test_t0299_search_concurrent_with_agent_update_clean(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0303 — Bootstrap concurrent with /v1/agents/search returns clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0303_bootstrap_concurrent_with_search_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0303 — Cross-subsystem concurrency: fire bootstrap and 5
+    /v1/agents/search calls concurrently after the subsystem is
+    already active. All responses must have clean envelopes (200 or
+    documented 503 if briefly inactive); no /errors/internal.
+    """
+    embedder_id = f"emb-t0303-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    config_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id)
+        config_created = True
+
+        async def _bootstrap() -> httpx.Response:
+            return await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=httpx.Timeout(180.0, connect=10.0),
+            )
+
+        async def _search() -> httpx.Response:
+            return await client.post(
+                "/v1/agents/search",
+                json={"query": "anything", "top_k": 3},
+            )
+
+        tasks = [asyncio.create_task(_bootstrap())]
+        for _ in range(5):
+            tasks.append(asyncio.create_task(_search()))
+        results = await asyncio.gather(*tasks)
+        for i, r in enumerate(results):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"task {i} returned /errors/internal: {r.text}"
+            )
+            # Bootstrap result is at index 0 — must be 200
+            if i == 0:
+                assert r.status_code == 200, r.text
+            else:
+                # Search results — 200 or 503 (subsystem-inactive)
+                assert r.status_code in (200, 503), (
+                    f"search task {i} unexpected status: {r.text}"
+                )
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")

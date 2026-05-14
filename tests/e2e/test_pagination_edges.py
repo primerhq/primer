@@ -255,3 +255,23 @@ async def test_t0214_pagination_limit_at_documented_boundary(
     body = over.json()
     assert body["type"] == "/errors/validation-error", body
     assert body["status"] == 422
+
+
+# ============================================================================
+# T0300 — Pagination limit=0 is rejected as 422 (lower bound)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0300_pagination_limit_zero_rejected_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0300 — Spec §4 says `limit` is bounded `1..200`. T0214 covered
+    the upper bound (limit=200/201). This pins the lower bound:
+    limit=0 must be rejected with 422 /errors/validation-error.
+    """
+    resp = await client.get("/v1/toolsets?limit=0&offset=0")
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["type"] == "/errors/validation-error", body
+    assert body["status"] == 422
