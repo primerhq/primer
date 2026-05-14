@@ -884,3 +884,103 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
         ), row
     finally:
         await client.delete(f"/v1/collections/{coll_id}")
+
+
+# ============================================================================
+# T0335 — GET /v1/documents/{id} after DELETE returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0335_document_get_after_delete_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0335 — Document CRUD round-trip pin: create→get(200)→
+    delete(204)→get(404) with the documented RFC 7807 envelope.
+    Mirror of T0009 for Document.
+    """
+    doc_id = f"doc-t0335-{unique_suffix}"
+    body = {
+        "id": doc_id,
+        "name": "T0335",
+        "collection_id": f"unenforced-{unique_suffix}",
+        "meta": {},
+    }
+    create = await client.post("/v1/documents", json=body)
+    assert create.status_code in (200, 201), create.text
+
+    # GET pre-delete
+    pre = await client.get(f"/v1/documents/{doc_id}")
+    assert pre.status_code == 200, pre.text
+
+    # DELETE
+    rm = await client.delete(f"/v1/documents/{doc_id}")
+    assert rm.status_code == 204, rm.text
+
+    # GET post-delete
+    post = await client.get(f"/v1/documents/{doc_id}")
+    assert post.status_code == 404, post.text
+    envelope = post.json()
+    assert envelope["type"] == "/errors/not-found", envelope
+
+
+# ============================================================================
+# T0336 — Chained collection→document survives collection DELETE
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0336_collection_delete_does_not_break_child_document_get(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0336 — Create a Collection + Document referencing it; DELETE
+    the Collection. The Document GET still resolves (referential
+    integrity is NOT enforced — orphan-tolerated like T0068);
+    /v1/collections/{id}/documents on the now-missing collection
+    responds cleanly (404 per T0204 pattern).
+    """
+    coll_id = f"coll-t0336-{unique_suffix}"
+    doc_id = f"doc-t0336-{unique_suffix}"
+
+    coll = await client.post(
+        "/v1/collections",
+        json={
+            "id": coll_id,
+            "description": "T0336",
+            "embedder": {
+                "provider_id": f"unused-emb-{unique_suffix}",
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+            },
+        },
+    )
+    assert coll.status_code in (200, 201), coll.text
+
+    doc = await client.post(
+        "/v1/documents",
+        json={
+            "id": doc_id,
+            "name": "T0336",
+            "collection_id": coll_id,
+            "meta": {},
+        },
+    )
+    assert doc.status_code in (200, 201), doc.text
+
+    try:
+        # DELETE the parent collection
+        rm = await client.delete(f"/v1/collections/{coll_id}")
+        assert rm.status_code == 204, rm.text
+
+        # Document GET still resolves (orphan-tolerated)
+        got = await client.get(f"/v1/documents/{doc_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["collection_id"] == coll_id
+
+        # /v1/collections/{C}/documents on the now-missing C is
+        # gated (T0204 confirmed gating); pin clean envelope
+        listing = await client.get(f"/v1/collections/{coll_id}/documents")
+        assert listing.status_code != 500, listing.text
+        envelope = listing.json() if listing.content else {}
+        assert envelope.get("type") != "/errors/internal", listing.text
+    finally:
+        await client.delete(f"/v1/documents/{doc_id}")

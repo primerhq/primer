@@ -3645,3 +3645,60 @@ async def test_t0325_workspace_log_on_missing_workspace_returns_404(
     envelope = resp.json()
     assert envelope["type"] == "/errors/not-found", envelope
     assert envelope["status"] == 404
+
+
+# ============================================================================
+# T0334 — Workspace /log without limit + with limit=1
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0334_workspace_log_default_limit_and_explicit_limit_one(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0334 — On a fresh workspace (empty /log per T0057), both
+    `?limit=1` and the no-`limit` default form return clean envelopes
+    with `commits` arrays of length ≤ N. Pins:
+
+      - omitting limit returns 200 with at most 50 (default) commits
+      - explicit ?limit=1 returns at most 1 commit
+
+    A fresh workspace has 0 commits so both arrays are empty here;
+    the hard pin is the response shape and length cap.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Default — no limit query
+        no_limit = await client.get(
+            f"/v1/workspaces/{workspace_id}/log",
+        )
+        assert no_limit.status_code == 200, no_limit.text
+        commits_default = no_limit.json().get("commits", [])
+        assert isinstance(commits_default, list), no_limit.json()
+        assert len(commits_default) <= 50, (
+            f"default-limit log returned {len(commits_default)} > 50"
+        )
+
+        # Explicit limit=1
+        l1 = await client.get(
+            f"/v1/workspaces/{workspace_id}/log?limit=1",
+        )
+        assert l1.status_code == 200, l1.text
+        commits_one = l1.json().get("commits", [])
+        assert isinstance(commits_one, list)
+        assert len(commits_one) <= 1, (
+            f"limit=1 log returned {len(commits_one)} > 1"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

@@ -2374,6 +2374,157 @@ async def test_t0332_cursor_walk_excludes_post_issue_inserts(
 
 
 # ============================================================================
+# T0337 — Predicate composite `in` + `and` filters intersection correctly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0337_predicate_composite_in_and_intersection(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0337 — and(field LIKE prefix%, in(field, [A,B,C])) returns
+    exactly the rows matching BOTH clauses (intersection). Pins
+    composite of `in` with `and` returns documented set.
+    """
+    prefix = f"ts-t0337-{unique_suffix}"
+    seeded = await _seed_toolsets(client, prefix, 4)
+    # Pick a subset of ids for the IN list — only 2 of the 4 seeded
+    in_subset = sorted(seeded[:2])
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "in",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": in_subset},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out = sorted(item["id"] for item in resp.json()["items"])
+        assert out == in_subset, (
+            f"composite IN+AND intersection wrong; expected "
+            f"{in_subset!r}, got {out!r}"
+        )
+    finally:
+        await _delete_toolsets(client, seeded)
+
+
+# ============================================================================
+# T0338 — Predicate nested 4 levels deep returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0338_predicate_nested_four_levels_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0338 — Build a predicate tree of depth 4 with mixed and/or/=
+    nodes. Tests the translator's depth handling: must return either
+    a documented result set (200) or a clean 4xx; never
+    /errors/internal.
+
+    Tree shape (depth 4):
+        and(
+            ~= prefix%,
+            or(
+                = id_a,
+                and(
+                    != id_b,
+                    or(
+                        = id_c,
+                        != id_d,
+                    ),
+                ),
+            ),
+        )
+    """
+    prefix = f"ts-t0338-{unique_suffix}"
+    seeded = await _seed_toolsets(client, prefix, 5)
+    a, b, c, d, _e = seeded
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "or",
+                    "left": {
+                        "kind": "predicate",
+                        "op": "=",
+                        "left": {"kind": "field", "name": "id"},
+                        "right": {"kind": "value", "value": a},
+                    },
+                    "right": {
+                        "kind": "predicate",
+                        "op": "and",
+                        "left": {
+                            "kind": "predicate",
+                            "op": "!=",
+                            "left": {"kind": "field", "name": "id"},
+                            "right": {"kind": "value", "value": b},
+                        },
+                        "right": {
+                            "kind": "predicate",
+                            "op": "or",
+                            "left": {
+                                "kind": "predicate",
+                                "op": "=",
+                                "left": {"kind": "field", "name": "id"},
+                                "right": {"kind": "value", "value": c},
+                            },
+                            "right": {
+                                "kind": "predicate",
+                                "op": "!=",
+                                "left": {"kind": "field", "name": "id"},
+                                "right": {"kind": "value", "value": d},
+                            },
+                        },
+                    },
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"depth-4 predicate leaked /errors/internal: {resp.text}"
+        )
+        # If 200, the result set is the prefix-scoped intersection
+        # of the inner OR clauses
+        if resp.status_code == 200:
+            out = {item["id"] for item in resp.json()["items"]}
+            # All seeded ids are prefix-matching — outer AND just
+            # narrows by id-prefix (which is already true). Inner
+            # OR: a OR (NOT b AND (c OR NOT d)). The expected set
+            # is at minimum {a} since a satisfies the lone equality.
+            assert a in out, (
+                f"expected at least {a!r} (matches lone =a clause); "
+                f"got {out!r}"
+            )
+    finally:
+        await _delete_toolsets(client, seeded)
+
+
+# ============================================================================
 # T0217 — find with order_by referencing unknown field returns clean 4xx
 # ============================================================================
 
