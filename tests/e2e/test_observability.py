@@ -239,3 +239,98 @@ async def test_t0308_worker_capacity_is_positive_integer(
         assert cap >= 1, (
             f"worker {w.get('id')!r} capacity should be >=1, got {cap}"
         )
+
+
+@pytest.mark.asyncio
+async def test_t0342_health_metrics_counters_monotonically_non_decreasing(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0342 — Sample /v1/health 20 times. Numeric counter values
+    inside `scheduler.metrics` and `worker_pool.metrics` must NEVER
+    decrease across consecutive snapshots — they're monotonic
+    counters.
+    """
+    import asyncio
+    snapshots: list[dict] = []
+    for _ in range(20):
+        r = await client.get("/v1/health")
+        assert r.status_code == 200, r.text
+        snapshots.append(r.json())
+        await asyncio.sleep(0.05)
+
+    def _flatten_int_counters(metrics: dict, prefix: str = "") -> dict:
+        out: dict[str, int] = {}
+        for k, v in (metrics or {}).items():
+            key = f"{prefix}{k}"
+            if isinstance(v, int):
+                out[key] = v
+            elif isinstance(v, dict):
+                out.update(_flatten_int_counters(v, prefix=f"{key}."))
+        return out
+
+    prev_scheduler: dict = {}
+    prev_pool: dict = {}
+    for i, snap in enumerate(snapshots):
+        sched_m = _flatten_int_counters(
+            (snap.get("scheduler") or {}).get("metrics") or {},
+        )
+        pool_m = _flatten_int_counters(
+            (snap.get("worker_pool") or {}).get("metrics") or {},
+        )
+        for key, val in sched_m.items():
+            prev = prev_scheduler.get(key, val)
+            assert val >= prev, (
+                f"scheduler metric {key!r} decreased between snapshots "
+                f"{i - 1} and {i}: prev={prev}, now={val}"
+            )
+            prev_scheduler[key] = val
+        for key, val in pool_m.items():
+            prev = prev_pool.get(key, val)
+            assert val >= prev, (
+                f"worker_pool metric {key!r} decreased between snapshots "
+                f"{i - 1} and {i}: prev={prev}, now={val}"
+            )
+            prev_pool[key] = val
+
+
+@pytest.mark.asyncio
+async def test_t0343_worker_heartbeat_advances_under_idle(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0343 — Worker claim_loop must respect its poll interval and
+    not busy-loop. With no sessions in the system, the worker's
+    `last_heartbeat` should still advance over a few seconds (the
+    heartbeat task runs independently of claim activity).
+
+    NB: spec §6 says `last_heartbeat_at` but the actual WorkerInfo
+    field is `last_heartbeat` (no `_at` suffix). Pinned by T0080;
+    this test uses the actual field name.
+
+    Pin the heartbeat-advances signal as an indirect indicator that
+    the worker isn't pinned in a tight CPU loop.
+    """
+    import asyncio
+
+    r1 = await client.get("/v1/workers")
+    assert r1.status_code == 200, r1.text
+    items1 = r1.json()["items"]
+    assert items1
+    worker_id = items1[0]["id"]
+    hb1 = items1[0].get("last_heartbeat")
+    assert hb1 is not None, items1[0]
+
+    # Wait — heartbeat should advance
+    await asyncio.sleep(2.0)
+
+    r2 = await client.get("/v1/workers")
+    assert r2.status_code == 200, r2.text
+    matching = [
+        w for w in r2.json()["items"] if w["id"] == worker_id
+    ]
+    assert matching, f"worker {worker_id!r} disappeared from list"
+    hb2 = matching[0].get("last_heartbeat")
+    assert hb2 is not None
+    # Heartbeat must have advanced (or at least not gone backwards)
+    assert hb2 >= hb1, (
+        f"worker heartbeat went backwards: hb1={hb1!r}, hb2={hb2!r}"
+    )

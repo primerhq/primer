@@ -1508,6 +1508,101 @@ async def test_t0282_predicate_gte_lte_on_session_turn_no(
 
 
 # ============================================================================
+# T0341 — Session pause then resume against LM Studio: observable PAUSED
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0341_session_pause_resume_observable_against_lm_studio(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0341 — Extends T0056 (HTTP contract only) to attempt observing
+    the PAUSED state. Use a heavy LM Studio prompt so the worker
+    spends time thinking (creating a window for the pause to
+    register), pause, sample status. The PAUSED transition is
+    inherently racy; pin only the soft observation as best-effort
+    (recorded but not strict-asserted) plus the hard contract that
+    pause+resume don't 5xx and the session converges to terminal.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Heavy prompt to keep the model thinking
+        long_prompt = (
+            "Think step by step about Conway's Game of Life. List 5 "
+            "interesting initial configurations and explain each."
+        )
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "initial_instructions": long_prompt,
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 200, resume.text
+
+        # Brief pause to let claim happen
+        await asyncio.sleep(0.5)
+
+        # Send pause; record observed status
+        pause_resp = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        assert pause_resp.status_code == 204, pause_resp.text
+
+        # Sample status across 3s — best-effort PAUSED observation
+        observed_paused = False
+        for _ in range(30):
+            r = await client.get(f"/v1/sessions/{session_id}")
+            if r.status_code == 200:
+                if r.json().get("status") == "paused":
+                    observed_paused = True
+                    break
+            await asyncio.sleep(0.1)
+
+        # Soft observation logged, not strictly asserted
+        print(f"[T0341] observed_paused={observed_paused}")
+
+        # Resume
+        resume2 = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume2.status_code in (200, 409), resume2.text
+
+        # Converge to terminal cleanly
+        final = await _wait_for_terminal(
+            client, workspace_id=workspace_id, session_id=session_id,
+            timeout_s=120.0,
+        )
+        assert final.get("status") == "ended", (
+            f"pause+resume session did not converge to terminal: "
+            f"{final!r}"
+        )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0179 — concurrent steer + cancel: cancel converges to terminal cleanly
 # ============================================================================
 

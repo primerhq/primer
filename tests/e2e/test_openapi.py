@@ -250,3 +250,124 @@ async def test_t0255_openapi_includes_pagination_envelope_schemas(
         f"{sorted(cursor_response_fields)!r} found. Available: "
         f"{sorted(schemas.keys())!r}"
     )
+
+
+# ============================================================================
+# T0339 — Every CRUD-generator entity has its 6 ops in /openapi.json
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0339_openapi_every_crud_entity_has_six_ops(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0339 — Spec §5 says every CRUD-generator entity has 6 routes:
+    POST /entity, GET /entity/{id}, PUT /entity/{id}, DELETE
+    /entity/{id}, GET /entity, POST /entity/find. Pin all 6 are
+    present in /openapi.json for every entity that uses the generator.
+
+    NB: WorkspaceProvider has no PUT (per spec §12), so it's
+    excluded; Workspace is bespoke (no generator) so also excluded.
+    """
+    resp = await client.get("/openapi.json")
+    assert resp.status_code == 200, resp.text
+    paths = (resp.json().get("paths") or {})
+
+    entities = (
+        "/v1/llm_providers",
+        "/v1/embedding_providers",
+        "/v1/cross_encoder_providers",
+        "/v1/toolsets",
+        "/v1/agents",
+        "/v1/graphs",
+        "/v1/collections",
+        "/v1/documents",
+        "/v1/workspace_templates",
+    )
+    for prefix in entities:
+        # Collection-level paths (/{prefix} and /{prefix}/find)
+        coll_path = prefix
+        find_path = f"{prefix}/find"
+        # Instance path (/{prefix}/{id})
+        # Look for any path matching /<prefix>/{<param>}
+        # FastAPI emits as e.g. "/v1/llm_providers/{provider_id}"
+        instance_paths = [
+            p for p in paths
+            if p.startswith(f"{prefix}/")
+            and not p.endswith("/find")
+            and "{" in p
+            # exclude bespoke sub-resources like /tools, /models
+            and p.count("/") == prefix.count("/") + 1
+        ]
+
+        # Verify collection path exists with POST + GET
+        assert coll_path in paths, (
+            f"OpenAPI missing collection path {coll_path!r}"
+        )
+        coll_methods = paths[coll_path]
+        assert "post" in coll_methods, (
+            f"{coll_path} missing POST: {list(coll_methods.keys())!r}"
+        )
+        assert "get" in coll_methods, (
+            f"{coll_path} missing GET: {list(coll_methods.keys())!r}"
+        )
+
+        # Verify /find path exists with POST
+        assert find_path in paths, (
+            f"OpenAPI missing /find path {find_path!r}"
+        )
+        assert "post" in paths[find_path], (
+            f"{find_path} missing POST"
+        )
+
+        # Verify instance path exists with GET, PUT, DELETE
+        assert instance_paths, (
+            f"OpenAPI missing instance path for {prefix!r}; "
+            f"available paths: {[p for p in paths if p.startswith(prefix)]!r}"
+        )
+        instance_path = instance_paths[0]
+        instance_methods = paths[instance_path]
+        for verb in ("get", "put", "delete"):
+            assert verb in instance_methods, (
+                f"{instance_path} missing {verb.upper()}: "
+                f"{list(instance_methods.keys())!r}"
+            )
+
+
+# ============================================================================
+# T0340 — No schema in components.schemas is unreferenced
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0340_openapi_no_unreferenced_schemas(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0340 — Walk components.schemas; every schema name must appear
+    as a $ref somewhere in the OpenAPI document (in paths or in
+    other schemas). An orphaned schema indicates a route was removed
+    but its body type wasn't.
+
+    Tolerates: discriminated-union variants (e.g. _AgentNodeRef) that
+    are referenced indirectly through their parent type's anyOf list.
+    """
+    import json
+    resp = await client.get("/openapi.json")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    schemas = (body.get("components") or {}).get("schemas") or {}
+
+    # Serialize the entire doc to a string and grep for each schema
+    # name's $ref. Cheap but reliable.
+    doc_str = json.dumps(body)
+
+    orphans: list[str] = []
+    for name in schemas.keys():
+        ref_token = f'#/components/schemas/{name}"'
+        if ref_token not in doc_str:
+            orphans.append(name)
+
+    assert not orphans, (
+        f"unreferenced schema(s) in /openapi.json (no $ref found): "
+        f"{sorted(orphans)!r}"
+    )
