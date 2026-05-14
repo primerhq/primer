@@ -2769,3 +2769,358 @@ async def test_t0410_concurrent_double_resume_both_200(
             )
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# Shared helper: wait for a session to reach `status="ended"` or timeout.
+# Mirrors the LM-Studio file's `_wait_for_terminal` so the graph-executor
+# error-contract tests below don't need LM Studio to drive them.
+# ============================================================================
+
+
+async def _wait_for_session_ended(
+    client: httpx.AsyncClient, *, session_id: str,
+    timeout_s: float = 30.0, interval_s: float = 0.5,
+) -> dict:
+    """Poll top-level GET /v1/sessions/{id} until status='ended' or
+    timeout. Returns the last seen body regardless of outcome —
+    caller decides what's acceptable.
+    """
+    deadline_iters = max(1, int(timeout_s / interval_s))
+    last: dict = {}
+    for _ in range(deadline_iters):
+        r = await client.get(f"/v1/sessions/{session_id}")
+        if r.status_code == 200:
+            last = r.json()
+            if last.get("status") == "ended":
+                return last
+        await asyncio.sleep(interval_s)
+    return last
+
+
+# ============================================================================
+# T0429 — Graph-bound session terminates cleanly via _handle_fatal
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0429_graph_bound_session_terminates_via_fatal_path(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0429 — Sibling of T0156 without the LM Studio dependency.
+    Graph executor wiring is `NotImplementedError` in
+    matrix/worker/pool.py:478. The worker must surface that as a
+    clean session ENDED/failed with `last_error` populated, NOT
+    leave the row stuck in RUNNING.
+
+    Pin this with the cheap Anthropic-placeholder provider (no real
+    LLM call ever happens because the failure occurs in
+    `_build_graph_executor` BEFORE the LLM is consulted).
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    graph_id = f"graph-t0429-{unique_suffix}"
+    workspace_id: str | None = None
+    session_id: str | None = None
+    graph_created = False
+    try:
+        # Minimal one-agent + terminal graph
+        gr = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_id,
+                "description": "T0429 — minimal graph",
+                "nodes": [
+                    {"kind": "agent", "id": "n1",
+                     "agent_id": env["agent_id"]},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            },
+        )
+        assert gr.status_code == 201, gr.text
+        graph_created = True
+
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+        assert sess.json()["binding"]["kind"] == "graph"
+
+        # Resume → worker claims → _build_graph_executor raises →
+        # _handle_fatal updates row to ENDED/failed
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 200, resume.text
+
+        final = await _wait_for_session_ended(
+            client, session_id=session_id, timeout_s=30.0,
+        )
+        assert final.get("status") == "ended", (
+            f"graph-bound session did not converge to terminal in 30s "
+            f"(stuck-in-RUNNING regression?): {final!r}"
+        )
+        assert final.get("ended_reason") == "failed", (
+            f"graph executor is NotImplemented; expected ended_reason="
+            f"'failed', got {final!r}"
+        )
+        # last_error must carry the executor failure text — operators
+        # need this to know WHY the session failed.
+        last_err = final.get("last_error")
+        assert last_err, (
+            f"failed graph session must populate last_error: {final!r}"
+        )
+        assert "NotImplementedError" in last_err or "graph" in last_err.lower(), (
+            f"last_error should reference the executor failure; "
+            f"got {last_err!r}"
+        )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if graph_created:
+            await client.delete(f"/v1/graphs/{graph_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0432 — Cancel signal during graph executor failure converges cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0432_graph_session_cancel_during_fatal_converges_cleanly(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0432 — Race a cancel against the worker's transient RUNNING
+    state on a graph-bound session. The worker hits
+    NotImplementedError → _handle_fatal sets ENDED/failed; if cancel
+    arrives first, the session may end ENDED/cancelled instead.
+    Either terminal outcome is acceptable; what is NOT is sticking
+    in RUNNING or surfacing /errors/internal anywhere.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    graph_id = f"graph-t0432-{unique_suffix}"
+    workspace_id: str | None = None
+    session_id: str | None = None
+    graph_created = False
+    try:
+        gr = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_id,
+                "description": "T0432",
+                "nodes": [
+                    {"kind": "agent", "id": "n1",
+                     "agent_id": env["agent_id"]},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            },
+        )
+        assert gr.status_code == 201, gr.text
+        graph_created = True
+
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # Race: resume + cancel without ordering. Cancel may land
+        # before/after the worker observes the session. Either way
+        # convergence to a terminal state must happen, and no 5xx.
+        resume_task = asyncio.create_task(client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        ))
+        cancel_task = asyncio.create_task(client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        ))
+        resume_resp, cancel_resp = await asyncio.gather(
+            resume_task, cancel_task,
+        )
+
+        # Hard pin: never 5xx
+        assert resume_resp.status_code < 500, resume_resp.text
+        assert cancel_resp.status_code < 500, cancel_resp.text
+        # Documented codes
+        assert resume_resp.status_code in (200, 409), resume_resp.text
+        assert cancel_resp.status_code in (200, 409), cancel_resp.text
+
+        # Convergence to terminal — extended timeout because the worker
+        # may still cycle through the failure path
+        final = await _wait_for_session_ended(
+            client, session_id=session_id, timeout_s=30.0,
+        )
+        assert final.get("status") == "ended", (
+            f"session stuck after cancel-during-fatal race: {final!r}"
+        )
+        # ended_reason is either "failed" (worker hit NotImplementedError
+        # before observing cancel) or "cancelled" (cancel landed first
+        # via the storage path). Both are valid.
+        assert final.get("ended_reason") in ("failed", "cancelled"), (
+            f"unexpected ended_reason: {final!r}"
+        )
+        # ended_at must be populated
+        assert final.get("ended_at") is not None, final
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if graph_created:
+            await client.delete(f"/v1/graphs/{graph_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0433 — Top-level GET /v1/sessions/{id} reflects ended_reason from fatal
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0433_top_level_get_reflects_fatal_ended_reason(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0433 — When a graph-bound session terminates via the fatal
+    path, the row's `ended_reason` and `last_error` must be visible
+    on the top-level GET /v1/sessions/{id} read.
+
+    Documented divergence: the NESTED route
+    /v1/workspaces/{wid}/sessions/{sid} returns `{info, status}`
+    sourced from the LocalWorkspace's in-memory `_sessions` dict,
+    which is populated only by `start_session` for AGENT bindings
+    (matrix/workspace/local/workspace.py:135-160). Graph-bound
+    sessions never get a live AgentSession object, so the nested
+    GET 404s. The top-level GET reads session_storage directly and
+    works for both binding kinds. This is a real spec/impl drift
+    pinned for now and noted in 01-app-spec.md §11.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    graph_id = f"graph-t0433-{unique_suffix}"
+    workspace_id: str | None = None
+    session_id: str | None = None
+    graph_created = False
+    try:
+        gr = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_id,
+                "description": "T0433",
+                "nodes": [
+                    {"kind": "agent", "id": "n1",
+                     "agent_id": env["agent_id"]},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            },
+        )
+        assert gr.status_code == 201, gr.text
+        graph_created = True
+
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 200, resume.text
+
+        # Top-level GET reads session_storage and MUST work for
+        # graph-bound sessions
+        top_final = await _wait_for_session_ended(
+            client, session_id=session_id, timeout_s=30.0,
+        )
+        assert top_final.get("status") == "ended", top_final
+        assert top_final.get("ended_reason") == "failed", top_final
+        assert top_final.get("last_error"), top_final
+        assert top_final.get("ended_at") is not None, top_final
+        # Binding round-trips through top-level GET
+        binding = top_final.get("binding", {})
+        assert binding.get("kind") == "graph", top_final
+        assert binding.get("graph_id") == graph_id, top_final
+
+        # Nested workspace GET — documented divergence: graph-bound
+        # sessions don't have a live AgentSession in the workspace's
+        # in-memory dict, so the nested handler 404s. We pin the
+        # actual behaviour: clean 404 envelope, never /errors/internal.
+        # If a future change wires graph sessions into the nested
+        # path too, this branch flips to 200 — which would also be a
+        # valid outcome and the test should be tightened then.
+        nested = await client.get(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}",
+        )
+        assert nested.status_code in (200, 404), (
+            f"nested GET on graph-bound session: unexpected status "
+            f"{nested.status_code}: {nested.text}"
+        )
+        if nested.status_code == 404:
+            envelope = nested.json()
+            assert envelope.get("type") == "/errors/not-found", envelope
+        else:
+            # Future-proof branch: when the nested handler learns to
+            # read graph-bound rows from storage, both reads must
+            # agree on ended_reason and last_error.
+            nested_body = nested.json()
+            info = nested_body.get("info", {})
+            assert nested_body.get("status") == top_final["status"]
+            assert info.get("ended_reason") == top_final.get("ended_reason")
+            assert info.get("last_error") == top_final.get("last_error")
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if graph_created:
+            await client.delete(f"/v1/graphs/{graph_id}")
+        await _teardown_setup(client, env)

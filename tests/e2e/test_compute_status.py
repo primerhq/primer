@@ -1159,3 +1159,173 @@ async def test_t0413_delete_toolset_flips_agent_status_ok_false(
         # Toolset already deleted (or never created on a failure path)
         await client.delete(f"/v1/toolsets/{toolset_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0430 — POST /v1/graphs with edge referencing non-existent node id 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0430_graph_create_edge_unknown_node_id_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0430 — Graph topology validator (matrix/model/graph.py:387)
+    rejects edges whose `from_node` or `to_node` doesn't match any
+    declared node id. Pin: 422 /errors/validation-error with the
+    bad node id surfaced in the envelope, never /errors/internal.
+
+    Pre-pin so the eventual graph executor lands without breaking
+    edge-id integrity guarantees.
+    """
+    provider_id = f"llm-t0430-{unique_suffix}"
+    agent_id = f"agent-t0430-{unique_suffix}"
+    graph_id = f"graph-t0430-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        # Edge.to_node references "no-such-node" — no node has that id
+        body = {
+            "id": graph_id,
+            "description": "T0430 — edge with bad to_node",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "no-such-node"},
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code != 500, resp.text
+        assert resp.status_code == 422, (
+            f"graph with bad edge.to_node should be 422; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        envelope = resp.json()
+        assert envelope.get("type") == "/errors/validation-error", envelope
+        # The message should mention the bad node id so an operator
+        # can act on it
+        body_str = resp.text
+        assert "no-such-node" in body_str, (
+            f"422 envelope should reference the bad node id "
+            f"'no-such-node'; body={body_str!r}"
+        )
+
+        # Defence: row should not have been created
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 404, (
+            f"graph {graph_id!r} unexpectedly created despite 422: "
+            f"{got.text}"
+        )
+
+        # Same pin for edge.from_node referencing a missing node
+        body2 = {
+            "id": graph_id,
+            "description": "T0430 — edge with bad from_node",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "ghost", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+        }
+        resp2 = await client.post("/v1/graphs", json=body2)
+        assert resp2.status_code == 422, resp2.text
+        assert "ghost" in resp2.text, resp2.text
+    finally:
+        # In case the create somehow succeeded
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0431 — POST /v1/graphs with cyclic edges has documented behaviour
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0431_graph_create_with_cyclic_edges_documented_behavior(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0431 — Per matrix/model/graph.py:359-363, "Cyclic graphs MUST
+    set max_iterations to bound execution; otherwise a stuck cycle
+    runs unbounded." The validator does NOT statically detect cycles
+    (only edge-id integrity); responsibility for unbounded loops is
+    pushed to runtime via max_iterations.
+
+    Pin observed behaviour: a graph with a 2-node cycle (n1→n2,
+    n2→n1) and no max_iterations is ACCEPTED at create time
+    (status 201). This documents the current contract so a future
+    static cycle-detector deliberately breaks this test.
+    """
+    provider_id = f"llm-t0431-{unique_suffix}"
+    agent_id = f"agent-t0431-{unique_suffix}"
+    graph_id = f"graph-t0431-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    graph_created = False
+
+    try:
+        # Two-node cycle: n1 → n2 → n1
+        body = {
+            "id": graph_id,
+            "description": "T0431 — cyclic edges, no max_iterations",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "agent", "id": "n2", "agent_id": agent_id},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "n2"},
+                {"kind": "static", "from_node": "n2", "to_node": "n1"},
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        # Hard pin: never 5xx
+        assert resp.status_code != 500, resp.text
+        # Acceptable outcomes: 201 (current — no static cycle detection),
+        # or 422 (future — explicit cycle detection lands and rejects
+        # cycles missing max_iterations). Both are valid contracts.
+        assert resp.status_code in (201, 422), (
+            f"graph with cyclic edges: unexpected {resp.status_code}: "
+            f"{resp.text}"
+        )
+
+        if resp.status_code == 201:
+            graph_created = True
+            # Roundtrip via GET
+            got = await client.get(f"/v1/graphs/{graph_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["max_iterations"] is None, got.json()
+            # Edges preserved
+            edge_pairs = sorted(
+                (e["from_node"], e["to_node"])
+                for e in got.json()["edges"]
+            )
+            assert edge_pairs == [("n1", "n2"), ("n2", "n1")], got.json()
+        else:
+            envelope = resp.json()
+            assert envelope.get("type") == "/errors/validation-error", envelope
+    finally:
+        if graph_created:
+            await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
