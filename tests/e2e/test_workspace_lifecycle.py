@@ -5643,3 +5643,109 @@ async def test_t0482_workspace_files_put_binary_read_as_text_clean(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0513 — Workspace files PUT with charset=utf-16 returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0513_workspace_files_put_charset_utf16_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0513 — Pin Content-Type charset variant beyond T0374's
+    `application/json; charset=utf-8`. UTF-16 is exotic for HTTP
+    JSON bodies and may not be supported. The contract: never 5xx,
+    never /errors/internal. Either accepted (the body parser
+    handles the charset) or rejected with a clean 4xx envelope.
+    """
+    import json
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        body_dict = {"content": "utf16-probe", "encoding": "text"}
+        # Encode body as UTF-16 (with BOM); server may or may not
+        # decode that depending on its body parser
+        body_bytes = json.dumps(body_dict).encode("utf-16")
+
+        resp = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "utf16-probe.txt"},
+            content=body_bytes,
+            headers={"content-type": "application/json; charset=utf-16"},
+        )
+        envelope = (
+            resp.json() if (resp.content and resp.status_code >= 400) else {}
+        )
+        assert envelope.get("type") != "/errors/internal", (
+            f"utf-16 charset PUT leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code < 500, resp.text
+        # Documented: 204 (accepted), or 4xx (rejected as bad
+        # charset / unparseable JSON)
+        assert resp.status_code in (204, 400, 415, 422), (
+            f"unexpected status: {resp.status_code}: {resp.text}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0514 — DELETE /files on path whose parent dir doesn't exist returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0514_workspace_files_delete_missing_parent_dir_clean_404(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0514 — DELETE /files?path=nonexistent_dir/file.txt where
+    neither the directory nor the file exist. Pin: 404
+    /errors/not-found (or another clean 4xx); never 5xx, never
+    /errors/internal — the missing parent directory must not
+    surface as a stat-failure or rmdir-failure 500.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        resp = await client.delete(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "nonexistent_dir_t0514/missing-file.txt"},
+        )
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"DELETE on missing parent dir leaked /errors/internal: "
+            f"{resp.text}"
+        )
+        assert resp.status_code < 500, resp.text
+        assert resp.status_code in (204, 404), (
+            f"DELETE on missing path: unexpected {resp.status_code}: "
+            f"{resp.text}"
+        )
+        if resp.status_code == 404:
+            assert envelope.get("type") == "/errors/not-found", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
