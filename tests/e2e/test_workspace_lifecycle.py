@@ -3962,3 +3962,232 @@ async def test_t0334_workspace_log_default_limit_and_explicit_limit_one(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0391 — file with leading-dot-only basename `...weird` round-trips
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0391_workspace_file_leading_dots_basename_round_trips(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0391 — A basename starting with multiple dots (e.g.
+    `...weird`) is a perfectly valid POSIX filename and MUST NOT be
+    confused with a path-traversal attempt (which is `..` as a path
+    SEGMENT, not as a leading basename character).
+
+    Round-trips PUT/READ/LIST/DELETE on `...weird.txt` and on a
+    nested `subdir/...weird` to ensure both root- and child-level
+    basenames work.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for path in ("...weird.txt", "subdir/...weird"):
+            content = f"leading-dots-{path}"
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": path},
+                json={"content": content, "encoding": "text"},
+            )
+            assert put.status_code == 204, (
+                f"PUT {path!r} returned {put.status_code}: {put.text}"
+            )
+
+            read = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": path},
+            )
+            assert read.status_code == 200, (
+                f"READ {path!r} returned {read.status_code}: {read.text}"
+            )
+            assert read.json()["content"] == content
+            assert read.json()["path"] == path
+
+            # List the parent directory and confirm the basename
+            # appears.
+            parent = path.rsplit("/", 1)[0] if "/" in path else ""
+            list_params = {"path": parent} if parent else None
+            listed = await client.get(
+                f"/v1/workspaces/{workspace_id}/files",
+                params=list_params,
+            )
+            assert listed.status_code == 200, listed.text
+            names = [item["path"] for item in listed.json()["items"]]
+            assert any(
+                n == path or n.endswith(path.rsplit("/", 1)[-1])
+                for n in names
+            ), (
+                f"leading-dots basename {path!r} missing from list "
+                f"of parent {parent!r}: {names!r}"
+            )
+
+            rm = await client.delete(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": path},
+            )
+            assert rm.status_code == 204, (
+                f"DELETE {path!r} returned {rm.status_code}: {rm.text}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0392 — basename with `?`, `*`, `[` round-trips on local backend
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0392_workspace_file_glob_metachar_basename_round_trips(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0392 — Glob meta-characters (`?`, `*`, `[`) are valid in POSIX
+    filenames and must NOT be expanded at the storage layer. The
+    local backend writes via Python `pathlib.Path` / direct fs APIs,
+    not via shell, so glob expansion would only happen if some
+    intermediate code path mistakenly ran through a shell or used
+    `glob`/`fnmatch` for routing.
+
+    Pins PUT/READ/DELETE on a file whose basename contains all three
+    meta-characters. Skipped on Windows (which forbids `?` and `*`
+    in paths at the OS level, so this test isn't meaningful there).
+    """
+    if os.name == "nt":
+        pytest.skip("Windows filesystem rejects '?' and '*' in basenames")
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # All three glob meta-characters in a single basename
+        glob_path = "weird?name*here[1].txt"
+        content = "no-glob-expansion"
+
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": glob_path},
+            json={"content": content, "encoding": "text"},
+        )
+        assert put.status_code == 204, (
+            f"PUT with glob meta-chars failed: {put.status_code}: "
+            f"{put.text}"
+        )
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": glob_path},
+        )
+        assert read.status_code == 200, read.text
+        body = read.json()
+        # If glob expansion had occurred, the path field would be a
+        # different concrete filename or the read would 404.
+        assert body["content"] == content
+        assert body["path"] == glob_path
+
+        # Listing the root must include exactly one entry that
+        # matches our literal basename — not multiple entries that
+        # would result from glob fan-out.
+        listed = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+        )
+        assert listed.status_code == 200, listed.text
+        names = [item["path"] for item in listed.json()["items"]]
+        matches = [n for n in names if n.endswith(glob_path)]
+        assert len(matches) == 1, (
+            f"glob meta-char basename should appear exactly once in "
+            f"listing; got matches={matches!r} from names={names!r}"
+        )
+
+        rm = await client.delete(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": glob_path},
+        )
+        assert rm.status_code == 204, rm.text
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0393 — PUT with trailing-slash path: accepts or 4xx, never 500
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0393_workspace_files_put_trailing_slash_path_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0393 — Path canonicalisation pin: a PUT to a path ending with
+    `/` (e.g. `notes/`) is ambiguous — it could mean "create a file
+    literally named with a trailing slash" (filesystem-illegal) or
+    "the directory itself" (also nonsensical for PUT). The contract
+    is: either the API accepts and silently strips the slash, OR it
+    rejects with a 4xx; it MUST NOT 500.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # PUT to a path with a trailing slash
+        resp = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "notes/"},
+            json={"content": "trailing-slash-content", "encoding": "text"},
+        )
+        # Hard pin: never 5xx. Either 204 (accepted, slash stripped)
+        # or 4xx (rejected with clean envelope).
+        assert resp.status_code < 500, (
+            f"PUT with trailing-slash path returned 5xx: "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        if resp.status_code == 204:
+            # If accepted, the canonical path is "notes" — read it back
+            read = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": "notes"},
+            )
+            # Either readable as "notes" or as "notes/" — accept both
+            # to give the API freedom in canonicalisation choice.
+            assert read.status_code in (200, 404), read.text
+        else:
+            # Rejected — must be a clean RFC 7807 envelope
+            assert resp.status_code in range(400, 500), resp.text
+            envelope = resp.json()
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+            assert envelope.get("type") != "/errors/internal", envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

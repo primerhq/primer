@@ -766,3 +766,93 @@ async def test_t0261_options_search_route_clean_response(
         assert "POST" in allow.upper(), (
             f"Allow header {allow!r} should include POST"
         )
+
+
+# ============================================================================
+# T0389 — X-Request-Id header behaviour pinned on /v1/health
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0389_x_request_id_header_behaviour_on_health(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0389 — Spec doesn't promise X-Request-Id on the response, but
+    if it IS surfaced (commonly via middleware) then the contract is:
+    when the client sends X-Request-Id, the server either echoes that
+    exact value or omits the header entirely; it MUST NOT emit a
+    duplicate header (httpx coalesces duplicates with `, `) and MUST
+    NOT replace the client value with a server-generated one.
+
+    Pins:
+    - No client header → server may set its own value or omit
+    - Client header → if present, must equal the client's value
+    - Header value (if present) never contains `, ` from duplication
+    """
+    # Case 1: no client-supplied header — absent or single-valued
+    r1 = await client.get("/v1/health")
+    assert r1.status_code == 200, r1.text
+    server_id = r1.headers.get("x-request-id")
+    if server_id is not None:
+        assert ", " not in server_id, (
+            f"X-Request-Id appears duplicated (multi-valued): "
+            f"{server_id!r}"
+        )
+
+    # Case 2: client supplies a value
+    client_id = "test-rid-t0389-deadbeef"
+    r2 = await client.get(
+        "/v1/health", headers={"x-request-id": client_id},
+    )
+    assert r2.status_code == 200, r2.text
+    echoed = r2.headers.get("x-request-id")
+    if echoed is not None:
+        # Must not be multi-valued (no comma-coalesced duplicates)
+        assert ", " not in echoed, (
+            f"X-Request-Id appears duplicated when client set it: "
+            f"{echoed!r}"
+        )
+        # If echoed at all, must equal what the client sent — server
+        # MUST NOT silently replace a client-supplied request id with
+        # its own (that would break end-to-end tracing).
+        assert echoed == client_id, (
+            f"server overrode client X-Request-Id: sent "
+            f"{client_id!r}, got {echoed!r}"
+        )
+
+
+# ============================================================================
+# T0390 — application/problem+json 404 body parses as JSON (extends T0312)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0390_problem_json_404_body_parses_as_json(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0390 — Strict-client compatibility: a 404 response carrying
+    Content-Type `application/problem+json` (per RFC 7807) MUST also
+    have a body that parses cleanly as JSON. Some strict clients
+    branch on the Content-Type and refuse to parse anything other
+    than `application/json` if the body isn't well-formed; pin both
+    the media type AND the body shape.
+
+    Extends T0312 which only checked the Content-Type header.
+    """
+    import json
+    resp = await client.get("/v1/agents/missing-agent-t0390")
+    assert resp.status_code == 404, resp.text
+    ct = resp.headers.get("content-type", "")
+    assert "problem+json" in ct.lower(), (
+        f"expected problem+json content-type; got {ct!r}"
+    )
+    # Raw body must parse via stdlib json (not just httpx's tolerant
+    # parser) — strict-client compat pin.
+    body = json.loads(resp.content.decode("utf-8"))
+    assert isinstance(body, dict), body
+    # RFC 7807 required fields all present and correctly typed
+    assert body.get("type") == "/errors/not-found", body
+    assert body.get("status") == 404, body
+    assert isinstance(body.get("title"), str) and body["title"], body
+    assert isinstance(body.get("detail"), str), body
+    assert isinstance(body.get("instance"), str), body
