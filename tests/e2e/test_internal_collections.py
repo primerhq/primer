@@ -254,3 +254,42 @@ async def test_t0560_search_with_whitespace_only_query_clean_envelope(
         assert isinstance(resp.json().get("hits"), list), resp.text
     else:
         assert envelope.get("type", "").startswith("/errors/"), envelope
+
+
+# ============================================================================
+# T0587 — /v1/agents/search query="🚀🎉" (emoji-only) clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0587_search_with_emoji_only_query_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0587 — Sister of T0560 (whitespace-only query). Multi-byte
+    UTF-8 emoji-only query string ("🚀🎉" = 2 codepoints, 8 bytes
+    UTF-8 encoded). Some embedder pre-tokenisers strip non-ASCII
+    aggressively and end up with empty input — pin that the route
+    handles this with a clean envelope, never /errors/internal.
+
+    Bringup never activates the subsystem, so the expected response
+    is 503 /errors/subsystem-inactive. The hard pin is "no
+    /errors/internal regardless of subsystem state" — even if a
+    future iteration enables bootstrap, an emoji-only query must
+    still produce a clean 200/4xx envelope.
+    """
+    resp = await client.post(
+        "/v1/agents/search",
+        json={"query": "🚀🎉", "top_k": 5},
+    )
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"emoji-only query leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code in (200, 400, 422, 503), (
+        f"unexpected status for emoji-only query: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    if resp.status_code == 200:
+        assert isinstance(resp.json().get("hits"), list), resp.text
+    else:
+        assert envelope.get("type", "").startswith("/errors/"), envelope

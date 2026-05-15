@@ -3945,3 +3945,49 @@ async def test_t0571_post_delete_post_then_status_clean(
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0588 — POST /v1/agents with `tools=[null]` returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0588_agent_create_with_null_tool_entry_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0588 — Per matrix/model/agent.py, `Agent.tools` is `list[str]`
+    (tool ids; the list itself MAY be empty but its entries must
+    each be a string). A `null` element violates the inner type and
+    must surface as 422 /errors/validation-error from Pydantic — never
+    /errors/internal from a downstream NoneType.startswith() crash
+    when the agent is later resolved.
+
+    Defence: the agent row must NOT exist after the rejected POST.
+    """
+    agent_id = f"agent-t0588-{unique_suffix}"
+    body = {
+        "id": agent_id,
+        "description": "T0588 null tool entry",
+        "model": {
+            "provider_id": f"placeholder-{unique_suffix}",
+            "model_name": "claude-sonnet-4-6",
+        },
+        "tools": [None],  # the offending element
+    }
+    resp = await client.post("/v1/agents", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"tools=[null] leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code == 422, (
+        f"tools=[null] should be 422 (Pydantic list[str] inner type "
+        f"violation); got {resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type") == "/errors/validation-error", envelope
+
+    # Defence: row not created
+    got = await client.get(f"/v1/agents/{agent_id}")
+    assert got.status_code == 404, got.text
+    # Best-effort cleanup in case the assertion above was too strict
+    await client.delete(f"/v1/agents/{agent_id}")

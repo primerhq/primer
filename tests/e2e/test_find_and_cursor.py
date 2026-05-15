@@ -4319,3 +4319,203 @@ async def test_t0559_predicate_field_consecutive_dots_clean_envelope(
     assert resp.status_code in (200, 400, 422, 502), (
         f"unexpected status: {resp.status_code}: {resp.text}"
     )
+
+
+# ============================================================================
+# T0582 — Predicate `!=` with right=null returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0582_predicate_neq_null_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0582 — Sister of T0439 (= NULL). Send `{op:"!=",
+    left:{name:"description"}, right:{value:null}}` against
+    /v1/toolsets/find. Per Postgres semantics, `data->>'description'
+    <> NULL` is ALWAYS NULL (treated as falsy by WHERE), so even
+    rows whose description IS not-null shouldn't match.
+
+    Hard pin: never 5xx, never `/errors/internal`. Documented:
+    200 with empty items (Postgres NULL semantics) OR a clean 4xx
+    if the handler validates and rejects null on the right of `!=`.
+    """
+    prefix = f"ts-t0582-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "!=",
+                "left": {"kind": "field", "name": "description"},
+                "right": {"kind": "value", "value": None},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"!= NULL leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code < 500 or resp.status_code == 502, (
+            f"!= NULL surfaced 500-class crash: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), resp.text
+        if resp.status_code == 200:
+            items = resp.json()["items"]
+            # Hard pin: NONE of our seeded rows should match (Postgres
+            # `<> NULL` always falsy)
+            assert all(item["id"] not in ids for item in items), (
+                f"!= NULL unexpectedly matched seeded toolsets: "
+                f"{[item['id'] for item in items if item['id'] in ids]!r}"
+            )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0583 — Predicate `>=` with right=NaN-style numeric returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0583_predicate_gte_nan_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0583 — JSON has no NaN literal in the strict spec, but
+    Python's `json` module accepts `NaN` by default. The non-standard
+    `NaN` token survives the FastAPI body parser and arrives in the
+    predicate translator as a Python `float('nan')`. Asyncpg then
+    refuses to bind a float for the `id` (TEXT) column and the error
+    is mapped to 502 /errors/provider-server-error with the underlying
+    `invalid input for query argument $N: nan (expected str, got
+    float)` text — the SAME shape as T0236/T0361 (JSONB type coercion
+    bugs) and T0439 ('= NULL' Postgres semantics).
+
+    Hard pin: never /errors/internal. Acceptable shapes:
+    - 422 /errors/validation-error (preferred — Pydantic/FastAPI
+      rejects the NaN literal before it reaches the translator).
+    - 400 /errors/bad-request (handler rejects it).
+    - 200 with empty items (translator coerces NaN to NULL).
+    - 502 /errors/provider-server-error (CURRENT BEHAVIOUR — the
+      NaN reaches asyncpg which refuses the float→TEXT bind, same
+      bug family as T0236/T0361). This is documented but not ideal:
+      the right-side value-type validation in the predicate translator
+      should reject non-string values when the LHS is a TEXT column.
+
+    Discovery: this iteration confirmed 502 as the current behaviour.
+    Future fix would type-check the right operand against the LHS
+    column type in the predicate SQL builder.
+    """
+    prefix = f"ts-t0583-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        # Build the JSON manually so we can embed the literal `NaN`
+        # token (Python's json.dumps emits NaN by default; the strict
+        # JSON spec doesn't allow it but the FastAPI parser accepts).
+        raw = (
+            '{"predicate":{"kind":"predicate","op":">=","left":'
+            '{"kind":"field","name":"id"},"right":'
+            '{"kind":"value","value":NaN}},"page":'
+            '{"kind":"offset","offset":0,"length":50}}'
+        )
+        resp = await client.post(
+            "/v1/toolsets/find",
+            content=raw.encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"NaN literal leaked /errors/internal: {resp.text}"
+        )
+        # Accept clean 4xx (preferred), 200 (translator coerced), or
+        # 502 with /errors/provider-server-error (current behaviour
+        # — same bug family as T0236/T0361).
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"NaN literal got unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 502:
+            # Document the current behaviour — clean envelope,
+            # asyncpg-style message exposed (which itself is a
+            # separate hardening opportunity).
+            assert envelope.get("type") == "/errors/provider-server-error", (
+                envelope
+            )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0584 — Predicate `~=` with raw `%` literal at pattern end (trailing wildcard)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0584_predicate_like_trailing_wildcard_matches_prefix(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0584 — Sister of T0377 (leading wildcard `%suffix`) and
+    T0283 (trailing single-char `_`) for the trailing `%` wildcard.
+    Seed rows with ids sharing a unique prefix; query `~= "prefix%"`
+    must return exactly those rows and nothing else.
+
+    Pins that the LIKE escaping path doesn't accidentally treat the
+    trailing `%` as literal (which would produce zero matches when
+    rows end with arbitrary characters).
+    """
+    prefix_marker = f"ts-pre-{unique_suffix}"
+    seeded = []
+    other = f"ts-othr-{unique_suffix}"
+    try:
+        for i in range(3):
+            entity_id = f"{prefix_marker}-{i:02d}"
+            r = await client.post(
+                "/v1/toolsets",
+                json={
+                    "id": entity_id,
+                    "provider": "mcp",
+                    "config": {
+                        "transport": "stdio",
+                        "config": {"command": ["echo"]},
+                    },
+                },
+            )
+            assert r.status_code == 201, r.text
+            seeded.append(entity_id)
+        # A row that does NOT have the prefix
+        r = await client.post(
+            "/v1/toolsets",
+            json={
+                "id": other,
+                "provider": "mcp",
+                "config": {
+                    "transport": "stdio",
+                    "config": {"command": ["echo"]},
+                },
+            },
+        )
+        assert r.status_code == 201, r.text
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix_marker}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        assert resp.status_code == 200, resp.text
+        out = sorted(item["id"] for item in resp.json()["items"])
+        assert out == sorted(seeded), (
+            f"trailing-wildcard LIKE pattern `{prefix_marker}%` should "
+            f"match exactly the prefix-starting rows; expected "
+            f"{sorted(seeded)!r}, got {out!r}"
+        )
+        assert other not in out
+    finally:
+        for entity_id in seeded + [other]:
+            await client.delete(f"/v1/toolsets/{entity_id}")
