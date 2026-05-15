@@ -3093,3 +3093,404 @@ async def test_t0525_post_graph_invalidate_clean_envelope(
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0544 — POST /v1/graphs/find cursor pagination round-trip
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0544_graphs_find_cursor_pagination_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0544 — Sibling of T0014 (toolsets cursor) for the graphs
+    /find endpoint. Seed 4 graphs sharing a unique-prefix id; walk
+    via POST find with `cursor=null + length=2` then `cursor=<next>`
+    until `next_cursor=null`. Pin: every graph visited exactly
+    once; no duplicates; no /errors/internal.
+    """
+    provider_id = f"llm-t0544-{unique_suffix}"
+    agent_id = f"agent-t0544-{unique_suffix}"
+    prefix = f"graph-t0544-{unique_suffix}"
+    graph_ids = [f"{prefix}-{i:02d}" for i in range(4)]
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    for gid in graph_ids:
+        r = await client.post(
+            "/v1/graphs", json=_graph_body(gid, agent_id=agent_id),
+        )
+        assert r.status_code == 201, r.text
+
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+        seen: list[str] = []
+        cursor: str | None = None
+        for _ in range(10):  # safety cap
+            body = {
+                "predicate": predicate,
+                "page": {
+                    "kind": "cursor", "cursor": cursor, "length": 2,
+                },
+            }
+            resp = await client.post("/v1/graphs/find", json=body)
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"graphs cursor walk leaked /errors/internal: "
+                f"{resp.text}"
+            )
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            assert page["kind"] == "cursor", page
+            seen.extend(item["id"] for item in page["items"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail(
+                "graphs cursor walk did not terminate within 10 pages"
+            )
+
+        # Each id seen exactly once; full set covered
+        assert sorted(seen) == sorted(graph_ids), (
+            f"cursor walk visited unexpected set: seen={sorted(seen)!r} "
+            f"expected={sorted(graph_ids)!r}"
+        )
+        assert len(seen) == len(set(seen)), (
+            f"cursor walk visited duplicates: {seen!r}"
+        )
+    finally:
+        for gid in graph_ids:
+            await client.delete(f"/v1/graphs/{gid}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0545 — Graph node ids with reserved-style names round-trip
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0545_graph_node_ids_reserved_style_names_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0545 — Pin that "obvious" node id names like "end", "start",
+    "main", "_internal" don't trigger any reserved-name validation
+    in the topology validator. T0156 / T0470 already use "end" as
+    a terminal id, but no test specifically pinned the
+    reserved-style-id contract. Catches a regression where a
+    future validator deliberately reserves node id names.
+    """
+    provider_id = f"llm-t0545-{unique_suffix}"
+    agent_id = f"agent-t0545-{unique_suffix}"
+    graph_id = f"graph-t0545-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    reserved_style = ["start", "main", "_internal"]
+    try:
+        nodes = [
+            {"kind": "agent", "id": rid, "agent_id": agent_id}
+            for rid in reserved_style
+        ] + [{"kind": "terminal", "id": "end"}]
+        edges = [
+            {"kind": "static", "from_node": rid, "to_node": "end"}
+            for rid in reserved_style
+        ]
+        body = {
+            "id": graph_id,
+            "description": "T0545 reserved-style node ids",
+            "nodes": nodes,
+            "edges": edges,
+            "entry_node_id": "start",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, (
+            f"reserved-style node ids should be accepted; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        got_ids = sorted(n["id"] for n in got.json()["nodes"])
+        assert got_ids == sorted(reserved_style + ["end"]), got_ids
+
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        assert "ok" in status.json(), status.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0546 — Graph description with newline + control char round-trips byte-exact
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0546_graph_description_with_control_chars_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0546 — Pin that the description field preserves embedded
+    newlines and control characters (\\x01) byte-exact through
+    POST → GET. Catches a regression where a sanitizer or a
+    JSON-then-asyncpg encoding step strips control chars or
+    normalises whitespace.
+    """
+    provider_id = f"llm-t0546-{unique_suffix}"
+    agent_id = f"agent-t0546-{unique_suffix}"
+    graph_id = f"graph-t0546-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    weird_desc = (
+        f"line-1-{unique_suffix}\nline-2\twith-tab\n"
+        f"control-x01:\x01:end-x01\nline-3"
+    )
+    try:
+        body = {
+            "id": graph_id,
+            "description": weird_desc,
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, resp.text
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        got_desc = got.json().get("description", "")
+        assert got_desc == weird_desc, (
+            f"description corrupted on round-trip:\n"
+            f"  sent (len={len(weird_desc)}): {weird_desc!r}\n"
+            f"  got  (len={len(got_desc)}): {got_desc!r}"
+        )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0547 — POST graph then DELETE then POST same id (warmed table)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0547_post_delete_post_same_graph_id_no_stale_cache(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0547 — Pin: POST a graph, DELETE it, then POST again with
+    the same id but a different body. Pin: re-create returns 201;
+    GET reflects the v2 body (no stale cache leak from the deleted
+    v1). Pre-warms the graphs table to avoid the T0103a cold-start
+    race.
+    """
+    provider_id = f"llm-t0547-{unique_suffix}"
+    agent_id = f"agent-t0547-{unique_suffix}"
+    graph_id = f"graph-t0547-{unique_suffix}"
+    warmup_id = f"graph-warm-t0547-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    # Warm the graphs table
+    warm = await client.post(
+        "/v1/graphs", json=_graph_body(warmup_id, agent_id=agent_id),
+    )
+    assert warm.status_code == 201, warm.text
+    await client.delete(f"/v1/graphs/{warmup_id}")
+
+    try:
+        # v1: original body
+        body_v1 = _graph_body(graph_id, agent_id=agent_id)
+        body_v1["description"] = "v1-original"
+        r1 = await client.post("/v1/graphs", json=body_v1)
+        assert r1.status_code == 201, r1.text
+        assert r1.json()["description"] == "v1-original", r1.json()
+
+        # DELETE
+        rm = await client.delete(f"/v1/graphs/{graph_id}")
+        assert rm.status_code == 204, rm.text
+
+        # GET 404 — sanity that the row is gone
+        gone = await client.get(f"/v1/graphs/{graph_id}")
+        assert gone.status_code == 404, gone.text
+
+        # v2: re-create with different description
+        body_v2 = _graph_body(graph_id, agent_id=agent_id)
+        body_v2["description"] = "v2-recreated"
+        r2 = await client.post("/v1/graphs", json=body_v2)
+        assert r2.status_code == 201, r2.text
+        assert r2.json()["description"] == "v2-recreated", r2.json()
+
+        # GET reflects v2 (no stale v1 leak)
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["description"] == "v2-recreated", got.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0548 — PUT graph with a PAUSED bound session returns 200
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0548_put_graph_with_paused_session_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0548 — Mirror of T0473 (PUT graph with CREATED-state bound
+    session) but with the bound session in PAUSED state instead.
+    Pin: PUT returns clean envelope (200 success or 4xx); the
+    pre-existing session row remains readable; binding intact.
+    """
+    import tempfile
+    provider_id = f"llm-t0548-{unique_suffix}"
+    agent_id = f"agent-t0548-{unique_suffix}"
+    graph_id = f"graph-t0548-{unique_suffix}"
+    wp_id = f"wp-t0548-{unique_suffix}"
+    tpl_id = f"wt-t0548-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            wp = await client.post(
+                "/v1/workspace_providers",
+                json={
+                    "id": wp_id, "provider": "local",
+                    "config": {"kind": "local", "path": tmp},
+                },
+            )
+            assert wp.status_code == 201, wp.text
+            tpl = await client.post(
+                "/v1/workspace_templates",
+                json={
+                    "id": tpl_id,
+                    "description": "T0548",
+                    "provider_id": wp_id,
+                    "backend": {"kind": "local"},
+                },
+            )
+            assert tpl.status_code == 201, tpl.text
+
+            # Initial graph + workspace + bound session
+            initial = _graph_body(graph_id, agent_id=agent_id)
+            initial["description"] = "T0548 initial"
+            gr = await client.post("/v1/graphs", json=initial)
+            assert gr.status_code == 201, gr.text
+
+            ws = await client.post(
+                "/v1/workspaces", json={"template_id": tpl_id},
+            )
+            assert ws.status_code == 201, ws.text
+            workspace_id = ws.json()["id"]
+
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json={
+                    "binding": {"kind": "graph", "graph_id": graph_id},
+                    "auto_start": False,
+                },
+            )
+            assert sess.status_code == 201, sess.text
+            session_id = sess.json()["id"]
+
+            # Pause the bound session: CREATED → PAUSED (per
+            # sessions.py:251-254 — direct transition)
+            pause = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/"
+                f"{session_id}/pause",
+            )
+            assert pause.status_code == 204, pause.text
+            check = await client.get(f"/v1/sessions/{session_id}")
+            assert check.json()["status"] == "paused", check.json()
+
+            # Now PUT the graph with a structural change while a
+            # PAUSED session is bound to it
+            mutated = _graph_body(graph_id, agent_id=agent_id)
+            mutated["description"] = "T0548 mutated"
+            put_resp = await client.put(
+                f"/v1/graphs/{graph_id}", json=mutated,
+            )
+            envelope = put_resp.json() if put_resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"PUT graph with PAUSED session leaked /errors/internal: "
+                f"{put_resp.text}"
+            )
+            assert put_resp.status_code < 500, put_resp.text
+            assert put_resp.status_code in (200, 409, 422), (
+                f"unexpected PUT status: {put_resp.status_code}: "
+                f"{put_resp.text}"
+            )
+
+            # Pre-existing session row still readable; binding intact
+            after = await client.get(f"/v1/sessions/{session_id}")
+            assert after.status_code == 200, after.text
+            assert after.json()["id"] == session_id, after.json()
+            assert after.json()["binding"]["kind"] == "graph", after.json()
+            assert after.json()["binding"]["graph_id"] == graph_id, (
+                after.json()
+            )
+        finally:
+            if session_id is not None and workspace_id is not None:
+                await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions/"
+                    f"{session_id}/cancel",
+                )
+            if workspace_id is not None:
+                await client.delete(f"/v1/workspaces/{workspace_id}")
+            await client.delete(f"/v1/graphs/{graph_id}")
+            await client.delete(f"/v1/workspace_templates/{tpl_id}")
+            await client.delete(f"/v1/workspace_providers/{wp_id}")
+            await client.delete(f"/v1/agents/{agent_id}")
+            await client.delete(f"/v1/llm_providers/{provider_id}")
