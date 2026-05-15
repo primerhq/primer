@@ -1997,3 +1997,98 @@ async def test_t0653_predicate_in_on_jsonb_nested_string_with_string_list(
     finally:
         for did in created:
             await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0700 — Cursor + JSONB nested numeric predicate + order_by triple
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0700_cursor_walk_with_jsonb_predicate_and_order_by(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0700 — Triple combination: cursor + `>=` predicate on JSONB
+    nested numeric `meta.score` + order_by on id. Hard pin: cursor
+    walk terminates; clean envelopes throughout; NEVER /errors/internal
+    even if the documented JSONB-coercion bug surfaces 502.
+    """
+    prefix = f"doc-t0700-{unique_suffix}"
+    created: list[str] = []
+    try:
+        for score in range(1, 11):
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": f"{prefix}-{score:02d}",
+                    "name": str(score),
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"score": score},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(f"{prefix}-{score:02d}")
+
+        predicate = {
+            "kind": "predicate",
+            "op": "and",
+            "left": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "right": {
+                "kind": "predicate",
+                "op": ">=",
+                "left": {"kind": "field", "name": "meta.score"},
+                "right": {"kind": "value", "value": 5},
+            },
+        }
+
+        seen: list[str] = []
+        cursor: str | None = None
+        for _ in range(10):
+            body = {
+                "predicate": predicate,
+                "order_by": [
+                    {"field": "id", "direction": "asc"},
+                ],
+                "page": {"kind": "cursor", "cursor": cursor, "length": 3},
+            }
+            resp = await client.post("/v1/documents/find", json=body)
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"cursor+JSONB+order_by leaked /errors/internal: "
+                f"{resp.text}"
+            )
+            # 200 (translator handled cleanly) or documented 502
+            # JSONB-coercion bug surface — both acceptable.
+            assert resp.status_code in (200, 502), (
+                f"cursor+JSONB+order_by unexpected status: "
+                f"{resp.status_code}: {resp.text}"
+            )
+            if resp.status_code != 200:
+                # Documented bug surface — pin envelope shape and stop
+                assert envelope["type"].startswith("/errors/"), envelope
+                return
+
+            page = resp.json()
+            assert page["kind"] == "cursor", page
+            seen.extend(item["id"] for item in page["items"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail(f"cursor walk did not terminate: seen={seen!r}")
+
+        # If all pages 200: scores 5..10 (6 docs); each visited at most once
+        expected = sorted(f"{prefix}-{s:02d}" for s in range(5, 11))
+        seeded_seen = sorted(s for s in seen if s in created)
+        assert seeded_seen == expected, (
+            f"cursor walk missed/duplicated docs: "
+            f"got {seeded_seen!r}, expected {expected!r}"
+        )
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")

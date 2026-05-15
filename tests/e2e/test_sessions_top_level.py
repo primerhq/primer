@@ -4937,3 +4937,105 @@ async def test_t0698_sessions_find_binding_kind_and_agent_id_combined(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0699 — Cursor walk over sessions/find with binding predicate + order_by
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0699_cursor_walk_sessions_find_binding_and_order_by(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0699 — Triple-combination pin: cursor + predicate (on
+    binding.kind) + order_by (created_at desc). Seed several
+    agent-bound sessions; walk via cursor pagination filtered by
+    `binding.kind="agent"` AND ordered by `created_at desc`. Each
+    session id must be visited exactly once across all pages.
+
+    T0180 covered cursor+predicate, T0298 covered order_by alone;
+    this is the triple combination on a cross-entity find endpoint.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_ids: list[str] = []
+    try:
+        # Seed 7 sessions on one workspace
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+        for _ in range(7):
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json={
+                    "binding": {"kind": "agent",
+                                "agent_id": env["agent_id"]},
+                    "auto_start": False,
+                },
+            )
+            assert sess.status_code == 201, sess.text
+            session_ids.append(sess.json()["id"])
+
+        predicate = {
+            "kind": "predicate",
+            "op": "and",
+            "left": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "workspace_id"},
+                "right": {"kind": "value", "value": workspace_id},
+            },
+            "right": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "binding.kind"},
+                "right": {"kind": "value", "value": "agent"},
+            },
+        }
+
+        seen: list[str] = []
+        cursor: str | None = None
+        for _ in range(10):  # bound the walk
+            body = {
+                "predicate": predicate,
+                "order_by": [
+                    {"field": "created_at", "direction": "desc"},
+                ],
+                "page": {"kind": "cursor", "cursor": cursor, "length": 3},
+            }
+            resp = await client.post("/v1/sessions/find", json=body)
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"cursor+predicate+order_by leaked /errors/internal: "
+                f"{resp.text}"
+            )
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            assert page["kind"] == "cursor", page
+            seen.extend(item["id"] for item in page["items"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail(
+                f"cursor walk did not terminate: seen={seen!r}"
+            )
+
+        # All seeded session ids visited
+        assert set(seen) >= set(session_ids), (
+            f"cursor walk missed sessions: walked={sorted(seen)!r}, "
+            f"expected superset of {sorted(session_ids)!r}"
+        )
+        # No duplicates within our seeded set
+        seeded_seen = [s for s in seen if s in session_ids]
+        assert len(seeded_seen) == len(set(seeded_seen)) == 7, (
+            f"cursor walk visited some seeded session more than once: "
+            f"{seeded_seen!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

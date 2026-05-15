@@ -755,3 +755,123 @@ async def test_t0564_delete_on_openapi_json_returns_405(
     assert "GET" in allow_upper, (
         f"Allow header {allow!r} on {target} should mention GET"
     )
+
+
+# ============================================================================
+# T0701 — LLMProvider models[].context_length=2**63 boundary clean
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0701_llm_provider_context_length_int64_max_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0701 — Extends T0381/T0382 (lower bound) to the int64-max
+    path through Pydantic + JSONB serialisation. PositiveInt has no
+    upper bound in Pydantic v2 (Python int is unbounded), but the
+    server-side path may stumble on Postgres BIGINT range or asyncpg
+    type-bind. Clean envelope expected: 201 (accepted) OR clean 4xx;
+    never /errors/internal.
+    """
+    huge = 2 ** 63  # 1 past int64 signed max
+    body = {
+        "id": f"llm-t0701-{unique_suffix}",
+        "provider": "anthropic",
+        "models": [{"name": "x", "context_length": huge}],
+        "config": {"api_key": "sk-test"},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/llm_providers", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"context_length=2**63 leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code in (201, 400, 422, 502), (
+        f"context_length=2**63 unexpected status: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    if resp.status_code == 201:
+        # If accepted, GET round-trips byte-exact
+        got = await client.get(f"/v1/llm_providers/{body['id']}")
+        assert got.status_code == 200, got.text
+        assert got.json()["models"][0]["context_length"] == huge, (
+            f"int64-max corrupted on round-trip: "
+            f"{got.json()['models'][0]['context_length']!r}"
+        )
+    else:
+        assert envelope["type"].startswith("/errors/"), envelope
+    await client.delete(f"/v1/llm_providers/{body['id']}")
+
+
+# ============================================================================
+# T0702 — LLMProvider models[].context_length="42" string-coercion clean
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0702_llm_provider_context_length_string_coercion_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0702 — context_length="42" (string). Pydantic v2 has strict-
+    by-default int parsing (no string→int coercion), so this should
+    be 422. Hard pin: never /errors/internal.
+
+    Documents the type-coercion edge in the PositiveInt boundary.
+    """
+    body = {
+        "id": f"llm-t0702-{unique_suffix}",
+        "provider": "anthropic",
+        "models": [{"name": "x", "context_length": "42"}],
+        "config": {"api_key": "sk-test"},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/llm_providers", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"context_length='42' leaked /errors/internal: {resp.text}"
+    )
+    # Pydantic typically rejects string-for-int with 422; some
+    # configurations may coerce (201). Both are clean.
+    assert resp.status_code in (201, 422), (
+        f"context_length='42' unexpected status: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    if resp.status_code == 422:
+        assert envelope["type"] == "/errors/validation-error", envelope
+    await client.delete(f"/v1/llm_providers/{body['id']}")
+
+
+# ============================================================================
+# T0703 — EmbeddingProvider POST with models=[] returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0703_embedding_provider_empty_models_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0703 — Cross-family mirror of T0097/T0449 (LLMProvider). The
+    `models` field has min_length=1 across all three provider
+    families; this confirms EmbeddingProvider enforces it.
+    """
+    body = {
+        "id": f"emb-t0703-{unique_suffix}",
+        "provider": "huggingface",
+        "models": [],
+        "config": {"token": "hf-placeholder"},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/embedding_providers", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"empty models on EmbeddingProvider leaked /errors/internal: "
+        f"{resp.text}"
+    )
+    assert resp.status_code == 422, (
+        f"empty models on EmbeddingProvider should be 422; "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    assert envelope["type"] == "/errors/validation-error", envelope
+    # Defence: row not created
+    got = await client.get(f"/v1/embedding_providers/{body['id']}")
+    assert got.status_code == 404, got.text
