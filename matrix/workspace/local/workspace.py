@@ -33,7 +33,7 @@ from matrix.model.workspace import (
     WorkspaceTemplate,
 )
 from matrix.workspace.local.cache import LocalTruncationStore
-from matrix.workspace.local.state import LocalStateRepo
+from matrix.workspace.local.state import LocalStateRepo, _GitCommandError
 from matrix.workspace.local.tools import Edit, Exec, Glob, Grep, Ls, Read, Write
 from matrix.workspace.session import AgentSession
 from matrix.workspace.tool import WorkspaceTool
@@ -279,7 +279,16 @@ class LocalWorkspace(Workspace):
             await asyncio.to_thread(target.unlink)
 
     async def log(self, *, limit: int = 50) -> list[CommitInfo]:
-        return await self._state.history(limit=limit)
+        try:
+            return await self._state.history(limit=limit)
+        except (OSError, _GitCommandError) as exc:
+            # Either the workspace .state directory disappeared
+            # mid-read (race with destroy) or git refused to read a
+            # partial state. Map to NotFound so the API returns a
+            # clean 404 instead of leaking 500 /errors/internal.
+            raise NotFoundError(
+                f"workspace log unavailable (state repo missing): {exc}"
+            ) from exc
 
     async def status(self) -> WorkspaceStatus:
         if await asyncio.to_thread(self._root.exists):

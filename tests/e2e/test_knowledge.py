@@ -1920,3 +1920,80 @@ async def test_t0670_predicate_eq_bool_against_jsonb_string_clean_envelope(
     finally:
         for did in created:
             await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0653 — Predicate `in` on JSONB nested string meta.tag with string-list
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0653_predicate_in_on_jsonb_nested_string_with_string_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0653 — Sister of T0633 (int-list on JSONB numeric) for the
+    string-typed JSONB nested key. Seed 5 docs with `meta.tag` in
+    {alpha, beta, gamma, delta, epsilon}; query `in [beta, delta]`
+    must return exactly those 2 rows or surface the JSONB-coercion
+    bug family with 502.
+
+    Hard pin: never /errors/internal.
+    """
+    prefix = f"doc-t0653-{unique_suffix}"
+    tags = ("alpha", "beta", "gamma", "delta", "epsilon")
+    created: list[str] = []
+    try:
+        for i, tag in enumerate(tags):
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": f"{prefix}-{i}",
+                    "name": tag,
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"tag": tag},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(f"{prefix}-{i}")
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "in",
+                    "left": {"kind": "field", "name": "meta.tag"},
+                    "right": {"kind": "value", "value": ["beta", "delta"]},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/documents/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"`in` string-list on JSONB nested str leaked /errors/internal: "
+            f"{resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"`in` string-list unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            out = sorted(item["id"] for item in resp.json()["items"])
+            expected = sorted([f"{prefix}-1", f"{prefix}-3"])  # beta, delta
+            assert out == expected, (
+                f"meta.tag in [beta, delta] should match {expected!r}, "
+                f"got {out!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")

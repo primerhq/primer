@@ -1888,3 +1888,93 @@ async def test_t0490_two_pause_calls_on_running_session_clean(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0678 — Session.attempt_count after 3 sequential resumes on bogus URL
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0678_session_attempt_count_after_three_resumes(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0678 — Multi-attempt accounting sibling of T0133. Same
+    bogus-URL setup, but call resume THREE times (with brief polls
+    between to let the worker actually fail each turn). Final
+    attempt_count must be ≥ 1; if backoff and retry are wired,
+    attempt_count > 1 after multiple resumes is observable.
+
+    Permissive: pass if attempt_count >= 1 OR session ended/failed
+    cleanly (some configurations may hard-fail after first attempt).
+    Hard pin: never /errors/internal across the resume sequence.
+    """
+    env = await _setup_bogus_llm_chain(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "initial_instructions": "ignored — bogus upstream",
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # Three sequential resumes; brief poll between to let the
+        # worker process each failed attempt.
+        for i in range(3):
+            r = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+            )
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"resume #{i} leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"resume #{i} returned 5xx: {r.status_code}: {r.text}"
+            )
+            # Brief poll for worker activity (≤ 5s per resume)
+            for _ in range(10):
+                await asyncio.sleep(0.5)
+                got = await client.get(f"/v1/sessions/{session_id}")
+                if got.status_code == 200 and (
+                    got.json().get("attempt_count", 0) > i
+                    or got.json().get("status") == "ended"
+                ):
+                    break
+
+        final = await client.get(f"/v1/sessions/{session_id}")
+        assert final.status_code == 200, final.text
+        body = final.json()
+        # Pin: attempt_count >= 1 (at least one turn happened) OR
+        # session is in ended state (worker hard-failed)
+        assert (
+            body.get("attempt_count", 0) >= 1
+            or body.get("status") == "ended"
+        ), (
+            f"after 3 resumes, expected attempt_count >= 1 or ended: "
+            f"{body!r}"
+        )
+        # Hard pin: never /errors/internal in the row's last_error
+        last_err = body.get("last_error") or ""
+        assert "/errors/internal" not in last_err, (
+            f"last_error references /errors/internal: {last_err!r}"
+        )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

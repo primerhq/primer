@@ -4755,3 +4755,60 @@ async def test_t0671_order_by_int_column_turn_no_asc_desc(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0679 — Rapid pause→resume→cancel sequence (no waits) on CREATED session
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0679_rapid_pause_resume_cancel_no_waits_converges_ended(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0679 — Stale-cache stress sibling of T0399/T0555/T0611. Fire
+    pause+resume+cancel back-to-back with no client-side waits — the
+    server must process all three signals cleanly. Top-level GET is
+    authoritative and must reflect ENDED. Hard pin: every call clean
+    envelope; never /errors/internal under signal-storm.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Fire all three signals back-to-back
+        for verb in ("pause", "resume", "cancel"):
+            r = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/{verb}",
+            )
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{verb} leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"{verb} returned 5xx: {r.status_code}: {r.text}"
+            )
+
+        # Cancel may be async if resume already kicked off the worker;
+        # poll until ENDED
+        for _ in range(60):
+            got = await client.get(f"/v1/sessions/{session_id}")
+            if got.status_code == 200 and got.json().get("status") == "ended":
+                break
+            await asyncio.sleep(0.5)
+
+        final = await client.get(f"/v1/sessions/{session_id}")
+        assert final.status_code == 200, final.text
+        assert final.json()["status"] == "ended", final.json()
+        # ended_reason: cancelled (cancel landed first) or failed
+        # (worker hit placeholder Anthropic creds first)
+        assert final.json()["ended_reason"] in ("cancelled", "failed"), (
+            final.json()
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

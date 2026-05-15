@@ -9237,3 +9237,74 @@ async def test_t0676_workspace_files_put_50_segments_deep(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0681 — Workspace destroy racing 5 concurrent /log GETs: clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0681_workspace_destroy_racing_5_concurrent_log_gets(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0681 — Higher-concurrency sibling of T0648 (1 destroy vs 1
+    /log GET). Race 5 parallel /log GETs against 1 destroy. All
+    /log responses are clean envelopes (200 with commits OR 404
+    workspace gone), and the destroy is clean (204 or 404). Never
+    /errors/internal under teardown stress.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        async def _log() -> httpx.Response:
+            return await client.get(
+                f"/v1/workspaces/{workspace_id}/log",
+            )
+
+        async def _destroy() -> httpx.Response:
+            return await client.delete(f"/v1/workspaces/{workspace_id}")
+
+        tasks: list = [_asyncio.create_task(_log()) for _ in range(5)]
+        tasks.append(_asyncio.create_task(_destroy()))
+        results = await _asyncio.gather(*tasks, return_exceptions=True)
+
+        # Last task is the destroy
+        del_resp = results[-1]
+        assert not isinstance(del_resp, BaseException), del_resp
+        del_env = del_resp.json() if del_resp.content else {}
+        assert del_env.get("type") != "/errors/internal", (
+            f"racing DELETE leaked /errors/internal: {del_resp.text}"
+        )
+        assert del_resp.status_code in (204, 404), (
+            f"racing DELETE unexpected status: "
+            f"{del_resp.status_code}: {del_resp.text}"
+        )
+
+        # 5 /log responses
+        for i, r in enumerate(results[:5]):
+            assert not isinstance(r, BaseException), (
+                f"/log #{i} raised: {r!r}"
+            )
+            env = r.json() if r.content else {}
+            assert env.get("type") != "/errors/internal", (
+                f"/log #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code in (200, 404), (
+                f"/log #{i} unexpected status: "
+                f"{r.status_code}: {r.text}"
+            )
+            if r.status_code == 200:
+                assert "commits" in r.json(), r.json()
+    finally:
+        await _teardown_provider_template(client, provider_id, template_id)

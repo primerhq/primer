@@ -613,3 +613,48 @@ async def test_t0461_worker_info_shape_stable_across_drain(
         f"added={after_keys - before_keys!r}, "
         f"removed={before_keys - after_keys!r}"
     )
+
+
+# ============================================================================
+# T0677 — health metrics dicts contain numeric values (shape contract)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0677_health_metrics_dicts_contain_numeric_values(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0677 — Extends T0079 (which pins metrics is a dict) by
+    asserting that AT LEAST one key under scheduler.metrics OR
+    worker_pool.metrics has a numeric value (int/float). This pins
+    the "metrics dict carries actual counters" contract beyond the
+    "is-dict" envelope check.
+
+    The test is permissive: a fresh idle bringup might have zero
+    activity, but the metrics dicts should still be populated with
+    the documented baseline counters (claim_loop iterations, etc).
+    """
+    resp = await client.get("/v1/health")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    sched_metrics = body.get("scheduler", {}).get("metrics", {})
+    pool_metrics = body.get("worker_pool", {}).get("metrics", {})
+    assert isinstance(sched_metrics, dict), body
+    assert isinstance(pool_metrics, dict), body
+
+    def _has_numeric(d: dict) -> bool:
+        for v in d.values():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return True
+            if isinstance(v, dict) and _has_numeric(v):
+                return True
+        return False
+
+    # At least one of the two dicts should carry a numeric counter
+    has_any = _has_numeric(sched_metrics) or _has_numeric(pool_metrics)
+    assert has_any, (
+        f"neither scheduler.metrics nor worker_pool.metrics carries "
+        f"a numeric counter; sched_metrics={sched_metrics!r}, "
+        f"pool_metrics={pool_metrics!r}"
+    )
