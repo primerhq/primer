@@ -6846,3 +6846,335 @@ async def test_t0553_workspace_files_info_field_set_stable(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0572 — PUT content=NUL bytes via base64 round-trips byte-exact
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0572_workspace_files_nul_bytes_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0572 — Pin that NUL bytes (0x00) survive PUT→READ via base64.
+    Many naive implementations treat 0x00 as a string terminator and
+    truncate; a correct binary path treats them as ordinary bytes.
+    T0030/T0040/T0048 cover ordinary text round-trips; T0219 covers
+    arbitrary 0x00..0xFF blobs via /info size; this test specifically
+    pins that the *content* (not just length) of an all-NUL payload
+    survives through PUT and READ.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        raw = b"\x00\x00\x00"
+        encoded = base64.b64encode(raw).decode("ascii")
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files?path=nul.bin",
+            json={"content": encoded, "encoding": "base64"},
+        )
+        assert put.status_code == 204, put.text
+
+        # /info should agree on size
+        info = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info?path=nul.bin",
+        )
+        assert info.status_code == 200, info.text
+        assert info.json().get("size_bytes") == 3, info.text
+
+        # Read back as base64 and compare bytes
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "nul.bin", "encoding": "base64"},
+        )
+        assert read.status_code == 200, read.text
+        body = read.json()
+        assert body["encoding"] == "base64", body
+        decoded = base64.b64decode(body["content"])
+        assert decoded == raw, (
+            f"NUL-byte round-trip corrupted: wrote {raw!r}, got {decoded!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0573 — /files/info reflects new size after DELETE+re-PUT (no stale cache)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0573_workspace_files_info_after_delete_recreate(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0573 — Sister test of T0316. T0316 pinned that /info returns
+    404 on a deleted path. This pins that AFTER the path is re-created
+    with different content, /info returns 200 and the size reflects
+    the NEW content (not the old stale entry).
+
+    Catches a regression where /info reads from an in-memory cache
+    that wasn't invalidated by the delete-then-recreate cycle.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        path = "recycle.txt"
+
+        # First PUT: 5 bytes
+        put1 = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": "first", "encoding": "text"},
+        )
+        assert put1.status_code == 204, put1.text
+
+        info1 = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": path},
+        )
+        assert info1.status_code == 200, info1.text
+        assert info1.json().get("size_bytes") == 5, info1.text
+
+        # DELETE
+        rm = await client.delete(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+        )
+        assert rm.status_code == 204, rm.text
+
+        # Re-PUT: 12 bytes ("second-write")
+        put2 = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": "second-write", "encoding": "text"},
+        )
+        assert put2.status_code == 204, put2.text
+
+        # /info must reflect the NEW size, not stale cached 5
+        info2 = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": path},
+        )
+        assert info2.status_code == 200, info2.text
+        size2 = info2.json().get("size_bytes")
+        assert size2 == 12, (
+            f"stale /info: expected 12 bytes after delete+recreate, "
+            f"got {size2!r}; full body={info2.json()!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0574 — init_command writing to stderr only still materialises (exit 0)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0574_workspace_init_command_stderr_only_materialises(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0574 — `init_commands` are evaluated by exit code, not by
+    stdout/stderr capture. A command that writes ONLY to stderr but
+    exits 0 must allow the workspace to materialise (201).
+
+    Regression-detector for any implementation that mistakenly treats
+    "stderr is non-empty" as failure (a common mistake when adapting
+    subprocess wrappers from interactive tooling).
+    """
+    provider_id = f"wp-stderr-{unique_suffix}"
+    template_id = f"wt-stderr-{unique_suffix}"
+    workspace_id: str | None = None
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        # Python one-liner: write to stderr, exit 0
+        init_cmd = (
+            'python -c "import sys; sys.stderr.write(\'noise on stderr\\n\'); '
+            'sys.exit(0)"'
+        )
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "stderr-only init_command test",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "init_commands": [init_cmd],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, (
+            f"stderr-only (exit 0) init_command should materialise; "
+            f"got {ws.status_code}: {ws.text}"
+        )
+        workspace_id = ws.json()["id"]
+        assert workspace_id, ws.text
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0575 — destroy workspace, immediately POST from same template = fresh id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0575_workspace_destroy_then_recreate_fresh_id(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0575 — DELETE a workspace, then immediately POST a new
+    workspace from the same template. The new POST must succeed (201)
+    and return a DISTINCT id from the destroyed one. Catches a
+    regression where backend id-reuse leaks the destroyed instance's
+    stale state into the new workspace, or where rapid recreate hits
+    a race in the cleanup path.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    first_id: str | None = None
+    second_id: str | None = None
+    try:
+        ws1 = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws1.status_code == 201, ws1.text
+        first_id = ws1.json()["id"]
+        assert first_id, ws1.text
+
+        # Destroy
+        rm = await client.delete(f"/v1/workspaces/{first_id}")
+        assert rm.status_code == 204, rm.text
+
+        # Recreate from same template, immediately
+        ws2 = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws2.status_code == 201, (
+            f"recreate from same template after destroy failed: "
+            f"{ws2.status_code}: {ws2.text}"
+        )
+        second_id = ws2.json()["id"]
+        assert second_id, ws2.text
+
+        assert second_id != first_id, (
+            f"id reuse on recreate: destroyed {first_id!r}, recreated "
+            f"got same id back ({second_id!r})"
+        )
+    finally:
+        if second_id is not None:
+            await client.delete(f"/v1/workspaces/{second_id}")
+        # first was already deleted; idempotent best-effort
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0576 — basenames containing literal % escape characters round-trip
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0576_workspace_files_percent_escapes_in_basename(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0576 — Pin that file basenames containing literal `%` characters
+    that LOOK like URL escapes (`foo%20bar.txt`, `x%2Fy.txt`) are
+    treated as opaque bytes by the server, NOT double-decoded.
+
+    Sister test of T0094 (which covers spaces, `+`, `&`, unicode); this
+    one specifically targets the "decode it twice and turn `%2F` into
+    `/`" foot-gun. After PUT, /list must enumerate the file with the
+    literal `%XX` characters intact, and /read must return its
+    content. T0537 already pinned that `%2E%2E/leak` doesn't escape;
+    this pins that benign `%XX` in a basename round-trips.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Two basenames with literal % characters that mimic url-encodings.
+        # We expect the server to PRESERVE the percent and surrounding
+        # hex characters as-is, NOT decode them (decoding %2F to / would
+        # turn this single basename into a path traversal).
+        for basename in ("foo%20bar.txt", "x%2Fy.txt"):
+            body_text = f"content-for-{basename}"
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": basename},
+                json={"content": body_text, "encoding": "text"},
+            )
+            assert put.status_code == 204, (
+                f"PUT {basename!r} failed: {put.status_code}: {put.text}"
+            )
+
+            read = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": basename},
+            )
+            assert read.status_code == 200, (
+                f"READ {basename!r} failed (server may have double-decoded "
+                f"the %XX): {read.status_code}: {read.text}"
+            )
+            assert read.json()["content"] == body_text, read.json()
+            # path echo should preserve the raw % characters
+            assert read.json()["path"] == basename, (
+                f"server normalised the basename: sent {basename!r}, "
+                f"got {read.json()['path']!r}"
+            )
+
+        # GET /files at workspace root must enumerate both basenames
+        # literally (not decoded into "foo bar.txt" or "x/y.txt").
+        lst = await client.get(f"/v1/workspaces/{workspace_id}/files")
+        assert lst.status_code == 200, lst.text
+        items = lst.json()["items"]
+        paths = {item["path"] for item in items}
+        for basename in ("foo%20bar.txt", "x%2Fy.txt"):
+            assert basename in paths, (
+                f"/files listing missing {basename!r} (server may have "
+                f"decoded the %XX); observed paths={sorted(paths)!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
