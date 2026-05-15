@@ -7755,3 +7755,305 @@ async def test_t0605_workspace_files_concurrent_put_read_same_path(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0606 — /files listing with limit=200 across 200-file seed enumerates all
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0606_workspace_files_listing_at_documented_max_200_files(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0606 — Spec §4 documents the page-limit cap at 200. Seed 200
+    files at the workspace root and verify a `?limit=200` listing
+    enumerates every one of them in a single page (plus the
+    backend-managed `.state` and `.tmp` directories — the cap of
+    200 is per-page, but `total` reflects the full count).
+
+    Hard pin: never /errors/internal even at the upper page limit.
+    Catches a regression where the limit clamp leaks the asyncpg
+    "OFFSET cannot be negative" or similar boundary errors.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        seeded: list[str] = []
+        for i in range(200):
+            name = f"max_{i:03d}.txt"
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": name},
+                json={"content": f"b{i}", "encoding": "text"},
+            )
+            assert put.status_code == 204, put.text
+            seeded.append(name)
+
+        # Single-page listing at documented max
+        page = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"limit": 200, "offset": 0},
+        )
+        envelope = page.json() if page.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"limit=200 leaked /errors/internal: {page.text}"
+        )
+        assert page.status_code == 200, page.text
+        body = page.json()
+
+        # Total includes the seeded 200 + .state + .tmp dirs (=202)
+        assert body.get("total") >= 200, (
+            f"total {body.get('total')!r} < 200; full body keys="
+            f"{list(body.keys())}"
+        )
+
+        # The single page returns up to 200 entries; every seed file
+        # MUST be reachable from the first page + at-most-one second
+        # page (since there's a small handful of backend dirs).
+        seen: set[str] = set()
+        for item in body["items"]:
+            seen.add(item["path"])
+        if len(seen) < body["total"]:
+            page2 = await client.get(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"limit": 200, "offset": 200},
+            )
+            assert page2.status_code == 200, page2.text
+            for item in page2.json()["items"]:
+                seen.add(item["path"])
+
+        missing = set(seeded) - seen
+        assert not missing, (
+            f"limit=200 listing missed {len(missing)} seeded files: "
+            f"{sorted(missing)[:10]!r}..."
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0607 — /files/info on basename like a symlink (regular file) clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0607_workspace_files_info_on_symlink_named_path(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0607 — A regular file named `link.txt` (or `symlink`) must
+    not be misclassified as kind="symlink" in /files/info. The
+    path's name is metadata; the kind is inferred from the actual
+    filesystem entry. Pin: kind == "file" for an ordinary file
+    regardless of basename connotations.
+
+    Hard pin: never /errors/internal — even on suggestive names.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for basename in ("link.txt", "symlink", "link"):
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": basename},
+                json={"content": "ordinary file", "encoding": "text"},
+            )
+            assert put.status_code == 204, put.text
+
+            info = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/info",
+                params={"path": basename},
+            )
+            envelope = info.json() if info.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"/info on {basename!r} leaked /errors/internal: "
+                f"{info.text}"
+            )
+            assert info.status_code == 200, (
+                f"/info on {basename!r}: {info.status_code}: {info.text}"
+            )
+            assert envelope.get("kind") == "file", (
+                f"basename {basename!r} (regular file) misclassified "
+                f"as kind={envelope.get('kind')!r}; full body={envelope!r}"
+            )
+            # size_bytes matches the written body
+            assert envelope.get("size_bytes") == len("ordinary file"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0608 — Workspace materialise from template referencing deleted provider
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0608_workspace_materialise_with_deleted_provider_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0608 — Sister of T0265 (Agent → deleted LLMProvider permissive).
+    Sequence:
+        1. POST workspace_provider
+        2. POST workspace_template referencing it
+        3. DELETE workspace_provider
+        4. POST /v1/workspaces with template_id
+
+    The materialise must produce a clean envelope (4xx documented
+    error OR 201 with degraded behaviour); never /errors/internal.
+    Pins how the workspace materialise path handles dangling
+    template→provider references at runtime.
+    """
+    provider_id = f"wp-t0608-{unique_suffix}"
+    template_id = f"wt-t0608-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    template_created = False
+    workspace_id: str | None = None
+    try:
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json=_template_body(template_id, provider_id=provider_id),
+        )
+        assert tpl.status_code == 201, tpl.text
+        template_created = True
+
+        # DELETE the provider before the materialise call
+        rm = await client.delete(f"/v1/workspace_providers/{provider_id}")
+        # 204 (deleted) or 409 (delete blocked by template FK) — either
+        # outcome is internally consistent. Track which.
+        assert rm.status_code in (204, 409), (
+            f"unexpected status DELETing provider with template: "
+            f"{rm.status_code}: {rm.text}"
+        )
+        if rm.status_code == 409:
+            # Provider is still alive — the materialise will succeed
+            # normally. This isn't the test scenario; skip the assertion.
+            pytest.skip(
+                "DELETE workspace_provider with template referent is "
+                "blocked by FK — T0608's dangling-reference scenario "
+                "isn't reachable on this iteration."
+            )
+
+        # Try to materialise a workspace from the template
+        ws = await client.post(
+            "/v1/workspaces",
+            json={"template_id": template_id},
+        )
+        envelope = ws.json() if ws.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"materialise with deleted provider leaked /errors/internal: "
+            f"{ws.text}"
+        )
+        # Acceptable: 4xx documented error (most likely), or 201
+        # (permissive, like T0265's Agent path).
+        assert ws.status_code < 500 or ws.status_code == 502, (
+            f"materialise leaked 5xx (other than documented 502): "
+            f"{ws.status_code}: {ws.text}"
+        )
+        assert ws.status_code in (201, 400, 404, 409, 422, 502), (
+            f"materialise unexpected status: "
+            f"{ws.status_code}: {ws.text}"
+        )
+        if ws.status_code == 201:
+            workspace_id = ws.json()["id"]
+        else:
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if template_created:
+            await client.delete(f"/v1/workspace_templates/{template_id}")
+        # Provider may already be deleted; idempotent best-effort
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0609 — Workspace files PUT with content larger than 4 MiB clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0609_workspace_files_put_4mib_body_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0609 — Large-body stress. PUT a 4-MiB blob (4 * 1024 * 1024
+    bytes) via base64 encoding. Either 204 (workspace accepted the
+    body and /info reports the matching size) or a clean 4xx (e.g.
+    413 Payload Too Large if the API has a documented cap). Hard
+    pin: never /errors/internal under large-body load.
+
+    4 MiB is sized to comfortably cross typical buffer / chunk
+    thresholds without burning excessive test time.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        size = 4 * 1024 * 1024  # 4 MiB
+        blob = bytes(range(256)) * (size // 256)
+        assert len(blob) == size, len(blob)
+        encoded = base64.b64encode(blob).decode("ascii")
+
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "big.bin"},
+            json={"content": encoded, "encoding": "base64"},
+            timeout=httpx.Timeout(60.0, connect=10.0),
+        )
+        envelope = put.json() if put.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"4-MiB PUT leaked /errors/internal: {put.text[:300]}"
+        )
+        assert put.status_code in (204, 400, 413, 422), (
+            f"4-MiB PUT unexpected status: "
+            f"{put.status_code}: {put.text[:300]}"
+        )
+
+        if put.status_code == 204:
+            # /info must reflect the full size — no truncation
+            info = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/info",
+                params={"path": "big.bin"},
+            )
+            assert info.status_code == 200, info.text
+            assert info.json().get("size_bytes") == size, (
+                f"4-MiB PUT truncated: /info size_bytes="
+                f"{info.json().get('size_bytes')!r}, expected {size}"
+            )
+        else:
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

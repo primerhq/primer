@@ -3984,3 +3984,93 @@ async def test_t0593_steer_on_graph_session_before_fatal_turn(
         if graph_created:
             await client.delete(f"/v1/graphs/{graph_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0610 — Cancel → steer → pause on agent-bound ENDED session: never 5xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0610_cancel_then_steer_then_pause_on_ended_session(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0610 — Extends T0399 (cancel→steer) with a trailing pause.
+    The full sequence stresses the post-terminal stale-cache window:
+
+        1. cancel from CREATED → ENDED/cancelled (200)
+        2. steer on ENDED → 200 (stale-cache let it through) OR 409
+           (refreshed view rejected); never /errors/internal.
+        3. pause on ENDED → 204 (idempotent for terminal) OR 4xx;
+           never /errors/internal, never flap session back to PAUSED.
+
+    Hard pin: at every step, no 5xx, no /errors/internal, and the
+    session row stays in ENDED/cancelled for the duration. Catches a
+    regression where the second signal after the steer (the pause)
+    re-introduces the stale-cache divergence T0399 / T0555 documented.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # 1. Cancel from CREATED → ENDED
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+        assert cancel.json()["status"] == "ended", cancel.json()
+        assert cancel.json()["ended_reason"] == "cancelled", cancel.json()
+
+        # 2. Steer on the now-ended session
+        steer = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": "post-terminal-steer-then-pause"},
+        )
+        envelope = steer.json() if steer.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"steer on ENDED leaked /errors/internal: {steer.text}"
+        )
+        assert steer.status_code < 500, (
+            f"steer on ENDED returned 5xx: "
+            f"{steer.status_code}: {steer.text}"
+        )
+
+        # Session row still ENDED after the steer
+        mid = await client.get(f"/v1/sessions/{session_id}")
+        assert mid.status_code == 200, mid.text
+        assert mid.json()["status"] == "ended", mid.json()
+        assert mid.json()["ended_reason"] == "cancelled", mid.json()
+
+        # 3. Pause on the ENDED session — the new addition vs T0399
+        pause = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        pause_env = pause.json() if pause.content else {}
+        assert pause_env.get("type") != "/errors/internal", (
+            f"pause on ENDED leaked /errors/internal: {pause.text}"
+        )
+        assert pause.status_code < 500, (
+            f"pause on ENDED returned 5xx: "
+            f"{pause.status_code}: {pause.text}"
+        )
+        # Documented behaviour: 204 (idempotent) or 4xx (rejected
+        # because terminal). Never 200 with status flapping.
+        assert pause.status_code in (200, 204, 400, 404, 409, 422), (
+            f"pause on ENDED unexpected status: "
+            f"{pause.status_code}: {pause.text}"
+        )
+
+        # Final defence: row STILL ENDED/cancelled. No flapping back
+        # to PAUSED, no ended_reason mutation, no clearing of ended_at.
+        after = await client.get(f"/v1/sessions/{session_id}")
+        assert after.status_code == 200, after.text
+        assert after.json()["status"] == "ended", after.json()
+        assert after.json()["ended_reason"] == "cancelled", after.json()
+        assert after.json().get("ended_at") is not None, after.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
