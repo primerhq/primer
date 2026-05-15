@@ -9098,3 +9098,142 @@ async def test_t0666_workspace_files_download_on_crlf_basename_clean_envelope(
     finally:
         await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0675 — env value with mixed single+double quotes survives shell quoting
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0675_workspace_env_mixed_quotes_survives_shell(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0675 — Shell-quoting edge for env propagation. Set env value
+    `a"b'c` (mixed single + double quotes), then read os.environ
+    inside an init_command and write to a marker file. The byte-exact
+    value must round-trip.
+
+    Catches a regression where a naive quoting strategy (wrapping in
+    single quotes) breaks on values containing single quotes, OR
+    wrapping in double quotes breaks on values containing double
+    quotes.
+    """
+    provider_id = f"wp-t0675-{unique_suffix}"
+    template_id = f"wt-t0675-{unique_suffix}"
+    workspace_id: str | None = None
+    tricky_value = "a\"b'c"
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        # Use Python -c to read the env var and write to file. Python
+        # source is single-quoted at outer level so its body's double
+        # quotes are safe.
+        init_cmd = (
+            'python -c "import os; '
+            "open('quoted.txt','w').write(os.environ.get('TRICKY',''))\""
+        )
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0675 mixed-quotes env",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "env": {"TRICKY": tricky_value},
+                "init_commands": [init_cmd],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "quoted.txt"},
+        )
+        assert read.status_code == 200, read.text
+        content = read.json()["content"]
+        assert content == tricky_value, (
+            f"mixed-quotes env value corrupted by shell quoting:\n"
+            f"sent: {tricky_value!r}\n"
+            f"got:  {content!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0676 — 50-segment-deep nested PUT round-trips on POSIX (skip Windows)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0676_workspace_files_put_50_segments_deep(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0676 — Stress sibling of T0464 in a single PUT call. Build
+    a 50-segment-deep relative path (each segment 4 chars), PUT a
+    small body, then READ it back. Round-trips byte-exact.
+
+    On Windows the absolute path quickly exceeds MAX_PATH=260 so
+    skip there — the underlying behaviour is documented in the
+    spec §12 / fixed by T0647 for the 500-leak case but the
+    happy-path round-trip remains POSIX-only.
+    """
+    import os
+
+    if os.name == "nt":
+        pytest.skip(
+            "50-segment-deep path exceeds Windows MAX_PATH=260; "
+            "see T0064a/T0296 for the documented Windows behaviour"
+        )
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # 50 segments × 4 chars = 200 chars + 49 separators = 249 chars
+        deep = "/".join(f"d{i:02d}" for i in range(50)) + "/leaf.txt"
+
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": deep},
+            json={"content": "deep-nest", "encoding": "text"},
+        )
+        envelope = put.json() if put.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"50-segment PUT leaked /errors/internal: {put.text}"
+        )
+        assert put.status_code == 204, (
+            f"50-segment PUT expected 204: {put.status_code}: {put.text}"
+        )
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": deep},
+        )
+        assert read.status_code == 200, read.text
+        assert read.json()["content"] == "deep-nest", read.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

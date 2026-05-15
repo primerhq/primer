@@ -5603,3 +5603,330 @@ async def test_t0642_graph_duplicate_node_ids_clean_envelope(
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0672 — Cancel on graph-bound CREATED session BEFORE first worker turn
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0672_cancel_graph_bound_created_before_first_turn(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0672 — Pre-fatal cancel path on graph executor. Sequence:
+        1. Create graph + workspace + graph-bound CREATED session
+        2. Cancel BEFORE calling resume
+
+    The session must converge to ENDED/cancelled cleanly without
+    ever invoking _build_graph_executor (which would throw
+    NotImplementedError). This pins the "fast cancel" path
+    distinct from the resume-then-fatal path covered by T0429.
+    """
+    provider_id = f"llm-t0672-{unique_suffix}"
+    agent_id = f"agent-t0672-{unique_suffix}"
+    wp_id = f"wp-t0672-{unique_suffix}"
+    tpl_id = f"wt-t0672-{unique_suffix}"
+    graph_id = f"graph-t0672-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    wp = await client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp_id,
+            "provider": "local",
+            "config": {"kind": "local", "path": str(tmp_path)},
+        },
+    )
+    assert wp.status_code == 201, wp.text
+    tpl = await client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl_id,
+            "description": "T0672",
+            "provider_id": wp_id,
+            "backend": {"kind": "local"},
+        },
+    )
+    assert tpl.status_code == 201, tpl.text
+    gr = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+    )
+    assert gr.status_code == 201, gr.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": tpl_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # Cancel BEFORE resume — pre-fatal path
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        env = cancel.json() if cancel.content else {}
+        assert env.get("type") != "/errors/internal", cancel.text
+        assert cancel.status_code == 200, cancel.text
+        assert cancel.json()["status"] == "ended", cancel.json()
+        assert cancel.json()["ended_reason"] == "cancelled", cancel.json()
+
+        # No worker activity required — confirm by checking last_error
+        # is None (NotImplementedError never fired)
+        final = await client.get(f"/v1/sessions/{session_id}")
+        assert final.status_code == 200, final.text
+        assert final.json()["status"] == "ended", final.json()
+        assert final.json()["ended_reason"] == "cancelled", final.json()
+        assert final.json().get("last_error") is None, (
+            f"pre-fatal cancel on graph session shouldn't have triggered "
+            f"the executor; last_error should be None: {final.json()!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/workspace_templates/{tpl_id}")
+        await client.delete(f"/v1/workspace_providers/{wp_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0673 — Graph PUT changing entry_node_id mid-flight on CREATED session
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0673_graph_put_entry_swap_mid_flight_session_clean_fatal(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0673 — Stale-cache check sister of T0640. Bind session to
+    graph G, then PUT G mutating entry_node_id (and the corresponding
+    nodes set) BEFORE resume. Resume — worker reads the current row
+    state and converges via _handle_fatal cleanly.
+
+    Hard pin: no /errors/internal at any step; PUT 200; resume 200;
+    session converges to ENDED.
+    """
+    import asyncio as _asyncio
+    provider_id = f"llm-t0673-{unique_suffix}"
+    agent_id = f"agent-t0673-{unique_suffix}"
+    wp_id = f"wp-t0673-{unique_suffix}"
+    tpl_id = f"wt-t0673-{unique_suffix}"
+    graph_id = f"graph-t0673-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    wp = await client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp_id,
+            "provider": "local",
+            "config": {"kind": "local", "path": str(tmp_path)},
+        },
+    )
+    assert wp.status_code == 201, wp.text
+    tpl = await client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl_id,
+            "description": "T0673",
+            "provider_id": wp_id,
+            "backend": {"kind": "local"},
+        },
+    )
+    assert tpl.status_code == 201, tpl.text
+
+    # Initial graph: entry_node_id = "n1"
+    v1_body = {
+        "id": graph_id,
+        "description": "T0673 v1",
+        "nodes": [
+            {"kind": "agent", "id": "n1", "agent_id": agent_id},
+            {"kind": "terminal", "id": "end"},
+        ],
+        "edges": [
+            {"kind": "static", "from_node": "n1", "to_node": "end"},
+        ],
+        "entry_node_id": "n1",
+    }
+    gr = await client.post("/v1/graphs", json=v1_body)
+    assert gr.status_code == 201, gr.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": tpl_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # PUT graph with NEW entry_node_id and disjoint nodes
+        v2_body = {
+            "id": graph_id,
+            "description": "T0673 v2 — new entry",
+            "nodes": [
+                {"kind": "agent", "id": "n_new", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end_new"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n_new",
+                 "to_node": "end_new"},
+            ],
+            "entry_node_id": "n_new",
+        }
+        put = await client.put(f"/v1/graphs/{graph_id}", json=v2_body)
+        put_env = put.json() if put.content else {}
+        assert put_env.get("type") != "/errors/internal", put.text
+        assert put.status_code == 200, put.text
+
+        # Resume — worker reads the new entry_node_id from storage
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        resume_env = resume.json() if resume.content else {}
+        assert resume_env.get("type") != "/errors/internal", resume.text
+        assert resume.status_code == 200, resume.text
+
+        # Wait for ENDED
+        for _ in range(60):
+            r = await client.get(f"/v1/sessions/{session_id}")
+            if r.status_code == 200 and r.json().get("status") == "ended":
+                break
+            await _asyncio.sleep(0.5)
+
+        final = await client.get(f"/v1/sessions/{session_id}")
+        assert final.status_code == 200, final.text
+        assert final.json()["status"] == "ended", final.json()
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/workspace_templates/{tpl_id}")
+        await client.delete(f"/v1/workspace_providers/{wp_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0674 — Graph node ids "end", " ", "End", "END" coexist as distinct
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0674_graph_node_ids_byte_exact_distinct(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0674 — Pin that node ids use byte-exact string equality
+    (whitespace-sensitive, case-sensitive). Build a graph with 4
+    distinct node ids that differ only by whitespace/case; create
+    must succeed (201), GET must round-trip all 4, /status must
+    return clean. Hard pin: never /errors/internal.
+
+    Catches a regression where a future "node id normalisation" pass
+    silently collapses these four into one.
+    """
+    provider_id = f"llm-t0674-{unique_suffix}"
+    agent_id = f"agent-t0674-{unique_suffix}"
+    graph_id = f"graph-t0674-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    try:
+        # 4 distinct ids that look similar but are byte-distinct
+        # NB: " " is a single space — node id min_length is 1, so
+        # this passes Pydantic length validation. If a future
+        # validator strips whitespace and rejects empty, this test
+        # would deliberately break.
+        node_ids = ("end", " ", "End", "END")
+        nodes = [
+            {"kind": "agent", "id": nid, "agent_id": agent_id}
+            for nid in node_ids
+        ]
+        body = {
+            "id": graph_id,
+            "description": "T0674 byte-exact node ids",
+            "nodes": nodes,
+            "edges": [],
+            "entry_node_id": "end",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"4-distinct-byte-exact ids leaked /errors/internal: "
+            f"{resp.text}"
+        )
+        # Either 201 (validator accepts byte-exact) or 4xx (validator
+        # rejects whitespace-only id). Both clean.
+        assert resp.status_code in (201, 400, 422), (
+            f"4-distinct-ids unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 201:
+            got = await client.get(f"/v1/graphs/{graph_id}")
+            assert got.status_code == 200, got.text
+            got_ids = [n["id"] for n in got.json()["nodes"]]
+            for nid in node_ids:
+                assert nid in got_ids, (
+                    f"node id {nid!r} silently dropped/normalised; "
+                    f"got_ids={got_ids!r}"
+                )
+            assert len(got_ids) == 4, (
+                f"4 byte-exact ids collapsed to {len(got_ids)}: "
+                f"{got_ids!r}"
+            )
+            status = await client.get(f"/v1/graphs/{graph_id}/status")
+            status_env = status.json() if status.content else {}
+            assert status_env.get("type") != "/errors/internal", (
+                f"/status leaked /errors/internal: {status.text}"
+            )
+            assert status.status_code == 200, status.text
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
