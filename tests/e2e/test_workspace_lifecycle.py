@@ -8891,3 +8891,210 @@ async def test_t0648_workspace_destroy_concurrent_with_log_get_clean(
             assert "commits" in log_resp.json(), log_resp.json()
     finally:
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0662–T0664, T0666 — sibling 500-leak hunt for CR/LF basenames on read surfaces
+# ============================================================================
+#
+# T0647 fixed the OSError leak on the WRITE path. The same OSError can be
+# raised by Path.exists / Path.is_file / Path.read_bytes / Path.unlink etc.
+# Each of these tests exercises one read surface with a CR/LF basename and
+# pins "never /errors/internal".
+
+
+async def _setup_workspace_with_dummy_file(
+    client: httpx.AsyncClient,
+    *,
+    suffix: str,
+    root: Path,
+) -> tuple[str, str, str]:
+    """Helper: create provider+template+workspace and PUT a benign file.
+    Returns (provider_id, template_id, workspace_id).
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=suffix, root=root,
+    )
+    ws = await client.post(
+        "/v1/workspaces", json=_workspace_body(template_id=template_id),
+    )
+    assert ws.status_code == 201, ws.text
+    return provider_id, template_id, ws.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_t0662_workspace_files_info_on_crlf_basename_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0662 — Sister of T0647 for the /files/info read surface.
+    GET /files/info?path=foo\\nbar.txt must NEVER leak /errors/internal,
+    regardless of whether the underlying Path.exists() / Path.is_file()
+    raises OSError [Errno 22] or returns False.
+    """
+    provider_id, template_id, workspace_id = (
+        await _setup_workspace_with_dummy_file(
+            client, suffix=unique_suffix, root=tmp_path,
+        )
+    )
+    try:
+        for sneaky in ("foo\nbar.txt", "foo\rbaz.txt", "foo\r\nqux.txt"):
+            resp = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/info",
+                params={"path": sneaky},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"/info on {sneaky!r} leaked /errors/internal: "
+                f"{resp.text}"
+            )
+            # Acceptable: 404 (NotFoundError because file doesn't
+            # exist), 400 (BadRequestError if OSError mapped), or
+            # 200 (file actually exists — unlikely without prior PUT).
+            assert resp.status_code in (200, 400, 404, 422), (
+                f"/info on {sneaky!r} unexpected status: "
+                f"{resp.status_code}: {resp.text}"
+            )
+    finally:
+        await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0663_workspace_files_read_on_crlf_basename_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0663 — Sister of T0647 for /files/read."""
+    provider_id, template_id, workspace_id = (
+        await _setup_workspace_with_dummy_file(
+            client, suffix=unique_suffix, root=tmp_path,
+        )
+    )
+    try:
+        for sneaky in ("foo\nbar.txt", "foo\rbaz.txt", "foo\r\nqux.txt"):
+            resp = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": sneaky},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"/read on {sneaky!r} leaked /errors/internal: "
+                f"{resp.text}"
+            )
+            assert resp.status_code in (200, 400, 404, 422), (
+                f"/read on {sneaky!r}: "
+                f"{resp.status_code}: {resp.text}"
+            )
+    finally:
+        await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0664_workspace_files_delete_on_crlf_basename_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0664 — Sister of T0647 for the DELETE /files surface."""
+    provider_id, template_id, workspace_id = (
+        await _setup_workspace_with_dummy_file(
+            client, suffix=unique_suffix, root=tmp_path,
+        )
+    )
+    try:
+        for sneaky in ("foo\nbar.txt", "foo\rbaz.txt", "foo\r\nqux.txt"):
+            resp = await client.delete(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": sneaky},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"DELETE on {sneaky!r} leaked /errors/internal: "
+                f"{resp.text}"
+            )
+            assert resp.status_code in (204, 400, 404, 422), (
+                f"DELETE on {sneaky!r}: "
+                f"{resp.status_code}: {resp.text}"
+            )
+    finally:
+        await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0665_workspace_files_list_on_path_with_file_parent_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0665 — Mirror of T0425 (still pending) for the LIST surface.
+    PUT a regular file at `a/b.txt`, then GET /files?path=a/b.txt/sub —
+    `a/b.txt/sub` is unreachable because `b.txt` is a file, not a dir.
+    The list surface MUST return a clean envelope (404 NotFound or 400
+    BadRequest), never /errors/internal.
+
+    The local backend's list_files uses Path.is_dir() to gate; on
+    POSIX this returns False cleanly → BadRequestError. On Windows
+    Path.exists() may raise OSError [Errno 22] for paths whose parent
+    isn't a real dir — so this hunts for the same 500-leak family.
+    """
+    provider_id, template_id, workspace_id = (
+        await _setup_workspace_with_dummy_file(
+            client, suffix=unique_suffix, root=tmp_path,
+        )
+    )
+    try:
+        # Seed a file at a/b.txt
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "a/b.txt"},
+            json={"content": "x", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        # List with a path that treats a/b.txt as a directory
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "a/b.txt/sub"},
+        )
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"list on file-parent leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 404, 422), (
+            f"list on file-parent unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+    finally:
+        await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0666_workspace_files_download_on_crlf_basename_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0666 — Sister of T0647 for the streaming /files/download surface."""
+    provider_id, template_id, workspace_id = (
+        await _setup_workspace_with_dummy_file(
+            client, suffix=unique_suffix, root=tmp_path,
+        )
+    )
+    try:
+        for sneaky in ("foo\nbar.txt", "foo\rbaz.txt", "foo\r\nqux.txt"):
+            resp = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/download",
+                params={"path": sneaky},
+            )
+            # /download streams; if rejected, returns JSON envelope
+            if resp.headers.get("content-type", "").startswith(
+                "application/json"
+            ):
+                envelope = resp.json() if resp.content else {}
+                assert envelope.get("type") != "/errors/internal", (
+                    f"/download on {sneaky!r} leaked /errors/internal: "
+                    f"{resp.text}"
+                )
+            assert resp.status_code in (200, 400, 404, 422), (
+                f"/download on {sneaky!r}: "
+                f"{resp.status_code}: {resp.text[:200]}"
+            )
+    finally:
+        await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
