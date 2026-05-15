@@ -3629,3 +3629,319 @@ async def test_t0563_post_entity_description_with_deep_unicode_escapes(
     finally:
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0567 — Graph POST with empty nodes list returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0567_graph_post_empty_nodes_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0567 — Per matrix/model/graph.py:365-368, Graph.nodes is
+    `list[GraphNode]` with `min_length=1`. Pin: empty nodes list
+    is rejected at create with 422 /errors/validation-error
+    (Pydantic min_length); never /errors/internal.
+    """
+    graph_id = f"graph-t0567-{unique_suffix}"
+    body = {
+        "id": graph_id,
+        "description": "T0567 empty nodes",
+        "nodes": [],  # rejected by min_length=1
+        "edges": [],
+        "entry_node_id": "anything",
+    }
+    resp = await client.post("/v1/graphs", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"empty nodes leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code == 422, (
+        f"empty nodes should be 422; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type") == "/errors/validation-error", envelope
+
+    # Defence: row not created
+    got = await client.get(f"/v1/graphs/{graph_id}")
+    assert got.status_code == 404, got.text
+
+
+# ============================================================================
+# T0568 — Graph POST with entry_node_id not in nodes returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0568_graph_post_entry_node_id_missing_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0568 — Per matrix/model/graph.py:399-402, the topology
+    validator rejects entry_node_id values not present in nodes.
+    Pin: 422 /errors/validation-error; never /errors/internal;
+    row not created.
+    """
+    provider_id = f"llm-t0568-{unique_suffix}"
+    agent_id = f"agent-t0568-{unique_suffix}"
+    graph_id = f"graph-t0568-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0568",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "missing-node-id",  # not in nodes
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"missing entry_node_id leaked /errors/internal: "
+            f"{resp.text}"
+        )
+        assert resp.status_code == 422, (
+            f"missing entry_node_id should be 422; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        # Detail mentions the bad node id
+        assert "missing-node-id" in resp.text, resp.text
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 404, got.text
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0569 — Graph POST with 100 nodes accepted; round-trips byte-exact
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0569_graph_post_with_100_nodes_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0569 — Pin large-but-valid graph: 100 agent nodes + 1
+    terminal, all wired through static edges to the terminal.
+    Pin: 201 at create; GET round-trips the full node id set
+    byte-exact; /status returns clean envelope.
+    """
+    provider_id = f"llm-t0569-{unique_suffix}"
+    agent_id = f"agent-t0569-{unique_suffix}"
+    graph_id = f"graph-t0569-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    node_ids = [f"n{i:03d}" for i in range(100)]
+    try:
+        nodes = [
+            {"kind": "agent", "id": nid, "agent_id": agent_id}
+            for nid in node_ids
+        ] + [{"kind": "terminal", "id": "end"}]
+        edges = [
+            {"kind": "static", "from_node": nid, "to_node": "end"}
+            for nid in node_ids
+        ]
+        body = {
+            "id": graph_id,
+            "description": "T0569 100-node graph",
+            "nodes": nodes,
+            "edges": edges,
+            "entry_node_id": node_ids[0],
+        }
+        resp = await client.post(
+            "/v1/graphs", json=body,
+            timeout=httpx.Timeout(60.0, connect=10.0),
+        )
+        assert resp.status_code == 201, (
+            f"100-node graph should be accepted; got "
+            f"{resp.status_code}: {resp.text[:300]}"
+        )
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        got_node_ids = sorted(n["id"] for n in got.json()["nodes"])
+        expected_ids = sorted(node_ids + ["end"])
+        assert got_node_ids == expected_ids, (
+            f"100-node graph node id set mismatch: "
+            f"len={len(got_node_ids)}, expected={len(expected_ids)}"
+        )
+
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        assert "ok" in status.json(), status.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0570 — Mutual subgraph cycle (Graph A → B, Graph B → A) accepted
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0570_mutual_subgraph_cycle_accepted_status_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0570 — Subgraph references are orphan-tolerated (T0475);
+    pin that mutual cycles are also accepted. Create Graph A
+    referencing B as a subgraph node, then Graph B referencing A.
+    Pin: both POSTs return 201; both /status return clean
+    envelope. After both exist, neither /status surfaces the
+    mutual-ref as a missing reference.
+    """
+    provider_id = f"llm-t0570-{unique_suffix}"
+    agent_id = f"agent-t0570-{unique_suffix}"
+    graph_a_id = f"graph-a-t0570-{unique_suffix}"
+    graph_b_id = f"graph-b-t0570-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        # Graph A references B as a subgraph
+        body_a = {
+            "id": graph_a_id,
+            "description": "T0570 graph A",
+            "nodes": [
+                {"kind": "graph", "id": "subB", "graph_id": graph_b_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "subB", "to_node": "end"},
+            ],
+            "entry_node_id": "subB",
+        }
+        ra = await client.post("/v1/graphs", json=body_a)
+        assert ra.status_code == 201, ra.text
+
+        # Graph B references A as a subgraph (cycle)
+        body_b = {
+            "id": graph_b_id,
+            "description": "T0570 graph B",
+            "nodes": [
+                {"kind": "graph", "id": "subA", "graph_id": graph_a_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "subA", "to_node": "end"},
+            ],
+            "entry_node_id": "subA",
+        }
+        rb = await client.post("/v1/graphs", json=body_b)
+        assert rb.status_code == 201, rb.text
+
+        # Both /status return clean envelope; both refs now exist
+        for gid in (graph_a_id, graph_b_id):
+            status = await client.get(f"/v1/graphs/{gid}/status")
+            assert status.status_code == 200, status.text
+            body = status.json()
+            assert "ok" in body, body
+            assert isinstance(body.get("issues"), list), body
+            # Mutual cycle: each ref now exists, so no missing-ref
+            # issues should be surfaced
+            assert body.get("ok") is True, (
+                f"graph {gid!r} /status reports issues despite "
+                f"both refs existing: {body!r}"
+            )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_a_id}")
+        await client.delete(f"/v1/graphs/{graph_b_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0571 — POST→DELETE→POST then /status returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0571_post_delete_post_then_status_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0571 — Sibling of T0547 (re-create after delete) extended
+    with an immediate /status read after the second POST. Pin: no
+    stale negative-cache leak — /status reflects the v2 row's
+    references, never 404s for an id that just got recreated.
+    """
+    provider_id = f"llm-t0571-{unique_suffix}"
+    agent_id = f"agent-t0571-{unique_suffix}"
+    graph_id = f"graph-t0571-{unique_suffix}"
+    warmup_id = f"graph-warm-t0571-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    # Pre-warm graphs table to avoid T0103a cold-start race
+    warm = await client.post(
+        "/v1/graphs", json=_graph_body(warmup_id, agent_id=agent_id),
+    )
+    assert warm.status_code == 201, warm.text
+    await client.delete(f"/v1/graphs/{warmup_id}")
+
+    try:
+        # v1 + DELETE + v2
+        v1 = await client.post(
+            "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+        )
+        assert v1.status_code == 201, v1.text
+        rm = await client.delete(f"/v1/graphs/{graph_id}")
+        assert rm.status_code == 204, rm.text
+        v2 = await client.post(
+            "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+        )
+        assert v2.status_code == 201, v2.text
+
+        # Immediate /status — pin no stale negative cache
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        envelope = status.json() if status.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"/status after recreate leaked /errors/internal: "
+            f"{status.text}"
+        )
+        assert status.status_code == 200, (
+            f"/status after recreate should be 200, not stale 404; "
+            f"got {status.status_code}: {status.text}"
+        )
+        assert "ok" in envelope, envelope
+        assert isinstance(envelope.get("issues"), list), envelope
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
