@@ -2950,3 +2950,146 @@ async def test_t0523_graph_max_iterations_one_accepted_round_trip(
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0524 — Graph node input_template with Jinja2 syntax error accepted
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0524_graph_node_jinja_syntax_error_in_template_accepted(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0524 — `_AgentNodeRef.input_template` is a free-form `str`
+    per matrix/model/graph.py:169-177. The topology validator does
+    NOT compile the Jinja2 template; runtime evaluation happens
+    inside the (currently NotImplemented) graph executor.
+
+    Pin: a graph whose node has a structurally-broken Jinja2
+    template (`"{{ unclosed"`) is accepted at create (201);
+    GET round-trips the template byte-exact; /status returns clean
+    envelope. A future template-validating layer would deliberately
+    break this test.
+    """
+    provider_id = f"llm-t0524-{unique_suffix}"
+    agent_id = f"agent-t0524-{unique_suffix}"
+    graph_id = f"graph-t0524-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    broken_template = "{{ unclosed_variable"
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0524 broken jinja",
+            "nodes": [
+                {
+                    "kind": "agent", "id": "n1",
+                    "agent_id": agent_id,
+                    "input_template": broken_template,
+                },
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, (
+            f"broken Jinja2 template should be accepted at create "
+            f"(no template compilation in validator); got "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        nodes = got.json()["nodes"]
+        agent_node = next(
+            (n for n in nodes if n.get("id") == "n1"), None,
+        )
+        assert agent_node is not None, nodes
+        assert agent_node.get("input_template") == broken_template, (
+            f"input_template corrupted on round-trip: "
+            f"{agent_node.get('input_template')!r}"
+        )
+
+        # /status returns clean envelope (validator doesn't engage
+        # template compilation)
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        assert "ok" in status.json(), status.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0525 — POST /v1/graphs/{id}/invalidate behaviour pinned
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0525_post_graph_invalidate_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0525 — Per matrix/api/routers/compute.py, the Graph CRUD
+    router (built via make_crud_router) does NOT mount an
+    /invalidate endpoint. Only LLMProvider / EmbeddingProvider /
+    CrossEncoderProvider / Toolset have invalidate (they manage
+    cached adapters per matrix/api/registries/provider_registry.py).
+
+    Pin: POST /v1/graphs/{id}/invalidate returns a clean envelope
+    (404 not-found on the route, OR 405 method-not-allowed). Never
+    /errors/internal. Result is deterministic across two calls.
+    """
+    provider_id = f"llm-t0525-{unique_suffix}"
+    agent_id = f"agent-t0525-{unique_suffix}"
+    graph_id = f"graph-t0525-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    gr = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+    )
+    assert gr.status_code == 201, gr.text
+
+    try:
+        # Two consecutive calls — same status + envelope shape
+        r1 = await client.post(f"/v1/graphs/{graph_id}/invalidate")
+        r2 = await client.post(f"/v1/graphs/{graph_id}/invalidate")
+
+        for r, label in ((r1, "call-1"), (r2, "call-2")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label} leaked /errors/internal: {r.text}"
+            )
+            assert r.status_code < 500, r.text
+            # Documented possibilities: 204 (route exists,
+            # provider-style), 404 (route not mounted), 405
+            # (method not allowed)
+            assert r.status_code in (204, 404, 405), (
+                f"{label}: unexpected {r.status_code}: {r.text}"
+            )
+
+        # Determinism: same status across the two calls
+        assert r1.status_code == r2.status_code, (
+            f"non-deterministic: {r1.status_code} vs {r2.status_code}"
+        )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")

@@ -6030,3 +6030,204 @@ async def test_t0518_workspace_files_download_content_length_matches_body(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0526 — Workspace files PUT 1 MiB single body to root path round-trips
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0526_workspace_files_put_1mib_root_path_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0526 — PUT a 1 MiB single body to a root-level path
+    "file.txt" (no subdir prefix). Pin: 204 at PUT; immediate
+    /files/info reports size_bytes=1048576; /files/read with
+    encoding=base64 round-trips byte-exact.
+
+    Sibling of T0518 (download endpoint Content-Length); T0526 pins
+    the size+round-trip via the standard /files/read instead of
+    /download.
+    """
+    import base64
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        size = 1024 * 1024  # exactly 1 MiB
+        body_text = "X" * size
+        path = "file.txt"  # root-level, no subdir prefix
+
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": body_text, "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        # Immediate /files/info reports the right size
+        info = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": path},
+        )
+        assert info.status_code == 200, info.text
+        assert info.json().get("size_bytes") == size, (
+            f"size_bytes mismatch: expected {size}, got "
+            f"{info.json().get('size_bytes')!r}"
+        )
+
+        # /files/read base64 round-trip is byte-exact
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": path, "encoding": "base64"},
+        )
+        assert read.status_code == 200, read.text
+        decoded = base64.b64decode(read.json()["content"])
+        assert len(decoded) == size, (
+            f"base64-read body size mismatch: expected {size}, got "
+            f"{len(decoded)}"
+        )
+        assert decoded == body_text.encode("utf-8"), (
+            "1 MiB body corrupted on round-trip"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0527 — Workspace files PUT then immediate /info on 0-byte file: size=0
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0527_workspace_files_put_zero_byte_info_reports_size_zero(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0527 — PUT empty content (0 bytes) then immediately GET
+    /files/info. Pin: size_bytes=0 reported correctly. Tighter than
+    T0063 (which round-trips empty content via /read): T0527 probes
+    the cache/fs read path under no fsync gap on a 0-byte file
+    where any default-padding behaviour would inflate the size.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        path = "zero-byte.bin"
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": "", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        # Tight: no asyncio.sleep before /info
+        info = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": path},
+        )
+        assert info.status_code == 200, info.text
+        assert info.json().get("size_bytes") == 0, (
+            f"0-byte file size mismatch: got "
+            f"{info.json().get('size_bytes')!r}"
+        )
+        assert info.json().get("kind") == "file", info.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0528 — Workspace files DELETE on path with trailing whitespace
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0528_workspace_files_delete_trailing_whitespace_path_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0528 — Seed a file at "foo.txt" then DELETE the path
+    "foo.txt " (trailing space). Pin: clean envelope (204 if the
+    backend strips whitespace consistently, OR 404 if it treats
+    paths as exact strings). Original "foo.txt" survives if the
+    DELETE 404'd; never /errors/internal.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed the file at the canonical path (no trailing space)
+        seed = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "foo.txt"},
+            json={"content": "untouched", "encoding": "text"},
+        )
+        assert seed.status_code == 204, seed.text
+
+        # DELETE with trailing space
+        rm = await client.delete(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "foo.txt "},
+        )
+        envelope = rm.json() if rm.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"trailing-whitespace DELETE leaked /errors/internal: "
+            f"{rm.text}"
+        )
+        assert rm.status_code in (204, 404), (
+            f"unexpected status: {rm.status_code}: {rm.text}"
+        )
+
+        # Original file: gone if 204 (whitespace stripped), present
+        # if 404 (paths treated as exact strings)
+        info = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": "foo.txt"},
+        )
+        if rm.status_code == 204:
+            # Stripped → DELETE landed on the canonical path
+            assert info.status_code == 404, (
+                f"DELETE returned 204 but original 'foo.txt' is "
+                f"still present: {info.text}"
+            )
+        else:
+            # 404 → DELETE didn't match; original survives
+            assert info.status_code == 200, (
+                f"DELETE returned 404 but original 'foo.txt' was "
+                f"removed anyway: {info.text}"
+            )
+            assert info.json().get("size_bytes") == len("untouched"), (
+                info.json()
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
