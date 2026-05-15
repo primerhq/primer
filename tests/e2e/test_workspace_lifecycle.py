@@ -6455,3 +6455,394 @@ async def test_t0541_post_workspace_empty_template_id_returns_422(
         f"{resp.status_code}: {resp.text}"
     )
     assert envelope.get("type", "").startswith("/errors/"), envelope
+
+
+# ============================================================================
+# T0549 — Two workspaces from two distinct templates of same provider isolated
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0549_two_workspaces_distinct_templates_same_provider_isolated(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0549 — Sibling of T0517 (same-template isolation). T0549
+    pins isolation across DIFFERENT templates from the same
+    provider: PUT to ws-A from template-A doesn't appear in ws-B
+    from template-B; cross-template /files/read 404s.
+
+    Catches a regression where the local backend keys workspace
+    roots by provider id alone (instead of workspace id), which
+    would let templates share the same root.
+    """
+    provider_id = f"wp-t0549-{unique_suffix}"
+    template_a_id = f"wt-t0549-a-{unique_suffix}"
+    template_b_id = f"wt-t0549-b-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    ws_a_id: str | None = None
+    ws_b_id: str | None = None
+    try:
+        for tpl_id in (template_a_id, template_b_id):
+            tpl = await client.post(
+                "/v1/workspace_templates",
+                json={
+                    "id": tpl_id,
+                    "description": f"T0549 {tpl_id}",
+                    "provider_id": provider_id,
+                    "backend": {"kind": "local"},
+                },
+            )
+            assert tpl.status_code == 201, tpl.text
+
+        # Materialise one workspace from each template
+        ws_a = await client.post(
+            "/v1/workspaces", json={"template_id": template_a_id},
+        )
+        assert ws_a.status_code == 201, ws_a.text
+        ws_a_id = ws_a.json()["id"]
+
+        ws_b = await client.post(
+            "/v1/workspaces", json={"template_id": template_b_id},
+        )
+        assert ws_b.status_code == 201, ws_b.text
+        ws_b_id = ws_b.json()["id"]
+
+        assert ws_a_id != ws_b_id, (ws_a_id, ws_b_id)
+
+        # Write to A
+        a_file = f"only-in-a-{unique_suffix}.txt"
+        put = await client.put(
+            f"/v1/workspaces/{ws_a_id}/files",
+            params={"path": a_file},
+            json={"content": "for-a-only", "encoding": "text"},
+        )
+        assert put.status_code == 204, put.text
+
+        # B's listing must not contain that file
+        list_b = await client.get(f"/v1/workspaces/{ws_b_id}/files")
+        assert list_b.status_code == 200, list_b.text
+        b_paths = [item["path"] for item in list_b.json()["items"]]
+        assert a_file not in b_paths, (
+            f"cross-template isolation broken: file {a_file!r} from "
+            f"ws-A (template-A) appears in ws-B's listing "
+            f"(template-B): {b_paths!r}"
+        )
+
+        # B's /files/read 404s on the cross-template path
+        read_b = await client.get(
+            f"/v1/workspaces/{ws_b_id}/files/read",
+            params={"path": a_file},
+        )
+        assert read_b.status_code == 404, read_b.text
+
+        # Defence: A's listing DOES contain the file
+        list_a = await client.get(f"/v1/workspaces/{ws_a_id}/files")
+        assert list_a.status_code == 200, list_a.text
+        a_paths = [item["path"] for item in list_a.json()["items"]]
+        assert a_file in a_paths, (
+            f"PUT to ws-A didn't land in A's listing: {a_paths!r}"
+        )
+    finally:
+        if ws_a_id is not None:
+            await client.delete(f"/v1/workspaces/{ws_a_id}")
+        if ws_b_id is not None:
+            await client.delete(f"/v1/workspaces/{ws_b_id}")
+        await client.delete(f"/v1/workspace_templates/{template_a_id}")
+        await client.delete(f"/v1/workspace_templates/{template_b_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0550 — Workspace /files list with path pointing at a regular file
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0550_workspace_files_list_path_at_file_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0550 — GET /files?path=<existing-file-path>. Pin: clean
+    envelope (4xx — path-is-not-a-dir, or 200 with empty items);
+    never /errors/internal; if 200, no sibling-directory entries
+    leak into the listing.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed a file + a sibling file in same dir to detect leakage
+        for path in ("dir/leaf.txt", "dir/sibling.txt"):
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": path},
+                json={"content": "x", "encoding": "text"},
+            )
+            assert put.status_code == 204, put.text
+
+        # GET /files with path pointing at the file (not the dir)
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "dir/leaf.txt"},
+        )
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"list-file-path leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code < 500, resp.text
+        # Documented possibilities: 4xx (rejected as "not a dir") or
+        # 200 (with the file itself echoed, OR empty items)
+        assert resp.status_code in (200, 400, 404, 422), (
+            f"list-file-path: unexpected {resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            items = resp.json().get("items", [])
+            paths = [i.get("path") for i in items]
+            # Sibling file MUST NOT leak into the listing — listing
+            # at a file should never expose neighbouring entries
+            assert "dir/sibling.txt" not in paths, (
+                f"list-on-file-path leaked sibling entry: {paths!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0551 — WorkspaceTemplate description with 10K-char value round-trips
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0551_workspace_template_10k_description_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0551 — WorkspaceTemplate.description is `str` with no
+    documented size cap. Pin: a 10K-char description round-trips
+    byte-exact through POST → GET → PUT; subsequent materialise
+    still works (no truncation regression that would corrupt the
+    template body).
+    """
+    provider_id = f"wp-t0551-{unique_suffix}"
+    template_id = f"wt-t0551-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    workspace_id: str | None = None
+    try:
+        big_desc = f"T0551-marker-{unique_suffix}-" + ("X" * 10_000)
+        body = {
+            "id": template_id,
+            "description": big_desc,
+            "provider_id": provider_id,
+            "backend": {"kind": "local"},
+        }
+        tpl = await client.post(
+            "/v1/workspace_templates", json=body,
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        got = await client.get(f"/v1/workspace_templates/{template_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["description"] == big_desc, (
+            f"10K description corrupted on POST→GET: "
+            f"got_len={len(got.json()['description'])}, "
+            f"sent_len={len(big_desc)}"
+        )
+
+        # PUT a different 10K description — must round-trip too
+        new_desc = f"T0551-update-{unique_suffix}-" + ("Y" * 10_000)
+        body["description"] = new_desc
+        put = await client.put(
+            f"/v1/workspace_templates/{template_id}", json=body,
+        )
+        assert put.status_code == 200, put.text
+        assert put.json()["description"] == new_desc, put.json()
+
+        got2 = await client.get(f"/v1/workspace_templates/{template_id}")
+        assert got2.status_code == 200, got2.text
+        assert got2.json()["description"] == new_desc, got2.json()
+
+        # Subsequent materialise still works
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": template_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0552 — WorkspaceTemplate state_path="" returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0552_workspace_template_empty_state_path_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0552 — Per matrix/model/workspace.py:389-393, `state_path`
+    has `min_length=1`. Pin: explicit empty string is rejected
+    with 422 /errors/validation-error (Pydantic min_length).
+    Validator complement to T0434 (`..` traversal) and T0435
+    (absolute path).
+    """
+    provider_id = f"wp-t0552-{unique_suffix}"
+    template_id = f"wt-t0552-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    try:
+        body = {
+            "id": template_id,
+            "description": "T0552 empty state_path",
+            "provider_id": provider_id,
+            "backend": {"kind": "local"},
+            "state_path": "",  # empty string
+        }
+        resp = await client.post("/v1/workspace_templates", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"empty state_path leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code == 422, (
+            f"empty state_path should be 422 (Pydantic min_length=1); "
+            f"got {resp.status_code}: {resp.text}"
+        )
+        assert envelope.get("type") == "/errors/validation-error", envelope
+
+        # Defence: row not created
+        got = await client.get(f"/v1/workspace_templates/{template_id}")
+        assert got.status_code == 404, got.text
+    finally:
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0553 — Workspace /files/info field set stable across text + binary files
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0553_workspace_files_info_field_set_stable(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0553 — Pin that /files/info returns the same field set for
+    a text file and for a binary (base64-encoded) file, AND that
+    repeating the call yields the same field set both times. The
+    canonical fields (path, kind, size_bytes, modified_at) are
+    pinned; optional fields like content_type / mime would show
+    up identically on both file types if exposed.
+
+    Documents the absence of optional fields if not present
+    (printed at -s for visibility).
+    """
+    import base64
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed a text file and a binary file
+        text_path = "probe-text.txt"
+        bin_path = "probe-binary.bin"
+        await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": text_path},
+            json={"content": "hello-text", "encoding": "text"},
+        )
+        await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": bin_path},
+            json={
+                "content": base64.b64encode(bytes(range(64))).decode(),
+                "encoding": "base64",
+            },
+        )
+
+        # /info on each, two reads each
+        async def _info_keys(path: str) -> tuple[set[str], set[str]]:
+            r1 = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/info",
+                params={"path": path},
+            )
+            assert r1.status_code == 200, r1.text
+            r2 = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/info",
+                params={"path": path},
+            )
+            assert r2.status_code == 200, r2.text
+            return set(r1.json().keys()), set(r2.json().keys())
+
+        text_keys_1, text_keys_2 = await _info_keys(text_path)
+        bin_keys_1, bin_keys_2 = await _info_keys(bin_path)
+
+        # Stability across two reads on the same file
+        assert text_keys_1 == text_keys_2, (
+            f"text /info field set drifted across reads: "
+            f"{text_keys_1!r} vs {text_keys_2!r}"
+        )
+        assert bin_keys_1 == bin_keys_2, (
+            f"binary /info field set drifted across reads: "
+            f"{bin_keys_1!r} vs {bin_keys_2!r}"
+        )
+
+        # Same field set across text and binary file types
+        assert text_keys_1 == bin_keys_1, (
+            f"/info field set differs across text vs binary files: "
+            f"text={sorted(text_keys_1)!r}, "
+            f"binary={sorted(bin_keys_1)!r}"
+        )
+
+        # Required canonical fields all present
+        for required in ("path", "kind", "size_bytes", "modified_at"):
+            assert required in text_keys_1, (
+                f"required field {required!r} missing from /info: "
+                f"{sorted(text_keys_1)!r}"
+            )
+
+        # Document optional fields presence/absence — print to -s
+        # output for visibility (no assertion on which)
+        optional_observed = text_keys_1 - {
+            "path", "kind", "size_bytes", "modified_at",
+        }
+        print(
+            f"\n[T0553] /files/info exposes these optional/extra "
+            f"fields: {sorted(optional_observed)!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
