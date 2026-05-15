@@ -9308,3 +9308,212 @@ async def test_t0681_workspace_destroy_racing_5_concurrent_log_gets(
                 assert "commits" in r.json(), r.json()
     finally:
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0687–T0690 — `..` traversal on info / read / download / delete sub-resources
+# ============================================================================
+#
+# T0148 covered PUT-side `..` traversal rejection. These four tests cover
+# the parallel surfaces (info, read, download, delete) — pinning that
+# `_resolve_path` rejects traversal symmetrically across all file ops
+# and never leaks /errors/internal.
+
+
+@pytest.mark.asyncio
+async def test_t0687_files_info_traversal_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0687 — `/files/info?path=..` traversal: clean envelope; never
+    /errors/internal. Read-side sibling of T0148 (PUT). Catches a
+    leak family where _resolve_path's traversal check was bypassed
+    by a particular sub-resource handler.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for traversal in ("..", "../escape", "../../etc/passwd"):
+            resp = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/info",
+                params={"path": traversal},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"/info {traversal!r} leaked /errors/internal: {resp.text}"
+            )
+            assert resp.status_code in (400, 403, 404, 422), (
+                f"/info {traversal!r} unexpected status: "
+                f"{resp.status_code}: {resp.text}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0688_files_read_traversal_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0688 — `/files/read?path=..` traversal: clean envelope."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for traversal in ("..", "../escape", "../../etc/passwd"):
+            resp = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": traversal},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"/read {traversal!r} leaked /errors/internal: {resp.text}"
+            )
+            assert resp.status_code in (400, 403, 404, 422), (
+                f"/read {traversal!r} unexpected status: "
+                f"{resp.status_code}: {resp.text}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0689_files_download_traversal_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0689 — `/files/download?path=..` traversal: clean envelope.
+    Streaming-download path is the highest-risk leak surface."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for traversal in ("..", "../escape", "../../etc/passwd"):
+            resp = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/download",
+                params={"path": traversal},
+            )
+            # Download may stream binary on success; if rejected,
+            # returns JSON. Inspect content-type to decide.
+            ct = resp.headers.get("content-type", "")
+            if ct.startswith("application/json"):
+                envelope = resp.json() if resp.content else {}
+                assert envelope.get("type") != "/errors/internal", (
+                    f"/download {traversal!r} leaked /errors/internal: "
+                    f"{resp.text[:200]}"
+                )
+            assert resp.status_code in (400, 403, 404, 422), (
+                f"/download {traversal!r} unexpected status: "
+                f"{resp.status_code}: {resp.text[:200]}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+@pytest.mark.asyncio
+async def test_t0690_files_delete_traversal_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0690 — DELETE `/files?path=..` traversal: clean envelope."""
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for traversal in ("..", "../escape", "../../etc/passwd"):
+            resp = await client.delete(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": traversal},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"DELETE {traversal!r} leaked /errors/internal: {resp.text}"
+            )
+            assert resp.status_code in (400, 403, 404, 422), (
+                f"DELETE {traversal!r} unexpected status: "
+                f"{resp.status_code}: {resp.text}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0691 — `/files/info?path=<NUL byte>` clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0691_files_info_with_nul_byte_in_path_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0691 — Sister of T0478 (PUT NUL-byte) for the /info read
+    surface. A path containing a literal NUL byte (`\\x00`) raises
+    ValueError in `Path` constructors before any OS call. Pin: this
+    must surface as a clean 4xx envelope, never /errors/internal.
+
+    NB: httpx encodes the NUL byte as %00 on the wire; the server
+    decodes back to the raw byte, then attempts to construct a Path
+    which raises `ValueError: embedded null character`.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for sneaky in ("foo\x00bar.txt", "\x00", "a/\x00/b"):
+            resp = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/info",
+                params={"path": sneaky},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"/info NUL-byte {sneaky!r} leaked /errors/internal: "
+                f"{resp.text}"
+            )
+            assert resp.status_code in (400, 404, 422), (
+                f"/info NUL-byte {sneaky!r} unexpected status: "
+                f"{resp.status_code}: {resp.text}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
