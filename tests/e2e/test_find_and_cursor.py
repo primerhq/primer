@@ -3838,3 +3838,125 @@ async def test_t0508_predicate_lt_uuid_string_vs_int_clean_envelope(
         )
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0532 — Predicate `=` with right.value=2**63 (just past int64) clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0532_predicate_eq_with_big_int_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0532 — Postgres BIGINT max is 2**63 - 1 (= 9223372036854775807).
+    Sending right.value = 2**63 (one past max) is the JSONB number-
+    range probe. Pin: clean envelope (200 / 4xx / 502); never
+    /errors/internal. asyncpg may surface the out-of-range value
+    as a clean 502 /errors/provider-server-error rather than a
+    documented 4xx.
+
+    The left field is `id` (string-typed) so even if asyncpg
+    accepts the int, no row matches — result is 200-empty.
+    """
+    prefix = f"ts-t0532-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    big_int = 2**63  # 9223372036854775808 — one past int64 max
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": big_int},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"big-int predicate leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"unexpected status: {resp.status_code}: {resp.text[:300]}"
+        )
+        if resp.status_code == 200:
+            # Hard pin: NONE of our seeded string ids match the int
+            out_ids = [item["id"] for item in resp.json()["items"]]
+            for i in ids:
+                assert i not in out_ids, (
+                    f"big-int predicate unexpectedly matched seeded "
+                    f"toolset {i!r}: {out_ids!r}"
+                )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0533 — Predicate `~=` with 10000-char pattern returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0533_predicate_like_with_huge_pattern_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0533 — Mirror of T0319 (10K-char search query) for the
+    predicate path. Send a 10000-char LIKE pattern. Pin: clean
+    envelope (200/4xx/502); never /errors/internal; deterministic
+    across two consecutive calls.
+
+    Catches a regression where the predicate translator's
+    parameter binding chokes on extreme-length string values.
+    """
+    prefix = f"ts-t0533-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    huge_pattern = "x" * 10_000  # 10K chars, no wildcards (matches none)
+
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": huge_pattern},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+
+        # Two consecutive calls — pin determinism
+        r1 = await client.post("/v1/toolsets/find", json=body)
+        r2 = await client.post("/v1/toolsets/find", json=body)
+
+        for r, label in ((r1, "call-1"), (r2, "call-2")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label}: huge LIKE pattern leaked /errors/internal: "
+                f"{r.text[:300]}"
+            )
+            assert r.status_code in (200, 400, 422, 502), (
+                f"{label}: unexpected {r.status_code}: "
+                f"{r.text[:300]}"
+            )
+
+        # Determinism: same status + same envelope type
+        assert r1.status_code == r2.status_code, (
+            f"non-deterministic: {r1.status_code} vs {r2.status_code}"
+        )
+        env1 = r1.json() if r1.content else {}
+        env2 = r2.json() if r2.content else {}
+        assert env1.get("type") == env2.get("type"), (
+            f"type drift: {env1.get('type')!r} vs {env2.get('type')!r}"
+        )
+
+        # If 200, no row matches a 10K-char literal pattern (no
+        # seeded id is 10K chars long)
+        if r1.status_code == 200:
+            out_ids = [item["id"] for item in r1.json()["items"]]
+            for i in ids:
+                assert i not in out_ids, (
+                    f"10K-char pattern unexpectedly matched seeded "
+                    f"toolset {i!r}"
+                )
+    finally:
+        await _delete_toolsets(client, ids)

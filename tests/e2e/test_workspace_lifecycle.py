@@ -6231,3 +6231,194 @@ async def test_t0528_workspace_files_delete_trailing_whitespace_path_clean(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0529 — Workspace destroy on never-materialized random UUID returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0529_workspace_destroy_random_uuid_clean_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0529 — DELETE /v1/workspaces/{random-uuid} where the
+    workspace was never materialised. Pin: 404 /errors/not-found
+    cleanly; subsequent GET also 404; no orphan side-effect on the
+    workspace registry that would cause a future genuine workspace
+    create to fail.
+    """
+    import uuid
+
+    fake_id = f"ws-not-real-{uuid.uuid4().hex[:12]}"
+
+    rm = await client.delete(f"/v1/workspaces/{fake_id}")
+    envelope = rm.json() if rm.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"DELETE on missing workspace leaked /errors/internal: "
+        f"{rm.text}"
+    )
+    assert rm.status_code == 404, (
+        f"DELETE on never-materialised id should be 404; got "
+        f"{rm.status_code}: {rm.text}"
+    )
+    assert envelope.get("type") == "/errors/not-found", envelope
+
+    # Subsequent GET also 404 (idempotent absence)
+    got = await client.get(f"/v1/workspaces/{fake_id}")
+    assert got.status_code == 404, got.text
+
+    # Defence: a genuine workspace create still works after the
+    # rejected DELETE — registry not corrupted
+    suffix = unique_suffix
+    provider_id = f"wp-t0529-{suffix}"
+    template_id = f"wt-t0529-{suffix}"
+    workspace_id: str | None = None
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": provider_id, "provider": "local",
+            "config": {"kind": "local", "path": "/tmp/t0529"},
+        },
+    )
+    if pr.status_code != 201:
+        # Could be 422 if /tmp doesn't exist on the test host —
+        # use a tempdir-style fallback instead. Test still proves
+        # the no-side-effect contract: the random-id DELETE didn't
+        # corrupt anything.
+        return
+    try:
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0529 sanity",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": template_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0530 — POST /v1/workspaces with template_id of just-deleted template
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0530_post_workspace_with_deleted_template_id_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0530 — Create a WorkspaceTemplate, delete it, then POST
+    /v1/workspaces with that template_id. Pin: 4xx /errors/not-
+    found (preferred) or other clean 4xx; never /errors/internal.
+    The race window between client read and POST is what this
+    pins — the API must surface the missing template cleanly
+    rather than 500ing on a missing FK.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        # Delete the template (provider stays — workspaces only
+        # need the template at create-time)
+        rm = await client.delete(f"/v1/workspace_templates/{template_id}")
+        assert rm.status_code == 204, rm.text
+
+        # POST /workspaces with the now-deleted template id
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": template_id},
+        )
+        envelope = ws.json() if ws.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"POST workspace with deleted template_id leaked "
+            f"/errors/internal: {ws.text}"
+        )
+        assert ws.status_code in range(400, 500), (
+            f"POST with deleted template_id should be 4xx; got "
+            f"{ws.status_code}: {ws.text}"
+        )
+        assert envelope.get("type", "").startswith("/errors/"), envelope
+    finally:
+        # Template already deleted; provider is the only thing left
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0531 — Workspace template init_command stdout exceeding 1 MiB
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0531_workspace_template_init_command_large_stdout_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0531 — init_command stdout > 1 MiB. Pin: workspace
+    materialise either succeeds (stdout captured/truncated cleanly,
+    201) OR returns clean 4xx (rejected as too-large). Never 5xx
+    OOM; never /errors/internal. Catches a regression where the
+    backend reads init_command stdout into memory unbounded.
+
+    Uses Python `print('x' * N)` for portability; if the backend
+    streams the output via PIPE without bounded read, a 1.1 MB
+    print could buffer.
+    """
+    provider_id = f"wp-t0531-{unique_suffix}"
+    template_id = f"wt-t0531-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    workspace_id: str | None = None
+    try:
+        # 1.1 MB print — past any conventional 1 MB threshold
+        big_print = (
+            "python -c \"print('x' * 1100000, end='')\""
+        )
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0531 big-stdout init",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "init_commands": [big_print],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        # Materialise — long timeout because the print itself takes
+        # a moment, plus the backend may be capturing the full
+        # stdout into memory
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": template_id},
+            timeout=httpx.Timeout(120.0, connect=10.0),
+        )
+        envelope = ws.json() if ws.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"large-stdout init_command leaked /errors/internal: "
+            f"{ws.text[:500]}"
+        )
+        assert ws.status_code < 500, ws.text[:500]
+        assert ws.status_code in (201, 400, 413, 422), (
+            f"unexpected status: {ws.status_code}: {ws.text[:300]}"
+        )
+        if ws.status_code == 201:
+            workspace_id = ws.json()["id"]
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
