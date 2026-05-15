@@ -8250,3 +8250,54 @@ async def test_t0626_workspace_destroy_concurrent_with_list_clean(
         assert gone.status_code == 404, gone.text
     finally:
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0628 — /log limit=500 (documented max) accepted; pins exact upper bound
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0628_workspace_log_limit_at_documented_max_accepted(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0628 — Sister of T0198 (probes 0/501 boundaries). Per
+    matrix/api/routers/workspaces.py:530, /log accepts `limit ge=1
+    le=500`. T0198 pinned the OUTSIDE-bounds case (0 and 501);
+    this pins the EXACT upper-bound value 500 as accepted with
+    a clean envelope and the documented `commits` shape.
+
+    The .state repo is empty on a fresh workspace (per spec §12,
+    only session/agent state grows it), so commits=[] is the
+    expected body — but the load-bearing pin is "limit=500 is NOT
+    rejected as 422".
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/log?limit=500",
+        )
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"limit=500 leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code == 200, (
+            f"limit=500 should be accepted (it's the documented max); "
+            f"got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert "commits" in body, body
+        assert isinstance(body["commits"], list), body
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
