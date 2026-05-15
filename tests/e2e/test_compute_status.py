@@ -4071,3 +4071,101 @@ async def test_t0594_predicate_eq_temperature_zero_clean_envelope(
     finally:
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0600 — 20 burst POST /v1/agents racing 20 burst DELETEs of same id set
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0600_agent_burst_create_delete_race_clean_envelopes(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0600 — Burst CRUD churn. Generate 20 distinct agent ids,
+    fire 20 POSTs and 20 DELETEs in parallel against them. Each
+    response must be a clean envelope (201 / 409 / 204 / 404), no
+    /errors/internal anywhere. The final list must be consistent —
+    every id is either present (201 won the race) or absent (DELETE
+    won), never half-created or duplicated.
+
+    Pre-warms the agents table via a synchronous create+delete to
+    avoid the documented T0103a cold-start CREATE TABLE race
+    surfacing as 502 noise.
+    """
+    import asyncio
+    provider_id = f"llm-t0600-{unique_suffix}"
+    warmup_id = f"agent-warmup-t0600-{unique_suffix}"
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    agent_ids = [f"agent-t0600-{i:02d}-{unique_suffix}" for i in range(20)]
+    try:
+        # Warm the agents table
+        warm = await client.post(
+            "/v1/agents",
+            json=_agent_body(warmup_id, provider_id=provider_id, tools=[]),
+        )
+        assert warm.status_code == 201, warm.text
+        await client.delete(f"/v1/agents/{warmup_id}")
+
+        async def _post(aid: str) -> tuple[str, httpx.Response]:
+            r = await client.post(
+                "/v1/agents",
+                json=_agent_body(aid, provider_id=provider_id, tools=[]),
+            )
+            return ("POST", r)
+
+        async def _delete(aid: str) -> tuple[str, httpx.Response]:
+            r = await client.delete(f"/v1/agents/{aid}")
+            return ("DELETE", r)
+
+        tasks: list[asyncio.Task] = []
+        for aid in agent_ids:
+            tasks.append(asyncio.create_task(_post(aid)))
+            tasks.append(asyncio.create_task(_delete(aid)))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, item in enumerate(results):
+            assert not isinstance(item, BaseException), (
+                f"task {i} raised: {item!r}"
+            )
+            verb, r = item
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{verb} #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            if verb == "POST":
+                # 201 (won), 409 (lost — id already exists), 502 (T0103a
+                # cold-start fallback — we warmed but allow it).
+                assert r.status_code in (201, 409, 502), (
+                    f"POST #{i}: unexpected status "
+                    f"{r.status_code}: {r.text}"
+                )
+            else:
+                # DELETE: 204 (row existed), 404 (POST hadn't run yet)
+                assert r.status_code in (204, 404), (
+                    f"DELETE #{i}: unexpected status "
+                    f"{r.status_code}: {r.text}"
+                )
+
+        # Final state: each id is either present (single non-corrupt
+        # row) or absent. No duplicates anywhere.
+        listed = await client.get(
+            "/v1/agents", params={"limit": 200, "offset": 0},
+        )
+        assert listed.status_code == 200, listed.text
+        listed_ids = [item["id"] for item in listed.json()["items"]]
+        for aid in agent_ids:
+            count = listed_ids.count(aid)
+            assert count in (0, 1), (
+                f"id {aid!r} appears {count}× in list — duplicates "
+                f"after burst CRUD churn"
+            )
+    finally:
+        for aid in agent_ids:
+            try:
+                await client.delete(f"/v1/agents/{aid}")
+            except Exception:
+                pass
+        await client.delete(f"/v1/llm_providers/{provider_id}")

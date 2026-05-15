@@ -7576,3 +7576,182 @@ async def test_t0581_workspace_burst_create_distinct_ids(
             except Exception:
                 pass
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0604 — Workspace files concurrent PUT to 10 distinct paths in same workspace
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0604_workspace_files_concurrent_put_distinct_paths(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0604 — Workspace filesystem concurrency. Fire 10 PUTs in
+    parallel to 10 DISTINCT paths in the same workspace. All must
+    return 204; the subsequent /files listing must contain all 10
+    entries; never /errors/internal.
+
+    Catches a regression where a per-workspace lock is held too
+    coarsely (serialising distinct paths) and either deadlocks
+    or surfaces a transient 500.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        async def _put(i: int) -> httpx.Response:
+            return await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": f"concurrent_{i:02d}.txt"},
+                json={"content": f"body-{i}", "encoding": "text"},
+            )
+
+        results = await _asyncio.gather(
+            *[_put(i) for i in range(10)],
+            return_exceptions=True,
+        )
+
+        for i, r in enumerate(results):
+            assert not isinstance(r, BaseException), (
+                f"PUT #{i} raised: {r!r}"
+            )
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"PUT #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code == 204, (
+                f"PUT #{i} expected 204, got "
+                f"{r.status_code}: {r.text}"
+            )
+
+        # Verify all 10 files appear in the listing
+        lst = await client.get(f"/v1/workspaces/{workspace_id}/files")
+        assert lst.status_code == 200, lst.text
+        paths = {item["path"] for item in lst.json()["items"]}
+        for i in range(10):
+            name = f"concurrent_{i:02d}.txt"
+            assert name in paths, (
+                f"concurrent PUT lost {name!r} from listing; "
+                f"paths={sorted(paths)!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0605 — Workspace files concurrent PUT+READ to same path: clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0605_workspace_files_concurrent_put_read_same_path(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0605 — Read-during-write race. Seed a file with `pre`,
+    then fire a PUT (writing `post`) racing 5 parallel READs
+    against the same path. PUT returns 204; each READ returns 200
+    with body == "pre" OR body == "post" (either is acceptable per
+    last-writer-wins semantics — the read MUST be one of the two
+    consistent snapshots, never a torn write or empty body).
+
+    Hard pin: never /errors/internal. Catches a regression where
+    the read sees a partially-written file and either truncates,
+    returns garbage, or 500s.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        path = "race.txt"
+        # Seed with `pre`
+        seed = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": path},
+            json={"content": "pre", "encoding": "text"},
+        )
+        assert seed.status_code == 204, seed.text
+
+        # Race: one PUT (writing `post`) against 5 READs
+        async def _put_post() -> httpx.Response:
+            return await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": path},
+                json={"content": "post", "encoding": "text"},
+            )
+
+        async def _read() -> httpx.Response:
+            return await client.get(
+                f"/v1/workspaces/{workspace_id}/files/read",
+                params={"path": path},
+            )
+
+        tasks: list = [_asyncio.create_task(_put_post())]
+        tasks += [_asyncio.create_task(_read()) for _ in range(5)]
+        results = await _asyncio.gather(*tasks, return_exceptions=True)
+
+        # First result is the PUT
+        put_resp = results[0]
+        assert not isinstance(put_resp, BaseException), put_resp
+        envelope = put_resp.json() if put_resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"racing PUT leaked /errors/internal: {put_resp.text}"
+        )
+        assert put_resp.status_code == 204, (
+            f"racing PUT expected 204, got "
+            f"{put_resp.status_code}: {put_resp.text}"
+        )
+
+        # Remaining are READs — each must return one of the two
+        # consistent snapshots (never torn / empty / 500)
+        for i, r in enumerate(results[1:]):
+            assert not isinstance(r, BaseException), (
+                f"READ #{i} raised: {r!r}"
+            )
+            env = r.json() if r.content else {}
+            assert env.get("type") != "/errors/internal", (
+                f"racing READ #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code == 200, (
+                f"racing READ #{i} expected 200, got "
+                f"{r.status_code}: {r.text}"
+            )
+            content = r.json().get("content")
+            assert content in ("pre", "post"), (
+                f"racing READ #{i} returned torn/garbage content: "
+                f"{content!r}"
+            )
+
+        # Final state: file must show `post` (PUT was last writer)
+        final = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": path},
+        )
+        assert final.status_code == 200, final.text
+        assert final.json()["content"] == "post", final.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

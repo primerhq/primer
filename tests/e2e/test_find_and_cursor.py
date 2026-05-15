@@ -4519,3 +4519,131 @@ async def test_t0584_predicate_like_trailing_wildcard_matches_prefix(
     finally:
         for entity_id in seeded + [other]:
             await client.delete(f"/v1/toolsets/{entity_id}")
+
+
+# ============================================================================
+# T0598 — Predicate `in` with empty list `[]` returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0598_predicate_in_empty_list_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0598 — Empty-IN edge case. SQL `id IN ()` is invalid syntax;
+    a correct translator either special-cases this to a constant-false
+    (yielding 200 empty) or rejects the predicate at validation time.
+
+    Hard pin: never /errors/internal. Catches a regression where the
+    SQL builder emits a literal `IN ()` and asyncpg fails with a
+    syntax error that leaks as 500.
+    """
+    prefix = f"ts-t0598-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "in",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": []},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"empty IN-list leaked /errors/internal: {resp.text}"
+        )
+        # Acceptable: 200 empty (constant-false), 4xx (validator rejects),
+        # 502 (asyncpg surfaced a clean upstream error).
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"empty IN-list got unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            items = resp.json()["items"]
+            # Constant-false semantics: NO row matches.
+            assert all(item["id"] not in ids for item in items), (
+                f"empty IN unexpectedly matched seeded rows: "
+                f"{[item['id'] for item in items]!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0599 — Deep predicate tree: OR-of-ANDs depth=5 returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0599_predicate_deep_nested_or_of_ands_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0599 — Deep-tree predicate stress. Build a depth-5 tree
+    alternating OR and AND nodes, each leaf being a trivial
+    `id = "<value>"` clause. Catches:
+
+    - Recursion-depth issues in the predicate translator.
+    - Pathological SQL generation (exponential parenthesisation).
+    - Stack overflows in asyncpg's prepared-statement parser.
+
+    Hard pin: never /errors/internal. Either 200 (translator handles
+    arbitrary depth) or a clean 4xx if there's an explicit
+    max-depth limit.
+    """
+    prefix = f"ts-t0599-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        # Build leaf clauses
+        def _leaf(value: str) -> dict:
+            return {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": value},
+            }
+
+        # Build the tree bottom-up: depth-5 alternating or/and
+        # Layer 0 (leaves): 32 of them — that's 2^5
+        layer = [_leaf(f"none-match-{i}-{unique_suffix}") for i in range(32)]
+        for op_token in ("and", "or", "and", "or", "and"):
+            new_layer: list[dict] = []
+            for i in range(0, len(layer), 2):
+                new_layer.append({
+                    "kind": "predicate",
+                    "op": op_token,
+                    "left": layer[i],
+                    "right": layer[i + 1],
+                })
+            layer = new_layer
+        assert len(layer) == 1, f"tree did not collapse to root: {layer!r}"
+
+        body = {
+            "predicate": layer[0],
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"deep predicate tree leaked /errors/internal: {resp.text}"
+        )
+        # Hard pin: clean envelope. Acceptable: 200 (empty, since no
+        # leaf matches), 4xx (depth limit), 502 (asyncpg upstream).
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"deep predicate got unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            items = resp.json()["items"]
+            assert all(item["id"] not in ids for item in items), (
+                f"deep predicate matched seeded rows unexpectedly: "
+                f"{[i['id'] for i in items if i['id'] in ids]!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        await _delete_toolsets(client, ids)
