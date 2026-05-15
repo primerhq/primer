@@ -8057,3 +8057,196 @@ async def test_t0609_workspace_files_put_4mib_body_clean_envelope(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0625 — 20 concurrent PUTs then 10 concurrent DELETEs: clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0625_workspace_files_concurrent_put_then_delete(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0625 — Sister of T0604 (concurrent PUT) extended with a
+    concurrent DELETE phase. Sequence:
+        1. PUT 20 distinct paths concurrently (each ~4 KiB body)
+        2. DELETE 10 of them concurrently
+        3. List files and verify exactly the surviving 10 paths
+
+    Catches a regression where:
+    - Concurrent DELETEs interfere with each other (lock too coarse).
+    - The listing reflects stale entries after a delete.
+    - Either op leaks /errors/internal under filesystem churn.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        body_4k = "x" * (4 * 1024)
+        names = [f"churn_{i:02d}.txt" for i in range(20)]
+
+        async def _put(name: str) -> httpx.Response:
+            return await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": name},
+                json={"content": body_4k, "encoding": "text"},
+            )
+
+        put_results = await _asyncio.gather(
+            *[_put(n) for n in names],
+            return_exceptions=True,
+        )
+        for i, r in enumerate(put_results):
+            assert not isinstance(r, BaseException), (
+                f"PUT #{i} raised: {r!r}"
+            )
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"PUT #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code == 204, (
+                f"PUT #{i} expected 204: "
+                f"{r.status_code}: {r.text}"
+            )
+
+        # Delete the first 10 names concurrently
+        to_delete = names[:10]
+        survivors = set(names[10:])
+
+        async def _delete(name: str) -> httpx.Response:
+            return await client.delete(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": name},
+            )
+
+        del_results = await _asyncio.gather(
+            *[_delete(n) for n in to_delete],
+            return_exceptions=True,
+        )
+        for i, r in enumerate(del_results):
+            assert not isinstance(r, BaseException), (
+                f"DELETE #{i} raised: {r!r}"
+            )
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"DELETE #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code == 204, (
+                f"DELETE #{i} expected 204: "
+                f"{r.status_code}: {r.text}"
+            )
+
+        # Listing must reflect exactly the surviving 10 + backend dirs
+        lst = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"limit": 200, "offset": 0},
+        )
+        assert lst.status_code == 200, lst.text
+        listed = {item["path"] for item in lst.json()["items"]}
+        # Survivors all present; deleted all absent
+        for name in survivors:
+            assert name in listed, (
+                f"surviving {name!r} missing from listing: "
+                f"{sorted(listed)!r}"
+            )
+        for name in to_delete:
+            assert name not in listed, (
+                f"deleted {name!r} still in listing: "
+                f"{sorted(listed)!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0626 — Workspace destroy concurrent with /files listing: clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0626_workspace_destroy_concurrent_with_list_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0626 — Sister of T0290 (DELETE racing PUT) for the listing
+    op. Race a workspace DELETE against a concurrent /files listing.
+    Both responses must be clean envelopes:
+    - DELETE: 204
+    - LIST: 200 (got the listing before destroy completed) OR 404
+      (workspace gone before the list handler ran)
+
+    Hard pin: never /errors/internal even under destroy/list race.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed a couple of files so the listing has content to enumerate
+        for name in ("seed_a.txt", "seed_b.txt"):
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": name},
+                json={"content": "x", "encoding": "text"},
+            )
+            assert put.status_code == 204, put.text
+
+        # Race: destroy + list
+        del_task = _asyncio.create_task(
+            client.delete(f"/v1/workspaces/{workspace_id}"),
+        )
+        list_task = _asyncio.create_task(
+            client.get(f"/v1/workspaces/{workspace_id}/files"),
+        )
+        del_resp, list_resp = await _asyncio.gather(
+            del_task, list_task, return_exceptions=True,
+        )
+
+        assert not isinstance(del_resp, BaseException), del_resp
+        assert not isinstance(list_resp, BaseException), list_resp
+
+        # DELETE
+        del_env = del_resp.json() if del_resp.content else {}
+        assert del_env.get("type") != "/errors/internal", (
+            f"racing DELETE leaked /errors/internal: {del_resp.text}"
+        )
+        assert del_resp.status_code in (204, 404), (
+            f"racing DELETE unexpected status: "
+            f"{del_resp.status_code}: {del_resp.text}"
+        )
+
+        # LIST: 200 (saw it before destroy) or 404 (destroy won)
+        list_env = list_resp.json() if list_resp.content else {}
+        assert list_env.get("type") != "/errors/internal", (
+            f"racing LIST leaked /errors/internal: {list_resp.text}"
+        )
+        assert list_resp.status_code in (200, 404), (
+            f"racing LIST unexpected status: "
+            f"{list_resp.status_code}: {list_resp.text}"
+        )
+
+        # GET on the destroyed workspace is now 404
+        gone = await client.get(f"/v1/workspaces/{workspace_id}")
+        assert gone.status_code == 404, gone.text
+    finally:
+        await _teardown_provider_template(client, provider_id, template_id)

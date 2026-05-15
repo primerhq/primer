@@ -4652,3 +4652,294 @@ async def test_t0621_graph_zero_edges_multi_node_accepted_clean(
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0622 — Graph max_iterations=null accepted; round-trips null
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0622_graph_max_iterations_null_accepted(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0622 — Per matrix/model/graph.py:379, `max_iterations` is
+    `PositiveInt | None` with default `None`. Pin: an explicit `null`
+    in the body is accepted (201), GET round-trips null, /status
+    returns clean. Sister of T0497 (very-large value).
+    """
+    provider_id = f"llm-t0622-{unique_suffix}"
+    agent_id = f"agent-t0622-{unique_suffix}"
+    graph_id = f"graph-t0622-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0622 max_iterations=null",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+            "max_iterations": None,
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, (
+            f"max_iterations=null should be accepted; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        assert got.json().get("max_iterations") is None, (
+            f"explicit null should round-trip null: "
+            f"{got.json().get('max_iterations')!r}"
+        )
+
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        assert status.json().get("ok") is True, status.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0623 — Three concurrent PUTs replacing same Graph nodes set: clean
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0623_graph_concurrent_put_replace_clean_envelopes(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0623 — Three simultaneous PUTs on the same graph_id, each
+    submitting a distinguishable description + nodes set. Mirror of
+    the agent CRUD churn pattern. Pin: every response is a clean
+    envelope (200/4xx — never /errors/internal). Final GET returns
+    one of the three submitted bodies (last-writer-wins). /status
+    walks the resolved graph cleanly.
+    """
+    import asyncio
+    provider_id = f"llm-t0623-{unique_suffix}"
+    agent_id = f"agent-t0623-{unique_suffix}"
+    graph_id = f"graph-t0623-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    # Seed the graph
+    seed = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+    )
+    assert seed.status_code == 201, seed.text
+
+    try:
+        def _put_body(tag: str) -> dict:
+            return {
+                "id": graph_id,
+                "description": f"T0623 racer {tag}",
+                "nodes": [
+                    {"kind": "agent", "id": f"n_{tag}",
+                     "agent_id": agent_id},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": f"n_{tag}",
+                     "to_node": "end"},
+                ],
+                "entry_node_id": f"n_{tag}",
+            }
+
+        tasks = [
+            asyncio.create_task(
+                client.put(f"/v1/graphs/{graph_id}", json=_put_body(tag)),
+            )
+            for tag in ("a", "b", "c")
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, r in enumerate(results):
+            assert not isinstance(r, BaseException), (
+                f"PUT #{i} raised: {r!r}"
+            )
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"PUT #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            # 200 (won) or 409 (lost). Never 5xx beyond documented bug
+            # families.
+            assert r.status_code in (200, 409), (
+                f"PUT #{i}: unexpected status {r.status_code}: {r.text}"
+            )
+
+        # Final GET shows one of the three submitted bodies
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        desc = got.json().get("description", "")
+        assert desc in (
+            "T0623 racer a",
+            "T0623 racer b",
+            "T0623 racer c",
+        ), f"final description not from submitted set: {desc!r}"
+
+        # Status walks the resolved graph cleanly
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        assert status.json().get("ok") is True, status.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0624 — Graph DELETEd then resume on graph-bound session: clean fatal-path
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0624_graph_deleted_then_resume_session_clean_fatal_path(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0624 — Sequential graph cascade. Sequence:
+        1. Create graph + workspace + graph-bound CREATED session
+        2. DELETE the graph row
+        3. Resume the session
+
+    Per matrix/worker/pool.py:478, the executor is NotImplemented
+    regardless. The session must converge to ENDED via _handle_fatal
+    with a clean error path. Hard pin: never /errors/internal at any
+    step; resume returns a documented status code; subsequent GET
+    shows ended/failed.
+    """
+    import asyncio as _asyncio
+    provider_id = f"llm-t0624-{unique_suffix}"
+    agent_id = f"agent-t0624-{unique_suffix}"
+    wp_id = f"wp-t0624-{unique_suffix}"
+    tpl_id = f"wt-t0624-{unique_suffix}"
+    graph_id = f"graph-t0624-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    wp = await client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp_id,
+            "provider": "local",
+            "config": {"kind": "local", "path": str(tmp_path)},
+        },
+    )
+    assert wp.status_code == 201, wp.text
+    tpl = await client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl_id,
+            "description": "T0624",
+            "provider_id": wp_id,
+            "backend": {"kind": "local"},
+        },
+    )
+    assert tpl.status_code == 201, tpl.text
+    gr = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+    )
+    assert gr.status_code == 201, gr.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": tpl_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # Delete the graph row BEFORE resume
+        rm = await client.delete(f"/v1/graphs/{graph_id}")
+        assert rm.status_code == 204, rm.text
+
+        # Resume — worker claims, fails (graph missing AND/OR executor
+        # NotImplemented), routes through _handle_fatal
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        envelope = resume.json() if resume.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"resume after graph delete leaked /errors/internal: "
+            f"{resume.text}"
+        )
+        assert resume.status_code < 500, (
+            f"resume after graph delete returned 5xx: "
+            f"{resume.status_code}: {resume.text}"
+        )
+        assert resume.status_code in (200, 400, 404, 409, 422), (
+            f"resume unexpected status: "
+            f"{resume.status_code}: {resume.text}"
+        )
+
+        # If resume succeeded (200), wait for the worker to converge
+        # the session to ENDED via _handle_fatal.
+        if resume.status_code == 200:
+            for _ in range(60):  # 30s budget
+                got = await client.get(f"/v1/sessions/{session_id}")
+                if got.status_code == 200 and got.json().get("status") == "ended":
+                    break
+                await _asyncio.sleep(0.5)
+            final = await client.get(f"/v1/sessions/{session_id}")
+            assert final.status_code == 200, final.text
+            assert final.json().get("status") == "ended", (
+                f"session did not converge to ended in 30s: "
+                f"{final.json()!r}"
+            )
+            assert final.json().get("ended_reason") == "failed", final.json()
+            last_err = final.json().get("last_error") or ""
+            # The error should reference EITHER the missing graph OR the
+            # NotImplementedError (whichever the worker hits first).
+            assert last_err, (
+                f"converged session must have last_error: {final.json()!r}"
+            )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        # graph already deleted; idempotent best-effort
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/workspace_templates/{tpl_id}")
+        await client.delete(f"/v1/workspace_providers/{wp_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
