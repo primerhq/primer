@@ -1144,3 +1144,226 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
         for did in created:
             await client.delete(f"/v1/documents/{did}")
         await client.delete(f"/v1/collections/{coll_id}")
+
+
+# ============================================================================
+# T0595 — Predicate `<` on JSONB nested numeric meta.score
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0595_predicate_lt_on_jsonb_nested_numeric(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0595 — Sister of T0236 (`>`) for the `<` operator. Seed 5
+    Documents with meta.score in [1..5]; find with `op="<", right=3`
+    must return rows with score 1 and 2 (or surface the same JSONB
+    type-coercion bug as T0236, which is documented and accepted).
+
+    Hard pin: never /errors/internal.
+    """
+    prefix = f"doc-t0595-{unique_suffix}"
+    created: list[str] = []
+    try:
+        for score in range(1, 6):
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": f"{prefix}-{score}",
+                    "name": str(score),
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"score": score},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(f"{prefix}-{score}")
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "<",
+                    "left": {"kind": "field", "name": "meta.score"},
+                    "right": {"kind": "value", "value": 3},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/documents/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"`<` on meta.score leaked /errors/internal: {resp.text}"
+        )
+        if resp.status_code == 200:
+            out = sorted(item["id"] for item in resp.json()["items"])
+            expected = sorted([f"{prefix}-1", f"{prefix}-2"])
+            assert out == expected, (
+                f"meta.score < 3 should return {expected!r}, got {out!r}"
+            )
+        else:
+            # Documented JSONB-numeric bug surface (502
+            # /errors/provider-server-error from asyncpg) accepted.
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0596 — Predicate `<=` on JSONB nested numeric meta.score
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0596_predicate_lte_on_jsonb_nested_numeric(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0596 — Third sibling of T0236; documents `<=` on JSONB
+    numerics. With score ∈ [1..5] and `<= 3`, the matching set is
+    {1,2,3} (or the documented 502 from the JSONB-coercion bug).
+
+    Together T0236 (`>`), T0595 (`<`), and this test (T0596 `<=`)
+    pin the full ordered comparison set on JSONB nested numerics.
+    """
+    prefix = f"doc-t0596-{unique_suffix}"
+    created: list[str] = []
+    try:
+        for score in range(1, 6):
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": f"{prefix}-{score}",
+                    "name": str(score),
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"score": score},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(f"{prefix}-{score}")
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "<=",
+                    "left": {"kind": "field", "name": "meta.score"},
+                    "right": {"kind": "value", "value": 3},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/documents/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"`<=` on meta.score leaked /errors/internal: {resp.text}"
+        )
+        if resp.status_code == 200:
+            out = sorted(item["id"] for item in resp.json()["items"])
+            expected = sorted(
+                [f"{prefix}-1", f"{prefix}-2", f"{prefix}-3"]
+            )
+            assert out == expected, (
+                f"meta.score <= 3 should return {expected!r}, got {out!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0597 — Predicate `=` int-literal against JSONB string meta.tag
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0597_predicate_eq_int_against_jsonb_string_field(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0597 — Reverse-direction JSONB type-coercion check. T0236
+    pins int-literal against numeric JSONB field; this test pins
+    int-literal against a STRING JSONB field. The translator may
+    surface 200 (no rows match), 502 (asyncpg type bind crash), or
+    a clean 4xx.
+
+    Hard pin: never /errors/internal.
+    """
+    prefix = f"doc-t0597-{unique_suffix}"
+    created: list[str] = []
+    try:
+        for i, tag in enumerate(("alpha", "beta", "gamma")):
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": f"{prefix}-{i}",
+                    "name": tag,
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"tag": tag},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(f"{prefix}-{i}")
+
+        # `meta.tag = 42` — type-mismatched
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "meta.tag"},
+                    "right": {"kind": "value", "value": 42},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/documents/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"int-vs-string JSONB cmp leaked /errors/internal: "
+            f"{resp.text}"
+        )
+        # Acceptable: 200 with empty items (no string equals integer),
+        # 4xx (handler validates), or 502 (documented bug family).
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"int-vs-string JSONB got unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            # No string tag should equal the integer 42
+            out = [item["id"] for item in resp.json()["items"]]
+            assert all(oid not in created for oid in out), (
+                f"int=string JSONB unexpectedly matched seeded "
+                f"docs: {out!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")

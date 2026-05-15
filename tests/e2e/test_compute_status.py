@@ -3991,3 +3991,83 @@ async def test_t0588_agent_create_with_null_tool_entry_returns_422(
     assert got.status_code == 404, got.text
     # Best-effort cleanup in case the assertion above was too strict
     await client.delete(f"/v1/agents/{agent_id}")
+
+
+# ============================================================================
+# T0594 — Predicate `=` on Agent.temperature literal 0 returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0594_predicate_eq_temperature_zero_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0594 — Sister of T0361 (`=` on Session.turn_no integer column).
+    Pin `=` against the agent's `temperature` field (float | None) with
+    a numeric literal 0. The same JSONB / asyncpg type-coercion bug
+    family that hits T0236/T0361/T0583 may also surface here if the
+    SQL builder casts the column to text but binds an int literal.
+
+    Hard pin: never /errors/internal. Acceptable shapes:
+    - 200 with seeded agent matching (preferred — translator coerces
+      cleanly).
+    - 502 /errors/provider-server-error (current behaviour for the
+      bug family, accepted as documented).
+    - 4xx if handler validates and rejects.
+    """
+    provider_id = f"llm-t0594-{unique_suffix}"
+    agent_id = f"agent-t0594-{unique_suffix}"
+    pr = await client.post("/v1/llm_providers", json={
+        "id": provider_id,
+        "provider": "anthropic",
+        "models": [
+            {"name": "claude-sonnet-4-6", "context_length": 200_000},
+        ],
+        "config": {"api_key": "placeholder"},
+        "limits": {"max_concurrency": 1},
+    })
+    assert pr.status_code == 201, pr.text
+    try:
+        # Seed agent with explicit temperature=0
+        body = _agent_body(agent_id, provider_id=provider_id, tools=[])
+        body["temperature"] = 0
+        ag = await client.post("/v1/agents", json=body)
+        assert ag.status_code == 201, ag.text
+
+        # Find with `=` against temperature literal 0
+        find_body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "temperature"},
+                "right": {"kind": "value", "value": 0},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/agents/find", json=find_body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"`=` on temperature=0 leaked /errors/internal: {resp.text}"
+        )
+        # Documented bug family: 502 /errors/provider-server-error from
+        # asyncpg type-bind mismatch is currently the most likely surface.
+        # Future fix flips this to 200 with the row matching.
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"`=` on temperature got unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            # If the translator handled it cleanly, our seeded agent
+            # MUST be in the result set (temperature really IS 0).
+            ids = [item["id"] for item in resp.json()["items"]]
+            assert agent_id in ids, (
+                f"=0 should match the seeded agent (temperature=0); "
+                f"got {ids!r}"
+            )
+        elif resp.status_code == 502:
+            assert envelope.get("type") == "/errors/provider-server-error", (
+                envelope
+            )
+    finally:
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")

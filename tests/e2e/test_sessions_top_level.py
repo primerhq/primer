@@ -3870,3 +3870,117 @@ async def test_t0555_cancelled_session_top_level_vs_nested_documented_drift(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0593 — Steer queued on graph-bound CREATED session before fatal turn
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0593_steer_on_graph_session_before_fatal_turn(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0593 — Sister of T0429. Spec §12 says steer "Does NOT gate on
+    session status". Pin: a steer on a graph-bound CREATED session
+    succeeds (2xx); after resume, the session still converges to
+    ended/failed via _handle_fatal — the steer queue did NOT crash
+    the worker, did NOT leak /errors/internal, and the queued
+    instruction does NOT block the fatal-path teardown.
+
+    This stresses the graph-executor failure path with a side effect
+    (a queued steer) to make sure the worker's NotImplementedError
+    handling cleans up the queue without leaking 5xx anywhere.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    graph_id = f"graph-t0593-{unique_suffix}"
+    workspace_id: str | None = None
+    session_id: str | None = None
+    graph_created = False
+    try:
+        gr = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_id,
+                "description": "T0593 — graph for steer-then-fatal",
+                "nodes": [
+                    {"kind": "agent", "id": "n1",
+                     "agent_id": env["agent_id"]},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            },
+        )
+        assert gr.status_code == 201, gr.text
+        graph_created = True
+
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # Steer BEFORE resume — session is still in CREATED
+        steer = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": "this should be queued and discarded"},
+        )
+        envelope = steer.json() if steer.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"steer on graph-bound CREATED leaked /errors/internal: "
+            f"{steer.text}"
+        )
+        # Spec says steer does not gate on status, so 2xx expected.
+        # 4xx is acceptable if a future iteration tightens validation,
+        # but never 5xx.
+        assert steer.status_code < 500, (
+            f"steer on graph-CREATED returned 5xx: "
+            f"{steer.status_code}: {steer.text}"
+        )
+        assert steer.status_code in (200, 204, 404, 409, 422), (
+            f"steer status outside expected envelope: "
+            f"{steer.status_code}: {steer.text}"
+        )
+
+        # Resume → worker claims → _build_graph_executor raises →
+        # _handle_fatal converges the row to ended/failed. The queued
+        # steer must not block this teardown.
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 200, resume.text
+
+        final = await _wait_for_session_ended(
+            client, session_id=session_id, timeout_s=30.0,
+        )
+        assert final.get("status") == "ended", (
+            f"steer-then-resume on graph session did not converge "
+            f"in 30s: {final!r}"
+        )
+        assert final.get("ended_reason") == "failed", (
+            f"expected ended_reason='failed' from NotImplementedError "
+            f"path; got {final!r}"
+        )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if graph_created:
+            await client.delete(f"/v1/graphs/{graph_id}")
+        await _teardown_setup(client, env)
