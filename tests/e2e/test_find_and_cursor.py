@@ -4146,3 +4146,140 @@ async def test_t0542_find_body_missing_page_field_returns_422(
         f"422 envelope should reference the missing 'page' field; "
         f"body={resp.text!r}"
     )
+
+
+# ============================================================================
+# T0556 — Predicate `>` with right=true (boolean) on integer field
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0556_predicate_gt_with_bool_right_on_int_field_clean(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0556 — Type mismatch: predicate `>` (typed comparison) with
+    right=true (boolean) against the integer-typed Session.turn_no
+    column. asyncpg may surface as 502 /errors/provider-server-error
+    or the translator may catch the mismatch as 4xx; either is
+    acceptable. Pin: never /errors/internal from a bool-vs-int
+    coercion crash.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": ">",
+            "left": {"kind": "field", "name": "turn_no"},
+            "right": {"kind": "value", "value": True},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/sessions/find", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"`>` bool-vs-int leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code in (200, 400, 422, 502), (
+        f"unexpected status: {resp.status_code}: {resp.text}"
+    )
+
+
+# ============================================================================
+# T0557 — Predicate `=` with float literal on string `id` field
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0557_predicate_eq_float_on_string_id_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0557 — Predicate `=` with right=3.14 (float) against the
+    string-typed `id` column. Pin: never /errors/internal; either
+    200 with empty results (no string id literally equals 3.14)
+    or 4xx/502 from type-mismatch handling.
+    """
+    prefix = f"ts-t0557-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": 3.14},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"`=` float-vs-string leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"unexpected status: {resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            # No seeded string id should match the float 3.14
+            out_ids = [item["id"] for item in resp.json()["items"]]
+            for i in ids:
+                assert i not in out_ids, (
+                    f"float-vs-string `=` unexpectedly matched "
+                    f"seeded id {i!r}: {out_ids!r}"
+                )
+    finally:
+        await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0558 — Predicate `op="in"` with 1000-element list returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0558_predicate_in_with_1000_element_list_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0558 — Send a predicate `op="in"` whose right operand is
+    a 1000-element list. Pin: clean envelope (200 with the
+    matching subset, OR clean 4xx if a future cap rejects); never
+    /errors/internal from a large IN-clause parameter binding.
+
+    Includes the seeded toolset ids so we can verify they appear
+    in the results when accepted.
+    """
+    prefix = f"ts-t0558-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        # Build a 1000-element list — first 3 are the seeded ids,
+        # rest are non-matching dummies
+        long_list = list(ids) + [
+            f"non-matching-{i}" for i in range(1000 - len(ids))
+        ]
+        assert len(long_list) == 1000
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "in",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": long_list},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/toolsets/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"1000-element IN list leaked /errors/internal: "
+            f"{resp.text[:300]}"
+        )
+        assert resp.status_code in (200, 400, 422), (
+            f"unexpected status: {resp.status_code}: {resp.text[:300]}"
+        )
+        if resp.status_code == 200:
+            # All seeded ids should appear (they're in the list)
+            out_ids = sorted(item["id"] for item in resp.json()["items"])
+            assert sorted(ids) == out_ids, (
+                f"large IN list missed expected matches: "
+                f"expected {sorted(ids)!r}, got {out_ids!r}"
+            )
+    finally:
+        await _delete_toolsets(client, ids)

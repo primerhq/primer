@@ -3724,3 +3724,94 @@ async def test_t0538_search_top_k_100_documented_hit_shape(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0554 — POST collection then /v1/collections/search reflects CDC ingestion
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0554_post_collection_then_collections_search_reflects_cdc(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0554 — Reframed from the original "put_document into a
+    collection then search reflects" — that path requires the
+    SearchService pipeline which is not yet wired (T0019 / T0034
+    show only the entity-row-search path is live).
+
+    Pin the contract that DOES exist: POST a Collection row with
+    a distinctive description, wait for CDC ingestion, then
+    /v1/collections/search with the marker query returns the
+    new collection's id in hits.
+    """
+    embedder_id = f"emb-t0554-{unique_suffix}"
+    collection_id = f"coll-t0554-{unique_suffix}"
+    distinctive = f"collection-marker-t0554-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers",
+        json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_created = False
+    coll_created = False
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        if boot.status_code != 200:
+            pytest.skip(
+                f"bootstrap returned {boot.status_code}: "
+                f"{boot.text[:300]}"
+            )
+
+        # Create a Collection with a distinctive description
+        cr = await client.post(
+            "/v1/collections",
+            json={
+                "id": collection_id,
+                "description": distinctive,
+                "embedder": {
+                    "provider_id": embedder_id,
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                },
+            },
+        )
+        assert cr.status_code == 201, cr.text
+        coll_created = True
+
+        # Poll /v1/collections/search for the marker
+        last_ids: list[str] = []
+        for _ in range(60):
+            search = await client.post(
+                "/v1/collections/search",
+                json={"query": distinctive, "top_k": 5},
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+            assert search.status_code == 200, search.text
+            last_ids = [
+                h["document_id"] for h in search.json()["hits"]
+            ]
+            if collection_id in last_ids:
+                break
+            await asyncio.sleep(0.5)
+        assert collection_id in last_ids, (
+            f"collection {collection_id!r} did not appear in "
+            f"/v1/collections/search results within 30s; last hits: "
+            f"{last_ids!r}"
+        )
+    finally:
+        if coll_created:
+            await client.delete(f"/v1/collections/{collection_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")

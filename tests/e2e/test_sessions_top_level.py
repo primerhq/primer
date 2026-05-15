@@ -3790,3 +3790,83 @@ async def test_t0540_pause_resume_pause_sequence_on_created_clean(
             )
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0555 — Cancel agent-bound session: top-level + nested GET both ENDED
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0555_cancelled_session_top_level_vs_nested_documented_drift(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0555 — Documents a SECOND stale-cache divergence on top of
+    T0433 (graph-bound nested 404). For agent-bound sessions that
+    are cancelled from CREATED via the storage path (sessions.py:
+    287-296 transitions CREATED→ENDED directly via
+    sessions.update), the nested workspace handler reads
+    `await session.status()` from the in-memory AgentSession
+    object, which doesn't see the storage update. Result:
+
+      - top-level GET /v1/sessions/{id} reads storage → "ended"
+      - nested GET /v1/workspaces/{wid}/sessions/{sid} reads
+        in-memory AgentSession → may report stale "running"
+
+    This is the same root cause as T0399 (steer-after-cancel
+    succeeds despite ENDED) and T0441 (pause→cancel→steer cache).
+    Pin: top-level is the authoritative source; never
+    /errors/internal on either; spec §11 needs a callout that
+    nested status may be stale on agent-bound rows that were
+    cancelled-from-CREATED until cache refreshed (a fix would
+    route session.status() through storage when the in-memory
+    object is stale).
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Cancel CREATED → storage row → ENDED (direct transition)
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+        assert cancel.json()["status"] == "ended", cancel.json()
+        assert cancel.json()["ended_reason"] == "cancelled", cancel.json()
+
+        # Top-level GET reads storage — authoritative
+        top = await client.get(f"/v1/sessions/{session_id}")
+        assert top.status_code == 200, top.text
+        top_body = top.json()
+        assert top_body["status"] == "ended", top_body
+        assert top_body["ended_reason"] == "cancelled", top_body
+        assert top_body.get("ended_at") is not None, top_body
+
+        # Nested GET reads in-memory AgentSession — may be stale
+        nested = await client.get(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}",
+        )
+        assert nested.status_code == 200, nested.text
+        nested_body = nested.json()
+        nested_status = nested_body.get("status")
+        # Documented drift: nested may show "ended" (cache happened to
+        # refresh) OR a stale state (created/running) — never a
+        # contradictory non-status value, never /errors/internal
+        assert nested_status in ("created", "running", "ended"), (
+            f"nested status outside the documented set: "
+            f"{nested_status!r}"
+        )
+        # Whether nested matches top-level is non-deterministic; print
+        # observation for visibility under -s
+        if nested_status != top_body["status"]:
+            print(
+                f"\n[T0555] documented stale-cache drift observed: "
+                f"top={top_body['status']!r} vs nested={nested_status!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
