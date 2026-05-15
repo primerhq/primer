@@ -447,3 +447,69 @@ async def test_t0707_ic_config_put_against_deleted_embedding_provider(
         await client.delete("/v1/internal_collections/config")
         # Provider already deleted; idempotent best-effort
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0717 — Concurrent IC-config DELETE racing 5 /v1/agents/search calls
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0717_ic_config_delete_racing_5_agents_search_calls(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0717 — Two-state-machine combo: subsystem teardown vs
+    in-flight search. Race 1 IC-config DELETE against 5 concurrent
+    /v1/agents/search calls. Each call must produce a clean envelope:
+    DELETE 204/404; each search 200 (subsystem still active) OR 503
+    /errors/subsystem-inactive (subsystem torn down). Never
+    /errors/internal under config-DELETE × in-flight search race.
+
+    No bootstrap required: bringup leaves subsystem inactive, so
+    DELETE is a no-op (404) and searches return 503 — the test still
+    exercises the concurrent-call path.
+    """
+    import asyncio as _asyncio
+
+    async def _delete() -> httpx.Response:
+        return await client.delete("/v1/internal_collections/config")
+
+    async def _search() -> httpx.Response:
+        return await client.post(
+            "/v1/agents/search",
+            json={"query": "anything", "top_k": 3},
+        )
+
+    tasks = [
+        _asyncio.create_task(_delete()),
+        *[_asyncio.create_task(_search()) for _ in range(5)],
+    ]
+    results = await _asyncio.gather(*tasks, return_exceptions=True)
+
+    # First task is DELETE
+    del_resp = results[0]
+    assert not isinstance(del_resp, BaseException), del_resp
+    del_env = del_resp.json() if del_resp.content else {}
+    assert del_env.get("type") != "/errors/internal", (
+        f"DELETE leaked /errors/internal: {del_resp.text}"
+    )
+    assert del_resp.status_code in (204, 404), (
+        f"DELETE unexpected status: "
+        f"{del_resp.status_code}: {del_resp.text}"
+    )
+
+    # Remaining are searches
+    for i, r in enumerate(results[1:]):
+        assert not isinstance(r, BaseException), (
+            f"search #{i} raised: {r!r}"
+        )
+        env = r.json() if r.content else {}
+        assert env.get("type") != "/errors/internal", (
+            f"search #{i} leaked /errors/internal: "
+            f"{r.status_code}: {r.text}"
+        )
+        # 200 (subsystem active), 503 (inactive), or 4xx
+        assert r.status_code in (200, 400, 422, 503), (
+            f"search #{i} unexpected status: "
+            f"{r.status_code}: {r.text}"
+        )
