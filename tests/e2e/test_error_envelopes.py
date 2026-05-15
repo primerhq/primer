@@ -959,3 +959,63 @@ async def test_t0705_openresponses_flavor_null_clean_envelope(
     else:
         assert envelope["type"].startswith("/errors/"), envelope
     await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0713 — /v1/embedding_providers/{missing}/invalidate returns 204
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0713_embedding_provider_invalidate_missing_id_returns_204(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0713 — Sister of T0187 for the embedding provider family.
+    Spec §7 documents invalidate as "204 always — unconditional
+    cache-drop, NOT gated on row existence". This pins the
+    embedding family conforms to the same contract.
+    """
+    missing_id = f"emb-missing-t0713-{unique_suffix}"
+    resp = await client.post(
+        f"/v1/embedding_providers/{missing_id}/invalidate",
+    )
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"invalidate on missing embedding provider leaked "
+        f"/errors/internal: {resp.text}"
+    )
+    assert resp.status_code == 204, (
+        f"invalidate on missing embedding provider should be 204 "
+        f"(unconditional cache-drop); got {resp.status_code}: "
+        f"{resp.text}"
+    )
+
+
+# ============================================================================
+# T0714 — /v1/embedding_providers/{missing}/models returns 404
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0714_embedding_provider_models_missing_id_returns_404(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0714 — Direct sister of T0188 (LLM family) and T0235
+    (cross_encoder family) for the embedding family. Spec §7 says
+    the /models route IS gated on row existence — must return 404
+    /errors/not-found when the provider id doesn't exist.
+    """
+    missing_id = f"emb-missing-t0714-{unique_suffix}"
+    resp = await client.get(
+        f"/v1/embedding_providers/{missing_id}/models",
+    )
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"/models on missing embedding provider leaked /errors/internal: "
+        f"{resp.text}"
+    )
+    assert resp.status_code == 404, (
+        f"/models on missing embedding provider should be 404; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type") == "/errors/not-found", envelope

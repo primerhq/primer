@@ -9788,3 +9788,106 @@ async def test_t0696_cancel_session_then_immediate_log_get_clean(
         await _teardown_provider_template(client, provider_id, template_id)
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{llm_provider_id}")
+
+
+# ============================================================================
+# T0716 — Workspace DELETE racing concurrent steer on bound CREATED session
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0716_workspace_delete_racing_steer_clean_envelopes(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0716 — Two-state-machine combo: workspace destroy racing
+    concurrent steer signal on a bound CREATED session. Both calls
+    must produce clean envelopes (DELETE 204/404; steer 2xx/4xx);
+    never /errors/internal under teardown × signal race.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    llm_provider_id = f"llm-t0716-{unique_suffix}"
+    agent_id = f"agent-t0716-{unique_suffix}"
+    pr = await client.post("/v1/llm_providers", json={
+        "id": llm_provider_id,
+        "provider": "anthropic",
+        "models": [
+            {"name": "claude-sonnet-4-6", "context_length": 200_000},
+        ],
+        "config": {"api_key": "placeholder"},
+        "limits": {"max_concurrency": 1},
+    })
+    assert pr.status_code == 201, pr.text
+    ag = await client.post("/v1/agents", json={
+        "id": agent_id,
+        "description": "T0716",
+        "model": {"provider_id": llm_provider_id,
+                  "model_name": "claude-sonnet-4-6"},
+        "tools": [],
+    })
+    assert ag.status_code == 201, ag.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": agent_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # Race DELETE workspace + steer
+        del_task = _asyncio.create_task(
+            client.delete(f"/v1/workspaces/{workspace_id}"),
+        )
+        steer_task = _asyncio.create_task(
+            client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+                json={"instruction": "T0716 race"},
+            ),
+        )
+        del_resp, steer_resp = await _asyncio.gather(
+            del_task, steer_task, return_exceptions=True,
+        )
+
+        assert not isinstance(del_resp, BaseException), del_resp
+        assert not isinstance(steer_resp, BaseException), steer_resp
+
+        del_env = del_resp.json() if del_resp.content else {}
+        assert del_env.get("type") != "/errors/internal", (
+            f"racing DELETE leaked /errors/internal: {del_resp.text}"
+        )
+        assert del_resp.status_code in (204, 404), (
+            f"racing DELETE unexpected status: "
+            f"{del_resp.status_code}: {del_resp.text}"
+        )
+
+        steer_env = steer_resp.json() if steer_resp.content else {}
+        assert steer_env.get("type") != "/errors/internal", (
+            f"racing steer leaked /errors/internal: {steer_resp.text}"
+        )
+        assert steer_resp.status_code < 500, (
+            f"racing steer returned 5xx: "
+            f"{steer_resp.status_code}: {steer_resp.text}"
+        )
+        assert steer_resp.status_code in (200, 204, 400, 404, 409, 422), (
+            f"racing steer unexpected status: "
+            f"{steer_resp.status_code}: {steer_resp.text}"
+        )
+    finally:
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{llm_provider_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

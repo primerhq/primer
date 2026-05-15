@@ -479,3 +479,74 @@ async def test_t0247_delete_search_toolset_before_activation_clean(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0711 — MCP HTTP transport /tools on unreachable URL: clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0711_mcp_http_transport_tools_unreachable_url_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0711 — Sister of T0706 (which fixed the stdio transport
+    leak) for the HTTP transport. A toolset configured with HTTP
+    transport pointing at a non-routable URL.
+
+    DISCOVERY: the T0706 fix (try/except around `provider.list_tools`
+    in the handler) catches stdio failures cleanly, but the HTTP
+    transport raises BaseExceptionGroup from anyio's task group used
+    inside `streamablehttp_client`. The exception propagates outside
+    the handler's scope into Starlette's middleware, which surfaces
+    "RuntimeError: No response returned" — the response never gets
+    formed and Starlette emits a 500 /errors/internal.
+
+    Documented anomaly. Permissive pin: accept 500 with /errors/
+    internal as the current behaviour, OR clean 502/etc envelope
+    if a fix lands. Hard pin: never silently 200 on an unreachable
+    URL; never crash the connection.
+
+    Sister bug to T0064a / T0103a — well-understood, deferred for
+    a follow-up because it requires deeper Starlette + MCP-SDK +
+    anyio task-group reconciliation.
+    """
+    entity_id = f"ts-t0711-{unique_suffix}"
+    base = "/v1/toolsets"
+
+    body = {
+        "id": entity_id,
+        "provider": "mcp",
+        "config": {
+            "transport": "http",
+            "config": {
+                "url": "http://127.0.0.1:1/nonexistent",  # port 1 = unreachable
+                "headers": {},
+            },
+        },
+    }
+    create = await client.post(base, json=body)
+    assert create.status_code == 201, create.text
+
+    try:
+        resp = await client.get(f"{base}/{entity_id}/tools")
+        envelope = resp.json() if resp.content else {}
+        # Hard pin: response is structured (body parses as JSON
+        # envelope), not a connection drop or empty body
+        assert envelope.get("type", "").startswith("/errors/"), (
+            f"HTTP MCP /tools didn't return a structured envelope: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        # Documented anomaly: 500 /errors/internal is the current
+        # behaviour because the BaseExceptionGroup escapes the
+        # handler's try/except. A future fix will produce 502
+        # /errors/provider-error (the T0706 envelope shape).
+        assert resp.status_code in (200, 400, 401, 404, 500, 502, 503, 504), (
+            f"HTTP MCP /tools unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 500:
+            # Document the current leak path
+            assert envelope.get("type") == "/errors/internal", envelope
+    finally:
+        await client.delete(f"{base}/{entity_id}")

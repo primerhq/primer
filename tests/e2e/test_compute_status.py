@@ -5930,3 +5930,64 @@ async def test_t0674_graph_node_ids_byte_exact_distinct(
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0715 — DELETE LLMProvider then /agents/{a}/status: clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0715_delete_llm_provider_then_agent_status_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0715 — Two-state-machine combo: provider gone, agent still
+    references it. The /status walk must surface a clean envelope
+    listing the missing-provider issue, never /errors/internal.
+
+    Sister of T0022 (status with missing provider) but with the
+    DELETE happening AFTER the agent was created — exercises the
+    cascade between provider DELETE and agent /status walk.
+    """
+    provider_id = f"llm-t0715-{unique_suffix}"
+    agent_id = f"agent-t0715-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        # First /status while provider exists — should be ok=true
+        before = await client.get(f"/v1/agents/{agent_id}/status")
+        assert before.status_code == 200, before.text
+        assert before.json()["ok"] is True, before.json()
+
+        # DELETE the provider
+        rm = await client.delete(f"/v1/llm_providers/{provider_id}")
+        assert rm.status_code == 204, rm.text
+
+        # Re-check /status — should reflect the missing provider
+        after = await client.get(f"/v1/agents/{agent_id}/status")
+        envelope = after.json() if after.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"/status after provider DELETE leaked /errors/internal: "
+            f"{after.text}"
+        )
+        assert after.status_code == 200, after.text
+        body = after.json()
+        assert body["ok"] is False, (
+            f"/status should be ok=false after provider DELETE: {body!r}"
+        )
+        # At least one issue references the missing provider id
+        issues_str = " ".join(str(i) for i in body["issues"])
+        assert provider_id in issues_str, (
+            f"issues should reference missing provider {provider_id!r}; "
+            f"got {body['issues']!r}"
+        )
+    finally:
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")

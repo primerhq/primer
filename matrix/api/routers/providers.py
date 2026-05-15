@@ -223,6 +223,22 @@ async def list_toolset_tools(
     try:
         async for tool in provider.list_tools(principal=principal):
             tools.append(tool.model_dump(mode="json"))
+    except BaseExceptionGroup as group:
+        # HTTP/SSE MCP transports run inside anyio task groups, which
+        # wrap any sub-exception in BaseExceptionGroup. Unwrap to find
+        # the most informative inner exception, then map to the same
+        # ProviderError envelope as the plain-Exception path.
+        from matrix.model.except_ import MatrixError
+        # Surface a documented MatrixError if any sub-exception is one
+        for sub in group.exceptions:
+            if isinstance(sub, MatrixError):
+                raise sub from group
+        # Otherwise, take the first sub-exception's type+message
+        first = group.exceptions[0] if group.exceptions else group
+        raise ProviderError(
+            f"toolset {toolset_id!r} provider failed to enumerate tools: "
+            f"{type(first).__name__}: {first}"
+        ) from group
     except Exception as exc:
         # Re-raise the documented matrix error types so the registry
         # mapper produces the correct envelope (NotFoundError → 404,
@@ -230,9 +246,9 @@ async def list_toolset_tools(
         from matrix.model.except_ import MatrixError
         if isinstance(exc, MatrixError):
             raise
-        # MCP transport failures (handshake refused, connection closed,
-        # subprocess crash) come back as third-party exception types
-        # like mcp.shared.exceptions.McpError. Map them to 502
+        # MCP stdio transport failures (handshake refused, connection
+        # closed, subprocess crash) come back as third-party exception
+        # types like mcp.shared.exceptions.McpError. Map to 502
         # provider-error rather than letting the 500 leak.
         raise ProviderError(
             f"toolset {toolset_id!r} provider failed to enumerate tools: "
