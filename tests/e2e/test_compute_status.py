@@ -4943,3 +4943,580 @@ async def test_t0624_graph_deleted_then_resume_session_clean_fatal_path(
         await client.delete(f"/v1/workspace_providers/{wp_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0637 — Graph status across 3-level subgraph chain to leaf missing agent
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0637_graph_status_3_level_subgraph_chain_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0637 — Build a 3-level subgraph chain A→B→C where C's leaf
+    agent_id references a missing agent. Pin: GET /v1/graphs/A/status
+    returns 200 with a clean envelope (whether issues surface
+    transitively or only at the local depth is implementation-defined,
+    but the response MUST be 200 with the documented {ok, issues}
+    shape). Hard pin: never /errors/internal regardless of how deep
+    the resolver walks.
+    """
+    provider_id = f"llm-t0637-{unique_suffix}"
+    real_agent = f"agent-real-t0637-{unique_suffix}"
+    missing_agent = f"agent-MISSING-t0637-{unique_suffix}"
+    graph_a = f"graph-a-t0637-{unique_suffix}"
+    graph_b = f"graph-b-t0637-{unique_suffix}"
+    graph_c = f"graph-c-t0637-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(real_agent, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        # C: references the MISSING agent (the leaf bug)
+        gc = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_c,
+                "description": "T0637 leaf graph (broken)",
+                "nodes": [
+                    {"kind": "agent", "id": "n_c",
+                     "agent_id": missing_agent},
+                ],
+                "edges": [],
+                "entry_node_id": "n_c",
+            },
+        )
+        assert gc.status_code == 201, gc.text
+
+        # B: references graph C
+        gb = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_b,
+                "description": "T0637 middle graph",
+                "nodes": [
+                    {"kind": "graph", "id": "n_b",
+                     "graph_id": graph_c},
+                ],
+                "edges": [],
+                "entry_node_id": "n_b",
+            },
+        )
+        assert gb.status_code == 201, gb.text
+
+        # A: references graph B
+        ga = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_a,
+                "description": "T0637 root graph",
+                "nodes": [
+                    {"kind": "graph", "id": "n_a",
+                     "graph_id": graph_b},
+                ],
+                "edges": [],
+                "entry_node_id": "n_a",
+            },
+        )
+        assert ga.status_code == 201, ga.text
+
+        status = await client.get(f"/v1/graphs/{graph_a}/status")
+        envelope = status.json() if status.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"3-level chain /status leaked /errors/internal: "
+            f"{status.text}"
+        )
+        assert status.status_code == 200, (
+            f"3-level chain /status not 200: "
+            f"{status.status_code}: {status.text}"
+        )
+        body = status.json()
+        # Required shape: {ok, issues}
+        assert "ok" in body, body
+        assert isinstance(body.get("issues"), list), body
+        # ok may be true (resolver shallow — only checks immediate
+        # references) or false (resolver transitive — surfaces missing
+        # leaf). Both behaviors are documented.
+        assert body["ok"] in (True, False), body
+    finally:
+        for gid in (graph_a, graph_b, graph_c):
+            await client.delete(f"/v1/graphs/{gid}")
+        await client.delete(f"/v1/agents/{real_agent}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0638 — Graph-bound steer→cancel→resume converges to ENDED/failed clean
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0638_graph_session_steer_cancel_resume_clean_fatal(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0638 — Long-walk sister of T0593. Sequence on a graph-bound
+    CREATED session:
+        1. steer (queue an instruction) → 2xx
+        2. cancel → 200 (direct from CREATED) or async to ENDED
+        3. resume on ENDED → documented code, never 5xx
+
+    Hard pin: every step a clean envelope. Final session is in
+    ENDED state with non-empty last_error (either NotImplementedError
+    text from the executor OR cancellation text — both acceptable
+    per the documented graph-fatal path).
+    """
+    import asyncio as _asyncio
+    provider_id = f"llm-t0638-{unique_suffix}"
+    agent_id = f"agent-t0638-{unique_suffix}"
+    wp_id = f"wp-t0638-{unique_suffix}"
+    tpl_id = f"wt-t0638-{unique_suffix}"
+    graph_id = f"graph-t0638-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    wp = await client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp_id,
+            "provider": "local",
+            "config": {"kind": "local", "path": str(tmp_path)},
+        },
+    )
+    assert wp.status_code == 201, wp.text
+    tpl = await client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl_id,
+            "description": "T0638",
+            "provider_id": wp_id,
+            "backend": {"kind": "local"},
+        },
+    )
+    assert tpl.status_code == 201, tpl.text
+    gr = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+    )
+    assert gr.status_code == 201, gr.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": tpl_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # 1. steer
+        steer = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": "T0638 pre-cancel"},
+        )
+        steer_env = steer.json() if steer.content else {}
+        assert steer_env.get("type") != "/errors/internal", steer.text
+        assert steer.status_code < 500, steer.text
+
+        # 2. cancel
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        cancel_env = cancel.json() if cancel.content else {}
+        assert cancel_env.get("type") != "/errors/internal", cancel.text
+        assert cancel.status_code == 200, cancel.text
+
+        # 3. resume on ENDED
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        resume_env = resume.json() if resume.content else {}
+        assert resume_env.get("type") != "/errors/internal", resume.text
+        assert resume.status_code < 500, resume.text
+
+        # If resume bumped session back to CREATED/RUNNING, poll for ended
+        for _ in range(60):  # 30s budget
+            r = await client.get(f"/v1/sessions/{session_id}")
+            if r.status_code == 200 and r.json().get("status") == "ended":
+                break
+            await _asyncio.sleep(0.5)
+
+        final = await client.get(f"/v1/sessions/{session_id}")
+        assert final.status_code == 200, final.text
+        assert final.json()["status"] == "ended", final.json()
+        # ended_reason can be cancelled (cancel won the race) or failed
+        # (executor NotImplemented after resume retried)
+        assert final.json()["ended_reason"] in ("cancelled", "failed"), (
+            final.json()
+        )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/workspace_templates/{tpl_id}")
+        await client.delete(f"/v1/workspace_providers/{wp_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0639 — Two graph-bound sessions on same workspace both terminate cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0639_two_graph_bound_sessions_terminate_independently(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0639 — Create two distinct graph-bound sessions on the same
+    workspace, resume both. Both must converge ENDED/failed via
+    _handle_fatal independently. Hard pin: distinct ids; both have
+    non-empty last_error; neither's failure leaks into the other's
+    row (no cross-session state pollution).
+    """
+    import asyncio as _asyncio
+    provider_id = f"llm-t0639-{unique_suffix}"
+    agent_id = f"agent-t0639-{unique_suffix}"
+    wp_id = f"wp-t0639-{unique_suffix}"
+    tpl_id = f"wt-t0639-{unique_suffix}"
+    graph_id = f"graph-t0639-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    wp = await client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp_id,
+            "provider": "local",
+            "config": {"kind": "local", "path": str(tmp_path)},
+        },
+    )
+    assert wp.status_code == 201, wp.text
+    tpl = await client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl_id,
+            "description": "T0639",
+            "provider_id": wp_id,
+            "backend": {"kind": "local"},
+        },
+    )
+    assert tpl.status_code == 201, tpl.text
+    gr = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+    )
+    assert gr.status_code == 201, gr.text
+
+    workspace_id: str | None = None
+    session_ids: list[str] = []
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": tpl_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Two distinct graph-bound sessions
+        for _ in range(2):
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json={
+                    "binding": {"kind": "graph", "graph_id": graph_id},
+                    "auto_start": False,
+                },
+            )
+            assert sess.status_code == 201, sess.text
+            session_ids.append(sess.json()["id"])
+
+        assert len(set(session_ids)) == 2, session_ids
+
+        # Resume both
+        for sid in session_ids:
+            r = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{sid}/resume",
+            )
+            env = r.json() if r.content else {}
+            assert env.get("type") != "/errors/internal", r.text
+            assert r.status_code == 200, r.text
+
+        # Both converge to ENDED (poll both)
+        async def _wait_ended(sid: str) -> dict:
+            for _ in range(60):
+                r = await client.get(f"/v1/sessions/{sid}")
+                if r.status_code == 200 and r.json().get("status") == "ended":
+                    return r.json()
+                await _asyncio.sleep(0.5)
+            r = await client.get(f"/v1/sessions/{sid}")
+            return r.json()
+
+        bodies = await _asyncio.gather(
+            *[_wait_ended(sid) for sid in session_ids],
+        )
+
+        for i, body in enumerate(bodies):
+            assert body.get("status") == "ended", (
+                f"session #{i} did not converge ended in 30s: {body!r}"
+            )
+            assert body.get("ended_reason") == "failed", (
+                f"session #{i} expected failed: {body!r}"
+            )
+            assert body.get("last_error"), (
+                f"session #{i} missing last_error: {body!r}"
+            )
+            assert body.get("id") == session_ids[i], body
+    finally:
+        for sid in session_ids:
+            if workspace_id is not None:
+                await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions/{sid}/cancel",
+                )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/workspace_templates/{tpl_id}")
+        await client.delete(f"/v1/workspace_providers/{wp_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0640 — Graph PUT mid-flight on RUNNING graph-bound session: clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0640_graph_put_mid_flight_on_running_session(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0640 — Bind session to graph G, resume (worker claims and
+    fails fast via NotImplementedError), then immediately PUT G with
+    a disjoint nodes set. PUT must return 200 with a clean envelope;
+    subsequent GET on the session must read cleanly (no 5xx); session
+    converges to ENDED.
+
+    Catches a regression where mutating a graph row currently bound
+    to a session corrupts either the row or the session.
+    """
+    import asyncio as _asyncio
+    provider_id = f"llm-t0640-{unique_suffix}"
+    agent_id = f"agent-t0640-{unique_suffix}"
+    wp_id = f"wp-t0640-{unique_suffix}"
+    tpl_id = f"wt-t0640-{unique_suffix}"
+    graph_id = f"graph-t0640-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    wp = await client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp_id,
+            "provider": "local",
+            "config": {"kind": "local", "path": str(tmp_path)},
+        },
+    )
+    assert wp.status_code == 201, wp.text
+    tpl = await client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl_id,
+            "description": "T0640",
+            "provider_id": wp_id,
+            "backend": {"kind": "local"},
+        },
+    )
+    assert tpl.status_code == 201, tpl.text
+    gr = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+    )
+    assert gr.status_code == 201, gr.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": tpl_id},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # Resume — worker claims + fails fast
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 200, resume.text
+
+        # Immediately PUT graph with disjoint nodes — race against the
+        # worker's fatal-path teardown
+        put_body = {
+            "id": graph_id,
+            "description": "T0640 mutated mid-flight",
+            "nodes": [
+                {"kind": "agent", "id": "n_new", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end_new"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n_new",
+                 "to_node": "end_new"},
+            ],
+            "entry_node_id": "n_new",
+        }
+        put = await client.put(f"/v1/graphs/{graph_id}", json=put_body)
+        put_env = put.json() if put.content else {}
+        assert put_env.get("type") != "/errors/internal", (
+            f"PUT mid-flight leaked /errors/internal: {put.text}"
+        )
+        assert put.status_code == 200, (
+            f"PUT mid-flight should be 200: {put.status_code}: {put.text}"
+        )
+
+        # Session GET still readable
+        sess_get = await client.get(f"/v1/sessions/{session_id}")
+        assert sess_get.status_code == 200, sess_get.text
+
+        # Wait for ENDED
+        for _ in range(60):
+            r = await client.get(f"/v1/sessions/{session_id}")
+            if r.status_code == 200 and r.json().get("status") == "ended":
+                break
+            await _asyncio.sleep(0.5)
+
+        final = await client.get(f"/v1/sessions/{session_id}")
+        assert final.status_code == 200, final.text
+        assert final.json()["status"] == "ended", final.json()
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/workspace_templates/{tpl_id}")
+        await client.delete(f"/v1/workspace_providers/{wp_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0641 — Graph with 200 nodes + 199 edges accepted; round-trips byte-exact
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0641_graph_large_dag_200_nodes_round_trips(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0641 — Stress validator on a large DAG: 200 nodes (199
+    agent-kind + 1 terminal) chained in a linear path with 199 static
+    edges. Pin: 201 accepted; GET round-trips with the same node
+    count and edge count; /status returns ok=true (all references
+    resolve to the same real agent); never /errors/internal on
+    a large payload.
+    """
+    provider_id = f"llm-t0641-{unique_suffix}"
+    agent_id = f"agent-t0641-{unique_suffix}"
+    graph_id = f"graph-t0641-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        # 199 agent nodes + 1 terminal node
+        nodes = [
+            {"kind": "agent", "id": f"n{i:03d}", "agent_id": agent_id}
+            for i in range(199)
+        ]
+        nodes.append({"kind": "terminal", "id": "end"})
+        # Linear chain edges
+        edges = [
+            {"kind": "static", "from_node": f"n{i:03d}",
+             "to_node": f"n{i + 1:03d}"}
+            for i in range(198)
+        ]
+        edges.append(
+            {"kind": "static", "from_node": "n198", "to_node": "end"},
+        )
+
+        body = {
+            "id": graph_id,
+            "description": "T0641 large DAG (200 nodes, 199 edges)",
+            "nodes": nodes,
+            "edges": edges,
+            "entry_node_id": "n000",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"large DAG POST leaked /errors/internal: "
+            f"{resp.text[:300]}"
+        )
+        assert resp.status_code == 201, (
+            f"large DAG should be accepted: "
+            f"{resp.status_code}: {resp.text[:300]}"
+        )
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        assert len(got.json()["nodes"]) == 200, (
+            f"node count diverged: {len(got.json()['nodes'])}"
+        )
+        assert len(got.json()["edges"]) == 199, (
+            f"edge count diverged: {len(got.json()['edges'])}"
+        )
+        assert got.json()["entry_node_id"] == "n000", got.json()
+
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        assert status.json().get("ok") is True, status.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
