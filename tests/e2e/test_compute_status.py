@@ -5520,3 +5520,86 @@ async def test_t0641_graph_large_dag_200_nodes_round_trips(
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0642 — Graph with duplicate node ids in nodes list returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0642_graph_duplicate_node_ids_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0642 — Two nodes sharing the same id ("n1"). The topology
+    validator (matrix/model/graph.py) should reject this with 422
+    surfacing the duplicate id; the row must NOT be created.
+
+    Hard pin: never /errors/internal. If a future iteration relaxes
+    this to allow duplicate ids (which would silently lose one to
+    the dict-keyed lookup), this test would document that.
+    """
+    provider_id = f"llm-t0642-{unique_suffix}"
+    agent_id = f"agent-t0642-{unique_suffix}"
+    graph_id = f"graph-t0642-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0642 duplicate node ids",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},  # dup
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"duplicate node ids leaked /errors/internal: {resp.text}"
+        )
+        # Acceptable: 422 (validator catches) OR 201 (validator silently
+        # tolerates — would be a documented permissive behaviour).
+        assert resp.status_code in (201, 400, 422), (
+            f"duplicate node ids unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 422:
+            # Detail or extensions should mention "n1" or "duplicate"
+            assert (
+                "n1" in resp.text.lower()
+                or "duplicate" in resp.text.lower()
+            ), (
+                f"422 envelope should reference duplicate id 'n1' or "
+                f"'duplicate': {resp.text}"
+            )
+            # Defence: row not created
+            got = await client.get(f"/v1/graphs/{graph_id}")
+            assert got.status_code == 404, got.text
+        elif resp.status_code == 201:
+            # Permissive path — pin GET round-trips and /status clean
+            got = await client.get(f"/v1/graphs/{graph_id}")
+            assert got.status_code == 200, got.text
+            status = await client.get(f"/v1/graphs/{graph_id}/status")
+            status_env = status.json() if status.content else {}
+            assert status_env.get("type") != "/errors/internal", (
+                f"/status with duplicate node ids leaked: {status.text}"
+            )
+            assert status.status_code == 200, status.text
+        else:
+            assert envelope.get("type", "").startswith("/errors/"), envelope
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")

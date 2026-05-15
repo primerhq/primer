@@ -8411,3 +8411,337 @@ async def test_t0629_workspace_files_concurrent_200_file_seed(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0643 — 5 POSTs racing 1 template DELETE: clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0643_workspace_materialise_concurrent_with_template_delete(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0643 — Race 5 concurrent POST /v1/workspaces calls against
+    1 DELETE on the underlying template. Each materialise must
+    return a clean envelope: 201 (template still present at handler
+    time) or 4xx (template gone). Hard pin: never /errors/internal
+    under template/materialise race; survivor workspaces (those that
+    got 201) are functional via subsequent file I/O.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    created_ids: list[str] = []
+    try:
+        async def _materialise() -> httpx.Response:
+            return await client.post(
+                "/v1/workspaces",
+                json=_workspace_body(template_id=template_id),
+            )
+
+        async def _delete_tpl() -> httpx.Response:
+            return await client.delete(
+                f"/v1/workspace_templates/{template_id}",
+            )
+
+        # Fire 5 materialise tasks + 1 template delete in parallel
+        tasks = [
+            _asyncio.create_task(_materialise()) for _ in range(5)
+        ]
+        tasks.append(_asyncio.create_task(_delete_tpl()))
+        results = await _asyncio.gather(*tasks, return_exceptions=True)
+
+        # Last result is the DELETE
+        del_resp = results[-1]
+        assert not isinstance(del_resp, BaseException), del_resp
+        del_env = del_resp.json() if del_resp.content else {}
+        assert del_env.get("type") != "/errors/internal", (
+            f"DELETE template leaked /errors/internal: {del_resp.text}"
+        )
+        assert del_resp.status_code in (204, 404, 409), (
+            f"DELETE template unexpected status: "
+            f"{del_resp.status_code}: {del_resp.text}"
+        )
+
+        # First 5 are materialise responses
+        for i, r in enumerate(results[:5]):
+            assert not isinstance(r, BaseException), (
+                f"materialise #{i} raised: {r!r}"
+            )
+            env = r.json() if r.content else {}
+            assert env.get("type") != "/errors/internal", (
+                f"materialise #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code in (201, 400, 404, 409, 422), (
+                f"materialise #{i} unexpected status: "
+                f"{r.status_code}: {r.text}"
+            )
+            if r.status_code == 201:
+                created_ids.append(r.json()["id"])
+
+        # Survivor workspaces remain functional (file I/O works)
+        for wid in created_ids:
+            put = await client.put(
+                f"/v1/workspaces/{wid}/files",
+                params={"path": "smoke.txt"},
+                json={"content": "ok", "encoding": "text"},
+            )
+            assert put.status_code == 204, (
+                f"survivor workspace {wid!r} broken after race: "
+                f"{put.status_code}: {put.text}"
+            )
+    finally:
+        for wid in created_ids:
+            try:
+                await client.delete(f"/v1/workspaces/{wid}")
+            except Exception:
+                pass
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0644 — init_commands run sequentially in declared order (5 commands)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0644_workspace_init_commands_run_in_declared_order(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0644 — `WorkspaceTemplate.init_commands` is a list; semantics
+    are sequential execution in declared order. Pin: each command
+    appends a unique line to a marker file; final file content is
+    those lines in the SAME order as the list.
+
+    Catches a regression where init_commands run concurrently or
+    in arbitrary order (which would scramble the marker file).
+    """
+    provider_id = f"wp-t0644-{unique_suffix}"
+    template_id = f"wt-t0644-{unique_suffix}"
+    workspace_id: str | None = None
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        cmds = [
+            'python -c "open(\'order.txt\',\'a\').write(\'line-1\\n\')"',
+            'python -c "open(\'order.txt\',\'a\').write(\'line-2\\n\')"',
+            'python -c "open(\'order.txt\',\'a\').write(\'line-3\\n\')"',
+            'python -c "open(\'order.txt\',\'a\').write(\'line-4\\n\')"',
+            'python -c "open(\'order.txt\',\'a\').write(\'line-5\\n\')"',
+        ]
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0644 init_commands ordering",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "init_commands": cmds,
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "order.txt"},
+        )
+        assert read.status_code == 200, read.text
+        # Normalise CRLF→LF (Windows Python text mode writes \r\n)
+        content = read.json()["content"].replace("\r\n", "\n")
+        expected = "line-1\nline-2\nline-3\nline-4\nline-5\n"
+        assert content == expected, (
+            f"init_commands ran out of order:\n"
+            f"expected: {expected!r}\n"
+            f"got:      {content!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0645 — env override merges (template ∪ override; collision = override)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0645_workspace_env_override_merges_with_template_env(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0645 — Multi-key extension of T0112. Template env={A:t, B:t},
+    override env={B:o, C:o}. Final env exposed to init_commands must
+    be union with caller-wins on collision: A=t, B=o, C=o.
+
+    Catches a regression where env override REPLACES the template's
+    env entirely (losing A) instead of merging.
+    """
+    provider_id = f"wp-t0645-{unique_suffix}"
+    template_id = f"wt-t0645-{unique_suffix}"
+    workspace_id: str | None = None
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        # Snapshot env to a marker file: A=$A_KEY, B=$B_KEY, C=$C_KEY
+        init_cmd = (
+            "python -c \"import os; "
+            "open('env.txt','w').write("
+            "'A=' + os.environ.get('A_KEY','') + ' "
+            "B=' + os.environ.get('B_KEY','') + ' "
+            "C=' + os.environ.get('C_KEY','')"
+            ")\""
+        )
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0645 env merge",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "env": {"A_KEY": "tA", "B_KEY": "tB"},
+                "init_commands": [init_cmd],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        ws = await client.post(
+            "/v1/workspaces",
+            json={
+                "template_id": template_id,
+                "overrides": {
+                    "env": {"B_KEY": "oB", "C_KEY": "oC"},
+                },
+            },
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "env.txt"},
+        )
+        assert read.status_code == 200, read.text
+        # Expected: A=tA (template only), B=oB (override wins), C=oC (override only)
+        content = read.json()["content"]
+        assert content == "A=tA B=oB C=oC", (
+            f"env merge wrong:\n"
+            f"expected: 'A=tA B=oB C=oC'\n"
+            f"got:      {content!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0646 — Workspace files listing on 80 files + 20 subdirs returns total≥100
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0646_workspace_files_listing_mixed_files_and_subdirs(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0646 — Seed 80 files at root + 20 subdirectories (each
+    containing a placeholder file so the subdir physically exists).
+    GET /v1/workspaces/{wid}/files at root must enumerate the 80
+    files AND the 20 subdir entries — pin both kinds appearing
+    correctly typed (kind=file vs not-file).
+
+    The backend-managed `.state` and `.tmp` dirs add to total but
+    don't affect the seeded-100 count. The hard pin is "every
+    seeded entry appears with the right kind".
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed 80 root files
+        seeded_files: list[str] = []
+        for i in range(80):
+            name = f"file_{i:03d}.txt"
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": name},
+                json={"content": str(i), "encoding": "text"},
+            )
+            assert put.status_code == 204, put.text
+            seeded_files.append(name)
+
+        # Seed 20 root subdirs (via writing a file inside each)
+        seeded_dirs: list[str] = []
+        for i in range(20):
+            dirname = f"dir_{i:02d}"
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": f"{dirname}/placeholder"},
+                json={"content": "p", "encoding": "text"},
+            )
+            assert put.status_code == 204, put.text
+            seeded_dirs.append(dirname)
+
+        page = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"limit": 200, "offset": 0},
+        )
+        assert page.status_code == 200, page.text
+        body = page.json()
+        # total: 80 files + 20 dirs + .state + .tmp = 102
+        assert body.get("total") >= 100, (
+            f"total {body.get('total')!r} < 100: {list(body.keys())}"
+        )
+
+        by_path: dict[str, str] = {}
+        for item in body["items"]:
+            by_path[item["path"]] = item.get("kind", "")
+
+        for name in seeded_files:
+            assert name in by_path, (
+                f"seeded file {name!r} missing from listing"
+            )
+            assert by_path[name] == "file", (
+                f"seeded file {name!r} misclassified: "
+                f"{by_path[name]!r}"
+            )
+
+        # Dirs MUST appear and MUST NOT be classified as file
+        for dname in seeded_dirs:
+            assert dname in by_path, (
+                f"seeded dir {dname!r} missing from listing"
+            )
+            assert by_path[dname] != "file", (
+                f"seeded dir {dname!r} misclassified as file"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
