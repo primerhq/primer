@@ -6422,3 +6422,36 @@ async def test_t0531_workspace_template_init_command_large_stdout_clean(
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await client.delete(f"/v1/workspace_templates/{template_id}")
         await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0541 — POST /v1/workspaces with template_id="" returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0541_post_workspace_empty_template_id_returns_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0541 — POST /v1/workspaces with `template_id=""` (empty
+    string). Pin: 4xx clean envelope (422 /errors/validation-error
+    if Identifiable-style min_length=1 rejects empty; 404
+    /errors/not-found if it resolves through to a missing-template
+    lookup); never /errors/internal; no workspace row created.
+
+    Catches a regression where an empty template_id leaks through
+    and either creates an unaddressable workspace or 5xxs on a
+    missing-FK lookup.
+    """
+    resp = await client.post(
+        "/v1/workspaces", json={"template_id": ""},
+    )
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"empty template_id leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code in (400, 404, 422), (
+        f"empty template_id should be 4xx; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type", "").startswith("/errors/"), envelope

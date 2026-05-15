@@ -3643,3 +3643,150 @@ async def test_t0504_pause_then_resume_on_created_session_clean(
             )
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0539 — Resume → cancel rapid (no sleep) on CREATED converges cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0539_resume_then_cancel_rapid_no_sleep_converges_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0539 — Sequential resume→cancel with NO sleep between
+    them on a CREATED session. Pin: documented codes (resume 200,
+    cancel 200/409); session converges to ended/cancelled or
+    ended/failed; never /errors/internal.
+
+    Distinct from T0489 (post-terminal stickiness) and T0179
+    (concurrent steer+cancel race): T0539 specifically pins the
+    tight-sequential resume→cancel boundary where the worker may
+    or may not have observed the resume before the cancel lands.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Resume immediately followed by cancel (no awaits between
+        # them beyond the HTTP roundtrips themselves)
+        r = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        envelope_r = r.json() if r.content else {}
+        assert envelope_r.get("type") != "/errors/internal", r.text
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] in ("running", "ended"), r.json()
+
+        c = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        envelope_c = c.json() if c.content else {}
+        assert envelope_c.get("type") != "/errors/internal", c.text
+        # Documented codes: 200 (won) or 409 (already ended in the
+        # gap between resume and cancel — fast-failing worker)
+        assert c.status_code in (200, 409), (
+            f"unexpected cancel status: {c.status_code}: {c.text}"
+        )
+
+        # Poll for terminal — accept any documented terminal
+        # ended_reason
+        final: dict = {}
+        for _ in range(60):
+            g = await client.get(f"/v1/sessions/{session_id}")
+            assert g.status_code == 200, g.text
+            final = g.json()
+            if final.get("status") == "ended":
+                break
+            await asyncio.sleep(0.5)
+        assert final.get("status") == "ended", (
+            f"resume→cancel did not converge in 30s: {final!r}"
+        )
+        assert final.get("ended_reason") in (
+            "cancelled", "completed", "failed",
+        ), final
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0540 — Pause → resume → pause sequence on CREATED returns clean codes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0540_pause_resume_pause_sequence_on_created_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0540 — Walk pause→resume→pause on a CREATED session.
+    Pin: each step returns documented codes; row converges to a
+    documented status (PAUSED or ENDED); never /errors/internal.
+
+    Step semantics:
+      1. CREATED → pause → 204 (PAUSED per sessions.py:251-254)
+      2. PAUSED → resume → 200 (transitions to RUNNING/ENDED)
+      3. running/ended → pause → 204 or 409 (depends on worker
+         observability and whether session already terminated)
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Step 1: pause CREATED → 204
+        p1 = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        assert p1.status_code == 204, p1.text
+
+        # Observable: PAUSED
+        s1 = await client.get(f"/v1/sessions/{session_id}")
+        assert s1.status_code == 200, s1.text
+        assert s1.json()["status"] == "paused", s1.json()
+
+        # Step 2: resume PAUSED → 200 (transitions to running)
+        r = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        envelope_r = r.json() if r.content else {}
+        assert envelope_r.get("type") != "/errors/internal", r.text
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] in ("running", "ended"), r.json()
+
+        # Step 3: pause again — depends on whether worker has driven
+        # the session to ENDED or it's still RUNNING
+        p2 = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        envelope_p2 = p2.json() if p2.content else {}
+        assert envelope_p2.get("type") != "/errors/internal", p2.text
+        assert p2.status_code in (204, 409), (
+            f"second pause: unexpected {p2.status_code}: {p2.text}"
+        )
+
+        # Final convergence: row reaches a documented status
+        final: dict = {}
+        for _ in range(60):
+            g = await client.get(f"/v1/sessions/{session_id}")
+            assert g.status_code == 200, g.text
+            final = g.json()
+            if final.get("status") in ("ended", "paused"):
+                break
+            await asyncio.sleep(0.5)
+        assert final.get("status") in ("ended", "paused"), (
+            f"pause→resume→pause didn't converge in 30s: {final!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

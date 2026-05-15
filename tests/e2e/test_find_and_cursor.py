@@ -4103,3 +4103,46 @@ async def test_t0536_find_with_empty_order_by_clean_envelope(
                 )
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0542 — POST /v1/sessions/find body without `page` field returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0542_find_body_missing_page_field_returns_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0542 — `page` is a required field on FindBody (matrix/
+    model/storage.py: PageRequest is the discriminated union of
+    OffsetPage / CursorPage). Pin: omitting `page` entirely
+    returns 422 /errors/validation-error mentioning the missing
+    page field. Symmetric companion to T0078 (empty body).
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": "anything"},
+        },
+        # `page` field omitted entirely
+    }
+    resp = await client.post("/v1/sessions/find", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"missing page leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code == 422, (
+        f"missing page should be 422; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type") == "/errors/validation-error", envelope
+    # Detail should reference the missing page field so callers
+    # can act on it
+    body_str = resp.text.lower()
+    assert "page" in body_str, (
+        f"422 envelope should reference the missing 'page' field; "
+        f"body={resp.text!r}"
+    )

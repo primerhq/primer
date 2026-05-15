@@ -894,3 +894,40 @@ async def test_t0466_options_steer_route_clean_allow_header(
         assert "POST" in allow.upper(), (
             f"Allow header {allow!r} should include POST"
         )
+
+
+# ============================================================================
+# T0543 — POST /v1/health returns 405 with Allow listing GET
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0543_post_health_returns_405_with_allow_get(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0543 — /v1/health is a GET-only route (per spec §1).
+    POST must be rejected with 405 method-not-allowed; the Allow
+    header must list GET. Pin: clean envelope; security headers
+    preserved (per T0002 contract — every response carries them).
+    """
+    resp = await client.post("/v1/health")
+    assert resp.status_code == 405, (
+        f"POST /v1/health should be 405; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    allow = resp.headers.get("allow", "")
+    assert allow, (
+        f"405 response missing Allow header; status={resp.status_code}"
+    )
+    assert "GET" in allow.upper(), (
+        f"Allow header {allow!r} should include GET"
+    )
+
+    # Security headers preserved on the 405 (extends T0002 to the
+    # method-not-allowed path)
+    for name, expected in _SECURITY_HEADERS.items():
+        actual = resp.headers.get(name)
+        assert actual == expected, (
+            f"405 missing/incorrect header {name!r}: "
+            f"expected {expected!r}, got {actual!r}"
+        )
