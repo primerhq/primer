@@ -875,3 +875,87 @@ async def test_t0703_embedding_provider_empty_models_returns_422(
     # Defence: row not created
     got = await client.get(f"/v1/embedding_providers/{body['id']}")
     assert got.status_code == 404, got.text
+
+
+# ============================================================================
+# T0704 — CrossEncoderProvider POST with models=[] returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0704_cross_encoder_provider_empty_models_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0704 — Third-family mirror of T0097/T0449 (LLMProvider) and
+    T0703 (EmbeddingProvider). Completes the cross-family
+    `min_length=1` contract symmetry pin.
+    """
+    body = {
+        "id": f"ce-t0704-{unique_suffix}",
+        "provider": "huggingface",
+        "models": [],
+        "config": {"token": None},
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/cross_encoder_providers", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"empty models on CrossEncoderProvider leaked /errors/internal: "
+        f"{resp.text}"
+    )
+    assert resp.status_code == 422, (
+        f"empty models on CrossEncoderProvider should be 422; "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    assert envelope["type"] == "/errors/validation-error", envelope
+    got = await client.get(f"/v1/cross_encoder_providers/{body['id']}")
+    assert got.status_code == 404, got.text
+
+
+# ============================================================================
+# T0705 — OpenResponsesConfig.flavor=null returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0705_openresponses_flavor_null_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0705 — Sub-discriminator edge sibling of T0380 (which pinned
+    unknown-string coercion to 'other' default). This pins explicit
+    `null`. Acceptable: 422 (Pydantic enum reject), 201 with default
+    coerced to "other", or clean 4xx. Hard pin: never /errors/internal.
+    """
+    entity_id = f"llm-t0705-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "openresponses",
+        "models": [{"name": "x", "context_length": 1000}],
+        "config": {
+            "url": "http://localhost:1234/v1",
+            "api_key": "placeholder",
+            "flavor": None,
+        },
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/llm_providers", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"flavor=null leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code in (201, 400, 422), (
+        f"flavor=null unexpected status: {resp.status_code}: {resp.text}"
+    )
+    if resp.status_code == 201:
+        # Accepted — GET round-trip should reflect SOME flavor (likely
+        # default-coerced to 'other' per T0380's pattern)
+        got = await client.get(f"/v1/llm_providers/{entity_id}")
+        assert got.status_code == 200, got.text
+        flavor = got.json()["config"].get("flavor")
+        assert flavor is not None, (
+            f"flavor=null silently persisted as null on round-trip "
+            f"(should default-coerce); got config={got.json()['config']!r}"
+        )
+    else:
+        assert envelope["type"].startswith("/errors/"), envelope
+    await client.delete(f"/v1/llm_providers/{entity_id}")

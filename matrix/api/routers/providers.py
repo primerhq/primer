@@ -216,10 +216,28 @@ async def list_toolset_tools(
     error mapper serialises as 401 + ``extensions.auth_url`` so the
     caller can prompt the user to consent.
     """
+    from matrix.model.except_ import ProviderError
+
     provider = await registry.get_toolset(toolset_id)
     tools = []
-    async for tool in provider.list_tools(principal=principal):
-        tools.append(tool.model_dump(mode="json"))
+    try:
+        async for tool in provider.list_tools(principal=principal):
+            tools.append(tool.model_dump(mode="json"))
+    except Exception as exc:
+        # Re-raise the documented matrix error types so the registry
+        # mapper produces the correct envelope (NotFoundError → 404,
+        # AuthRequiredError → 401, etc.).
+        from matrix.model.except_ import MatrixError
+        if isinstance(exc, MatrixError):
+            raise
+        # MCP transport failures (handshake refused, connection closed,
+        # subprocess crash) come back as third-party exception types
+        # like mcp.shared.exceptions.McpError. Map them to 502
+        # provider-error rather than letting the 500 leak.
+        raise ProviderError(
+            f"toolset {toolset_id!r} provider failed to enumerate tools: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     return {"tools": tools}
 
 

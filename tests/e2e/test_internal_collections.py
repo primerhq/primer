@@ -376,3 +376,74 @@ async def test_t0612_ic_config_concurrent_deletes_converge_clean(
     # Subsequent GET shows no config
     got = await client.get("/v1/internal_collections/config")
     assert got.status_code == 404, got.text
+
+
+# ============================================================================
+# T0707 — IC config PUT against deleted EmbeddingProvider clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0707_ic_config_put_against_deleted_embedding_provider(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0707 — Two-state pin: IC config write × provider lifecycle.
+    Sequence:
+        1. Create EmbeddingProvider X
+        2. DELETE X
+        3. PUT IC config referencing X
+
+    The PUT must produce a clean envelope (4xx documented error or
+    permissive 200 like T0265's Agent→deleted-provider pattern);
+    never /errors/internal.
+
+    Defence: If 200 (permissive path), DELETE the orphan config so
+    it doesn't pollute later tests. If 4xx, no config row should exist.
+    """
+    embedder_id = f"emb-t0707-{unique_suffix}"
+    pr = await client.post("/v1/embedding_providers", json={
+        "id": embedder_id,
+        "provider": "huggingface",
+        "models": [
+            {"name": "sentence-transformers/all-MiniLM-L6-v2", "dim": 384},
+        ],
+        "config": {"token": "hf-placeholder"},
+        "limits": {"max_concurrency": 1},
+    })
+    assert pr.status_code == 201, pr.text
+
+    # Ensure no IC config exists (defence against pollution)
+    await client.delete("/v1/internal_collections/config")
+
+    try:
+        # DELETE the embedding provider
+        rm = await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        assert rm.status_code in (204, 404), rm.text
+
+        # PUT IC config referencing the deleted provider
+        body = {
+            "embedding_provider_id": embedder_id,
+            "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+        }
+        resp = await client.put(
+            "/v1/internal_collections/config", json=body,
+        )
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"IC config PUT against deleted provider leaked "
+            f"/errors/internal: {resp.text}"
+        )
+        # Acceptable: 200 (permissive — IC config persisted; bootstrap
+        # would later fail to find provider), 4xx (validator caught
+        # the dangling reference), or 502 (upstream surfaced).
+        assert resp.status_code in (200, 400, 404, 422, 502), (
+            f"IC config PUT against deleted provider unexpected "
+            f"status: {resp.status_code}: {resp.text}"
+        )
+        if resp.status_code != 200:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        # Clean up any IC config that landed
+        await client.delete("/v1/internal_collections/config")
+        # Provider already deleted; idempotent best-effort
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")

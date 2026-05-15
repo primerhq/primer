@@ -658,3 +658,69 @@ async def test_t0677_health_metrics_dicts_contain_numeric_values(
         f"a numeric counter; sched_metrics={sched_metrics!r}, "
         f"pool_metrics={pool_metrics!r}"
     )
+
+
+# ============================================================================
+# T0708 — Worker last_heartbeat consistent across rapid sequential GETs
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0708_worker_last_heartbeat_consistent_across_rapid_gets(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0708 — Sister of T0343/T0444 (advance-over-time pins) for the
+    cross-call freshness invariant. Five rapid sequential GETs on
+    /v1/workers must show last_heartbeat values that:
+        - are non-null for active workers
+        - never rewind (each subsequent value >= the prior one)
+        - parse as ISO datetimes (no garbage strings)
+
+    No timing assumption — heartbeats may stay constant across the
+    tight loop if the scheduler heartbeat interval is longer than
+    our read window.
+    """
+    from datetime import datetime as _dt
+
+    samples: list[dict[str, str]] = []
+    for _ in range(5):
+        resp = await client.get("/v1/workers")
+        assert resp.status_code == 200, resp.text
+        snap = {
+            w["id"]: w.get("last_heartbeat")
+            for w in resp.json()["items"]
+        }
+        samples.append(snap)
+
+    assert samples, "no /workers samples collected"
+    # Every active worker has a non-null heartbeat across all samples
+    worker_ids = list(samples[0].keys())
+    assert worker_ids, "no workers registered — nothing to assert against"
+
+    for wid in worker_ids:
+        prev_dt: _dt | None = None
+        for i, snap in enumerate(samples):
+            hb = snap.get(wid)
+            assert hb is not None, (
+                f"worker {wid!r} sample #{i}: last_heartbeat is None; "
+                f"snap={snap!r}"
+            )
+            assert isinstance(hb, str) and hb, (
+                f"worker {wid!r} sample #{i}: last_heartbeat not "
+                f"a non-empty string: {hb!r}"
+            )
+            # Parse the ISO timestamp (Postgres-style suffix supported
+            # by fromisoformat in 3.11+)
+            try:
+                dt = _dt.fromisoformat(hb.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise AssertionError(
+                    f"worker {wid!r} sample #{i} last_heartbeat is "
+                    f"not a valid ISO timestamp: {hb!r} ({exc})"
+                )
+            if prev_dt is not None:
+                assert dt >= prev_dt, (
+                    f"worker {wid!r} last_heartbeat REWOUND across "
+                    f"samples #{i-1}→#{i}: {prev_dt!r} → {dt!r}"
+                )
+            prev_dt = dt

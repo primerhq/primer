@@ -37,6 +37,87 @@ async def test_t0140_system_toolset_lists_tools(
         assert tool.get("toolset_id") == "_system", tool
 
 
+# ============================================================================
+# T0706 — Toolset invalidate→/tools cycle: clean envelopes; no stale cache
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0706_toolset_invalidate_then_tools_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0706 — Sister of LLMProvider invalidate→models cycle (T0032).
+    For Toolset family: POST /v1/toolsets (initial config) → GET
+    /tools (initial result) → PUT /v1/toolsets (new config) →
+    POST /invalidate (drop cached provider) → GET /tools (rebuild
+    from new config).
+
+    Hard pin: every step a clean envelope; no /errors/internal even
+    if the MCP-stdio command fails to handshake (the harness's
+    `echo` command isn't a real MCP server). The /tools endpoint
+    handles connection failures cleanly.
+    """
+    entity_id = f"ts-t0706-{unique_suffix}"
+    base = "/v1/toolsets"
+
+    create_body = {
+        "id": entity_id,
+        "provider": "mcp",
+        "config": {
+            "transport": "stdio",
+            "config": {"command": ["echo"]},
+        },
+    }
+    create = await client.post(base, json=create_body)
+    assert create.status_code == 201, create.text
+
+    try:
+        # First /tools call (may 200 or clean error from MCP handshake)
+        first = await client.get(f"{base}/{entity_id}/tools")
+        first_env = first.json() if first.content else {}
+        assert first_env.get("type") != "/errors/internal", (
+            f"first /tools leaked /errors/internal: {first.text}"
+        )
+        assert first.status_code in (200, 400, 401, 404, 500, 502, 503), (
+            f"first /tools unexpected status: "
+            f"{first.status_code}: {first.text}"
+        )
+        # If 500, ensure it's not /errors/internal — but the endpoint
+        # may return 5xx for upstream MCP failure. Allow but pin envelope.
+        if first.status_code == 500:
+            assert first_env.get("type") != "/errors/internal", first.text
+
+        # PUT updated config (different command list)
+        updated_body = dict(create_body)
+        updated_body["config"] = {
+            "transport": "stdio",
+            "config": {"command": ["echo", "v2"]},
+        }
+        put = await client.put(f"{base}/{entity_id}", json=updated_body)
+        put_env = put.json() if put.content else {}
+        assert put_env.get("type") != "/errors/internal", put.text
+        assert put.status_code == 200, put.text
+
+        # Invalidate cache
+        inv = await client.post(f"{base}/{entity_id}/invalidate")
+        inv_env = inv.json() if inv.content else {}
+        assert inv_env.get("type") != "/errors/internal", inv.text
+        assert inv.status_code == 204, inv.text
+
+        # Second /tools call — must rebuild from the PUT-updated row
+        second = await client.get(f"{base}/{entity_id}/tools")
+        second_env = second.json() if second.content else {}
+        assert second_env.get("type") != "/errors/internal", (
+            f"second /tools leaked /errors/internal: {second.text}"
+        )
+        assert second.status_code in (200, 400, 401, 404, 500, 502, 503), (
+            f"second /tools unexpected status: "
+            f"{second.status_code}: {second.text}"
+        )
+    finally:
+        await client.delete(f"{base}/{entity_id}")
+
+
 @pytest.mark.asyncio
 async def test_t0141_workspaces_toolset_lists_tools(
     client: httpx.AsyncClient,
