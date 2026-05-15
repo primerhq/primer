@@ -7178,3 +7178,401 @@ async def test_t0576_workspace_files_percent_escapes_in_basename(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0577 — WorkspaceTemplate tmp_path=".." rejected at create
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0577_workspace_template_tmp_path_traversal_rejected(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0577 — Mirror of T0434 for `tmp_path`. The shared validator
+    `_validate_workspace_relative_path` (matrix/model/workspace.py:411)
+    is registered against BOTH `state_path` and `tmp_path`. T0434
+    pinned state_path; this is the parallel pin for tmp_path.
+
+    Several traversal shapes ("..", "../escape", "foo/../..") must
+    each be rejected — at create time (cleanest) or at materialise
+    time (acceptable). Never 5xx.
+    """
+    provider_id = f"wp-t0577-{unique_suffix}"
+    template_id = f"wt-t0577-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    template_created = False
+    workspace_id: str | None = None
+    try:
+        for traversal in ("..", "../escape", "../../escape", "foo/../.."):
+            tpl_body = {
+                "id": template_id,
+                "description": f"T0577 tmp_path={traversal}",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "tmp_path": traversal,
+            }
+            tpl = await client.post(
+                "/v1/workspace_templates", json=tpl_body,
+            )
+            assert tpl.status_code < 500, (
+                f"template create with tmp_path={traversal!r} "
+                f"returned 5xx: {tpl.status_code}: {tpl.text}"
+            )
+
+            if tpl.status_code in range(400, 500):
+                envelope = tpl.json()
+                assert envelope.get("type", "").startswith("/errors/"), envelope
+                assert envelope.get("type") != "/errors/internal", envelope
+                continue
+
+            # Accepted — try materialise; failure must be clean 4xx
+            assert tpl.status_code == 201, tpl.text
+            template_created = True
+            try:
+                ws = await client.post(
+                    "/v1/workspaces",
+                    json={"template_id": template_id},
+                )
+                assert ws.status_code < 500, (
+                    f"workspace materialise with traversal tmp_path "
+                    f"leaked 5xx: {ws.status_code}: {ws.text}"
+                )
+                if ws.status_code == 201:
+                    workspace_id = ws.json()["id"]
+                    pytest.fail(
+                        f"workspace with tmp_path={traversal!r} "
+                        f"materialised — tmp would land outside the "
+                        f"workspace root. Fix: validate tmp_path in "
+                        f"WorkspaceTemplate model_validator."
+                    )
+                else:
+                    envelope = ws.json()
+                    assert envelope.get("type", "").startswith("/errors/")
+                    assert envelope.get("type") != "/errors/internal"
+            finally:
+                await client.delete(f"/v1/workspace_templates/{template_id}")
+                template_created = False
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if template_created:
+            await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0578 — WorkspaceTemplate tmp_path absolute (POSIX + Windows) rejected
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0578_workspace_template_tmp_path_absolute_rejected(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0578 — Mirror of T0435 for `tmp_path`. The validator rejects
+    BOTH POSIX-absolute (`/tmp/x`) AND Windows-absolute (`C:\\tmp`)
+    shapes regardless of platform — templates are portable across
+    OSes so both must be caught at create time.
+    """
+    provider_id = f"wp-t0578-{unique_suffix}"
+    template_id = f"wt-t0578-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    template_created = False
+    workspace_id: str | None = None
+    try:
+        for absolute in ("/tmp/x", "C:\\tmp", "C:/tmp", "//server/share"):
+            tpl_body = {
+                "id": template_id,
+                "description": f"T0578 tmp_path={absolute}",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "tmp_path": absolute,
+            }
+            tpl = await client.post(
+                "/v1/workspace_templates", json=tpl_body,
+            )
+            assert tpl.status_code < 500, (
+                f"template create with tmp_path={absolute!r} "
+                f"returned 5xx: {tpl.status_code}: {tpl.text}"
+            )
+
+            if tpl.status_code in range(400, 500):
+                envelope = tpl.json()
+                assert envelope.get("type", "").startswith("/errors/"), envelope
+                assert envelope.get("type") != "/errors/internal", envelope
+                continue
+
+            assert tpl.status_code == 201, tpl.text
+            template_created = True
+            try:
+                ws = await client.post(
+                    "/v1/workspaces",
+                    json={"template_id": template_id},
+                )
+                assert ws.status_code < 500, (
+                    f"materialise with absolute tmp_path leaked 5xx: "
+                    f"{ws.status_code}: {ws.text}"
+                )
+                if ws.status_code == 201:
+                    workspace_id = ws.json()["id"]
+                    pytest.fail(
+                        f"workspace with tmp_path={absolute!r} "
+                        f"materialised — absolute tmp_path escaped the "
+                        f"workspace root."
+                    )
+                else:
+                    envelope = ws.json()
+                    assert envelope.get("type", "").startswith("/errors/")
+                    assert envelope.get("type") != "/errors/internal"
+            finally:
+                await client.delete(f"/v1/workspace_templates/{template_id}")
+                template_created = False
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        if template_created:
+            await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0579 — WorkspaceTemplate tmp_path="" rejected with 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0579_workspace_template_empty_tmp_path_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0579 — Per matrix/model/workspace.py:401-405, `tmp_path` has
+    `min_length=1`. Pin: explicit empty string is rejected with 422
+    /errors/validation-error (Pydantic min_length). Validator
+    complement to T0577 (`..` traversal) and T0578 (absolute path).
+    Mirror of T0552 for tmp_path.
+    """
+    provider_id = f"wp-t0579-{unique_suffix}"
+    template_id = f"wt-t0579-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/workspace_providers",
+        json=_provider_body(provider_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    try:
+        body = {
+            "id": template_id,
+            "description": "T0579 empty tmp_path",
+            "provider_id": provider_id,
+            "backend": {"kind": "local"},
+            "tmp_path": "",
+        }
+        resp = await client.post("/v1/workspace_templates", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"empty tmp_path leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code == 422, (
+            f"empty tmp_path should be 422 (Pydantic min_length=1); "
+            f"got {resp.status_code}: {resp.text}"
+        )
+        assert envelope.get("type") == "/errors/validation-error", envelope
+
+        # Defence: row not created
+        got = await client.get(f"/v1/workspace_templates/{template_id}")
+        assert got.status_code == 404, got.text
+    finally:
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0580 — /files list with no path query param (50-file seed) returns root
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0580_workspace_files_list_implicit_root_50_files(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0580 — Larger sibling of T0274 (which seeded a small handful
+    of files). Seed 50 files at the workspace root, then call GET
+    /v1/workspaces/{wid}/files with NO `path=` query param. The
+    implicit-root listing must return all 50 files in the items list
+    (offset+limit pagination may surface only the first page; total
+    must reflect 50).
+
+    Catches a regression where the root listing requires an explicit
+    `path=""` or `path=.` to enumerate the root.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        seeded: list[str] = []
+        for i in range(50):
+            name = f"seed_{i:03d}.txt"
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": name},
+                json={"content": f"body-{i}", "encoding": "text"},
+            )
+            assert put.status_code == 204, put.text
+            seeded.append(name)
+
+        # Implicit root listing — no `path=` query param
+        lst = await client.get(f"/v1/workspaces/{workspace_id}/files")
+        assert lst.status_code == 200, lst.text
+        body = lst.json()
+        assert "items" in body, body
+        # total counts everything visible at root, including the
+        # backend-managed `.state` and `.tmp` dirs. The hard pin is
+        # that EVERY seeded file appears, not the exact total.
+        assert body.get("total") >= 50, (
+            f"implicit-root listing total={body.get('total')!r}, "
+            f"expected >=50 (50 seeds + backend dirs); "
+            f"full body keys={list(body.keys())}"
+        )
+
+        # Walk all pages to verify every seeded file is reachable
+        seen: set[str] = set()
+        offset = 0
+        while True:
+            page = await client.get(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"offset": offset, "limit": 200},
+            )
+            assert page.status_code == 200, page.text
+            page_body = page.json()
+            page_items = page_body["items"]
+            if not page_items:
+                break
+            for item in page_items:
+                seen.add(item["path"])
+            offset += len(page_items)
+            if offset >= page_body.get("total", offset):
+                break
+
+        missing = set(seeded) - seen
+        assert not missing, (
+            f"implicit-root listing missing {len(missing)} files: "
+            f"{sorted(missing)[:10]!r}..."
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0581 — 10 concurrent POST /v1/workspaces from same template → distinct ids
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0581_workspace_burst_create_distinct_ids(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0581 — Burst materialise stress. Fire 10 POST /v1/workspaces
+    in parallel against the same template. All must return 2xx with
+    distinct workspace ids; never /errors/internal. Catches:
+
+    - Duplicate-id collisions if the backend's id generator races on
+      uuid generation.
+    - Cold-start CREATE TABLE races (T0103a-class) — the workspaces
+      table may not yet exist; concurrent CREATE TABLE attempts
+      shouldn't surface as 5xx /errors/internal/leaked-message.
+
+    Pre-warming the table with one synchronous create avoids the
+    documented T0103a race specifically — the test is about
+    backend-level burst safety, not the cold-start race that's
+    already pinned by T0103.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    created_ids: list[str] = []
+    try:
+        # Pre-warm the workspaces table so we're not reproducing T0103a
+        warm = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert warm.status_code == 201, warm.text
+        warm_id = warm.json()["id"]
+        created_ids.append(warm_id)
+
+        # Now fire 10 in parallel
+        async def _create() -> httpx.Response:
+            return await client.post(
+                "/v1/workspaces",
+                json=_workspace_body(template_id=template_id),
+            )
+
+        results = await _asyncio.gather(
+            *[_create() for _ in range(10)],
+            return_exceptions=True,
+        )
+
+        ids_seen: list[str] = []
+        for i, r in enumerate(results):
+            assert not isinstance(r, BaseException), (
+                f"burst-create #{i} raised: {r!r}"
+            )
+            # Hard pin: never 5xx /errors/internal
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"burst-create #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"burst-create #{i} returned 5xx: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code == 201, (
+                f"burst-create #{i} expected 201 (not even 409 — backend "
+                f"generates its own id and shouldn't collide); got "
+                f"{r.status_code}: {r.text}"
+            )
+            wid = r.json()["id"]
+            assert wid, r.text
+            ids_seen.append(wid)
+            created_ids.append(wid)
+
+        # All 10 ids must be distinct
+        assert len(set(ids_seen)) == 10, (
+            f"burst-create produced duplicate ids: ids={ids_seen!r} "
+            f"(distinct={len(set(ids_seen))}/10)"
+        )
+        # And none collide with the warmup id
+        assert warm_id not in ids_seen, (
+            f"burst-create collided with warmup id {warm_id!r}: {ids_seen!r}"
+        )
+    finally:
+        # Best-effort cleanup of all created workspaces
+        for wid in created_ids:
+            try:
+                await client.delete(f"/v1/workspaces/{wid}")
+            except Exception:
+                pass
+        await _teardown_provider_template(client, provider_id, template_id)
