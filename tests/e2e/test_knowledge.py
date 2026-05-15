@@ -1606,3 +1606,97 @@ async def test_t0635_order_by_jsonb_mixed_type_values_clean_envelope(
     finally:
         for did in created:
             await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0652 — Predicate `>=` on JSONB nested numeric meta.score with float literal
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0652_predicate_gte_float_on_jsonb_nested_numeric(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0652 — Sister of T0236 (`>` int-literal) / T0595 (`<`) /
+    T0596 (`<=`) for the `>=` operator with a FLOAT literal. Seed 5
+    docs with `meta.score` in [1..5]; query `>= 3.5` should return
+    rows with score 4 and 5 (or surface the JSONB-coercion bug
+    family with a 502 envelope, which is documented and accepted).
+
+    Hard pin: never /errors/internal. Envelope deterministic across
+    two sequential calls.
+    """
+    prefix = f"doc-t0652-{unique_suffix}"
+    created: list[str] = []
+    try:
+        for score in range(1, 6):
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": f"{prefix}-{score}",
+                    "name": str(score),
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"score": score},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(f"{prefix}-{score}")
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": ">=",
+                    "left": {"kind": "field", "name": "meta.score"},
+                    "right": {"kind": "value", "value": 3.5},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        # Two sequential calls — pin determinism
+        r1 = await client.post("/v1/documents/find", json=body)
+        env1 = r1.json() if r1.content else {}
+        assert env1.get("type") != "/errors/internal", (
+            f"`>=` float meta.score call #1 leaked /errors/internal: "
+            f"{r1.text}"
+        )
+
+        r2 = await client.post("/v1/documents/find", json=body)
+        env2 = r2.json() if r2.content else {}
+        assert env2.get("type") != "/errors/internal", (
+            f"`>=` float meta.score call #2 leaked /errors/internal: "
+            f"{r2.text}"
+        )
+
+        assert r1.status_code == r2.status_code, (
+            f"non-deterministic status across two calls: "
+            f"{r1.status_code} vs {r2.status_code}"
+        )
+        assert r1.status_code in (200, 400, 422, 502), (
+            f"`>=` float unexpected status: "
+            f"{r1.status_code}: {r1.text}"
+        )
+        if r1.status_code == 200:
+            out1 = sorted(item["id"] for item in r1.json()["items"])
+            out2 = sorted(item["id"] for item in r2.json()["items"])
+            assert out1 == out2, (
+                f"non-deterministic id set: {out1!r} vs {out2!r}"
+            )
+            expected = sorted([f"{prefix}-4", f"{prefix}-5"])
+            assert out1 == expected, (
+                f"meta.score >= 3.5 should match {expected!r}, got {out1!r}"
+            )
+        else:
+            assert env1["type"].startswith("/errors/"), env1
+            assert env1["type"] != "/errors/internal", env1
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")

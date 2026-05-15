@@ -250,8 +250,16 @@ class LocalWorkspace(Workspace):
         # API can't corrupt the backend's bookkeeping.
         self._refuse_reserved(target, path)
         parent = target.parent
-        await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_bytes, content)
+        try:
+            await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(target.write_bytes, content)
+        except OSError as exc:
+            # Map filesystem-rejection errors (invalid filename chars on
+            # Windows, MAX_PATH overflow, etc.) to a clean 4xx instead
+            # of letting the OSError leak as 500 /errors/internal.
+            raise BadRequestError(
+                f"cannot write {path!r}: {exc.strerror or exc}"
+            ) from exc
 
     async def delete_file(self, path: str) -> None:
         target = self._resolve_path(path)

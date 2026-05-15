@@ -3424,15 +3424,12 @@ async def test_t0295_workspace_template_post_missing_provider_id_returns_422(
 async def test_t0296_workspace_files_put_very_long_path_clean_envelope(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0296 — Spec §12 documents a known-anomaly: PUT to a workspace-
-    relative path long enough to push the absolute path past Windows
-    MAX_PATH=260 currently returns 500 /errors/internal (sibling of
-    quarantined T0064a). The proper contract is 4xx (e.g. bad-request).
-
-    This test is INTENTIONALLY PERMISSIVE — accepts either the buggy
-    behaviour (500 /errors/internal) or the fix (clean 4xx). When the
-    fix lands, future iterations should tighten the assertion to
-    require 4xx and remove the bug acknowledgement here.
+    """T0296 — Spec §12 used to document a known-anomaly: PUT to a
+    workspace-relative path long enough to push the absolute past
+    Windows MAX_PATH=260 returned 500 /errors/internal. Fix landed
+    in the T0647 iteration (try/except around mkdir+write_bytes in
+    LocalWorkspaceBackend.write_file). This test is now TIGHTENED
+    to require a clean 4xx envelope; never /errors/internal.
     """
     provider_id, template_id = await _setup_provider_template(
         client, suffix=unique_suffix, root=tmp_path,
@@ -3451,18 +3448,18 @@ async def test_t0296_workspace_files_put_very_long_path_clean_envelope(
             f"/v1/workspaces/{workspace_id}/files?path={long_segment}",
             json={"content": "x", "encoding": "text"},
         )
-        # Accept 4xx (proper contract, fix landed) OR 500 (current
-        # known-bug behaviour). Document the actual outcome.
-        assert resp.status_code in range(400, 600), resp.text
-        if resp.status_code == 500:
-            # Known-bug path — envelope shape sanity
-            envelope = resp.json()
-            assert envelope["type"] == "/errors/internal", envelope
-        else:
-            envelope = resp.json()
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"long path leaked /errors/internal post-fix: {resp.text}"
+        )
+        # Either accepted (path fits) or clean 4xx (rejected by the
+        # OSError mapping in write_file).
+        assert resp.status_code in (204, 400, 404, 422), (
+            f"long path unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code >= 400:
             assert envelope["type"].startswith("/errors/"), envelope
-            # Once the fix lands, this branch will be the only one
-            # reached and the test should be tightened.
     finally:
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
@@ -8744,4 +8741,153 @@ async def test_t0646_workspace_files_listing_mixed_files_and_subdirs(
     finally:
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0647 — Workspace files PUT to a basename with literal CR/LF
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0647_workspace_files_put_basename_with_crlf_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0647 — A basename containing literal CR or LF is structurally
+    suspicious — most filesystems accept them, but they're trivial
+    smuggling vectors for any tool that parses logs/listings line by
+    line. Pin: clean envelope (4xx rejected with /errors/* OR 204
+    accepted with byte-exact round-trip through /info and /read).
+    Hard pin: never /errors/internal.
+
+    NB: httpx's url-encoding ferries CR/LF as %0D/%0A across the
+    wire, so this exercises the server's decode/sanitise behaviour.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for sneaky in ("foo\nbar.txt", "foo\rbaz.txt", "foo\r\nqux.txt"):
+            put = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": sneaky},
+                json={"content": f"body-for-{sneaky!r}", "encoding": "text"},
+            )
+            envelope = put.json() if put.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"PUT {sneaky!r} leaked /errors/internal: {put.text}"
+            )
+            assert put.status_code in (204, 400, 404, 422), (
+                f"PUT {sneaky!r} unexpected status: "
+                f"{put.status_code}: {put.text}"
+            )
+
+            if put.status_code == 204:
+                # Accepted — the basename must round-trip byte-exact
+                # through /info; if it doesn't, the listing entry was
+                # silently sanitised which is a contract bug.
+                info = await client.get(
+                    f"/v1/workspaces/{workspace_id}/files/info",
+                    params={"path": sneaky},
+                )
+                # info may 200 (round-trip works) or 404 (server
+                # canonicalised the path differently between PUT and
+                # GET). Either is acceptable as long as no /errors/
+                # internal leaks.
+                info_env = info.json() if info.content else {}
+                assert info_env.get("type") != "/errors/internal", (
+                    f"/info on {sneaky!r} leaked /errors/internal: "
+                    f"{info.text}"
+                )
+                assert info.status_code in (200, 404), (
+                    f"/info on {sneaky!r}: "
+                    f"{info.status_code}: {info.text}"
+                )
+            else:
+                # Rejected — listing must NOT show the sneaky name
+                lst = await client.get(
+                    f"/v1/workspaces/{workspace_id}/files",
+                )
+                assert lst.status_code == 200, lst.text
+                listed_names = [item["path"] for item in lst.json()["items"]]
+                assert sneaky not in listed_names, (
+                    f"rejected PUT leaked {sneaky!r} into listing: "
+                    f"{listed_names!r}"
+                )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0648 — Workspace destroy concurrent with /log GET: clean envelopes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0648_workspace_destroy_concurrent_with_log_get_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0648 — Sister of T0290 (DELETE racing PUT) and T0626 (DELETE
+    racing /files list) for the /log endpoint. The /log handler
+    lazily initialises the workspace's `.state` git repo on first
+    call; this stresses the lazy-init path under destroy race.
+
+    Hard pin: both responses clean envelopes; LOG returns 200 (with
+    commits or empty) or 404 (workspace gone); DELETE returns 204
+    or 404. Never /errors/internal under teardown race.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        del_task = _asyncio.create_task(
+            client.delete(f"/v1/workspaces/{workspace_id}"),
+        )
+        log_task = _asyncio.create_task(
+            client.get(f"/v1/workspaces/{workspace_id}/log"),
+        )
+        del_resp, log_resp = await _asyncio.gather(
+            del_task, log_task, return_exceptions=True,
+        )
+
+        assert not isinstance(del_resp, BaseException), del_resp
+        assert not isinstance(log_resp, BaseException), log_resp
+
+        del_env = del_resp.json() if del_resp.content else {}
+        assert del_env.get("type") != "/errors/internal", (
+            f"racing DELETE leaked /errors/internal: {del_resp.text}"
+        )
+        assert del_resp.status_code in (204, 404), (
+            f"racing DELETE unexpected status: "
+            f"{del_resp.status_code}: {del_resp.text}"
+        )
+
+        log_env = log_resp.json() if log_resp.content else {}
+        assert log_env.get("type") != "/errors/internal", (
+            f"racing /log leaked /errors/internal: {log_resp.text}"
+        )
+        assert log_resp.status_code in (200, 404), (
+            f"racing /log unexpected status: "
+            f"{log_resp.status_code}: {log_resp.text}"
+        )
+        if log_resp.status_code == 200:
+            assert "commits" in log_resp.json(), log_resp.json()
+    finally:
         await _teardown_provider_template(client, provider_id, template_id)

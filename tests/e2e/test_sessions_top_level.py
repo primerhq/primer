@@ -4443,3 +4443,152 @@ async def test_t0611_nested_vs_toplevel_get_after_steer_then_cancel(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0649 — Steer queued on PAUSED session: durable across resume→cancel
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0649_steer_on_paused_durably_visible_through_signals(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0649 — Sequence:
+        1. CREATED session → pause (queues pause_requested)
+        2. Steer (queue an instruction) on PAUSED
+        3. Resume → 200
+        4. Cancel → 200 (or async to ENDED)
+
+    Hard pin: every step a clean envelope; final top-level GET shows
+    ENDED; the row exists across all signals (no flapping or
+    deletion). Never /errors/internal across the sequence.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # 1. Pause from CREATED
+        pause = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        env_p = pause.json() if pause.content else {}
+        assert env_p.get("type") != "/errors/internal", pause.text
+        assert pause.status_code < 500, pause.text
+
+        # 2. Steer on PAUSED (per spec §12, steer doesn't gate on status)
+        steer = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": "T0649 queued during pause"},
+        )
+        steer_env = steer.json() if steer.content else {}
+        assert steer_env.get("type") != "/errors/internal", steer.text
+        assert steer.status_code < 500, steer.text
+
+        # Row still exists after pause+steer
+        mid = await client.get(f"/v1/sessions/{session_id}")
+        assert mid.status_code == 200, mid.text
+        assert mid.json().get("id") == session_id, mid.json()
+
+        # 3. Resume
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        resume_env = resume.json() if resume.content else {}
+        assert resume_env.get("type") != "/errors/internal", resume.text
+        assert resume.status_code == 200, resume.text
+
+        # 4. Cancel → ENDED (poll if async)
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        cancel_env = cancel.json() if cancel.content else {}
+        assert cancel_env.get("type") != "/errors/internal", cancel.text
+        assert cancel.status_code == 200, cancel.text
+        if cancel.json().get("status") != "ended":
+            for _ in range(60):
+                r = await client.get(f"/v1/sessions/{session_id}")
+                if r.status_code == 200 and r.json().get("status") == "ended":
+                    break
+                await asyncio.sleep(0.5)
+
+        # Final top-level GET: ENDED row preserved
+        final = await client.get(f"/v1/sessions/{session_id}")
+        assert final.status_code == 200, final.text
+        assert final.json()["status"] == "ended", final.json()
+        assert final.json().get("id") == session_id, final.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0651 — Nested vs top-level GET on PAUSED agent-bound session
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0651_nested_vs_toplevel_get_on_paused_session(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0651 — Sister of T0555/T0611 for the PAUSED state. After
+    pausing a CREATED session, both endpoint shapes must respond
+    cleanly (200), neither leaks /errors/internal. Top-level reads
+    storage; nested may report stale per the documented drift family
+    (T0399/T0555/T0611).
+
+    Pin: clean envelopes; nested status in {created, running, paused,
+    ended}; top-level status reflects pause_requested handling.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        pause = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        pause_env = pause.json() if pause.content else {}
+        assert pause_env.get("type") != "/errors/internal", pause.text
+        assert pause.status_code < 500, pause.text
+
+        # Top-level GET — authoritative storage view
+        top = await client.get(f"/v1/sessions/{session_id}")
+        top_env = top.json() if top.content else {}
+        assert top_env.get("type") != "/errors/internal", top.text
+        assert top.status_code == 200, top.text
+        # pause_requested is the storage field that records the signal
+        assert top.json().get("pause_requested") in (True, False), (
+            f"pause_requested missing/non-bool: {top.json()!r}"
+        )
+        assert top.json().get("status") in (
+            "created", "running", "paused", "ended",
+        ), top.json()
+
+        # Nested GET — in-memory AgentSession view
+        nested = await client.get(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}",
+        )
+        nested_env = nested.json() if nested.content else {}
+        assert nested_env.get("type") != "/errors/internal", nested.text
+        assert nested.status_code == 200, nested.text
+        nested_status = nested.json().get("status")
+        assert nested_status in (
+            "created", "running", "paused", "ended",
+        ), f"nested status outside drift set: {nested.json()!r}"
+        if nested_status != top.json()["status"]:
+            print(
+                f"\n[T0651] documented stale-cache drift on PAUSED: "
+                f"top={top.json()['status']!r} vs "
+                f"nested={nested_status!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
