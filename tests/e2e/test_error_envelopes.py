@@ -708,3 +708,50 @@ async def test_t0323_patch_on_workers_list_endpoint_returns_405(
         f"Allow header {allow!r} should mention GET (the only "
         f"documented verb on /v1/workers list)"
     )
+
+
+# ============================================================================
+# T0564 — DELETE /v1/openapi.json returns 405 with Allow listing GET
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0564_delete_on_openapi_json_returns_405(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0564 — The /v1/openapi.json route is always available
+    (FastAPI auto-generated). DELETE is not a documented verb on it;
+    must return 405 with a non-empty Allow header listing GET.
+
+    Mirror of T0281/T0322 for the always-on OpenAPI route.
+
+    NB: openapi.json is mounted at the FastAPI app's root with the
+    `/v1` prefix, so the path is `/v1/openapi.json`.
+    """
+    # Try both common mount points; whichever serves OpenAPI is the
+    # one where 405 should land. Locate it first via GET.
+    for path in ("/v1/openapi.json", "/openapi.json"):
+        get = await client.get(path)
+        if get.status_code == 200:
+            target = path
+            break
+    else:
+        pytest.skip("openapi.json not reachable at known paths")
+
+    resp = await client.request("DELETE", target)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"DELETE {target} leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code == 405, (
+        f"DELETE {target} should be 405 (read-only route); "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    allow = resp.headers.get("allow", "")
+    assert allow, (
+        f"405 on {target} should set Allow header; got {allow!r}"
+    )
+    allow_upper = allow.upper()
+    assert "GET" in allow_upper, (
+        f"Allow header {allow!r} on {target} should mention GET"
+    )

@@ -506,3 +506,71 @@ async def test_t0099_worker_drain_nonexistent_id_is_clean(
         )
     assert envelope["status"] == resp.status_code
     assert envelope["type"].startswith("/errors/"), envelope
+
+
+# ============================================================================
+# T0636 — Two concurrent POST /v1/workers/{id}/drain calls
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0636_concurrent_drain_calls_idempotent(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0636 — Sister of T0218 (sequential drain idempotency) and
+    T0307 (field stability across drain). Race two concurrent
+    POST /v1/workers/{id}/drain calls. Both must return 204; the
+    worker row's status remains "draining"; identity fields
+    (id, host, pid, capacity) stay stable across the race.
+
+    Catches a regression where a load-flip-write race produces
+    inconsistent state under concurrent drain.
+    """
+    import asyncio
+
+    listed = await client.get("/v1/workers")
+    assert listed.status_code == 200, listed.text
+    items = listed.json()["items"]
+    assert items, "no workers registered — nothing to drain"
+    worker_id = items[0]["id"]
+
+    # Snapshot before
+    before = next(
+        (w for w in items if w["id"] == worker_id), None,
+    )
+    assert before is not None
+
+    # Race two concurrent drain calls
+    async def _drain() -> httpx.Response:
+        return await client.post(f"/v1/workers/{worker_id}/drain")
+
+    r1, r2 = await asyncio.gather(_drain(), _drain(), return_exceptions=True)
+    for i, r in enumerate((r1, r2)):
+        assert not isinstance(r, BaseException), (
+            f"drain #{i} raised: {r!r}"
+        )
+        envelope = r.json() if r.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"drain #{i} leaked /errors/internal: "
+            f"{r.status_code}: {r.text}"
+        )
+        assert r.status_code == 204, (
+            f"drain #{i} expected 204: {r.status_code}: {r.text}"
+        )
+
+    # Post-race state: worker still "draining", identity fields stable
+    after = await client.get("/v1/workers")
+    assert after.status_code == 200, after.text
+    row_after = next(
+        (w for w in after.json()["items"] if w["id"] == worker_id), None,
+    )
+    assert row_after is not None, "worker disappeared after concurrent drain"
+    assert row_after["status"] == "draining", (
+        f"concurrent drain failed to reach draining: {row_after!r}"
+    )
+    for field in ("id", "host", "pid", "capacity"):
+        assert row_after.get(field) == before.get(field), (
+            f"field {field!r} changed across concurrent drain: "
+            f"before={before.get(field)!r}, "
+            f"after={row_after.get(field)!r}"
+        )

@@ -1510,3 +1510,99 @@ async def test_t0633_predicate_in_on_jsonb_nested_numeric_int_list(
     finally:
         for did in created:
             await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0635 — order_by on JSONB nested field with mixed-type values clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0635_order_by_jsonb_mixed_type_values_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0635 — Sister of T0249/T0276 for the mixed-type-value edge
+    case. Seed documents whose `meta.score` values are deliberately
+    mixed types (int and string). order_by=[meta.score desc] must
+    produce a clean envelope across two sequential calls — either
+    consistently ordered (some Postgres JSONB-cast rule applies) or
+    a clean 4xx/502; never /errors/internal.
+
+    The hard pin is determinism and envelope cleanliness, not the
+    specific ordering — Postgres JSONB comparison rules for
+    cross-type values are implementation-defined.
+    """
+    prefix = f"doc-t0635-{unique_suffix}"
+    created: list[str] = []
+    try:
+        mixed = [
+            ("a", 1),       # int
+            ("b", "two"),   # string
+            ("c", 3),       # int
+            ("d", "four"),  # string
+            ("e", 5),       # int
+        ]
+        for tag, score in mixed:
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": f"{prefix}-{tag}",
+                    "name": tag,
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"score": score},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(f"{prefix}-{tag}")
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "order_by": [{"field": "meta.score", "direction": "desc"}],
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        r1 = await client.post("/v1/documents/find", json=body)
+        env1 = r1.json() if r1.content else {}
+        assert env1.get("type") != "/errors/internal", (
+            f"mixed-type order_by call #1 leaked /errors/internal: "
+            f"{r1.text}"
+        )
+
+        r2 = await client.post("/v1/documents/find", json=body)
+        env2 = r2.json() if r2.content else {}
+        assert env2.get("type") != "/errors/internal", (
+            f"mixed-type order_by call #2 leaked /errors/internal: "
+            f"{r2.text}"
+        )
+
+        # Both calls converge on the same envelope kind
+        assert r1.status_code == r2.status_code, (
+            f"non-deterministic status across two identical calls: "
+            f"{r1.status_code} vs {r2.status_code}"
+        )
+        assert r1.status_code in (200, 400, 422, 502), (
+            f"mixed-type order_by unexpected status: "
+            f"{r1.status_code}: {r1.text}"
+        )
+        if r1.status_code == 200:
+            # Determinism pin: same id sequence across both calls
+            ids1 = [item["id"] for item in r1.json()["items"]]
+            ids2 = [item["id"] for item in r2.json()["items"]]
+            assert ids1 == ids2, (
+                f"mixed-type order_by non-deterministic: "
+                f"{ids1!r} vs {ids2!r}"
+            )
+            # Set membership is correct (all seeded rows returned)
+            assert sorted(ids1) == sorted(created), (
+                f"ordered set missing rows: got {sorted(ids1)!r}, "
+                f"expected {sorted(created)!r}"
+            )
+        else:
+            assert env1["type"].startswith("/errors/"), env1
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")

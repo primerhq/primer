@@ -4285,6 +4285,82 @@ async def test_t0631_cancel_created_with_metadata_round_trips(
 
 
 # ============================================================================
+# T0634 — Predicate `=` on bool field Session.cancel_requested clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0634_predicate_eq_bool_on_cancel_requested(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0634 — Sister of T0361 (`=` on int column) and T0594 (`=`
+    on float column) for a BOOL column. Per matrix/model/session.py:
+    363-364, `Session.cancel_requested: bool` is the actual bool
+    column on the model (the original proposal said `auto_start`
+    but that lives only on the create-body, not the persisted row).
+
+    Sequence: create one session, cancel it, then run a predicate
+    `cancel_requested = true`. Hard pin: clean envelope (200 with
+    the cancelled session matched, OR 502 from the documented
+    JSONB-coercion bug family).
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+        # Cancel to flip cancel_requested
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+
+        # Find sessions with cancel_requested = true, scoped to our workspace
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "workspace_id"},
+                    "right": {"kind": "value", "value": workspace_id},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "cancel_requested"},
+                    "right": {"kind": "value", "value": True},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"`=` on cancel_requested leaked /errors/internal: "
+            f"{resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"`=` on cancel_requested unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            ids = [item["id"] for item in resp.json()["items"]]
+            assert session_id in ids, (
+                f"cancel_requested=true should match the cancelled "
+                f"session {session_id!r}; got {ids!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0611 — Steer→cancel: nested vs top-level GET (T0555 drift sibling)
 # ============================================================================
 

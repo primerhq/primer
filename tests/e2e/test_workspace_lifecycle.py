@@ -8301,3 +8301,113 @@ async def test_t0628_workspace_log_limit_at_documented_max_accepted(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0629 — 200-file PUT in 10 concurrent batches × 20: all 204; listing has 200
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0629_workspace_files_concurrent_200_file_seed(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0629 — Concurrent stress sibling of T0606 (sequential 200-file
+    seed) and T0604 (10 concurrent PUTs). Spawn 10 concurrent tasks,
+    each PUTting 20 distinct paths sequentially → 200 PUTs in flight
+    across 10 concurrent workers. All must return 204; final listing
+    at limit=200 must enumerate every seeded path.
+
+    Catches:
+    - Per-workspace lock too coarse (deadlock or serialised throughput).
+    - Filesystem races losing file metadata.
+    - Listing pagination misses entries when concurrent writes
+      interleave with the listing's FS scan.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        async def _batch_put(batch_idx: int) -> list[httpx.Response]:
+            results = []
+            for i in range(20):
+                name = f"b{batch_idx:02d}_f{i:02d}.txt"
+                r = await client.put(
+                    f"/v1/workspaces/{workspace_id}/files",
+                    params={"path": name},
+                    json={"content": f"b{batch_idx}-{i}", "encoding": "text"},
+                )
+                results.append(r)
+            return results
+
+        # 10 concurrent batches × 20 files each = 200 PUTs total
+        all_results = await _asyncio.gather(
+            *[_batch_put(b) for b in range(10)],
+            return_exceptions=True,
+        )
+
+        seeded_names: list[str] = []
+        for batch_idx, batch in enumerate(all_results):
+            assert not isinstance(batch, BaseException), (
+                f"batch {batch_idx} raised: {batch!r}"
+            )
+            for i, r in enumerate(batch):
+                envelope = r.json() if r.content else {}
+                assert envelope.get("type") != "/errors/internal", (
+                    f"batch {batch_idx} put #{i} leaked "
+                    f"/errors/internal: {r.status_code}: {r.text}"
+                )
+                assert r.status_code == 204, (
+                    f"batch {batch_idx} put #{i} expected 204: "
+                    f"{r.status_code}: {r.text}"
+                )
+                seeded_names.append(f"b{batch_idx:02d}_f{i:02d}.txt")
+
+        assert len(seeded_names) == 200, len(seeded_names)
+
+        # Listing at documented max should enumerate the seeded set
+        # (plus the backend-managed `.state` and `.tmp` dirs)
+        page = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"limit": 200, "offset": 0},
+        )
+        assert page.status_code == 200, page.text
+        body = page.json()
+        # total reflects the full count including backend dirs
+        assert body.get("total") >= 200, (
+            f"total {body.get('total')!r} < 200; body keys="
+            f"{list(body.keys())}"
+        )
+
+        # Walk all pages to gather every entry name; every seeded
+        # name must be reachable.
+        seen: set[str] = set()
+        for item in body["items"]:
+            seen.add(item["path"])
+        if len(seen) < body["total"]:
+            page2 = await client.get(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"limit": 200, "offset": 200},
+            )
+            assert page2.status_code == 200, page2.text
+            for item in page2.json()["items"]:
+                seen.add(item["path"])
+
+        missing = set(seeded_names) - seen
+        assert not missing, (
+            f"concurrent 200-file seed lost {len(missing)} files: "
+            f"{sorted(missing)[:10]!r}..."
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
