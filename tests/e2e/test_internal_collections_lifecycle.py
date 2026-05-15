@@ -3555,3 +3555,172 @@ async def test_t0502_three_consecutive_bootstraps_identical_shape(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0537 — /v1/agents/search post-bootstrap on empty DB returns 200 empty hits
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0537_search_post_bootstrap_empty_db_returns_empty_hits(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0537 — Sharper than T0203 (which pinned bootstrap envelope
+    shape). T0537 specifically pins the search-after-clean-bootstrap
+    path: PUT config → bootstrap → POST /v1/agents/search → 200 with
+    `hits=[]` (the documented empty-result envelope, not 503 / 4xx).
+
+    Catches a regression where the freshly-bootstrapped subsystem
+    returns the search route as inactive even though /bootstrap
+    succeeded.
+    """
+    embedder_id = f"emb-t0537-{unique_suffix}"
+    pr = await client.post(
+        "/v1/embedding_providers",
+        json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_created = False
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        if boot.status_code != 200:
+            pytest.skip(
+                f"bootstrap returned {boot.status_code}; embedder may "
+                f"be unavailable: {boot.text[:300]}"
+            )
+
+        # No agents created — DB is empty for the agents collection
+        search = await client.post(
+            "/v1/agents/search",
+            json={"query": "anything", "top_k": 10},
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+        envelope = search.json() if search.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"empty-DB search leaked /errors/internal: {search.text}"
+        )
+        assert search.status_code == 200, (
+            f"post-bootstrap search on empty DB should be 200, not "
+            f"503/inactive; got {search.status_code}: {search.text}"
+        )
+        body = search.json()
+        assert "hits" in body, body
+        assert isinstance(body["hits"], list), body
+        assert body["hits"] == [], (
+            f"empty-DB search should return empty hits; got {body!r}"
+        )
+    finally:
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0538 — /v1/agents/search top_k=100 (max) returns documented hits envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0538_search_top_k_100_documented_hit_shape(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0538 — Reframed from the original "top_k=200" proposal:
+    actual documented max is 100 (per T0061/T0318 — Pydantic
+    le=100). This pins the response shape AT the documented max.
+
+    After bootstrap + create one agent, search with top_k=100,
+    distinctive marker. Pin: 200; `hits` is a list of length ≤ 100;
+    each hit has document_id + score + text + meta keys (the
+    documented Hit shape from T0034).
+    """
+    embedder_id = f"emb-t0538-{unique_suffix}"
+    llm_id = f"llm-t0538-{unique_suffix}"
+    agent_id = f"agent-t0538-{unique_suffix}"
+    distinctive = f"distinctive-marker-t0538-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers",
+        json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+    config_created = False
+    llm_created = False
+    agent_created = False
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        if boot.status_code != 200:
+            pytest.skip(
+                f"bootstrap returned {boot.status_code}: "
+                f"{boot.text[:300]}"
+            )
+
+        llm = await client.post(
+            "/v1/llm_providers", json=_llm_body(llm_id),
+        )
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                agent_id, provider_id=llm_id, description=distinctive,
+            ),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        # Wait for CDC ingestion of the agent
+        ids_seen = await _poll_search_for(
+            client, query=distinctive, expected_id=agent_id,
+            present=True,
+        )
+        assert agent_id in ids_seen, ids_seen
+
+        # Now the load-bearing assertion: search with top_k=100
+        # (documented max) returns the documented hit shape
+        search = await client.post(
+            "/v1/agents/search",
+            json={"query": distinctive, "top_k": 100},
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+        assert search.status_code == 200, search.text
+        body = search.json()
+        assert isinstance(body.get("hits"), list), body
+        assert len(body["hits"]) <= 100, body
+        assert len(body["hits"]) >= 1, (
+            f"expected ≥1 hit for the seeded agent's marker: {body!r}"
+        )
+        for hit in body["hits"]:
+            assert "document_id" in hit, hit
+            assert "score" in hit, hit
+            assert "text" in hit, hit
+            assert "meta" in hit, hit
+    finally:
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        if config_created:
+            await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")

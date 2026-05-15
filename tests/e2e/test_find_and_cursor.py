@@ -3960,3 +3960,146 @@ async def test_t0533_predicate_like_with_huge_pattern_clean_envelope(
                 )
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0534 — Predicate AND tree with operand missing `kind` field rejected 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0534_predicate_and_with_kindless_operand_rejected_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0534 — Operand kinds (predicate / field / value) are
+    discriminated by the `kind` field. An operand missing `kind`
+    is structurally invalid — Pydantic's discriminated-union
+    parser must reject with 422 /errors/validation-error.
+
+    Catches a regression where a permissive parser falls through
+    to a "best guess" union-member coercion that could surface
+    nonsense as 200-empty.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "and",
+            "left": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": "x"},
+            },
+            "right": {"name": "id"},  # missing kind
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"kindless operand leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code == 422, (
+        f"kindless operand should be 422; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type") == "/errors/validation-error", envelope
+
+
+# ============================================================================
+# T0535 — Predicate `op` field as integer rejected 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0535_predicate_op_as_integer_rejected_422(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0535 — `op` is an Op-enum string. Sending `op=42`
+    (integer) must be rejected with 422 /errors/validation-error.
+    Mirror of T0405 (op as ASCII `==`) and T0406 (op as empty
+    string) for the non-string-typed op variant.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": 42,  # integer, not Op-enum string
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": "x"},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"integer op leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code == 422, (
+        f"integer op should be 422; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type") == "/errors/validation-error", envelope
+
+
+# ============================================================================
+# T0536 — order_by with empty list `[]` returns clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0536_find_with_empty_order_by_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0536 — Send `order_by=[]` (explicit empty list) to /find.
+    Pin: clean envelope across two consecutive calls (deterministic).
+    Either accepted (200 with documented natural order) or
+    rejected (422 if empty-list is treated as malformed). Never
+    /errors/internal.
+    """
+    prefix = f"ts-t0536-{unique_suffix}"
+    ids = await _seed_toolsets(client, prefix, 3)
+    try:
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": f"{prefix}%"},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+            "order_by": [],
+        }
+
+        r1 = await client.post("/v1/toolsets/find", json=body)
+        r2 = await client.post("/v1/toolsets/find", json=body)
+
+        for r, label in ((r1, "call-1"), (r2, "call-2")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label}: empty order_by leaked /errors/internal: "
+                f"{r.text}"
+            )
+            assert r.status_code in (200, 400, 422), (
+                f"{label}: unexpected {r.status_code}: {r.text}"
+            )
+
+        # Determinism
+        assert r1.status_code == r2.status_code, (
+            f"non-deterministic: {r1.status_code} vs {r2.status_code}"
+        )
+        if r1.status_code == 200:
+            # Both calls return the same row set (sorted for
+            # comparison since the natural order is undocumented)
+            ids_1 = sorted(item["id"] for item in r1.json()["items"])
+            ids_2 = sorted(item["id"] for item in r2.json()["items"])
+            assert ids_1 == ids_2, (
+                f"non-deterministic row set: {ids_1!r} vs {ids_2!r}"
+            )
+            # All seeded rows should be returned (predicate matches
+            # the prefix)
+            for i in ids:
+                assert i in ids_1, (
+                    f"seeded id {i!r} missing from result: {ids_1!r}"
+                )
+    finally:
+        await _delete_toolsets(client, ids)
