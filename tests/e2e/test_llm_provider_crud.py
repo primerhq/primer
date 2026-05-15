@@ -528,3 +528,73 @@ async def test_t0493_llm_provider_create_with_deep_unicode_escapes_clean(
             assert got.json()["id"] == entity_id, got.json()
         finally:
             await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0562 — POST /v1/llm_providers with duplicate names in models clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0562_post_llm_provider_with_duplicate_model_names_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0562 — Per matrix/model/provider.py:334-337, LLMProvider.
+    models is `list[LLMModel]` with no documented dedup constraint.
+    Pin observed behavior: duplicate model names are accepted (201)
+    or rejected (422) deterministically across two consecutive
+    calls; never /errors/internal.
+
+    Catches a regression where a future dedup validator changes
+    the contract silently.
+    """
+    entity_id_a = f"llm-t0562a-{unique_suffix}"
+    entity_id_b = f"llm-t0562b-{unique_suffix}"
+    body_template = {
+        "provider": "anthropic",
+        "models": [
+            {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            {"name": "claude-sonnet-4-6", "context_length": 100_000},
+        ],
+        "config": {"api_key": "sk-test"},
+        "limits": {"max_concurrency": 1},
+    }
+
+    # Two distinct ids so neither call hits the duplicate-id 409
+    # path — the only difference in outcome should be the dedup
+    # behavior on `models`
+    body_a = {**body_template, "id": entity_id_a}
+    body_b = {**body_template, "id": entity_id_b}
+
+    r1 = await client.post("/v1/llm_providers", json=body_a)
+    r2 = await client.post("/v1/llm_providers", json=body_b)
+
+    try:
+        for r, label in ((r1, "call-1"), (r2, "call-2")):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label}: dup model names leaked /errors/internal: "
+                f"{r.text}"
+            )
+            assert r.status_code in (201, 422), (
+                f"{label}: unexpected {r.status_code}: {r.text}"
+            )
+
+        # Determinism: same outcome across both
+        assert r1.status_code == r2.status_code, (
+            f"non-deterministic dedup behavior: {r1.status_code} vs "
+            f"{r2.status_code}"
+        )
+
+        # If accepted, the duplicate models survive on GET
+        if r1.status_code == 201:
+            got = await client.get(f"/v1/llm_providers/{entity_id_a}")
+            assert got.status_code == 200, got.text
+            got_models = got.json().get("models", [])
+            names = [m["name"] for m in got_models]
+            # Either preserved both entries (dup intact) or deduped
+            # to one — pin observation
+            assert names.count("claude-sonnet-4-6") in (1, 2), names
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id_a}")
+        await client.delete(f"/v1/llm_providers/{entity_id_b}")

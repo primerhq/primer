@@ -4283,3 +4283,39 @@ async def test_t0558_predicate_in_with_1000_element_list_clean_envelope(
             )
     finally:
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0559 — Predicate field name with consecutive dots `meta..tag` clean 4xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0559_predicate_field_consecutive_dots_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0559 — Per matrix/storage._predicate _resolve_dotted +
+    _render_field_expr, dotted paths split on `.`. A field name
+    with consecutive dots like `meta..tag` would split to
+    `["meta", "", "tag"]` — the empty middle segment is degenerate.
+    Pin: clean envelope (4xx /errors/bad-request from the
+    translator, OR 200-empty); never /errors/internal from a
+    tokenizer crash.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "=",
+            "left": {"kind": "field", "name": "meta..tag"},
+            "right": {"kind": "value", "value": "anything"},
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/sessions/find", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"`meta..tag` leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code in (200, 400, 422, 502), (
+        f"unexpected status: {resp.status_code}: {resp.text}"
+    )

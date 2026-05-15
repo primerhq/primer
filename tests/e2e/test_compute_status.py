@@ -3494,3 +3494,138 @@ async def test_t0548_put_graph_with_paused_session_clean(
             await client.delete(f"/v1/workspace_providers/{wp_id}")
             await client.delete(f"/v1/agents/{agent_id}")
             await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0561 — POST /v1/agents with temperature=null accepted (default deferred)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0561_post_agent_with_explicit_null_temperature_accepted(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0561 — Per matrix/model/agent.py:79, Agent.temperature is
+    `float | None` defaulting to None. Pin: explicit `null` in the
+    request body is accepted (201) — null is the documented
+    "defer to adapter" sentinel. GET round-trips with field absent
+    or null; /status returns clean envelope.
+
+    Catches a regression where a future strict-typing change makes
+    `null` distinct from omission and breaks the documented
+    deferred-default semantics.
+    """
+    provider_id = f"llm-t0561-{unique_suffix}"
+    agent_id = f"agent-t0561-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        body = {
+            "id": agent_id,
+            "description": "T0561 explicit null temperature",
+            "model": {
+                "provider_id": provider_id,
+                "model_name": "claude-sonnet-4-6",
+            },
+            "tools": [],
+            "temperature": None,  # explicit null
+        }
+        resp = await client.post("/v1/agents", json=body)
+        assert resp.status_code == 201, resp.text
+
+        got = await client.get(f"/v1/agents/{agent_id}")
+        assert got.status_code == 200, got.text
+        temp = got.json().get("temperature")
+        assert temp is None, (
+            f"temperature should be None (deferred to adapter); "
+            f"got {temp!r}"
+        )
+
+        status = await client.get(f"/v1/agents/{agent_id}/status")
+        assert status.status_code == 200, status.text
+        assert "ok" in status.json(), status.json()
+    finally:
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0563 — POST entity description with deeply-nested unicode escapes
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0563_post_entity_description_with_deep_unicode_escapes(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0563 — Mirror of T0493 (api_key) for the description field
+    on a Describeable entity. Use Agent (extends Describeable; per
+    matrix/model/agent.py:66 — Toolset only extends Identifiable
+    so description would be silently dropped). Build a description
+    with 100+ stacked `\\u` escape sequences embedded in JSON wire
+    bytes. Pin: 201 (accepted byte-exact) or clean 4xx; never
+    /errors/internal from JSON re-encoding; GET round-trips byte-
+    exact.
+    """
+    provider_id = f"llm-t0563-{unique_suffix}"
+    agent_id = f"agent-t0563-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+
+    # Build raw JSON wire bytes manually so the embedded `\uXXXX`
+    # escape sequences arrive as actual JSON unicode escapes
+    # (json.dumps would re-escape the backslashes and defeat the
+    # purpose). Each `\u` pair on the wire decodes to
+    # the literal two-char string `\u` after JSON parsing → 200
+    # decoded chars total for 100 pairs.
+    wire_pair = r"\u"  # 12 wire chars; decodes to `\u`
+    description_payload = (
+        f"T0563-marker-{unique_suffix}-" + wire_pair * 100 + "-end"
+    )
+    raw_body = (
+        '{'
+        f'"id":"{agent_id}",'
+        f'"description":"{description_payload}",'
+        f'"model":{{"provider_id":"{provider_id}",'
+        f'"model_name":"claude-sonnet-4-6"}},'
+        f'"tools":[]'
+        '}'
+    )
+
+    try:
+        resp = await client.post(
+            "/v1/agents",
+            content=raw_body.encode("utf-8"),
+            headers={"content-type": "application/json"},
+        )
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"deep-unicode description leaked /errors/internal: "
+            f"{resp.text[:300]}"
+        )
+        assert resp.status_code < 500, resp.text[:300]
+        assert resp.status_code in (201, 400, 422), (
+            f"unexpected status: {resp.status_code}: "
+            f"{resp.text[:300]}"
+        )
+
+        if resp.status_code == 201:
+            got = await client.get(f"/v1/agents/{agent_id}")
+            assert got.status_code == 200, got.text
+            got_desc = got.json().get("description", "")
+            decoded_unicode = "\\u" * 100
+            expected = (
+                f"T0563-marker-{unique_suffix}-{decoded_unicode}-end"
+            )
+            assert got_desc == expected, (
+                f"description corrupted on round-trip:\n"
+                f"  expected (len={len(expected)}): "
+                f"{expected[:80]!r}...\n"
+                f"  got      (len={len(got_desc)}): "
+                f"{got_desc[:80]!r}..."
+            )
+    finally:
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")

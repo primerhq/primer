@@ -218,3 +218,39 @@ async def test_t0326_ic_config_delete_before_put_clean_envelope(
         envelope = resp.json()
         assert envelope["type"].startswith("/errors/"), envelope
         assert envelope["type"] != "/errors/internal", envelope
+
+
+# ============================================================================
+# T0560 — /v1/agents/search query="   " (whitespace-only) clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0560_search_with_whitespace_only_query_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0560 — Search query="   " (three spaces, no other chars).
+    Per the SearchRequest spec, `query` has min_length=1; whether
+    the validator strips whitespace before checking is the unknown
+    being pinned. Pin: clean envelope (422 if validator rejects
+    whitespace-only OR 503 if it reaches subsystem-inactive OR 200
+    with empty hits if subsystem is active and treats whitespace
+    as no-op). Never /errors/internal.
+    """
+    resp = await client.post(
+        "/v1/agents/search",
+        json={"query": "   ", "top_k": 5},
+    )
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"whitespace-only query leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code in (200, 422, 503), (
+        f"unexpected status: {resp.status_code}: {resp.text}"
+    )
+    # If 200 (subsystem active), hits is a list; if 503 (inactive)
+    # or 422 (rejected), envelope is cleanly typed
+    if resp.status_code == 200:
+        assert isinstance(resp.json().get("hits"), list), resp.text
+    else:
+        assert envelope.get("type", "").startswith("/errors/"), envelope
