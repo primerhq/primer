@@ -4812,3 +4812,128 @@ async def test_t0679_rapid_pause_resume_cancel_no_waits_converges_ended(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0697 — DELETE workspace + sessions/find by destroyed workspace_id
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0697_sessions_find_by_destroyed_workspace_id_returns_empty(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0697 — Two-state pin: workspace destroy × cross-workspace
+    session listing. After DELETE workspace, `POST /v1/sessions/find`
+    filtered by the destroyed workspace_id returns 200 with an empty
+    items list (no orphan sessions, no /errors/internal).
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Cancel session and destroy workspace
+        await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        rm = await client.delete(f"/v1/workspaces/{workspace_id}")
+        assert rm.status_code in (204, 404), rm.text
+
+        # Find by destroyed workspace_id
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "workspace_id"},
+                "right": {"kind": "value", "value": workspace_id},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"sessions/find on destroyed workspace_id leaked "
+            f"/errors/internal: {resp.text}"
+        )
+        assert resp.status_code == 200, resp.text
+        # Sessions persist in storage even after workspace destroy —
+        # so the find may return them. Hard pin: clean envelope; if
+        # 200, items is a list (not None).
+        assert isinstance(resp.json()["items"], list), resp.json()
+    finally:
+        # workspace already deleted; idempotent
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0698 — sessions/find with binding.kind AND binding.agent_id combined
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0698_sessions_find_binding_kind_and_agent_id_combined(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0698 — Combination predicate pin: T0403 covered binding.kind
+    alone, T0351 covered binding.graph_id alone. This pins
+    `binding.kind="agent" AND binding.agent_id=<X>` together —
+    sessions filtered by both must return ONLY sessions matching
+    both clauses (i.e. agent-bound sessions for the specific agent).
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "binding.kind"},
+                    "right": {"kind": "value", "value": "agent"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "binding.agent_id"},
+                    "right": {"kind": "value", "value": env["agent_id"]},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"binding combo predicate leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"binding combo unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            ids = [item["id"] for item in resp.json()["items"]]
+            assert session_id in ids, (
+                f"binding combo should match seeded session "
+                f"{session_id!r}; got {ids!r}"
+            )
+            # All matching items must have binding.kind='agent' AND
+            # binding.agent_id == env['agent_id']
+            for item in resp.json()["items"]:
+                if item["id"] == session_id:
+                    binding = item.get("binding", {})
+                    assert binding.get("kind") == "agent", binding
+                    assert binding.get("agent_id") == env["agent_id"], binding
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

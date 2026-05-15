@@ -9517,3 +9517,274 @@ async def test_t0691_files_info_with_nul_byte_in_path_clean_envelope(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0693–T0694 — Workspace /log racing OTHER state machines (T0681 siblings)
+# ============================================================================
+#
+# T0681 covered /log racing destroy. These two cover /log racing different
+# concurrent ops on the workspace's .state repo (resume signal — though
+# the worker must actually run for .state to grow — and concurrent
+# materialise from same template).
+
+
+@pytest.mark.asyncio
+async def test_t0693_workspace_log_racing_concurrent_resume_signal(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0693 — Race a /log GET against a /resume signal on a session
+    in the same workspace. Resume triggers worker activity that may
+    write to .state; /log reads that .state. Both surfaces must
+    return clean envelopes.
+
+    No LM Studio needed: the session uses placeholder Anthropic
+    creds and fails fast through _handle_fatal — the worker still
+    touches .state during the failure path.
+    """
+    import asyncio as _asyncio
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    # Need an LLM provider + agent for the session
+    llm_provider_id = f"llm-t0693-{unique_suffix}"
+    agent_id = f"agent-t0693-{unique_suffix}"
+    pr = await client.post("/v1/llm_providers", json={
+        "id": llm_provider_id,
+        "provider": "anthropic",
+        "models": [
+            {"name": "claude-sonnet-4-6", "context_length": 200_000},
+        ],
+        "config": {"api_key": "placeholder"},
+        "limits": {"max_concurrency": 1},
+    })
+    assert pr.status_code == 201, pr.text
+    ag = await client.post("/v1/agents", json={
+        "id": agent_id,
+        "description": "T0693 agent",
+        "model": {"provider_id": llm_provider_id,
+                  "model_name": "claude-sonnet-4-6"},
+        "tools": [],
+    })
+    assert ag.status_code == 201, ag.text
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": agent_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # Race resume + /log GET
+        resume_task = _asyncio.create_task(
+            client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+            ),
+        )
+        log_task = _asyncio.create_task(
+            client.get(f"/v1/workspaces/{workspace_id}/log"),
+        )
+        resume_resp, log_resp = await _asyncio.gather(
+            resume_task, log_task, return_exceptions=True,
+        )
+
+        assert not isinstance(resume_resp, BaseException), resume_resp
+        assert not isinstance(log_resp, BaseException), log_resp
+
+        resume_env = resume_resp.json() if resume_resp.content else {}
+        assert resume_env.get("type") != "/errors/internal", (
+            f"racing resume leaked /errors/internal: {resume_resp.text}"
+        )
+        assert resume_resp.status_code in (200, 404, 409), (
+            f"racing resume unexpected status: "
+            f"{resume_resp.status_code}: {resume_resp.text}"
+        )
+
+        log_env = log_resp.json() if log_resp.content else {}
+        assert log_env.get("type") != "/errors/internal", (
+            f"racing /log leaked /errors/internal: {log_resp.text}"
+        )
+        assert log_resp.status_code in (200, 404), (
+            f"racing /log unexpected status: "
+            f"{log_resp.status_code}: {log_resp.text}"
+        )
+    finally:
+        if session_id is not None and workspace_id is not None:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{llm_provider_id}")
+
+
+@pytest.mark.asyncio
+async def test_t0694_workspace_log_racing_concurrent_materialise(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0694 — Cold-start race: GET /log on a fresh workspace
+    (whose .state repo may be lazily initialised) racing a SECOND
+    materialise from the same template. Both materialise calls
+    succeed (distinct workspace ids); /log on either workspace
+    returns clean envelope. T0681 sibling for materialise side.
+    """
+    import asyncio as _asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    created_ids: list[str] = []
+    try:
+        # Pre-create workspace A
+        ws_a = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws_a.status_code == 201, ws_a.text
+        workspace_a = ws_a.json()["id"]
+        created_ids.append(workspace_a)
+
+        # Race: GET /log on workspace A + POST new materialise from same tpl
+        async def _materialise() -> httpx.Response:
+            return await client.post(
+                "/v1/workspaces",
+                json=_workspace_body(template_id=template_id),
+            )
+
+        async def _log() -> httpx.Response:
+            return await client.get(
+                f"/v1/workspaces/{workspace_a}/log",
+            )
+
+        mat_resp, log_resp = await _asyncio.gather(
+            _materialise(), _log(), return_exceptions=True,
+        )
+        assert not isinstance(mat_resp, BaseException), mat_resp
+        assert not isinstance(log_resp, BaseException), log_resp
+
+        # Materialise: clean envelope (201 expected)
+        mat_env = mat_resp.json() if mat_resp.content else {}
+        assert mat_env.get("type") != "/errors/internal", (
+            f"racing materialise leaked /errors/internal: {mat_resp.text}"
+        )
+        assert mat_resp.status_code == 201, (
+            f"racing materialise expected 201: "
+            f"{mat_resp.status_code}: {mat_resp.text}"
+        )
+        created_ids.append(mat_resp.json()["id"])
+
+        # /log: clean envelope (200 with commits, or 404 if cold-start
+        # raced unfavorably).
+        log_env = log_resp.json() if log_resp.content else {}
+        assert log_env.get("type") != "/errors/internal", (
+            f"racing /log leaked /errors/internal: {log_resp.text}"
+        )
+        assert log_resp.status_code in (200, 404), (
+            f"racing /log unexpected status: "
+            f"{log_resp.status_code}: {log_resp.text}"
+        )
+        if log_resp.status_code == 200:
+            assert "commits" in log_resp.json(), log_resp.json()
+    finally:
+        for wid in created_ids:
+            try:
+                await client.delete(f"/v1/workspaces/{wid}")
+            except Exception:
+                pass
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0696 — Cancel session then immediate /log GET on same workspace
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0696_cancel_session_then_immediate_log_get_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0696 — Two-state pin: cancel a session, then immediately GET
+    /log on the same workspace. The cancel signal triggers .state
+    writes (if the worker had started any). /log read mid-cancel
+    must not leak /errors/internal.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    llm_provider_id = f"llm-t0696-{unique_suffix}"
+    agent_id = f"agent-t0696-{unique_suffix}"
+    pr = await client.post("/v1/llm_providers", json={
+        "id": llm_provider_id,
+        "provider": "anthropic",
+        "models": [
+            {"name": "claude-sonnet-4-6", "context_length": 200_000},
+        ],
+        "config": {"api_key": "placeholder"},
+        "limits": {"max_concurrency": 1},
+    })
+    assert pr.status_code == 201, pr.text
+    ag = await client.post("/v1/agents", json={
+        "id": agent_id,
+        "description": "T0696",
+        "model": {"provider_id": llm_provider_id,
+                  "model_name": "claude-sonnet-4-6"},
+        "tools": [],
+    })
+    assert ag.status_code == 201, ag.text
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": agent_id},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        cancel_env = cancel.json() if cancel.content else {}
+        assert cancel_env.get("type") != "/errors/internal", cancel.text
+        assert cancel.status_code == 200, cancel.text
+
+        # Immediate /log GET — no waits
+        log_resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/log",
+        )
+        log_env = log_resp.json() if log_resp.content else {}
+        assert log_env.get("type") != "/errors/internal", (
+            f"/log post-cancel leaked /errors/internal: {log_resp.text}"
+        )
+        assert log_resp.status_code == 200, (
+            f"/log post-cancel expected 200: "
+            f"{log_resp.status_code}: {log_resp.text}"
+        )
+        assert "commits" in log_resp.json(), log_resp.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{llm_provider_id}")
