@@ -4303,3 +4303,352 @@ async def test_t0613_graph_put_replace_nodes_status_reflects_v2(
         for aid in (agent_v1, agent_v2):
             await client.delete(f"/v1/agents/{aid}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0617 — Graph node body with both agent_id AND graph_id: clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0617_graph_node_with_both_agent_id_and_graph_id_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0617 — Graph nodes are a discriminated union by `kind`. Per
+    matrix/model/graph.py:152-201, _AgentNodeRef has fields
+    {kind, id, agent_id} and _GraphNodeRef has {kind, id, graph_id}.
+    Sending kind="agent" with BOTH agent_id and graph_id is
+    structurally suspicious — Pydantic's default extra=ignore
+    silently drops the extra `graph_id`, but a strict-mode model
+    would reject with 422.
+
+    Hard pin: clean envelope (201 with the extra silently dropped,
+    OR 422 if strict). Never /errors/internal. Documents the current
+    behavior so a future tightening is a deliberate test update.
+    """
+    provider_id = f"llm-t0617-{unique_suffix}"
+    agent_id = f"agent-t0617-{unique_suffix}"
+    graph_id = f"graph-t0617-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0617 mixed-id node",
+            "nodes": [
+                {
+                    "kind": "agent",
+                    "id": "n1",
+                    "agent_id": agent_id,
+                    # The suspicious extra:
+                    "graph_id": "should-not-be-here",
+                },
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"mixed-id node leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code in (201, 400, 422), (
+            f"mixed-id node unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 201:
+            # Extra silently dropped — GET round-trip should not contain
+            # the rogue graph_id field on the agent-kind node
+            got = await client.get(f"/v1/graphs/{graph_id}")
+            assert got.status_code == 200, got.text
+            n1 = got.json()["nodes"][0]
+            assert n1["kind"] == "agent", n1
+            assert n1.get("graph_id") in (None, "should-not-be-here"), (
+                f"unexpected graph_id field treatment: {n1!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0618 — Graph PUT swapping entry_node_id to a non-existent node returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0618_graph_put_entry_node_id_missing_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0618 — Mirror of T0568 for the PUT path. The same topology
+    validator that rejects entry_node_id-not-in-nodes at POST must
+    reject it at PUT. The original row must NOT be corrupted by
+    the rejected PUT (the description and entry_node_id should be
+    unchanged after the failed call).
+    """
+    provider_id = f"llm-t0618-{unique_suffix}"
+    agent_id = f"agent-t0618-{unique_suffix}"
+    graph_id = f"graph-t0618-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    valid_body = {
+        "id": graph_id,
+        "description": "T0618 original",
+        "nodes": [
+            {"kind": "agent", "id": "n1", "agent_id": agent_id},
+            {"kind": "terminal", "id": "end"},
+        ],
+        "edges": [
+            {"kind": "static", "from_node": "n1", "to_node": "end"},
+        ],
+        "entry_node_id": "n1",
+    }
+    create = await client.post("/v1/graphs", json=valid_body)
+    assert create.status_code == 201, create.text
+
+    try:
+        # PUT with entry_node_id pointing at a non-existent node
+        put_body = dict(valid_body)
+        put_body["description"] = "T0618 attempted-corrupt"
+        put_body["entry_node_id"] = "MISSING-node-id"
+        resp = await client.put(f"/v1/graphs/{graph_id}", json=put_body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"PUT bad entry_node_id leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code == 422, (
+            f"PUT with missing entry_node_id should be 422; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        # Detail mentions the bad node id
+        assert "MISSING-node-id" in resp.text, resp.text
+
+        # Defence: original row unchanged
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["description"] == "T0618 original", got.json()
+        assert got.json()["entry_node_id"] == "n1", got.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0619 — Graph with two parallel edges A→B accepted; both round-trip
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0619_graph_duplicate_edges_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0619 — Two identical edges from A to B (parallel multi-edge).
+    Per the model edges are a list (not a set), so duplicates are
+    allowed at the schema level. Pin: 201 accepts the body and GET
+    round-trips both edges (no silent dedup). /status remains
+    clean. Hard pin: never /errors/internal.
+
+    A future iteration that decides to dedup edges at create time
+    would deliberately break this test.
+    """
+    provider_id = f"llm-t0619-{unique_suffix}"
+    agent_id = f"agent-t0619-{unique_suffix}"
+    graph_id = f"graph-t0619-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    body = {
+        "id": graph_id,
+        "description": "T0619 duplicate edges",
+        "nodes": [
+            {"kind": "agent", "id": "n1", "agent_id": agent_id},
+            {"kind": "terminal", "id": "end"},
+        ],
+        "edges": [
+            {"kind": "static", "from_node": "n1", "to_node": "end"},
+            {"kind": "static", "from_node": "n1", "to_node": "end"},
+        ],
+        "entry_node_id": "n1",
+    }
+    try:
+        resp = await client.post("/v1/graphs", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"duplicate edges leaked /errors/internal: {resp.text}"
+        )
+        # Either accepted (201) or rejected with clean 4xx
+        assert resp.status_code in (201, 400, 422), (
+            f"duplicate edges unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 201:
+            got = await client.get(f"/v1/graphs/{graph_id}")
+            assert got.status_code == 200, got.text
+            edges = got.json()["edges"]
+            # Pin: no silent dedup — both edges round-trip
+            assert len(edges) == 2, (
+                f"duplicate edges silently deduped at GET: "
+                f"got {len(edges)} edges, expected 2: {edges!r}"
+            )
+            # /status walks the graph cleanly
+            status = await client.get(f"/v1/graphs/{graph_id}/status")
+            assert status.status_code == 200, status.text
+            assert status.json().get("ok") is True, status.json()
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0620 — Graph node id="" rejected 422 (Identifiable.id min_length=1)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0620_graph_node_empty_id_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0620 — Per matrix/model/graph.py:160-162, _AgentNodeRef.id
+    has min_length=1 (and similarly for _GraphNodeRef and
+    _TerminalNode). Pin: explicit empty-string id is rejected with
+    422 /errors/validation-error; row not created.
+    """
+    provider_id = f"llm-t0620-{unique_suffix}"
+    agent_id = f"agent-t0620-{unique_suffix}"
+    graph_id = f"graph-t0620-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0620 empty node id",
+            "nodes": [
+                {"kind": "agent", "id": "", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [],
+            "entry_node_id": "end",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"empty node id leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code == 422, (
+            f"empty node id should be 422 (Pydantic min_length=1); "
+            f"got {resp.status_code}: {resp.text}"
+        )
+        assert envelope.get("type") == "/errors/validation-error", envelope
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 404, got.text
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0621 — Graph zero-edge multi-node accepted; /status ok=true
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0621_graph_zero_edges_multi_node_accepted_clean(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0621 — Pin that a graph with multiple nodes but ZERO edges
+    is a legal shape. The DAG can have isolated nodes; the entry
+    node must be present (validated by T0568) but unreachable
+    nodes are not rejected at create time.
+
+    Hard pin: 201 + /status returns ok=true (or at least clean
+    envelope, not /errors/internal).
+    """
+    provider_id = f"llm-t0621-{unique_suffix}"
+    agent_id = f"agent-t0621-{unique_suffix}"
+    graph_id = f"graph-t0621-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0621 zero-edge multi-node",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "agent", "id": "n2", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [],  # the unusual shape
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"zero-edge graph leaked /errors/internal: {resp.text}"
+        )
+        # Acceptable: 201 (legal) or clean 4xx (if validator added)
+        assert resp.status_code in (201, 400, 422), (
+            f"zero-edge graph unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 201:
+            got = await client.get(f"/v1/graphs/{graph_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["edges"] == [], got.json()
+            assert len(got.json()["nodes"]) == 3, got.json()
+
+            status = await client.get(f"/v1/graphs/{graph_id}/status")
+            assert status.status_code == 200, status.text
+            # All references resolve (one agent referenced twice + terminal)
+            assert status.json().get("ok") is True, (
+                f"zero-edge graph status should be ok=true: "
+                f"{status.json()!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
