@@ -4074,3 +4074,88 @@ async def test_t0610_cancel_then_steer_then_pause_on_ended_session(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0611 — Steer→cancel: nested vs top-level GET (T0555 drift sibling)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0611_nested_vs_toplevel_get_after_steer_then_cancel(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0611 — Sister of T0555 for the steer-then-cancel sequence
+    (T0555 covers cancel-then-steer-then-cancel). Spec §12 documents
+    the nested handler reads in-memory `AgentSession` while top-level
+    reads storage; the two can diverge on cancel.
+
+    Sequence:
+        1. Create CREATED agent-bound session
+        2. Steer (queue an instruction)
+        3. Cancel → ENDED/cancelled
+        4. Compare nested GET vs top-level GET
+
+    Hard pin: both responses must be 200, neither leaks
+    /errors/internal, and top-level shows ended/cancelled. Nested
+    may be stale (created/running/ended) but never a contradictory
+    non-status value.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # 1+2. Steer first (CREATED state)
+        steer = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
+            json={"instruction": "T0611 steer-before-cancel"},
+        )
+        assert steer.status_code < 500, steer.text
+        envelope = steer.json() if steer.content else {}
+        assert envelope.get("type") != "/errors/internal", steer.text
+
+        # 3. Cancel
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+        assert cancel.json()["status"] == "ended", cancel.json()
+        assert cancel.json()["ended_reason"] == "cancelled", cancel.json()
+
+        # 4. Top-level GET reads storage — authoritative
+        top = await client.get(f"/v1/sessions/{session_id}")
+        top_env = top.json() if top.content else {}
+        assert top_env.get("type") != "/errors/internal", top.text
+        assert top.status_code == 200, top.text
+        top_body = top.json()
+        assert top_body["status"] == "ended", top_body
+        assert top_body["ended_reason"] == "cancelled", top_body
+        assert top_body.get("ended_at") is not None, top_body
+
+        # Nested GET reads in-memory AgentSession — may be stale
+        nested = await client.get(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}",
+        )
+        nested_env = nested.json() if nested.content else {}
+        assert nested_env.get("type") != "/errors/internal", nested.text
+        assert nested.status_code == 200, nested.text
+        nested_body = nested.json()
+        nested_status = nested_body.get("status")
+        # Documented drift set: stale (created/running) OR refreshed (ended)
+        assert nested_status in ("created", "running", "ended"), (
+            f"nested status outside the documented drift set: "
+            f"{nested_status!r} — full body={nested_body!r}"
+        )
+        if nested_status != top_body["status"]:
+            print(
+                f"\n[T0611] documented stale-cache drift observed "
+                f"(steer-then-cancel): top={top_body['status']!r} vs "
+                f"nested={nested_status!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

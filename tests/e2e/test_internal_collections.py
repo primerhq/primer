@@ -293,3 +293,86 @@ async def test_t0587_search_with_emoji_only_query_clean_envelope(
         assert isinstance(resp.json().get("hits"), list), resp.text
     else:
         assert envelope.get("type", "").startswith("/errors/"), envelope
+
+
+# ============================================================================
+# T0603 — IC config PUT with embedding_model="" returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0603_ic_config_put_empty_embedding_model_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0603 — Per matrix/api/routers/internal_collections.py:79-86,
+    `embedding_model` has `min_length=1`. Pin: explicit empty string
+    is rejected with 422 /errors/validation-error. The Pydantic
+    body validator runs before the embedding-provider lookup, so this
+    works against an inactive subsystem with no setup needed.
+
+    Defence: subsequent GET still returns 404 (config row not created
+    by the rejected PUT).
+    """
+    body = {
+        "embedding_provider_id": "any-placeholder",
+        "embedding_model": "",
+    }
+    resp = await client.put("/v1/internal_collections/config", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"empty embedding_model leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code == 422, (
+        f"empty embedding_model should be 422 (Pydantic min_length=1); "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type") == "/errors/validation-error", envelope
+
+    # Defence: config row NOT created
+    got = await client.get("/v1/internal_collections/config")
+    assert got.status_code == 404, got.text
+
+
+# ============================================================================
+# T0612 — Two concurrent IC-config DELETEs converge cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0612_ic_config_concurrent_deletes_converge_clean(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0612 — Fire two concurrent DELETEs on /v1/internal_collections/
+    config. Both must return clean envelopes (204 / 404) — never
+    /errors/internal under config-DELETE race. Subsequent GET must
+    return 404 (no config row).
+
+    No bootstrap required: bringup leaves the subsystem inactive,
+    so both DELETEs see "no row" — but the race is meaningful
+    because the handler may set up backend cache state on either
+    path.
+    """
+    import asyncio
+
+    async def _del() -> httpx.Response:
+        return await client.delete("/v1/internal_collections/config")
+
+    r1, r2 = await asyncio.gather(_del(), _del(), return_exceptions=True)
+    for i, r in enumerate((r1, r2)):
+        assert not isinstance(r, BaseException), (
+            f"DELETE #{i} raised: {r!r}"
+        )
+        envelope = r.json() if r.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"DELETE #{i} leaked /errors/internal: "
+            f"{r.status_code}: {r.text}"
+        )
+        # 204 (no-op idempotent) or 404 (not found) — both acceptable
+        assert r.status_code in (204, 404), (
+            f"DELETE #{i} unexpected status: "
+            f"{r.status_code}: {r.text}"
+        )
+
+    # Subsequent GET shows no config
+    got = await client.get("/v1/internal_collections/config")
+    assert got.status_code == 404, got.text

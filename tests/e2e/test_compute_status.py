@@ -4169,3 +4169,137 @@ async def test_t0600_agent_burst_create_delete_race_clean_envelopes(
             except Exception:
                 pass
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0589 — POST /v1/llm_providers with limits.max_concurrency=0 returns 422
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0589_llm_provider_max_concurrency_zero_returns_422(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0589 — Per matrix/model/provider.py:313, `Limits.max_concurrency`
+    is `PositiveInt`. Pydantic rejects 0 with 422 — never accepted as
+    "no concurrency cap" (a different field would be used for that).
+
+    Defence: row not created on rejection.
+    """
+    provider_id = f"llm-t0589-{unique_suffix}"
+    body = _llm_body(provider_id)
+    body["limits"] = {"max_concurrency": 0}  # the offending value
+
+    resp = await client.post("/v1/llm_providers", json=body)
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"max_concurrency=0 leaked /errors/internal: {resp.text}"
+    )
+    assert resp.status_code == 422, (
+        f"max_concurrency=0 should be 422 (PositiveInt); "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type") == "/errors/validation-error", envelope
+
+    got = await client.get(f"/v1/llm_providers/{provider_id}")
+    assert got.status_code == 404, got.text
+    await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0613 — Graph PUT v1→v2 with disjoint nodes reflects v2 on /status
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0613_graph_put_replace_nodes_status_reflects_v2(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0613 — POST graph v1 with one node set, then PUT graph v2
+    with a disjoint node set, then immediately GET /status. The
+    status walk must reflect v2's nodes (no stale node-cache
+    keeping v1's references alive).
+
+    Catches a regression where the status endpoint reads from an
+    in-memory cache that wasn't invalidated by the PUT, leading
+    to v1's references being walked even after the row was
+    replaced.
+    """
+    provider_id = f"llm-t0613-{unique_suffix}"
+    agent_v1 = f"agent-v1-t0613-{unique_suffix}"
+    agent_v2 = f"agent-v2-t0613-{unique_suffix}"
+    graph_id = f"graph-t0613-{unique_suffix}"
+    missing_agent = f"agent-MISSING-t0613-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    try:
+        # Two real agents
+        for aid in (agent_v1, agent_v2):
+            ag = await client.post(
+                "/v1/agents",
+                json=_agent_body(aid, provider_id=provider_id, tools=[]),
+            )
+            assert ag.status_code == 201, ag.text
+
+        # v1 references agent_v1 (real) — /status should show ok=true
+        v1 = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_id,
+                "description": "T0613 v1",
+                "nodes": [
+                    {"kind": "agent", "id": "n_v1",
+                     "agent_id": agent_v1},
+                ],
+                "edges": [],
+                "entry_node_id": "n_v1",
+            },
+        )
+        assert v1.status_code == 201, v1.text
+        s1 = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert s1.status_code == 200, s1.text
+        assert s1.json()["ok"] is True, (
+            f"v1 status should be ok=true (agent exists); got {s1.json()!r}"
+        )
+
+        # PUT v2 with a DISJOINT node set referencing missing_agent.
+        # /status MUST reflect v2 (ok=false with missing-agent issue)
+        # NOT keep walking v1's now-stale node references.
+        v2_body = {
+            "id": graph_id,
+            "description": "T0613 v2 — replaced nodes",
+            "nodes": [
+                {"kind": "agent", "id": "n_v2",
+                 "agent_id": missing_agent},
+            ],
+            "edges": [],
+            "entry_node_id": "n_v2",
+        }
+        v2 = await client.put(f"/v1/graphs/{graph_id}", json=v2_body)
+        assert v2.status_code == 200, v2.text
+
+        # Immediate /status — must reflect v2's missing reference
+        s2 = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert s2.status_code == 200, s2.text
+        body = s2.json()
+        assert body["ok"] is False, (
+            f"v2 /status should be ok=false (refs missing agent); "
+            f"got {body!r} — stale node-cache from v1?"
+        )
+        # The issue should reference the MISSING agent id (proof we
+        # walked v2's nodes), not the still-existing agent_v1.
+        issues_str = " ".join(str(i) for i in body["issues"])
+        assert missing_agent in issues_str, (
+            f"v2 /status didn't reference the missing agent {missing_agent!r}; "
+            f"issues={body['issues']!r} — likely walked v1's stale nodes"
+        )
+        assert agent_v1 not in issues_str, (
+            f"v2 /status still references v1's agent {agent_v1!r}; "
+            f"issues={body['issues']!r} — node-cache not invalidated"
+        )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        for aid in (agent_v1, agent_v2):
+            await client.delete(f"/v1/agents/{aid}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
