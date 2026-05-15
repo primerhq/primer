@@ -2555,3 +2555,398 @@ async def test_t0500_post_graph_concurrent_put_same_id_clean(
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0519 — Graph node ids: whitespace / unicode / length-1 / length-200
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0519_graph_node_ids_edge_cases_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0519 — Per matrix/model/graph.py:159-162 + 198, node `id`
+    is a `str` with `min_length=1`. Pin: edge-shaped node ids
+    (single char, unicode, leading-whitespace-only, very long)
+    round-trip byte-exact through POST → GET, and graph /status
+    returns a clean envelope.
+    """
+    provider_id = f"llm-t0519-{unique_suffix}"
+    agent_id = f"agent-t0519-{unique_suffix}"
+    graph_id = f"graph-t0519-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    edge_ids = [
+        "x",                  # length-1
+        "ノード",             # unicode (Japanese)
+        "n" * 200,            # length-200
+        " ws ",               # leading + trailing whitespace
+    ]
+    try:
+        nodes = [
+            {"kind": "agent", "id": eid, "agent_id": agent_id}
+            for eid in edge_ids
+        ] + [{"kind": "terminal", "id": "end"}]
+        edges = [
+            {"kind": "static", "from_node": eid, "to_node": "end"}
+            for eid in edge_ids
+        ]
+        body = {
+            "id": graph_id,
+            "description": "T0519 node-id edge cases",
+            "nodes": nodes,
+            "edges": edges,
+            "entry_node_id": edge_ids[0],
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, (
+            f"edge-shaped node ids should be accepted; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        got_node_ids = [n["id"] for n in got.json()["nodes"]]
+        for eid in edge_ids:
+            assert eid in got_node_ids, (
+                f"node id {eid!r} missing from round-trip: "
+                f"{got_node_ids!r}"
+            )
+
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        body_status = status.json()
+        assert "ok" in body_status, body_status
+        assert isinstance(body_status.get("issues"), list), body_status
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0520 — Graph entry_node_id at subgraph node: bound session converges cleanly
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0520_graph_entry_at_subgraph_node_session_converges_cleanly(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0520 — A parent graph whose entry_node_id is a node of
+    kind=graph (subgraph reference). Pin: graph CRUD accepts the
+    shape (201 + round-trip); a session bound to the parent
+    converges to terminal via _handle_fatal (graph executor
+    NotImplemented per T0429); never sticks RUNNING.
+
+    The child subgraph reference doesn't even need to exist
+    (orphan-tolerated per T0475) — the load-bearing assertion is
+    the parent graph's session terminates cleanly.
+    """
+    import asyncio
+    import tempfile
+
+    provider_id = f"llm-t0520-{unique_suffix}"
+    agent_id = f"agent-t0520-{unique_suffix}"
+    parent_graph_id = f"graph-parent-t0520-{unique_suffix}"
+    child_subgraph_id = f"graph-child-t0520-{unique_suffix}"
+    wp_id = f"wp-t0520-{unique_suffix}"
+    tpl_id = f"wt-t0520-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    workspace_id: str | None = None
+    session_id: str | None = None
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            parent_body = {
+                "id": parent_graph_id,
+                "description": "T0520 parent graph",
+                "nodes": [
+                    {
+                        "kind": "graph", "id": "subnode",
+                        "graph_id": child_subgraph_id,
+                    },
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {
+                        "kind": "static", "from_node": "subnode",
+                        "to_node": "end",
+                    },
+                ],
+                "entry_node_id": "subnode",
+            }
+            gr = await client.post("/v1/graphs", json=parent_body)
+            assert gr.status_code == 201, gr.text
+
+            got = await client.get(f"/v1/graphs/{parent_graph_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["entry_node_id"] == "subnode", got.json()
+
+            wp = await client.post(
+                "/v1/workspace_providers",
+                json={
+                    "id": wp_id,
+                    "provider": "local",
+                    "config": {"kind": "local", "path": tmp},
+                },
+            )
+            assert wp.status_code == 201, wp.text
+            tpl = await client.post(
+                "/v1/workspace_templates",
+                json={
+                    "id": tpl_id,
+                    "description": "T0520",
+                    "provider_id": wp_id,
+                    "backend": {"kind": "local"},
+                },
+            )
+            assert tpl.status_code == 201, tpl.text
+            ws = await client.post(
+                "/v1/workspaces", json={"template_id": tpl_id},
+            )
+            assert ws.status_code == 201, ws.text
+            workspace_id = ws.json()["id"]
+
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json={
+                    "binding": {
+                        "kind": "graph", "graph_id": parent_graph_id,
+                    },
+                    "auto_start": False,
+                },
+            )
+            assert sess.status_code == 201, sess.text
+            session_id = sess.json()["id"]
+
+            resume = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/"
+                f"{session_id}/resume",
+            )
+            assert resume.status_code == 200, resume.text
+
+            final: dict = {}
+            for _ in range(60):
+                r = await client.get(f"/v1/sessions/{session_id}")
+                assert r.status_code == 200, r.text
+                final = r.json()
+                if final.get("status") == "ended":
+                    break
+                await asyncio.sleep(0.5)
+            assert final.get("status") == "ended", (
+                f"subgraph-entry session did not converge in 30s: "
+                f"{final!r}"
+            )
+            assert final.get("ended_reason") == "failed", final
+            assert final.get("last_error"), final
+        finally:
+            if session_id is not None and workspace_id is not None:
+                await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions/"
+                    f"{session_id}/cancel",
+                )
+            if workspace_id is not None:
+                await client.delete(f"/v1/workspaces/{workspace_id}")
+            await client.delete(f"/v1/graphs/{parent_graph_id}")
+            await client.delete(f"/v1/workspace_templates/{tpl_id}")
+            await client.delete(f"/v1/workspace_providers/{wp_id}")
+            await client.delete(f"/v1/agents/{agent_id}")
+            await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0521 — Graph with subgraph + agent siblings accepted (201)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0521_graph_with_subgraph_and_agent_siblings_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0521 — A graph may mix node kinds: a subgraph reference
+    AND an agent node in the same graph. Pin: 201 at create; both
+    kinds round-trip on GET; /status surfaces only refs that
+    genuinely miss (the subgraph_id is orphan-tolerated like T0475).
+    """
+    provider_id = f"llm-t0521-{unique_suffix}"
+    agent_id = f"agent-t0521-{unique_suffix}"
+    graph_id = f"graph-t0521-{unique_suffix}"
+    missing_subgraph_id = f"missing-sub-t0521-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0521 mixed node kinds",
+            "nodes": [
+                {"kind": "agent", "id": "an", "agent_id": agent_id},
+                {
+                    "kind": "graph", "id": "sn",
+                    "graph_id": missing_subgraph_id,
+                },
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "an", "to_node": "sn"},
+                {"kind": "static", "from_node": "sn", "to_node": "end"},
+            ],
+            "entry_node_id": "an",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, resp.text
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        kinds = sorted(n["kind"] for n in got.json()["nodes"])
+        assert kinds == sorted(["agent", "graph", "terminal"]), kinds
+
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        body_status = status.json()
+        assert body_status.get("ok") is False, body_status
+        issues = body_status.get("issues", [])
+        assert any(
+            missing_subgraph_id in str(i) for i in issues
+        ), issues
+        for issue in issues:
+            assert agent_id not in str(issue), (
+                f"agent {agent_id!r} (which exists) wrongly in "
+                f"issues: {issues!r}"
+            )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0522 — Graph with empty description="" accepted 201; round-trip
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0522_graph_with_empty_description_accepted(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0522 — Per matrix/model/common.Describeable, `description`
+    defaults to "" and has no min_length constraint. Pin: explicit
+    empty description is accepted (201) and round-trips byte-exact;
+    /status returns clean envelope.
+    """
+    provider_id = f"llm-t0522-{unique_suffix}"
+    agent_id = f"agent-t0522-{unique_suffix}"
+    graph_id = f"graph-t0522-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, (
+            f"empty description should be accepted; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        assert got.json().get("description") == "", got.json()
+
+        status = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert status.status_code == 200, status.text
+        assert status.json().get("ok") is True, status.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0523 — Graph max_iterations=1 (PositiveInt lower bound) accepted
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0523_graph_max_iterations_one_accepted_round_trip(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0523 — PositiveInt lower bound is 1. Pin: max_iterations=1
+    (the smallest legal value) is accepted; round-trips byte-exact
+    via GET. Lower-bound complement to T0497 (2**31 upper) and
+    T0495/T0496 (rejected 0/-5).
+    """
+    provider_id = f"llm-t0523-{unique_suffix}"
+    agent_id = f"agent-t0523-{unique_suffix}"
+    graph_id = f"graph-t0523-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+
+    try:
+        body = {
+            "id": graph_id,
+            "description": "T0523",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "terminal", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "n1",
+            "max_iterations": 1,
+        }
+        resp = await client.post("/v1/graphs", json=body)
+        assert resp.status_code == 201, resp.text
+
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["max_iterations"] == 1, got.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        await client.delete(f"/v1/agents/{agent_id}")
+        await client.delete(f"/v1/llm_providers/{provider_id}")
