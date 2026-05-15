@@ -1700,3 +1700,223 @@ async def test_t0652_predicate_gte_float_on_jsonb_nested_numeric(
     finally:
         for did in created:
             await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0668 — Predicate `~=` LIKE on JSONB nested numeric meta.score
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0668_predicate_like_on_jsonb_nested_numeric_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0668 — Cross-type sibling of the T0236 family. LIKE is a
+    string-only operator; running it against a JSONB nested NUMERIC
+    field forces the SQL builder into a type-conversion path.
+
+    Hard pin: never /errors/internal. Acceptable: 200 (translator
+    coerces numeric to TEXT for LIKE), 4xx (handler validates), or
+    502 (asyncpg type-bind crash — JSONB-coercion bug family).
+    """
+    prefix = f"doc-t0668-{unique_suffix}"
+    created: list[str] = []
+    try:
+        for score in range(1, 6):
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": f"{prefix}-{score}",
+                    "name": str(score),
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"score": score},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(f"{prefix}-{score}")
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "meta.score"},
+                    "right": {"kind": "value", "value": "1%"},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/documents/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"`~=` on JSONB nested numeric leaked /errors/internal: "
+            f"{resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"`~=` on JSONB nested numeric unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            # If translator coerces numeric to TEXT for LIKE,
+            # `1%` matches "1" only (since scores are 1..5).
+            out = sorted(item["id"] for item in resp.json()["items"])
+            assert out in (
+                [f"{prefix}-1"],  # exact "1"
+                [],               # translator returned nothing
+            ), f"unexpected matches: {out!r}"
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0669 — Predicate `in` on JSONB nested numeric meta.score with float-list
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0669_predicate_in_on_jsonb_nested_numeric_float_list(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0669 — Float-list sibling of T0633 (int-list on JSONB
+    numeric). `in [2.5, 4.5]` against meta.score with int values
+    [1..5] should return empty (no exact match) or surface the
+    JSONB-coercion bug family with 502. Never /errors/internal.
+    """
+    prefix = f"doc-t0669-{unique_suffix}"
+    created: list[str] = []
+    try:
+        for score in range(1, 6):
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": f"{prefix}-{score}",
+                    "name": str(score),
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"score": score},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(f"{prefix}-{score}")
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "in",
+                    "left": {"kind": "field", "name": "meta.score"},
+                    "right": {"kind": "value", "value": [2.5, 4.5]},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/documents/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"`in` float-list on JSONB numeric leaked /errors/internal: "
+            f"{resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"`in` float-list unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            # No int score equals 2.5 or 4.5
+            out = [item["id"] for item in resp.json()["items"]]
+            assert all(oid not in created for oid in out), (
+                f"float-list `in` matched int values unexpectedly: "
+                f"{out!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")
+
+
+# ============================================================================
+# T0670 — Predicate `=` boolean true against JSONB nested string meta.tag
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0670_predicate_eq_bool_against_jsonb_string_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0670 — Sister of T0597 (int vs string JSONB). `meta.tag = true`
+    where tags are strings. Acceptable: 200 empty, 4xx, or 502.
+    Hard pin: never /errors/internal.
+    """
+    prefix = f"doc-t0670-{unique_suffix}"
+    created: list[str] = []
+    try:
+        for i, tag in enumerate(("alpha", "true", "gamma")):
+            resp = await client.post(
+                "/v1/documents",
+                json={
+                    "id": f"{prefix}-{i}",
+                    "name": tag,
+                    "collection_id": f"unenforced-{unique_suffix}",
+                    "meta": {"tag": tag},
+                },
+            )
+            assert resp.status_code in (200, 201), resp.text
+            created.append(f"{prefix}-{i}")
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"{prefix}%"},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "meta.tag"},
+                    "right": {"kind": "value", "value": True},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/documents/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"bool=string JSONB leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"bool=string JSONB unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            out = [item["id"] for item in resp.json()["items"]]
+            # Strings like "true" don't equal the bool True in JSONB
+            assert all(oid not in created for oid in out), (
+                f"bool=string matched seeded rows: {out!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        for did in created:
+            await client.delete(f"/v1/documents/{did}")

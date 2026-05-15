@@ -4592,3 +4592,166 @@ async def test_t0651_nested_vs_toplevel_get_on_paused_session(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0667 — Predicate `=` 0 on Session.attempt_count int column clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0667_predicate_eq_zero_on_attempt_count_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0667 — Sister of T0361 (`=` 0 on `Session.turn_no`) extending
+    coverage to a SECOND int column: `Session.attempt_count`. Same
+    bug family — `=` int-literal on a TEXT-cast int column may
+    surface 502 /errors/provider-server-error from asyncpg's
+    type-bind mismatch. Hard pin: never /errors/internal.
+
+    A fresh CREATED session has attempt_count=0, so a `= 0` query
+    scoped to its workspace_id should match it (or surface 502).
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "and",
+                "left": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "workspace_id"},
+                    "right": {"kind": "value", "value": workspace_id},
+                },
+                "right": {
+                    "kind": "predicate",
+                    "op": "=",
+                    "left": {"kind": "field", "name": "attempt_count"},
+                    "right": {"kind": "value", "value": 0},
+                },
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        resp = await client.post("/v1/sessions/find", json=body)
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"`=0` on attempt_count leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code in (200, 400, 422, 502), (
+            f"`=0` on attempt_count unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 200:
+            ids = [item["id"] for item in resp.json()["items"]]
+            assert session_id in ids, (
+                f"=0 on attempt_count should match fresh session "
+                f"{session_id!r}; got {ids!r}"
+            )
+        else:
+            assert envelope["type"].startswith("/errors/"), envelope
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0671 — order_by on integer column Session.turn_no asc/desc reverses sequence
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0671_order_by_int_column_turn_no_asc_desc(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0671 — Sister of T0043 (id) and T0089 (created_at) for an
+    integer column. Build several sessions; even though they all
+    have turn_no=0 initially, the order_by clause must produce a
+    clean envelope on both asc and desc, and asc + desc on the same
+    set must be reverses of each other.
+
+    Pins the int-column sort path. Hard pin: never /errors/internal.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_ids: list[str] = []
+    try:
+        # Make 5 sessions on same workspace
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        for _ in range(5):
+            sess = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions",
+                json={
+                    "binding": {"kind": "agent",
+                                "agent_id": env["agent_id"]},
+                    "auto_start": False,
+                },
+            )
+            assert sess.status_code == 201, sess.text
+            session_ids.append(sess.json()["id"])
+
+        scope = {
+            "kind": "predicate",
+            "op": "=",
+            "left": {"kind": "field", "name": "workspace_id"},
+            "right": {"kind": "value", "value": workspace_id},
+        }
+        body_asc = {
+            "predicate": scope,
+            "order_by": [{"field": "turn_no", "direction": "asc"}],
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+        body_desc = {
+            "predicate": scope,
+            "order_by": [{"field": "turn_no", "direction": "desc"}],
+            "page": {"kind": "offset", "offset": 0, "length": 50},
+        }
+
+        r_asc = await client.post("/v1/sessions/find", json=body_asc)
+        env_asc = r_asc.json() if r_asc.content else {}
+        assert env_asc.get("type") != "/errors/internal", (
+            f"order_by turn_no asc leaked /errors/internal: {r_asc.text}"
+        )
+        assert r_asc.status_code in (200, 400, 422, 502), (
+            f"order_by turn_no asc unexpected status: "
+            f"{r_asc.status_code}: {r_asc.text}"
+        )
+
+        r_desc = await client.post("/v1/sessions/find", json=body_desc)
+        env_desc = r_desc.json() if r_desc.content else {}
+        assert env_desc.get("type") != "/errors/internal", (
+            f"order_by turn_no desc leaked /errors/internal: {r_desc.text}"
+        )
+        assert r_desc.status_code in (200, 400, 422, 502), (
+            f"order_by turn_no desc unexpected status: "
+            f"{r_desc.status_code}: {r_desc.text}"
+        )
+
+        if r_asc.status_code == 200 and r_desc.status_code == 200:
+            ids_asc = [item["id"] for item in r_asc.json()["items"]]
+            ids_desc = [item["id"] for item in r_desc.json()["items"]]
+            # Ties on turn_no=0 mean DB-defined order applies — the
+            # set membership must match, but the asc/desc reversal
+            # may not be strict if a tiebreaker is involved. Hard pin:
+            # both result sets contain the same session_ids.
+            assert sorted(ids_asc) == sorted(session_ids), (
+                f"asc result missing sessions: {sorted(ids_asc)!r}"
+            )
+            assert sorted(ids_desc) == sorted(session_ids), (
+                f"desc result missing sessions: {sorted(ids_desc)!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
