@@ -123,12 +123,23 @@ function UserToolsetsHeader({ count, onRefresh, onNew }) {
 // User toolset create modal
 // ============================================================================
 
+// Provider-pattern: the toolset record has a top-level `provider` field
+// (currently only "mcp" is creatable — "internal" toolsets are runtime
+// built-ins and must not come from a row). Future providers (e.g. a
+// future REST-tool provider) would slot in here.
+const TOOLSET_PROVIDERS = [
+  { value: "mcp", label: "MCP server" },
+];
+
 function NewToolsetModal({ onClose, onCreate }) {
   const { push: pushToast } = useToast();
   const [id, setId] = React.useState("");
+  const [provider, setProvider] = React.useState("mcp");
   const [transport, setTransport] = React.useState("stdio");
-  const [command, setCommand] = React.useState("");  // space-separated for stdio
+  const [command, setCommand] = React.useState("");
+  const [stdioEnv, setStdioEnv] = React.useState([]);   // [{key, value}, ...]
   const [url, setUrl] = React.useState("");
+  const [httpHeaders, setHttpHeaders] = React.useState([]);  // [{key, value}, ...]
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   const create = useMutation(
@@ -148,20 +159,41 @@ function NewToolsetModal({ onClose, onCreate }) {
     }
   );
 
+  const kvToDict = (pairs) => Object.fromEntries(
+    pairs.map((p) => [p.key.trim(), p.value]).filter(([k]) => k.length > 0)
+  );
+
   const submit = async () => {
     setFieldErrors({});
-    const config = transport === "stdio"
-      ? { transport: "stdio", config: { command: command.trim().split(/\s+/).filter(Boolean), env: {} } }
-      : { transport: "http", config: { url: url.trim(), headers: {} } };
+    let config = null;
+    if (provider === "mcp") {
+      config = transport === "stdio"
+        ? {
+            transport: "stdio",
+            config: {
+              command: command.trim().split(/\s+/).filter(Boolean),
+              env: kvToDict(stdioEnv),
+            },
+          }
+        : {
+            transport: "http",
+            config: {
+              url: url.trim(),
+              headers: kvToDict(httpHeaders),
+            },
+          };
+    }
     const body = {
       ...(id ? { id } : {}),
-      provider: "mcp",
-      config,
+      provider,
+      ...(config ? { config } : {}),
     };
     try { await create.mutate(body); } catch (_e) {}
   };
 
-  const stdioCommandFirst = command.trim().split(/\s+/)[0];
+  const canSubmit = provider === "mcp"
+    ? (transport === "stdio" ? !!command.trim() : !!url.trim())
+    : false;
 
   return (
     <Modal
@@ -170,7 +202,7 @@ function NewToolsetModal({ onClose, onCreate }) {
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={(transport === "stdio" ? !command.trim() : !url.trim()) || create.loading}>
+          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit || create.loading}>
             {create.loading ? "Creating…" : "Create"}
           </Btn>
         </>
@@ -181,41 +213,103 @@ function NewToolsetModal({ onClose, onCreate }) {
         <input className="input" value={id} onChange={(e) => setId(e.target.value)} placeholder="auto-generated" style={{ width: "100%" }} />
       </div>
       <div className="field">
-        <label className="field-label">Transport</label>
-        <div className="chip-group" style={{ display: "inline-flex" }}>
-          <span className={`chip ${transport === "stdio" ? "active" : ""}`} onClick={() => setTransport("stdio")}>stdio</span>
-          <span className={`chip ${transport === "http" ? "active" : ""}`} onClick={() => setTransport("http")}>http</span>
-        </div>
+        <label className="field-label">Provider</label>
+        <select className="select" value={provider} onChange={(e) => setProvider(e.target.value)} style={{ width: "100%" }}>
+          {TOOLSET_PROVIDERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+        </select>
         <div className="field-help">
-          Per app spec, MCP TransportType only enumerates stdio + http (no sse).
+          Internal toolsets (<span className="mono">_system</span>, <span className="mono">_workspaces</span>, <span className="mono">_misc</span>, <span className="mono">_search</span>, <span className="mono">web</span>) are runtime built-ins — they cannot be created via this form.
         </div>
+        {fieldErrors["body.provider"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider"]}</div>}
       </div>
-      {transport === "stdio" ? (
-        <div className="field">
-          <label className="field-label">Command</label>
-          <input className="input mono" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx @modelcontextprotocol/server-github" style={{ width: "100%" }} />
-          {stdioCommandFirst && (
-            <div className="field-help warn" style={{ color: "var(--amber)" }}>
-              <Icon name="alert" size={11} />{" "}
-              If <span className="mono">{stdioCommandFirst}</span> is not in <span className="mono">AppConfig.mcp_stdio_allowed_commands</span>, the first session-open
-              call will raise ConfigError. Allowlist is server-side; can't be probed from the UI.
+
+      {provider === "mcp" && (
+        <>
+          <div className="field">
+            <label className="field-label">Transport</label>
+            <div className="chip-group" style={{ display: "inline-flex" }}>
+              <span className={`chip ${transport === "stdio" ? "active" : ""}`} onClick={() => setTransport("stdio")}>stdio</span>
+              <span className={`chip ${transport === "http" ? "active" : ""}`} onClick={() => setTransport("http")}>http</span>
             </div>
-          )}
-          {fieldErrors["body.config.config.command"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.config.config.command"]}</div>}
-        </div>
-      ) : (
-        <div className="field">
-          <label className="field-label">URL</label>
-          <input className="input mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://mcp.example.com/sse" style={{ width: "100%" }} />
-          {fieldErrors["body.config.config.url"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.config.config.url"]}</div>}
-          <div className="field-help warn" style={{ color: "var(--amber)" }}>
-            <Icon name="alert" size={11} />{" "}
-            HTTP transport may leak 500 on /tools when the server is unreachable (T0711); the
-            toolset detail surfaces this with a documented anomaly block.
+            <div className="field-help">
+              Per app spec, MCP TransportType only enumerates stdio + http (no sse).
+            </div>
           </div>
-        </div>
+
+          {transport === "stdio" ? (
+            <>
+              <div className="field">
+                <label className="field-label">Command</label>
+                <input className="input mono" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx @modelcontextprotocol/server-github" style={{ width: "100%" }} />
+                <div className="field-help">
+                  Space-separated argv. First token must be in <span className="mono">AppConfig.mcp_stdio_allowed_commands</span> or the first session-open will raise ConfigError.
+                </div>
+                {fieldErrors["body.config.config.command"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.config.config.command"]}</div>}
+              </div>
+              <KvEditor
+                label="Environment"
+                hint="optional · env vars set when launching the subprocess"
+                pairs={stdioEnv}
+                onChange={setStdioEnv}
+                keyPlaceholder="GITHUB_TOKEN"
+                valuePlaceholder="ghp_…"
+              />
+            </>
+          ) : (
+            <>
+              <div className="field">
+                <label className="field-label">URL</label>
+                <input className="input mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://mcp.example.com/sse" style={{ width: "100%" }} />
+                {fieldErrors["body.config.config.url"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.config.config.url"]}</div>}
+              </div>
+              <KvEditor
+                label="Headers"
+                hint="optional · sent on every request to the MCP server"
+                pairs={httpHeaders}
+                onChange={setHttpHeaders}
+                keyPlaceholder="Authorization"
+                valuePlaceholder="Bearer …"
+              />
+            </>
+          )}
+        </>
       )}
     </Modal>
+  );
+}
+
+// Reusable key/value editor for dict[str, str] fields (env vars, HTTP headers, etc.)
+function KvEditor({ label, hint, pairs, onChange, keyPlaceholder, valuePlaceholder }) {
+  const updateAt = (i, patch) => onChange(pairs.map((p, idx) => idx === i ? { ...p, ...patch } : p));
+  const removeAt = (i) => onChange(pairs.filter((_, idx) => idx !== i));
+  const add = () => onChange([...pairs, { key: "", value: "" }]);
+  return (
+    <div className="field">
+      <label className="field-label">{label} {hint && <span className="hint">{hint}</span>}</label>
+      {pairs.length === 0 && <div className="field-help muted">— none —</div>}
+      {pairs.map((p, i) => (
+        <div key={i} style={{ display: "flex", gap: 6, marginTop: 4 }}>
+          <input
+            className="input mono"
+            value={p.key}
+            onChange={(e) => updateAt(i, { key: e.target.value })}
+            placeholder={keyPlaceholder}
+            style={{ flex: 1 }}
+          />
+          <input
+            className="input mono"
+            value={p.value}
+            onChange={(e) => updateAt(i, { value: e.target.value })}
+            placeholder={valuePlaceholder}
+            style={{ flex: 2 }}
+          />
+          <Btn size="sm" kind="ghost" onClick={() => removeAt(i)} title="Remove">×</Btn>
+        </div>
+      ))}
+      <div style={{ marginTop: 6 }}>
+        <Btn size="sm" kind="ghost" icon="plus" onClick={add}>Add {label.toLowerCase().replace(/s$/, "")}</Btn>
+      </div>
+    </div>
   );
 }
 

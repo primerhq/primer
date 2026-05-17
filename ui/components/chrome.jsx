@@ -33,7 +33,7 @@ const NAV = [
     items: [
       { id: "collections", label: "Collections", icon: "collection", route: "/knowledge/collections" },
       { id: "documents", label: "Documents", icon: "doc", route: "/knowledge/documents" },
-      { id: "search", label: "Search test bench", icon: "search", route: "/knowledge/search" },
+      { id: "search", label: "Entity search probe", icon: "search", route: "/knowledge/search" },
     ],
   },
   {
@@ -240,7 +240,7 @@ function Topbar({ onOpenPalette }) {
   return (
     <header className="topbar">
       <div className="topbar-brand">
-        <div className="logo mono">M</div>
+        <BrandMark size={22} />
         <div>
           <div className="name">{brandName}</div>
         </div>
@@ -346,7 +346,7 @@ const _STATIC_PAGES = [
   { kind: "page", label: "Graphs", path: "/graphs", icon: "graph" },
   { kind: "page", label: "Collections", path: "/knowledge/collections", icon: "collection" },
   { kind: "page", label: "Documents", path: "/knowledge/documents", icon: "doc" },
-  { kind: "page", label: "Search test bench", path: "/knowledge/search", icon: "search" },
+  { kind: "page", label: "Entity search probe", path: "/knowledge/search", icon: "search" },
   { kind: "page", label: "User toolsets", path: "/toolsets", icon: "tools" },
   { kind: "page", label: "Built-in toolsets", path: "/toolsets/builtin", icon: "tools" },
   { kind: "page", label: "LLM providers", path: "/providers/llm", icon: "llm" },
@@ -551,4 +551,28 @@ function ToastContainer() {
   );
 }
 
-Object.assign(window, { Sidebar, Topbar, CommandPalette, ToastContainer });
+// BrandMark — inlined logo so CSS `color` cascades into `currentColor`.
+// Source: brand/logo.svg (5-poly rotated-quad mark). The accent
+// polygon stays baked at the brand green; the four ink polygons
+// inherit the current text color so they read on both themes.
+function BrandMark({ size = 22 }) {
+  return (
+    <svg
+      className="brand-mark"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      role="img"
+      aria-label="Matrix logo"
+      style={{ display: "block", color: "var(--text)" }}
+    >
+      <polygon points="12,3 21,12 12,21 3,12" fill="currentColor" fillOpacity="0.16" />
+      <polygon points="12,3 16.5,7.5 12,12 7.5,7.5" fill="currentColor" />
+      <polygon points="16.5,7.5 21,12 16.5,16.5 12,12" fill="currentColor" fillOpacity="0.4" />
+      <polygon points="12,12 16.5,16.5 12,21 7.5,16.5" fill="#61d46a" />
+      <polygon points="7.5,7.5 12,12 7.5,16.5 3,12" fill="currentColor" fillOpacity="0.4" />
+    </svg>
+  );
+}
+
+Object.assign(window, { Sidebar, Topbar, CommandPalette, ToastContainer, BrandMark });

@@ -35,6 +35,7 @@ from matrix.model.scheduler import RuntimeMode, SchedulerProviderType
 from matrix.toolset.misc import build_misc_toolset
 from matrix.toolset.search import build_search_toolset
 from matrix.toolset.system import build_system_toolset
+from matrix.toolset.web import build_web_toolset
 from matrix.toolset.workspaces import build_workspaces_toolset
 
 
@@ -98,6 +99,10 @@ def _make_lifespan(config: AppConfig):
         # Build the always-on _misc toolset (stateless utilities).
         misc_toolset = build_misc_toolset()
         provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
+        # Build the always-on `web` toolset (DuckDuckGo search +
+        # http-request primitives). Reserved id without underscore.
+        web_toolset = build_web_toolset()
+        provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001
         app.state.storage_provider = storage_provider
         app.state.provider_registry = provider_registry
         app.state.vector_store_registry = vector_store_registry
@@ -105,6 +110,7 @@ def _make_lifespan(config: AppConfig):
         app.state.system_toolset = system_toolset
         app.state.workspaces_toolset = ws_toolset
         app.state.misc_toolset = misc_toolset
+        app.state.web_toolset = web_toolset
         app.state.internal_collections = None
         app.state.search_toolset = None
 
@@ -309,24 +315,40 @@ def _mount_routers(
 def create_app(config: AppConfig) -> FastAPI:
     """Production factory: builds the app + wires the lifespan handler."""
     # Disable Swagger / ReDoc UIs unless the operator opts back in via
-    # the log_level=debug setting; the OpenAPI JSON stays available at
-    # /openapi.json for client-generation pipelines.
+    # the log_level=debug setting; the OpenAPI JSON stays under the
+    # /v1/ prefix to match the rest of the versioned API surface.
     debug_docs = config.log_level == "debug"
     app = FastAPI(
         title="Matrix Microagents Framework API",
         version=APP_VERSION,
         lifespan=_make_lifespan(config),
         contact={"name": "matrix"},
-        docs_url="/docs" if debug_docs else None,
-        redoc_url="/redoc" if debug_docs else None,
+        openapi_url=f"/{API_VERSION}/openapi.json",
+        docs_url=f"/{API_VERSION}/docs" if debug_docs else None,
+        redoc_url=f"/{API_VERSION}/redoc" if debug_docs else None,
     )
     _install_security_headers(app)
     _install_console_csp(app)
     _install_request_id(app)
     _mount_routers(app, runtime_mode=config.runtime_mode)
     _mount_console(app)
+    _install_root_redirect(app)
     register_error_handlers(app)
     return app
+
+
+def _install_root_redirect(app: FastAPI) -> None:
+    """GET / -> 307 redirect to /console/.
+
+    Operators land at the host root expecting the console; without this
+    they get a bare 404 from FastAPI. The console mount handles its own
+    trailing-slash redirect from /console -> /console/.
+    """
+    from starlette.responses import RedirectResponse
+
+    @app.get("/", include_in_schema=False)
+    async def _root_redirect() -> RedirectResponse:
+        return RedirectResponse(url="/console/", status_code=307)
 
 
 def _install_security_headers(app: FastAPI) -> None:
@@ -417,6 +439,15 @@ def _install_console_csp(app: FastAPI) -> None:
             # Direct assignment, not setdefault — the policy is strict
             # by intent; no downstream handler should be loosening it.
             response.headers["Content-Security-Policy"] = _CONSOLE_CSP
+            # Force revalidation on every request. The static-file
+            # mount sends ETags so the browser usually gets a cheap
+            # 304; this header makes it actually ask. Prevents the
+            # classic "I edited styles.css / *.jsx and the browser
+            # is still serving last week's copy" trap. Spec §13 open
+            # question #8 (static-asset versioning) is addressed here
+            # for the dev/operator surface; production CDN caching
+            # would need a separate strategy.
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
 
 
@@ -495,6 +526,7 @@ def create_test_app(
     system_toolset=None,
     workspaces_toolset=None,
     misc_toolset=None,
+    web_toolset=None,
 ) -> FastAPI:
     """Test factory: skips the lifespan; stashes pre-built dependencies.
 
@@ -525,9 +557,12 @@ def create_test_app(
         )
     if misc_toolset is None:
         misc_toolset = build_misc_toolset()
+    if web_toolset is None:
+        web_toolset = build_web_toolset()
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001
     provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
+    provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001
     app.state.storage_provider = storage_provider
     app.state.provider_registry = provider_registry
     app.state.vector_store_registry = vector_store_registry
@@ -535,6 +570,7 @@ def create_test_app(
     app.state.system_toolset = system_toolset
     app.state.workspaces_toolset = workspaces_toolset
     app.state.misc_toolset = misc_toolset
+    app.state.web_toolset = web_toolset
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
     app.state.search_toolset = None

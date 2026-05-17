@@ -443,7 +443,7 @@ function prettyPage(p) {
     graphs: "Graphs",
     collections: "Collections",
     documents: "Documents",
-    search: "Search test bench",
+    search: "Entity search probe",
     "toolsets-user": "User toolsets",
     "toolsets-builtin": "Built-in toolsets",
     llm: "LLM providers",

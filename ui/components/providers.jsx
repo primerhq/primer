@@ -142,17 +142,193 @@ function ProvidersHeader({ label, plural, count, onRefresh, onNew }) {
 }
 
 // ============================================================================
-// Create modal — generic JSON-config editor (per spec §3)
+// Create modal — provider-pattern with rich per-provider controls.
 // ============================================================================
+//
+// PROVIDER_FIELDS is the single source of truth mirroring the backend's
+// provider enums + per-provider Config models in matrix/model/provider.py.
+// Keep these in sync when the backend grows a new provider type.
+//
+// Each kind (llm / embedding / rerank) maps provider-type-string ->
+//   { label, config: [field, ...], discoverable, suggestedModels, modelFields }
+//
+// field: { key, label, type, placeholder?, options?, required?, default? }
+//   type: "text" | "password" | "url" | "enum"
+//
+// discoverable: when true, the "Fetch Models" button calls
+//   POST /v1/{plural}/_discover_models with the draft {provider, config}
+//   and replaces the models table with the response. When false, the
+//   button populates the table from `suggestedModels` (hand-curated;
+//   the listed model names work but aren't authoritative — users can
+//   edit them in the table).
+//
+// modelFields: which columns the models-table renders for this provider.
+
+const PROVIDER_FIELDS = {
+  llm: {
+    openresponses: {
+      label: "OpenAI / OpenAI-compatible (openresponses)",
+      config: [
+        { key: "url", label: "Base URL", type: "url", placeholder: "https://api.openai.com/v1", required: true },
+        { key: "api_key", label: "API key", type: "password", required: true },
+        { key: "flavor", label: "Flavor", type: "enum", options: ["openai", "lmstudio", "other"], default: "other" },
+      ],
+      discoverable: true,
+      suggestedModels: [
+        { name: "gpt-4o", context_length: 128000 },
+        { name: "gpt-4o-mini", context_length: 128000 },
+        { name: "gpt-4-turbo", context_length: 128000 },
+      ],
+      modelFields: [
+        { key: "name", label: "Model name", type: "text", flex: 2 },
+        { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
+      ],
+    },
+    anthropic: {
+      label: "Anthropic",
+      config: [
+        { key: "api_key", label: "API key", type: "password", required: true },
+      ],
+      discoverable: false,
+      suggestedModels: [
+        { name: "claude-opus-4-5", context_length: 200000 },
+        { name: "claude-sonnet-4-5", context_length: 200000 },
+        { name: "claude-haiku-4-5", context_length: 200000 },
+      ],
+      modelFields: [
+        { key: "name", label: "Model name", type: "text", flex: 2 },
+        { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
+      ],
+    },
+    gemini: {
+      label: "Google Gemini",
+      config: [
+        { key: "api_key", label: "API key", type: "password", required: true },
+      ],
+      discoverable: false,
+      suggestedModels: [
+        { name: "gemini-2.5-pro", context_length: 2000000 },
+        { name: "gemini-2.5-flash", context_length: 1000000 },
+        { name: "gemini-2.0-flash", context_length: 1000000 },
+      ],
+      modelFields: [
+        { key: "name", label: "Model name", type: "text", flex: 2 },
+        { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
+      ],
+    },
+    ollama: {
+      label: "Ollama",
+      config: [
+        { key: "url", label: "Base URL", type: "url", placeholder: "http://localhost:11434", required: true },
+        { key: "api_key", label: "API key (optional)", type: "password" },
+      ],
+      discoverable: true,
+      suggestedModels: [
+        { name: "llama3.3:70b", context_length: 131072 },
+        { name: "qwen3:8b", context_length: 32768 },
+        { name: "gpt-oss:20b", context_length: 131072 },
+      ],
+      modelFields: [
+        { key: "name", label: "Model name", type: "text", flex: 2 },
+        { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
+      ],
+    },
+  },
+  embedding: {
+    openai: {
+      label: "OpenAI / OpenAI-compatible",
+      config: [
+        { key: "url", label: "Base URL", type: "url", placeholder: "https://api.openai.com/v1", required: true },
+        { key: "api_key", label: "API key", type: "password", required: true },
+        { key: "flavor", label: "Flavor", type: "enum", options: ["openai", "lmstudio", "other"], default: "other" },
+      ],
+      discoverable: true,
+      suggestedModels: [
+        { name: "text-embedding-3-small" },
+        { name: "text-embedding-3-large" },
+      ],
+      modelFields: [{ key: "name", label: "Model name", type: "text", flex: 1 }],
+    },
+    huggingface: {
+      label: "HuggingFace (local sentence-transformers)",
+      config: [
+        { key: "token", label: "HF token", type: "password", required: true, help: "Required to pull the transformer model — even public models." },
+      ],
+      discoverable: false,
+      suggestedModels: [
+        { name: "BAAI/bge-large-en-v1.5" },
+        { name: "BAAI/bge-base-en-v1.5" },
+        { name: "sentence-transformers/all-MiniLM-L6-v2" },
+        { name: "mixedbread-ai/mxbai-embed-large-v1" },
+      ],
+      modelFields: [{ key: "name", label: "Model name", type: "text", flex: 1 }],
+    },
+    gemini: {
+      label: "Google Gemini",
+      config: [
+        { key: "api_key", label: "API key", type: "password", required: true },
+      ],
+      discoverable: false,
+      suggestedModels: [
+        { name: "gemini-embedding-001" },
+        { name: "text-embedding-004" },
+      ],
+      modelFields: [{ key: "name", label: "Model name", type: "text", flex: 1 }],
+    },
+  },
+  rerank: {
+    huggingface: {
+      label: "HuggingFace (local sentence-transformers)",
+      config: [
+        { key: "token", label: "HF token (optional for public repos)", type: "password" },
+      ],
+      discoverable: false,
+      suggestedModels: [
+        { name: "BAAI/bge-reranker-v2-m3" },
+        { name: "cross-encoder/ms-marco-MiniLM-L-6-v2" },
+        { name: "cross-encoder/ms-marco-MiniLM-L-12-v2" },
+        { name: "mixedbread-ai/mxbai-rerank-large-v1" },
+      ],
+      modelFields: [
+        { key: "name", label: "Model name", type: "text", flex: 2 },
+        { key: "max_pair_length", label: "Max pair length", type: "number", flex: 1, min: 1 },
+      ],
+    },
+  },
+};
+
+// Normalize the kind URL segment ("rerank" / "cross_encoder") to the
+// PROVIDER_FIELDS key.
+const _normKind = (k) => (k === "cross_encoder" ? "rerank" : k);
 
 function NewProviderModal({ kindKey, plural, label, onClose, onCreate }) {
   const { push: pushToast } = useToast();
+  const fieldKind = _normKind(kindKey);
+  const providers = PROVIDER_FIELDS[fieldKind] || {};
+  const providerOptions = Object.keys(providers);
+
   const [id, setId] = React.useState("");
-  const [provider, setProvider] = React.useState("");
-  const [configJson, setConfigJson] = React.useState(_defaultConfigJson(kindKey));
-  const [modelsJson, setModelsJson] = React.useState('[{"name": "model-name", "context_length": 4096}]');
-  const [limitsJson, setLimitsJson] = React.useState('{"max_concurrency": 1}');
+  const [provider, setProvider] = React.useState(providerOptions[0] || "");
+  const [configValues, setConfigValues] = React.useState({});
+  const [models, setModels] = React.useState([]);
+  const [maxConcurrency, setMaxConcurrency] = React.useState(1);
   const [fieldErrors, setFieldErrors] = React.useState({});
+
+  // Whenever the provider type changes, re-seed config defaults +
+  // wipe the models list (it would have the wrong shape).
+  React.useEffect(() => {
+    const def = providers[provider];
+    if (!def) return;
+    const seeded = {};
+    for (const f of def.config) {
+      if (f.default !== undefined) seeded[f.key] = f.default;
+    }
+    setConfigValues(seeded);
+    setModels([]);
+    setFieldErrors({});
+  }, [provider]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const def = providers[provider];
 
   const create = useMutation(
     (body) => apiFetch("POST", "/" + plural, body),
@@ -171,21 +347,82 @@ function NewProviderModal({ kindKey, plural, label, onClose, onCreate }) {
     }
   );
 
+  const discover = useMutation(
+    (body) => apiFetch("POST", "/" + plural + "/_discover_models", body),
+    {
+      onSuccess: (r) => {
+        if (Array.isArray(r?.models) && r.models.length > 0) {
+          setModels(r.models.map((m) => ({ ...m })));
+          pushToast({ kind: "success", title: "Models fetched", detail: `${r.models.length} model${r.models.length === 1 ? "" : "s"} from the provider.` });
+        } else {
+          pushToast({ kind: "warning", title: "Provider returned no models", detail: "Check the URL / credentials, or add models manually." });
+        }
+      },
+      onError: (err) => pushToast({
+        kind: "error",
+        title: err.title || "Discovery failed",
+        detail: err.detail || err.message,
+        requestId: err.requestId,
+      }),
+    }
+  );
+
+  const handleFetchModels = () => {
+    if (def?.discoverable) {
+      discover.mutate({ provider, config: configValues });
+    } else if (def?.suggestedModels?.length) {
+      setModels(def.suggestedModels.map((m) => ({ ...m })));
+      pushToast({ kind: "info", title: "Models populated", detail: "Suggested defaults loaded — edit names as needed; provider does not expose a live list endpoint." });
+    }
+  };
+
+  const addModel = () => {
+    if (!def) return;
+    const empty = Object.fromEntries(def.modelFields.map((f) => [f.key, ""]));
+    setModels((arr) => [...arr, empty]);
+  };
+  const removeModel = (i) => setModels((arr) => arr.filter((_, idx) => idx !== i));
+  const updateModel = (i, patch) => setModels((arr) => arr.map((m, idx) => idx === i ? { ...m, ...patch } : m));
+
+  // Strip empty optional fields from the config payload before submit
+  // (e.g. an empty api_key on ollama should be omitted, not sent as "").
+  const cleanConfig = () => {
+    if (!def) return {};
+    const out = {};
+    for (const f of def.config) {
+      const v = configValues[f.key];
+      if (v !== undefined && v !== "" && v !== null) out[f.key] = v;
+    }
+    return out;
+  };
+
+  // Strip empty optional model fields (e.g. max_pair_length="").
+  const cleanModels = () => models.map((m) => {
+    const cleaned = {};
+    for (const f of def.modelFields) {
+      const v = m[f.key];
+      if (v === undefined || v === "" || v === null) continue;
+      cleaned[f.key] = f.type === "number" ? Number(v) : v;
+    }
+    return cleaned;
+  });
+
   const submit = async () => {
     setFieldErrors({});
-    let config, models, limits;
-    try { config = JSON.parse(configJson); } catch (e) { setFieldErrors({ "body.config": "Invalid JSON: " + e.message }); return; }
-    try { models = JSON.parse(modelsJson); } catch (e) { setFieldErrors({ "body.models": "Invalid JSON: " + e.message }); return; }
-    try { limits = JSON.parse(limitsJson); } catch (e) { setFieldErrors({ "body.limits": "Invalid JSON: " + e.message }); return; }
     const body = {
       ...(id ? { id } : {}),
       provider,
-      config,
-      models,
-      limits,
+      config: cleanConfig(),
+      models: cleanModels(),
+      limits: { max_concurrency: Number(maxConcurrency) || 1 },
     };
     try { await create.mutate(body); } catch (_e) {}
   };
+
+  const canSubmit = !!provider
+    && models.length > 0
+    && def?.config.every((f) => !f.required || (configValues[f.key] != null && configValues[f.key] !== ""))
+    && !create.loading;
 
   return (
     <Modal
@@ -194,7 +431,7 @@ function NewProviderModal({ kindKey, plural, label, onClose, onCreate }) {
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={!provider || create.loading}>
+          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit}>
             {create.loading ? "Creating…" : "Create"}
           </Btn>
         </>
@@ -203,39 +440,112 @@ function NewProviderModal({ kindKey, plural, label, onClose, onCreate }) {
       <div className="field">
         <label className="field-label">ID <span className="hint">optional — backend assigns if blank</span></label>
         <input className="input" value={id} onChange={(e) => setId(e.target.value)} placeholder="auto-generated" style={{ width: "100%" }} />
+        {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
       </div>
+
       <div className="field">
-        <label className="field-label">Vendor</label>
-        <input className="input" value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="openresponses, anthropic, openai, gemini, ollama, huggingface, voyageai, cohere, …" style={{ width: "100%" }} />
+        <label className="field-label">Provider</label>
+        <select className="select" value={provider} onChange={(e) => setProvider(e.target.value)} style={{ width: "100%" }}>
+          {providerOptions.map((p) => <option key={p} value={p}>{providers[p].label}</option>)}
+        </select>
         {fieldErrors["body.provider"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider"]}</div>}
-        <div className="field-help">
-          Provider ↔ config alignment is NOT cross-validated server-side (T0379) — make sure
-          the vendor name matches the config shape.
+      </div>
+
+      {def && def.config.map((f) => (
+        <ConfigField
+          key={f.key}
+          field={f}
+          value={configValues[f.key] ?? ""}
+          onChange={(v) => setConfigValues((cv) => ({ ...cv, [f.key]: v }))}
+          error={fieldErrors[`body.config.${f.key}`]}
+        />
+      ))}
+
+      <div className="field">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <label className="field-label">Models</label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <Btn
+              size="sm"
+              kind="ghost"
+              icon="refresh"
+              onClick={handleFetchModels}
+              disabled={discover.loading || (def && !def.discoverable && !(def.suggestedModels?.length))}
+              title={
+                def?.discoverable
+                  ? "Live-probe the provider for its model list"
+                  : "Load curated suggestions (provider has no live list endpoint)"
+              }
+            >
+              {discover.loading ? "Fetching…" : (def?.discoverable ? "Fetch models" : "Suggest models")}
+            </Btn>
+            <Btn size="sm" kind="ghost" icon="plus" onClick={addModel}>Add</Btn>
+          </div>
         </div>
-      </div>
-      <div className="field">
-        <label className="field-label">Config (JSON)</label>
-        <textarea className="textarea mono" value={configJson} onChange={(e) => setConfigJson(e.target.value)} rows={6} />
-        {fieldErrors["body.config"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.config"]}</div>}
-      </div>
-      <div className="field">
-        <label className="field-label">Models (JSON array)</label>
-        <textarea className="textarea mono" value={modelsJson} onChange={(e) => setModelsJson(e.target.value)} rows={4} />
+        {models.length === 0 && (
+          <div className="field-help muted">— no models — add at least one before saving (or use the buttons above).</div>
+        )}
+        {def && models.map((m, i) => (
+          <div key={i} style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
+            {def.modelFields.map((mf) => (
+              <input
+                key={mf.key}
+                className="input mono"
+                type={mf.type === "number" ? "number" : "text"}
+                {...(mf.min != null ? { min: mf.min } : {})}
+                value={m[mf.key] ?? ""}
+                placeholder={mf.label}
+                onChange={(e) => updateModel(i, { [mf.key]: e.target.value })}
+                style={{ flex: mf.flex || 1 }}
+              />
+            ))}
+            <Btn size="sm" kind="ghost" onClick={() => removeModel(i)} title="Remove">×</Btn>
+          </div>
+        ))}
         {fieldErrors["body.models"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.models"]}</div>}
       </div>
+
       <div className="field">
-        <label className="field-label">Limits (JSON)</label>
-        <textarea className="textarea mono" value={limitsJson} onChange={(e) => setLimitsJson(e.target.value)} rows={2} />
-        {fieldErrors["body.limits"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.limits"]}</div>}
+        <label className="field-label">Max concurrency <span className="hint">in-flight requests cap</span></label>
+        <input
+          className="input"
+          type="number"
+          min="1"
+          value={maxConcurrency}
+          onChange={(e) => setMaxConcurrency(e.target.value)}
+          style={{ width: 120 }}
+        />
+        {fieldErrors["body.limits.max_concurrency"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.limits.max_concurrency"]}</div>}
       </div>
     </Modal>
   );
 }
 
-function _defaultConfigJson(kindKey) {
-  if (kindKey === "embedding") return '{\n  "url": "https://api.openai.com/v1",\n  "api_key": "sk-...",\n  "flavor": "default"\n}';
-  if (kindKey === "rerank") return '{\n  "url": "https://api.cohere.com/v1",\n  "api_key": "..."\n}';
-  return '{\n  "url": "https://api.openai.com/v1",\n  "api_key": "sk-...",\n  "flavor": "other"\n}';
+function ConfigField({ field, value, onChange, error }) {
+  return (
+    <div className="field">
+      <label className="field-label">
+        {field.label}
+        {!field.required && <span className="hint">optional</span>}
+      </label>
+      {field.type === "enum" ? (
+        <select className="select" value={value || field.default || ""} onChange={(e) => onChange(e.target.value)} style={{ width: "100%" }}>
+          {field.options.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+        </select>
+      ) : (
+        <input
+          className={`input ${field.type === "password" || field.type === "url" ? "mono" : ""}`}
+          type={field.type === "password" ? "password" : "text"}
+          value={value}
+          placeholder={field.placeholder || ""}
+          onChange={(e) => onChange(e.target.value)}
+          style={{ width: "100%" }}
+        />
+      )}
+      {field.help && <div className="field-help">{field.help}</div>}
+      {error && <div className="field-help" style={{ color: "var(--red)" }}>{error}</div>}
+    </div>
+  );
 }
 
 // ============================================================================

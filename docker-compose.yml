@@ -1,33 +1,26 @@
-# Local development infrastructure for matrix.
+# Local development stack for matrix.
 #
-# Spins up a single Postgres instance with the pgvector extension
-# pre-installed. The internal collections subsystem and the production
-# scheduler both target this same database — there's no need for a
-# second container.
+# Spins up Postgres + pgvector, plus the matrix app itself (built from
+# ./Dockerfile). Postgres data lives in the `matrix-pgdata` named
+# volume (inside the podman-machine VM, not on the Windows host) — a
+# host bind-mount was tried but the postgres user can't chmod a
+# Windows-mounted directory through podman.
 #
-# Container runtime: Podman is the default. The compose file follows the
-# compose-spec, so `docker compose` works against it too if you have
-# Docker instead. The e2e test harness assumes Podman.
+# Container runtime: Podman (rootless or rootful, both work). The file
+# is plain compose-spec so `docker compose` works against it too if
+# you have Docker. The team uses Podman on Windows.
 #
 # Usage (Podman):
-#   podman compose up -d
-#   podman compose logs -f postgres
-#   podman compose down            # keeps the volume
-#   podman compose down -v         # drops the volume (wipes all data)
+#   podman compose up -d              # start everything (builds matrix on first run)
+#   podman compose up -d --build      # rebuild the matrix image and start
+#   podman compose logs -f matrix     # tail app logs
+#   podman compose logs -f postgres   # tail database logs
+#   podman compose down               # stop + remove containers; keeps volume
+#   podman compose down -v            # also wipes the matrix-pgdata volume
 #
-# Docker users: substitute `docker` for `podman` in the commands above.
-#
-# After the container is healthy, point AppConfig at it. Either env vars:
-#   export MATRIX_DB_HOST=localhost
-#   export MATRIX_DB_PORT=5432
-#   export MATRIX_DB_DATABASE=matrix
-#   export MATRIX_DB_USER=matrix
-#   export MATRIX_DB_PASSWORD=matrix
-# Or matching keys in your config.yaml passed to ``matrix api --config``.
-#
-# The pgvector image is pinned to a Postgres major version so the
-# pgvector extension binary matches the server. Bump the tag together
-# (e.g. pg17 + the matching pgvector release).
+# AppConfig is driven entirely by environment variables here (the
+# matrix service reads MATRIX_* env, no config.yaml needed). To
+# override defaults, create a .env file next to this compose file.
 
 services:
   postgres:
@@ -41,6 +34,13 @@ services:
     ports:
       - "${MATRIX_DB_PORT:-5432}:5432"
     volumes:
+      # Named volume — lives inside the podman-machine VM's filesystem.
+      # A host bind-mount (./.data/postgres) was attempted first but
+      # fails on podman-on-Windows because the postgres user (UID 999)
+      # inside the container can't chmod the bind-mounted directory
+      # (Windows filesystems don't map POSIX permissions to container
+      # UIDs). Data still persists across container restarts; just not
+      # browsable from Windows Explorer.
       - matrix-pgdata:/var/lib/postgresql/data
       # Idempotent CREATE EXTENSION runs on first boot — needed by the
       # vector store registry and the internal collections subsystem.
@@ -50,6 +50,39 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  matrix:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: matrix-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Database: connect by compose-network DNS, NOT localhost.
+      MATRIX_DB_HOST: postgres
+      MATRIX_DB_PORT: 5432
+      MATRIX_DB_DATABASE: ${MATRIX_DB_DATABASE:-matrix}
+      MATRIX_DB_USER: ${MATRIX_DB_USER:-matrix}
+      MATRIX_DB_PASSWORD: ${MATRIX_DB_PASSWORD:-matrix}
+      # Bind to all interfaces inside the container so the host port
+      # mapping can reach the server.
+      MATRIX_HOST: 0.0.0.0
+      MATRIX_PORT: 8765
+    ports:
+      - "${MATRIX_PORT:-8765}:8765"
+    volumes:
+      # Live-mount ui/ read-only so JSX/CSS edits are picked up by
+      # Babel-in-browser without rebuilding the image. The FastAPI
+      # static mount serves these at request time.
+      - ./ui:/app/ui:ro
+      # Brand kit — mounted under ui/brand so the existing /console
+      # static mount serves it at /console/brand/* without any
+      # backend changes. Updates to brand/ on the host are picked up
+      # immediately.
+      - ./brand:/app/ui/brand:ro
 
 volumes:
   matrix-pgdata:

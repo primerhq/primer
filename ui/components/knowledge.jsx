@@ -126,23 +126,136 @@ function CollectionDetail({ c, navigate }) {
     (s) => apiFetch("GET", `/collections/${encodeURIComponent(c.id)}/documents?limit=1`, null, { signal: s }),
     { pollMs: null, deps: [c.id] });
   return (
+    <div className="col" style={{ gap: 14 }}>
+      <div className="panel">
+        <div className="panel-h">
+          <Icon name="collection" size={13} className="muted" />
+          <span className="mono">{c.id}</span>
+          {c.system && <span className="pill" style={{ marginLeft: 8 }}><span className="dot"></span>system</span>}
+        </div>
+        <div className="panel-body">
+          <div className="kv" style={{ gridTemplateColumns: "120px 1fr" }}>
+            <dt>description</dt><dd>{c.description || <span className="muted">—</span>}</dd>
+            <dt>embedding</dt><dd className="mono">{c.embedder?.provider_id || "—"}</dd>
+            <dt>model</dt><dd className="mono">{c.embedder?.model || "—"}</dd>
+            <dt>docs</dt><dd className="mono num tabular">{docs.data?.total ?? "—"}</dd>
+          </div>
+          <div className="mt-3">
+            <Btn size="sm" kind="primary" icon="doc" onClick={() => navigate("/knowledge/documents", { collection: c.id })}>View documents</Btn>
+          </div>
+        </div>
+      </div>
+      <CollectionSearchPanel collection={c} />
+    </div>
+  );
+}
+
+function CollectionSearchPanel({ collection }) {
+  const { push: pushToast } = useToast();
+  const [query, setQuery] = React.useState("");
+  const [topK, setTopK] = React.useState(10);
+  const [hits, setHits] = React.useState(null);
+  const [latencyMs, setLatencyMs] = React.useState(null);
+
+  const search = useMutation(
+    async (body) => {
+      const t0 = performance.now();
+      const result = await apiFetch(
+        "POST",
+        `/collections/${encodeURIComponent(collection.id)}/search`,
+        body,
+      );
+      return { result, wallMs: Math.round(performance.now() - t0) };
+    },
+    {
+      onSuccess: ({ result, wallMs }) => {
+        setHits(result.hits || []);
+        setLatencyMs(wallMs);
+      },
+      onError: (err) => {
+        setHits(null);
+        setLatencyMs(null);
+        if (err.status === 404) {
+          pushToast({ kind: "error", title: "Collection not found", detail: collection.id, requestId: err.requestId });
+        } else {
+          pushToast({ kind: "error", title: err.title || "Search failed", detail: err.detail || err.message, requestId: err.requestId });
+        }
+      },
+    },
+  );
+
+  const run = () => {
+    if (!query.trim()) return;
+    search.mutate({ query, top_k: topK });
+  };
+
+  return (
     <div className="panel">
       <div className="panel-h">
-        <Icon name="collection" size={13} className="muted" />
-        <span className="mono">{c.id}</span>
-        {c.system && <span className="pill" style={{ marginLeft: 8 }}><span className="dot"></span>system</span>}
+        <Icon name="search" size={13} className="muted" />
+        <span>Search this collection</span>
+        <span className="sub muted">· <span className="mono">POST /v1/collections/{collection.id}/search</span></span>
       </div>
       <div className="panel-body">
-        <div className="kv" style={{ gridTemplateColumns: "120px 1fr" }}>
-          <dt>description</dt><dd>{c.description || <span className="muted">—</span>}</dd>
-          <dt>embedding</dt><dd className="mono">{c.embedder?.provider_id || "—"}</dd>
-          <dt>model</dt><dd className="mono">{c.embedder?.model || "—"}</dd>
-          <dt>docs</dt><dd className="mono num tabular">{docs.data?.total ?? "—"}</dd>
+        <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+          <textarea
+            className="textarea"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            rows={2}
+            style={{ flex: 1, fontFamily: "inherit", fontSize: 13 }}
+            placeholder="Natural-language query…  (⌘/Ctrl+Enter to run)"
+            onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run(); }}
+          />
+          <Btn kind="primary" icon="search" disabled={!query.trim() || search.loading} onClick={run}>
+            {search.loading ? "Searching…" : "Search"}
+          </Btn>
         </div>
-        <div className="mt-3" style={{ display: "flex", gap: 6 }}>
-          <Btn size="sm" kind="primary" icon="doc" onClick={() => navigate("/knowledge/documents", { collection: c.id })}>View documents</Btn>
-          <Btn size="sm" kind="ghost" icon="search" onClick={() => navigate("/knowledge/search", { target: "collections", collection_id: c.id })}>Test search</Btn>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 10, fontSize: 12 }}>
+          <label className="muted" htmlFor="cs-topk">top_k</label>
+          <input
+            id="cs-topk"
+            className="input"
+            type="number"
+            min="1"
+            max="100"
+            value={topK}
+            onChange={(e) => setTopK(Number(e.target.value) || 1)}
+            style={{ width: 70 }}
+          />
+          {latencyMs != null && (
+            <span className="muted tabular">· {latencyMs} ms · {hits?.length ?? 0} hit{hits?.length === 1 ? "" : "s"}</span>
+          )}
         </div>
+
+        {hits != null && hits.length === 0 && (
+          <div className="muted text-sm mt-3">No matches. Either the collection is empty, or the query doesn't match any indexed chunk well enough.</div>
+        )}
+        {hits != null && hits.length > 0 && (
+          <div className="mt-3" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {hits.map((h, i) => (
+              <div key={i} style={{ borderTop: "1px solid var(--border)", padding: "8px 0" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+                  <span className="mono num tabular muted">#{i + 1}</span>
+                  <span className="mono">{h.document_id}</span>
+                  <span className="muted">·</span>
+                  <span className="mono muted">{h.chunk_id}</span>
+                  {h.score != null && (
+                    <span className="muted" style={{ marginLeft: "auto" }}>score {h.score.toFixed(4)}</span>
+                  )}
+                </div>
+                <div className="text-sm mt-1" style={{ whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
+                  {h.text}
+                </div>
+                {h.meta && Object.keys(h.meta).length > 0 && (
+                  <div className="muted text-sm mt-1 mono" style={{ fontSize: 10.5 }}>
+                    {Object.entries(h.meta).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" · ")}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -476,7 +589,12 @@ function NewDocumentModal({ collections, defaultCollection, onClose, onCreate })
 // Search bench
 // ============================================================================
 
-const SEARCH_TARGETS = ["agents", "graphs", "collections", "tools"];
+// `collections` removed — per-collection content search now lives
+// inline on the Collection detail panel via CollectionSearchPanel.
+// What was here was "find collections by description" — same shape
+// as agents/graphs/tools, kept under the renamed "Entity search
+// probe" sidebar entry.
+const SEARCH_TARGETS = ["agents", "graphs", "tools"];
 
 function SearchBench() {
   const { navigate } = useRouter();
@@ -484,7 +602,7 @@ function SearchBench() {
   const ic = useResource("sidebar:ic-config", _fetchIcConfig, { pollMs: 30000 });
   const subsystemOn = ic.data != null;
 
-  const [target, setTarget] = React.useState("collections");
+  const [target, setTarget] = React.useState(SEARCH_TARGETS[0]);
   const [query, setQuery] = React.useState("");
   const [topK, setTopK] = React.useState(5);
 
@@ -617,10 +735,13 @@ function SearchHeader() {
     <div className="page-header" style={{ marginBottom: 0 }}>
       <div>
         <div className="crumb">
-          <span>Knowledge</span><span className="sep">/</span><span style={{ color: "var(--text)" }}>Search bench</span>
+          <span>Knowledge</span><span className="sep">/</span><span style={{ color: "var(--text)" }}>Entity search probe</span>
         </div>
-        <h1 className="page-title">Search test bench</h1>
-        <div className="page-sub">Probe <span className="mono">POST /v1/{`{agents|graphs|collections|tools}`}/search</span></div>
+        <h1 className="page-title">Entity search probe</h1>
+        <div className="page-sub">
+          Find <span className="mono">agent</span>, <span className="mono">graph</span>, or <span className="mono">tool</span> entries by description.
+          Per-collection document search lives on each Collection — open it from <a href="#/knowledge/collections" style={{ color: "var(--accent)" }}>Knowledge → Collections</a>.
+        </div>
       </div>
     </div>
   );

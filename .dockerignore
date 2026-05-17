@@ -1,0 +1,48 @@
+# Keep the build context small + reproducible.
+# Anything not whitelisted via COPY in the Dockerfile is excluded
+# anyway, but listing these speeds up `podman compose build` (no
+# need to send a 500 MB context over the socket).
+
+# VCS / IDE
+.git
+.gitignore
+.github
+.idea
+.vscode
+*.code-workspace
+
+# Local environments + caches
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Database bind-mount (created by compose at runtime)
+.data
+
+# E2E test artifacts (overlap with .data; harmless to list both)
+tests/.e2e/logs
+tests/.e2e/server.pid
+tests/.e2e/server.stdout
+tests/.e2e/config.yaml
+tests/.e2e/env.sh
+
+# Docs + research + scratch
+docs
+research
+progress.md
+
+# Mockup screenshots — not needed in the image; the UI is JS/CSS/HTML
+ui/*.png
+
+# Claude / agent harness state
+.claude
+
+# OS noise
+.DS_Store
+Thumbs.db

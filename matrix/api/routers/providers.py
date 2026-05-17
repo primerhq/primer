@@ -5,8 +5,10 @@ Each entity follows the standard CRUD + Find shape from
 
 * LLMProvider:           ``GET /v1/llm_providers/{id}/models``
                          ``POST /v1/llm_providers/{id}/invalidate``
+                         ``POST /v1/llm_providers/_discover_models``
 * EmbeddingProvider:     ``GET /v1/embedding_providers/{id}/models``
                          ``POST /v1/embedding_providers/{id}/invalidate``
+                         ``POST /v1/embedding_providers/_discover_models``
 * CrossEncoderProvider:  ``GET /v1/cross_encoder_providers/{id}/models``
                          ``POST /v1/cross_encoder_providers/{id}/invalidate``
 * Toolset:               ``GET  /v1/toolsets/{id}/tools``
@@ -14,11 +16,21 @@ Each entity follows the standard CRUD + Find shape from
 
 PUT and DELETE on every entity cascade-invalidate the matching cached
 adapter in the per-request ProviderRegistry via the CRUD callbacks.
+
+The ``_discover_models`` endpoints accept a draft provider config
+(provider type + config block) and live-probe the upstream API to
+return the list of available models — used by the console's "Fetch
+Models" button. They build a transient adapter, call its
+``list_models()``, then dispose. They do NOT persist anything.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, Path, Request
+from typing import Any
+from uuid import uuid4
+
+from fastapi import APIRouter, Body, Depends, Header, Path, Request
+from pydantic import BaseModel, Field, ValidationError
 
 from matrix.api.deps import (
     PRINCIPAL_HEADER,
@@ -29,6 +41,7 @@ from matrix.api.deps import (
     get_toolset_storage,
 )
 from matrix.api.errors import common_responses
+from matrix.model.except_ import BadRequestError
 from matrix.api.registries import ProviderRegistry
 from matrix.api.routers._crud import make_crud_router
 from matrix.model.provider import (
@@ -37,6 +50,52 @@ from matrix.model.provider import (
     LLMProvider,
     Toolset,
 )
+
+
+# ---- Discovery body shapes -------------------------------------------------
+
+
+class _DiscoverModelsBody(BaseModel):
+    """Body for ``POST /v1/<entity>/_discover_models``.
+
+    A draft provider config — same shape as a real provider entry but
+    without ``id``, ``models``, or ``limits`` (the endpoint synthesizes
+    those to satisfy the model validator before constructing the
+    transient adapter).
+    """
+
+    provider: str = Field(..., description="Provider type discriminator.")
+    config: dict[str, Any] = Field(
+        ..., description="Provider-specific connection config.",
+    )
+
+
+def _build_stub_provider(
+    model_cls: type,
+    *,
+    provider: str,
+    config: dict[str, Any],
+    models: list[dict[str, Any]],
+) -> Any:
+    """Construct a transient provider row for discovery probes.
+
+    Validates the draft via the canonical Pydantic model so config-
+    shape errors surface as a 400 with the field path, instead of an
+    obscure 500 from inside the adapter constructor. The id and limits
+    are synthesized — neither matters for ``list_models()``.
+    """
+    try:
+        return model_cls.model_validate({
+            "id": f"_probe_{uuid4().hex[:8]}",
+            "provider": provider,
+            "config": config,
+            "models": models,
+            "limits": {"max_concurrency": 1},
+        })
+    except ValidationError as e:
+        raise BadRequestError(
+            "Draft provider failed validation: " + str(e),
+        ) from e
 
 
 # ---- cascade-invalidation hooks --------------------------------------------
@@ -97,6 +156,47 @@ async def get_llm_provider_models(
     return {"models": list(models)}
 
 
+@llm_provider_router.post(
+    "/llm_providers/_discover_models",
+    summary="Probe a draft LLM provider for its model list",
+    responses=common_responses(400, 422, 502),
+)
+async def discover_llm_models(
+    body: _DiscoverModelsBody = Body(...),
+) -> dict:
+    """Live-probe the upstream provider for its available models.
+
+    Used by the console's "Fetch Models" button before any provider
+    has been persisted. Returns ``{"models": [{name, context_length?}, ...]}``.
+
+    Note: the adapters' ``list_models()`` method returns the stored
+    row's static model list (anomaly T0025), not a live probe. This
+    endpoint deliberately bypasses the adapter for discovery and calls
+    the provider's native list endpoint directly.
+
+    Only ``ollama`` and ``openresponses`` expose a useful list-models
+    API. For ``anthropic`` and ``gemini`` the frontend should fall back
+    to a curated suggested-model list — those providers return 400 here.
+    """
+    # Validate the draft via the canonical model so config shape errors
+    # surface cleanly. We never persist or run anything from the stub.
+    _build_stub_provider(
+        LLMProvider,
+        provider=body.provider,
+        config=body.config,
+        models=[{"name": "_probe", "context_length": 1}],
+    )
+    if body.provider == "ollama":
+        return await _probe_ollama_models(body.config)
+    if body.provider == "openresponses":
+        return await _probe_openai_compatible_models(body.config)
+    raise BadRequestError(
+        f"live model discovery is not supported for provider "
+        f"{body.provider!r}; populate the models list manually or "
+        f"use the UI's 'Suggest models' fallback.",
+    )
+
+
 # ---- EmbeddingProvider router ----------------------------------------------
 
 embedding_provider_router = make_crud_router(
@@ -134,6 +234,95 @@ async def get_embedding_provider_models(
     adapter = await registry.get_embedder(provider_id)
     models = await adapter.list_models()
     return {"models": list(models)}
+
+
+@embedding_provider_router.post(
+    "/embedding_providers/_discover_models",
+    summary="Probe a draft embedding provider for its model list",
+    responses=common_responses(400, 422, 502),
+)
+async def discover_embedding_models(
+    body: _DiscoverModelsBody = Body(...),
+) -> dict:
+    """Mirror of ``discover_llm_models`` for embedding providers.
+
+    Only ``openai`` (OpenAI-compatible HTTP) is live-discoverable.
+    ``huggingface`` (local sentence-transformers) and ``gemini`` have
+    no usable list endpoint — the frontend falls back to curated
+    suggestions.
+    """
+    _build_stub_provider(
+        EmbeddingProvider,
+        provider=body.provider,
+        config=body.config,
+        models=[{"name": "_probe"}],
+    )
+    if body.provider == "openai":
+        return await _probe_openai_compatible_models(body.config)
+    raise BadRequestError(
+        f"live model discovery is not supported for embedding "
+        f"provider {body.provider!r}; populate the models list "
+        f"manually or use the UI's 'Suggest models' fallback.",
+    )
+
+
+# ---- Discovery probes ------------------------------------------------------
+
+
+async def _probe_ollama_models(config: dict[str, Any]) -> dict:
+    """List models locally available on an Ollama server."""
+    import ollama
+
+    headers: dict[str, str] = {}
+    api_key = config.get("api_key")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    client = ollama.AsyncClient(host=config["url"], headers=headers or None)
+    try:
+        resp = await client.list()
+    except Exception as exc:  # pragma: no cover — network paths
+        raise BadRequestError(
+            f"ollama probe failed: {type(exc).__name__}: {exc}",
+        ) from exc
+    finally:
+        # ollama.AsyncClient does not expose aclose() in all versions;
+        # rely on httpx's GC for cleanup.
+        pass
+    # ollama.list() returns a ListResponse with .models[].model (the name).
+    # context_length is not exposed on the list endpoint; would need a
+    # per-model `client.show(name)` call. Skip — operators edit it in
+    # the form.
+    models = getattr(resp, "models", None) or resp.get("models", [])
+    out: list[dict[str, Any]] = []
+    for m in models:
+        name = getattr(m, "model", None) or (m.get("model") if isinstance(m, dict) else None)
+        if name:
+            out.append({"name": name})
+    return {"models": out}
+
+
+async def _probe_openai_compatible_models(config: dict[str, Any]) -> dict:
+    """List models from an OpenAI-compatible /v1/models endpoint."""
+    import httpx
+
+    url = str(config["url"]).rstrip("/")
+    api_key = config.get("api_key") or ""
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"{url}/models", headers=headers)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as exc:  # pragma: no cover — network paths
+        raise BadRequestError(
+            f"openai-compatible probe failed: {type(exc).__name__}: {exc}",
+        ) from exc
+    items = data.get("data") or []
+    # OpenAI returns {data: [{id, ...}, ...]}. context_length isn't in
+    # the list response (it's model-specific; the chat-completions API
+    # returns it on a per-request error path). The UI seeds a default
+    # context_length and the operator can edit it.
+    return {"models": [{"name": m["id"]} for m in items if "id" in m]}
 
 
 # ---- CrossEncoderProvider router -------------------------------------------

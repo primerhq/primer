@@ -2,12 +2,18 @@
 
 * Collection — CRUD + Find. ``GET /v1/collections/{id}/documents``
   lists documents belonging to the collection (server-side filter on
-  ``collection_id``). Live ``search`` against the vector store ships
-  via :mod:`matrix.api.routers.search` (per-Describeable type) once
-  the internal collections subsystem is activated.
+  ``collection_id``). ``POST /v1/collections/{id}/search`` runs
+  semantic search across the collection's indexed documents using the
+  collection's own embedder + the application's vector store.
 * Document — CRUD + Find. Live ``ingest`` (multipart upload + docling
   chunking) is deferred to a follow-up sub-project; the system
   toolset's ``put_document`` provides an in-process upsert path.
+
+NOTE: ``POST /v1/collections/search`` (no id, in
+:mod:`matrix.api.routers.internal_collections`) is a different
+operation — it searches the *collection metadata* internal index for
+the "find collection by description" use case. The per-collection
+``/{id}/search`` route here searches the *document contents*.
 
 VectorStoreConfig CRUD has moved out of storage entirely — vector
 store configuration is now an AppConfig field
@@ -17,15 +23,22 @@ process boot.
 
 from __future__ import annotations
 
-from fastapi import Depends, Path, Query
+from typing import Any
+
+from fastapi import Body, Depends, Path, Query
+from pydantic import BaseModel, Field
 
 from matrix.api.deps import (
     get_collection_storage,
     get_document_storage,
+    get_provider_registry,
+    get_vector_store_registry,
 )
 from matrix.api.errors import common_responses
+from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
 from matrix.api.routers._cdc_hooks import make_cdc_hooks
 from matrix.api.routers._crud import make_crud_router
+from matrix.model.chat import TextPart
 from matrix.model.collection import Collection, Document
 
 
@@ -42,6 +55,18 @@ from matrix.model.storage import (
     Predicate,
     Value,
 )
+
+
+class _CollectionSearchBody(BaseModel):
+    """Body for ``POST /v1/collections/{id}/search``."""
+
+    query: str = Field(
+        ..., min_length=1, description="Free-text query string.",
+    )
+    top_k: int = Field(
+        default=10, ge=1, le=100,
+        description="Maximum number of hits to return.",
+    )
 
 
 # ---- Collection router -----------------------------------------------------
@@ -80,6 +105,58 @@ async def list_collection_documents(
     )
     page = OffsetPage(offset=offset, length=limit)
     return await documents.find(predicate, page)
+
+
+@collection_router.post(
+    "/collections/{collection_id}/search",
+    summary="Semantic search within a collection's documents",
+    responses=common_responses(404, 422, 502, 503),
+)
+async def search_collection(
+    collection_id: str = Path(..., description="Collection id"),
+    body: _CollectionSearchBody = Body(...),
+    collections=Depends(get_collection_storage),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+    vsr: VectorStoreRegistry = Depends(get_vector_store_registry),
+) -> dict:
+    """Vectorise ``body.query`` with the collection's embedder and run a
+    similarity search against the application's vector store, scoped to
+    this collection. Returns ``{"hits": [{document_id, chunk_id, score,
+    text, meta}, ...]}``.
+
+    The collection must exist and have indexed documents; an empty
+    collection returns an empty hits list. The embedder used is the
+    one declared on ``Collection.embedder`` (provider id + model name)
+    — the same one the ingest pipeline used when storing chunks, so
+    query and index vectors live in the same embedding space.
+    """
+    coll = await collections.get(collection_id)
+    if coll is None:
+        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+
+    # Vectorise the query with the collection's own embedder so query
+    # and index vectors agree on dimensionality + distance metric.
+    embedder = await registry.get_embedder(coll.embedder.provider_id)
+    response = await embedder.embed(
+        model=coll.embedder.model,
+        inputs=[TextPart(text=body.query)],
+    )
+    vector = list(response.embeddings[0].vector)
+
+    store = await vsr.get()
+    hits = await store.search(collection_id, vector, body.top_k)
+    return {
+        "hits": [
+            {
+                "document_id": h.record.document_id,
+                "chunk_id": h.record.chunk_id,
+                "score": h.score,
+                "text": h.record.text,
+                "meta": h.record.meta,
+            }
+            for h in hits
+        ],
+    }
 
 
 # ---- Document router -------------------------------------------------------

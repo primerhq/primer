@@ -93,6 +93,9 @@ _SYSTEM_TOOLSET_ID = "_system"
 _SEARCH_TOOLSET_ID = "_search"
 _WORKSPACES_TOOLSET_ID = "_workspaces"
 _MISC_TOOLSET_ID = "_misc"
+# Reserved builtin id WITHOUT leading underscore (legacy — the `web`
+# toolset shipped before the underscore-prefix convention was settled).
+_WEB_TOOLSET_ID = "web"
 
 
 def _build_default_toolset_factory(
@@ -154,6 +157,7 @@ class ProviderRegistry:
         search_toolset_provider: ToolsetProvider | None = None,
         workspaces_toolset_provider: ToolsetProvider | None = None,
         misc_toolset_provider: ToolsetProvider | None = None,
+        web_toolset_provider: ToolsetProvider | None = None,
     ) -> None:
         self._sp = storage_provider
         self._llm_factory = llm_factory or _default_llm_factory
@@ -180,6 +184,10 @@ class ProviderRegistry:
         # always built at app startup. Stateless utilities
         # (get_datetime, sleep, uuid_v4, hash, calculate).
         self._misc_toolset_provider = misc_toolset_provider
+        # Reserved id ``web`` (no underscore prefix — legacy) resolves
+        # to the immutable web toolset built at app startup.
+        # DuckDuckGo search + http-request primitives.
+        self._web_toolset_provider = web_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -260,6 +268,13 @@ class ProviderRegistry:
             and toolset_id == _MISC_TOOLSET_ID
         ):
             return self._misc_toolset_provider
+        # Reserved id `web` resolves to the always-on web toolset
+        # built at app startup.
+        if (
+            self._web_toolset_provider is not None
+            and toolset_id == _WEB_TOOLSET_ID
+        ):
+            return self._web_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -302,6 +317,7 @@ class ProviderRegistry:
             _SEARCH_TOOLSET_ID,
             _WORKSPACES_TOOLSET_ID,
             _MISC_TOOLSET_ID,
+            _WEB_TOOLSET_ID,
         ):
             return
         async with self._lock:
