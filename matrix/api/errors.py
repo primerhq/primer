@@ -133,6 +133,15 @@ def _problem_response(
     detail: str,
     extensions: dict[str, Any] | None = None,
 ) -> JSONResponse:
+    # Thread the request-id from request.state (set by the
+    # _install_request_id middleware in matrix.api.app) into the
+    # envelope's extensions so the UI's "Copy request id" link works
+    # on the 4xx/5xx path. Skipped silently when the middleware is
+    # absent (e.g. a unit test that constructs a Request without the
+    # production app factory) so existing tests remain green.
+    rid = getattr(getattr(request, "state", None), "request_id", None)
+    if rid:
+        extensions = {**(extensions or {}), "request_id": rid}
     problem = ProblemDetails(
         type=type_uri,
         title=title,

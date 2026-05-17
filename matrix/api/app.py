@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from matrix.api.config import AppConfig
 from matrix.api.errors import register_error_handlers
@@ -319,7 +321,10 @@ def create_app(config: AppConfig) -> FastAPI:
         redoc_url="/redoc" if debug_docs else None,
     )
     _install_security_headers(app)
+    _install_console_csp(app)
+    _install_request_id(app)
     _mount_routers(app, runtime_mode=config.runtime_mode)
+    _mount_console(app)
     register_error_handlers(app)
     return app
 
@@ -329,9 +334,9 @@ def _install_security_headers(app: FastAPI) -> None:
 
     The API is JSON-only, so a strict ``no-sniff`` + deny-frame policy
     is safe by default. ``Cross-Origin-Resource-Policy: same-origin``
-    blocks no-CORS embeds from other origins. CSP is omitted (it has
-    no effect on JSON responses, and configuring it for the optional
-    debug-mode Swagger UI would add a maintenance surface).
+    blocks no-CORS embeds from other origins. CSP for the JSON surface
+    is handled by ``_install_console_csp`` which scopes the policy to
+    the ``/console/*`` mount only — JSON responses never carry one.
     """
     @app.middleware("http")
     async def _security_headers(request, call_next):  # noqa: ARG001
@@ -345,6 +350,140 @@ def _install_security_headers(app: FastAPI) -> None:
             "Cross-Origin-Resource-Policy", "same-origin",
         )
         return response
+
+
+# CSP header for the /console/* static mount.
+#
+# Why 'unsafe-eval' AND 'unsafe-inline' are both required:
+# @babel/standalone has two paths for running <script type="text/babel">
+# tags. (1) ``new Function`` over the transpiled body — covered by
+# 'unsafe-eval'. (2) When the source comes from a `src=` attribute it
+# fetches the file, transpiles it, and injects a fresh <script> element
+# whose body is the transpiled code INLINE — that's an inline script
+# and CSP blocks it without 'unsafe-inline'. The .jsx files are all
+# `src`-loaded, so path (2) is what we hit; the console page renders
+# blank without 'unsafe-inline'.
+#
+# Why there are NO `sha384-...` entries in script-src:
+# CSP hash source-list entries (`'sha-*'`) allow inline script BLOCKS
+# whose content hashes to a listed value — they are NOT a way to pin
+# external script integrity. External-script integrity is enforced by
+# the `integrity="sha384-..."` attribute on the `<script src=...>` tag
+# (Subresource Integrity, a separate browser layer). More importantly,
+# per CSP spec the presence of ANY hash/nonce in script-src causes
+# 'unsafe-inline' to be silently ignored — defeating the inline-script
+# allowance we need for Babel path (2). The CDN script integrity is
+# preserved unchanged by the `integrity=` attributes already on the
+# script tags in `ui/index.html`.
+#
+# Trust chain after this CSP:
+#   1. CDN scripts (React, ReactDOM, Babel-standalone) load only from
+#      `https://unpkg.com` and are verified by SRI on the script tag.
+#   2. .jsx files load only from `'self'`.
+#   3. `connect-src 'self'` blocks all exfiltration to other origins.
+#   4. The XSS path 'unsafe-inline' normally opens — injected inline
+#      <script> in served HTML — has no entry point here: nothing
+#      user-controlled lands in /console/* content. An attacker would
+#      need write access to ui/ directly, at which point CSP is moot.
+#   5. The alternative — pre-compile the JSX at build time — requires
+#      an npm-installed Babel CLI, which the project forbids on the
+#      host (Shai-Hulud mitigation).
+# Documented in docs/superpowers/specs/2026-05-15-web-console-implementation-design.md §2.2.
+_CONSOLE_CSP = (
+    "default-src 'none'; "
+    "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src https://fonts.gstatic.com; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'"
+)
+
+
+def _install_console_csp(app: FastAPI) -> None:
+    """Apply a strict CSP only to ``/console/*`` responses.
+
+    JSON responses on ``/v1/*`` are not browser-renderable so CSP has no
+    effect on them. Scoping the policy to the static UI mount keeps the
+    JSON surface unchanged and avoids any unintended interaction with
+    OpenAPI / Swagger / ReDoc when log_level=debug is set.
+    """
+    @app.middleware("http")
+    async def _console_csp(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/console"):
+            # Direct assignment, not setdefault — the policy is strict
+            # by intent; no downstream handler should be loosening it.
+            response.headers["Content-Security-Policy"] = _CONSOLE_CSP
+        return response
+
+
+# Directory containing the operator console (the bind-mounted ui/
+# folder at repo root). Computed once at import time; the production
+# factory guards on .is_dir() so a deployment that strips the directory
+# still boots without the console mount.
+_UI_DIR = Path(__file__).resolve().parent.parent.parent / "ui"
+
+
+# Request-id propagation. Honour an incoming X-Request-Id when it
+# parses as a safe token; otherwise mint a fresh one. Stashed on
+# request.state.request_id so error handlers can embed it into the
+# RFC 7807 envelope (extensions.request_id) and the UI's "Copy
+# request id" action has something to surface.
+#
+# Defensive guard on the incoming value: cap length + restrict to a
+# conservative character set so a malicious client cannot smuggle
+# control characters / log-injection payloads through the header
+# (the value is echoed on the response and logged structurally).
+import re as _re
+import uuid as _uuid
+
+_VALID_REQUEST_ID = _re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+
+
+def _install_request_id(app: FastAPI) -> None:
+    """Stamp X-Request-Id on every response; expose it via request.state.
+
+    Incoming X-Request-Id values are honoured when they match the
+    conservative regex above; otherwise a fresh ``req-<uuid hex[:12]>``
+    is generated. The id is set on the response header and stashed at
+    ``request.state.request_id`` for downstream consumers (the error
+    mapper threads it into ``extensions.request_id``).
+    """
+    @app.middleware("http")
+    async def _request_id(request, call_next):
+        incoming = request.headers.get("X-Request-Id")
+        if incoming and _VALID_REQUEST_ID.match(incoming):
+            rid = incoming
+        else:
+            rid = "req-" + _uuid.uuid4().hex[:12]
+        request.state.request_id = rid
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = rid
+        return response
+
+
+def _mount_console(app: FastAPI) -> None:
+    """Mount the operator console at ``/console`` if the ui/ dir is present.
+
+    ``html=True`` makes StaticFiles serve ``index.html`` for the bare
+    ``/console/`` prefix. Only invoked from :func:`create_app` (the
+    production factory); tests intentionally do not get the static
+    mount.
+    """
+    if _UI_DIR.is_dir():
+        app.mount(
+            "/console",
+            StaticFiles(directory=str(_UI_DIR), html=True),
+            name="console",
+        )
+    else:
+        logger.info(
+            "ui/ directory not found at %s; /console mount skipped",
+            _UI_DIR,
+        )
 
 
 def create_test_app(
@@ -370,6 +509,7 @@ def create_test_app(
         version=APP_VERSION,
         contact={"name": "matrix"},
     )
+    _install_request_id(app)
     if workspace_registry is None:
         workspace_registry = WorkspaceRegistry(storage_provider)
     if system_toolset is None:

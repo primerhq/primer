@@ -344,6 +344,17 @@ async def list_sessions(
         str | None,
         Query(description="Filter by parent_session_id."),
     ] = None,
+    worker_id: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Filter by the id of the worker that last held the "
+                "session lease (`last_worker_id`). Useful for the "
+                "Workers UI page to list which sessions a given worker "
+                "is currently processing or has recently touched."
+            ),
+        ),
+    ] = None,
     sessions=Depends(get_session_storage),
 ):
     """List sessions across workspaces, optionally filtered.
@@ -386,6 +397,14 @@ async def list_sessions(
                 left=FieldRef(name="binding.agent_id"),
                 op=Op.EQ,
                 right=Value(value=agent_id),
+            )
+        )
+    if worker_id is not None:
+        filters.append(
+            Predicate(
+                left=FieldRef(name="last_worker_id"),
+                op=Op.EQ,
+                right=Value(value=worker_id),
             )
         )
     if filters:

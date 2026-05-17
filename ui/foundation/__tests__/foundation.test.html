@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>matrix foundation hook tests</title>
+<style>
+  body { font-family: ui-monospace, monospace; padding: 16px; background: #0a0a0a; color: #e5e5e5; }
+  h1 { margin: 0 0 8px; font-size: 16px; }
+  .summary { margin-bottom: 12px; padding: 8px; background: #1a1a1a; border-radius: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #1f1f1f; vertical-align: top; }
+  th { background: #1a1a1a; }
+  tr.pass { color: #84cc16; }
+  tr.fail { color: #ef4444; }
+  tr.skip { color: #a3a3a3; }
+  pre { margin: 4px 0 0; white-space: pre-wrap; font-size: 11px; color: #fca5a5; }
+</style>
+</head>
+<body>
+<h1>matrix foundation hook tests</h1>
+<div id="summary" class="summary">running…</div>
+<table>
+  <thead><tr><th style="width:160px">Name</th><th style="width:80px">Result</th><th>Details</th></tr></thead>
+  <tbody id="results"></tbody>
+</table>
+
+<!-- Same CDN deps as index.html. SRI hashes verified 2026-05-15. -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<!-- Load the same foundation modules the production app loads. -->
+<script type="text/babel" src="../api.js"></script>
+<script type="text/babel" src="../toast.js"></script>
+<script type="text/babel" src="../use-resource.js"></script>
+<script type="text/babel" src="../use-mutation.js"></script>
+<script type="text/babel" src="../router.js"></script>
+<script type="text/babel" src="../tweaks.js"></script>
+
+<!--
+  Tests run inline below. The <script type="text/babel"> tag is
+  processed by Babel-standalone after all preceding babel-typed
+  scripts have been processed (document order), so window.matrixApi
+  is fully populated when this runs.
+-->
+<script type="text/babel">
+(async function () {
+  const { apiFetch, ApiError, useResource, useMutation, useRouter, useToast, _toast } = window.matrixApi;
+  const _resource = window.matrixApi._resource;
+  const _router = window.matrixApi._router;
+
+  // ---- Test harness ------------------------------------------------------
+  const results = [];
+  function record(name, ok, detail) {
+    results.push({ name, ok, detail });
+    const tr = document.createElement("tr");
+    tr.className = ok ? "pass" : (ok === null ? "skip" : "fail");
+    tr.innerHTML =
+      "<td>" + name + "</td>" +
+      "<td>" + (ok ? "PASS" : (ok === null ? "SKIP" : "FAIL")) + "</td>" +
+      "<td>" + (detail ? '<pre>' + escapeHtml(detail) + '</pre>' : "") + "</td>";
+    document.getElementById("results").appendChild(tr);
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function assertEq(a, b, msg) {
+    if (a !== b) throw new Error((msg || "assertEq") + ": expected " + JSON.stringify(b) + ", got " + JSON.stringify(a));
+  }
+  function assertDeepEq(a, b, msg) {
+    if (JSON.stringify(a) !== JSON.stringify(b)) {
+      throw new Error((msg || "assertDeepEq") + ": expected " + JSON.stringify(b) + ", got " + JSON.stringify(a));
+    }
+  }
+  function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  // ---- Stubbed fetch -----------------------------------------------------
+  // Per-test stub. Each test sets window.fetch then runs.
+  const originalFetch = window.fetch;
+  function makeFetch(handler) {
+    return async function stubbedFetch(url, init) {
+      const response = await handler(url, init || {});
+      // Allow the handler to return either a Response-like or a spec
+      // {status, body, headers?} object; normalise to a Response-like.
+      if (response && response.json) return response;
+      const status = response.status;
+      const body = response.body;
+      const headers = new Headers(response.headers || {});
+      if (!headers.has("Content-Type") && body !== undefined) {
+        headers.set("Content-Type", "application/json");
+      }
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: response.statusText || "",
+        headers,
+        clone() { return this; },
+        async json() { return body; },
+        async text() { return JSON.stringify(body); },
+      };
+    };
+  }
+  function restoreFetch() { window.fetch = originalFetch; }
+
+  async function runTest(name, fn) {
+    try {
+      await fn();
+      record(name, true, null);
+    } catch (e) {
+      record(name, false, (e && e.stack) || String(e));
+    } finally {
+      restoreFetch();
+    }
+  }
+
+  // =======================================================================
+  // apiFetch
+  // =======================================================================
+
+  await runTest("apiFetch: returns parsed body on 200", async () => {
+    window.fetch = makeFetch(async () => ({ status: 200, body: { hello: "world" } }));
+    const result = await apiFetch("GET", "/foo");
+    assertDeepEq(result, { hello: "world" });
+  });
+
+  await runTest("apiFetch: returns null on 204", async () => {
+    window.fetch = makeFetch(async () => ({ status: 204 }));
+    const result = await apiFetch("DELETE", "/foo");
+    assertEq(result, null);
+  });
+
+  await runTest("apiFetch: throws ApiError on 404 with populated fields", async () => {
+    window.fetch = makeFetch(async () => ({
+      status: 404,
+      body: { type: "/errors/not-found", title: "Not found", detail: "no such row", status: 404,
+              extensions: { request_id: "req-abc" } }
+    }));
+    try {
+      await apiFetch("GET", "/missing");
+      throw new Error("expected ApiError");
+    } catch (e) {
+      if (!(e instanceof ApiError)) throw new Error("not an ApiError: " + e);
+      assertEq(e.status, 404);
+      assertEq(e.type, "/errors/not-found");
+      assertEq(e.title, "Not found");
+      assertEq(e.detail, "no such row");
+      assertEq(e.requestId, "req-abc");
+    }
+  });
+
+  await runTest("apiFetch: auto-retries on T0103a 502", async () => {
+    let calls = 0;
+    window.fetch = makeFetch(async () => {
+      calls++;
+      if (calls === 1) {
+        return { status: 502, body: { type: "/errors/provider-error", title: "Provider error", status: 502,
+                                       detail: "duplicate key value violates unique constraint \"pg_type_typname_nsp_index\"" } };
+      }
+      return { status: 200, body: { ok: true } };
+    });
+    const result = await apiFetch("POST", "/widgets", {});
+    assertEq(calls, 2);
+    assertDeepEq(result, { ok: true });
+  });
+
+  await runTest("apiFetch: does NOT retry on non-T0103a 502", async () => {
+    let calls = 0;
+    window.fetch = makeFetch(async () => {
+      calls++;
+      return { status: 502, body: { type: "/errors/provider-server-error", title: "Upstream", detail: "openai timeout", status: 502 } };
+    });
+    try { await apiFetch("GET", "/x"); throw new Error("expected throw"); }
+    catch (e) { if (!(e instanceof ApiError)) throw e; }
+    assertEq(calls, 1);
+  });
+
+  // =======================================================================
+  // useResource
+  // =======================================================================
+
+  // Helper: render a component into a transient container, return cleanup.
+  function mount(component) {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    const root = ReactDOM.createRoot(div);
+    root.render(component);
+    return () => { root.unmount(); div.remove(); };
+  }
+
+  await runTest("useResource: fires once on mount, returns data", async () => {
+    let calls = 0;
+    window.fetch = makeFetch(async () => { calls++; return { status: 200, body: { v: calls } }; });
+    let captured = null;
+    const Probe = () => {
+      const r = useResource("probe-mount-" + Math.random(),
+        (signal) => apiFetch("GET", "/p", null, { signal }), {});
+      captured = r;
+      return null;
+    };
+    const cleanup = mount(React.createElement(Probe));
+    await delay(50);
+    cleanup();
+    assertEq(calls, 1, "expected one fetch on mount");
+    if (!captured || !captured.data) throw new Error("no data after settle: " + JSON.stringify(captured));
+    assertEq(captured.data.v, 1);
+    assertEq(captured.loading, false);
+    assertEq(captured.error, null);
+  });
+
+  await runTest("useResource: re-fires on poll tick", async () => {
+    let calls = 0;
+    window.fetch = makeFetch(async () => { calls++; return { status: 200, body: { v: calls } }; });
+    const Probe = () => {
+      useResource("probe-poll-" + Math.random().toString(36).slice(2),
+        (signal) => apiFetch("GET", "/p", null, { signal }),
+        { pollMs: 50 });
+      return null;
+    };
+    const cleanup = mount(React.createElement(Probe));
+    await delay(220); // ~3-4 polls
+    cleanup();
+    if (calls < 3) throw new Error("expected at least 3 calls, got " + calls);
+  });
+
+  await runTest("useResource: cancels on unmount (no errors after unmount)", async () => {
+    let aborted = false;
+    window.fetch = makeFetch(async (url, init) => {
+      // Simulate slow fetch + abort listener.
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => resolve(null), 200);
+        if (init.signal) {
+          init.signal.addEventListener("abort", () => {
+            clearTimeout(t);
+            aborted = true;
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }
+      });
+      return { status: 200, body: { v: 1 } };
+    });
+    const Probe = () => {
+      useResource("probe-unmount-" + Math.random(),
+        (signal) => apiFetch("GET", "/p", null, { signal }), {});
+      return null;
+    };
+    const cleanup = mount(React.createElement(Probe));
+    await delay(20);
+    cleanup();
+    await delay(50);
+    if (!aborted) throw new Error("expected fetch to be aborted on unmount");
+  });
+
+  await runTest("useResource: halts after 3 consecutive errors; resumes on refetch", async () => {
+    let calls = 0;
+    window.fetch = makeFetch(async () => { calls++; throw new Error("network down"); });
+    let captured = null;
+    const Probe = () => {
+      const r = useResource("probe-halt-" + Math.random().toString(36).slice(2),
+        (signal) => apiFetch("GET", "/p", null, { signal }),
+        { pollMs: 30 });
+      captured = r;
+      return null;
+    };
+    const cleanup = mount(React.createElement(Probe));
+    await delay(250); // plenty for 3 attempts at 30ms apart
+    const callsAfterHalt = calls;
+    if (callsAfterHalt < 3) throw new Error("expected at least 3 attempts, got " + callsAfterHalt);
+    await delay(120);
+    if (calls > callsAfterHalt + 1) {
+      // Allow at most one in-flight at the moment of halt; subsequent ticks must NOT fire.
+      throw new Error("expected polling to halt; calls=" + calls + " after delay (was " + callsAfterHalt + ")");
+    }
+    // Now resume via refetch.
+    let refetchCalls = 0;
+    window.fetch = makeFetch(async () => { refetchCalls++; return { status: 200, body: { ok: true } }; });
+    captured.refetch();
+    await delay(80);
+    if (refetchCalls < 1) throw new Error("refetch did not fire");
+    if (!captured.data || captured.data.ok !== true) throw new Error("data not populated after refetch");
+    cleanup();
+  });
+
+  // =======================================================================
+  // useMutation
+  // =======================================================================
+
+  await runTest("useMutation: optimistic-then-rollback on error", async () => {
+    // Backing useResource holds data; useMutation applies optimistic
+    // transform then fails; verify rollback.
+    const key = "mut-rollback-" + Math.random().toString(36).slice(2);
+    let getCalls = 0;
+    let postShouldFail = true;
+    window.fetch = makeFetch(async (url, init) => {
+      const method = init.method || "GET";
+      if (method === "GET") {
+        getCalls++;
+        return { status: 200, body: { count: 10 } };
+      }
+      if (postShouldFail) {
+        return { status: 500, body: { type: "/errors/internal", title: "Boom", status: 500 } };
+      }
+      return { status: 200, body: { count: 11 } };
+    });
+    let captured = { data: null, error: null };
+    let mutateFn = null;
+    const Probe = () => {
+      const r = useResource(key, (s) => apiFetch("GET", "/c", null, { signal: s }), {});
+      const m = useMutation((body) => apiFetch("POST", "/c", body), {
+        invalidates: [key],
+        optimistic: (current, body) => ({ count: (current?.count ?? 0) + body.delta }),
+        onError: () => {},  // suppress auto-toast
+      });
+      captured = r;
+      mutateFn = m.mutate;
+      return null;
+    };
+    const cleanup = mount(React.createElement(Probe));
+    await delay(50);
+    assertEq(captured.data.count, 10);
+    try { await mutateFn({ delta: 1 }); } catch (e) { /* expected */ }
+    await delay(100);  // settle invalidates
+    assertEq(captured.data.count, 10, "expected rollback to original");
+    cleanup();
+  });
+
+  await runTest("useMutation: invalidates listed caches on success", async () => {
+    const key = "mut-inval-" + Math.random().toString(36).slice(2);
+    let getCalls = 0;
+    let currentValue = 5;
+    window.fetch = makeFetch(async (url, init) => {
+      const method = init.method || "GET";
+      if (method === "GET") {
+        getCalls++;
+        return { status: 200, body: { v: currentValue } };
+      }
+      currentValue = 99;
+      return { status: 200, body: { ok: true } };
+    });
+    let captured = { data: null };
+    let mutateFn = null;
+    const Probe = () => {
+      const r = useResource(key, (s) => apiFetch("GET", "/r", null, { signal: s }), {});
+      const m = useMutation(() => apiFetch("POST", "/r", {}), { invalidates: [key] });
+      captured = r;
+      mutateFn = m.mutate;
+      return null;
+    };
+    const cleanup = mount(React.createElement(Probe));
+    await delay(50);
+    assertEq(captured.data.v, 5);
+    await mutateFn();
+    await delay(80);
+    assertEq(captured.data.v, 99, "expected refetched value");
+    cleanup();
+  });
+
+  await runTest("useMutation: onSuccess / onError callbacks fire", async () => {
+    let okCalled = null, errCalled = null;
+    window.fetch = makeFetch(async () => ({ status: 200, body: { ok: true } }));
+    const Probe1 = () => {
+      const m = useMutation(() => apiFetch("POST", "/x"),
+        { onSuccess: (d) => { okCalled = d; } });
+      React.useEffect(() => { m.mutate(); }, []);
+      return null;
+    };
+    const c1 = mount(React.createElement(Probe1));
+    await delay(40);
+    c1();
+    assertDeepEq(okCalled, { ok: true });
+
+    window.fetch = makeFetch(async () => ({ status: 500, body: { type: "/errors/internal", title: "X", status: 500 } }));
+    const Probe2 = () => {
+      const m = useMutation(() => apiFetch("POST", "/x"),
+        { onError: (e) => { errCalled = e; } });
+      React.useEffect(() => { m.mutate().catch(() => {}); }, []);
+      return null;
+    };
+    const c2 = mount(React.createElement(Probe2));
+    await delay(40);
+    c2();
+    if (!errCalled || errCalled.status !== 500) throw new Error("onError not called with ApiError");
+  });
+
+  // =======================================================================
+  // useRouter
+  // =======================================================================
+
+  await runTest("useRouter: parses #/sessions/sess-abc?tab=turns into {path, params, query}", async () => {
+    // parseHash is a synchronous helper exposed for tests.
+    const parsed = _router.parseHash("#/sessions/sess-abc?tab=turns");
+    assertEq(parsed.path, "/sessions/sess-abc");
+    assertDeepEq(parsed.query, { tab: "turns" });
+    // matchPattern + resolveRoute fill params.
+    const route = _router.resolveRoute("/sessions/sess-abc");
+    if (!route) throw new Error("resolveRoute returned null");
+    assertDeepEq(route.params, { id: "sess-abc" });
+  });
+
+  await runTest("useRouter: empty hash returns the dashboard route", async () => {
+    const parsed = _router.parseHash("");
+    assertEq(parsed.path, "/");
+  });
+
+  await runTest("useRouter: unknown route resolves to /__notfound__", async () => {
+    const route = _router.resolveRoute("/does-not-exist-anywhere");
+    assertEq(route.path, "/__notfound__");
+  });
+
+  // =======================================================================
+  // useToast
+  // =======================================================================
+
+  await runTest("useToast: max-5 enforced (oldest dropped)", async () => {
+    // Clear any pre-existing state first.
+    while (_toast.state.toasts.length) _toast.dismiss(_toast.state.toasts[0].id);
+    for (let i = 0; i < 7; i++) {
+      _toast.push({ kind: "info", title: "t" + i, durationMs: 0 });
+    }
+    assertEq(_toast.state.toasts.length, 5);
+    // Oldest should be t2 (t0 and t1 dropped).
+    assertEq(_toast.state.toasts[0].title, "t2");
+    // Cleanup.
+    while (_toast.state.toasts.length) _toast.dismiss(_toast.state.toasts[0].id);
+  });
+
+  await runTest("useToast: auto-dismiss timer fires", async () => {
+    while (_toast.state.toasts.length) _toast.dismiss(_toast.state.toasts[0].id);
+    const id = _toast.push({ kind: "info", title: "ephemeral", durationMs: 40 });
+    assertEq(_toast.state.toasts.length, 1);
+    await delay(120);
+    assertEq(_toast.state.toasts.length, 0, "expected auto-dismiss");
+  });
+
+  await runTest("useToast: manual dismiss removes the toast", async () => {
+    while (_toast.state.toasts.length) _toast.dismiss(_toast.state.toasts[0].id);
+    const id = _toast.push({ kind: "info", title: "sticky", durationMs: 0 });
+    assertEq(_toast.state.toasts.length, 1);
+    _toast.dismiss(id);
+    assertEq(_toast.state.toasts.length, 0);
+  });
+
+  // ---- Summary ------------------------------------------------------------
+  const passed = results.filter(r => r.ok === true).length;
+  const failed = results.filter(r => r.ok === false).length;
+  const skipped = results.filter(r => r.ok === null).length;
+  const total = results.length;
+  const ok = failed === 0;
+  const summary = document.getElementById("summary");
+  summary.textContent = total + " tests · " + passed + " pass · " + failed + " fail · " + skipped + " skip · " + (ok ? "OK" : "FAIL");
+  summary.style.background = ok ? "#052e16" : "#450a0a";
+  summary.style.color = ok ? "#86efac" : "#fca5a5";
+
+  // Expose for headless drivers that want to scrape the result.
+  window.__matrixFoundationTests = { results, passed, failed, skipped, total, ok };
+})();
+</script>
+</body>
+</html>
