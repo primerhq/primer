@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from matrix.model.session import AgentBinding, SessionInfo, SessionStatus
 from matrix.model.workspace import (
@@ -76,6 +76,26 @@ class Workspace(ABC):
     @abstractmethod
     def template(self) -> WorkspaceTemplate:
         """The template this workspace was materialised from."""
+
+    @property
+    def state_repo(self) -> "Any | None":
+        """Optional handle to the workspace's state repository.
+
+        Backends that persist state via a local git repo (currently
+        :class:`matrix.workspace.local.LocalWorkspace`) expose a
+        :class:`matrix.workspace.local.state.LocalStateRepo` here so
+        downstream callers — primarily the graph executor — can
+        commit per-graph state directly. Backends that do not yet
+        offer a compatible state-repo surface (sandbox / container /
+        k8s) return ``None``; callers that require state_repo MUST
+        check for ``None`` and raise a clear error.
+
+        Default implementation returns ``None`` so existing backends
+        opt in by override rather than being broken by the new
+        method. The graph dispatch in
+        :mod:`matrix.worker.pool` is the only consumer today.
+        """
+        return None
 
     # ---------- Tool surface ----------------------------------------------
 

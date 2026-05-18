@@ -40,12 +40,6 @@ function GraphsPage() {
     <div className="col" style={{ gap: 14 }}>
       <GraphsHeader count={items.length} onRefresh={list.refetch} onNew={() => setCreateOpen(true)} />
 
-      <Banner
-        kind="warning"
-        title="Graph executor is unimplemented (T0156)"
-        detail="Sessions bound to a graph end with `failed` on the first turn — pinned in the app spec. The list and editor still work; saved graphs are ready for when the engine ships."
-      />
-
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
@@ -82,7 +76,7 @@ function GraphsPage() {
                   <div className="empty" style={{ padding: "40px 20px" }}>
                     <div className="ico-wrap"><Icon name="graph" size={22} /></div>
                     <div className="head">No graphs yet</div>
-                    <div className="sub">Graphs orchestrate multiple agents through static or conditional edges. The executor is unimplemented (T0156) — saved graphs are durable, but bound sessions will fail on turn 1.</div>
+                    <div className="sub">Graphs orchestrate multiple agents through static or conditional edges. Sessions bound to a graph run the whole graph in one turn via the workspace's git-backed state repo.</div>
                     <div className="actions"><Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New graph</Btn></div>
                   </div>
                 </td></tr>
@@ -243,7 +237,7 @@ function NewGraphModal({ onClose, onCreate }) {
           </div>
         )}
         <div className="field-help">
-          The graph executor is unimplemented (T0156). The graph will be persisted, but sessions bound to it will fail on turn 1.
+          Once created, you can bind sessions to this graph — the graph executor runs every node in one turn, persisting per-node state to the workspace's <span className="mono">.state/graphs/&lt;session_id&gt;/</span> git repo.
         </div>
       </div>
     </Modal>
@@ -297,12 +291,6 @@ function GraphDetail() {
         navigate={navigate}
         onRefresh={() => { graph.refetch(); status.refetch(); }}
         onDelete={() => setConfirmDelete(true)}
-      />
-
-      <Banner
-        kind="warning"
-        title="Graph executor is unimplemented (T0156)"
-        detail="Sessions bound to a graph end with `failed` on the first turn. You can still edit and save the graph for when the engine ships."
       />
 
       <GraphStatusPanel id={id} status={status} />

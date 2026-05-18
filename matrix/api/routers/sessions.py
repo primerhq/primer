@@ -143,14 +143,35 @@ async def create_session(
     # Allocate the on-disk session slot inside the workspace so the
     # scheduler-visible Session row and the workspace's
     # .state/sessions/<sid>/ directory share the same id (spec §11.4
-    # step 5). Only for agent bindings — graph executor wiring is a
-    # separate concern handled by the graph runtime.
+    # step 5). Both agent and graph bindings get a holder slot —
+    # graph bindings use a synthetic agent_id (``graph:<graph_id>``)
+    # so the graph executor in matrix/worker/pool.py can compose the
+    # workspace's tools into every per-node ToolExecutionManager.
     if isinstance(body.binding, AgentSessionBinding):
         assert resolved_agent is not None  # guarded above
         on_disk_binding = OnDiskAgentBinding(
             agent_id=resolved_agent.id,
             agent_name=resolved_agent.id,
             registered_tool_ids=list(resolved_agent.tools or []),
+        )
+        live_workspace = await workspace_registry.get_workspace(workspace_id)
+        await live_workspace.start_session(
+            on_disk_binding,
+            id=sid,
+            instructions=body.initial_instructions,
+            parent_session_id=body.parent_session_id,
+        )
+    elif isinstance(body.binding, GraphSessionBinding):
+        # Synthetic AgentBinding for the graph-holder slot. The
+        # registered_tool_ids list is informational only — the per-node
+        # tool managers register their own toolsets via the worker
+        # pool's tool_manager_resolver. The workspace tools (ls/read/
+        # write/exec/...) become available to every graph node via the
+        # AgentSession the executor consumes.
+        on_disk_binding = OnDiskAgentBinding(
+            agent_id=f"graph:{body.binding.graph_id}",
+            agent_name=f"graph:{body.binding.graph_id}",
+            registered_tool_ids=[],
         )
         live_workspace = await workspace_registry.get_workspace(workspace_id)
         await live_workspace.start_session(

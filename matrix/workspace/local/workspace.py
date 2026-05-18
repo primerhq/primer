@@ -129,6 +129,15 @@ class LocalWorkspace(Workspace):
         """The on-disk filesystem root the agent sees as ``/``."""
         return self._root
 
+    @property
+    def state_repo(self) -> LocalStateRepo:
+        """Override the ABC default (``None``) — local workspaces expose
+        their git-backed state repo so the graph executor can commit
+        per-graph state via the workspace's ``.state/`` repo. The same
+        repo also persists agent-session messages, so graph state and
+        agent state share one git history per workspace."""
+        return self._state
+
     def get_tools(self) -> list[WorkspaceTool]:
         return list(self._tools)
 

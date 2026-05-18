@@ -35,6 +35,7 @@ from matrix.worker.turn import _CancelScope, compute_backoff
 
 if TYPE_CHECKING:
     from matrix.api.registries import ProviderRegistry, WorkspaceRegistry
+    from matrix.graph.router import RouterRegistry
     from matrix.int.storage_provider import StorageProvider
 
 logger = logging.getLogger(__name__)
@@ -51,12 +52,17 @@ class WorkerPool:
         storage: "StorageProvider",
         workspace_registry: "WorkspaceRegistry",
         provider_registry: "ProviderRegistry",
+        router_registry: "RouterRegistry | None" = None,
     ) -> None:
         self.config = config
         self._scheduler = scheduler
         self._storage = storage
         self._workspace_registry = workspace_registry
         self._provider_registry = provider_registry
+        # Optional RouterRegistry for callable-router edges in graph
+        # dispatch. None means only _StaticEdge + _JsonPathRouter edges
+        # work; _CallableRouter edges will raise at runtime.
+        self._router_registry = router_registry
 
         self._worker_id: str = ""
         self._tasks: list[asyncio.Task] = []
@@ -466,21 +472,138 @@ class WorkerPool:
         return _TurnDriver(executor)
 
     async def _build_graph_executor(self, session: Session, workspace):
-        """Construct a graph executor for ``session``.
+        """Build a turn-driver around :class:`WorkspaceGraphExecutor`.
 
-        DEFERRED — :class:`WorkspaceGraphExecutor` requires multi-node
-        agent + LLM + tool-manager resolvers and a :class:`StateRepo`
-        handle off the workspace. The agent path is the v1 priority
-        (per the spec self-review notes); graph wiring lands in a
-        dedicated follow-on sub-project so the surface here can stay
-        focused on the dispatch decision.
+        Resolves the graph (snapshot first, falls back to storage),
+        the per-node agent + LLM + toolset resolvers (which mirror the
+        agent path), the workspace's git-backed state repo (required —
+        only :class:`matrix.workspace.local.LocalWorkspace` exposes
+        one today; sandbox/container/k8s backends will need StateRepo
+        parity before they can host graph dispatch), and an optional
+        :class:`RouterRegistry` stashed on app.state at startup.
+
+        Unlike the agent path, the graph executor runs the WHOLE
+        graph in one ``invoke()`` call. The returned :class:`_GraphTurnDriver`
+        always reports ``last_done_reason = "graph_ended"`` so the
+        post-turn status mapper transitions the session straight to
+        ``ENDED`` — no re-enqueue.
+
+        Phase 2 scope:
+            - graph_resolver wired — subgraph nodes resolve from storage
+            - router_registry wired from app.state (None if no
+              callable routers registered → callable-router edges raise)
+            - workspace_session wired from the graph-holder slot
+              allocated by POST /workspaces/{id}/sessions; agents in
+              the graph receive composite system prompt augmentation
+              + workspace tools per-node. Falls back to None for
+              legacy graph-bound sessions created before the holder
+              allocation landed.
         """
-        raise NotImplementedError(
-            "graph executor wiring is the next sub-project; v1 ships "
-            "only the agent binding path. See workspace-graph executor "
-            "constructor in matrix/graph/workspace_executor.py for the "
-            "shape of the per-node resolver fan-out that needs wiring."
+        from matrix.agent.tool_manager import ToolExecutionManager
+        from matrix.graph.workspace_executor import WorkspaceGraphExecutor
+        from matrix.model.agent import Agent
+        from matrix.model.except_ import ConfigError, NotFoundError
+        from matrix.model.graph import Graph
+
+        binding = session.binding  # GraphSessionBinding
+
+        # ① Resolve the Graph: snapshot first, then storage. Falls back
+        # gracefully so the executor sees a consistent definition even
+        # if the row is edited mid-session.
+        graph = binding.graph_snapshot
+        if graph is None:
+            graph_storage = self._storage.get_storage(Graph)
+            graph = await graph_storage.get(binding.graph_id)
+            if graph is None:
+                raise NotFoundError(
+                    f"Graph {binding.graph_id!r} not found for session "
+                    f"{session.id!r}"
+                )
+
+        # ② Workspace state-repo: required for the executor's git-backed
+        # state persistence. Only LocalWorkspace exposes one today.
+        # getattr-with-default tolerates legacy fakes that predate the
+        # state_repo addition to the ABC.
+        state_repo = getattr(workspace, "state_repo", None)
+        if state_repo is None:
+            raise ConfigError(
+                f"workspace {workspace.id!r} ({type(workspace).__name__}) "
+                "does not expose a state_repo; graph-bound sessions "
+                "currently require a LocalWorkspace. Sandbox / Container "
+                "/ K8s backends need StateRepo parity (a tracked follow-on)."
+            )
+
+        # ③ Per-node resolvers — closures over self so each resolver
+        # can use the same provider/storage caches as the agent path.
+
+        async def agent_resolver(agent_id: str):
+            agent_storage = self._storage.get_storage(Agent)
+            row = await agent_storage.get(agent_id)
+            if row is None:
+                raise NotFoundError(
+                    f"Agent {agent_id!r} referenced by graph "
+                    f"{graph.id!r} not found"
+                )
+            return row
+
+        async def llm_resolver(agent):
+            llm = await self._provider_registry.get_llm(
+                agent.model.provider_id
+            )
+            llm_model = await self._resolve_llm_model(agent)
+            return llm, llm_model
+
+        # ④ Holder AgentSession allocated by POST /workspaces/{id}/sessions
+        # (Phase 2). Optional — fall back to None for legacy graph-
+        # bound sessions that were created before holder allocation
+        # landed. With the holder, agents in the graph get composite
+        # system prompt augmentation + workspace tools per-node.
+        workspace_session = await workspace.get_session(session.id)
+
+        async def tool_manager_resolver(agent):
+            toolset_providers: dict = {}
+            for toolset_id in (agent.tools or []):
+                provider = await self._provider_registry.get_toolset(
+                    toolset_id
+                )
+                toolset_providers[toolset_id] = provider
+            if workspace_session is not None:
+                return ToolExecutionManager.for_workspace(
+                    toolset_providers=toolset_providers,
+                    session=workspace_session,
+                )
+            return ToolExecutionManager(toolset_providers=toolset_providers)
+
+        # ④ Optional handles wired in later phases.
+
+        async def graph_resolver(subgraph_id: str):
+            graph_storage = self._storage.get_storage(Graph)
+            row = await graph_storage.get(subgraph_id)
+            if row is None:
+                raise NotFoundError(
+                    f"Subgraph {subgraph_id!r} referenced by graph "
+                    f"{graph.id!r} not found"
+                )
+            return row
+
+        # RouterRegistry singleton stashed on app.state at startup
+        # (None if no callables registered). Pass through; the
+        # executor only needs it for _CallableRouter edges.
+        router_registry = getattr(self, "_router_registry", None)
+
+        executor = WorkspaceGraphExecutor(
+            graph=graph,
+            agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,
+            tool_manager_resolver=tool_manager_resolver,
+            state_repo=state_repo,
+            graph_session_id=session.id,
+            workspace_session=workspace_session,
+            graph_resolver=graph_resolver,
+            router_registry=router_registry,
+            principal=None,
         )
+        return _GraphTurnDriver(executor)
 
     async def _resolve_llm_model(self, agent):
         """Look up the :class:`LLMModel` row matching ``agent.model``.
@@ -533,6 +656,11 @@ class WorkerPool:
         having taken a wait.
         """
         last_reason = getattr(executor, "last_done_reason", None)
+        # Graph dispatch sets a sentinel — the graph executor runs the
+        # whole graph in one invoke() call, so there's no follow-up
+        # turn for the worker to schedule.
+        if last_reason == "graph_ended":
+            return SessionStatus.ENDED
         if last_reason in ("max_tokens", "error", "content_filter"):
             return SessionStatus.WAITING
         return SessionStatus.RUNNING
@@ -760,4 +888,45 @@ class _TurnDriver:
         async for _ev in self._executor.invoke(
             messages, response_format=response_format
         ):
+            pass
+
+
+class _GraphTurnDriver:
+    """Adapter for :class:`matrix.graph.workspace_executor.WorkspaceGraphExecutor`.
+
+    Two differences from :class:`_TurnDriver`:
+
+    * Graph executor's ``invoke(messages)`` does NOT accept a
+      ``response_format`` kwarg (per-node response_format lives on
+      each agent node), so this adapter discards the kwarg the worker
+      passes uniformly.
+    * The graph executor runs the WHOLE graph in one ``invoke()`` call
+      (multiple supersteps complete internally before returning), so
+      ``last_done_reason`` is a fixed ``"graph_ended"`` sentinel that
+      :meth:`WorkerPool._infer_post_turn_status` recognises as ENDED
+      — the session is never re-enqueued.
+    """
+
+    def __init__(self, executor) -> None:
+        self._executor = executor
+
+    @property
+    def last_done_reason(self) -> str:
+        return "graph_ended"
+
+    @property
+    def session(self):
+        # Graphs have no single AgentSession in Phase 1; expose None
+        # so the pool's introspection callers see a consistent shape.
+        return getattr(self._executor, "_workspace_session", None)
+
+    async def invoke(self, messages, *, response_format=None) -> None:
+        """Drain the graph executor's stream to completion.
+
+        ``response_format`` is accepted for signature compatibility
+        with :class:`_TurnDriver` and silently discarded — graph nodes
+        carry their own per-node ``response_format`` on the
+        :class:`_AgentNodeRef` model.
+        """
+        async for _ev in self._executor.invoke(messages):
             pass

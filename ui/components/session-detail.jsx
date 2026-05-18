@@ -136,15 +136,6 @@ function SessionDetail() {
     <div className="col" style={{ gap: 14 }}>
       <SessionDetailHeader sid={sid} session={s} navigate={navigate} />
 
-      {isGraph && (
-        <Banner
-          kind="warning"
-          icon="alert"
-          title="Graph executor is unimplemented"
-          detail="This session is bound to a graph. The graph executor currently raises NotImplementedError, so the session ends with `failed` on the first turn. Pinned in app spec §12 (T0156)."
-        />
-      )}
-
       <div className="session-detail-grid">
         {/* LEFT — primary */}
         <div className="col" style={{ gap: 14 }}>

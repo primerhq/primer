@@ -569,9 +569,8 @@ function NewSessionModal({ onClose, onCreate, defaultWorkspaceId, defaultAgentId
               <option value="">-- pick a graph --</option>
               {(graphs.data?.items ?? []).map((g) => <option key={g.id} value={g.id}>{g.id}</option>)}
             </select>
-            <div className="field-help warn">
-              <Icon name="alert" size={11} /> Graph executor is unimplemented (T0156) —
-              this session will end with <span className="mono">failed</span> on turn 1.
+            <div className="field-help">
+              The graph runs end-to-end in one turn; per-node state is persisted to the workspace's <span className="mono">.state/graphs/&lt;session_id&gt;/</span> git subtree.
             </div>
           </>
         )}

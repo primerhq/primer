@@ -114,6 +114,17 @@ def _make_lifespan(config: AppConfig):
         app.state.internal_collections = None
         app.state.search_toolset = None
 
+        # Graph router registry — singleton consumed by the worker
+        # pool's _build_graph_executor when a graph has callable-router
+        # edges (`_CallableRouter` discriminator). Empty at startup;
+        # operators register callables via a startup hook or a future
+        # POST /v1/_graph_routers/{id} endpoint. Graphs with only
+        # static + json_path edges work fine without any registration.
+        from matrix.graph.router import RouterRegistry
+
+        router_registry = RouterRegistry()
+        app.state.router_registry = router_registry
+
         # --- Scheduler + worker pool wiring (Task 23) ----------------
         scheduler = None
         if config.scheduler is not None:
@@ -151,6 +162,7 @@ def _make_lifespan(config: AppConfig):
                 storage=storage_provider,
                 workspace_registry=workspace_registry,
                 provider_registry=provider_registry,
+                router_registry=router_registry,
             )
             await worker_pool.start()
         app.state.worker_pool = worker_pool

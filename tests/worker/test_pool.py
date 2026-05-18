@@ -465,15 +465,29 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
     assert driver.last_done_reason is None
 
 
-async def test_build_executor_raises_for_graph_binding(monkeypatch):
-    """Graph wiring is deferred; the dispatcher must still recognise
-    the binding and raise NotImplementedError with a clear message."""
+async def test_build_executor_raises_for_graph_binding_without_state_repo(monkeypatch):
+    """When the workspace exposes no state_repo (sandbox / container /
+    k8s backends today), graph dispatch must raise a clear ConfigError
+    naming the workspace and the missing attribute. The default
+    Workspace.state_repo is None, so backends opt in by override —
+    legacy fakes get the helpful error."""
+    from matrix.model.except_ import ConfigError
+    from matrix.model.graph import Graph, _AgentNodeRef, _TerminalNode, _StaticEdge
     from matrix.model.session import GraphSessionBinding
 
     sid = "sess-graph-1"
+    graph_snapshot = Graph(
+        id="g-1", description="t",
+        nodes=[
+            _AgentNodeRef(id="start", agent_id="ag-1"),
+            _TerminalNode(id="end"),
+        ],
+        edges=[_StaticEdge(from_node="start", to_node="end")],
+        entry_node_id="start",
+    )
     session = Session(
         id=sid, workspace_id="ws-1",
-        binding=GraphSessionBinding(graph_id="g-1"),
+        binding=GraphSessionBinding(graph_id="g-1", graph_snapshot=graph_snapshot),
         status=SessionStatus.RUNNING,
         created_at=datetime.now(timezone.utc),
         turn_no=0,
@@ -485,8 +499,100 @@ async def test_build_executor_raises_for_graph_binding(monkeypatch):
         workspace_registry=None,        # type: ignore[arg-type]
         provider_registry=None,         # type: ignore[arg-type]
     )
-    with pytest.raises(NotImplementedError, match="graph executor wiring"):
+    # _FakeWorkspaceForBuild does not override state_repo, so the ABC
+    # default (None) flows through and triggers the ConfigError.
+    with pytest.raises(ConfigError, match="state_repo"):
         await pool._build_executor(session, _FakeWorkspaceForBuild(sid))
+
+
+async def test_build_graph_executor_returns_graph_turn_driver(monkeypatch, tmp_path):
+    """Smoke: _build_executor for a graph binding constructs a
+    WorkspaceGraphExecutor wrapped in _GraphTurnDriver, against a
+    workspace with a real LocalStateRepo. The driver's last_done_reason
+    is the 'graph_ended' sentinel that the post-turn mapper recognises."""
+    from matrix.graph.workspace_executor import WorkspaceGraphExecutor
+    from matrix.model.graph import (
+        Graph,
+        _AgentNodeRef,
+        _StaticEdge,
+        _TerminalNode,
+    )
+    from matrix.model.session import GraphSessionBinding
+    from matrix.worker.pool import _GraphTurnDriver
+    from matrix.workspace.local.state import LocalStateRepo
+
+    sid = "sess-graph-ok-1"
+    graph_snapshot = Graph(
+        id="g-ok-1", description="2-node smoke graph",
+        nodes=[
+            _AgentNodeRef(id="start", agent_id="ag-1"),
+            _TerminalNode(id="end"),
+        ],
+        edges=[_StaticEdge(from_node="start", to_node="end")],
+        entry_node_id="start",
+    )
+    session = Session(
+        id=sid, workspace_id="ws-1",
+        binding=GraphSessionBinding(graph_id="g-ok-1", graph_snapshot=graph_snapshot),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        turn_no=0,
+    )
+
+    # Workspace stub: only state_repo + id are read by _build_graph_executor.
+    repo = LocalStateRepo(tmp_path / "state", workspace_id="ws-1")
+    await repo.initialize()
+
+    class _LocalWsStub:
+        def __init__(self, sr):
+            self.id = "ws-1"
+            self.state_repo = sr
+
+        async def get_session(self, session_id):
+            # Phase 2 graph dispatch reads the holder AgentSession via
+            # workspace.get_session(session.id). For this unit test we
+            # exercise the no-holder fallback path (workspace_session
+            # is None → ToolExecutionManager() with no workspace tools).
+            return None
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=None,                 # type: ignore[arg-type]
+        storage=None,                   # type: ignore[arg-type]
+        workspace_registry=None,        # type: ignore[arg-type]
+        provider_registry=None,         # type: ignore[arg-type]
+    )
+    driver = await pool._build_executor(session, _LocalWsStub(repo))
+    assert isinstance(driver, _GraphTurnDriver)
+    assert isinstance(driver._executor, WorkspaceGraphExecutor)
+    # The sentinel that _infer_post_turn_status maps to ENDED.
+    assert driver.last_done_reason == "graph_ended"
+
+
+async def test_infer_post_turn_status_maps_graph_ended_to_ended():
+    """The mapper recognises the graph driver's sentinel and transitions
+    the session directly to ENDED — no re-enqueue."""
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=None,                 # type: ignore[arg-type]
+        storage=None,                   # type: ignore[arg-type]
+        workspace_registry=None,        # type: ignore[arg-type]
+        provider_registry=None,         # type: ignore[arg-type]
+    )
+
+    class _Driver:
+        last_done_reason = "graph_ended"
+
+    # Session value is unused by the agent-flavor mapper today, but
+    # we pass a stub to satisfy the signature.
+    sess = Session(
+        id="s", workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="a"),  # type: ignore[arg-type]
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        turn_no=0,
+    )
+    assert pool._infer_post_turn_status(_Driver(), sess) == SessionStatus.ENDED
 
 
 async def test_infer_post_turn_status_reads_last_done_reason():

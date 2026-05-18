@@ -27,13 +27,18 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
 # System deps:
-# - curl   for the HEALTHCHECK and for installing uv
-# - ca-certificates  for HTTPS during uv install + runtime fetches
+# - curl              the HEALTHCHECK and for installing uv
+# - ca-certificates   HTTPS during uv install + runtime fetches
+# - git               required by matrix/workspace/local/state.py:LocalStateRepo
+#                     which uses `git init` / `git commit` for the
+#                     workspace's .state/ versioned-state repo. Workspace
+#                     creation (POST /v1/workspaces) and all graph-bound
+#                     session dispatch fail without it.
 # Most python deps (asyncpg, grpcio, pgvector, torch, transformers)
 # ship manylinux wheels for cp313, so no build toolchain is needed.
 # Add `build-essential` here if a future dep requires compilation.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv (standalone binary, ~25 MB) directly to /usr/local/bin so
