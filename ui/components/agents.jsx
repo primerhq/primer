@@ -286,17 +286,17 @@ function NewAgentModal({ onClose, onCreate }) {
       }
     >
       <div className="field">
-        <label className="field-label">ID <span className="hint">optional — backend assigns if blank</span></label>
-        <input className="input" value={id} onChange={(e) => setId(e.target.value)} placeholder="auto-generated" style={{ width: "100%" }} />
+        <label className="field-label" htmlFor="na-id">ID <span className="hint">optional — backend assigns if blank</span></label>
+        <input id="na-id" className="input" value={id} onChange={(e) => setId(e.target.value)} placeholder="auto-generated" style={{ width: "100%" }} />
       </div>
       <div className="field">
-        <label className="field-label">Description</label>
-        <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} style={{ width: "100%" }} />
+        <label className="field-label" htmlFor="na-description">Description</label>
+        <input id="na-description" className="input" value={description} onChange={(e) => setDescription(e.target.value)} style={{ width: "100%" }} />
         {fieldErrors["body.description"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.description"]}</div>}
       </div>
       <div className="field">
-        <label className="field-label">LLM provider</label>
-        <select className="select" value={providerId} onChange={(e) => setProviderId(e.target.value)} style={{ width: "100%" }}>
+        <label className="field-label" htmlFor="na-llm-provider">LLM provider</label>
+        <select id="na-llm-provider" className="select" value={providerId} onChange={(e) => setProviderId(e.target.value)} style={{ width: "100%" }}>
           <option value="">-- pick a provider --</option>
           {(providers.data?.items ?? []).map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
         </select>
@@ -308,8 +308,8 @@ function NewAgentModal({ onClose, onCreate }) {
         {fieldErrors["body.model.provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.provider_id"]}</div>}
       </div>
       <div className="field">
-        <label className="field-label">Model</label>
-        <select className="select" value={modelName} onChange={(e) => setModelName(e.target.value)} style={{ width: "100%" }}>
+        <label className="field-label" htmlFor="na-model">Model</label>
+        <select id="na-model" className="select" value={modelName} onChange={(e) => setModelName(e.target.value)} style={{ width: "100%" }}>
           <option value="">-- pick a model --</option>
           {modelOptions.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
         </select>
@@ -333,12 +333,12 @@ function NewAgentModal({ onClose, onCreate }) {
         </div>
       </div>
       <div className="field">
-        <label className="field-label">System prompt <span className="hint">optional · stored as a single-segment list</span></label>
-        <textarea className="textarea" value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} rows={4} />
+        <label className="field-label" htmlFor="na-system-prompt">System prompt <span className="hint">optional · stored as a single-segment list</span></label>
+        <textarea id="na-system-prompt" className="textarea" value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} rows={4} />
       </div>
       <div className="field">
-        <label className="field-label">Temperature <span className="hint">optional · default is provider-decided</span></label>
-        <input className="input" type="number" step="0.05" min="0" value={temperature} onChange={(e) => setTemperature(e.target.value)} style={{ width: 100 }} />
+        <label className="field-label" htmlFor="na-temperature">Temperature <span className="hint">optional · default is provider-decided</span></label>
+        <input id="na-temperature" className="input" type="number" step="0.05" min="0" value={temperature} onChange={(e) => setTemperature(e.target.value)} style={{ width: 100 }} />
         {fieldErrors["body.temperature"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.temperature"]}</div>}
       </div>
     </Modal>

@@ -503,6 +503,15 @@ function NewProviderModal({ kindKey, plural, label, onClose, onCreate }) {
           </div>
         ))}
         {fieldErrors["body.models"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.models"]}</div>}
+        {/* T0025: documented anomaly surface — see docs/testing/05-ui-spec.md §5.
+            The /v1/{plural}/{id}/models endpoint returns this stored list,
+            NOT a live provider probe. The Fetch/Suggest button above is the
+            UI's escape hatch; this helper makes the static-list semantics
+            explicit so operators don't expect the list to refresh on its own. */}
+        <div className="field-help">
+          Model list comes from the provider row, not a live introspection (T0025).
+          Use the {def?.discoverable ? "Fetch" : "Suggest"} models button above to populate or refresh.
+        </div>
       </div>
 
       <div className="field">

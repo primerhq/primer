@@ -229,3 +229,4 @@ research/
 # rule that only code and Python tests are committed.
 tests/.e2e/
 tests/e2e/.state/
+tests/ui_e2e/.state/
