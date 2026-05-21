@@ -1019,3 +1019,74 @@ async def test_t0714_embedding_provider_models_missing_id_returns_404(
         f"{resp.status_code}: {resp.text}"
     )
     assert envelope.get("type") == "/errors/not-found", envelope
+
+
+# ============================================================================
+# T0725 — OpenResponsesConfig.flavor="   " (whitespace-only) clean envelope
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0725_openresponses_flavor_whitespace_only_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0725 — Sister of T0380 (unknown flavor value → coerced to default
+    "other") and T0705 (flavor=null → 422 strict-mode). T0725 probes the
+    whitespace-only case: ``flavor="   "`` is a string that's neither a
+    known enum value nor an empty string nor null. Document whichever
+    behavior the API actually has — coerce-to-default, 422-reject, or
+    accept-verbatim — but assert it's a clean envelope; never
+    /errors/internal.
+
+    Defence: if 201, clean up the row.
+    """
+    entity_id = f"llm-t0725-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "openresponses",
+        "models": [{"name": "x", "context_length": 1024}],
+        "config": {
+            "url": "http://localhost:1234/v1",
+            "api_key": "sk-test",
+            "flavor": "   ",  # whitespace-only
+        },
+        "limits": {"max_concurrency": 1},
+    }
+    resp = await client.post("/v1/llm_providers", json=body)
+    envelope = resp.json() if resp.content else {}
+
+    # Primary invariant — no internal-error leak under sub-discriminator
+    # edge.
+    assert envelope.get("type") != "/errors/internal", (
+        f"flavor='   ' leaked /errors/internal: "
+        f"{resp.status_code}: {resp.text}"
+    )
+
+    # Either accepted (lenient coerce, matches T0380) OR rejected 4xx
+    # (strict, matches T0705). Both are documented possible contracts.
+    assert resp.status_code in (201, 400, 422), (
+        f"flavor='   ' unexpected status: "
+        f"{resp.status_code}: {resp.text}"
+    )
+
+    # Cleanup if accepted.
+    if resp.status_code == 201:
+        try:
+            got = await client.get(f"/v1/llm_providers/{entity_id}")
+            assert got.status_code == 200, got.text
+            persisted_flavor = got.json()["config"].get("flavor")
+            # If the row landed, the persisted flavor must be one of:
+            #   - "other" (coerced to default per T0380's contract)
+            #   - "   " (accepted verbatim — also acceptable as long
+            #     as a downstream consumer doesn't 500 on it)
+            #   - any other enum value if the coercer normalises space
+            assert isinstance(persisted_flavor, str), got.json()
+        finally:
+            await client.delete(f"/v1/llm_providers/{entity_id}")
+    else:
+        # On a 4xx, the row should NOT exist (no partial persist).
+        got = await client.get(f"/v1/llm_providers/{entity_id}")
+        assert got.status_code == 404, (
+            f"4xx on POST should not leave a persisted row: "
+            f"{got.status_code}: {got.text}"
+        )

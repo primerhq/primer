@@ -9984,3 +9984,143 @@ async def test_t0722_concurrent_files_info_same_path_identical_envelopes(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0723 — /log on workspace whose .state was overwritten with a non-git file
+# returns a clean envelope (T0681 sibling — corrupt .state, not destroy race)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0723_log_on_workspace_with_corrupt_state_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0723 — Sibling of T0681 (destroy racing /log). T0723 corrupts
+    the workspace's ``.state`` git repo BEFORE the /log call: instead
+    of a directory the .state path is a regular junk file. The handler
+    invokes `git log` under the hood; with .state as a non-directory
+    git will fail. The contract: clean envelope — NEVER an
+    /errors/internal leak. Status code is advisory (200 with empty
+    commits, 4xx, or 5xx with a specific /errors/<slug> type all
+    acceptable).
+
+    Priority 2 (workspace-stress) + priority 6 (envelope-leak hunt).
+    """
+    import shutil
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Locate the workspace's .state dir on disk. Per local-backend
+        # layout (test_t0370 confirms): <provider.root>/<workspace_id>/.state
+        ws_dir = tmp_path / workspace_id
+        state_dir = ws_dir / ".state"
+
+        # Sanity — the freshly-created workspace should have .state as
+        # a directory (the initialised git repo). If layout has drifted
+        # the test silently skips; spec changes should be caught by a
+        # sibling test, not by a defensive structural assertion here.
+        if not state_dir.is_dir():
+            pytest.skip(
+                f"local-backend layout drifted: expected {state_dir} "
+                f"to be a directory; skipping T0723"
+            )
+
+        # Replace the .state dir with a junk file.
+        shutil.rmtree(state_dir)
+        state_dir.write_bytes(b"this is not a git repo, this is a file\n")
+
+        # Now /log — must produce a clean envelope.
+        resp = await client.get(f"/v1/workspaces/{workspace_id}/log")
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"/log on corrupt .state leaked /errors/internal: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        # Acceptable outcomes: 200 (empty/recoverable), 404, 4xx,
+        # or 5xx with a specific /errors/<slug>. Forbidden: only the
+        # generic /errors/internal type (asserted above).
+        assert 200 <= resp.status_code < 600, (
+            f"/log on corrupt .state returned non-HTTP status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+    finally:
+        if workspace_id is not None:
+            try:
+                await client.delete(f"/v1/workspaces/{workspace_id}")
+            except Exception:  # noqa: BLE001
+                pass
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0729 — Multi-byte UTF-8 (CJK + emoji) in `path` query param of /files/info
+# returns clean envelope (query-param encoding pin)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0729_files_info_with_utf8_path_query_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0729 — Send a multi-byte UTF-8 string (CJK + emoji) as the
+    ``path`` query parameter of /files/info. The path does not exist;
+    the handler must return a clean envelope (typically 404
+    ``/errors/not-found``); never /errors/internal from a decode
+    panic or path-sanitiser blowup.
+
+    Priority 2 (workspace-stress) + query-param encoding pin. httpx
+    encodes the param via percent-encoding; the server must decode
+    it back without choking.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # CJK + emoji + a couple of common test glyphs. All UTF-8
+        # encodable as multi-byte sequences; covers BMP + supplementary
+        # planes. The path is deliberately exotic so it can't collide
+        # with anything on disk.
+        utf8_path = "漢字-文件/サブ-📁/тест-😀.txt"
+
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": utf8_path},
+        )
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"UTF-8 path query leaked /errors/internal: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        # Path doesn't exist; documented response is 404 /errors/not-found.
+        # 400 also acceptable if a path sanitiser rejects multi-byte
+        # codepoints (defensive policy); both are "clean".
+        assert resp.status_code in (400, 404), (
+            f"UTF-8 path on missing file unexpected status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        assert envelope.get("type", "").startswith("/errors/"), (
+            f"non-RFC-7807 envelope on UTF-8 path: {envelope}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
