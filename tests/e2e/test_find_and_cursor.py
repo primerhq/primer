@@ -4898,3 +4898,66 @@ async def test_t0721_cursor_walk_mid_walk_insert_and_delete(
         await client.delete(f"/v1/toolsets/{inserted_id}")
         # deleted_id already removed; idempotent
         await _delete_toolsets(client, ids)
+
+
+# ============================================================================
+# T0731 — Predicate `or` with one operand kind="value" instead of nested
+# predicate returns 4xx (predicate-engine discriminator edge)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0731_predicate_or_with_value_operand_returns_clean_4xx(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0731 — The `and`/`or` predicate ops require both operands to
+    be nested predicates (see test_t0xxx-and-correctness above for the
+    canonical shape). Passing ``{"kind": "value", "value": ...}`` as
+    the ``left`` operand violates the discriminated-union schema —
+    must reject cleanly with 422 ``/errors/validation-error``, never
+    a 500 ``/errors/internal``.
+
+    Sister of T0507 (which pins the same shape on the AND branch);
+    T0731 pins the OR branch. Together they prove the discriminator
+    is enforced symmetrically across both compound predicates.
+
+    Defence shape: the matrix predicate engine should reject this at
+    Pydantic-validation time (before query-build), so the failure
+    surfaces as 422 with a field-level error pointing at
+    ``body.predicate.left``.
+    """
+    body = {
+        "predicate": {
+            "kind": "predicate",
+            "op": "or",
+            # WRONG: left operand should be a nested predicate, not a value.
+            "left": {"kind": "value", "value": "foo"},
+            "right": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": "x"},
+            },
+        },
+        "page": {"kind": "offset", "offset": 0, "length": 10},
+    }
+    resp = await client.post("/v1/toolsets/find", json=body)
+    envelope = resp.json() if resp.content else {}
+
+    # Primary invariant: never an internal-error leak.
+    assert envelope.get("type") != "/errors/internal", (
+        f"OR predicate with value-operand leaked /errors/internal: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    # Documented contract: 422 is the canonical Pydantic-validation
+    # response for body-shape failures in this codebase. 400 is
+    # acceptable for the same family (some routers translate). We
+    # forbid 5xx and 2xx — neither is a documented outcome.
+    assert resp.status_code in (400, 422), (
+        f"OR predicate with value-operand expected 4xx, got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert envelope.get("type", "").startswith("/errors/"), (
+        f"non-RFC-7807 envelope on predicate validation failure: "
+        f"{envelope}"
+    )

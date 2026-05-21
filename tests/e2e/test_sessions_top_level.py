@@ -5039,3 +5039,108 @@ async def test_t0699_cursor_walk_sessions_find_binding_and_order_by(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0724 — Resume-then-immediate-pause back-to-back on CREATED session
+# returns documented codes (race-prone signal combo)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0724_resume_then_immediate_pause_on_created_clean_envelopes(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0724 — Fire resume then pause back-to-back (concurrent) on a
+    CREATED session. Both calls must return documented codes; neither
+    leaks /errors/internal. The final session state must be one of
+    the documented terminal-or-paused values, not stuck mid-transition.
+
+    Priority 3 (stale-cache / signal-race area, T0399 sibling):
+    resume races the CREATED→RUNNING storage write with pause's
+    RUNNING→PAUSED (or CREATED→PAUSED) transition. Depending on
+    which wins the lock, the documented outcomes are:
+      * resume 200 (running), then pause 204 (pause_requested set)
+      * pause 204 (pause_requested set on CREATED), then resume 200
+        observing the flag and short-circuiting to PAUSED or running
+        a no-op turn
+
+    Neither path may 500. Both transitions are documented in spec §13.
+    """
+    import asyncio
+
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Fire both signals concurrently. The order in which the
+        # server picks them up is the property under test.
+        async def _resume() -> httpx.Response:
+            return await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+            )
+
+        async def _pause() -> httpx.Response:
+            return await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+            )
+
+        resume_resp, pause_resp = await asyncio.gather(
+            _resume(), _pause(), return_exceptions=True,
+        )
+
+        for name, r in (("resume", resume_resp), ("pause", pause_resp)):
+            assert not isinstance(r, BaseException), (
+                f"{name} raised: {r!r}"
+            )
+            env_body = r.json() if r.content else {}
+            assert env_body.get("type") != "/errors/internal", (
+                f"{name} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+
+        # Documented status sets:
+        #   resume — spec §13 idempotent start-or-resume returns 200
+        #            (200 even if already running); the racing pause
+        #            may have flipped status by then, so 200 or 409 are
+        #            both documented.
+        #   pause  — spec §13 "request soft pause" returns 204; 404 if
+        #            the session vanished (impossible here), or 409 if
+        #            already in a terminal state.
+        assert resume_resp.status_code in (200, 409), (
+            f"resume unexpected status: "
+            f"{resume_resp.status_code}: {resume_resp.text}"
+        )
+        assert pause_resp.status_code in (200, 204, 404, 409), (
+            f"pause unexpected status: "
+            f"{pause_resp.status_code}: {pause_resp.text}"
+        )
+
+        # Final state should be one of the documented non-error
+        # statuses: running, paused, waiting, or ended. Never
+        # /errors/internal on the read.
+        final = await client.get(f"/v1/sessions/{session_id}")
+        assert final.status_code == 200, final.text
+        final_body = final.json()
+        assert final_body.get("status") in (
+            "created", "running", "paused", "waiting", "ended",
+        ), (
+            f"session settled in unexpected status: "
+            f"{final_body.get('status')!r} (full row: {final_body})"
+        )
+    finally:
+        if workspace_id is not None and session_id is not None:
+            # Cancel to release any lease before tearing the workspace down.
+            try:
+                await client.post(
+                    f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+                )
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

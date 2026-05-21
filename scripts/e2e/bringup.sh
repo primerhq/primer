@@ -24,6 +24,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+# Windows-friendly PATH augmentation: when this script is invoked from
+# pytest / a Claude Code Bash tool / a bare git-bash window, $PATH may
+# not include the Windows app dirs where podman lives. Prepend the
+# common locations idempotently so the script can find it. Mirrors
+# scripts/e2e/ui-bringup.sh's shim.
+case "${OS:-}${OSTYPE:-}" in
+    *win*|*Win*|*msys*|*cygwin*)
+        for p in \
+            "/c/Users/${USERNAME:-$USER}/AppData/Local/Programs/Podman" \
+            "/c/Users/${USERNAME:-$USER}/AppData/Local/Microsoft/WindowsApps" \
+            "/c/Program Files/podman" ; do
+            if [[ -d "$p" && ":$PATH:" != *":$p:"* ]]; then
+                PATH="$p:$PATH"
+            fi
+        done
+        export PATH
+        ;;
+esac
+
 E2E_DIR="$ROOT/tests/.e2e"
 LOG_DIR="$E2E_DIR/logs"
 CONFIG="$E2E_DIR/config.yaml"

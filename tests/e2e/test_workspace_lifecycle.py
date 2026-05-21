@@ -9891,3 +9891,96 @@ async def test_t0716_workspace_delete_racing_steer_clean_envelopes(
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{llm_provider_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0722 — Two concurrent GET /files/info on the same path return identical
+# envelopes (workspace .state read concurrency pin)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0722_concurrent_files_info_same_path_identical_envelopes(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0722 — Two concurrent GET /files/info on the SAME path return
+    identical 200 envelopes. Workspace .state read concurrency edge:
+    LocalWorkspace's stat path opens the file metadata + reads a
+    sidecar entry; two readers must not race on the .state lock or
+    yield divergent byte counts / mtimes.
+
+    Pins the §17.7 invariant ("write → read returns identical content")
+    against parallel reads instead of sequential ones — a sibling
+    angle on the same workspace-stress priority (priority 2).
+
+    Setup: create workspace + PUT a small file. Fire two concurrent
+    GETs on /files/info?path=<file>. Assert:
+      * both return 200
+      * neither leaks /errors/internal
+      * the response JSON bodies are byte-identical (same size_bytes,
+        same mtime, same path) — proves the stat path is stable
+        under concurrent readers
+    """
+    import asyncio
+
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed a known file so /files/info has something to stat.
+        fpath = f"t0722-{unique_suffix}.txt"
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": fpath},
+            json={"content": "hello concurrent readers", "encoding": "text"},
+        )
+        assert put.status_code in (200, 201, 204), put.text
+
+        # Fire two GETs concurrently. asyncio.gather is the simplest
+        # primitive; both calls launch before either response lands.
+        async def _info() -> httpx.Response:
+            return await client.get(
+                f"/v1/workspaces/{workspace_id}/files/info",
+                params={"path": fpath},
+            )
+
+        r1, r2 = await asyncio.gather(_info(), _info(), return_exceptions=True)
+        for i, r in enumerate((r1, r2)):
+            assert not isinstance(r, BaseException), (
+                f"reader #{i} raised: {r!r}"
+            )
+            env = r.json() if r.content else {}
+            assert env.get("type") != "/errors/internal", (
+                f"reader #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code == 200, (
+                f"reader #{i} unexpected status: "
+                f"{r.status_code}: {r.text}"
+            )
+
+        # Envelopes are byte-identical. Compare parsed JSON dicts so
+        # we don't fail on whitespace / key-order differences in the
+        # serializer output.
+        body1, body2 = r1.json(), r2.json()
+        assert body1 == body2, (
+            f"concurrent /files/info responses diverged:\n"
+            f"  reader 1: {body1}\n"
+            f"  reader 2: {body2}"
+        )
+        # Sanity: the response actually describes our file.
+        assert body1.get("path") == fpath or body1.get("path", "").endswith(fpath), (
+            f"response path does not match input: {body1}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
