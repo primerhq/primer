@@ -448,6 +448,16 @@ function NewProviderModal({ kindKey, plural, label, onClose, onCreate }) {
         <select className="select" value={provider} onChange={(e) => setProvider(e.target.value)} style={{ width: "100%" }}>
           {providerOptions.map((p) => <option key={p} value={p}>{providers[p].label}</option>)}
         </select>
+        {/* T0379: documented anomaly surface — see docs/testing/05-ui-spec.md §5.
+            The backend does NOT cross-validate that the chosen `provider`
+            type and the supplied `config` shape agree (it'll happily
+            persist a row with mismatched provider + config and only
+            surface the bug at adapter-construction time on first use).
+            Surface this asymmetry on the form so operators don't ship
+            a misaligned row. */}
+        <div className="field-help">
+          Provider ↔ config alignment is NOT cross-validated server-side (T0379) — make sure the provider type above matches the config shape below.
+        </div>
         {fieldErrors["body.provider"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider"]}</div>}
       </div>
 

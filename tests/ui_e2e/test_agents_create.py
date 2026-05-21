@@ -229,3 +229,84 @@ def test_u0016_new_agent_modal_scrolls_to_footer_at_600px(
             "depends on form validity, which isn't the focus of this "
             "regression test — the scroll contract IS)."
         )
+
+
+# ---------------------------------------------------------------------------
+# U0007 — agent create 422 renders per-field inline errors, not a toast
+# ---------------------------------------------------------------------------
+
+
+def test_u0007_new_agent_create_422_renders_inline_field_errors(
+    page,
+    base_url: str,
+    console_url: str,
+    unique_suffix: str,
+) -> None:
+    """U0007 — Submitting the New agent form with an invalid
+    ``temperature`` (one that fails server-side validation) surfaces
+    the 422 as an inline field-help error under the offending input,
+    NOT as a generic error toast.
+
+    Follow-on from U0006 (happy path). Verifies the cross-cutting
+    mutation-feedback contract from UI spec §3:
+      * 422 from the backend renders per-field via
+        ``extensions.errors[].loc[]`` mapping to ``fieldErrors[...]``
+      * Modal stays open so the operator can correct the value
+      * No error toast appears (toast is reserved for non-422)
+
+    Trigger: Agent.temperature is ``Field(default=None, ge=0.0)``
+    (per matrix/model/agent.py:79); -0.5 violates ``ge=0.0`` and is
+    reliably rejected with 422 carrying ``body.temperature`` in the
+    field-errors loc. This trigger is more robust than id-format
+    games because Identifiable's validator is intentionally lenient
+    on whitespace.
+    """
+    with _seeded_llm_provider(base_url, unique_suffix) as provider_id:
+        agent_id = f"ag-u0007-{unique_suffix}"
+        page.goto(console_url + "#/agents", wait_until="domcontentloaded")
+        page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
+
+        page.get_by_role("button", name="New agent").first.click()
+        modal = page.locator(".modal").first
+        modal.wait_for(state="visible", timeout=5_000)
+
+        modal.locator("#na-id").fill(agent_id)
+        modal.locator("#na-description").fill("u0007 422 probe")
+        modal.locator("#na-llm-provider").select_option(provider_id)
+        modal.locator("#na-model").select_option("fake-model")
+        # The deliberate bad value — violates Agent.temperature's
+        # documented ``ge=0.0`` constraint.
+        modal.locator("#na-temperature").fill("-0.5")
+
+        modal.get_by_role("button", name="Create").click()
+
+        # Modal should STAY OPEN on 422 (a success would close it).
+        # Give the mutation a moment to settle before asserting.
+        page.wait_for_load_state("networkidle", timeout=10_000)
+        assert modal.is_visible(), (
+            "modal should stay open on 422 so the operator can correct "
+            "the field; closing means the contract collapsed into a "
+            "happy-path or error-toast flow"
+        )
+
+        # An inline field-help error must appear somewhere in the
+        # modal body. The exact loc-key the server emits depends on
+        # which validator fires; we look for ANY field-help-red marker
+        # that wasn't present before submit. The CSS pattern in
+        # NewAgentModal is `<div className="field-help" style="color: var(--red)">`.
+        red_helps = modal.locator('.field-help[style*="--red"]')
+        red_helps.first.wait_for(state="visible", timeout=5_000)
+
+        # No error toast — 422 should NOT surface as a toast per spec §3.
+        # Use a short wait_for absence; if a toast slipped through, this
+        # catches it. We do NOT use the "Create failed" text from the
+        # general onError because that's reserved for non-422 paths.
+        # Strict absence check: the toast container has its own class.
+        toast_errors = page.locator(".toast.toast-error, [class*='toast-error']")
+        # A pre-existing toast from a prior test would still be in the
+        # DOM if not dismissed; the per-test browser context fixture
+        # gives us a clean slate, so 0 is the expected count.
+        assert toast_errors.count() == 0, (
+            f"422 surfaced as a toast instead of inline field-help: "
+            f"{toast_errors.count()} toast-error elements present"
+        )

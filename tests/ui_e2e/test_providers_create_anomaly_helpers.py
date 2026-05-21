@@ -51,3 +51,44 @@ def test_u0010_llm_provider_modal_shows_t0025_static_models_helper(
         "T0025 anomaly tag missing from the modal body — copy edit "
         "dropped the anomaly reference?\nModal text was:\n" + modal_text
     )
+
+
+def test_u0011_llm_provider_modal_shows_t0379_cross_validation_warning(
+    page,
+    console_url: str,
+) -> None:
+    """U0011 — Opening the New LLM provider modal renders the documented
+    T0379 cross-validation warning ("Provider ↔ config alignment is NOT
+    cross-validated server-side (T0379) — make sure the vendor name
+    matches the config shape") somewhere in the modal body.
+
+    Sister of U0010. The T0379 warning lives alongside the provider
+    dropdown in PROVIDER_FIELDS so operators see it before submitting
+    a misaligned provider×config combo. Like U0010, no backend
+    precondition needed — text is unconditional UI copy.
+
+    Defence: if a future copy-edit drops the T0379 reference, this
+    test catches it before the anomaly drift propagates to operators.
+    """
+    page.goto(console_url + "#/providers/llm", wait_until="domcontentloaded")
+    page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
+
+    page.get_by_role("button", name="New llm provider").first.click()
+    modal = page.locator(".modal").first
+    modal.wait_for(state="visible", timeout=5_000)
+
+    modal_text = modal.inner_text()
+    assert "Provider" in modal_text and "config" in modal_text, (
+        "Expected T0379 cross-validation warning copy mentioning "
+        "'Provider ↔ config' alignment in the New LLM provider modal.\n"
+        f"Modal text was:\n{modal_text}"
+    )
+    assert "cross-validated" in modal_text or "cross-validation" in modal_text, (
+        "Expected T0379 helper text mentioning 'cross-validated' / "
+        "'cross-validation' in the modal body — copy drift?\n"
+        f"Modal text was:\n{modal_text}"
+    )
+    assert "T0379" in modal_text, (
+        "T0379 anomaly tag missing from the modal body — copy edit "
+        "dropped the anomaly reference?\nModal text was:\n" + modal_text
+    )
