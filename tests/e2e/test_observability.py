@@ -724,3 +724,86 @@ async def test_t0708_worker_last_heartbeat_consistent_across_rapid_gets(
                     f"samples #{i-1}→#{i}: {prev_dt!r} → {dt!r}"
                 )
             prev_dt = dt
+
+
+# ============================================================================
+# T0654 — Worker drain on the only worker: /v1/workers immediately shows
+# status='draining'; capacity unchanged on the row; /health.worker_pool.capacity
+# unchanged
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0654_worker_drain_immediate_observability(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0654 — Pin the observability of drain-in-progress: after
+    calling POST /v1/workers/{id}/drain on the only worker, an
+    immediate /v1/workers GET must show the worker still present
+    with status='draining' and capacity unchanged. /v1/health's
+    worker_pool.capacity field should likewise be stable.
+
+    Sister of T0251 (which waits for the drain to settle — deferred
+    because it tears down the env). T0654 only pins the IMMEDIATE
+    post-drain state and does not wait for terminal:
+      * worker row stays in the list (identity fields stable)
+      * row.status flips to 'draining'
+      * row.capacity unchanged (drain doesn't shrink capacity, it
+        stops the worker accepting new claims)
+      * health.worker_pool.capacity unchanged
+
+    Priority 6 (observability + envelope shape). Bringup resets the
+    DB and starts a fresh worker per iteration, so this drain is
+    confined to its own bringup cycle.
+    """
+    pre = await client.get("/v1/workers")
+    assert pre.status_code == 200, pre.text
+    pre_workers = pre.json()["items"]
+    assert len(pre_workers) >= 1, (
+        f"expected at least one worker pre-drain; got {pre_workers!r}"
+    )
+    worker = pre_workers[0]
+    worker_id = worker["id"]
+    pre_capacity = worker["capacity"]
+    assert worker["status"] == "active", (
+        f"expected pre-drain status='active'; got {worker!r}"
+    )
+
+    health_pre = await client.get("/v1/health")
+    assert health_pre.status_code == 200, health_pre.text
+    pre_pool_capacity = health_pre.json()["worker_pool"]["capacity"]
+
+    # Drain.
+    drain = await client.post(f"/v1/workers/{worker_id}/drain")
+    assert drain.status_code == 204, (
+        f"drain expected 204; got {drain.status_code}: {drain.text}"
+    )
+
+    # Immediate post-drain /workers GET.
+    post = await client.get("/v1/workers")
+    assert post.status_code == 200, post.text
+    post_workers = post.json()["items"]
+    matched = [w for w in post_workers if w["id"] == worker_id]
+    assert len(matched) == 1, (
+        f"worker {worker_id!r} disappeared from /workers immediately "
+        f"after drain (expected to linger as draining); "
+        f"post-drain list: {post_workers!r}"
+    )
+    post_row = matched[0]
+    assert post_row["status"] == "draining", (
+        f"expected status='draining' immediately after drain; "
+        f"got {post_row!r}"
+    )
+    assert post_row["capacity"] == pre_capacity, (
+        f"drain should not change worker.capacity; "
+        f"pre={pre_capacity}, post={post_row['capacity']}"
+    )
+
+    # /health.worker_pool.capacity unchanged.
+    health_post = await client.get("/v1/health")
+    assert health_post.status_code == 200, health_post.text
+    post_pool_capacity = health_post.json()["worker_pool"]["capacity"]
+    assert post_pool_capacity == pre_pool_capacity, (
+        f"health.worker_pool.capacity changed across drain: "
+        f"pre={pre_pool_capacity}, post={post_pool_capacity}"
+    )

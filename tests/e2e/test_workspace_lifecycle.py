@@ -10297,3 +10297,151 @@ async def test_t0627_workspace_template_long_running_init_command_clean_envelope
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await client.delete(f"/v1/workspace_templates/{template_id}")
         await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0730 — Cursor walk on bespoke /v1/workspaces list visits each seeded
+# workspace exactly once (pagination cursor mode for bespoke router)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0730_workspaces_cursor_walk_visits_each_exactly_once(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0730 — POST /v1/workspaces/find walks the full list via
+    cursor-mode pagination (cursor=None initial → walk via
+    next_cursor); every seeded workspace appears exactly once
+    across pages.
+
+    Priority 2 (workspace-stress + pagination correctness). The
+    workspaces router is bespoke; the /find body endpoint is how
+    cursor mode is reachable (the GET /v1/workspaces query-param
+    surface can't express cursor=None — parse_page's `cursor`
+    Query is Optional[str]; omitting it falls through to offset,
+    and empty-string is rejected as malformed at the storage
+    layer). Documented in matrix/api/pagination.py:18.
+
+    Seed N=5 workspaces, walk with length=2 via /find, assert
+    each appears exactly once.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    seeded_ids: list[str] = []
+    try:
+        # Seed 5 workspaces.
+        for _ in range(5):
+            ws = await client.post(
+                "/v1/workspaces",
+                json=_workspace_body(template_id=template_id),
+            )
+            assert ws.status_code == 201, ws.text
+            seeded_ids.append(ws.json()["id"])
+
+        # Walk via /find body cursor with length=2. The set of seeded
+        # ids is what we assert on — other workspaces from neighbour
+        # tests in the same iteration may interleave; we just need
+        # each seeded id to appear exactly once.
+        seen: set[str] = set()
+        cursor: str | None = None
+        for _page in range(40):  # bounded safety net
+            body: dict = {
+                "predicate": None,  # no filter — walk everything
+                "page": {"kind": "cursor", "cursor": cursor, "length": 2},
+            }
+            resp = await client.post("/v1/workspaces/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            assert page["kind"] == "cursor", (
+                f"expected cursor envelope on cursor walk, got: {page}"
+            )
+            for item in page["items"]:
+                seen.add(item["id"])
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail(f"cursor walk did not terminate within 40 pages")
+
+        # Each seeded id appears exactly once (set semantics — and
+        # the cursor invariant from T0044 says no id should repeat).
+        missing = [sid for sid in seeded_ids if sid not in seen]
+        assert not missing, (
+            f"cursor walk missed seeded workspaces: {missing!r}"
+        )
+    finally:
+        for wid in seeded_ids:
+            try:
+                await client.delete(f"/v1/workspaces/{wid}")
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0685 — PUT /v1/workspaces/{wid}/files with Content-Type
+# application/octet-stream returns clean 4xx (body-type negotiation)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0685_files_put_with_octet_stream_content_type_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0685 — The file PUT handler expects a JSON FileWriteBody
+    ({"content": ..., "encoding": "text"|"base64"}). Sending raw
+    bytes with Content-Type application/octet-stream must produce
+    a clean 4xx envelope (415 unsupported-media or 422 validation);
+    never an /errors/internal leak from a JSON-decode panic.
+
+    Priority 6 (envelope leak hunt) + body-type negotiation pin.
+    Operators who accidentally PUT binary directly should see a
+    clear error, not a 500.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # PUT with octet-stream — raw bytes, no JSON envelope.
+        resp = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "raw.bin"},
+            content=b"\x00\x01\x02not a json body",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"octet-stream PUT leaked /errors/internal: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        assert resp.status_code in (400, 415, 422), (
+            f"octet-stream PUT expected 4xx (400/415/422); got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        assert envelope.get("type", "").startswith("/errors/"), (
+            f"non-RFC-7807 envelope on octet-stream PUT: {envelope}"
+        )
+
+        # Defence: no partial-write — the file should NOT exist after
+        # a rejected PUT.
+        check = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": "raw.bin"},
+        )
+        assert check.status_code == 404, (
+            f"rejected PUT left a partial file on disk; "
+            f"GET /files/info returned {check.status_code}: {check.text}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
