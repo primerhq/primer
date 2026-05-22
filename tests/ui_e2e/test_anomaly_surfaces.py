@@ -361,3 +361,129 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
                     c.delete(url)
                 except Exception:  # noqa: BLE001
                     pass
+
+
+def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
+    page,
+    base_url: str,
+    console_url: str,
+    unique_suffix: str,
+) -> None:
+    """U0009 — An agent bound to TWO toolsets — one that loads
+    cleanly and one whose ``/tools`` endpoint 500-leaks — renders the
+    good toolset's tools and the bad toolset's T0711 banner side by
+    side. The page must NOT blank out; the failure must be confined
+    to the offending toolset's panel.
+
+    Priority 3 — anomaly surface. Implements the per-toolset
+    isolation contract documented at agents.jsx:638-700: each
+    bound toolset is rendered by its own ``<ToolsetSection>`` and
+    a ``tools.error?.status === 500`` only collapses that panel,
+    not the parent ``<AgentToolsTab>``.
+
+    Good toolset: the built-in ``_misc`` internal toolset (always
+    available, returns 5 tools per matrix/toolset/misc.py).
+    Bad toolset: an MCP-HTTP toolset pointing at an unreachable
+    URL — identical pattern to U0008's T0711 trigger.
+    """
+    provider_id = f"llm-u0009-{unique_suffix}"
+    agent_id = f"ag-u0009-{unique_suffix}"
+    bad_toolset_id = f"ts-u0009-bad-{unique_suffix}"
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        # Seed LLM (placeholder).
+        r = c.post("/v1/llm_providers", json={
+            "id": provider_id,
+            "provider": "ollama",
+            "config": {"url": "http://127.0.0.1:9999"},
+            "models": [{"name": "fake-model", "context_length": 4096}],
+            "limits": {"max_concurrency": 1},
+        })
+        assert r.status_code == 201, f"seed LLM failed: {r.text}"
+
+        # Seed the broken MCP-HTTP toolset (T0711 trigger).
+        r = c.post("/v1/toolsets", json={
+            "id": bad_toolset_id,
+            "provider": "mcp",
+            "config": {
+                "transport": "http",
+                "config": {
+                    "url": "http://127.0.0.1:9999/sse",
+                    "headers": {},
+                },
+            },
+        })
+        assert r.status_code == 201, f"seed bad toolset failed: {r.text}"
+
+        # Seed agent bound to both _misc (good) and the bad toolset.
+        # agent.tools = list of toolset ids per agents.jsx:622.
+        r = c.post("/v1/agents", json={
+            "id": agent_id,
+            "description": "u0009 per-toolset isolation probe",
+            "model": {
+                "provider_id": provider_id,
+                "model_name": "fake-model",
+            },
+            "tools": ["_misc", bad_toolset_id],
+            "system_prompt": ["test"],
+        })
+        assert r.status_code == 201, f"seed agent failed: {r.text}"
+
+    try:
+        # Navigate directly to the Tools tab via deep-link.
+        page.goto(
+            f"{console_url}#/agents/{agent_id}?tab=tools",
+            wait_until="domcontentloaded",
+        )
+        page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
+            state="visible", timeout=10_000,
+        )
+
+        # Good toolset panel renders the _misc id as a header. At
+        # least one of the 5 _misc tools (e.g. uuid_v4) must appear
+        # as a clickable row — confirms the panel rendered through
+        # to ToolEntry rows.
+        page.locator(".panel-h:has(.mono:text('_misc'))").first.wait_for(
+            state="visible", timeout=15_000,
+        )
+        page.get_by_text("uuid_v4", exact=False).first.wait_for(
+            state="visible", timeout=10_000,
+        )
+
+        # Bad toolset panel renders the documented T0711 banner —
+        # both the title ("Tools list unavailable") and the T0711
+        # reference are required (same contract as U0008).
+        page.get_by_text("Tools list unavailable", exact=False).first.wait_for(
+            state="visible", timeout=15_000,
+        )
+        page.get_by_text("T0711", exact=False).first.wait_for(
+            state="visible", timeout=5_000,
+        )
+
+        # Defence: the page-title is still rendered (no blank crash).
+        # The agent detail h1 carries the agent id — if a render
+        # error blew up the whole AgentToolsTab, the title would
+        # still be visible via the page chrome, but the panels
+        # wouldn't be. The asserts above already prove the panels
+        # are present; this is a final structural sanity check.
+        assert page.locator("h1.page-title").first.is_visible(), (
+            "agent detail title disappeared after Tools tab render — "
+            "page may have blanked out instead of isolating the failure"
+        )
+
+        # Defence 2: both panels are present at the same time. The
+        # bad-toolset panel carries its toolset id as the .mono
+        # span inside its .panel-h, just like the good one.
+        page.locator(f".panel-h:has(.mono:text('{bad_toolset_id}'))").first.wait_for(
+            state="visible", timeout=5_000,
+        )
+    finally:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            for url in (
+                f"/v1/agents/{agent_id}",
+                f"/v1/toolsets/{bad_toolset_id}",
+                f"/v1/llm_providers/{provider_id}",
+            ):
+                try:
+                    c.delete(url)
+                except Exception:  # noqa: BLE001
+                    pass
