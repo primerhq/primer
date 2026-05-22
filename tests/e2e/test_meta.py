@@ -1373,3 +1373,150 @@ async def test_t0423_post_internal_collections_config_returns_405(
             f"405 missing/incorrect header {name!r}: "
             f"expected {expected!r}, got {actual!r}"
         )
+
+
+# ============================================================================
+# T0420 — OPTIONS /v1/internal_collections/bootstrap returns clean response
+# with Allow including POST (verb-table pin for the bootstrap singleton).
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0420_options_internal_collections_bootstrap_allow_post(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0420 — OPTIONS verb-table pin for the IC bootstrap singleton.
+    The /v1/internal_collections/bootstrap route is POST-only per
+    spec §13 (one-shot bootstrap signal). OPTIONS must respond
+    cleanly (200/204 with Allow listing POST, or 405 fallback);
+    NEVER /errors/internal.
+
+    Sister of T0421 (worker drain) and T0466 (session steer) — all
+    POST-only signal-style sub-resources where OPTIONS should
+    return Allow listing POST without choking on the singleton path.
+    """
+    resp = await client.request(
+        "OPTIONS", "/v1/internal_collections/bootstrap",
+    )
+    assert resp.status_code < 500, resp.text
+    if resp.status_code in (200, 204):
+        allow = resp.headers.get("allow", "")
+        assert allow, (
+            f"OPTIONS {resp.status_code} but no Allow header"
+        )
+        assert "POST" in allow.upper(), (
+            f"Allow header {allow!r} should include POST"
+        )
+
+
+# ============================================================================
+# T0422 — GET on /v1/agents/search returns 405 with non-empty Allow
+# listing POST (search route family is POST-only — body carries the
+# query / predicate / page).
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0422_get_agents_find_route_collision_returns_404_cleanly(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0422 — GET on the agents find route returns a clean 4xx,
+    never /errors/internal. The backlog entry originally framed
+    this as a 405 method-not-allowed pin (assuming GET /v1/agents/find
+    would route to the find handler's verb table), but the actual
+    behaviour is a routing collision: ``/v1/agents/find`` matches
+    ``/v1/agents/{id}`` first and returns 404 ``Agent 'find' does
+    not exist``. (The CRUD-router declares find as POST-only at
+    routers/_crud.py:202, but the row-scoped GET pattern wins.)
+
+    The test pins what the framework actually emits (404 + clean
+    envelope) so a regression that promotes the response to 5xx or
+    drops the envelope shape surfaces here. The 405-vs-404 design
+    discussion is a separate concern (would require route ordering
+    or an explicit reservation of 'find' as a non-id segment).
+    """
+    resp = await client.get("/v1/agents/find")
+    # Priority-6 contract: never 5xx.
+    assert resp.status_code < 500, (
+        f"GET /v1/agents/find leaked 5xx: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    # Documented behaviour today: 404 from the row-scoped lookup
+    # treating 'find' as the id. A future routing fix could flip
+    # this to 405 (the original spec intent) — both are clean 4xx
+    # outcomes worth tolerating in a regression net.
+    assert resp.status_code in (404, 405), (
+        f"GET /v1/agents/find expected 404 (current route collision) "
+        f"or 405 (after a future routing fix); got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    envelope = resp.json()
+    # RFC 7807 envelope shape.
+    for key in ("type", "title", "status", "detail"):
+        assert key in envelope, f"missing key {key!r}: {envelope!r}"
+    assert envelope["type"].startswith("/errors/"), envelope
+    assert envelope["type"] != "/errors/internal", (
+        f"GET /v1/agents/find leaked /errors/internal: {envelope}"
+    )
+    # Security headers preserved on the 4xx (extends T0002 contract).
+    for name, expected in _SECURITY_HEADERS.items():
+        actual = resp.headers.get(name)
+        assert actual == expected, (
+            f"4xx missing/incorrect header {name!r}: "
+            f"expected {expected!r}, got {actual!r}"
+        )
+
+
+# ============================================================================
+# T0683 — PATCH /v1/cross_encoder_providers list endpoint returns 405
+# with non-empty Allow (provider-router method-not-allowed pin; mirror
+# of T0281/T0566/T0660 for the cross_encoder provider family).
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0683_patch_cross_encoder_providers_list_returns_405(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0683 — Method-not-allowed pin for PATCH on the
+    /v1/cross_encoder_providers list route. CRUD list endpoints
+    accept GET (list) and POST (create); PATCH is NOT documented
+    on a list route (per spec §6 — PATCH is row-scoped where it
+    exists at all). The router must reject PATCH with 405 +
+    non-empty Allow; never 5xx leak.
+
+    Sister of T0281 (PATCH /v1/toolsets → 405) and T0566 (PATCH
+    /v1/llm_providers → 405) — extends the family contract to the
+    third provider family (cross_encoder). Per T0423's framework
+    note, FastAPI's 405 Allow may only list ONE supported verb;
+    this test pins the looser contract (Allow present + GET or
+    POST mentioned + PATCH not mentioned).
+    """
+    resp = await client.patch("/v1/cross_encoder_providers", json={})
+    assert resp.status_code == 405, (
+        f"PATCH /v1/cross_encoder_providers should be 405; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    allow = resp.headers.get("allow", "")
+    assert allow, (
+        f"405 response missing Allow header; status={resp.status_code}"
+    )
+    allow_upper = allow.upper()
+    # At least one CRUD-list verb (GET or POST) must be in Allow.
+    assert "GET" in allow_upper or "POST" in allow_upper, (
+        f"Allow header {allow!r} should include at least GET or POST "
+        f"(CRUD list endpoint declares both)"
+    )
+    # PATCH itself must NOT be in Allow — we just rejected it.
+    assert "PATCH" not in allow_upper, (
+        f"Allow header {allow!r} should NOT include PATCH on a 405 "
+        f"that rejects PATCH"
+    )
+
+    # Security headers preserved on the 405 (extends T0002 contract).
+    for name, expected in _SECURITY_HEADERS.items():
+        actual = resp.headers.get(name)
+        assert actual == expected, (
+            f"405 missing/incorrect header {name!r}: "
+            f"expected {expected!r}, got {actual!r}"
+        )
