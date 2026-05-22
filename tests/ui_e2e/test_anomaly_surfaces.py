@@ -231,3 +231,133 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
                 c.delete(f"/v1/llm_providers/{provider_id}")
             except Exception:  # noqa: BLE001
                 pass
+
+
+def test_u0013_session_detail_renders_t0399_stale_cache_notice(
+    page,
+    base_url: str,
+    console_url: str,
+    unique_suffix: str,
+    tmp_path,
+) -> None:
+    """U0013 — Opening any session detail page renders the documented
+    T0399 / T0555 / T0611 stale-cache notice block ("workspace path
+    is known to drift after signals") under the live status panel.
+
+    Priority 3 — anomaly surface. The notice is unconditional per
+    design §3.7 (session-detail.jsx:413-422): every session detail
+    view must surface it so operators interpret nested workspace
+    paths as informational, not authoritative. This test seeds the
+    minimal precondition (agent + workspace + CREATED session)
+    through the API and asserts the banner copy + the three documented
+    references are present.
+
+    Setup ladder mirrors test_t0042 (test_sessions_top_level.py:42-):
+    LLM provider → agent → workspace provider → workspace template →
+    workspace → session bound to the agent with auto_start=False so
+    the worker pool doesn't attempt a real LLM call.
+    """
+    provider_id = f"llm-u0013-{unique_suffix}"
+    agent_id = f"ag-u0013-{unique_suffix}"
+    wp_id = f"wp-u0013-{unique_suffix}"
+    tpl_id = f"wt-u0013-{unique_suffix}"
+    workspace_id: str | None = None
+    session_id: str | None = None
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        # 1. LLM provider — placeholder (no upstream call).
+        r = c.post("/v1/llm_providers", json={
+            "id": provider_id,
+            "provider": "ollama",
+            "config": {"url": "http://127.0.0.1:9999"},
+            "models": [{"name": "fake-model", "context_length": 4096}],
+            "limits": {"max_concurrency": 1},
+        })
+        assert r.status_code == 201, f"seed LLM failed: {r.text}"
+
+        # 2. Agent bound to the LLM provider.
+        r = c.post("/v1/agents", json={
+            "id": agent_id,
+            "description": "u0013 session-detail probe",
+            "model": {
+                "provider_id": provider_id,
+                "model_name": "fake-model",
+            },
+            "tools": [],
+            "system_prompt": ["test"],
+        })
+        assert r.status_code == 201, f"seed agent failed: {r.text}"
+
+        # 3. Workspace provider + template + workspace.
+        r = c.post("/v1/workspace_providers", json={
+            "id": wp_id,
+            "provider": "local",
+            "config": {"kind": "local", "path": str(tmp_path)},
+        })
+        assert r.status_code == 201, f"seed wp failed: {r.text}"
+        r = c.post("/v1/workspace_templates", json={
+            "id": tpl_id,
+            "description": "u0013 template",
+            "provider_id": wp_id,
+            "backend": {"kind": "local"},
+        })
+        assert r.status_code == 201, f"seed template failed: {r.text}"
+        r = c.post("/v1/workspaces", json={"template_id": tpl_id})
+        assert r.status_code == 201, f"seed workspace failed: {r.text}"
+        workspace_id = r.json()["id"]
+
+        # 4. Session bound to the agent, auto_start=False so the
+        # worker pool doesn't try a real LLM call (placeholder key).
+        r = c.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": agent_id},
+                "auto_start": False,
+            },
+        )
+        assert r.status_code == 201, f"seed session failed: {r.text}"
+        session_id = r.json()["id"]
+
+    try:
+        page.goto(
+            f"{console_url}#/sessions/{session_id}",
+            wait_until="domcontentloaded",
+        )
+        # The detail page renders the session id in its title.
+        page.locator("h1.page-title").get_by_text(session_id).first.wait_for(
+            state="visible", timeout=10_000,
+        )
+
+        # The stale-cache banner copy ("Reads are authoritative") is the
+        # documented title; the detail line carries the three test
+        # references. Asserting both ensures we don't accidentally match
+        # an unrelated banner.
+        page.get_by_text("Reads are authoritative", exact=False).first.wait_for(
+            state="visible", timeout=5_000,
+        )
+        page.get_by_text("T0399", exact=False).first.wait_for(
+            state="visible", timeout=5_000,
+        )
+
+        # Defence: all three references appear together in the same
+        # detail line — pins the exact contract from §3.7. Use one
+        # locator to keep the assertion contained.
+        notice = page.get_by_text(
+            "T0399 / T0555 / T0611", exact=False,
+        ).first
+        notice.wait_for(state="visible", timeout=5_000)
+    finally:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            for url in (
+                f"/v1/sessions/{session_id}" if session_id else None,
+                f"/v1/workspaces/{workspace_id}" if workspace_id else None,
+                f"/v1/workspace_templates/{tpl_id}",
+                f"/v1/workspace_providers/{wp_id}",
+                f"/v1/agents/{agent_id}",
+                f"/v1/llm_providers/{provider_id}",
+            ):
+                if url is None:
+                    continue
+                try:
+                    c.delete(url)
+                except Exception:  # noqa: BLE001
+                    pass
