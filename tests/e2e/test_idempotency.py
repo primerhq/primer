@@ -574,3 +574,64 @@ async def test_t0636_concurrent_drain_calls_idempotent(
             f"before={before.get(field)!r}, "
             f"after={row_after.get(field)!r}"
         )
+
+
+# ============================================================================
+# T0682 — POST /v1/workers/{missing-id}/drain RFC 7807 envelope shape
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0682_worker_drain_missing_id_rfc7807_envelope_instance_echo(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0682 — Tightens T0099 (clean-4xx pin) to assert the §3
+    RFC 7807 envelope shape on the 4xx path. Specifically: when the
+    handler returns 4xx (i.e. not the 204 no-op branch), the envelope
+    must include the documented ``instance`` field echoing the full
+    request path (per spec §3, mirrors T0375's pin on /llm_providers).
+
+    Priority 6 — error envelope correctness. A regression that
+    silently dropped ``instance`` would otherwise hide behind T0099's
+    looser "no-5xx" pin.
+    """
+    bogus = f"wrk-t0682-missing-{unique_suffix}"
+    path = f"/v1/workers/{bogus}/drain"
+    resp = await client.post(path)
+
+    # Defence: no 5xx ever (covered by T0099 too, restated for clarity).
+    assert resp.status_code < 500, (
+        f"POST drain on missing worker leaked 5xx: "
+        f"{resp.status_code}: {resp.text}"
+    )
+
+    # If the scheduler treats it as a no-op (204), there's no envelope
+    # to assert — this path is documented as acceptable by T0099 and
+    # we don't change that contract. The T0682 contract bites only on
+    # the 4xx branch.
+    if resp.status_code == 204:
+        return
+
+    # 4xx — assert the full RFC 7807 envelope shape with ``instance``
+    # echoing the request path.
+    assert 400 <= resp.status_code < 500, (
+        f"unexpected status {resp.status_code} for drain on missing "
+        f"worker: {resp.text}"
+    )
+    envelope = resp.json()
+    # The minimal RFC 7807 keys (type, title, status, detail) are
+    # pinned by T0099 already. T0682's contribution is the ``instance``
+    # field echo plus the never-/errors/internal guard.
+    assert envelope.get("type") != "/errors/internal", (
+        f"drain on missing worker leaked /errors/internal: {envelope}"
+    )
+    assert "instance" in envelope, (
+        f"RFC 7807 ``instance`` field missing on drain 4xx: {envelope}"
+    )
+    # ``instance`` SHOULD reference the request path. Earlier T0375
+    # pinned `endswith(path)`; we use the same shape so the two
+    # tests share a contract.
+    assert envelope["instance"].endswith(path), (
+        f"instance field {envelope['instance']!r} should echo "
+        f"request path {path!r}; full envelope: {envelope}"
+    )

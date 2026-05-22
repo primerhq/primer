@@ -1081,3 +1081,118 @@ async def test_t0728_post_with_oversize_content_length_returns_clean_4xx(
     assert envelope.get("type") != "/errors/internal", (
         f"Content-Length mismatch leaked /errors/internal: {envelope}"
     )
+
+
+# ============================================================================
+# T0428 — POST with `Content-Type: application/xml` returns 422 cleanly,
+# never /errors/internal. Mirror of T0209 (text/plain) for the XML
+# media-type path. FastAPI's default body parser refuses non-JSON
+# content-types; the priority-6 pin is "the envelope shape is RFC 7807,
+# and the rejection happens at the parser, not 500-leaking out of a
+# downstream type coercion".
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0428_post_with_xml_content_type_returns_clean_4xx(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0428 — `POST /v1/llm_providers` with
+    ``Content-Type: application/xml`` and an XML-shaped body must
+    produce a clean 4xx envelope (typically 422 from Pydantic /
+    FastAPI's body parser refusing the media type). T0209 covered
+    text/plain; this covers XML — a meaningfully different rejection
+    path because XML is a *real* structured data format that some
+    middleware stacks try to parse.
+
+    Priority 6 — error envelope safety. The hard contract is: no
+    5xx leak, RFC 7807 envelope on the 4xx response, and the body
+    must not be 5xx-echoed back as the rejection message (a
+    historical leak pattern in ASGI stacks).
+    """
+    xml_body = (
+        b"<?xml version='1.0'?>\n"
+        b"<provider>\n"
+        b"  <id>test</id>\n"
+        b"  <kind>anthropic</kind>\n"
+        b"</provider>\n"
+    )
+    resp = await client.post(
+        "/v1/llm_providers",
+        content=xml_body,
+        headers={"content-type": "application/xml"},
+    )
+    # No 5xx ever — priority-6 contract.
+    assert resp.status_code < 500, (
+        f"XML content-type triggered 5xx leak: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    # 4xx with RFC 7807 envelope.
+    assert 400 <= resp.status_code < 500, (
+        f"XML content-type expected 4xx; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    envelope = resp.json()
+    assert envelope.get("type", "").startswith("/errors/"), envelope
+    assert envelope.get("type") != "/errors/internal", (
+        f"XML content-type leaked /errors/internal: {envelope}"
+    )
+    # RFC 7807 keys present.
+    for key in ("type", "title", "status", "detail"):
+        assert key in envelope, f"missing key {key!r}: {envelope!r}"
+
+
+# ============================================================================
+# T0465 — POST with `Content-Type: application/json; charset=ascii` is
+# accepted (charset parameter is the body's character set, not a different
+# media type). Extends T0374 (charset=utf-8) to a non-default charset.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0465_post_with_charset_ascii_content_type_succeeds(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0465 — `POST /v1/llm_providers` with
+    ``Content-Type: application/json; charset=ascii`` and an ASCII
+    body must succeed (201). FastAPI's default body parser matches
+    by media-type prefix and ignores the charset parameter
+    altogether — that's why T0374 passes with charset=utf-8 and
+    why charset=ascii should pass too. Pin so a future "strict
+    media-type" middleware doesn't silently break ASCII clients.
+
+    Priority 6 — error envelope safety. A false 415 / 422 here
+    would silently break legitimate clients sending ASCII bodies
+    (Python's requests library defaults to ASCII on str payloads
+    without explicit encoding).
+    """
+    import json
+    entity_id = f"llm-t0465-{unique_suffix}"
+    body = {
+        "id": entity_id,
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test"},
+        "limits": {"max_concurrency": 1},
+    }
+    # Encode as ASCII — ensure_ascii=True is the default but we set
+    # the encoding explicitly so the wire bytes match the declared
+    # charset.
+    resp = await client.post(
+        "/v1/llm_providers",
+        content=json.dumps(body, ensure_ascii=True).encode("ascii"),
+        headers={"content-type": "application/json; charset=ascii"},
+    )
+    assert resp.status_code == 201, (
+        f"charset=ascii content-type should be accepted (charset is "
+        f"a media-type parameter, not a different type); got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    try:
+        # Confirm the row landed — sanity check that the body was
+        # actually decoded, not just the headers ignored.
+        got = await client.get(f"/v1/llm_providers/{entity_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["id"] == entity_id
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")
