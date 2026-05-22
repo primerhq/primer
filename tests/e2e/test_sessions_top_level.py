@@ -5144,3 +5144,88 @@ async def test_t0724_resume_then_immediate_pause_on_created_clean_envelopes(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0748 — Stale-cache: cancel CREATED then GET via /sessions/find (third
+# read path beyond T0555's nested/top-level pair) reflects the terminal
+# ended row, never the stale RUNNING. Pins that the predicate engine
+# reads from storage (CDC-synced), not from the in-memory AgentSession.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0748_cancel_then_find_reflects_terminal_row(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0748 — Priority 3 (stale-cache hunt). Extends T0555's
+    nested/top-level GET pair with a third read path: POST
+    /v1/sessions/find with predicate ``id == <session_id>``. The
+    /find handler reads via the storage layer (predicate engine
+    against the sessions table) — same source as top-level GET —
+    so it should always return the terminal ended row, never the
+    in-memory AgentSession stale view that nested GET surfaces.
+
+    Setup mirrors T0555 — agent-bound session created with
+    auto_start=False, cancelled from CREATED via the nested
+    /cancel endpoint (transitions CREATED→ENDED directly via
+    sessions.update). The contract: /find returns exactly one row
+    matching the session id, with status="ended" and
+    ended_reason="cancelled". Never /errors/internal.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    try:
+        workspace_id, session_id = await _create_workspace_and_session(
+            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+        )
+
+        # Cancel CREATED → storage row → ENDED.
+        cancel = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+        )
+        assert cancel.status_code == 200, cancel.text
+        assert cancel.json()["status"] == "ended", cancel.json()
+
+        # Third read path: POST /v1/sessions/find with predicate
+        # id == session_id. Must reflect the terminal row.
+        find_body = {
+            "predicate": {
+                "kind": "predicate",
+                "op": "=",
+                "left": {"kind": "field", "name": "id"},
+                "right": {"kind": "value", "value": session_id},
+            },
+            "page": {"kind": "offset", "offset": 0, "length": 10},
+        }
+        find = await client.post("/v1/sessions/find", json=find_body)
+        envelope = find.json() if find.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"/sessions/find post-cancel leaked /errors/internal: "
+            f"{find.status_code}: {find.text}"
+        )
+        assert find.status_code == 200, find.text
+
+        items = envelope.get("items", [])
+        # Exactly one matching row.
+        matching = [it for it in items if it.get("id") == session_id]
+        assert len(matching) == 1, (
+            f"/sessions/find returned {len(matching)} rows for "
+            f"id={session_id!r}; expected 1. Items: {items!r}"
+        )
+        row = matching[0]
+        # The predicate-engine read path must reflect the terminal
+        # row, NOT the stale in-memory AgentSession view.
+        assert row["status"] == "ended", (
+            f"/sessions/find returned stale status: "
+            f"{row['status']!r} (expected 'ended' — the predicate "
+            f"engine should read from storage, not the in-memory "
+            f"AgentSession cache that nested GET surfaces per T0555)"
+        )
+        assert row.get("ended_reason") == "cancelled", (
+            f"/sessions/find ended_reason mismatch: {row.get('ended_reason')!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)

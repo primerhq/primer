@@ -92,7 +92,22 @@ class LocalWorkspace(Workspace):
         state_path = root / template.state_path
         tmp_path = root / template.tmp_path
         repo = LocalStateRepo(state_path, workspace_id=workspace_id)
-        await repo.initialize()
+        # Catch _GitCommandError + OSError so a malformed state_path
+        # (deep nesting overflowing MAX_PATH, invalid filename chars,
+        # permission denials, etc.) maps to a clean 4xx envelope
+        # instead of leaking /errors/internal. The git layer's own
+        # stderr (e.g. "Filename too long") is surfaced as the
+        # detail so operators can correlate.
+        try:
+            await repo.initialize()
+        except (OSError, _GitCommandError) as exc:
+            raise BadRequestError(
+                f"cannot initialise workspace state at "
+                f"{template.state_path!r}: {exc.strerror or exc}"
+                if isinstance(exc, OSError)
+                else f"cannot initialise workspace state at "
+                f"{template.state_path!r}: {exc}"
+            ) from exc
         cache = LocalTruncationStore(tmp_path)
 
         tools: list[WorkspaceTool] = [

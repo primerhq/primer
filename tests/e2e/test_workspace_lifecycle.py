@@ -10752,3 +10752,270 @@ async def test_t0427_files_listing_emits_offset_page_envelope_shape(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0744 — Workspace files listing of 500 seeded files paginates cleanly
+# across 10 pages of limit=50; every seeded basename appears exactly once
+# across the union of pages. Pins the bespoke /files list endpoint's
+# offset-pagination correctness at scale.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0744_files_listing_500_files_paginates_cleanly(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0744 — Priority 2 (workspace stress). Seed 500 unique files
+    at the workspace root, then walk the listing in 10 pages of
+    limit=50 via offset=0,50,...,450. Assert every page returns
+    200 + clean envelope; the union of items contains every seeded
+    basename exactly once (no drops, no duplicates); each page's
+    length matches len(items) and respects the limit.
+
+    Sister of T0427 (envelope shape) and T0426 (determinism) —
+    extends both to a non-trivial item count to catch
+    boundary-misaligned pages or internal caps.
+    """
+    from collections import Counter
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        seed_names = [f"file_{i:04d}.txt" for i in range(500)]
+        for name in seed_names:
+            r = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": name},
+                json={"content": name, "encoding": "text"},
+            )
+            assert r.status_code in (200, 201, 204), (
+                f"seed PUT for {name!r} failed: "
+                f"{r.status_code}: {r.text}"
+            )
+
+        # Walk pages until empty. The workspace root has 500 user
+        # files PLUS reserved entries (.state, .tmp directories),
+        # so a fixed 10-page walk of limit=50 only covers 500 of
+        # the ~502 total entries — the last 2 user files spill past
+        # the offset=450 page boundary. Walk dynamically instead,
+        # capped at 20 pages as a safety net.
+        page_size = 50
+        seen_basenames: list[str] = []
+        seed_name_set = set(seed_names)
+        for page_idx in range(20):
+            offset = page_idx * page_size
+            resp = await client.get(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": ".", "limit": page_size, "offset": offset},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"page offset={offset} leaked /errors/internal: "
+                f"{resp.status_code}: {resp.text}"
+            )
+            assert resp.status_code == 200, (
+                f"page offset={offset} failed: "
+                f"{resp.status_code}: {resp.text}"
+            )
+            items = envelope.get("items", [])
+            assert envelope.get("length") == len(items), (
+                f"page offset={offset}: length {envelope.get('length')} "
+                f"!= len(items) {len(items)}"
+            )
+            assert len(items) <= page_size, (
+                f"page offset={offset} overflowed limit={page_size}: "
+                f"len={len(items)}"
+            )
+            for it in items:
+                basename = (it.get("path") or "").rsplit("/", 1)[-1]
+                # Filter to seeded names so reserved entries
+                # (.state, .tmp) don't pollute the union.
+                if basename in seed_name_set:
+                    seen_basenames.append(basename)
+            # Exhausted: fewer items than the page size means the
+            # next page would be empty.
+            if len(items) < page_size:
+                break
+
+        seen_set = set(seen_basenames)
+        missing = set(seed_names) - seen_set
+        assert not missing, (
+            f"files dropped from paginated walk: missing {len(missing)} "
+            f"of 500, e.g. {sorted(list(missing))[:5]}"
+        )
+        dup_counts = Counter(seen_basenames)
+        dups = {name: c for name, c in dup_counts.items() if c > 1}
+        assert not dups, (
+            f"files duplicated across paginated walk: "
+            f"{sorted(dups.items())[:5]}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0745 — Workspace files PUT then READ preserves trailing newline and
+# \r\n bytes exactly. Pins binary-safety of the file I/O path.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0745_put_then_read_preserves_crlf_bytes_exactly(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0745 — Priority 2 (workspace stress). Seed ``probe.bin``
+    with the 3 bytes ``b"a\\r\\n"`` via the base64 encoding leg
+    of the PUT API. Assert /files/info reports size_bytes=3 and
+    /files/read returns the same 3 bytes when decoded. Defends
+    the binary-safety of the file I/O path against an LF-
+    normalisation regression in storage / serialiser layers.
+    """
+    import base64
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        payload = b"a\r\n"
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "probe.bin"},
+            json={
+                "content": base64.b64encode(payload).decode("ascii"),
+                "encoding": "base64",
+            },
+        )
+        assert put.status_code in (200, 201, 204), (
+            f"seed PUT failed: {put.status_code}: {put.text}"
+        )
+
+        info = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": "probe.bin"},
+        )
+        assert info.status_code == 200, info.text
+        assert info.json()["size_bytes"] == 3, (
+            f"size_bytes mismatch: expected 3, got "
+            f"{info.json()['size_bytes']!r} — likely LF normalisation"
+        )
+
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "probe.bin", "encoding": "base64"},
+        )
+        assert read.status_code == 200, read.text
+        got_bytes = base64.b64decode(read.json()["content"])
+        assert got_bytes == payload, (
+            f"byte-exact round-trip failed: sent {payload!r}, got "
+            f"{got_bytes!r} (likely LF normalisation strips \\r)"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0742 — WorkspaceTemplate state_path with 50 nested segments. Either
+# rejected at validation OR materialised cleanly. Pins no /errors/internal
+# at any step of the template-validation + materialise path.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0742_workspace_template_50_segment_state_path_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0742 — Priority 2 (workspace stress / validation edge).
+    POST a workspace_template whose state_path carries 50 nested
+    segments. Acceptable: 422 rejection at template POST, OR 201
+    accept + clean workspace materialise + clean /log read. The
+    hard contract is no /errors/internal at any step.
+    """
+    wp_id = f"wp-t0742-{unique_suffix}"
+    tpl_id = f"wt-t0742-{unique_suffix}"
+    deep_state_path = "/".join(["a"] * 50)
+    workspace_id: str | None = None
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(wp_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        tpl_body = {
+            "id": tpl_id,
+            "description": "t0742 deep state_path probe",
+            "provider_id": wp_id,
+            "backend": {"kind": "local"},
+            "state_path": deep_state_path,
+        }
+        tpl_resp = await client.post(
+            "/v1/workspace_templates", json=tpl_body,
+        )
+        envelope = tpl_resp.json() if tpl_resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"template POST with deep state_path leaked "
+            f"/errors/internal: {tpl_resp.status_code}: {tpl_resp.text}"
+        )
+        assert tpl_resp.status_code in (201, 422), (
+            f"unexpected status {tpl_resp.status_code} for deep "
+            f"state_path template POST: {tpl_resp.text}"
+        )
+
+        if tpl_resp.status_code == 422:
+            return
+
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": tpl_id},
+        )
+        ws_envelope = ws.json() if ws.content else {}
+        assert ws_envelope.get("type") != "/errors/internal", (
+            f"workspace materialise leaked /errors/internal: "
+            f"{ws.status_code}: {ws.text}"
+        )
+        if ws.status_code != 201:
+            return
+        workspace_id = ws.json()["id"]
+
+        log_resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/log",
+            params={"limit": 5},
+        )
+        log_envelope = log_resp.json() if log_resp.content else {}
+        assert log_envelope.get("type") != "/errors/internal", (
+            f"/log on deep state_path workspace leaked "
+            f"/errors/internal: {log_resp.status_code}: {log_resp.text}"
+        )
+    finally:
+        if workspace_id is not None:
+            try:
+                await client.delete(f"/v1/workspaces/{workspace_id}")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await client.delete(f"/v1/workspace_templates/{tpl_id}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await client.delete(f"/v1/workspace_providers/{wp_id}")
+        except Exception:  # noqa: BLE001
+            pass
