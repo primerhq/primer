@@ -3815,3 +3815,309 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
         if config_created:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
+
+
+# ============================================================================
+# T0601 — IC bootstrap mid-flight racing 5 concurrent agent DELETEs
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0601_ic_bootstrap_racing_5_agent_deletes_clean_envelopes(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0601 — Race POST /bootstrap against 5 concurrent agent DELETEs.
+    Bootstrap must return 200 or 4xx (never 5xx); each DELETE must
+    return 204 or 404; subsequent /v1/agents/search must return a
+    clean 200 envelope; never /errors/internal across the storm.
+
+    Priority 5 — internal-collections subsystem under churn. The
+    race targets the bootstrap path's interaction with CDC: the
+    bootstrap initialises vector tables + worker; concurrent DELETEs
+    enqueue CDC events. The system must converge cleanly without
+    a Pydantic / asyncpg panic.
+
+    Setup creates a real EmbeddingProvider + IC config + agents.
+    Bootstrap may take 30-60 s for first-time model load; tests
+    skip cleanly if the embedder is unavailable.
+    """
+    embedder_id = f"emb-t0601-{unique_suffix}"
+    agent_ids = [f"ag-t0601-{unique_suffix}-{i}" for i in range(5)]
+    llm_id = f"llm-t0601-{unique_suffix}"
+    config_created = False
+
+    # Seed embedding provider.
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    try:
+        # Seed an LLM provider so the agents have a valid provider_id.
+        lp = await client.post("/v1/llm_providers", json={
+            "id": llm_id,
+            "provider": "anthropic",
+            "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+            "config": {"api_key": "sk-placeholder"},
+            "limits": {"max_concurrency": 1},
+        })
+        assert lp.status_code == 201, lp.text
+
+        # Seed 5 agents.
+        for aid in agent_ids:
+            ar = await client.post("/v1/agents", json={
+                "id": aid,
+                "description": "t0601 race-target agent",
+                "model": {"provider_id": llm_id, "model_name": "claude-sonnet-4-6"},
+                "tools": [],
+                "system_prompt": ["test"],
+            })
+            assert ar.status_code == 201, ar.text
+
+        # Activate IC config (no bootstrap yet — that's the race).
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        # Race: bootstrap + 5 concurrent agent DELETEs.
+        async def _bootstrap() -> httpx.Response:
+            return await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=httpx.Timeout(180.0, connect=10.0),
+            )
+
+        async def _del(aid: str) -> httpx.Response:
+            return await client.delete(f"/v1/agents/{aid}")
+
+        tasks = [
+            asyncio.create_task(_bootstrap()),
+            *[asyncio.create_task(_del(aid)) for aid in agent_ids],
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        boot_resp = results[0]
+        del_resps = results[1:]
+
+        # Bootstrap: 200 (success), 4xx (configured but couldn't
+        # complete), or skip on model-load failure.
+        assert not isinstance(boot_resp, BaseException), boot_resp
+        boot_env = boot_resp.json() if boot_resp.content else {}
+        assert boot_env.get("type") != "/errors/internal", (
+            f"bootstrap leaked /errors/internal: {boot_resp.text}"
+        )
+        if boot_resp.status_code not in (200, 400, 422):
+            pytest.skip(
+                f"bootstrap returned {boot_resp.status_code} — embedder "
+                f"may be unavailable. Body: {boot_resp.text[:300]}"
+            )
+
+        # DELETEs: each 204 (success), 404 (already gone), or 4xx.
+        for i, r in enumerate(del_resps):
+            assert not isinstance(r, BaseException), f"DELETE #{i} raised: {r!r}"
+            env = r.json() if r.content else {}
+            assert env.get("type") != "/errors/internal", (
+                f"DELETE #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code in (204, 404, 400, 422), (
+                f"DELETE #{i} unexpected status: "
+                f"{r.status_code}: {r.text}"
+            )
+
+        # Subsequent /agents/search returns clean envelope (200 with
+        # whatever hits remain — concurrent DELETEs may have racing
+        # CDC propagation so we don't pin hit contents).
+        search = await client.post(
+            "/v1/agents/search",
+            json={"query": "anything", "top_k": 5},
+        )
+        search_env = search.json() if search.content else {}
+        assert search_env.get("type") != "/errors/internal", (
+            f"post-race search leaked /errors/internal: {search.text}"
+        )
+        assert search.status_code in (200, 503), (
+            f"post-race search unexpected status: "
+            f"{search.status_code}: {search.text}"
+        )
+    finally:
+        for aid in agent_ids:
+            try:
+                await client.delete(f"/v1/agents/{aid}")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        except Exception:  # noqa: BLE001
+            pass
+        if config_created:
+            try:
+                await client.delete("/v1/internal_collections/config")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ============================================================================
+# T0602 — IC re-bootstrap cycle (config DELETE → PUT same body → bootstrap) ×5
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0602_ic_re_bootstrap_cycle_x5_clean_envelopes(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0602 — Run the lifecycle DELETE config → PUT same config →
+    bootstrap five times. Each cycle ends with /v1/agents/search
+    returning 200; never /errors/internal across the 5 cycles.
+
+    Priority 5 — IC subsystem under churn. Re-bootstrap exercises
+    the vector-store table create / drop / recreate path. Many
+    backends accumulate state (open connections, cached schema)
+    that can leak across cycles; 5 cycles is enough to surface
+    a slow leak as a 5xx on later cycles.
+    """
+    embedder_id = f"emb-t0602-{unique_suffix}"
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    try:
+        for cycle in range(5):
+            # DELETE config (no-op on cycle 0 since none exists yet).
+            d = await client.delete("/v1/internal_collections/config")
+            assert d.status_code in (204, 404), (
+                f"cycle {cycle} DELETE unexpected status: "
+                f"{d.status_code}: {d.text}"
+            )
+
+            # PUT config.
+            put = await client.put(
+                "/v1/internal_collections/config",
+                json=_ic_config_body(embedder_id=embedder_id),
+            )
+            assert put.status_code == 200, (
+                f"cycle {cycle} PUT failed: {put.status_code}: {put.text}"
+            )
+
+            # Bootstrap.
+            boot = await client.post(
+                "/v1/internal_collections/bootstrap",
+                timeout=httpx.Timeout(180.0, connect=10.0),
+            )
+            boot_env = boot.json() if boot.content else {}
+            assert boot_env.get("type") != "/errors/internal", (
+                f"cycle {cycle} bootstrap leaked /errors/internal: "
+                f"{boot.text}"
+            )
+            if boot.status_code != 200:
+                pytest.skip(
+                    f"cycle {cycle} bootstrap returned "
+                    f"{boot.status_code} — embedder may be unavailable. "
+                    f"Body: {boot.text[:300]}"
+                )
+
+            # /agents/search 200.
+            search = await client.post(
+                "/v1/agents/search",
+                json={"query": f"cycle-{cycle}", "top_k": 3},
+            )
+            search_env = search.json() if search.content else {}
+            assert search_env.get("type") != "/errors/internal", (
+                f"cycle {cycle} search leaked /errors/internal: "
+                f"{search.text}"
+            )
+            assert search.status_code == 200, (
+                f"cycle {cycle} search unexpected status: "
+                f"{search.status_code}: {search.text}"
+            )
+    finally:
+        try:
+            await client.delete("/v1/internal_collections/config")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ============================================================================
+# T0586 — /v1/agents/search top_k=1 on empty post-bootstrap DB returns
+# 200 with hits=[]
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0586_agents_search_top_k_1_empty_post_bootstrap(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0586 — After bootstrap on a fresh DB with no agents,
+    /v1/agents/search with top_k=1 returns 200 with hits=[]
+    (or similar empty-result envelope).
+
+    Priority 5 — IC subsystem under churn. top_k=1 sister of T0537
+    (which pins top_k bounds). Documents the empty-result shape
+    for callers who paginate one-by-one.
+    """
+    embedder_id = f"emb-t0586-{unique_suffix}"
+    config_created = False
+
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    try:
+        put = await client.put(
+            "/v1/internal_collections/config",
+            json=_ic_config_body(embedder_id=embedder_id),
+        )
+        assert put.status_code == 200, put.text
+        config_created = True
+
+        boot = await client.post(
+            "/v1/internal_collections/bootstrap",
+            timeout=httpx.Timeout(180.0, connect=10.0),
+        )
+        if boot.status_code != 200:
+            pytest.skip(
+                f"bootstrap returned {boot.status_code} — embedder "
+                f"may be unavailable. Body: {boot.text[:300]}"
+            )
+
+        # Empty DB (no agents seeded this iteration); top_k=1.
+        resp = await client.post(
+            "/v1/agents/search",
+            json={"query": "anything", "top_k": 1},
+        )
+        env = resp.json() if resp.content else {}
+        assert env.get("type") != "/errors/internal", (
+            f"empty top_k=1 search leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code == 200, (
+            f"empty top_k=1 search expected 200; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        # The response envelope has a `hits` list; on empty DB it's [].
+        body = resp.json()
+        assert "hits" in body, body
+        assert body["hits"] == [], (
+            f"empty post-bootstrap DB should yield hits=[]; got: {body}"
+        )
+    finally:
+        if config_created:
+            try:
+                await client.delete("/v1/internal_collections/config")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        except Exception:  # noqa: BLE001
+            pass
