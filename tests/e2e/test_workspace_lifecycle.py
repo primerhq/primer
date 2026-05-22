@@ -10124,3 +10124,176 @@ async def test_t0729_files_info_with_utf8_path_query_clean_envelope(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0732 — POST /v1/workspaces overrides with empty init_commands materialises
+# cleanly (override merge semantics edge)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0732_workspace_overrides_empty_init_commands_materialises_cleanly(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0732 — POST /v1/workspaces with
+    ``overrides={"init_commands": []}`` must materialise the workspace
+    successfully. The override-merge logic must treat an empty list
+    as a no-op (extend by nothing), NOT as a clobber-template signal
+    nor as a Pydantic-validation failure.
+
+    Priority 2 (workspace-stress) + override-merge semantics edge.
+    Template's own init_commands MUST still run; the empty override
+    list adds zero new commands.
+
+    Sister of T0113 (overrides.init_commands extend template's).
+    """
+    provider_id = f"wp-t0732-{unique_suffix}"
+    template_id = f"wt-t0732-{unique_suffix}"
+    workspace_id: str | None = None
+    marker = f"t0732-{unique_suffix}"
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        # Template has a marker-writing init_command so we can prove
+        # the template's commands ran (override didn't clobber them).
+        template_cmd = (
+            'python -c "open(\'marker.txt\',\'w\').write(\'' + marker + '\')"'
+        )
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0732 — empty override init_commands",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "init_commands": [template_cmd],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        # Workspace POST with EMPTY init_commands override.
+        ws = await client.post(
+            "/v1/workspaces",
+            json={
+                "template_id": template_id,
+                "overrides": {
+                    "env": {},
+                    "files": [],
+                    "init_commands": [],  # ← the test condition
+                },
+            },
+        )
+        envelope = ws.json() if ws.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"empty init_commands override leaked /errors/internal: "
+            f"{ws.status_code}: {ws.text}"
+        )
+        assert ws.status_code == 201, (
+            f"empty init_commands override should materialise cleanly; "
+            f"got {ws.status_code}: {ws.text}"
+        )
+        workspace_id = ws.json()["id"]
+
+        # Defence: the template's init_command DID run (marker exists),
+        # proving the empty override extended (no-op) rather than
+        # clobbered the template's command list.
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "marker.txt"},
+        )
+        assert read.status_code == 200, (
+            f"template init_command did not produce marker.txt — "
+            f"empty override likely clobbered the template: "
+            f"{read.status_code}: {read.text}"
+        )
+        assert read.json()["content"] == marker, read.json()
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")
+
+
+# ============================================================================
+# T0627 — Workspace template init_command sleeping 30s then exit 0:
+# materialise either 201 within window or clean 5xx/4xx (long-running init)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0627_workspace_template_long_running_init_command_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0627 — A template whose init_command sleeps 30s then exits 0
+    is materialised. The POST must either succeed (201 with the
+    workspace ready after the sleep window) OR fail with a clean 4xx
+    /5xx envelope — never an /errors/internal leak from the subprocess
+    pipe / timeout path.
+
+    Priority 2 workspace-stress; behavioural complement to T0438
+    (init_command exit 1 → clean failure). Sets the httpx timeout
+    long enough to either observe the success OR receive the
+    server-side timeout envelope.
+    """
+    provider_id = f"wp-t0627-{unique_suffix}"
+    template_id = f"wt-t0627-{unique_suffix}"
+    workspace_id: str | None = None
+    try:
+        pr = await client.post(
+            "/v1/workspace_providers",
+            json=_provider_body(provider_id, tmp_path),
+        )
+        assert pr.status_code == 201, pr.text
+
+        # 30s sleep then exit 0. Cross-platform: python is on PATH in
+        # the test environment (matrix is python; uv-managed venv).
+        long_cmd = 'python -c "import time; time.sleep(30)"'
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": template_id,
+                "description": "T0627 long-running init",
+                "provider_id": provider_id,
+                "backend": {"kind": "local"},
+                "init_commands": [long_cmd],
+            },
+        )
+        assert tpl.status_code == 201, tpl.text
+
+        # POST /v1/workspaces — block up to 90s waiting for either
+        # 201 (success) or a clean error envelope. The default httpx
+        # client timeout in conftest is 30s; we need a per-call
+        # override since this single call may legitimately block ~30s.
+        resp = await client.post(
+            "/v1/workspaces",
+            json={"template_id": template_id},
+            timeout=90.0,
+        )
+        envelope = resp.json() if resp.content else {}
+
+        # Primary invariant: never an internal-error leak.
+        assert envelope.get("type") != "/errors/internal", (
+            f"long-running init leaked /errors/internal: "
+            f"{resp.status_code}: {resp.text}"
+        )
+
+        # Two documented outcomes:
+        #   201 — init_command ran to completion within the window.
+        #   4xx/5xx with a specific /errors/<slug> — server-side
+        #         timeout / config error / similar. Either is clean.
+        assert 200 <= resp.status_code < 600, (
+            f"long-running init returned non-HTTP status: "
+            f"{resp.status_code}: {resp.text}"
+        )
+        if resp.status_code == 201:
+            workspace_id = resp.json()["id"]
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{template_id}")
+        await client.delete(f"/v1/workspace_providers/{provider_id}")

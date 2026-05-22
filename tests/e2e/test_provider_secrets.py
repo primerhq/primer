@@ -134,3 +134,77 @@ async def test_t0211_post_with_unknown_extra_field_silently_accepted(
         envelope = create.json()
         assert envelope["type"].startswith("/errors/"), envelope
         assert envelope["type"] != "/errors/internal", envelope
+
+
+# ============================================================================
+# T0726 — POST with deeply-nested unknown extra config keys silently dropped
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0726_post_with_deeply_nested_unknown_extra_keys_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0726 — Sister of T0211 (top-level unknown extra field). T0726
+    deepens the probe: unknown extra keys are nested inside
+    ``config:`` and inside one of the ``models[]`` entries — 2-3
+    levels deep. The Pydantic config-discriminator must still
+    silently drop them (or cleanly reject 422); never leak
+    /errors/internal from a recursive validator panic or asyncpg
+    JSONB-coercion edge.
+
+    Priority 4 (JSONB sibling) + priority 6 (envelope leak hunt).
+    """
+    entity_id = f"llm-t0726-{unique_suffix}"
+    extra_nested = f"x_nested_{unique_suffix}"
+    body = _llm_body(entity_id)
+    # Nest extras one level inside config and inside a model entry.
+    body["config"]["__extra_top"] = "this-should-be-dropped"
+    body["config"]["__extra_obj"] = {
+        "deeper": {extra_nested: "even-deeper"},
+        "list": [{"k": "v"}, {extra_nested: "list-deep"}],
+    }
+    body["models"][0]["__extra_in_model"] = "drop-me-too"
+
+    resp = await client.post("/v1/llm_providers", json=body)
+    envelope = resp.json() if resp.content else {}
+
+    # Primary invariant — no internal-error leak under deep nesting.
+    assert envelope.get("type") != "/errors/internal", (
+        f"deeply-nested extra keys leaked /errors/internal: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    # Documented outcomes match T0211 — Pydantic default extra="ignore"
+    # accepts; if a future tightening flips to extra="forbid" we
+    # still want 4xx, never 5xx.
+    assert resp.status_code in (201, 400, 422), (
+        f"deeply-nested extra keys unexpected status: "
+        f"{resp.status_code}: {resp.text}"
+    )
+
+    if resp.status_code == 201:
+        try:
+            got = await client.get(f"/v1/llm_providers/{entity_id}")
+            assert got.status_code == 200, got.text
+            row = got.json()
+            row_text = str(row)
+            # None of the nested extra keys should survive the round-trip.
+            for needle in (
+                "__extra_top", "__extra_obj", "__extra_in_model",
+                "this-should-be-dropped", "even-deeper", "drop-me-too",
+                extra_nested,
+            ):
+                assert needle not in row_text, (
+                    f"deeply-nested extra key/value {needle!r} survived "
+                    f"the create + read round-trip — Pydantic should "
+                    f"have dropped it; full row: {row}"
+                )
+        finally:
+            await client.delete(f"/v1/llm_providers/{entity_id}")
+    else:
+        # On 4xx, no row should exist (no partial persist).
+        got = await client.get(f"/v1/llm_providers/{entity_id}")
+        assert got.status_code == 404, (
+            f"4xx on POST should not leave a persisted row: "
+            f"{got.status_code}: {got.text}"
+        )
