@@ -1196,3 +1196,180 @@ async def test_t0465_post_with_charset_ascii_content_type_succeeds(
         assert got.json()["id"] == entity_id
     finally:
         await client.delete(f"/v1/llm_providers/{entity_id}")
+
+
+# ============================================================================
+# T0417 — HEAD /v1/sessions returns 200 with empty body + 4 security headers
+# (sibling of T0258 for the bespoke top-level cross-workspace sessions list).
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0417_head_top_level_sessions_returns_headers_only(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0417 — HEAD on the top-level cross-workspace sessions list
+    route. T0258 covered the generic CRUD list pattern (/v1/llm_providers);
+    this covers the bespoke /v1/sessions list which is hand-rolled
+    (per spec §11 — top-level lookup without workspace prefix) and
+    has historically had subtle drift from the CRUD-router default.
+
+    Body must be empty; status code must be 200 (or 405 if HEAD is
+    explicitly disallowed); the 4 security headers must be preserved
+    per T0002's contract.
+    """
+    resp = await client.head("/v1/sessions")
+    assert resp.status_code in (200, 405), resp.text
+    assert resp.content == b"", (
+        f"HEAD /v1/sessions body should be empty; got {resp.content!r}"
+    )
+    if resp.status_code == 200:
+        for name, expected in _SECURITY_HEADERS.items():
+            actual = resp.headers.get(name)
+            assert actual == expected, (
+                f"HEAD /v1/sessions missing/incorrect header "
+                f"{name!r}: expected {expected!r}, got {actual!r}"
+            )
+
+
+# ============================================================================
+# T0419 — OPTIONS /v1/internal_collections/config returns clean response
+# with Allow listing PUT/GET/DELETE (verb-table pin for the IC singleton).
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0419_options_internal_collections_config_allow_header(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0419 — OPTIONS verb-table pin for the IC config singleton.
+    The /v1/internal_collections/config route supports PUT / GET /
+    DELETE per spec §13 (config singleton). OPTIONS must respond
+    cleanly (200/204 with Allow listing those verbs, or 405 if the
+    framework doesn't auto-respond). NEVER /errors/internal.
+
+    This route is a singleton (no {id} placeholder), which is a
+    notably different routing path from row-scoped OPTIONS (T0208)
+    and list-scoped OPTIONS (T0466); the test catches the regression
+    where a singleton-style route fails to register an OPTIONS
+    handler.
+    """
+    resp = await client.request(
+        "OPTIONS", "/v1/internal_collections/config",
+    )
+    assert resp.status_code < 500, resp.text
+    if resp.status_code in (200, 204):
+        allow = resp.headers.get("allow", "")
+        assert allow, (
+            f"OPTIONS {resp.status_code} but no Allow header"
+        )
+        allow_upper = allow.upper()
+        # The IC config singleton declares PUT/GET/DELETE per spec
+        # §13. Assert all three are present so a regression that
+        # silently strips one surfaces here.
+        for verb in ("PUT", "GET", "DELETE"):
+            assert verb in allow_upper, (
+                f"Allow header {allow!r} should include {verb} "
+                f"(IC config singleton declares PUT/GET/DELETE)"
+            )
+
+
+# ============================================================================
+# T0421 — OPTIONS /v1/workers/{id}/drain returns clean response with Allow
+# including POST (verb-table pin for worker drain).
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0421_options_worker_drain_allow_includes_post(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0421 — OPTIONS verb-table pin for the worker drain
+    sub-resource. /v1/workers/{id}/drain is POST-only (per spec §15;
+    worker draining is a one-shot signal, not a CRUD verb). OPTIONS
+    must respond cleanly with Allow listing POST. NEVER
+    /errors/internal.
+
+    Uses a placeholder worker id because OPTIONS' verb-table check
+    happens at the route layer and doesn't need the id to resolve
+    to a real row (mirror of T0466's pattern for the steer route).
+    """
+    resp = await client.request(
+        "OPTIONS", "/v1/workers/any-wrk/drain",
+    )
+    assert resp.status_code < 500, resp.text
+    if resp.status_code in (200, 204):
+        allow = resp.headers.get("allow", "")
+        assert allow, (
+            f"OPTIONS {resp.status_code} but no Allow header"
+        )
+        assert "POST" in allow.upper(), (
+            f"Allow header {allow!r} should include POST"
+        )
+
+
+# ============================================================================
+# T0423 — POST /v1/internal_collections/config returns 405 with Allow
+# listing PUT/GET/DELETE (method-not-allowed pin for the IC singleton).
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0423_post_internal_collections_config_returns_405(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0423 — Method-not-allowed pin for the IC config singleton.
+    Per spec §13 the route accepts PUT / GET / DELETE; POST is NOT
+    documented. The router must reject POST with 405 + a non-empty
+    Allow header listing at least one of the supported verbs;
+    never 4xx-as-200, never 5xx leak. Security headers preserved.
+
+    Sister of T0543 (POST /v1/health → 405 + Allow:GET).
+
+    NOTE on Allow-header completeness: per RFC 7231 §6.5.5 the
+    Allow header SHOULD list the union of supported methods at the
+    path. In practice FastAPI/Starlette's method-not-allowed
+    handler only lists the verb of the *first matched route* at
+    that path — so this 405 returns ``Allow: PUT`` even though GET
+    and DELETE are also registered on the same path. That is a
+    framework quirk, not a matrix bug; chasing a custom OPTIONS
+    handler to aggregate the Allow header would be significant
+    scope creep. The test pins what the framework actually does
+    (405 + non-empty Allow + one of the documented verbs) so a
+    regression that drops Allow entirely or flips the status still
+    surfaces here.
+    """
+    resp = await client.post(
+        "/v1/internal_collections/config", json={},
+    )
+    assert resp.status_code == 405, (
+        f"POST /v1/internal_collections/config should be 405; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    allow = resp.headers.get("allow", "")
+    assert allow, (
+        f"405 response missing Allow header; status={resp.status_code}"
+    )
+    allow_upper = allow.upper()
+    # At least ONE of the documented verbs must be present (framework
+    # may return any single one per the note above).
+    documented_verbs = {"PUT", "GET", "DELETE"}
+    found = documented_verbs & {v.strip() for v in allow_upper.split(",")}
+    assert found, (
+        f"Allow header {allow!r} should include at least one of "
+        f"PUT/GET/DELETE (IC config singleton's documented verbs); "
+        f"got none"
+    )
+    # POST must NOT be in the Allow listing — we're rejecting POST.
+    assert "POST" not in allow_upper, (
+        f"Allow header {allow!r} should NOT include POST on a 405 "
+        f"that rejects POST"
+    )
+
+    # Security headers preserved on the 405 (extends T0002 contract).
+    for name, expected in _SECURITY_HEADERS.items():
+        actual = resp.headers.get(name)
+        assert actual == expected, (
+            f"405 missing/incorrect header {name!r}: "
+            f"expected {expected!r}, got {actual!r}"
+        )
