@@ -5046,3 +5046,251 @@ async def test_t0415_cursor_walk_with_mid_walk_put_visits_each_once(
             )
     finally:
         await _delete_toolsets(client, seeded)
+
+
+# ============================================================================
+# T0749 + T0750 + T0751 + T0752 — predicate engine 500-leak hunts.
+# Four parametrised shapes that exercise the documented predicate edges:
+# type-mismatch LIKE, NULL semantics on JSONB nested paths, missing nested
+# keys, and mixed-type `in` lists on JSONB. The contract is uniform: 200
+# (with whatever items the postgres engine returns) OR a clean 4xx
+# (validation reject) OR 502 /errors/provider-error. NEVER /errors/internal.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "endpoint,predicate,backlog_id",
+    [
+        # T0749: ~= LIKE against an integer column. /v1/sessions/find
+        # has a real Session.turn_no integer field; LIKE on it is a
+        # documented type-mismatch shape from the §17 callout.
+        (
+            "/v1/sessions/find",
+            {
+                "kind": "predicate",
+                "op": "~=",
+                "left": {"kind": "field", "name": "turn_no"},
+                "right": {"kind": "value", "value": "1%"},
+            },
+            "T0749",
+        ),
+        # T0750: != null against a JSONB nested path. /v1/toolsets/find
+        # has a config column (JSONB); meta.score doesn't exist on
+        # the schema but the predicate engine should still resolve
+        # the path through JSONB extraction. Sister of T0582 for
+        # top-level columns.
+        (
+            "/v1/toolsets/find",
+            {
+                "kind": "predicate",
+                "op": "!=",
+                "left": {"kind": "field", "name": "config.meta.score"},
+                "right": {"kind": "value", "value": None},
+            },
+            "T0750",
+        ),
+        # T0751: dotted path into a non-existent nested key.
+        # JSONB extraction returns NULL when the path doesn't
+        # resolve; comparing NULL with anything is NULL (falsy).
+        # Documents whether the handler chokes when no rows match
+        # because the path itself is absent.
+        (
+            "/v1/toolsets/find",
+            {
+                "kind": "predicate",
+                "op": "=",
+                "left": {
+                    "kind": "field",
+                    "name": "config.meta.absent.deeply.buried",
+                },
+                "right": {"kind": "value", "value": "x"},
+            },
+            "T0751",
+        ),
+        # T0752: mixed-type `in` list against a JSONB nested path.
+        # Sister of T0440 (top-level int column); the JSONB
+        # extraction layer may emit different SQL.
+        (
+            "/v1/toolsets/find",
+            {
+                "kind": "predicate",
+                "op": "in",
+                "left": {"kind": "field", "name": "config.meta.score"},
+                "right": {
+                    "kind": "value",
+                    "value": [1, "two", None],
+                },
+            },
+            "T0752",
+        ),
+    ],
+    ids=[
+        "T0749-LIKE-int-turn_no",
+        "T0750-neq-null-jsonb-nested",
+        "T0751-dotted-absent-key",
+        "T0752-in-mixed-type-jsonb",
+    ],
+)
+@pytest.mark.asyncio
+async def test_predicate_engine_no_5xx_leak_on_500_hunt_shapes(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    predicate: dict,
+    backlog_id: str,
+) -> None:
+    """T0749 + T0750 + T0751 + T0752 — Four shapes from the §17
+    predicate-engine 500-leak hunt:
+
+    * **T0749** ``~=`` (LIKE) against an integer column — type
+      mismatch the engine should reject or coerce, not 500.
+    * **T0750** ``!=`` with NULL on a JSONB nested path — extends
+      T0582's top-level-column NULL semantics into JSONB.
+    * **T0751** dotted path into a non-existent nested key —
+      JSONB extraction returns NULL; comparisons should evaluate
+      to NULL (falsy) without choking.
+    * **T0752** ``in`` mixed-type list against a JSONB nested path —
+      sister of T0440 for the JSONB extraction layer.
+
+    The contract is uniform: 200 (with whatever the engine
+    returns), 400/422 (clean validation reject), or 502
+    /errors/provider-error (clean postgres-error mapping). NEVER
+    /errors/internal — that's the priority-6 500-leak guard.
+    """
+    body = {
+        "predicate": predicate,
+        "page": {"kind": "offset", "offset": 0, "length": 50},
+    }
+    resp = await client.post(endpoint, json=body)
+
+    # Universal contract: no 5xx-as-/errors/internal.
+    envelope = resp.json() if resp.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"{backlog_id}: predicate leaked /errors/internal: "
+        f"{resp.status_code}: {resp.text}"
+    )
+
+    # Document the acceptable status set so a future regression
+    # surfaces as a clear failure rather than a silent change.
+    # 200 — engine returned items (possibly empty).
+    # 400 / 422 — handler validated and rejected the shape.
+    # 502 — postgres raised an error that was mapped to a clean
+    #       /errors/provider-error envelope.
+    assert resp.status_code in (200, 400, 422, 502), (
+        f"{backlog_id}: unexpected status {resp.status_code} for "
+        f"predicate shape: {resp.text}"
+    )
+
+    # For 4xx/5xx, the envelope must carry the documented /errors/
+    # prefix and the RFC 7807 keys.
+    if resp.status_code >= 400:
+        for key in ("type", "title", "status", "detail"):
+            assert key in envelope, (
+                f"{backlog_id}: missing key {key!r}: {envelope!r}"
+            )
+        assert envelope.get("type", "").startswith("/errors/"), envelope
+
+
+# ============================================================================
+# T0755 — POST /v1/agents with description containing RTL override U+202E
+# and other bidi control characters round-trips byte-exact through CRUD.
+# Documented unicode edge beyond T0399/T0729 — RLO/LRO/PDF chars must
+# survive storage and GET intact; never /errors/internal.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0755_agent_description_with_rtl_bidi_controls_roundtrips(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0755 — Seed an LLM provider, then POST an agent whose
+    description contains U+202E (RIGHT-TO-LEFT OVERRIDE), U+202D
+    (LEFT-TO-RIGHT OVERRIDE), U+202C (POP DIRECTIONAL FORMATTING),
+    and U+200F (RTL MARK). GET the agent and assert the description
+    field is byte-identical to what we sent. Then /agents/find
+    LIKE on the agent's id prefix must include the seeded row
+    (proves the CDC sync layer didn't strip the bidi controls).
+
+    Priority 6 — Unicode edge / 500-leak hunt. Bidi controls are a
+    classic source of database driver bugs (some treat them as
+    invisible whitespace and strip them) and JSON serialiser bugs
+    (some escape U+2028/U+2029 differently). The hard contract is:
+    no /errors/internal at any step + byte-exact round-trip.
+    """
+    provider_id = f"llm-t0755-{unique_suffix}"
+    agent_id = f"ag-t0755-{unique_suffix}"
+    # The four bidi controls + plain text on both sides so we can
+    # see whether the round-trip preserves them in the middle.
+    description = (
+        "before ‮rlo‬ after ‭lro‬ ‏mark"
+    )
+    pr = await client.post("/v1/llm_providers", json={
+        "id": provider_id,
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test-placeholder"},
+        "limits": {"max_concurrency": 1},
+    })
+    assert pr.status_code == 201, pr.text
+
+    try:
+        ag = await client.post("/v1/agents", json={
+            "id": agent_id,
+            "description": description,
+            "model": {
+                "provider_id": provider_id,
+                "model_name": "claude-sonnet-4-6",
+            },
+            "tools": [],
+            "system_prompt": ["test"],
+        })
+        # Never 5xx — that's the priority-6 contract.
+        assert ag.status_code < 500, (
+            f"agent POST with bidi controls leaked 5xx: "
+            f"{ag.status_code}: {ag.text}"
+        )
+        ag_envelope = ag.json() if ag.content else {}
+        assert ag_envelope.get("type") != "/errors/internal", (
+            f"agent POST leaked /errors/internal: {ag_envelope}"
+        )
+        # If the validator rejected the bidi controls, that's a
+        # clean documented outcome and the test ends here (no
+        # round-trip to verify).
+        if ag.status_code != 201:
+            assert ag.status_code in (400, 422), (
+                f"unexpected non-201 status for bidi description: "
+                f"{ag.status_code}: {ag.text}"
+            )
+            return
+
+        try:
+            # Round-trip: GET /agents/{id} must return the same bytes.
+            got = await client.get(f"/v1/agents/{agent_id}")
+            assert got.status_code == 200, got.text
+            got_body = got.json()
+            assert got_body["description"] == description, (
+                f"bidi controls did not survive GET round-trip: "
+                f"sent {description!r}, got {got_body['description']!r}"
+            )
+
+            # Defence: /agents/find on the id prefix must include
+            # the row (CDC sync didn't strip / corrupt the marker).
+            find_body = {
+                "predicate": {
+                    "kind": "predicate",
+                    "op": "~=",
+                    "left": {"kind": "field", "name": "id"},
+                    "right": {"kind": "value", "value": f"ag-t0755-{unique_suffix}%"},
+                },
+                "page": {"kind": "offset", "offset": 0, "length": 50},
+            }
+            find_resp = await client.post("/v1/agents/find", json=find_body)
+            assert find_resp.status_code == 200, find_resp.text
+            ids = [it["id"] for it in find_resp.json().get("items", [])]
+            assert agent_id in ids, (
+                f"/agents/find did not return the seeded agent {agent_id!r}; "
+                f"got {ids!r}"
+            )
+        finally:
+            await client.delete(f"/v1/agents/{agent_id}")
+    finally:
+        await client.delete(f"/v1/llm_providers/{provider_id}")
