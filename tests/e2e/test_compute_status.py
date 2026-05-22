@@ -5991,3 +5991,79 @@ async def test_t0715_delete_llm_provider_then_agent_status_clean(
     finally:
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
+
+
+# ============================================================================
+# T0414 — DELETE Agent referenced by a Graph node succeeds; Graph /status
+# flips ok=false (mirror of T0344 cascade for Agent→Graph)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0414_delete_agent_flips_graph_status_to_failed(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0414 — Build LLMProvider→Agent→Graph, DELETE the Agent.
+    Graph's /status walker must surface the missing-Agent reference
+    in ``issues`` and flip ``ok=false``. Mirror of T0344 (which
+    deletes the provider one tier up) — T0414 hits the Agent tier
+    directly.
+
+    Priority 1 (graph executor surface) + cascade integrity pin.
+    The graph executor not being wired yet (worker pool path is
+    NotImplementedError) is orthogonal: the /status endpoint walks
+    the model only, so this contract works today regardless.
+
+    Defence: DELETE Agent returns 204 cleanly; the Graph row stays
+    intact (graphs are not cascade-deleted by agent loss); only
+    the /status walk surfaces the broken reference.
+    """
+    provider_id = f"llm-t0414-{unique_suffix}"
+    agent_id = f"agent-t0414-{unique_suffix}"
+    graph_id = f"graph-t0414-{unique_suffix}"
+
+    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    assert pr.status_code == 201, pr.text
+    ag = await client.post(
+        "/v1/agents",
+        json=_agent_body(agent_id, provider_id=provider_id, tools=[]),
+    )
+    assert ag.status_code == 201, ag.text
+    gr = await client.post(
+        "/v1/graphs", json=_graph_body(graph_id, agent_id=agent_id),
+    )
+    assert gr.status_code == 201, gr.text
+    try:
+        # Sanity: pre-delete graph status is ok
+        pre = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert pre.status_code == 200, pre.text
+        assert pre.json()["ok"] is True, pre.text
+
+        # DELETE the agent — should succeed (no provider cascade).
+        rm = await client.delete(f"/v1/agents/{agent_id}")
+        assert rm.status_code == 204, (
+            f"DELETE Agent referenced by Graph should succeed; "
+            f"got {rm.status_code}: {rm.text}"
+        )
+
+        # Graph row still exists.
+        gr_get = await client.get(f"/v1/graphs/{graph_id}")
+        assert gr_get.status_code == 200, gr_get.text
+
+        # Graph status flips ok=false with missing-Agent in issues.
+        post = await client.get(f"/v1/graphs/{graph_id}/status")
+        assert post.status_code == 200, post.text
+        body = post.json()
+        assert body["ok"] is False, (
+            f"Graph status should flip ok=false after Agent deletion; "
+            f"got: {body}"
+        )
+        issues_str = " ".join(str(i) for i in body["issues"])
+        assert agent_id in issues_str, (
+            f"issues should reference missing agent {agent_id!r}; "
+            f"got {body['issues']!r}"
+        )
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
+        # agent already deleted (the body of the test)
+        await client.delete(f"/v1/llm_providers/{provider_id}")

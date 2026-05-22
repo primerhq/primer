@@ -10445,3 +10445,95 @@ async def test_t0685_files_put_with_octet_stream_content_type_clean_envelope(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0425 — Workspace files PUT to a path whose parent is an existing regular
+# file returns clean envelope (POSIX semantics: can't have a child path
+# below a regular file)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0425_files_put_through_regular_file_parent_clean_envelope(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0425 — PUT a regular file at ``foo.txt``, then PUT at
+    ``foo.txt/child.txt`` (treating the existing regular file as a
+    parent directory). Must return a clean 4xx envelope; never
+    /errors/internal from a Python OSError leak.
+
+    Priority 2 (workspace-stress). POSIX semantics make this
+    structurally impossible (a regular file can't have children);
+    the handler must catch the IsADirectoryError / NotADirectoryError
+    family and return a documented 4xx.
+
+    Defence: post-rejection, the original foo.txt is untouched
+    (size/content match what we wrote first).
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # 1. Seed foo.txt as a regular file.
+        put1 = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "foo.txt"},
+            json={"content": "regular-file-content", "encoding": "text"},
+        )
+        assert put1.status_code in (200, 201, 204), put1.text
+
+        # 2. PUT foo.txt/child.txt — should reject cleanly.
+        put2 = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "foo.txt/child.txt"},
+            json={"content": "should-not-land", "encoding": "text"},
+        )
+        envelope = put2.json() if put2.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"PUT through regular-file parent leaked /errors/internal: "
+            f"{put2.status_code}: {put2.text}"
+        )
+        # POSIX errno is ENOTDIR / EEXIST; the handler should map to 4xx.
+        # 400/409/422 all acceptable; 5xx is forbidden.
+        assert 400 <= put2.status_code < 500, (
+            f"PUT through regular-file parent expected 4xx; got "
+            f"{put2.status_code}: {put2.text}"
+        )
+        assert envelope.get("type", "").startswith("/errors/"), (
+            f"non-RFC-7807 envelope on PUT through regular-file parent: "
+            f"{envelope}"
+        )
+
+        # Defence: foo.txt unchanged.
+        read = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/read",
+            params={"path": "foo.txt"},
+        )
+        assert read.status_code == 200, read.text
+        assert read.json()["content"] == "regular-file-content", (
+            f"foo.txt was corrupted by the failed PUT-through-parent: "
+            f"{read.json()}"
+        )
+
+        # Defence 2: foo.txt/child.txt does NOT exist (no partial-write).
+        check = await client.get(
+            f"/v1/workspaces/{workspace_id}/files/info",
+            params={"path": "foo.txt/child.txt"},
+        )
+        assert check.status_code == 404, (
+            f"failed PUT left a partial path on disk; "
+            f"GET /files/info returned {check.status_code}: {check.text}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

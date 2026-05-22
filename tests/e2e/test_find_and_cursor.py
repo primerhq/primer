@@ -4961,3 +4961,88 @@ async def test_t0731_predicate_or_with_value_operand_returns_clean_4xx(
         f"non-RFC-7807 envelope on predicate validation failure: "
         f"{envelope}"
     )
+
+
+# ============================================================================
+# T0415 — Cursor walk over toolsets with mid-walk PUT (description change)
+# visits remainder cleanly — no duplicates, no skips, no 5xx
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0415_cursor_walk_with_mid_walk_put_visits_each_once(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0415 — Cursor pagination is stable under mid-walk PUTs
+    (update the description of one already-seen row partway
+    through the walk).
+
+    Priority 4 (pagination correctness). Extension of T0044 (mid-
+    walk INSERT) and T0239 (mid-walk DELETE) — both pinned. T0415
+    pins the UPDATE branch: the row stays present + at the same
+    cursor position; the walk completes with no duplicates, no
+    skips, and never a 5xx.
+    """
+    prefix = f"ts-t0415-{unique_suffix}"
+    seeded = await _seed_toolsets(client, prefix, 5)
+    try:
+        predicate = {
+            "kind": "predicate",
+            "op": "~=",
+            "left": {"kind": "field", "name": "id"},
+            "right": {"kind": "value", "value": f"{prefix}%"},
+        }
+        seen: list[str] = []
+        cursor: str | None = None
+        page_no = 0
+        put_target: str | None = None
+        for _ in range(15):
+            body = {
+                "predicate": predicate,
+                "page": {"kind": "cursor", "cursor": cursor, "length": 2},
+            }
+            resp = await client.post("/v1/toolsets/find", json=body)
+            assert resp.status_code == 200, resp.text
+            page = resp.json()
+            assert page["kind"] == "cursor"
+            for item in page["items"]:
+                seen.append(item["id"])
+
+            # After the first page, PUT one ALREADY-SEEN row to
+            # change its description. The walk continues; the
+            # updated row should not be revisited.
+            page_no += 1
+            if page_no == 1 and put_target is None and seen:
+                put_target = seen[0]
+                # PUT the existing toolset with an updated body.
+                # _toolset_body provides the canonical shape; we
+                # just need to change the description by re-issuing
+                # PUT (replaces the whole row).
+                body_for_put = _toolset_body(put_target)
+                put = await client.put(
+                    f"/v1/toolsets/{put_target}", json=body_for_put,
+                )
+                assert put.status_code in (200, 204), (
+                    f"mid-walk PUT failed: {put.status_code}: {put.text}"
+                )
+
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+        else:
+            pytest.fail(f"cursor walk did not terminate: seen={seen!r}")
+
+        # Invariant 1: no id appears twice.
+        assert len(seen) == len(set(seen)), (
+            f"cursor walk yielded duplicate ids after mid-walk PUT: {seen!r}"
+        )
+        # Invariant 2: every seeded id appears at least once
+        # (including the one we PUT — update should NOT remove it
+        # from the walk).
+        for sid in seeded:
+            assert sid in seen, (
+                f"seeded id {sid!r} missing from walk after mid-walk "
+                f"PUT (PUT target was {put_target!r}): {seen!r}"
+            )
+    finally:
+        await _delete_toolsets(client, seeded)
