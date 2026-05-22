@@ -413,11 +413,21 @@ def _walk_for_user(
     # like USMANS~1 vs the long-name Usman Shahid).
     root_resolved = workspace_root.resolve()
     out: list[FileEntry] = []
-    iterator = (
-        target.rglob("*")
-        if recursive
-        else sorted(target.iterdir(), key=lambda p: p.name)
-    )
+    # `iterdir()` and `rglob()` both raise OSError (e.g.
+    # FileNotFoundError) when the target directory disappears
+    # between the list_files exists()/is_dir() gate and this walk
+    # (TOCTOU window under concurrent PUT/DELETE). Treat the
+    # missing-dir case as an empty listing — the priority-6
+    # contract is "no /errors/internal leak on the listing path";
+    # callers can re-check existence with /files/info if they
+    # need to distinguish "empty" from "gone".
+    try:
+        if recursive:
+            iterator = list(target.rglob("*"))
+        else:
+            iterator = sorted(target.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return out
     for entry in iterator:
         try:
             stat = entry.stat()

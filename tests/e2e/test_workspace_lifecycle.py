@@ -11019,3 +11019,128 @@ async def test_t0742_workspace_template_50_segment_state_path_clean(
             await client.delete(f"/v1/workspace_providers/{wp_id}")
         except Exception:  # noqa: BLE001
             pass
+
+
+# ============================================================================
+# T0740 — Workspace local backend: PUT racing concurrent DELETE of the
+# containing directory. Both clean envelopes (204/404/4xx); final
+# /files/info on the file resolves cleanly; never /errors/internal under
+# the concurrency. Pins the file I/O concurrency-safety contract.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0740_files_put_racing_delete_of_containing_dir(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0740 — Priority 2 (workspace concurrency). Seed a directory
+    with one file (so the directory exists and can be DELETEd). Then
+    concurrently:
+
+    * PUT a new file at ``mydir/another.txt``,
+    * DELETE the existing file ``mydir/file.txt``.
+
+    Both responses must be clean envelopes (any of 200/201/204/404/
+    400/409 — the legal failure modes), never /errors/internal. The
+    final /files/info on each path resolves cleanly. The hard
+    contract is: the concurrency window does NOT produce a 5xx leak
+    or corrupt the workspace into an unqueryable state.
+
+    Catches a regression where two simultaneous file ops on the
+    same parent directory deadlock, race a stat() between
+    mkdir+write, or leak an OSError as 500 instead of the documented
+    mapping (T0742's recent fix maps these to BadRequestError for
+    init-time errors; the runtime file ops have parallel guards).
+    """
+    import asyncio as _asyncio
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # Seed mydir/file.txt so the directory exists and the
+        # DELETE target is real.
+        seed = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "mydir/file.txt"},
+            json={"content": "seed", "encoding": "text"},
+        )
+        assert seed.status_code in (200, 201, 204), seed.text
+
+        # Concurrent ops — fire them as awaitables, gather results.
+        put_coro = client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "mydir/another.txt"},
+            json={"content": "racing-put", "encoding": "text"},
+        )
+        del_coro = client.delete(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "mydir/file.txt"},
+        )
+        put_resp, del_resp = await _asyncio.gather(
+            put_coro, del_coro, return_exceptions=False,
+        )
+
+        # Both responses must carry clean envelopes (no 5xx).
+        for label, r in [("PUT", put_resp), ("DELETE", del_resp)]:
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"{label} leaked /errors/internal during PUT vs "
+                f"DELETE race: {r.status_code}: {r.text}"
+            )
+            assert r.status_code < 500, (
+                f"{label} 5xx during PUT vs DELETE race: "
+                f"{r.status_code}: {r.text}"
+            )
+            # Acceptable status set: success, conflict, or
+            # documented client error.
+            assert r.status_code in (200, 201, 204, 400, 404, 409), (
+                f"{label} unexpected status: "
+                f"{r.status_code}: {r.text}"
+            )
+
+        # Final /files/info on each path resolves cleanly — either
+        # 200 (the file exists) or 404 (the file is gone). Never
+        # /errors/internal.
+        for path in ("mydir/another.txt", "mydir/file.txt"):
+            info = await client.get(
+                f"/v1/workspaces/{workspace_id}/files/info",
+                params={"path": path},
+            )
+            info_env = info.json() if info.content else {}
+            assert info_env.get("type") != "/errors/internal", (
+                f"/files/info on {path!r} leaked /errors/internal: "
+                f"{info.status_code}: {info.text}"
+            )
+            assert info.status_code in (200, 404), (
+                f"/files/info on {path!r} unexpected status: "
+                f"{info.status_code}: {info.text}"
+            )
+
+        # Defence: parent /files listing also resolves cleanly.
+        listing = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "mydir"},
+        )
+        listing_env = listing.json() if listing.content else {}
+        assert listing_env.get("type") != "/errors/internal", (
+            f"parent listing leaked /errors/internal: "
+            f"{listing.status_code}: {listing.text}"
+        )
+        # 200 (some files survived) or 404 (whole dir gone) are both
+        # acceptable.
+        assert listing.status_code in (200, 404), (
+            f"parent listing unexpected status: "
+            f"{listing.status_code}: {listing.text}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

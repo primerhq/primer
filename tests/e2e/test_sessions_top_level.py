@@ -5588,3 +5588,280 @@ async def test_t0757_find_with_50_level_nested_predicate_clean_envelope(
                 f"missing key {key!r}: {envelope!r}"
             )
         assert envelope.get("type", "").startswith("/errors/"), envelope
+
+
+# ============================================================================
+# T0735 — Graph PUT mutating nodes AFTER bound session terminated.
+# The session row's binding.graph_id must remain unchanged; top-level GET
+# /sessions/{id} still returns the ended row. Pins the post-execution
+# session-state contract: a PUT-replace of the graph after the session
+# has already run does NOT retroactively change the session's binding.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0735_graph_put_after_session_terminated_state_pinned(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0735 — Priority 1 (graph executor post-terminal state).
+    Seed a graph-bound session with auto_start=True so the graph
+    executor runs end-to-end (terminates via fatal path on the
+    placeholder LLM); poll until terminal. PUT the graph to mutate
+    its nodes (add a node, drop the original entry node's id). Then:
+
+    * top-level GET /v1/sessions/{id} must STILL return the ended
+      row with binding.graph_id unchanged,
+    * the session's binding.kind must still be "graph",
+    * no /errors/internal at any step (PUT, GET).
+
+    Defends the invariant that post-execution session state is
+    pinned to the graph version that was in effect at execution
+    time, not the current graph row.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    graph_id = f"graph-t0735-{unique_suffix}"
+    graph_created = False
+    try:
+        workspace_id = (await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )).json()["id"]
+
+        # Seed the graph.
+        gr = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_id,
+                "description": "T0735 post-terminate pin probe",
+                "nodes": [
+                    {"kind": "agent", "id": "n1",
+                     "agent_id": env["agent_id"]},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            },
+        )
+        assert gr.status_code == 201, gr.text
+        graph_created = True
+
+        # Graph-bound session with auto_start=True so the executor
+        # runs end-to-end. The placeholder LLM fails at agent build,
+        # so the session terminates via the fatal path with
+        # ended_reason in {failed, ...}.
+        sg = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": True,
+            },
+        )
+        assert sg.status_code == 201, sg.text
+        session_id = sg.json()["id"]
+
+        # Poll top-level GET until terminal (15s budget).
+        import asyncio as _asyncio
+        terminal_words = {"ended", "failed", "cancelled", "completed"}
+        for _ in range(30):
+            r = await client.get(f"/v1/sessions/{session_id}")
+            assert r.status_code == 200, r.text
+            if (r.json().get("status") or "").lower() in terminal_words:
+                break
+            await _asyncio.sleep(0.5)
+        else:
+            raise AssertionError(
+                f"session never reached terminal status within 15s; "
+                f"final body: {r.json()}"
+            )
+
+        # PUT the graph with a mutated node list. The current
+        # session binding should NOT be rewritten.
+        put = await client.put(
+            f"/v1/graphs/{graph_id}",
+            json={
+                "id": graph_id,
+                "description": "T0735 mutated post-terminate",
+                "nodes": [
+                    {"kind": "agent", "id": "n1_renamed",
+                     "agent_id": env["agent_id"]},
+                    {"kind": "agent", "id": "n2",
+                     "agent_id": env["agent_id"]},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1_renamed",
+                     "to_node": "n2"},
+                    {"kind": "static", "from_node": "n2",
+                     "to_node": "end"},
+                ],
+                "entry_node_id": "n1_renamed",
+            },
+        )
+        put_env = put.json() if put.content else {}
+        assert put_env.get("type") != "/errors/internal", put_env
+        assert put.status_code in (200, 204), put.text
+
+        # Top-level GET still returns the ended row with the
+        # original binding.
+        got = await client.get(f"/v1/sessions/{session_id}")
+        got_env = got.json() if got.content else {}
+        assert got_env.get("type") != "/errors/internal", got_env
+        assert got.status_code == 200, got.text
+        body = got_env
+        assert body["status"] in terminal_words, (
+            f"session no longer terminal after graph PUT: {body!r}"
+        )
+        assert body["binding"]["kind"] == "graph", (
+            f"binding.kind changed after graph PUT: {body['binding']!r}"
+        )
+        assert body["binding"]["graph_id"] == graph_id, (
+            f"binding.graph_id changed after graph PUT: "
+            f"got {body['binding']['graph_id']!r}, expected {graph_id!r}"
+        )
+    finally:
+        if graph_created:
+            try:
+                await client.delete(f"/v1/graphs/{graph_id}")
+            except Exception:  # noqa: BLE001
+                pass
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0738 — Nested GET on graph-bound session after pause-then-resume
+# returns a clean envelope (deterministic 404 per T0433 drift, or other
+# clean shape) across the full pause/resume sequence. Top-level GET
+# remains authoritative throughout.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0738_nested_get_graph_bound_after_pause_resume_clean(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0738 — Priority 3 (drift consistency). Seed a graph-bound
+    session with auto_start=False (stays CREATED). Apply pause then
+    resume signals. At each step:
+
+    * top-level GET /v1/sessions/{id} returns 200 with clean
+      envelope and an in-spec status,
+    * nested GET /v1/workspaces/{wid}/sessions/{sid} returns a
+      clean envelope — either 404 (the documented T0433 drift for
+      graph-bound rows, because the nested handler doesn't index
+      graph-bound rows in its in-memory map) OR 200 with a status
+      from the documented set,
+    * never /errors/internal at any step.
+
+    Pins that the documented T0433 nested-404 behaviour is
+    consistent across signal transitions, not just on the initial
+    CREATED read.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    graph_id = f"graph-t0738-{unique_suffix}"
+    graph_created = False
+    try:
+        workspace_id = (await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )).json()["id"]
+
+        gr = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_id,
+                "description": "T0738 pause-resume drift probe",
+                "nodes": [
+                    {"kind": "agent", "id": "n1",
+                     "agent_id": env["agent_id"]},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            },
+        )
+        assert gr.status_code == 201, gr.text
+        graph_created = True
+
+        sg = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": False,
+            },
+        )
+        assert sg.status_code == 201, sg.text
+        session_id = sg.json()["id"]
+
+        async def _check_both_reads(label: str) -> None:
+            """Top-level + nested GET, assert both clean."""
+            top = await client.get(f"/v1/sessions/{session_id}")
+            top_env = top.json() if top.content else {}
+            assert top_env.get("type") != "/errors/internal", (
+                f"[{label}] top-level leaked /errors/internal: "
+                f"{top.status_code}: {top.text}"
+            )
+            assert top.status_code == 200, (
+                f"[{label}] top-level failed: "
+                f"{top.status_code}: {top.text}"
+            )
+
+            nested = await client.get(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}",
+            )
+            nested_env = nested.json() if nested.content else {}
+            assert nested_env.get("type") != "/errors/internal", (
+                f"[{label}] nested leaked /errors/internal: "
+                f"{nested.status_code}: {nested.text}"
+            )
+            # Per T0433: nested may 404 for graph-bound rows. Other
+            # clean shapes (200) are also acceptable. The hard
+            # contract is "no 5xx leak".
+            assert nested.status_code in (200, 404), (
+                f"[{label}] nested unexpected status: "
+                f"{nested.status_code}: {nested.text}"
+            )
+
+        # 0. baseline (CREATED, no signals applied yet).
+        await _check_both_reads("baseline")
+
+        # 1. pause CREATED → 204 (per T0397).
+        pause = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
+        )
+        assert pause.status_code == 204, pause.text
+        await _check_both_reads("post-pause")
+
+        # 2. resume PAUSED → 200 (per spec §11 resume table).
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        # resume from PAUSED returns 200 (or 204 depending on impl);
+        # never 5xx.
+        assert resume.status_code < 500, resume.text
+        assert resume.status_code in (200, 204), (
+            f"resume PAUSED expected 200/204; got "
+            f"{resume.status_code}: {resume.text}"
+        )
+        await _check_both_reads("post-resume")
+    finally:
+        # Cancel to release any worker lease before tearing down.
+        try:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        if graph_created:
+            try:
+                await client.delete(f"/v1/graphs/{graph_id}")
+            except Exception:  # noqa: BLE001
+                pass
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
