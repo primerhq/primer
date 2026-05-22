@@ -218,6 +218,132 @@ async def _sleep_handler(
 
 
 # ===========================================================================
+# ask_user — second yielding tool (M3 of the yielding-tools feature).
+# See docs/superpowers/specs/2026-05-22-yielding-tools-design.md §8.2.
+#
+# Pauses the agent's turn until a human operator types a response via
+# the API surface (GET .../ask_user/pending + POST .../ask_user/respond).
+# The optional ``timeout_seconds`` falls back to the global yield cap
+# when omitted. The optional ``response_schema`` is surfaced to the
+# UI and validated server-side at POST time.
+# ===========================================================================
+
+
+class _AskUserArgs(BaseModel):
+    """Prompt the operator sees and shape of the expected reply."""
+
+    prompt: str = Field(
+        ...,
+        min_length=1,
+        max_length=8000,
+        description=(
+            "Question or instruction shown to the operator. Newlines "
+            "are preserved by the UI panel. Required."
+        ),
+    )
+    response_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional JSON Schema the operator's response must satisfy. "
+            "Validated server-side at POST time; a violation is "
+            "surfaced inline in the UI without resuming the agent. "
+            "Omit for free-text responses."
+        ),
+    )
+    timeout_seconds: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Optional per-call timeout. When omitted, falls back to "
+            "the global yield cap (default 60 minutes). If the "
+            "operator doesn't respond in time the resume hook returns "
+            "``{timed_out: true, elapsed_seconds: ...}`` so the agent "
+            "can decide whether to retry or proceed."
+        ),
+    )
+
+
+def ask_user_resume(
+    yield_metadata: dict[str, Any],
+    event_payload: Any,
+) -> ToolCallResult:
+    """Resume hook for ask_user — translate payload into tool result.
+
+    Three branches:
+
+    * real response (``{"response": <any>}`` from the POST endpoint) →
+      ``{"response": <any>}``
+    * :class:`YieldTimeout` from the sweeper → ``{"timed_out": true,
+      "elapsed_seconds": ...}``
+    * :class:`YieldCancelled` from the cancel-yielded-tool API →
+      ``{"cancelled": true, "reason": ..., "elapsed_seconds": ...}``
+
+    ``yield_metadata`` carries ``parked_at_iso`` (worker-injected) so
+    we can compute elapsed even if the event payload didn't include
+    it (defensive — both timeout and cancel synthesise elapsed
+    upstream via :func:`classify_resume_payload`, but the dataclass
+    instance is the source of truth).
+    """
+    from matrix.model.yield_ import YieldCancelled, YieldTimeout  # avoid cycle
+
+    if isinstance(event_payload, YieldTimeout):
+        return _ok(
+            {
+                "timed_out": True,
+                "elapsed_seconds": event_payload.elapsed_seconds,
+            }
+        )
+    if isinstance(event_payload, YieldCancelled):
+        return _ok(
+            {
+                "cancelled": True,
+                "reason": event_payload.reason,
+                "elapsed_seconds": event_payload.elapsed_seconds,
+            }
+        )
+    # Real operator response from the POST endpoint.
+    response = (
+        event_payload.get("response")
+        if isinstance(event_payload, dict)
+        else None
+    )
+    return _ok({"response": response})
+
+
+async def _ask_user_handler(
+    arguments: dict[str, Any],
+    *,
+    ctx: ToolContext,
+) -> ToolCallResult | Yielded:
+    try:
+        args = _AskUserArgs.model_validate(arguments)
+    except ValidationError as exc:
+        return _err_from_validation(exc)
+
+    # The event_key is keyed on (session_id, tool_call_id) so the API
+    # endpoint can target a specific in-flight prompt. Without a
+    # session id we'd lose disambiguation across concurrent sessions,
+    # so fail loud.
+    if ctx.session_id is None:
+        return _err(
+            "ask_user requires ctx.session_id; the worker must pass "
+            "the live session id when invoking yielding tools",
+            error_type="bad-request",
+        )
+
+    return Yielded(
+        tool_name="",  # filled in by the provider
+        event_key=f"ask_user:{ctx.session_id}:{ctx.tool_call_id}",
+        timeout=args.timeout_seconds,
+        resume_metadata={
+            "prompt": args.prompt,
+            "response_schema": args.response_schema,
+            "tool_call_id": ctx.tool_call_id,
+        },
+    )
+
+
+# ===========================================================================
 # uuid_v4
 # ===========================================================================
 
@@ -451,6 +577,32 @@ def build_misc_toolset(
             ),
             _get_datetime_handler,
         ),
+        "ask_user": (
+            Tool(
+                id="ask_user",
+                description=(
+                    "Ask the human operator a question and pause the "
+                    "agent's turn until they respond. YIELDING TOOL — "
+                    "the agent's execution is suspended while the "
+                    "operator types; the worker is released to handle "
+                    "other sessions in the meantime. Use this when "
+                    "you genuinely need human input (clarification, "
+                    "approval, a choice the agent can't make "
+                    "autonomously) — do not use it for status updates "
+                    "or progress reports. Optional ``timeout_seconds`` "
+                    "(falls back to the global yield cap). Optional "
+                    "``response_schema`` (JSON Schema validated "
+                    "server-side). Returns ``{response: <any>}`` on "
+                    "operator reply, ``{timed_out: true, "
+                    "elapsed_seconds}`` on timeout, or ``{cancelled: "
+                    "true, reason, elapsed_seconds}`` if the operator "
+                    "skipped the prompt."
+                ),
+                toolset_id=toolset_id,
+                schema=_AskUserArgs.model_json_schema(),
+            ),
+            _ask_user_handler,
+        ),
         "sleep": (
             Tool(
                 id="sleep",
@@ -539,6 +691,7 @@ def build_misc_toolset(
 from matrix.worker.yield_resume_registry import register_resume_hook  # noqa: E402
 
 register_resume_hook("sleep", sleep_resume)
+register_resume_hook("ask_user", ask_user_resume)
 
 
 __all__ = ["MISC_TOOLSET_ID", "build_misc_toolset"]

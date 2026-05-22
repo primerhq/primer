@@ -208,6 +208,10 @@ function SessionDetail() {
             </div>
           </div>
 
+          {/* Pending ask_user prompt — yielding-tools M3.
+              Renders only when GET .../ask_user/pending returns 200. */}
+          <AskUserPanel sid={sid} sessionStatus={s.status} pushToast={pushToast} />
+
           {/* Initial instructions */}
           {s.initial_instructions && (
             <div className="panel">
@@ -516,6 +520,173 @@ function _toastErr(pushToast, title) {
     detail: err.detail || err.title || err.message,
     requestId: err.requestId,
   });
+}
+
+// ---------------------------------------------------------------------------
+// AskUserPanel — yielding-tools M3 (spec §8.2)
+//
+// Polls GET /v1/sessions/{sid}/ask_user/pending while the session is
+// non-terminal; renders the inline form when a prompt exists.
+// Submit  → POST /v1/sessions/{sid}/ask_user/respond
+// Skip    → POST /v1/sessions/{sid}/yields/{tool_call_id}/cancel
+// ---------------------------------------------------------------------------
+function AskUserPanel({ sid, sessionStatus, pushToast }) {
+  const isTerminal = TERMINAL_STATUSES.has(sessionStatus);
+  // useResource handles 404s by setting error.status=404; we treat
+  // that as "no pending prompt" and render nothing. Poll while the
+  // session can still be parked (any non-terminal status).
+  const pending = useResource(
+    "session-ask-user-pending:" + sid,
+    (signal) => apiFetch("GET", `/sessions/${encodeURIComponent(sid)}/ask_user/pending`, null, { signal }),
+    {
+      pollMs: isTerminal ? 0 : 2000,
+      deps: [sid, sessionStatus],
+    }
+  );
+
+  const [draft, setDraft] = React.useState("");
+  const [submitting, setSubmitting] = React.useState(false);
+  const [skipping, setSkipping] = React.useState(false);
+  const [inlineError, setInlineError] = React.useState(null);
+
+  // Clear local edit state when the prompt id changes (i.e. a new
+  // ask_user landed while the previous one was being typed).
+  const tcid = pending.data?.tool_call_id;
+  React.useEffect(() => {
+    setDraft("");
+    setInlineError(null);
+  }, [tcid]);
+
+  // 404 (no pending) or unloaded → render nothing.
+  if (pending.error?.status === 404) return null;
+  if (!pending.data) return null;
+
+  const { prompt, response_schema, parked_at } = pending.data;
+  const expectsJson = response_schema && response_schema.type === "object";
+  // Heuristic per spec: single-line ≤80 chars → input, else textarea.
+  const isShortPrompt = !prompt.includes("\n") && prompt.length <= 80;
+
+  const onSubmit = async () => {
+    if (!draft.trim()) return;
+    setSubmitting(true);
+    setInlineError(null);
+    let response = draft;
+    if (expectsJson) {
+      try {
+        response = JSON.parse(draft);
+      } catch (e) {
+        setInlineError("Response must be valid JSON: " + e.message);
+        setSubmitting(false);
+        return;
+      }
+    }
+    try {
+      await apiFetch(
+        "POST",
+        `/sessions/${encodeURIComponent(sid)}/ask_user/respond`,
+        { tool_call_id: tcid, response },
+      );
+      pushToast({ kind: "success", title: "Response sent", detail: "Session resuming." });
+      setDraft("");
+      // The next poll will return 404 once the row flips; in the
+      // meantime, hide the panel optimistically by forcing a refetch.
+      pending.refetch();
+    } catch (err) {
+      setInlineError(err.detail || err.title || err.message || "Submit failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const onSkip = async () => {
+    setSkipping(true);
+    setInlineError(null);
+    try {
+      await apiFetch(
+        "POST",
+        `/sessions/${encodeURIComponent(sid)}/yields/${encodeURIComponent(tcid)}/cancel`,
+        { reason: "operator skipped" },
+      );
+      pushToast({
+        kind: "info",
+        title: "Skipped",
+        detail: "Agent will continue without your input.",
+      });
+      setDraft("");
+      pending.refetch();
+    } catch (err) {
+      setInlineError(err.detail || err.title || err.message || "Skip failed");
+    } finally {
+      setSkipping(false);
+    }
+  };
+
+  const placeholder = expectsJson ? "JSON object…" : "";
+
+  return (
+    <div className="panel" style={{ borderColor: "oklch(0.7 0.18 240 / 0.4)" }} data-testid="ask-user-panel">
+      <div className="panel-h" style={{ background: "var(--blue-dim, transparent)" }}>
+        <Icon name="info" size={13} />
+        <span>Input requested</span>
+        {parked_at && (
+          <span className="sub muted">· waiting since {fmtDate(new Date(parked_at))}</span>
+        )}
+      </div>
+      <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ whiteSpace: "pre-wrap", color: "var(--text)" }}>{prompt}</div>
+        {isShortPrompt && !expectsJson ? (
+          <input
+            type="text"
+            className="textarea"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                onSubmit();
+              }
+            }}
+            placeholder=""
+            disabled={submitting || skipping}
+            data-testid="ask-user-input"
+          />
+        ) : (
+          <textarea
+            className={"textarea" + (expectsJson ? " mono" : "")}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={placeholder}
+            rows={expectsJson ? 6 : 4}
+            disabled={submitting || skipping}
+            data-testid="ask-user-textarea"
+          />
+        )}
+        {inlineError && (
+          <div className="text-sm" style={{ color: "var(--red)" }} data-testid="ask-user-error">
+            {inlineError}
+          </div>
+        )}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <Btn
+            kind="ghost"
+            onClick={onSkip}
+            disabled={submitting || skipping}
+            data-testid="ask-user-skip"
+          >
+            Skip this prompt
+          </Btn>
+          <Btn
+            kind="primary"
+            onClick={onSubmit}
+            disabled={!draft.trim() || submitting || skipping}
+            data-testid="ask-user-submit"
+          >
+            {submitting ? "Sending…" : "Send response"}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 window.SessionDetail = SessionDetail;

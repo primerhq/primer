@@ -46,6 +46,7 @@ from matrix.model.workspace import (
 
 
 if TYPE_CHECKING:
+    from matrix.int.event_bus import EventBus
     from matrix.int.scheduler import Scheduler
     from matrix.int.storage import Storage
     from matrix.int.storage_provider import StorageProvider
@@ -222,6 +223,27 @@ def get_scheduler(request: Request) -> "Scheduler":
     return sched
 
 
+def get_event_bus(request: Request) -> "EventBus":
+    """Resolve the live :class:`EventBus`.
+
+    Stashed by the lifespan handler (or test fixture) on
+    ``app.state.event_bus``. The yielding-tool endpoints publish
+    operator responses + cancel markers through it; the listener
+    subscribes and flips parked rows to resumable. Raises
+    :class:`ConfigError` when absent — a deployment that wants the
+    yielding-tool API must wire a bus.
+    """
+    bus = getattr(request.app.state, "event_bus", None)
+    if bus is None:
+        raise ConfigError(
+            "EventBus not on app.state — the yielding-tool feature "
+            "requires a bus. The production lifespan builds one; tests "
+            "that hit /v1/sessions/.../ask_user must attach an "
+            "InMemoryEventBus to app.state.event_bus."
+        )
+    return bus
+
+
 def get_worker_pool(request: Request) -> "WorkerPool":
     """Resolve the live :class:`WorkerPool`.
 
@@ -251,6 +273,7 @@ __all__ = [
     "get_cross_encoder_provider_storage",
     "get_document_storage",
     "get_embedding_provider_storage",
+    "get_event_bus",
     "get_graph_storage",
     "get_ingest_failure_storage",
     "get_internal_collections_config_storage",

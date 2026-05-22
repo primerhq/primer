@@ -96,6 +96,7 @@ class ParkedState:
     llm_messages: list[dict[str, Any]]
     turn_no: int
     started_at: datetime
+    tool_call_id: str | None = None
     resume_event_payload: dict[str, Any] | None = None
     schema_version: int = PARKED_STATE_SCHEMA_VERSION
 
@@ -103,6 +104,7 @@ class ParkedState:
         """Render to a JSON-safe dict for persistence in sessions.data."""
         return {
             "schema_version": self.schema_version,
+            "tool_call_id": self.tool_call_id,
             "yielded": self.yielded.to_jsonable(),
             "llm_messages": list(self.llm_messages),
             "turn_no": self.turn_no,
@@ -129,6 +131,7 @@ class ParkedState:
             llm_messages=list(data["llm_messages"]),
             turn_no=int(data["turn_no"]),
             started_at=_parse_iso(data["started_at"]),
+            tool_call_id=data.get("tool_call_id"),
             resume_event_payload=(
                 dict(data["resume_event_payload"])
                 if data.get("resume_event_payload") is not None

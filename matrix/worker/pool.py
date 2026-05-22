@@ -897,6 +897,7 @@ class WorkerPool:
             llm_messages=[],
             turn_no=lease.turn_no,
             started_at=parked_at,
+            tool_call_id=yield_exc.tool_call_id,
         )
 
         logger.info(

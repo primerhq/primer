@@ -27,6 +27,7 @@ from matrix.api.routers import (
     sessions as sessions_router,
     workers as workers_router,
     workspaces as workspaces_router,
+    yields as yields_router,
 )
 from matrix.api.version import API_VERSION, APP_VERSION
 from matrix.internal_collections import build_subsystem, load_config_or_none
@@ -150,6 +151,46 @@ def _make_lifespan(config: AppConfig):
                 )
         app.state.scheduler = scheduler
 
+        # --- Event bus + yield background tasks (M2/M3) -------------
+        # Bus drives the yielding-tool wake path: tool endpoints
+        # publish; the listener mark_resumable()s parked rows; the
+        # timer scheduler republishes due timer:* parks; the sweeper
+        # catches expired non-timer parks. All bound to the same bus.
+        event_bus = None
+        yield_listener = None
+        timer_scheduler = None
+        timeout_sweeper = None
+        if scheduler is not None:
+            from matrix.bus.in_memory import InMemoryEventBus
+            from matrix.bus.listener import YieldEventListener
+            from matrix.bus.postgres import PostgresEventBus
+            from matrix.bus.scheduler_tasks import (
+                TimeoutSweeper, TimerScheduler,
+            )
+            from matrix.scheduler.postgres import PostgresScheduler
+
+            # Pair the bus to the scheduler flavour: postgres scheduler
+            # → LISTEN/NOTIFY bus (cross-app delivery); in-memory
+            # scheduler → in-process bus.
+            if isinstance(scheduler, PostgresScheduler):
+                event_bus = PostgresEventBus(scheduler._storage)
+            else:
+                event_bus = InMemoryEventBus()
+            await event_bus.initialize()
+            yield_listener = YieldEventListener(
+                bus=event_bus, scheduler=scheduler,
+            )
+            yield_listener.start()
+            timer_scheduler = TimerScheduler(
+                bus=event_bus, scheduler=scheduler,
+            )
+            timer_scheduler.start()
+            timeout_sweeper = TimeoutSweeper(
+                bus=event_bus, scheduler=scheduler,
+            )
+            timeout_sweeper.start()
+        app.state.event_bus = event_bus
+
         worker_pool = None
         if config.runtime_mode in (
             RuntimeMode.WORKER, RuntimeMode.API_PLUS_WORKER,
@@ -208,6 +249,23 @@ def _make_lifespan(config: AppConfig):
                     await worker_pool.drain_and_stop()
                 except Exception:
                     logger.exception("worker_pool.drain_and_stop failed")
+            # Stop yield background tasks BEFORE the scheduler / bus
+            # close so an in-flight tick doesn't race a closing bus.
+            for task, name in (
+                (timeout_sweeper, "timeout_sweeper"),
+                (timer_scheduler, "timer_scheduler"),
+                (yield_listener, "yield_listener"),
+            ):
+                if task is not None:
+                    try:
+                        await task.stop()
+                    except Exception:
+                        logger.exception("%s.stop failed", name)
+            if event_bus is not None:
+                try:
+                    await event_bus.aclose()
+                except Exception:
+                    logger.exception("event_bus.aclose failed")
             if scheduler is not None:
                 try:
                     await scheduler.aclose()
@@ -322,6 +380,11 @@ def _mount_routers(
     # cancel sub-resources.
     app.include_router(sessions_router.nested_session_router, prefix=prefix)
     app.include_router(sessions_router.top_session_router, prefix=prefix)
+    # Yielding-tools surface (M3+): ask_user pending/respond + the
+    # tool-agnostic cancel-yielded-tool. Routes live under
+    # /v1/sessions/{id}/...; the lifespan handler attaches the event
+    # bus required by the publish path.
+    app.include_router(yields_router.yields_router, prefix=prefix)
 
 
 def create_app(config: AppConfig) -> FastAPI:
