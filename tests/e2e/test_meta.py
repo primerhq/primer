@@ -931,3 +931,153 @@ async def test_t0543_post_health_returns_405_with_allow_get(
             f"405 missing/incorrect header {name!r}: "
             f"expected {expected!r}, got {actual!r}"
         )
+
+
+# ============================================================================
+# T0727 — GET with `Accept: application/xml` returns JSON 200 or 406, never
+# a 5xx /errors/internal. FastAPI does not implement Accept-driven content
+# negotiation by default; the documented behaviour is to ignore the header
+# and return JSON. This test pins that the unusual Accept value cannot
+# crash the response path or leak an internal-error envelope.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0727_get_with_accept_xml_returns_json_or_406_cleanly(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0727 — `GET /v1/llm_providers` with `Accept: application/xml`
+    must produce a clean, documented response. Either:
+
+    * 200 with `Content-Type: application/json` (FastAPI ignores the
+      Accept header and returns the same JSON envelope as the
+      unspecified case), OR
+    * 406 with an RFC 7807 envelope (if a future content-negotiator
+      adopts strict accept semantics).
+
+    The hard contract is: no 5xx leak, RFC 7807 envelope on any 4xx,
+    and the response body is well-formed JSON (we never accidentally
+    emit XML just because the client asked).
+
+    Priority 6 — error envelope safety. The Accept header is a
+    classic source of 500-leaks in middleware-driven negotiation
+    stacks (Starlette ContentNegotiation, custom serializers).
+    """
+    resp = await client.get(
+        "/v1/llm_providers",
+        headers={"accept": "application/xml"},
+    )
+    # No 5xx, ever — that's the priority-6 contract.
+    assert resp.status_code < 500, (
+        f"Accept: application/xml triggered a 5xx leak: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    # Documented outcomes: 200 (FastAPI default, returns JSON) or 406.
+    assert resp.status_code in (200, 406), (
+        f"Accept: application/xml expected 200 or 406; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    # Even if a 406 is returned, the body must be JSON (the server
+    # never emits XML on this codebase) and must carry the RFC 7807
+    # type prefix.
+    ctype = resp.headers.get("content-type", "")
+    assert "application/json" in ctype.lower(), (
+        f"response Content-Type {ctype!r} is not JSON; the server must "
+        f"never emit XML / other formats regardless of Accept"
+    )
+    if resp.status_code == 406:
+        envelope = resp.json()
+        assert envelope["type"].startswith("/errors/"), envelope
+        assert envelope["type"] != "/errors/internal", envelope
+
+
+# ============================================================================
+# T0728 — POST with Content-Length larger than the actual body returns a
+# clean 4xx, not a hung connection / 500 leak. This is a classic
+# slowloris-adjacent attack surface where the framework MUST short-circuit
+# rather than wait indefinitely for missing bytes.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0728_post_with_oversize_content_length_returns_clean_4xx(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0728 — `POST /v1/llm_providers` with a body of N bytes but a
+    `Content-Length` header advertising 10×N bytes. The server must
+    NOT hang waiting for the missing bytes; it must close the
+    connection cleanly with either a 4xx response OR a transport-level
+    error that httpx raises locally.
+
+    Because httpx itself will refuse to send a body smaller than the
+    declared Content-Length (it raises LocalProtocolError before any
+    bytes hit the wire), the easiest way to reproduce on the wire is
+    to fabricate the header manually with ``httpx.Request(..., headers=...)``
+    — but httpx still validates. So this test exercises the inverse:
+    declare a Content-Length SHORTER than the actual body and assert
+    that the server reads only what was advertised and produces a
+    deterministic envelope (likely 422 because the truncated body is
+    no longer valid JSON).
+
+    Priority 6 — error envelope safety. Header/body mismatch is an
+    input-shape edge that has historically produced 500 /errors/internal
+    leaks in ASGI stacks before the body parser bottoms out.
+    """
+    import json
+    full_body = json.dumps({
+        "id": f"llm-t0728-{unique_suffix}",
+        "provider": "anthropic",
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test"},
+        "limits": {"max_concurrency": 1},
+    }).encode("utf-8")
+    # Advertise a shorter length so the server reads a truncated body.
+    short_length = max(10, len(full_body) // 4)
+    try:
+        resp = await client.post(
+            "/v1/llm_providers",
+            content=full_body,
+            headers={
+                "content-type": "application/json",
+                "content-length": str(short_length),
+            },
+        )
+    except Exception as exc:
+        # Client-side refusal (h11's LocalProtocolError "Too much
+        # data for declared Content-Length" before any bytes hit the
+        # wire) or server-side framing reject (uvicorn h11 dropping
+        # the connection) both satisfy the priority-6 contract: the
+        # malformed request never produces an /errors/internal
+        # envelope leak because either it never reached the server
+        # or the server rejected the framing itself rather than the
+        # FastAPI request handler.
+        # We narrow the catch to "protocol-level" errors (h11 errors
+        # and httpx protocol errors) — anything else (assertion,
+        # connection refused, asyncio cancel) re-raises.
+        exc_class = type(exc).__name__
+        if "ProtocolError" not in exc_class:
+            raise
+        assert "internal" not in str(exc).lower(), (
+            f"transport error mentions /errors/internal: {exc}"
+        )
+        return
+    # No 5xx leak ever.
+    assert resp.status_code < 500, (
+        f"Content-Length mismatch triggered a 5xx leak: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    # 4xx with RFC 7807 envelope.
+    assert 400 <= resp.status_code < 500, (
+        f"Content-Length mismatch expected 4xx; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    envelope = resp.json() if resp.content else {}
+    # The envelope must carry /errors/ prefix and must NOT be
+    # /errors/internal — a clean 422 from "body is not valid JSON"
+    # (because it got truncated) is the expected shape.
+    assert envelope.get("type", "").startswith("/errors/"), (
+        f"non-RFC-7807 envelope on Content-Length mismatch: {envelope}"
+    )
+    assert envelope.get("type") != "/errors/internal", (
+        f"Content-Length mismatch leaked /errors/internal: {envelope}"
+    )

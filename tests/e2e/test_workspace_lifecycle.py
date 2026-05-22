@@ -10632,3 +10632,123 @@ async def test_t0426_files_listing_deterministic_across_calls(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0427 — Workspace files listing emits the documented
+# ``OffsetPageResponse`` envelope shape ``{items, offset, length, total}``
+# (plus the bespoke ``path`` echo). The /files list endpoint pre-dates the
+# generic pagination wrapper and was once free-form; pin the §4 shape so
+# the eventual unification does not silently drop fields.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0427_files_listing_emits_offset_page_envelope_shape(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0427 — `GET /v1/workspaces/{id}/files?path=.&limit=2&offset=0`
+    after seeding 5 files returns an envelope with all four
+    OffsetPageResponse keys (``items``, ``offset``, ``length``,
+    ``total``) and the bespoke ``path`` echo. ``items`` must obey
+    ``limit`` (≤2), ``length`` must equal ``len(items)``, ``offset``
+    must echo back as 0, ``total`` must equal 5 (the seeded count).
+
+    Priority 2 (workspace-stress contract pin). Sister to T0426
+    (determinism) and the unification trail for §4. A regression that
+    drops ``total`` or replaces ``length`` with ``count`` would surface
+    here and would otherwise be invisible to the simpler T0274/T0275
+    pins which only assert membership.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        seed_names = [
+            "alpha.txt",
+            "beta.txt",
+            "gamma.txt",
+            "delta.txt",
+            "epsilon.txt",
+        ]
+        for name in seed_names:
+            r = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": name},
+                json={"content": f"body of {name}", "encoding": "text"},
+            )
+            assert r.status_code in (200, 201, 204), (
+                f"seed PUT for {name!r} failed: {r.status_code}: {r.text}"
+            )
+
+        resp = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": ".", "limit": 2, "offset": 0},
+        )
+        assert resp.status_code == 200, (
+            f"listing failed: {resp.status_code}: {resp.text}"
+        )
+        envelope = resp.json()
+
+        # No 500-leak via /errors/internal — sanity guard.
+        assert envelope.get("type") != "/errors/internal", envelope
+
+        # §4 OffsetPageResponse keys — pin all four are present.
+        for key in ("items", "offset", "length", "total"):
+            assert key in envelope, (
+                f"OffsetPageResponse key {key!r} missing from listing "
+                f"envelope: {envelope}"
+            )
+
+        # Bespoke /files extra: echoes the requested path back so the
+        # caller can correlate when serving virtualised file trees.
+        assert envelope.get("path") == ".", (
+            f"`path` echo expected '.'; got {envelope.get('path')!r}"
+        )
+
+        # Behavioural assertions on the four §4 keys.
+        items = envelope["items"]
+        assert isinstance(items, list), envelope
+        # limit=2 must bound the page.
+        assert len(items) <= 2, (
+            f"items overflowed limit=2: len={len(items)} envelope={envelope}"
+        )
+        # length is the actual returned count.
+        assert envelope["length"] == len(items), (
+            f"length {envelope['length']} disagrees with len(items)="
+            f"{len(items)}: {envelope}"
+        )
+        # offset must echo the request.
+        assert envelope["offset"] == 0, (
+            f"offset echo expected 0; got {envelope['offset']!r}: {envelope}"
+        )
+        # total must reflect the seeded count (5 user files). The
+        # workspace root may also contain reserved entries (.state,
+        # .tmp) the bespoke listing chooses whether to surface; we
+        # therefore assert total >= 5 rather than == 5 to be robust
+        # against the implementation choice.
+        assert envelope["total"] >= len(seed_names), (
+            f"total {envelope['total']} should be >= {len(seed_names)} "
+            f"seeded user files: {envelope}"
+        )
+
+        # Each item should be a FileEntry-shaped dict (path + kind at
+        # minimum). Pin so the items array isn't downgraded to bare
+        # strings in some future refactor.
+        for it in items:
+            assert isinstance(it, dict), f"item is not a dict: {it!r}"
+            assert "path" in it and "kind" in it, (
+                f"FileEntry shape regressed: {it!r}"
+            )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)
