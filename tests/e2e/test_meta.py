@@ -1376,6 +1376,112 @@ async def test_t0423_post_internal_collections_config_returns_405(
 
 
 # ============================================================================
+# T0566 — PATCH /v1/llm_providers list endpoint returns 405 with non-empty
+# Allow (provider-router method-not-allowed; mirror of T0281 for toolsets
+# and T0683 for cross_encoder_providers).
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0566_patch_llm_providers_list_returns_405(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0566 — Method-not-allowed pin for PATCH on the
+    /v1/llm_providers list route. CRUD list endpoints accept GET
+    (list) and POST (create); PATCH is NOT documented on a list
+    route. The router must reject PATCH with 405 + non-empty Allow;
+    never 5xx leak.
+
+    Completes the provider-family PATCH-405 trio with T0281 (toolsets)
+    and T0683 (cross_encoder_providers). Per T0423's framework note,
+    FastAPI's 405 Allow may only list ONE supported verb; this test
+    pins the looser contract (Allow present + GET or POST mentioned +
+    PATCH not mentioned).
+    """
+    resp = await client.patch("/v1/llm_providers", json={})
+    assert resp.status_code == 405, (
+        f"PATCH /v1/llm_providers should be 405; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    allow = resp.headers.get("allow", "")
+    assert allow, (
+        f"405 response missing Allow header; status={resp.status_code}"
+    )
+    allow_upper = allow.upper()
+    assert "GET" in allow_upper or "POST" in allow_upper, (
+        f"Allow header {allow!r} should include at least GET or POST "
+        f"(CRUD list endpoint declares both)"
+    )
+    assert "PATCH" not in allow_upper, (
+        f"Allow header {allow!r} should NOT include PATCH on a 405 "
+        f"that rejects PATCH"
+    )
+
+    # Security headers preserved on the 405 (extends T0002 contract).
+    for name, expected in _SECURITY_HEADERS.items():
+        actual = resp.headers.get(name)
+        assert actual == expected, (
+            f"405 missing/incorrect header {name!r}: "
+            f"expected {expected!r}, got {actual!r}"
+        )
+
+
+# ============================================================================
+# T0615 + T0658 + T0659 + T0686 — HEAD coverage for entity-list endpoints.
+# Parametrised so the four sister tests share one assertion body: 200 or
+# 405, empty body, security headers preserved. Sister of T0258
+# (/v1/llm_providers) and T0417 (/v1/sessions) for the remaining
+# entity-list routes that hadn't been pinned individually.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "path,backlog_id",
+    [
+        ("/v1/workers", "T0615"),
+        ("/v1/agents", "T0658"),
+        ("/v1/graphs", "T0659"),
+        ("/v1/collections", "T0686"),
+    ],
+    ids=["T0615-workers", "T0658-agents", "T0659-graphs", "T0686-collections"],
+)
+@pytest.mark.asyncio
+async def test_head_entity_list_returns_headers_only(
+    client: httpx.AsyncClient, path: str, backlog_id: str,
+) -> None:
+    """T0615 + T0658 + T0659 + T0686 — HEAD on entity-list endpoints
+    (no body). Same shape as T0258 (HEAD /v1/llm_providers) — pin
+    that the security headers and empty body apply uniformly across
+    /v1/workers, /v1/agents, /v1/graphs, /v1/collections.
+
+    HEAD may map to GET (200 with headers) or 405 if explicitly
+    disallowed by the router. Either is acceptable as long as no
+    5xx and security headers are preserved on the 200 path.
+
+    The parametrisation gives the failure message a clear backlog
+    id so a regression on a single endpoint surfaces with the test
+    name that corresponds to its backlog entry.
+    """
+    resp = await client.head(path)
+    assert resp.status_code in (200, 405), (
+        f"{backlog_id}: HEAD {path} expected 200 or 405; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    assert resp.content == b"", (
+        f"{backlog_id}: HEAD {path} body should be empty; got "
+        f"{resp.content!r}"
+    )
+    if resp.status_code == 200:
+        for name, expected in _SECURITY_HEADERS.items():
+            actual = resp.headers.get(name)
+            assert actual == expected, (
+                f"{backlog_id}: HEAD {path} missing/incorrect "
+                f"header {name!r}: expected {expected!r}, got "
+                f"{actual!r}"
+            )
+
+
+# ============================================================================
 # T0420 — OPTIONS /v1/internal_collections/bootstrap returns clean response
 # with Allow including POST (verb-table pin for the bootstrap singleton).
 # ============================================================================
