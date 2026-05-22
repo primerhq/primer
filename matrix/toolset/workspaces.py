@@ -58,6 +58,7 @@ from matrix.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from matrix.model.yield_ import ToolContext, Yielded
 from matrix.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -370,6 +371,149 @@ def _tool(
             schema=args_cls.model_json_schema(),
         ),
         handler,
+    )
+
+
+# ===========================================================================
+# watch_files — third yielding tool (M4 of the yielding-tools feature).
+# See docs/superpowers/specs/2026-05-22-yielding-tools-design.md §8.3.
+#
+# Pauses the agent's turn until one of the watched paths changes on
+# disk. The matching background watcher (matrix/bus/watcher.py) polls
+# mtimes and publishes a coalesced change burst on the event bus.
+# ===========================================================================
+
+
+class _WatchFilesArgs(BaseModel):
+    """Workspace-relative paths to watch + polling/coalescing controls."""
+
+    paths: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description=(
+            "Workspace-relative paths to watch. Files and directories "
+            "are both accepted; directories are watched recursively "
+            "(at one level — child file mtime changes count). Paths "
+            "must NOT be absolute and must NOT contain ``..`` segments "
+            "(no traversal). Required, at least one path."
+        ),
+    )
+    timeout_seconds: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Optional per-call timeout. When omitted, falls back to "
+            "the global yield cap. If no change fires before the "
+            "deadline, the resume hook returns "
+            "``{timed_out: true, changes: [], elapsed_seconds: ...}``."
+        ),
+    )
+    batch_window_ms: int = Field(
+        default=250,
+        ge=0,
+        le=5000,
+        description=(
+            "After the first change is detected, the watcher waits "
+            "this many milliseconds for more changes before publishing "
+            "one coalesced burst. Defaults to 250ms — tune up for "
+            "noisy file systems (long compile, large directory tree)."
+        ),
+    )
+
+
+def watch_files_resume(
+    yield_metadata: dict[str, Any],
+    event_payload: Any,
+) -> ToolCallResult:
+    """Resume hook for watch_files — translate payload into tool result.
+
+    Three branches:
+
+    * real changes (``{"changes": [...]}`` from the watcher) →
+      ``{"timed_out": false, "changes": [...]}``
+    * :class:`YieldTimeout` from the sweeper → ``{"timed_out": true,
+      "changes": [], "elapsed_seconds": ...}``
+    * :class:`YieldCancelled` from the cancel-yielded-tool API →
+      ``{"cancelled": true, "reason": ..., "changes": []}``
+    """
+    from matrix.model.yield_ import YieldCancelled, YieldTimeout  # avoid cycle
+
+    if isinstance(event_payload, YieldTimeout):
+        return _ok(
+            {
+                "timed_out": True,
+                "changes": [],
+                "elapsed_seconds": event_payload.elapsed_seconds,
+            }
+        )
+    if isinstance(event_payload, YieldCancelled):
+        return _ok(
+            {
+                "cancelled": True,
+                "reason": event_payload.reason,
+                "changes": [],
+                "elapsed_seconds": event_payload.elapsed_seconds,
+            }
+        )
+    changes = (
+        event_payload.get("changes", [])
+        if isinstance(event_payload, dict)
+        else []
+    )
+    return _ok({"timed_out": False, "changes": list(changes)})
+
+
+async def _watch_files_handler(
+    arguments: dict[str, Any],
+    *,
+    ctx: ToolContext,
+) -> ToolCallResult | Yielded:
+    try:
+        args = _WatchFilesArgs.model_validate(arguments)
+    except ValidationError as exc:
+        return _err_from_validation(exc)
+    if ctx.session_id is None:
+        return _err(
+            "watch_files requires ctx.session_id; the worker must pass "
+            "the live session id when invoking yielding tools",
+            error_type="bad-request",
+        )
+    if ctx.workspace_id is None:
+        return _err(
+            "watch_files requires ctx.workspace_id; the watcher needs "
+            "the workspace's filesystem root to resolve the paths",
+            error_type="bad-request",
+        )
+    # Path hygiene: absolute paths and traversal segments could let
+    # the agent escape the workspace sandbox. Reject upfront so the
+    # watcher never has to defend against them.
+    for p in args.paths:
+        if p.startswith("/") or (len(p) >= 2 and p[1] == ":"):
+            return _err(
+                f"absolute paths not allowed: {p!r}",
+                error_type="bad-request",
+            )
+        # Split on both POSIX and Windows separators so the check
+        # works regardless of the host OS the agent runs on.
+        segs = p.replace("\\", "/").split("/")
+        if ".." in segs:
+            return _err(
+                f"path traversal not allowed: {p!r}",
+                error_type="bad-request",
+            )
+
+    return Yielded(
+        tool_name="",  # provider stamps
+        event_key=f"watch:{ctx.session_id}:{ctx.tool_call_id}",
+        timeout=args.timeout_seconds,
+        resume_metadata={
+            "paths": list(args.paths),
+            "batch_window_ms": args.batch_window_ms,
+            "workspace_id": ctx.workspace_id,
+            "tool_call_id": ctx.tool_call_id,
+            "registered_at_iso": datetime.now(timezone.utc).isoformat(),
+        },
     )
 
 
@@ -942,6 +1086,31 @@ def build_workspaces_toolset(
             return _err_from_matrix(exc, error_type="backend-error")
         return _ok({"commits": [c.model_dump(mode="json") for c in commits]})
 
+    # watch_files — yielding tool (M4). Suspends the agent's turn until
+    # one of the watched paths changes on disk. The matching watcher
+    # (matrix/bus/watcher.py) polls mtimes and publishes change bursts.
+    name, entry = _tool(
+        "watch_files",
+        (
+            "Watch one or more workspace-relative paths and pause "
+            "this agent turn until something changes. YIELDING TOOL "
+            "— execution is suspended; the worker is released to "
+            "handle other sessions while the watcher polls. Files "
+            "and directories are both accepted; directories report "
+            "child-file changes. Optional ``timeout_seconds`` (falls "
+            "back to the global yield cap). Optional ``batch_window_ms"
+            "`` (default 250) coalesces bursts of changes into one "
+            "wake. Returns ``{timed_out: false, changes: [...]}`` on "
+            "change, ``{timed_out: true, changes: []}`` on timeout, "
+            "or ``{cancelled: true, ...}`` if the operator skipped "
+            "the yield. Each change carries ``{path, event_type "
+            "(created|modified|deleted), mtime_after}``."
+        ),
+        _WatchFilesArgs,
+        _watch_files_handler,
+    )
+    registry[name] = entry
+
     name, entry = _tool(
         "get_workspace_log",
         (
@@ -964,3 +1133,10 @@ def build_workspaces_toolset(
 
 
 __all__ = ["WORKSPACES_TOOLSET_ID", "build_workspaces_toolset"]
+
+
+# Register yielding-tool resume hooks at import time. The worker's
+# resume path looks up hooks by tool name from this central registry.
+from matrix.worker.yield_resume_registry import register_resume_hook  # noqa: E402
+
+register_resume_hook("watch_files", watch_files_resume)

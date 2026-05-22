@@ -160,6 +160,7 @@ def _make_lifespan(config: AppConfig):
         yield_listener = None
         timer_scheduler = None
         timeout_sweeper = None
+        watcher_manager = None
         if scheduler is not None:
             from matrix.bus.in_memory import InMemoryEventBus
             from matrix.bus.listener import YieldEventListener
@@ -167,6 +168,7 @@ def _make_lifespan(config: AppConfig):
             from matrix.bus.scheduler_tasks import (
                 TimeoutSweeper, TimerScheduler,
             )
+            from matrix.bus.watcher import WatcherManager
             from matrix.scheduler.postgres import PostgresScheduler
 
             # Pair the bus to the scheduler flavour: postgres scheduler
@@ -189,6 +191,25 @@ def _make_lifespan(config: AppConfig):
                 bus=event_bus, scheduler=scheduler,
             )
             timeout_sweeper.start()
+
+            # watch_files watcher manager — resolves workspace_id →
+            # filesystem root via the workspace registry. Returns None
+            # for non-local backends (sandbox/container/k8s) so the
+            # manager logs a warning and skips them; native watcher
+            # support for those backends is future work.
+            async def _resolve_root(workspace_id: str):
+                try:
+                    ws = await workspace_registry.get_workspace(workspace_id)
+                except Exception:
+                    return None
+                root = getattr(ws, "root", None)
+                return root
+            watcher_manager = WatcherManager(
+                bus=event_bus,
+                scheduler=scheduler,
+                workspace_root_resolver=_resolve_root,
+            )
+            watcher_manager.start()
         app.state.event_bus = event_bus
 
         worker_pool = None
@@ -252,6 +273,7 @@ def _make_lifespan(config: AppConfig):
             # Stop yield background tasks BEFORE the scheduler / bus
             # close so an in-flight tick doesn't race a closing bus.
             for task, name in (
+                (watcher_manager, "watcher_manager"),
                 (timeout_sweeper, "timeout_sweeper"),
                 (timer_scheduler, "timer_scheduler"),
                 (yield_listener, "yield_listener"),
