@@ -1626,3 +1626,129 @@ async def test_t0683_patch_cross_encoder_providers_list_returns_405(
             f"405 missing/incorrect header {name!r}: "
             f"expected {expected!r}, got {actual!r}"
         )
+
+
+# ============================================================================
+# T0616 + T0660 — PATCH 405 coverage for the remaining provider-router
+# list endpoints (workspace_providers + embedding_providers). Completes
+# the PATCH-405 family alongside T0281 (toolsets), T0566 (llm_providers),
+# T0683 (cross_encoder_providers).
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "path,backlog_id",
+    [
+        ("/v1/workspace_providers", "T0616"),
+        ("/v1/embedding_providers", "T0660"),
+    ],
+    ids=[
+        "T0616-workspace_providers",
+        "T0660-embedding_providers",
+    ],
+)
+@pytest.mark.asyncio
+async def test_patch_provider_list_returns_405(
+    client: httpx.AsyncClient, path: str, backlog_id: str,
+) -> None:
+    """T0616 + T0660 — PATCH on the remaining provider-router list
+    endpoints (workspace_providers + embedding_providers) must
+    return 405 with a non-empty Allow header. Completes the
+    PATCH-405 family alongside T0281 (toolsets), T0566
+    (llm_providers), T0683 (cross_encoder_providers).
+
+    Per T0423's framework note, FastAPI's 405 Allow may only list
+    ONE supported verb; the test pins the looser contract — Allow
+    present + at least GET or POST included + PATCH itself NOT
+    in Allow + security headers preserved.
+    """
+    resp = await client.patch(path, json={})
+    assert resp.status_code == 405, (
+        f"{backlog_id}: PATCH {path} should be 405; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    allow = resp.headers.get("allow", "")
+    assert allow, (
+        f"{backlog_id}: 405 response missing Allow header"
+    )
+    allow_upper = allow.upper()
+    assert "GET" in allow_upper or "POST" in allow_upper, (
+        f"{backlog_id}: Allow header {allow!r} should include at "
+        f"least GET or POST (CRUD list declares both)"
+    )
+    assert "PATCH" not in allow_upper, (
+        f"{backlog_id}: Allow header {allow!r} should NOT include "
+        f"PATCH on a 405 that rejects PATCH"
+    )
+
+    # Security headers preserved on the 405.
+    for name, expected in _SECURITY_HEADERS.items():
+        actual = resp.headers.get(name)
+        assert actual == expected, (
+            f"{backlog_id}: 405 missing/incorrect header {name!r}: "
+            f"expected {expected!r}, got {actual!r}"
+        )
+
+
+# ============================================================================
+# T0684 + T0655 + T0656 + T0657 — OPTIONS verb-table pins for the
+# top-level /v1/sessions list and the three session signal routes
+# (cancel / pause / resume). Sister of T0421 (worker drain) and T0466
+# (session steer) — all signal-style sub-resources where OPTIONS
+# should respond cleanly with Allow listing the expected verb.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "path,expected_verb,backlog_id",
+    [
+        # Top-level cross-workspace sessions list — GET-only at this
+        # path (POST is on the nested /workspaces/{wid}/sessions per
+        # spec §11).
+        ("/v1/sessions", "GET", "T0684"),
+        # Signal sub-resources — POST-only one-shot signals.
+        ("/v1/workspaces/any-wid/sessions/any-sid/cancel", "POST", "T0655"),
+        ("/v1/workspaces/any-wid/sessions/any-sid/pause", "POST", "T0656"),
+        ("/v1/workspaces/any-wid/sessions/any-sid/resume", "POST", "T0657"),
+    ],
+    ids=[
+        "T0684-sessions-list-GET",
+        "T0655-cancel-POST",
+        "T0656-pause-POST",
+        "T0657-resume-POST",
+    ],
+)
+@pytest.mark.asyncio
+async def test_options_session_route_allow_header(
+    client: httpx.AsyncClient,
+    path: str,
+    expected_verb: str,
+    backlog_id: str,
+) -> None:
+    """T0684 + T0655 + T0656 + T0657 — OPTIONS verb-table pins for
+    the top-level sessions list and the three session signal routes.
+    Each route accepts a single documented verb (GET for /v1/sessions
+    per spec §11; POST for cancel/pause/resume signal sub-resources).
+
+    The contract: OPTIONS responds cleanly (200/204 with Allow
+    listing the expected verb, or 405 fallback) and NEVER
+    /errors/internal. Placeholder ids in the signal paths are
+    acceptable because OPTIONS' verb-table check happens at the
+    route layer and doesn't need the ids to resolve to real rows
+    (mirror of T0466's pattern for the steer route and T0421's
+    pattern for worker drain).
+    """
+    resp = await client.request("OPTIONS", path)
+    assert resp.status_code < 500, (
+        f"{backlog_id}: OPTIONS {path} leaked 5xx: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    if resp.status_code in (200, 204):
+        allow = resp.headers.get("allow", "")
+        assert allow, (
+            f"{backlog_id}: OPTIONS {resp.status_code} but no Allow header"
+        )
+        assert expected_verb in allow.upper(), (
+            f"{backlog_id}: Allow header {allow!r} should include "
+            f"{expected_verb}"
+        )
