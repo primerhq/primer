@@ -152,6 +152,62 @@ class Scheduler(ABC):
         record_failure: FailureRecord | None = None,
     ) -> CompleteTurnResult: ...
 
+    # ---- Park / resume (yielding-tool feature) ---------------------------
+
+    @abstractmethod
+    async def park_turn(
+        self,
+        worker_id: str,
+        session_id: str,
+        *,
+        expected_turn_no: int,
+        parked_event_key: str,
+        parked_until: "datetime",
+        parked_at: "datetime",
+        parked_state: dict[str, Any],
+    ) -> CompleteTurnResult:
+        """Park the in-flight turn instead of completing it.
+
+        Writes the parked-state blob into the session row, releases
+        the worker's lease, and does NOT advance ``turn_no`` — the
+        same turn resumes when an event flips ``parked_status`` to
+        ``'resumable'``. Used by the yielding-tools feature (see
+        spec §7.2).
+
+        Returns the same outcome enum as :meth:`complete_turn`:
+
+        * SUCCESS — park written, lease released; another worker
+          will pick this session up when it becomes resumable.
+        * LEASE_LOST — another worker stole the lease before we
+          parked; the park was NOT written. Caller treats as a
+          turn that should not be re-run (the other worker is
+          already running it).
+        * TURN_CONFLICT — ``expected_turn_no`` no longer matches
+          the row's ``turn_no``; same response as LEASE_LOST.
+        """
+
+    @abstractmethod
+    async def mark_resumable(
+        self,
+        event_key: str,
+        *,
+        resume_event_payload: dict[str, Any],
+    ) -> int:
+        """Flip parked session(s) keyed on ``event_key`` to resumable.
+
+        Called by the event bus listener (M2) and the timeout
+        sweeper / cancel-yielded-tool API. Atomic per row: only the
+        first publisher to flip a given parked row wins (subsequent
+        calls see ``parked_status != 'parked'`` and no-op). Returns
+        the number of rows that were flipped (typically 0 or 1 —
+        higher only if multiple sessions happen to share the same
+        event_key, which is unusual but supported).
+
+        After the flip the scheduler also re-arms the lease and
+        notifies the ``session_ready`` channel so the worker pool
+        wakes immediately.
+        """
+
     # ---- Hints + cancel --------------------------------------------------
 
     @abstractmethod

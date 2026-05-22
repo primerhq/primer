@@ -30,14 +30,12 @@ Tool catalog
 
 from __future__ import annotations
 
-import asyncio
 import ast
 import hashlib
 import json
 import logging
 import math
 import operator
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -45,6 +43,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from matrix.model.chat import Tool, ToolCallResult
+from matrix.model.yield_ import ToolContext, Yielded
 from matrix.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -128,11 +127,15 @@ async def _get_datetime_handler(arguments: dict[str, Any]) -> ToolCallResult:
 
 
 # ===========================================================================
-# sleep
+# sleep — first yielding tool (M1 of the yielding-tools feature).
+# See docs/superpowers/specs/2026-05-22-yielding-tools-design.md §8.1.
+#
+# Returns a Yielded sentinel; the worker parks the session and the
+# timer scheduler (M2) republishes on parked_until expiry. Resume
+# synthesises the elapsed time from parked_at. The cap moves to the
+# global yield timeout (default 60 min) — sleep no longer enforces
+# its own 300s ceiling.
 # ===========================================================================
-
-
-_SLEEP_MAX_SECONDS = 300.0
 
 
 class _SleepArgs(BaseModel):
@@ -141,25 +144,77 @@ class _SleepArgs(BaseModel):
     seconds: float = Field(
         ...,
         ge=0.0,
-        le=_SLEEP_MAX_SECONDS,
         description=(
-            "Number of seconds to sleep, in [0, 300]. Fractional "
-            "values are honoured. The cap exists to prevent agents "
-            "from accidentally pausing for hours; if you need a "
-            "longer wait, sleep multiple times in a loop."
+            "Number of seconds to sleep. Fractional values are "
+            "honoured. Bounded by the global yield-timeout cap "
+            "(default 60 minutes). Longer waits are documented as "
+            "a future Yielding-Tools follow-up rather than today's "
+            "tool surface."
         ),
     )
 
 
-async def _sleep_handler(arguments: dict[str, Any]) -> ToolCallResult:
+def sleep_resume(yield_metadata: dict[str, Any], event_payload: Any) -> ToolCallResult:
+    """Resume hook for sleep — synthesise elapsed-seconds.
+
+    Sleep's event payload is empty (the timer scheduler just fires);
+    the resume hook reads ``requested_seconds`` from the metadata and
+    computes elapsed from the parked_at timestamp the worker injected.
+    On YieldCancelled the elapsed time is similarly computed; the
+    tool result reports both ``cancelled`` and the actual elapsed
+    seconds so the agent can decide whether to redo the wait.
+
+    The runtime imports this lazily (via the registry) so M1's
+    sleep migration doesn't create a cycle between misc.py and the
+    worker yield_runtime module.
+    """
+    from matrix.model.yield_ import YieldCancelled  # local: avoid cycle.
+    requested = float(yield_metadata.get("requested_seconds", 0.0))
+    # Worker injects parked_at_iso into yield_metadata on resume —
+    # see worker/yield_runtime.py for the convention.
+    parked_at_iso = yield_metadata.get("parked_at_iso")
+    elapsed = 0.0
+    if parked_at_iso:
+        parked_at = datetime.fromisoformat(parked_at_iso)
+        elapsed = (datetime.now(timezone.utc) - parked_at).total_seconds()
+    base = {
+        "requested_seconds": requested,
+        "elapsed_seconds": elapsed,
+    }
+    if isinstance(event_payload, YieldCancelled):
+        base["cancelled"] = True
+        base["cancel_reason"] = event_payload.reason
+    return _ok(base)
+
+
+async def _sleep_handler(
+    arguments: dict[str, Any],
+    *,
+    ctx: ToolContext,
+) -> ToolCallResult | Yielded:
     try:
         args = _SleepArgs.model_validate(arguments)
     except ValidationError as exc:
         return _err_from_validation(exc)
-    started = time.monotonic()
-    await asyncio.sleep(args.seconds)
-    elapsed = time.monotonic() - started
-    return _ok({"requested_seconds": args.seconds, "elapsed_seconds": elapsed})
+
+    # Zero-second sleeps short-circuit: no point parking, no event
+    # to wait for. Return the result directly so the LLM loop
+    # continues without crossing the worker boundary.
+    if args.seconds == 0.0:
+        return _ok({"requested_seconds": 0.0, "elapsed_seconds": 0.0})
+
+    # The Yielded sentinel; the provider stamps tool_name onto it
+    # and raises YieldToWorker. The worker writes parked_state with
+    # the rehydrated parked_at_iso so the resume hook can compute
+    # elapsed.
+    return Yielded(
+        tool_name="",  # filled in by the provider; placeholder
+        event_key=f"timer:{ctx.tool_call_id}",
+        timeout=args.seconds,
+        resume_metadata={
+            "requested_seconds": args.seconds,
+        },
+    )
 
 
 # ===========================================================================
@@ -401,10 +456,14 @@ def build_misc_toolset(
                 id="sleep",
                 description=(
                     "Pause this agent turn for ``seconds`` seconds "
-                    "(fractional allowed; capped at 300). Useful for "
-                    "polling external state with backoff or for "
-                    "deliberate pacing between actions. Returns "
-                    "``{requested_seconds, elapsed_seconds}``."
+                    "(fractional allowed). YIELDING TOOL — the agent's "
+                    "execution is suspended for the requested duration; "
+                    "the worker is released to handle other sessions in "
+                    "the meantime. Useful for polling external state "
+                    "with backoff or for deliberate pacing. Returns "
+                    "``{requested_seconds, elapsed_seconds}``. If the "
+                    "operator cancels the yield mid-sleep, the result "
+                    "additionally includes ``cancelled: true``."
                 ),
                 toolset_id=toolset_id,
                 schema=_SleepArgs.model_json_schema(),
@@ -472,6 +531,14 @@ def build_misc_toolset(
     )
 
     return InternalToolsetProvider(toolset_id=toolset_id, registry=registry)
+
+
+# Register yielding-tool resume hooks at import time. The worker's
+# resume path looks up hooks by tool name from this central
+# registry — see matrix/worker/yield_resume_registry.py.
+from matrix.worker.yield_resume_registry import register_resume_hook  # noqa: E402
+
+register_resume_hook("sleep", sleep_resume)
 
 
 __all__ = ["MISC_TOOLSET_ID", "build_misc_toolset"]

@@ -256,6 +256,85 @@ class InMemoryScheduler(Scheduler):
                     self._notify_received_total += 1
             return CompleteTurnResult.SUCCESS
 
+    # ---- Park / resume (yielding-tools feature) -------------------------
+
+    async def park_turn(
+        self,
+        worker_id: str,
+        session_id: str,
+        *,
+        expected_turn_no: int,
+        parked_event_key: str,
+        parked_until,
+        parked_at,
+        parked_state: dict[str, Any],
+    ) -> CompleteTurnResult:
+        """Park the in-flight turn without advancing turn_no.
+
+        Mirrors :meth:`PostgresScheduler.park_turn` for in-process
+        tests. The Session model carries the parked_* fields
+        natively (added by the yielding-tools M1 migration), so we
+        write them via attribute assignment.
+        """
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            lease = self._leases.get(session_id)
+            if session is None or lease is None:
+                return CompleteTurnResult.LEASE_LOST
+            if lease.worker_id != worker_id:
+                return CompleteTurnResult.LEASE_LOST
+            if session.turn_no != expected_turn_no:
+                return CompleteTurnResult.TURN_CONFLICT
+
+            session.parked_status = "parked"
+            session.parked_event_key = parked_event_key
+            session.parked_until = parked_until
+            session.parked_at = parked_at
+            session.parked_state = parked_state
+
+            lease.worker_id = None
+            lease.expires_at = None
+            lease.runnable = False
+            lease.next_attempt_at = datetime.now(timezone.utc)
+            return CompleteTurnResult.SUCCESS
+
+    async def mark_resumable(
+        self,
+        event_key: str,
+        *,
+        resume_event_payload: dict[str, Any],
+    ) -> int:
+        """Flip parked sessions keyed on ``event_key`` to resumable.
+
+        Walks the in-memory session table for matching parked rows;
+        each is atomically flipped under the scheduler lock so only
+        the first publisher wins per row.
+        """
+        flipped = 0
+        async with self._lock:
+            for sid, session in self._sessions.items():
+                if (
+                    session.parked_status != "parked"
+                    or session.parked_event_key != event_key
+                ):
+                    continue
+                lease = self._leases.get(sid)
+                if lease is None:
+                    continue
+
+                session.parked_status = "resumable"
+                state = dict(session.parked_state or {})
+                state["resume_event_payload"] = dict(resume_event_payload)
+                session.parked_state = state
+
+                lease.runnable = True
+                lease.next_attempt_at = datetime.now(timezone.utc)
+                for w in self._workers.values():
+                    w.ready_queue.put_nowait(sid)
+                    self._notify_received_total += 1
+                flipped += 1
+        return flipped
+
     # ---- Hints + cancel -------------------------------------------------
 
     def watch_ready(self, worker_id: str) -> AsyncIterator[str]:

@@ -4,27 +4,53 @@ Suitable for tools the application implements itself -- no remote server,
 no transport, no auth. The registry maps each tool's wire name to a
 :class:`matrix.model.chat.Tool` descriptor (the schema the LLM sees) and
 an async handler that executes the call.
+
+Handlers may yield. A handler that returns a :class:`Yielded` instance
+instead of a :class:`ToolCallResult` signals that the calling agent's
+turn should be parked until the named event fires. The provider
+recognises the sentinel, stamps the registered tool name into it (so
+the resume path can look it up from the parked-state blob alone), and
+re-raises as :class:`YieldToWorker` for the worker pool to catch.
+
+Handlers that need their own ``tool_call_id`` / ``session_id`` /
+``workspace_id`` (every yielding handler does) declare a keyword
+argument ``ctx: ToolContext``. The provider inspects each handler's
+signature at registration time and only injects the context when the
+parameter is declared, so legacy handlers (no ``ctx``) keep working
+unchanged.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
+from typing import Any, Union
 
 from matrix.int.toolset import ToolsetProvider
 from matrix.model.chat import Tool, ToolCallResult
 from matrix.model.except_ import ConfigError, UnsupportedContentError
+from matrix.model.yield_ import ToolContext, YieldToWorker, Yielded
 
 
 logger = logging.getLogger(__name__)
 
 
-ToolHandler = Callable[[dict[str, Any]], Awaitable[ToolCallResult]]
+# Two handler shapes coexist:
+#   * Legacy: ``(arguments)`` only — returns ToolCallResult.
+#   * Yielding: ``(arguments, ctx=ToolContext)`` — returns
+#     ToolCallResult OR Yielded.
+# The provider supports both; introspection on the handler's signature
+# picks the right call shape at dispatch time.
+ToolHandler = Callable[..., Awaitable[Union[ToolCallResult, Yielded]]]
 """Async function that executes one tool call.
 
-Receives the parsed argument dict, returns a :class:`ToolCallResult`.
-The handler may raise; the provider does not catch -- exceptions
+Receives the parsed argument dict and (optionally) a
+:class:`ToolContext`. Returns a :class:`ToolCallResult` for normal
+tools or a :class:`Yielded` sentinel for yielding tools (the
+provider re-raises the sentinel as :class:`YieldToWorker`).
+
+The handler may raise; the provider does not catch — exceptions
 propagate to the caller of :meth:`InternalToolsetProvider.call`.
 """
 
@@ -41,12 +67,18 @@ class InternalToolsetProvider(ToolsetProvider):
         # Defensive copy -- caller mutations after construction must not
         # alter the provider's view.
         self._registry: dict[str, tuple[Tool, ToolHandler]] = dict(registry)
-        for name, (tool, _) in self._registry.items():
+        # Cache: does each handler accept a ToolContext via `ctx`?
+        # Computed once at registration time so dispatch doesn't pay
+        # the introspection cost per call. A True entry tells
+        # dispatch to inject the context kwarg.
+        self._handler_takes_ctx: dict[str, bool] = {}
+        for name, (tool, handler) in self._registry.items():
             if tool.toolset_id != toolset_id:
                 raise ConfigError(
                     f"Tool {name!r} declares toolset_id={tool.toolset_id!r} "
                     f"but provider toolset_id={toolset_id!r}"
                 )
+            self._handler_takes_ctx[name] = _handler_takes_ctx(handler)
 
     async def list_tools(
         self,
@@ -63,7 +95,18 @@ class InternalToolsetProvider(ToolsetProvider):
         tool_name: str,
         arguments: dict[str, Any],
         principal: str | None = None,
+        ctx: ToolContext | None = None,
     ) -> ToolCallResult:
+        """Dispatch ``tool_name`` with ``arguments``.
+
+        Yielding handlers see the optional ``ctx`` if their signature
+        declares it; non-yielding handlers are called with arguments
+        only. If a handler returns a :class:`Yielded` sentinel, the
+        provider stamps the registered tool name onto it (so the
+        resume path doesn't need to walk the LLM message history)
+        and raises :class:`YieldToWorker` for the worker pool to
+        catch.
+        """
         del principal  # explicitly ignored
         entry = self._registry.get(tool_name)
         if entry is None:
@@ -76,4 +119,47 @@ class InternalToolsetProvider(ToolsetProvider):
             tool_name,
             self._toolset_id,
         )
-        return await handler(arguments)
+        if self._handler_takes_ctx.get(tool_name) and ctx is not None:
+            result = await handler(arguments, ctx=ctx)
+        else:
+            result = await handler(arguments)
+
+        if isinstance(result, Yielded):
+            # Tools don't set tool_name themselves — stamp the
+            # registered name so the resume path can look up the
+            # handler from the parked-state blob alone.
+            stamped = Yielded(
+                tool_name=tool_name,
+                event_key=result.event_key,
+                timeout=result.timeout,
+                resume_metadata=result.resume_metadata,
+            )
+            # tool_call_id is required to form unique event keys;
+            # if the handler didn't have ctx (legacy signature)
+            # there's nothing to yield with — that's a programming
+            # bug, not a runtime condition, so fail loud.
+            if ctx is None:
+                raise ConfigError(
+                    f"tool {tool_name!r} returned Yielded but its "
+                    f"handler doesn't accept ToolContext — yielding "
+                    f"handlers must declare `ctx: ToolContext`"
+                )
+            raise YieldToWorker(stamped, tool_call_id=ctx.tool_call_id)
+        return result
+
+
+def _handler_takes_ctx(handler: ToolHandler) -> bool:
+    """Introspect a handler to see if it declares ``ctx``.
+
+    Returns True if the handler's signature has a parameter named
+    ``ctx`` (any kind: keyword-only, positional-or-keyword, etc.).
+    Used at registration time to decide whether to inject the
+    :class:`ToolContext` at call time.
+    """
+    try:
+        sig = inspect.signature(handler)
+    except (TypeError, ValueError):
+        # Some C-backed callables don't expose a signature — treat
+        # them as legacy (no ctx).
+        return False
+    return "ctx" in sig.parameters

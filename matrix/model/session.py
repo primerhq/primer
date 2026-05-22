@@ -363,6 +363,54 @@ class Session(Identifiable):
     pause_requested: bool = Field(default=False)
     cancel_requested: bool = Field(default=False)
 
+    # ----------------------------------------------------------------------
+    # Yielding-tool park state (M1 of the yielding-tools feature).
+    # See docs/superpowers/specs/2026-05-22-yielding-tools-design.md §5.
+    # ----------------------------------------------------------------------
+    parked_status: Literal["parked", "resumable"] | None = Field(
+        default=None,
+        description=(
+            "Park lifecycle: NULL when not parked, 'parked' when the "
+            "session is waiting for its yield event to fire, "
+            "'resumable' when the event has fired (or a timeout/cancel "
+            "synthesised one) and the next worker claim should resume "
+            "the parked turn. Excluded from the claim-loop while "
+            "'parked'."
+        ),
+    )
+    parked_event_key: str | None = Field(
+        default=None,
+        description=(
+            "Routing key for the event bus. NULL when not parked. "
+            "Conventional prefixes: 'timer:', 'ask_user:', 'watch:', "
+            "'mcp_task:'."
+        ),
+    )
+    parked_until: datetime | None = Field(
+        default=None,
+        description=(
+            "Deadline at which the park auto-resumes with a "
+            "YieldTimeout payload. Drives both the timer scheduler "
+            "(timer:* parks) and the global timeout sweeper."
+        ),
+    )
+    parked_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Timestamp the park was written. Resume uses this to "
+            "compute elapsed_seconds for the tool's resume hook."
+        ),
+    )
+    parked_state: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Opaque blob carrying the in-progress turn state "
+            "(LLM message history, pending tool_call_id, tool name, "
+            "yield resume_metadata, and on resume the merged "
+            "resume_event_payload). Shape documented in spec §5.2."
+        ),
+    )
+
 
 # ===========================================================================
 # Forward-reference resolution

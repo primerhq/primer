@@ -31,9 +31,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from matrix.model.chat import Tool, ToolCallResult
+
+if TYPE_CHECKING:
+    from matrix.model.yield_ import ToolContext
 
 
 class ToolsetProvider(ABC):
@@ -87,6 +90,7 @@ class ToolsetProvider(ABC):
         tool_name: str,
         arguments: dict[str, Any],
         principal: str | None = None,
+        ctx: "ToolContext | None" = None,
     ) -> ToolCallResult:
         """Invoke a tool by name and return its result.
 
@@ -101,6 +105,15 @@ class ToolsetProvider(ABC):
             arguments before dispatch.
         principal
             See :meth:`list_tools`.
+        ctx
+            Optional :class:`matrix.model.yield_.ToolContext` injected
+            for yielding tools (carries ``tool_call_id``,
+            ``session_id``, ``workspace_id``, and on resume
+            ``parked_at``). Providers ignore it for non-yielding
+            handlers; yielding handlers use it to form unique event
+            keys. ``None`` is permitted — providers MUST tolerate
+            ``ctx=None`` and only inject when both the handler
+            declares it and the caller supplied one.
 
         Returns
         -------
@@ -118,6 +131,11 @@ class ToolsetProvider(ABC):
         matrix.model.except_.ProviderError
         matrix.model.except_.NetworkError
             Standard upstream / transport failures.
+        matrix.model.yield_.YieldToWorker
+            The tool yielded — its turn is paused until the named
+            event fires. Caller (typically the agent's tool manager)
+            propagates this up to the worker pool which writes the
+            parked-state blob and releases the lease.
         """
 
     async def aclose(self) -> None:

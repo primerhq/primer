@@ -31,6 +31,7 @@ from matrix.int.scheduler import (
 from matrix.model.except_ import TransientError
 from matrix.model.scheduler import WorkerConfig
 from matrix.model.session import Session, SessionStatus
+from matrix.model.yield_ import YieldToWorker
 from matrix.worker.turn import _CancelScope, compute_backoff
 
 if TYPE_CHECKING:
@@ -724,6 +725,14 @@ class WorkerPool:
                 await self._handle_cancel(lease, session)
                 outcome = "cancelled"
                 raise
+            except YieldToWorker as yield_exc:
+                # The agent invoked a yielding tool; the LLM loop
+                # raised after stamping the Yielded sentinel. Park
+                # the session in storage and release our lease — a
+                # later worker resumes when the event fires.
+                await self._handle_yield(lease, session, yield_exc)
+                outcome = "parked"
+                return
             except TransientError as exc:
                 await self._handle_transient(lease, session, exc)
                 outcome = "failed"
@@ -818,6 +827,94 @@ class WorkerPool:
             ended_reason="failed",
             re_enqueue=False,
             record_failure=failure,
+        )
+
+    async def _handle_yield(
+        self,
+        lease: Lease,
+        session: Session,
+        yield_exc: YieldToWorker,
+    ) -> None:
+        """Park the in-flight turn (yielding-tools §7.2).
+
+        The tool engine raised :class:`YieldToWorker` because the
+        agent invoked a yielding tool. Package the in-progress turn
+        state into the parked_state blob and call the scheduler's
+        ``park_turn`` to atomically write the park + release the
+        lease.
+
+        The blob carries enough state for any worker (same or
+        different) to resume the turn once the event fires:
+
+        * ``yielded`` — the Yielded sentinel (tool name, event key,
+          timeout, resume_metadata)
+        * ``llm_messages`` — the in-progress LLM history; for M1
+          we leave this as an empty list because the executor
+          doesn't yet expose it. M2+ will plumb the real history
+          through.
+        * ``turn_no`` / ``started_at`` — for audit + elapsed
+          calculations.
+
+        The worker also stamps ``parked_at_iso`` into the tool's
+        ``resume_metadata`` so the resume hook can compute elapsed
+        time without re-reading the session row.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from matrix.worker.yield_runtime import ParkedState
+
+        yielded = yield_exc.yielded
+        parked_at = datetime.now(timezone.utc)
+        # Per-yield timeout takes precedence; fall back to the global
+        # yield cap (60 min default — overridable via env once
+        # config is wired in M2).
+        timeout = (
+            yielded.timeout
+            if yielded.timeout is not None
+            else 3600.0
+        )
+        parked_until = parked_at + timedelta(seconds=timeout)
+
+        # Inject parked_at_iso into resume_metadata so the resume
+        # hook can compute elapsed without a separate read.
+        resume_metadata = dict(yielded.resume_metadata)
+        resume_metadata["parked_at_iso"] = parked_at.isoformat()
+        yielded_stamped = type(yielded)(
+            tool_name=yielded.tool_name,
+            event_key=yielded.event_key,
+            timeout=yielded.timeout,
+            resume_metadata=resume_metadata,
+        )
+
+        parked_state = ParkedState(
+            yielded=yielded_stamped,
+            # M1 placeholder: the executor doesn't yet hand us back
+            # the in-progress message history. M2+ extends this so
+            # the resume can re-enter the LLM call. For now the
+            # sleep tool's resume synthesises its result from
+            # resume_metadata alone, so an empty history still works
+            # end-to-end for the prototype.
+            llm_messages=[],
+            turn_no=lease.turn_no,
+            started_at=parked_at,
+        )
+
+        logger.info(
+            "session %s parking on tool %r (event_key=%r, timeout=%.1fs)",
+            lease.session_id,
+            yielded.tool_name,
+            yielded.event_key,
+            timeout,
+        )
+
+        await self._scheduler.park_turn(
+            self._worker_id,
+            lease.session_id,
+            expected_turn_no=lease.turn_no,
+            parked_event_key=yielded.event_key,
+            parked_until=parked_until,
+            parked_at=parked_at,
+            parked_state=parked_state.to_jsonable(),
         )
 
     async def _handle_cancel(

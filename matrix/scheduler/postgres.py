@@ -251,6 +251,10 @@ class PostgresScheduler(Scheduler):
     async def claim(
         self, worker_id: str, *, max_count: int = 1,
     ) -> list[Lease]:
+        # Yielding-tools (§7.1): parked rows are invisible to
+        # claimers — only resumable rows (event fired OR
+        # timeout/cancel synthesised one) re-enter the claim pool.
+        # A non-parked row matches both branches of the OR.
         sql = """
             WITH claimed AS (
               SELECT l.session_id,
@@ -261,6 +265,8 @@ class PostgresScheduler(Scheduler):
               WHERE l.runnable = TRUE
                 AND (l.worker_id IS NULL OR l.expires_at < now())
                 AND l.next_attempt_at <= now()
+                AND (s.data->>'parked_status' IS NULL
+                     OR s.data->>'parked_status' = 'resumable')
               ORDER BY
                 CASE WHEN s.data->>'last_worker_id' = $1 THEN 0 ELSE 1 END,
                 l.next_attempt_at
@@ -420,6 +426,165 @@ class PostgresScheduler(Scheduler):
                         "SELECT pg_notify('session_ready', $1)", session_id,
                     )
                 return CompleteTurnResult.SUCCESS
+
+    # ---- Park / resume (yielding-tools feature) -------------------------
+
+    async def park_turn(
+        self,
+        worker_id: str,
+        session_id: str,
+        *,
+        expected_turn_no: int,
+        parked_event_key: str,
+        parked_until,
+        parked_at,
+        parked_state: dict,
+    ) -> CompleteTurnResult:
+        """Park the in-flight turn (yielding-tools §7.2).
+
+        Atomic write that does TWO things:
+
+        * stamps parked_status='parked', parked_event_key,
+          parked_until, parked_at, parked_state into sessions.data
+          via jsonb_set (does NOT touch turn_no, status, ended_at
+          etc. — the turn is suspended, not completed).
+        * releases our session_leases row (worker_id=NULL,
+          runnable=FALSE so subsequent claims have to be re-armed
+          by mark_resumable's NOTIFY).
+
+        Both updates run inside one transaction. Returns SUCCESS,
+        TURN_CONFLICT (turn_no advanced under us), or LEASE_LOST
+        (we lost the lease before parking).
+        """
+        try:
+            return await self._park_turn_inner(
+                worker_id, session_id,
+                expected_turn_no=expected_turn_no,
+                parked_event_key=parked_event_key,
+                parked_until=parked_until,
+                parked_at=parked_at,
+                parked_state=parked_state,
+            )
+        except _LeaseLostMarker:
+            return CompleteTurnResult.LEASE_LOST
+
+    async def _park_turn_inner(
+        self, worker_id, session_id, *,
+        expected_turn_no, parked_event_key, parked_until,
+        parked_at, parked_state,
+    ):
+        # JSON-encode the state blob — postgres' jsonb expects text
+        # input it can parse.
+        import json
+        state_json = json.dumps(parked_state)
+
+        update_session_sql = """
+            UPDATE sessions
+            SET data = (
+                jsonb_set(
+                  jsonb_set(
+                    jsonb_set(
+                      jsonb_set(
+                        jsonb_set(data,
+                          '{parked_status}', to_jsonb('parked'::text)),
+                        '{parked_event_key}', to_jsonb($3::text)),
+                      '{parked_until}', to_jsonb($4::timestamptz)),
+                    '{parked_at}', to_jsonb($5::timestamptz)),
+                  '{parked_state}', $6::jsonb
+                )
+            ),
+            updated_at = now()
+            WHERE id = $2 AND (data->>'turn_no')::int = $7
+            RETURNING id
+        """
+
+        # Park releases the lease: worker_id NULL, NOT runnable
+        # until mark_resumable re-arms (which the event-bus
+        # listener / timeout sweeper does via NOTIFY).
+        update_lease_sql = """
+            UPDATE session_leases
+            SET worker_id = NULL,
+                expires_at = NULL,
+                runnable = FALSE,
+                next_attempt_at = now()
+            WHERE session_id = $1 AND worker_id = $2
+            RETURNING session_id
+        """
+
+        async with self._storage.pool.acquire() as conn:
+            async with conn.transaction():
+                updated = await conn.fetchrow(
+                    update_session_sql,
+                    worker_id, session_id, parked_event_key,
+                    parked_until, parked_at, state_json,
+                    expected_turn_no,
+                )
+                if updated is None:
+                    return CompleteTurnResult.TURN_CONFLICT
+                lease_row = await conn.fetchrow(
+                    update_lease_sql, session_id, worker_id,
+                )
+                if lease_row is None:
+                    raise _LeaseLostMarker()
+                return CompleteTurnResult.SUCCESS
+
+    async def mark_resumable(
+        self,
+        event_key: str,
+        *,
+        resume_event_payload: dict,
+    ) -> int:
+        """Flip parked sessions keyed on event_key to resumable.
+
+        One atomic SQL UPDATE matches every parked row whose
+        ``parked_event_key`` equals the supplied key, flips it to
+        ``resumable``, and stamps the payload under
+        ``parked_state.resume_event_payload``. The ``WHERE
+        parked_status='parked'`` clause guards against double-publish
+        — only the first publisher wins per row.
+
+        After the flip, every affected lease is re-armed
+        (``runnable=TRUE``) and the ``session_ready`` channel is
+        NOTIFY-ed once per session id so the worker pool wakes.
+
+        Returns the number of rows flipped (typically 0 or 1; more
+        is supported but unusual — distinct event_keys are the norm).
+        """
+        import json
+        payload_json = json.dumps(resume_event_payload)
+        update_session_sql = """
+            UPDATE sessions
+            SET data = jsonb_set(
+                jsonb_set(data,
+                    '{parked_status}', to_jsonb('resumable'::text)),
+                '{parked_state, resume_event_payload}',
+                $2::jsonb
+            ),
+            updated_at = now()
+            WHERE data->>'parked_status' = 'parked'
+              AND data->>'parked_event_key' = $1
+            RETURNING id
+        """
+        update_lease_sql = """
+            UPDATE session_leases
+            SET runnable = TRUE,
+                next_attempt_at = now()
+            WHERE session_id = ANY($1::text[])
+        """
+        async with self._storage.pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    update_session_sql, event_key, payload_json,
+                )
+                if not rows:
+                    return 0
+                session_ids = [r["id"] for r in rows]
+                await conn.execute(update_lease_sql, session_ids)
+                for sid in session_ids:
+                    await conn.execute(
+                        "SELECT pg_notify('session_ready', $1)", sid,
+                    )
+                return len(rows)
 
     # ---- methods filled in by Task 11 ----------------------------------
 
