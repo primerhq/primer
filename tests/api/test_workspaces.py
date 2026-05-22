@@ -679,7 +679,9 @@ class TestWorkspacesToolsetRegistration:
             "get_workspace_log",
         ):
             assert name in names, f"missing {name}"
-        assert len(names) == 24
+        # 24 original + watch_files (yielding-tools M4) = 25.
+        assert len(names) == 25
+        assert "watch_files" in names
 
     @pytest.mark.asyncio
     async def test_create_provider_via_toolset(self, app, pr) -> None:

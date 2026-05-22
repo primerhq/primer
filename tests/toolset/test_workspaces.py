@@ -370,7 +370,9 @@ class TestCatalog:
     async def test_toolset_id_and_count(self, toolset) -> None:
         assert WORKSPACES_TOOLSET_ID == "_workspaces"
         names = [t.id async for t in toolset.list_tools()]
-        assert len(names) == 24
+        # 24 original + watch_files (yielding-tools M4) = 25.
+        assert len(names) == 25
+        assert "watch_files" in names
 
     @pytest.mark.asyncio
     async def test_every_tool_has_clear_description(self, toolset) -> None:
@@ -462,7 +464,8 @@ class TestBootstrapIngestsWorkspacesTools:
             for doc_id in ingested_ids
             if doc_id.startswith("_workspaces::")
         }
-        assert len(ws_ingested) == 24
+        # 24 original + watch_files (yielding-tools M4) = 25.
+        assert len(ws_ingested) == 25
         for expected in (
             "_workspaces::list_workspace_providers",
             "_workspaces::create_workspace_template",

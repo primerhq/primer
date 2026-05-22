@@ -5,7 +5,7 @@ internal collections subsystem ingests its tools into the
 ``_internal_tools`` collection during bootstrap so agents can search
 for them.
 
-Tool catalog (24 tools)
+Tool catalog (25 tools)
 -----------------------
 
 Provider (CRUD minus update):
@@ -31,6 +31,9 @@ Files:
 
 Log:
     get_workspace_log
+
+Yielding (M4):
+    watch_files
 """
 
 from __future__ import annotations

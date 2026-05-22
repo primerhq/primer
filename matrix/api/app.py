@@ -19,6 +19,7 @@ from matrix.api.registries import (
     WorkspaceRegistry,
 )
 from matrix.api.routers import (
+    chats as chats_router,
     compute,
     health,
     internal_collections,
@@ -422,6 +423,11 @@ def _mount_routers(
     # /v1/sessions/{id}/...; the lifespan handler attaches the event
     # bus required by the publish path.
     app.include_router(yields_router.yields_router, prefix=prefix)
+    # Chat surface (M6): REST + WS for agent-driven conversations.
+    # Park fields on the Chat row reuse the M1-M5 yield machinery so
+    # the same listener / timer / sweeper / watcher / mcp-bridge
+    # wakes parked chats just like parked sessions.
+    app.include_router(chats_router.chats_router, prefix=prefix)
 
 
 def create_app(config: AppConfig) -> FastAPI:

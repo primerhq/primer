@@ -136,6 +136,14 @@ def _eval_predicate(entity: Any, node: Any) -> bool:
                 return actual == expected
             if node.op == Op.NE:
                 return actual != expected
+            if node.op == Op.GT:
+                return actual is not None and actual > expected
+            if node.op == Op.LT:
+                return actual is not None and actual < expected
+            if node.op == Op.GE:
+                return actual is not None and actual >= expected
+            if node.op == Op.LE:
+                return actual is not None and actual <= expected
         return True
     return True
 
