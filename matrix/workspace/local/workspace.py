@@ -390,6 +390,13 @@ def _walk_for_user(
     *,
     recursive: bool,
 ) -> list[FileEntry]:
+    # `target` is already a resolved path (see _resolve_path). Resolve the
+    # workspace root too so entries from `target.iterdir()` share a common
+    # prefix with it — otherwise `entry.relative_to(workspace_root)`
+    # raises ValueError on platforms where the unresolved root differs
+    # from its resolved form (e.g. Windows short-name 8.3 temp paths
+    # like USMANS~1 vs the long-name Usman Shahid).
+    root_resolved = workspace_root.resolve()
     out: list[FileEntry] = []
     iterator = (
         target.rglob("*")
@@ -410,7 +417,7 @@ def _walk_for_user(
         else:
             kind = "file"
             size = stat.st_size
-        rel = entry.relative_to(workspace_root).as_posix()
+        rel = entry.relative_to(root_resolved).as_posix()
         out.append(
             FileEntry(
                 path=rel,

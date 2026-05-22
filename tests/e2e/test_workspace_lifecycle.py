@@ -10537,3 +10537,98 @@ async def test_t0425_files_put_through_regular_file_parent_clean_envelope(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0426 — Workspace files listing returns a deterministic order across
+# back-to-back calls. Catches a regression where listing relied on
+# filesystem readdir() iteration order (which is platform-dependent and
+# unstable) instead of an explicit sort. A flaky order would confuse
+# clients showing a file tree and make cursor-based pagination unsound.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0426_files_listing_deterministic_across_calls(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0426 — Seed 5 files at the root with names crafted to defeat
+    any incidental ordering (mix of case, digits, punctuation). Call
+    GET /files?path=. twice with no intervening mutation. Pin: the
+    sequence of `path` fields must be byte-identical between calls.
+
+    Priority 2 (workspace-stress). Determinism is a contract clients
+    rely on for stable file-tree rendering and for cursor stability
+    if the listing endpoint ever grows pagination.
+
+    The names are chosen to expose lexicographic-vs-readdir
+    divergence: ``Zeta.txt`` > ``alpha.txt`` in ASCII byte order but
+    is filesystem-typically returned interleaved.
+    """
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    workspace_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        seed_names = [
+            "Zeta.txt",
+            "alpha.txt",
+            "10_first.txt",
+            "2_second.txt",
+            "_hidden_prefix.txt",
+        ]
+        for name in seed_names:
+            r = await client.put(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": name},
+                json={"content": f"body of {name}", "encoding": "text"},
+            )
+            assert r.status_code in (200, 201, 204), (
+                f"seed PUT for {name!r} failed: {r.status_code}: {r.text}"
+            )
+
+        async def _list_paths() -> list[str]:
+            resp = await client.get(
+                f"/v1/workspaces/{workspace_id}/files",
+                params={"path": "."},
+            )
+            envelope = resp.json() if resp.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"listing leaked /errors/internal: "
+                f"{resp.status_code}: {resp.text}"
+            )
+            assert resp.status_code == 200, (
+                f"listing failed: {resp.status_code}: {resp.text}"
+            )
+            items = envelope.get("items", [])
+            return [it.get("path") for it in items]
+
+        first = await _list_paths()
+        second = await _list_paths()
+
+        # Sanity: all seeded names visible in first call.
+        first_basenames = {(p or "").rsplit("/", 1)[-1] for p in first}
+        missing = set(seed_names) - first_basenames
+        assert not missing, (
+            f"seeded files missing from first listing: missing={missing!r}, "
+            f"first={first!r}"
+        )
+
+        # Determinism contract: two back-to-back listings agree exactly
+        # on the order. A non-deterministic readdir-based listing would
+        # eventually drift here.
+        assert first == second, (
+            f"workspace files listing order is non-deterministic; "
+            f"first={first!r} second={second!r}"
+        )
+    finally:
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_provider_template(client, provider_id, template_id)

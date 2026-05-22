@@ -513,3 +513,52 @@ async def test_t0717_ic_config_delete_racing_5_agents_search_calls(
             f"search #{i} unexpected status: "
             f"{r.status_code}: {r.text}"
         )
+
+
+# ============================================================================
+# T0424 — GET /v1/toolsets/_search/tools before subsystem activation
+# returns clean envelope (never /errors/internal)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0424_search_toolset_tools_before_activation_clean_envelope(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0424 — The `_search` toolset is wired by the internal-collections
+    subsystem on bootstrap. Before the subsystem is activated, the
+    toolset doesn't exist, but the route is still mounted. GETting
+    /v1/toolsets/_search/tools must produce a clean envelope —
+    typically 404 ``/errors/not-found`` (toolset absent) or 200 with
+    an empty tools list if the route short-circuits.
+
+    Priority 5 — IC subsystem gating. The contract is: never
+    /errors/internal under subsystem-off probing. Other reserved
+    toolset ids (_system, _workspaces, _misc, web) are unconditional
+    so this only applies to _search.
+
+    Setup ensures the subsystem is OFF (idempotent DELETE).
+    """
+    # Ensure subsystem is OFF.
+    await client.delete("/v1/internal_collections/config")
+
+    resp = await client.get("/v1/toolsets/_search/tools")
+    envelope = resp.json() if resp.content else {}
+
+    # Primary invariant: never a generic /errors/internal leak.
+    assert envelope.get("type") != "/errors/internal", (
+        f"_search/tools before activation leaked /errors/internal: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    # Documented outcomes: 404 (toolset absent), 503 (subsystem
+    # inactive — also documented for the /search routes), 200 with
+    # empty tools. Forbid 5xx generic.
+    assert resp.status_code in (200, 404, 503), (
+        f"_search/tools before activation unexpected status: "
+        f"{resp.status_code}: {resp.text}"
+    )
+    if resp.status_code != 200:
+        assert envelope.get("type", "").startswith("/errors/"), (
+            f"non-RFC-7807 envelope on _search/tools before activation: "
+            f"{envelope}"
+        )

@@ -237,7 +237,8 @@ class OffsetPage(BaseModel):
     length: int = Field(
         ...,
         ge=1,
-        description="Maximum number of items to return.",
+        le=200,
+        description="Maximum number of items to return (1..200, spec §4).",
     )
 
 
@@ -261,7 +262,8 @@ class CursorPage(BaseModel):
     length: int = Field(
         ...,
         ge=1,
-        description="Maximum number of items to return.",
+        le=200,
+        description="Maximum number of items to return (1..200, spec §4).",
     )
 
 

@@ -496,3 +496,49 @@ async def test_t0456_find_with_excessive_length_clean_envelope(
         assert len(items) <= 10000, (
             f"items exceeded requested length: got {len(items)}"
         )
+
+
+# ============================================================================
+# T0416 — Cursor pagination with length=200 succeeds; length=201 rejected 422
+# (cursor-mode mirror of T0214's offset-mode bound check)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0416_cursor_pagination_length_at_documented_boundary(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0416 — Spec §4 caps page length at 200. T0214 pinned the
+    offset-mode boundary (limit=200/201). T0416 pins the cursor-mode
+    boundary on the same boundary value via /find body (length=200
+    succeeds; length=201 rejected 422 /errors/validation-error).
+
+    Priority 4 — pagination correctness. The cursor-mode and
+    offset-mode validators must agree on the upper bound.
+    """
+    # length=200 succeeds.
+    body_ok = {
+        "page": {"kind": "cursor", "cursor": None, "length": 200},
+    }
+    ok = await client.post("/v1/toolsets/find", json=body_ok)
+    assert ok.status_code == 200, ok.text
+    page = ok.json()
+    assert page["kind"] == "cursor", page
+    # Bounded by length, not by available rows.
+    assert len(page["items"]) <= 200, page
+
+    # length=201 rejected as 422.
+    body_over = {
+        "page": {"kind": "cursor", "cursor": None, "length": 201},
+    }
+    over = await client.post("/v1/toolsets/find", json=body_over)
+    envelope = over.json() if over.content else {}
+    assert envelope.get("type") != "/errors/internal", (
+        f"length=201 leaked /errors/internal: "
+        f"{over.status_code}: {over.text}"
+    )
+    assert over.status_code == 422, (
+        f"cursor length=201 should be 422; got "
+        f"{over.status_code}: {over.text}"
+    )
+    assert envelope.get("type") == "/errors/validation-error", envelope
