@@ -413,6 +413,8 @@ function AgentDetail() {
           {AGENT_TABS.map((t) => (
             <button
               key={t.id}
+              role="tab"
+              aria-selected={tab === t.id}
               onClick={() => setTab(t.id)}
               style={{
                 background: "none", border: "none", padding: "10px 14px", cursor: "pointer",
