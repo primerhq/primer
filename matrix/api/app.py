@@ -161,9 +161,11 @@ def _make_lifespan(config: AppConfig):
         timer_scheduler = None
         timeout_sweeper = None
         watcher_manager = None
+        mcp_task_bridge = None
         if scheduler is not None:
             from matrix.bus.in_memory import InMemoryEventBus
             from matrix.bus.listener import YieldEventListener
+            from matrix.bus.mcp_tasks import McpTaskBridge
             from matrix.bus.postgres import PostgresEventBus
             from matrix.bus.scheduler_tasks import (
                 TimeoutSweeper, TimerScheduler,
@@ -210,6 +212,18 @@ def _make_lifespan(config: AppConfig):
                 workspace_root_resolver=_resolve_root,
             )
             watcher_manager.start()
+
+            # MCP task bridge — polls parked mcp_task:* sessions
+            # and republishes results onto the bus. The bridge looks
+            # up the right MCP provider via the provider_registry, so
+            # task-style tools across many MCP servers all funnel
+            # through one bridge.
+            mcp_task_bridge = McpTaskBridge(
+                bus=event_bus,
+                scheduler=scheduler,
+                provider_registry=provider_registry,
+            )
+            mcp_task_bridge.start()
         app.state.event_bus = event_bus
 
         worker_pool = None
@@ -273,6 +287,7 @@ def _make_lifespan(config: AppConfig):
             # Stop yield background tasks BEFORE the scheduler / bus
             # close so an in-flight tick doesn't race a closing bus.
             for task, name in (
+                (mcp_task_bridge, "mcp_task_bridge"),
                 (watcher_manager, "watcher_manager"),
                 (timeout_sweeper, "timeout_sweeper"),
                 (timer_scheduler, "timer_scheduler"),

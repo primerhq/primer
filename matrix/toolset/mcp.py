@@ -29,7 +29,31 @@ from matrix.model.provider import (
     StdioConfig,
     TransportType,
 )
+from matrix.model.yield_ import ToolContext, Yielded
 from matrix.toolset.oauth.handler import MatrixOAuthHandler
+
+
+# Canonical tool_name for MCP task parks in the resume registry.
+# Each individual MCP task tool keeps its own user-facing name but
+# yields under this synthetic name so a single resume hook can
+# service all of them — the per-task metadata in resume_metadata
+# carries the specifics (task_id, toolset_id, original tool name).
+MCP_TASK_PARK_NAME = "__mcp_task__"
+
+
+def is_mcp_task_tool(tool: mcp_types.Tool) -> bool:
+    """Whether ``tool`` advertises task-style execution.
+
+    Per the MCP 2025-11-25 ``tools/tasks`` extension, a tool's
+    ``execution.taskSupport`` may be ``forbidden`` / ``optional`` /
+    ``required``. The first two short-circuit to synchronous calls
+    when the caller doesn't ask for task mode; ``required`` means
+    the server only supports task-style invocation.
+    """
+    execution = getattr(tool, "execution", None)
+    if execution is None:
+        return False
+    return execution.taskSupport in ("optional", "required")
 
 
 logger = logging.getLogger(__name__)
@@ -81,6 +105,12 @@ class McpToolsetProvider(ToolsetProvider):
         self._stdio_session: ClientSession | None = None
         self._stdio_exit_stack: AsyncExitStack | None = None
 
+        # Cache of MCP tool names that advertise task-style execution.
+        # Populated as a side-effect of ``list_tools`` so subsequent
+        # ``call`` invocations can route task tools to the yielding
+        # path without re-listing.
+        self._task_tools: set[str] = set()
+
     # ---------- public API ------------------------------------------------
 
     async def list_tools(
@@ -94,6 +124,13 @@ class McpToolsetProvider(ToolsetProvider):
             except Exception as exc:
                 raise classify_mcp_exception(exc) from exc
 
+        # Refresh the task-tools cache off the latest list. Server may
+        # have added / removed task-style annotations between calls;
+        # refreshing here keeps the call-time decision fresh without
+        # an extra round trip.
+        self._task_tools = {
+            t.name for t in result.tools if is_mcp_task_tool(t)
+        }
         for mcp_tool in result.tools:
             yield self._mcp_tool_to_matrix(mcp_tool)
 
@@ -103,7 +140,27 @@ class McpToolsetProvider(ToolsetProvider):
         tool_name: str,
         arguments: dict[str, Any],
         principal: str | None = None,
+        ctx: ToolContext | None = None,
     ) -> ToolCallResult:
+        # Task-style dispatch: when the tool advertises task support
+        # AND the worker passed a ToolContext (so we can form a unique
+        # event_key), invoke task mode and return Yielded. The provider
+        # base class catches the Yielded sentinel and raises
+        # YieldToWorker. Without ctx (legacy callers), fall through to
+        # the synchronous path — a task-required tool will then fail
+        # at the server, which is the right behaviour for the caller.
+        if ctx is not None and tool_name in self._task_tools:
+            from matrix.model.yield_ import YieldToWorker  # local: cycle
+
+            yielded = await self._call_task_mode(
+                session_id=ctx.session_id,
+                tool_call_id=ctx.tool_call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                principal=principal,
+            )
+            raise YieldToWorker(yielded, tool_call_id=ctx.tool_call_id)
+
         async with self._open_session(principal=principal) as session:
             try:
                 result = await session.call_tool(tool_name, arguments=arguments)
@@ -111,6 +168,133 @@ class McpToolsetProvider(ToolsetProvider):
                 raise classify_mcp_exception(exc) from exc
 
             return self._mcp_call_result_to_matrix(result)
+
+    async def _call_task_mode(
+        self,
+        *,
+        session_id: str | None,
+        tool_call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        principal: str | None,
+    ) -> Yielded:
+        """Issue a task-style tools/call and return a Yielded sentinel.
+
+        The MCP server replies with a Task reference (carried in
+        ``CallToolResult.meta['task']``). We build the event_key off
+        ``(toolset_id, task_id)`` so the bridge can match parks
+        cross-process and so each MCP server has its own task
+        namespace.
+        """
+        async with self._open_session(principal=principal) as session:
+            try:
+                result = await session.call_tool(
+                    tool_name,
+                    arguments=arguments,
+                    meta={"task": {}},  # request task-style execution
+                )
+            except Exception as exc:
+                raise classify_mcp_exception(exc) from exc
+
+        # Extract the task id. Tolerate slight variations in where
+        # the server returns it: result.meta or result._meta, with a
+        # nested `task` object.
+        meta = getattr(result, "_meta", None) or getattr(result, "meta", None) or {}
+        task_obj = meta.get("task") if isinstance(meta, dict) else None
+        if not task_obj or not isinstance(task_obj, dict):
+            raise ConfigError(
+                f"MCP toolset {self._toolset_id!r}: task-style call to "
+                f"{tool_name!r} returned no task reference; the server "
+                "may not implement the tasks extension correctly."
+            )
+        task_id = task_obj.get("taskId") or task_obj.get("task_id")
+        if not task_id:
+            raise ConfigError(
+                f"MCP toolset {self._toolset_id!r}: task reference missing "
+                f"taskId for {tool_name!r}"
+            )
+
+        # Pluck the server-suggested poll interval if present — the
+        # bridge uses it to back off cheaper than its default.
+        poll_interval = task_obj.get("pollInterval")
+
+        return Yielded(
+            tool_name=MCP_TASK_PARK_NAME,
+            event_key=f"mcp_task:{self._toolset_id}:{task_id}",
+            timeout=None,  # honour the global yield cap
+            resume_metadata={
+                "task_id": task_id,
+                "toolset_id": self._toolset_id,
+                "tool_name": tool_name,
+                "poll_interval_ms": poll_interval,
+                "tool_call_id": tool_call_id,
+                "session_id": session_id,
+            },
+        )
+
+    async def poll_task_status(
+        self,
+        task_id: str,
+        *,
+        principal: str | None = None,
+    ) -> mcp_types.GetTaskResult:
+        """Send a ``tasks/get`` request for ``task_id``. Used by the bridge."""
+        request = mcp_types.ClientRequest(
+            mcp_types.GetTaskRequest(
+                params=mcp_types.GetTaskRequestParams(taskId=task_id),
+            )
+        )
+        async with self._open_session(principal=principal) as session:
+            try:
+                return await session.send_request(
+                    request, mcp_types.GetTaskResult,
+                )
+            except Exception as exc:
+                raise classify_mcp_exception(exc) from exc
+
+    async def fetch_task_result(
+        self,
+        task_id: str,
+        *,
+        principal: str | None = None,
+    ) -> dict[str, Any]:
+        """Send a ``tasks/result`` request once the task is terminal."""
+        request = mcp_types.ClientRequest(
+            mcp_types.GetTaskPayloadRequest(
+                params=mcp_types.GetTaskPayloadRequestParams(taskId=task_id),
+            )
+        )
+        async with self._open_session(principal=principal) as session:
+            try:
+                result = await session.send_request(
+                    request, mcp_types.GetTaskPayloadResult,
+                )
+            except Exception as exc:
+                raise classify_mcp_exception(exc) from exc
+        # GetTaskPayloadResult is "additionalProperties: true" — the
+        # body of the original CallToolResult lives alongside _meta.
+        # model_dump preserves the extra fields the server attached.
+        return result.model_dump(mode="json", exclude_none=False)
+
+    async def cancel_task(
+        self,
+        task_id: str,
+        *,
+        principal: str | None = None,
+    ) -> None:
+        """Send a ``tasks/cancel`` request. Best-effort — caller swallows."""
+        request = mcp_types.ClientRequest(
+            mcp_types.CancelTaskRequest(
+                params=mcp_types.CancelTaskRequestParams(taskId=task_id),
+            )
+        )
+        async with self._open_session(principal=principal) as session:
+            try:
+                await session.send_request(
+                    request, mcp_types.CancelTaskResult,
+                )
+            except Exception as exc:
+                raise classify_mcp_exception(exc) from exc
 
     async def complete_oauth(self, *, code: str, state: str) -> None:
         """Finish an OAuth flow started by an earlier AuthRequiredError."""
@@ -286,3 +470,96 @@ class McpToolsetProvider(ToolsetProvider):
             is_error=bool(r.isError),
             extended=extended,
         )
+
+
+# ===========================================================================
+# MCP task resume hook
+# ===========================================================================
+
+
+def mcp_task_resume(
+    yield_metadata: dict[str, Any],
+    event_payload: Any,
+) -> ToolCallResult:
+    """Resume hook for MCP-task yields.
+
+    The bridge publishes ``{"result": <CallToolResult-shaped dict>}``
+    on the bus when a task transitions to a terminal state. This hook
+    translates that payload into a Matrix :class:`ToolCallResult`. On
+    timeout / cancel, the upstream MCP task is cancelled by the
+    bridge / pre_cancel hook (best-effort) and the agent sees a
+    structured marker so it can decide what to do next.
+    """
+    from matrix.model.yield_ import YieldCancelled, YieldTimeout  # local: cycle
+
+    task_id = yield_metadata.get("task_id", "")
+    if isinstance(event_payload, YieldTimeout):
+        return ToolCallResult(
+            output=json.dumps(
+                {
+                    "timed_out": True,
+                    "task_id": task_id,
+                    "elapsed_seconds": event_payload.elapsed_seconds,
+                }
+            ),
+            is_error=False,
+        )
+    if isinstance(event_payload, YieldCancelled):
+        return ToolCallResult(
+            output=json.dumps(
+                {
+                    "cancelled": True,
+                    "task_id": task_id,
+                    "reason": event_payload.reason,
+                    "elapsed_seconds": event_payload.elapsed_seconds,
+                }
+            ),
+            is_error=False,
+        )
+    # Real completion. The bridge wraps the CallToolResult payload
+    # under a `result` key.
+    result_blob = (
+        event_payload.get("result")
+        if isinstance(event_payload, dict)
+        else None
+    )
+    if not isinstance(result_blob, dict):
+        return ToolCallResult(
+            output=json.dumps({"task_id": task_id, "result": result_blob}),
+            is_error=False,
+        )
+    # If the upstream tool errored, propagate is_error so the LLM
+    # surfaces it as a tool-error rather than success.
+    is_error = bool(result_blob.get("isError", False))
+    # Best-effort to extract text content for the LLM. The bridge may
+    # send back a full CallToolResult-shaped dict (content array) or a
+    # custom payload — handle both.
+    content = result_blob.get("content")
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                chunks.append(str(item.get("text", "")))
+            elif isinstance(item, dict):
+                chunks.append(json.dumps(item))
+        output = "\n".join(chunks) if chunks else json.dumps(result_blob)
+    else:
+        output = json.dumps(result_blob)
+    return ToolCallResult(output=output, is_error=is_error)
+
+
+# Register the resume hook at module import. The hook is keyed under
+# MCP_TASK_PARK_NAME — the synthetic tool_name we stamp into Yielded
+# for task parks. Per-MCP-server / per-tool routing happens via
+# resume_metadata.toolset_id, not via the tool_name.
+from matrix.worker.yield_resume_registry import register_resume_hook  # noqa: E402
+
+register_resume_hook(MCP_TASK_PARK_NAME, mcp_task_resume)
+
+
+__all__ = [
+    "MCP_TASK_PARK_NAME",
+    "McpToolsetProvider",
+    "is_mcp_task_tool",
+    "mcp_task_resume",
+]
