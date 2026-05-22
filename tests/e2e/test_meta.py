@@ -6,6 +6,7 @@ Covers backlog items T0001, T0002, T0003.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
@@ -1752,3 +1753,206 @@ async def test_options_session_route_allow_header(
             f"{backlog_id}: Allow header {allow!r} should include "
             f"{expected_verb}"
         )
+
+
+# ============================================================================
+# T0661 — DELETE on /v1/workers list endpoint returns 405 with Allow header.
+# Workers list is read-only (GET-only) per spec §15; DELETE on the list path
+# is undocumented and must be rejected at the router. Sister of T0322/T0323
+# (DELETE on /v1/sessions list etc.) for the read-only worker router.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0661_delete_workers_list_returns_405(
+    client: httpx.AsyncClient,
+) -> None:
+    """T0661 — Method-not-allowed pin for DELETE on the
+    /v1/workers list route. Per spec §15 the workers router is
+    read-only at the list path (only GET is documented). DELETE
+    must reject with 405 + Allow listing the supported verb;
+    never 5xx leak.
+
+    Per T0423's framework note, FastAPI's 405 Allow may only list
+    ONE supported verb (the first matched route at the path). The
+    test pins the looser contract — Allow present + GET in Allow
+    (workers list is GET-only) + DELETE NOT in Allow + security
+    headers preserved.
+    """
+    resp = await client.delete("/v1/workers")
+    assert resp.status_code == 405, (
+        f"DELETE /v1/workers should be 405; got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    allow = resp.headers.get("allow", "")
+    assert allow, (
+        f"405 response missing Allow header; status={resp.status_code}"
+    )
+    allow_upper = allow.upper()
+    assert "GET" in allow_upper, (
+        f"Allow header {allow!r} should include GET (workers list "
+        f"is GET-only per spec §15)"
+    )
+    assert "DELETE" not in allow_upper, (
+        f"Allow header {allow!r} should NOT include DELETE on a "
+        f"405 that rejects DELETE"
+    )
+
+    # Security headers preserved on the 405.
+    for name, expected in _SECURITY_HEADERS.items():
+        actual = resp.headers.get(name)
+        assert actual == expected, (
+            f"405 missing/incorrect header {name!r}: "
+            f"expected {expected!r}, got {actual!r}"
+        )
+
+
+# ============================================================================
+# T0418 + T0467 + T0591 + T0614 + T0710 — workspace-scoped HEAD / OPTIONS
+# verb-table pins. All five share one workspace fixture so the per-test
+# overhead of provider+template+workspace setup is paid once. Each item
+# carries its backlog id in the parametrise nodeid for failure
+# correlation, and either:
+#   * HEAD path — assert 200 or 405, empty body, security headers preserved
+#     on the 200 path; OR
+#   * OPTIONS path — assert no 5xx; Allow includes the expected verb on
+#     the 200/204 path (per T0466's pattern).
+# ============================================================================
+
+
+def _provider_body(entity_id: str, root: Path) -> dict:
+    return {
+        "id": entity_id,
+        "provider": "local",
+        "config": {"kind": "local", "path": str(root)},
+    }
+
+
+def _template_body(entity_id: str, *, provider_id: str) -> dict:
+    return {
+        "id": entity_id,
+        "description": "verb-table fixture template",
+        "provider_id": provider_id,
+        "backend": {"kind": "local"},
+    }
+
+
+@pytest.fixture
+async def _workspace_for_verb_table(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+):
+    """Provider + template + workspace; cleans up afterwards.
+
+    Yields the workspace id. Used by the parametrised workspace-
+    scoped verb-table test below so all five backlog items share
+    one setup cycle.
+    """
+    wp_id = f"wp-vt-{unique_suffix}"
+    tpl_id = f"wt-vt-{unique_suffix}"
+    pr = await client.post(
+        "/v1/workspace_providers", json=_provider_body(wp_id, tmp_path),
+    )
+    assert pr.status_code == 201, pr.text
+    tpl = await client.post(
+        "/v1/workspace_templates",
+        json=_template_body(tpl_id, provider_id=wp_id),
+    )
+    assert tpl.status_code == 201, tpl.text
+    ws = await client.post("/v1/workspaces", json={"template_id": tpl_id})
+    assert ws.status_code == 201, ws.text
+    workspace_id = ws.json()["id"]
+    try:
+        yield workspace_id
+    finally:
+        await client.delete(f"/v1/workspaces/{workspace_id}")
+        await client.delete(f"/v1/workspace_templates/{tpl_id}")
+        await client.delete(f"/v1/workspace_providers/{wp_id}")
+
+
+@pytest.mark.parametrize(
+    "method,subpath,expected_verb,backlog_id",
+    [
+        # T0418: HEAD /v1/workspaces/{wid}/files — bespoke list route.
+        ("HEAD", "/files", None, "T0418"),
+        # T0467: HEAD /v1/workspaces/{wid}/log — bespoke git-log route.
+        ("HEAD", "/log", None, "T0467"),
+        # T0614: OPTIONS /v1/workspaces/{wid}/sessions — nested list/create.
+        # The route is GET (list) + POST (create) per spec §11.
+        ("OPTIONS", "/sessions", "GET", "T0614"),
+        # T0591: OPTIONS /v1/workspaces/{wid}/files/info — read-only info.
+        ("OPTIONS", "/files/info", "GET", "T0591"),
+        # T0710: OPTIONS /v1/workspaces/{wid}/files/download — streaming.
+        ("OPTIONS", "/files/download", "GET", "T0710"),
+    ],
+    ids=[
+        "T0418-HEAD-files",
+        "T0467-HEAD-log",
+        "T0614-OPTIONS-sessions",
+        "T0591-OPTIONS-files-info",
+        "T0710-OPTIONS-files-download",
+    ],
+)
+@pytest.mark.asyncio
+async def test_workspace_scoped_verb_table(
+    client: httpx.AsyncClient,
+    _workspace_for_verb_table: str,
+    method: str,
+    subpath: str,
+    expected_verb: str | None,
+    backlog_id: str,
+) -> None:
+    """T0418 + T0467 + T0591 + T0614 + T0710 — workspace-scoped
+    HEAD / OPTIONS verb-table pins on a real (fixture-seeded)
+    workspace. Each parametrised case asserts one of two contracts:
+
+    * **HEAD** (T0418, T0467): 200 or 405; empty body; security
+      headers preserved on 200. Sister of T0258 / T0417 / T0615 /
+      T0658 / T0659 / T0686 for the bespoke workspace sub-resources.
+
+    * **OPTIONS** (T0614, T0591, T0710): no 5xx; if 200/204, Allow
+      includes the expected verb. Sister of T0421 (worker drain),
+      T0466 (session steer), T0420 (IC bootstrap).
+
+    Using a real workspace id (not a placeholder) so the route
+    resolver matches the actual handler instead of fall-through
+    to 404 on an unknown workspace.
+    """
+    wid = _workspace_for_verb_table
+    path = f"/v1/workspaces/{wid}{subpath}"
+    resp = await client.request(method, path)
+    # No 5xx — universal across both branches.
+    assert resp.status_code < 500, (
+        f"{backlog_id}: {method} {path} leaked 5xx: "
+        f"{resp.status_code}: {resp.text}"
+    )
+
+    if method == "HEAD":
+        assert resp.status_code in (200, 405), (
+            f"{backlog_id}: HEAD {path} expected 200 or 405; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        assert resp.content == b"", (
+            f"{backlog_id}: HEAD {path} body should be empty; got "
+            f"{resp.content!r}"
+        )
+        if resp.status_code == 200:
+            for name, expected in _SECURITY_HEADERS.items():
+                actual = resp.headers.get(name)
+                assert actual == expected, (
+                    f"{backlog_id}: HEAD {path} missing/incorrect "
+                    f"header {name!r}: expected {expected!r}, got "
+                    f"{actual!r}"
+                )
+    elif method == "OPTIONS":
+        if resp.status_code in (200, 204):
+            allow = resp.headers.get("allow", "")
+            assert allow, (
+                f"{backlog_id}: OPTIONS {resp.status_code} but no "
+                f"Allow header"
+            )
+            assert expected_verb in allow.upper(), (
+                f"{backlog_id}: Allow header {allow!r} should "
+                f"include {expected_verb}"
+            )
+    else:  # pragma: no cover - parametrize covers HEAD + OPTIONS only.
+        raise AssertionError(f"unexpected method {method!r}")
