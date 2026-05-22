@@ -310,3 +310,105 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
             f"422 surfaced as a toast instead of inline field-help: "
             f"{toast_errors.count()} toast-error elements present"
         )
+
+
+# ---------------------------------------------------------------------------
+# U0020 — Agent delete confirms, removes the entity, navigates to list,
+# and surfaces a success toast
+# ---------------------------------------------------------------------------
+
+
+def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
+    page,
+    base_url: str,
+    console_url: str,
+    unique_suffix: str,
+) -> None:
+    """U0020 — From an agent's detail page, clicking Delete opens the
+    confirm modal; confirming closes the dialog, navigates back to
+    /agents, surfaces a success toast ("Agent deleted"), and the
+    agent is absent from the backend (verified via API).
+
+    Mutation-feedback contract from UI spec §3 for the DELETE leg:
+      * confirm dialog must appear before the destructive action
+      * confirming → dialog closes
+      * navigates back to list (/agents)
+      * success toast appears
+      * row is gone from storage
+
+    Priority 1 (mutation feedback — destructive). Setup seeds the
+    agent directly via API so the test exercises only the delete
+    flow.
+    """
+    import httpx
+
+    with _seeded_llm_provider(base_url, unique_suffix) as provider_id:
+        agent_id = f"ag-u0020-{unique_suffix}"
+        # Seed the agent directly via API (faster + isolates the
+        # behavior under test from the create flow).
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            r = c.post("/v1/agents", json={
+                "id": agent_id,
+                "description": "u0020 delete probe",
+                "model": {"provider_id": provider_id, "model_name": "fake-model"},
+                "tools": [],
+                "system_prompt": ["test"],
+            })
+            assert r.status_code == 201, f"seed agent failed: {r.text}"
+
+        try:
+            # Land directly on the agent's detail page.
+            page.goto(
+                f"{console_url}#/agents/{agent_id}",
+                wait_until="domcontentloaded",
+            )
+            page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
+                state="visible", timeout=10_000,
+            )
+
+            # Click the Delete button in the page header. The header
+            # has Test agent + Delete + Back buttons — `name="Delete"`
+            # uniquely matches the danger one.
+            page.get_by_role("button", name="Delete").first.click()
+
+            # Confirm dialog appears with title containing the agent id.
+            confirm = page.locator(".modal").first
+            confirm.wait_for(state="visible", timeout=5_000)
+            assert agent_id in confirm.inner_text(), (
+                f"confirm dialog should mention the agent id "
+                f"{agent_id!r}; modal text: {confirm.inner_text()}"
+            )
+
+            # Click the danger-Delete button inside the confirm modal.
+            # The modal has Cancel + Delete; locating by role + name +
+            # narrowing to the modal scope avoids matching the header
+            # Delete we just clicked (which is now hidden under the
+            # overlay anyway, but be explicit).
+            confirm.get_by_role("button", name="Delete").first.click()
+
+            # Dialog closes.
+            confirm.wait_for(state="hidden", timeout=10_000)
+
+            # Navigates back to /agents (the UI's success path).
+            page.wait_for_url("**/console/#/agents", timeout=10_000)
+            page.locator("h1.page-title").get_by_text("Agents").first.wait_for(
+                state="visible", timeout=5_000,
+            )
+
+            # Success toast surfaces. The toast title is "Agent deleted"
+            # per the onSuccess callback in agents.jsx.
+            page.get_by_text("Agent deleted", exact=False).first.wait_for(
+                state="visible", timeout=5_000,
+            )
+
+            # Defence: the agent row is actually gone from storage.
+            with httpx.Client(base_url=base_url, timeout=30.0) as c:
+                got = c.get(f"/v1/agents/{agent_id}")
+            assert got.status_code == 404, (
+                f"agent should be absent after delete; "
+                f"GET returned {got.status_code}: {got.text}"
+            )
+        finally:
+            # Best-effort cleanup if the test bailed before the delete
+            # actually landed.
+            _delete_agent_if_exists(base_url, agent_id)
