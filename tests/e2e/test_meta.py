@@ -1956,3 +1956,126 @@ async def test_workspace_scoped_verb_table(
             )
     else:  # pragma: no cover - parametrize covers HEAD + OPTIONS only.
         raise AssertionError(f"unexpected method {method!r}")
+
+
+# ============================================================================
+# T0709 — HEAD /v1/workspaces/{wid}/files/download?path=<file> returns 200
+# with empty body and security headers (HEAD coverage gap on the streaming
+# bespoke route). Needs a real file to land on the 200 branch — without one
+# the route returns 404 from the underlying GET handler.
+#
+# T0468 — DELETE on /v1/workspaces/{wid}/files/info returns 405 with Allow
+# listing GET (method-not-allowed for the read-only files/info sub-resource).
+# Doesn't need a real path because the verb-table check happens before the
+# path resolver.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "method,subpath,assert_kind,backlog_id",
+    [
+        # T0709: HEAD streaming download with a real file. The GET form
+        # streams bytes; HEAD must drop the body but preserve headers.
+        ("HEAD", "/files/download", "head_with_file", "T0709"),
+        # T0468: DELETE on the read-only /files/info sub-resource —
+        # must reject with 405 + Allow listing GET.
+        ("DELETE", "/files/info", "delete_405", "T0468"),
+    ],
+    ids=[
+        "T0709-HEAD-files-download",
+        "T0468-DELETE-files-info",
+    ],
+)
+@pytest.mark.asyncio
+async def test_workspace_scoped_verb_table_with_seeded_file(
+    client: httpx.AsyncClient,
+    _workspace_for_verb_table: str,
+    method: str,
+    subpath: str,
+    assert_kind: str,
+    backlog_id: str,
+) -> None:
+    """T0709 + T0468 — Two workspace-scoped polish items that need
+    a real file in the workspace before the verb-table assertion
+    is meaningful. Seeds ``probe.txt`` via PUT, then exercises the
+    parametrised verb at the parametrised path.
+
+    * T0709 (HEAD /files/download?path=probe.txt) — pins the
+      HEAD-on-streaming-route contract: status 200 (or 405 if
+      HEAD isn't routed), empty body, security headers preserved.
+      Sister of T0418/T0467 for the streaming bespoke route.
+
+    * T0468 (DELETE /files/info?path=probe.txt) — pins the
+      method-not-allowed contract: status 405, Allow includes GET
+      (the only documented verb on /files/info), DELETE not in
+      Allow, security headers preserved. Sister of T0322/T0323/
+      T0661 for read-only sub-resources.
+    """
+    wid = _workspace_for_verb_table
+    # Seed probe.txt so HEAD download has a real file to drop the
+    # body of. DELETE /files/info doesn't strictly need the file
+    # to exist, but seeding once keeps the parametrize body uniform.
+    put = await client.put(
+        f"/v1/workspaces/{wid}/files",
+        params={"path": "probe.txt"},
+        json={"content": "verb-table probe payload", "encoding": "text"},
+    )
+    assert put.status_code in (200, 201, 204), (
+        f"seed probe.txt failed: {put.status_code}: {put.text}"
+    )
+
+    path = f"/v1/workspaces/{wid}{subpath}"
+    resp = await client.request(
+        method, path, params={"path": "probe.txt"},
+    )
+    assert resp.status_code < 500, (
+        f"{backlog_id}: {method} {path} leaked 5xx: "
+        f"{resp.status_code}: {resp.text}"
+    )
+
+    if assert_kind == "head_with_file":
+        # T0709: 200 (HEAD-on-GET mirror, body dropped) or 405.
+        assert resp.status_code in (200, 405), (
+            f"{backlog_id}: HEAD {path} expected 200 or 405; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        assert resp.content == b"", (
+            f"{backlog_id}: HEAD {path} body should be empty; got "
+            f"{resp.content!r}"
+        )
+        if resp.status_code == 200:
+            for name, expected in _SECURITY_HEADERS.items():
+                actual = resp.headers.get(name)
+                assert actual == expected, (
+                    f"{backlog_id}: HEAD {path} missing/incorrect "
+                    f"header {name!r}: expected {expected!r}, got "
+                    f"{actual!r}"
+                )
+    elif assert_kind == "delete_405":
+        # T0468: must be 405; Allow includes GET; DELETE absent.
+        assert resp.status_code == 405, (
+            f"{backlog_id}: DELETE {path} should be 405; got "
+            f"{resp.status_code}: {resp.text}"
+        )
+        allow = resp.headers.get("allow", "")
+        assert allow, (
+            f"{backlog_id}: 405 response missing Allow header"
+        )
+        allow_upper = allow.upper()
+        assert "GET" in allow_upper, (
+            f"{backlog_id}: Allow header {allow!r} should include "
+            f"GET (files/info is GET-only)"
+        )
+        assert "DELETE" not in allow_upper, (
+            f"{backlog_id}: Allow header {allow!r} should NOT "
+            f"include DELETE on a 405 that rejects DELETE"
+        )
+        # Security headers preserved on 405.
+        for name, expected in _SECURITY_HEADERS.items():
+            actual = resp.headers.get(name)
+            assert actual == expected, (
+                f"{backlog_id}: 405 missing/incorrect header "
+                f"{name!r}: expected {expected!r}, got {actual!r}"
+            )
+    else:  # pragma: no cover
+        raise AssertionError(f"unexpected assert_kind {assert_kind!r}")
