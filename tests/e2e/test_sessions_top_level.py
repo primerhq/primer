@@ -5865,3 +5865,276 @@ async def test_t0738_nested_get_graph_bound_after_pause_resume_clean(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0734 — Two graph-bound sessions on the same workspace converge to
+# terminal independently; workspace remains usable for /files + /log
+# afterward. Catches a regression where two graph executors sharing a
+# workspace's .state repo corrupt each other or leave the workspace
+# unqueryable.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0734_two_graph_bound_sessions_isolated_termination(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0734 — Priority 1 (graph executor isolation). Create one
+    graph, materialise one workspace, post TWO graph-bound sessions
+    with auto_start=True. Both should converge to terminal status
+    independently (each via the fatal path because the placeholder
+    LLM fails on agent build — but the *runtime* shape is what we
+    pin: no /errors/internal, both rows reach terminal, the workspace
+    survives both runs and remains usable.
+
+    Pins the contract that the graph executor's per-session
+    .state/graphs/<sid>/ subtrees don't cross-contaminate, and the
+    workspace's root filesystem remains usable for normal file ops
+    after both graph runs.
+
+    With LM Studio (future pivot), we'd assert .state/graphs commits
+    actually contain per-session content; today we settle for the
+    "both reach terminal cleanly + workspace still works" envelope.
+    """
+    import asyncio as _asyncio
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    graph_id = f"graph-t0734-{unique_suffix}"
+    graph_created = False
+    sid_1 = sid_2 = None
+    try:
+        workspace_id = (await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )).json()["id"]
+
+        gr = await client.post(
+            "/v1/graphs",
+            json={
+                "id": graph_id,
+                "description": "T0734 isolation probe",
+                "nodes": [
+                    {"kind": "agent", "id": "n1",
+                     "agent_id": env["agent_id"]},
+                    {"kind": "terminal", "id": "end"},
+                ],
+                "edges": [
+                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                ],
+                "entry_node_id": "n1",
+            },
+        )
+        assert gr.status_code == 201, gr.text
+        graph_created = True
+
+        # Post two graph-bound sessions concurrently.
+        s1 = client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": True,
+            },
+        )
+        s2 = client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": graph_id},
+                "auto_start": True,
+            },
+        )
+        r1, r2 = await _asyncio.gather(s1, s2)
+        assert r1.status_code == 201, r1.text
+        assert r2.status_code == 201, r2.text
+        sid_1 = r1.json()["id"]
+        sid_2 = r2.json()["id"]
+        assert sid_1 != sid_2
+
+        # Poll both top-level GETs until both reach terminal (20s
+        # budget — generous because the worker processes one at a
+        # time and each fatal-path takes a moment).
+        terminal_words = {"ended", "failed", "cancelled", "completed"}
+        deadline = 40  # poll iterations × 0.5s each
+        for _ in range(deadline):
+            g1 = await client.get(f"/v1/sessions/{sid_1}")
+            g2 = await client.get(f"/v1/sessions/{sid_2}")
+            assert g1.status_code == 200, g1.text
+            assert g2.status_code == 200, g2.text
+            s1_envelope = g1.json()
+            s2_envelope = g2.json()
+            assert s1_envelope.get("type") != "/errors/internal", s1_envelope
+            assert s2_envelope.get("type") != "/errors/internal", s2_envelope
+            if (
+                (s1_envelope.get("status") or "").lower() in terminal_words
+                and (s2_envelope.get("status") or "").lower() in terminal_words
+            ):
+                break
+            await _asyncio.sleep(0.5)
+        else:
+            raise AssertionError(
+                f"sessions did not both reach terminal in 20s; "
+                f"s1={s1_envelope.get('status')!r} "
+                f"s2={s2_envelope.get('status')!r}"
+            )
+
+        # Defence: workspace's /files listing still works.
+        files = await client.get(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "."},
+        )
+        files_env = files.json() if files.content else {}
+        assert files_env.get("type") != "/errors/internal", (
+            f"workspace /files leaked /errors/internal after dual "
+            f"graph runs: {files.status_code}: {files.text}"
+        )
+        assert files.status_code == 200, files.text
+
+        # Defence: workspace /log still works (state repo intact).
+        log = await client.get(
+            f"/v1/workspaces/{workspace_id}/log",
+            params={"limit": 50},
+        )
+        log_env = log.json() if log.content else {}
+        assert log_env.get("type") != "/errors/internal", (
+            f"workspace /log leaked /errors/internal after dual "
+            f"graph runs: {log.status_code}: {log.text}"
+        )
+        assert log.status_code == 200, log.text
+
+        # Defence: a fresh PUT on the workspace still succeeds
+        # (workspace not corrupted into a degraded state).
+        put = await client.put(
+            f"/v1/workspaces/{workspace_id}/files",
+            params={"path": "post-graph.txt"},
+            json={"content": "still works", "encoding": "text"},
+        )
+        assert put.status_code in (200, 201, 204), (
+            f"PUT after dual graph runs failed: {put.status_code}: {put.text}"
+        )
+    finally:
+        for sid in (sid_1, sid_2):
+            if sid is not None:
+                try:
+                    await client.delete(f"/v1/sessions/{sid}")
+                except Exception:  # noqa: BLE001
+                    pass
+        if graph_created:
+            try:
+                await client.delete(f"/v1/graphs/{graph_id}")
+            except Exception:  # noqa: BLE001
+                pass
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
+# T0754 — DELETE EmbeddingProvider referenced by IC config: subsequent
+# /agents/search returns a clean envelope. Pins cascading-delete behaviour
+# of an IC subsystem dependency. Search may return 200 (degraded) /
+# 502 / 503 — never /errors/internal. IC config row may itself stay
+# (with an orphaned embedding_provider_id) or be cascade-cleaned; both
+# are acceptable provided the read remains clean.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0754_delete_embedding_provider_referenced_by_ic_config(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """T0754 — Priority 5 (IC churn / cascading delete). Seed an
+    embedding provider; PUT an IC config that references it; DELETE
+    the embedding provider; assert subsequent
+    `POST /v1/agents/search` returns a clean envelope. Also verify
+    /v1/internal_collections/config remains queryable cleanly
+    (either still present with orphaned reference, or 404 after
+    cascade — both acceptable, never /errors/internal).
+
+    Defends the priority-6 "no 500-leak" contract on the cascading-
+    delete edge between EmbeddingProvider and IC config. Without
+    explicit cleanup, deleting a referenced provider could leave
+    IC config in a state where any search dereferences a dead
+    provider id and surfaces as an unhandled lookup error.
+    """
+    provider_id = f"emb-t0754-{unique_suffix}"
+    ic_config_was_set = False
+    try:
+        # 1. Seed the embedding provider (placeholder credentials).
+        pr = await client.post("/v1/embedding_providers", json={
+            "id": provider_id,
+            "provider": "huggingface",
+            "models": [
+                {"name": "sentence-transformers/all-MiniLM-L6-v2", "dim": 384},
+            ],
+            "config": {"token": "hf-placeholder"},
+            "limits": {"max_concurrency": 1},
+        })
+        assert pr.status_code == 201, pr.text
+
+        # 2. PUT IC config referencing it.
+        cfg = await client.put("/v1/internal_collections/config", json={
+            "embedding_provider_id": provider_id,
+            "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+        })
+        # 200/201 acceptable; the resp shape varies.
+        assert cfg.status_code in (200, 201), cfg.text
+        ic_config_was_set = True
+
+        # 3. DELETE the embedding provider — the API may allow this
+        # (orphaning the IC config) or reject it (cascade-protect).
+        # Both are acceptable; the contract pin is what comes after.
+        del_resp = await client.delete(
+            f"/v1/embedding_providers/{provider_id}",
+        )
+        del_envelope = del_resp.json() if del_resp.content else {}
+        assert del_envelope.get("type") != "/errors/internal", (
+            f"DELETE embedding_provider leaked /errors/internal: "
+            f"{del_resp.status_code}: {del_resp.text}"
+        )
+        # 204 (allowed + deleted) or 4xx (rejected by cascade guard)
+        # both clean; just no 5xx.
+        assert del_resp.status_code < 500, (
+            f"DELETE embedding_provider 5xx: "
+            f"{del_resp.status_code}: {del_resp.text}"
+        )
+
+        # 4. /agents/search must return cleanly regardless of the
+        # delete outcome. Acceptable: 200 (engine still works), 502
+        # (provider error), 503 (subsystem inactive). Never
+        # /errors/internal.
+        search = await client.post("/v1/agents/search", json={
+            "query": "anything",
+            "limit": 5,
+        })
+        search_env = search.json() if search.content else {}
+        assert search_env.get("type") != "/errors/internal", (
+            f"/agents/search after embed-provider DELETE leaked "
+            f"/errors/internal: {search.status_code}: {search.text}"
+        )
+        assert search.status_code in (200, 400, 422, 502, 503), (
+            f"/agents/search unexpected status after embed-provider "
+            f"DELETE: {search.status_code}: {search.text}"
+        )
+
+        # 5. /internal_collections/config remains queryable cleanly.
+        cfg_get = await client.get("/v1/internal_collections/config")
+        cfg_env = cfg_get.json() if cfg_get.content else {}
+        assert cfg_env.get("type") != "/errors/internal", (
+            f"IC config GET after embed-provider DELETE leaked "
+            f"/errors/internal: {cfg_get.status_code}: {cfg_get.text}"
+        )
+        # 200 (config still present, possibly orphaned) or 404
+        # (cascade-cleaned) — both acceptable.
+        assert cfg_get.status_code in (200, 404), (
+            f"IC config GET unexpected status: "
+            f"{cfg_get.status_code}: {cfg_get.text}"
+        )
+    finally:
+        if ic_config_was_set:
+            try:
+                await client.delete("/v1/internal_collections/config")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await client.delete(f"/v1/embedding_providers/{provider_id}")
+        except Exception:  # noqa: BLE001
+            pass

@@ -11144,3 +11144,150 @@ async def test_t0740_files_put_racing_delete_of_containing_dir(
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
         await _teardown_provider_template(client, provider_id, template_id)
+
+
+# ============================================================================
+# T0741 — Workspace local backend: PUT racing materialise of new workspace
+# from same provider. 5 concurrent PUTs against ws-A racing 5 POST
+# /workspaces against the same provider+template. All clean envelopes;
+# both workspaces' final /files listings are consistent.
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0741_put_racing_materialise_concurrent(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0741 — Priority 2 (workspace stress / concurrency). Materialise
+    workspace A; seed it with one file. Then concurrently:
+
+    * 5 PUTs against ws-A at distinct paths (ws-a-file-{i}.txt).
+    * 5 POST /workspaces against the same provider+template
+      (materialising 5 new workspaces).
+
+    All 10 responses must be clean envelopes (no /errors/internal).
+    After the gather settles, ws-A's listing must contain all 5
+    PUT files plus the initial seed; each new workspace must list
+    cleanly with no user files.
+
+    Catches a regression where the provider's mkdir for new
+    workspace roots races a concurrent file write on an existing
+    workspace and produces FileNotFoundError / PermissionError /
+    git-init failures.
+    """
+    import asyncio as _asyncio
+    provider_id, template_id = await _setup_provider_template(
+        client, suffix=unique_suffix, root=tmp_path,
+    )
+    ws_a_id: str | None = None
+    new_ws_ids: list[str] = []
+    try:
+        ws_a = await client.post(
+            "/v1/workspaces",
+            json=_workspace_body(template_id=template_id),
+        )
+        assert ws_a.status_code == 201, ws_a.text
+        ws_a_id = ws_a.json()["id"]
+
+        seed = await client.put(
+            f"/v1/workspaces/{ws_a_id}/files",
+            params={"path": "seed.txt"},
+            json={"content": "baseline", "encoding": "text"},
+        )
+        assert seed.status_code in (200, 201, 204), seed.text
+
+        put_coros = [
+            client.put(
+                f"/v1/workspaces/{ws_a_id}/files",
+                params={"path": f"ws-a-file-{i}.txt"},
+                json={"content": f"racing-{i}", "encoding": "text"},
+            )
+            for i in range(5)
+        ]
+        materialise_coros = [
+            client.post(
+                "/v1/workspaces",
+                json=_workspace_body(template_id=template_id),
+            )
+            for _ in range(5)
+        ]
+        all_responses = await _asyncio.gather(
+            *put_coros, *materialise_coros, return_exceptions=False,
+        )
+
+        put_responses = all_responses[:5]
+        materialise_responses = all_responses[5:]
+
+        for i, r in enumerate(put_responses):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"PUT #{i} leaked /errors/internal during race: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code in (200, 201, 204), (
+                f"PUT #{i} unexpected status: "
+                f"{r.status_code}: {r.text}"
+            )
+
+        for i, r in enumerate(materialise_responses):
+            envelope = r.json() if r.content else {}
+            assert envelope.get("type") != "/errors/internal", (
+                f"materialise #{i} leaked /errors/internal: "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.status_code == 201, (
+                f"materialise #{i} unexpected status: "
+                f"{r.status_code}: {r.text}"
+            )
+            new_ws_ids.append(envelope["id"])
+
+        # ws-A listing must contain seed + 5 PUT files.
+        listing_a = await client.get(
+            f"/v1/workspaces/{ws_a_id}/files",
+            params={"path": "."},
+        )
+        assert listing_a.status_code == 200, listing_a.text
+        a_basenames = {
+            (it.get("path") or "").rsplit("/", 1)[-1]
+            for it in listing_a.json().get("items", [])
+        }
+        expected = {"seed.txt"} | {f"ws-a-file-{i}.txt" for i in range(5)}
+        missing = expected - a_basenames
+        assert not missing, (
+            f"ws-A missing files after race: {missing!r} "
+            f"(saw: {sorted(a_basenames)!r})"
+        )
+
+        # Each new workspace lists cleanly with no user files (the
+        # PUTs went to ws-A; cross-workspace leakage would surface
+        # here).
+        for new_id in new_ws_ids:
+            listing_n = await client.get(
+                f"/v1/workspaces/{new_id}/files",
+                params={"path": "."},
+            )
+            assert listing_n.status_code == 200, (
+                f"new workspace {new_id} listing failed: "
+                f"{listing_n.status_code}: {listing_n.text}"
+            )
+            user_files = [
+                it for it in listing_n.json().get("items", [])
+                if not (it.get("path") or "").startswith(".")
+            ]
+            assert user_files == [], (
+                f"new workspace {new_id} unexpectedly contains "
+                f"user files: {user_files!r} — race may have "
+                f"crossed workspaces"
+            )
+    finally:
+        if ws_a_id is not None:
+            try:
+                await client.delete(f"/v1/workspaces/{ws_a_id}")
+            except Exception:  # noqa: BLE001
+                pass
+        for nid in new_ws_ids:
+            try:
+                await client.delete(f"/v1/workspaces/{nid}")
+            except Exception:  # noqa: BLE001
+                pass
+        await _teardown_provider_template(client, provider_id, template_id)
