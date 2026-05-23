@@ -140,6 +140,16 @@ worker:
   lease_ttl_seconds: 15
   poll_interval_seconds: 1.0
   drain_timeout_seconds: 30
+
+# MCP stdio safety: when set (non-null), MCP toolsets whose stdio
+# command[0] is not in this list are refused at session-open with
+# ConfigError → 503 /errors/service-unavailable. Pinned for T0245.
+# Includes npx so T0767 (open-websearch) still runs; any binary
+# outside this list is rejected.
+mcp_stdio_allowed_commands:
+  - npx
+  - python
+  - uv
 EOF
 echo "[bringup] rendered $CONFIG" >&2
 
