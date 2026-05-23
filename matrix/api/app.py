@@ -103,7 +103,9 @@ def _make_lifespan(config: AppConfig):
         provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
         # Build the always-on `web` toolset (DuckDuckGo search +
         # http-request primitives). Reserved id without underscore.
+        logger.info("lifespan: building web toolset")
         web_toolset = build_web_toolset()
+        logger.info("lifespan: web toolset built")
         provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001
         app.state.storage_provider = storage_provider
         app.state.provider_registry = provider_registry
@@ -132,10 +134,13 @@ def _make_lifespan(config: AppConfig):
         if config.scheduler is not None:
             from matrix.scheduler.factory import SchedulerFactory
 
+            logger.info("lifespan: creating scheduler")
             scheduler = SchedulerFactory.create(
                 config.scheduler, storage_provider=storage_provider,
             )
+            logger.info("lifespan: scheduler.initialize() begin")
             await scheduler.initialize()
+            logger.info("lifespan: scheduler.initialize() done")
             # Loud warning: in-memory scheduler is single-process; running it
             # alongside any worker pool (whether colocated 'api+worker' or
             # separate 'worker' processes) means cross-process state is not
@@ -181,7 +186,9 @@ def _make_lifespan(config: AppConfig):
                 event_bus = PostgresEventBus(scheduler._storage)
             else:
                 event_bus = InMemoryEventBus()
+            logger.info("lifespan: event bus initialise")
             await event_bus.initialize()
+            logger.info("lifespan: starting yield listener / timer / sweeper")
             yield_listener = YieldEventListener(
                 bus=event_bus, scheduler=scheduler,
             )
@@ -213,6 +220,7 @@ def _make_lifespan(config: AppConfig):
                 workspace_root_resolver=_resolve_root,
             )
             watcher_manager.start()
+            logger.info("lifespan: watcher manager started")
 
             # MCP task bridge — polls parked mcp_task:* sessions
             # and republishes results onto the bus. The bridge looks
@@ -225,6 +233,7 @@ def _make_lifespan(config: AppConfig):
                 provider_registry=provider_registry,
             )
             mcp_task_bridge.start()
+            logger.info("lifespan: mcp task bridge started")
         app.state.event_bus = event_bus
 
         worker_pool = None
@@ -241,7 +250,9 @@ def _make_lifespan(config: AppConfig):
                 provider_registry=provider_registry,
                 router_registry=router_registry,
             )
+            logger.info("lifespan: worker_pool.start() begin")
             await worker_pool.start()
+            logger.info("lifespan: worker_pool.start() done")
         app.state.worker_pool = worker_pool
 
         # Internal collections subsystem auto-activation: if a config
@@ -249,7 +260,9 @@ def _make_lifespan(config: AppConfig):
         # search toolset and start the CDC worker. We do NOT auto-run
         # bootstrap here — the operator does that explicitly via
         # POST /v1/internal_collections/bootstrap.
+        logger.info("lifespan: loading IC config")
         ic_config = await load_config_or_none(storage_provider)
+        logger.info("lifespan: IC config loaded (present=%s)", ic_config is not None)
         if ic_config is not None:
             ic_subsystem = build_subsystem(
                 config=ic_config,

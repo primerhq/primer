@@ -98,8 +98,11 @@ db_port: 5432
 db_database: $DB_NAME
 db_user: $DB_USER
 db_password: $DB_PASSWORD
-db_min_pool_size: 1
-db_max_pool_size: 5
+# Yielding-tools (M2+) holds one perpetual LISTEN connection plus
+# several polling background tasks; min=1/max=5 deadlocks the
+# lifespan on Windows. min=5/max=20 leaves comfortable headroom.
+db_min_pool_size: 5
+db_max_pool_size: 20
 
 host: 127.0.0.1
 port: $PORT
@@ -169,7 +172,11 @@ echo "[bringup] server started pid=$server_pid" >&2
 
 # ---- 6. Poll health ---------------------------------------------------------
 
-deadline=$(( $(date +%s) + 30 ))
+# 60s deadline accommodates slow Windows postgres handshakes when the
+# pool pre-allocates min connections + the yielding-tools background
+# tasks (M2+) initialise their pool conns. 30s was tight enough to
+# race the lifespan on cold-cache laptops.
+deadline=$(( $(date +%s) + 60 ))
 while true; do
     if ! kill -0 "$server_pid" 2>/dev/null; then
         echo "[bringup] FATAL: server died during startup" >&2
@@ -190,7 +197,7 @@ while true; do
         exit 0
     fi
     if [[ $(date +%s) -ge $deadline ]]; then
-        echo "[bringup] FATAL: /v1/health did not respond within 30s" >&2
+        echo "[bringup] FATAL: /v1/health did not respond within 60s" >&2
         echo "--- last 100 lines of server.stdout ---" >&2
         tail -n 100 "$STDOUT_FILE" >&2 || true
         echo "--- last 100 lines of matrix.log ---" >&2

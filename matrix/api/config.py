@@ -46,10 +46,20 @@ class AppConfig(BaseSettings):
     db_user: str = Field(..., description="Postgres user.")
     db_password: SecretStr = Field(..., description="Postgres password.")
     db_min_pool_size: int = Field(
-        default=1, ge=1, description="Lower bound for the connection pool."
+        default=5,
+        ge=1,
+        description=(
+            "Lower bound for the connection pool. Defaults to 5 so the "
+            "yielding-tools background tasks (LISTEN + polling timer / "
+            "sweeper / watcher / mcp-bridge) have headroom alongside the "
+            "worker pool. Smaller pools deadlock the lifespan on slow "
+            "Windows postgres handshakes."
+        ),
     )
     db_max_pool_size: int = Field(
-        default=10, ge=1, description="Upper bound for the connection pool."
+        default=20,
+        ge=1,
+        description="Upper bound for the connection pool.",
     )
 
     # --- HTTP server -----------------------------------------------------
