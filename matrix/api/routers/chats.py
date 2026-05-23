@@ -310,10 +310,15 @@ async def chat_ws(
     chat = await chats_storage.get(chat_id)
     if chat is None:
         # 4404 = application-defined "not found" close code per RFC 6455
-        # §7.4 (the 4000-4999 range is reserved for app use).
+        # §7.4 (the 4000-4999 range is reserved for app use). MUST
+        # accept() first — close() before accept() makes Starlette
+        # reject the handshake with HTTP 403, which clients see as a
+        # generic handshake failure, not the documented close code.
+        await websocket.accept()
         await websocket.close(code=4404, reason=f"chat {chat_id!r} not found")
         return
     if chat.status == "ended":
+        await websocket.accept()
         await websocket.close(code=4410, reason="chat ended")
         return
 
