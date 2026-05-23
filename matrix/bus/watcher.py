@@ -415,7 +415,13 @@ async def _find_active_watch_parks(scheduler) -> list[dict]:
         async with scheduler._storage.pool.acquire() as conn:
             rows = await conn.fetch(sql)
         for row in rows:
-            blob = row["parked_state"] or {}
+            # asyncpg returns JSONB as a string unless a codec is
+            # registered on the connection — parse defensively.
+            raw_blob = row["parked_state"]
+            if isinstance(raw_blob, str):
+                import json as _json
+                raw_blob = _json.loads(raw_blob)
+            blob = raw_blob or {}
             yielded = blob.get("yielded") or {}
             meta = yielded.get("resume_metadata") or {}
             out.append(
