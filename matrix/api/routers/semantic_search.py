@@ -6,20 +6,10 @@ and cascade-block-on-delete.
 
 Cascade-block (§5 reference-integrity):
     DELETE /v1/ssp/{id} is rejected with 409 when any Collection row
-    references ``search_provider_id == id``.  Collection.search_provider_id
-    is added in Task 4; until then the predicate query returns an empty
-    result set (missing JSONB keys evaluate to NULL ≠ any value, so no
-    false positives).  A defensive try/except wraps the query so that
-    if the predicate engine raises before Task 4 lands, we treat the
-    outcome as "no collisions" and allow the delete to proceed.
-
-    # TODO(task-4): once Collection.search_provider_id lands, remove the
-    # defensive try/except — the predicate engine will be canonical.
+    references ``search_provider_id == id``.
 """
 
 from __future__ import annotations
-
-import logging
 
 from fastapi import APIRouter, Depends, Path, Request
 
@@ -29,9 +19,6 @@ from matrix.api.routers._crud import make_crud_router
 from matrix.model.except_ import ConflictError
 from matrix.model.provider import SemanticSearchProvider
 from matrix.model.storage import FieldRef, Op, OffsetPage, Predicate, Value
-
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -66,17 +53,7 @@ async def _on_update(entity_id: str, request: Request) -> None:
 
 
 async def _on_delete(entity_id: str, request: Request) -> None:
-    """Block delete when a Collection references this SSP; then invalidate.
-
-    The Collection.search_provider_id field is added in Task 4.  Until
-    then the predicate will match nothing (missing JSONB key → NULL ≠
-    entity_id), which is the correct semantics (no false positives).
-    A defensive try/except handles any predicate-engine errors that
-    could arise before Task 4 is in place.
-
-    # TODO(task-4): once Collection.search_provider_id lands, remove the
-    # defensive try/except — predicate engine will be canonical.
-    """
+    """Block delete when a Collection references this SSP; then invalidate."""
     from matrix.model.collection import Collection
 
     storage_provider = request.app.state.storage_provider
@@ -89,19 +66,8 @@ async def _on_delete(entity_id: str, request: Request) -> None:
     )
     page = OffsetPage(offset=0, length=1)
 
-    try:
-        result = await collection_storage.find(predicate, page)
-        collisions = result.items if hasattr(result, "items") else []
-    except Exception:  # noqa: BLE001
-        # TODO(task-4): remove this defensive catch once
-        # Collection.search_provider_id is a real field — the predicate
-        # engine will be canonical and won't raise on the field lookup.
-        logger.warning(
-            "SSP on_delete: predicate query for search_provider_id=%r "
-            "raised (likely pre-Task-4); treating as no collisions.",
-            entity_id,
-        )
-        collisions = []
+    result = await collection_storage.find(predicate, page)
+    collisions = result.items if hasattr(result, "items") else []
 
     if collisions:
         collection_ids = [c.id for c in collisions]
