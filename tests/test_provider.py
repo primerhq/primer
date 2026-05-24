@@ -790,3 +790,52 @@ class TestHttpConfigOAuth:
         )
         assert c.oauth is not None
         assert str(c.oauth.redirect_uri).startswith("https://app.example/cb")
+
+
+def test_semantic_search_provider_pgvector_construction():
+    from matrix.model.provider import (
+        SemanticSearchProvider,
+        SemanticSearchProviderType,
+        PgVectorConfig,
+        PoolConfig,
+    )
+    from pydantic import SecretStr
+
+    ssp = SemanticSearchProvider(
+        id="ssp-test",
+        provider=SemanticSearchProviderType.PGVECTOR,
+        config=PgVectorConfig(
+            hostname="h",
+            username="u",
+            password=SecretStr("p"),
+            database="db",
+            pool=PoolConfig(),
+        ),
+    )
+    assert ssp.id == "ssp-test"
+    assert ssp.provider == SemanticSearchProviderType.PGVECTOR
+    assert isinstance(ssp.config, PgVectorConfig)
+
+
+def test_semantic_search_provider_mismatched_config_rejected():
+    import pytest
+    from matrix.model.provider import (
+        SemanticSearchProvider,
+        SemanticSearchProviderType,
+        PgVectorScaleConfig,
+    )
+    from pydantic import SecretStr, ValidationError
+    from matrix.model.provider import PoolConfig
+
+    with pytest.raises(ValidationError):
+        SemanticSearchProvider(
+            id="ssp-test",
+            provider=SemanticSearchProviderType.PGVECTOR,
+            config=PgVectorScaleConfig(
+                hostname="h",
+                username="u",
+                password=SecretStr("p"),
+                database="db",
+                pool=PoolConfig(),
+            ),
+        )

@@ -896,3 +896,64 @@ class VectorStoreProviderConfig(BaseModel):
                 "provider='pgvectorscale' requires a PgVectorScaleConfig in 'config'"
             )
         return self
+
+
+# ===========================================================================
+# SemanticSearch provider entity (runtime-CRUD, replaces VectorStoreProviderConfig)
+# ===========================================================================
+
+
+class SemanticSearchProviderType(str, Enum):
+    """Supported semantic-search backends.
+
+    Mirrors VectorStoreProviderType (which will be removed once all
+    callsites migrate to SemanticSearchProvider).
+    """
+
+    PGVECTOR = "pgvector"
+    PGVECTORSCALE = "pgvectorscale"
+
+
+class SemanticSearchProvider(Identifiable):
+    """Operator-managed semantic-search backend backing collections
+    and the internal collections subsystem.
+
+    Stored as a CRUD-able row alongside LLMProvider, EmbeddingProvider,
+    etc. The discriminated ``config`` carries backend-specific
+    connection + index settings; the parent ``provider`` discriminator
+    chooses which dataclass shape is valid.
+    """
+
+    provider: SemanticSearchProviderType = Field(
+        ...,
+        description="Which semantic-search backend to use.",
+    )
+    config: PgVectorConfig | PgVectorScaleConfig = Field(
+        ...,
+        description=(
+            "Backend-specific config; must match the provider "
+            "discriminator (see validator)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_config_matches(self) -> "SemanticSearchProvider":
+        if self.provider == SemanticSearchProviderType.PGVECTOR and not isinstance(
+            self.config, PgVectorConfig
+        ):
+            raise ValueError(
+                "provider='pgvector' requires a PgVectorConfig in 'config'"
+            )
+        if self.provider == SemanticSearchProviderType.PGVECTORSCALE and not isinstance(
+            self.config, PgVectorScaleConfig
+        ):
+            raise ValueError(
+                "provider='pgvectorscale' requires a PgVectorScaleConfig in 'config'"
+            )
+        return self
+
+
+__all__ = [
+    "SemanticSearchProvider",
+    "SemanticSearchProviderType",
+]
