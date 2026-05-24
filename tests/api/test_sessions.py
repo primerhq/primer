@@ -21,7 +21,6 @@ from httpx import ASGITransport, AsyncClient
 from matrix.api.app import create_test_app
 from matrix.api.registries import (
     ProviderRegistry,
-    VectorStoreRegistry,
     WorkspaceRegistry,
 )
 
@@ -103,7 +102,6 @@ class _FakeBackendForSessions:
 def app(
     fake_storage_provider,
     fake_provider_registry,
-    fake_vector_store_registry,
 ) -> FastAPI:
     """Override the conftest ``app`` fixture with a fake WorkspaceRegistry.
 
@@ -119,7 +117,6 @@ def app(
     return create_test_app(
         storage_provider=fake_storage_provider,  # type: ignore[arg-type]
         provider_registry=fake_provider_registry,
-        vector_store_registry=fake_vector_store_registry,
         workspace_registry=workspace_registry,
     )
 
@@ -140,9 +137,6 @@ async def seeded_workspace(app):
     resolves the live workspace via :class:`WorkspaceRegistry`, which
     looks up the backend by ``provider_id``.
     """
-    from matrix.model.provider import (
-        VectorStoreProviderType,  # noqa: F401 -- ensure module loaded
-    )
     from matrix.model.workspace import (
         LocalWorkspaceConfig,
         Workspace,

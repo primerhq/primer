@@ -22,7 +22,7 @@ from httpx import ASGITransport
 from pydantic import SecretStr
 
 from matrix.api.app import create_test_app
-from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+from matrix.api.registries import ProviderRegistry
 from matrix.model.agent import Agent, AgentModel
 from matrix.model.except_ import ConflictError, NotFoundError
 from matrix.model.provider import (
@@ -34,8 +34,6 @@ from matrix.model.provider import (
     PgVectorConfig,
     SemanticSearchProvider,
     SemanticSearchProviderType,
-    VectorStoreProviderConfig,
-    VectorStoreProviderType,
 )
 from matrix.model.storage import OffsetPage, OffsetPageResponse
 
@@ -195,21 +193,7 @@ class _Provider:
 
 
 @pytest.fixture
-def vsr(store) -> VectorStoreRegistry:
-    cfg = VectorStoreProviderConfig(
-        provider=VectorStoreProviderType.PGVECTOR,
-        config=PgVectorConfig(
-            hostname="x",
-            username="u",
-            password="p",  # type: ignore[arg-type]
-            database="d",
-        ),
-    )
-    return VectorStoreRegistry(cfg, factory=lambda c: _Provider(store))
-
-
-@pytest.fixture
-async def app(sp, pr, vsr, store):
+async def app(sp, pr, store):
     # Seed the embedding provider row that the subsystem will look up
     # via ProviderRegistry.get_embedder. Tests that exercise bootstrap
     # rely on this row being present before they POST.
@@ -235,7 +219,6 @@ async def app(sp, pr, vsr, store):
     test_app = create_test_app(
         storage_provider=sp,  # type: ignore[arg-type]
         provider_registry=pr,
-        vector_store_registry=vsr,
     )
     # Override the semantic_search_registry with a fake that returns the
     # test store so bootstrap can resolve vectors without a real database.

@@ -609,6 +609,8 @@ class StorageProviderType(str, Enum):
     POSTGRES = "postgres"
 
 
+# Internal adapter shape; not exposed via API.
+# See SemanticSearchProvider for the public-facing entity.
 class VectorStoreProviderType(str, Enum):
     """Supported VectorStore provider backends."""
 
@@ -869,6 +871,8 @@ class StorageProviderConfig(BaseModel):
         return self
 
 
+# Internal adapter shape; not exposed via API.
+# See SemanticSearchProvider for the public-facing entity.
 class VectorStoreProviderConfig(BaseModel):
     """Top-level VectorStore provider configuration -- discriminated by ``provider``."""
 

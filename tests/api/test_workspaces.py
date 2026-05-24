@@ -19,18 +19,12 @@ from httpx import ASGITransport
 from matrix.api.app import create_test_app
 from matrix.api.registries import (
     ProviderRegistry,
-    VectorStoreRegistry,
     WorkspaceRegistry,
 )
 from matrix.model.except_ import (
     BadRequestError,
     ConflictError,
     NotFoundError,
-)
-from matrix.model.provider import (
-    PgVectorConfig,
-    VectorStoreProviderConfig,
-    VectorStoreProviderType,
 )
 from matrix.model.session import SessionInfo, SessionStatus
 from matrix.model.storage import OffsetPage, OffsetPageResponse
@@ -293,30 +287,15 @@ def pr(sp) -> ProviderRegistry:
 
 
 @pytest.fixture
-def vsr() -> VectorStoreRegistry:
-    cfg = VectorStoreProviderConfig(
-        provider=VectorStoreProviderType.PGVECTOR,
-        config=PgVectorConfig(
-            hostname="x",
-            username="u",
-            password="p",  # type: ignore[arg-type]
-            database="d",
-        ),
-    )
-    return VectorStoreRegistry(cfg, factory=lambda c: object())
-
-
-@pytest.fixture
 def wsr(sp) -> WorkspaceRegistry:
     return WorkspaceRegistry(sp, factory=_FakeBackend)
 
 
 @pytest.fixture
-def app(sp, pr, vsr, wsr):
+def app(sp, pr, wsr):
     return create_test_app(
         storage_provider=sp,  # type: ignore[arg-type]
         provider_registry=pr,
-        vector_store_registry=vsr,
         workspace_registry=wsr,
     )
 

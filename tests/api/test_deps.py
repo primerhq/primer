@@ -20,11 +20,10 @@ from matrix.api.deps import (
     get_session_storage,
     get_storage_provider,
     get_toolset_storage,
-    get_vector_store_registry,
     get_worker_pool,
 )
 from matrix.api.errors import register_error_handlers
-from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+from matrix.api.registries import ProviderRegistry
 from matrix.model.except_ import ConfigError
 from matrix.model.session import Session
 
@@ -34,12 +33,10 @@ def _mount_state_echo(app: FastAPI) -> None:
     def _echo(
         sp=Depends(get_storage_provider),
         pr=Depends(get_provider_registry),
-        vsr=Depends(get_vector_store_registry),
     ) -> dict:
         return {
             "storage_provider": sp is not None,
             "provider_registry": isinstance(pr, ProviderRegistry),
-            "vector_store_registry": isinstance(vsr, VectorStoreRegistry),
         }
 
     @app.get("/echo-principal")
@@ -56,7 +53,6 @@ async def test_singleton_resolvers_return_app_state(client, app) -> None:
     assert body == {
         "storage_provider": True,
         "provider_registry": True,
-        "vector_store_registry": True,
     }
 
 

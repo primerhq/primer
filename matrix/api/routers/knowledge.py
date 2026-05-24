@@ -4,7 +4,7 @@
   lists documents belonging to the collection (server-side filter on
   ``collection_id``). ``POST /v1/collections/{id}/search`` runs
   semantic search across the collection's indexed documents using the
-  collection's own embedder + the application's vector store.
+  collection's own embedder + the SSP-registry-resolved vector store.
 * Document — CRUD + Find. Live ``ingest`` (multipart upload + docling
   chunking) is deferred to a follow-up sub-project; the system
   toolset's ``put_document`` provides an in-process upsert path.
@@ -14,11 +14,6 @@ NOTE: ``POST /v1/collections/search`` (no id, in
 operation — it searches the *collection metadata* internal index for
 the "find collection by description" use case. The per-collection
 ``/{id}/search`` route here searches the *document contents*.
-
-VectorStoreConfig CRUD has moved out of storage entirely — vector
-store configuration is now an AppConfig field
-(:attr:`matrix.api.config.AppConfig.vector_store`) read once at
-process boot.
 """
 
 from __future__ import annotations
@@ -33,10 +28,10 @@ from matrix.api.deps import (
     get_collection_storage,
     get_document_storage,
     get_provider_registry,
-    get_vector_store_registry,
+    get_semantic_search_registry,
 )
 from matrix.api.errors import common_responses
-from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+from matrix.api.registries import ProviderRegistry, SemanticSearchRegistry
 from matrix.api.routers._cdc_hooks import make_cdc_hooks
 from matrix.api.routers._crud import make_crud_router
 from matrix.model.chat import TextPart
@@ -156,11 +151,12 @@ async def search_collection(
     body: _CollectionSearchBody = Body(...),
     collections=Depends(get_collection_storage),
     registry: ProviderRegistry = Depends(get_provider_registry),
-    vsr: VectorStoreRegistry = Depends(get_vector_store_registry),
+    ssr: SemanticSearchRegistry = Depends(get_semantic_search_registry),
 ) -> dict:
     """Vectorise ``body.query`` with the collection's embedder and run a
-    similarity search against the application's vector store, scoped to
-    this collection. Returns ``{"hits": [{document_id, chunk_id, score,
+    similarity search against the collection's vector store (resolved
+    via the collection's ``search_provider_id``), scoped to this
+    collection. Returns ``{"hits": [{document_id, chunk_id, score,
     text, meta}, ...]}``.
 
     The collection must exist and have indexed documents; an empty
@@ -182,7 +178,8 @@ async def search_collection(
     )
     vector = list(response.embeddings[0].vector)
 
-    store = await vsr.get()
+    # Resolve the vector store via the collection's search_provider_id.
+    store = await ssr.get_store(coll.search_provider_id)
     hits = await store.search(collection_id, vector, body.top_k)
     return {
         "hits": [

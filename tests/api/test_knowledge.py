@@ -1,11 +1,4 @@
-"""Phase-3 router tests: Collection + Document.
-
-VectorStoreConfig CRUD has moved out of the API surface — vector
-store configuration is now in :class:`AppConfig`. The cascade test
-that exercised the old CRUD route is gone; the registry-rebuild
-behaviour is covered directly by
-``tests/api/test_vector_store_registry.py``.
-"""
+"""Phase-3 router tests: Collection + Document."""
 
 from __future__ import annotations
 

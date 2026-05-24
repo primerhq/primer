@@ -46,7 +46,7 @@ _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
 
 # Callback signature: ``(entity_id, request) -> None``. The Request is
 # threaded through so callbacks can reach ``request.app.state`` for
-# the per-request ProviderRegistry / VectorStoreRegistry.
+# the per-request ProviderRegistry / SemanticSearchRegistry.
 _OnMutateHook = Callable[[str, Request], Awaitable[None]] | None
 
 # Pre-write hook signature: ``(entity, request) -> None``.

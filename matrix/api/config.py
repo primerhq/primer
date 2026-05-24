@@ -1,11 +1,10 @@
 """Application configuration loaded from env vars (and an optional TOML file).
 
-Carries database connection parameters only. Provider configs, vector
-store config, toolset config — all live in storage rows and are
-managed via the API itself. The lifespan handler in
-:mod:`matrix.api.app` builds :class:`StorageProvider` from this and
-seeds two empty registries that lazy-instantiate adapters from rows
-on demand.
+Carries database connection parameters only. Provider configs, toolset
+config — all live in storage rows and are managed via the API itself.
+The lifespan handler in :mod:`matrix.api.app` builds
+:class:`StorageProvider` from this and seeds empty registries that
+lazy-instantiate adapters from rows on demand.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from matrix.model.provider import VectorStoreProviderConfig
 from matrix.model.scheduler import (
     RuntimeMode,
     SchedulerProviderConfig,
@@ -65,33 +63,6 @@ class AppConfig(BaseSettings):
     # --- HTTP server -----------------------------------------------------
     host: str = Field(default="0.0.0.0", description="Bind host for uvicorn.")
     port: int = Field(default=8000, description="Bind port for uvicorn.")
-
-    # --- Vector store (Phase-3 infrastructure) ---------------------------
-    # Single active vector store backing the internal collections
-    # subsystem. Required for Collection / Document / search routes to
-    # work; ``None`` means the subsystem is disabled. Discriminated
-    # union of pgvector / pgvectorscale (see
-    # :class:`matrix.model.provider.VectorStoreProviderConfig`).
-    #
-    # Env shape (uses the BaseSettings nested-delimiter ``__``):
-    #   MATRIX_VECTOR_STORE__PROVIDER=pgvector
-    #   MATRIX_VECTOR_STORE__CONFIG__HOSTNAME=localhost
-    #   MATRIX_VECTOR_STORE__CONFIG__PORT=5432
-    #   ... etc.
-    # Or via TOML at ``$MATRIX_CONFIG_PATH``:
-    #   [vector_store]
-    #   provider = "pgvector"
-    #   [vector_store.config]
-    #   hostname = "..."
-    vector_store: VectorStoreProviderConfig | None = Field(
-        default=None,
-        description=(
-            "Vector store backend configuration (pgvector or "
-            "pgvectorscale). Required for the internal collections "
-            "subsystem. ``None`` disables collection / search "
-            "functionality at the API layer."
-        ),
-    )
 
     # --- Background execution (scheduler + worker pool) ------------------
     runtime_mode: RuntimeMode = Field(

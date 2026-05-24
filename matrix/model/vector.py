@@ -136,16 +136,11 @@ _VectorStoreBackend = Literal["pgvector", "pgvectorscale"]
 
 
 class VectorStoreConfig(Identifiable):
-    """Single-row "active vector store" configuration.
+    """Single-row "active vector store" configuration (legacy, unused).
 
-    Stored under the conventional id ``"_active_vector_store"`` in the
-    application's :class:`Storage[VectorStoreConfig]`. The
-    :class:`matrix.api.registries.VectorStoreRegistry` reads this row
-    on first :meth:`get` to discover which backend to construct.
-
-    Phase 3 of the REST API rollout ships CRUD endpoints over this
-    model; Phase 0 ships the model only so the registry can read from
-    storage as soon as a row exists.
+    This model is retained for reference only. Vector store configuration
+    is now managed via :class:`matrix.model.provider.SemanticSearchProvider`
+    rows, resolved at runtime through :class:`matrix.api.registries.SemanticSearchRegistry`.
     """
 
     backend: _VectorStoreBackend = Field(

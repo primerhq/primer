@@ -55,7 +55,7 @@ from matrix.model.vector import EmbeddingRecord, SearchResult
 
 
 if TYPE_CHECKING:
-    from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+    from matrix.api.registries import ProviderRegistry
     from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
     from matrix.int.storage_provider import StorageProvider
 

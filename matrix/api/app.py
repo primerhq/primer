@@ -15,10 +15,9 @@ from matrix.api.config import AppConfig
 from matrix.api.errors import register_error_handlers
 from matrix.api.registries import (
     ProviderRegistry,
-    VectorStoreRegistry,
+    SemanticSearchRegistry,
     WorkspaceRegistry,
 )
-from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
 from matrix.model.provider import SemanticSearchProvider
 from matrix.api.routers import (
     chats as chats_router,
@@ -67,7 +66,6 @@ def _make_lifespan(config: AppConfig):
 
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
-        vector_store_registry = VectorStoreRegistry(config.vector_store)
         semantic_search_registry = SemanticSearchRegistry(
             storage=storage_provider.get_storage(SemanticSearchProvider),
         )
@@ -96,7 +94,6 @@ def _make_lifespan(config: AppConfig):
         system_toolset = build_system_toolset(
             storage_provider=storage_provider,
             provider_registry=provider_registry,
-            vector_store_registry=vector_store_registry,
             semantic_search_registry=semantic_search_registry,
         )
         provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
@@ -117,7 +114,6 @@ def _make_lifespan(config: AppConfig):
         provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001
         app.state.storage_provider = storage_provider
         app.state.provider_registry = provider_registry
-        app.state.vector_store_registry = vector_store_registry
         app.state.workspace_registry = workspace_registry
         app.state.system_toolset = system_toolset
         app.state.workspaces_toolset = ws_toolset
@@ -347,10 +343,6 @@ def _make_lifespan(config: AppConfig):
             except Exception:
                 logger.exception("semantic_search_registry.aclose failed")
             try:
-                await vector_store_registry.aclose()
-            except Exception:
-                logger.exception("vector_store_registry.aclose failed")
-            try:
                 await workspace_registry.aclose()
             except Exception:
                 logger.exception("workspace_registry.aclose failed")
@@ -422,8 +414,8 @@ def _mount_routers(
     app.include_router(compute.agent_router, prefix=prefix)
     app.include_router(compute.graph_router, prefix=prefix)
     # Phase 3 — knowledge (Collection + Document). VectorStoreConfig
-    # has moved out of storage and into AppConfig.vector_store; no
-    # CRUD endpoint exists for it any more.
+    # has been removed; vector store is now managed per-row via
+    # SemanticSearchProvider rows (SSP registry).
     app.include_router(knowledge.collection_router, prefix=prefix)
     app.include_router(knowledge.document_router, prefix=prefix)
     # Internal collections subsystem (config + bootstrap + per-entity
@@ -665,7 +657,6 @@ def create_test_app(
     *,
     storage_provider: "StorageProvider",
     provider_registry: ProviderRegistry,
-    vector_store_registry: VectorStoreRegistry,
     workspace_registry: WorkspaceRegistry | None = None,
     system_toolset=None,
     workspaces_toolset=None,
@@ -689,7 +680,6 @@ def create_test_app(
     if workspace_registry is None:
         workspace_registry = WorkspaceRegistry(storage_provider)
     # Wire the SemanticSearchRegistry so /v1/ssp endpoints work in tests.
-    from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
     from matrix.model.provider import SemanticSearchProvider
     _test_ssp_registry = SemanticSearchRegistry(
         storage=storage_provider.get_storage(SemanticSearchProvider),
@@ -699,7 +689,6 @@ def create_test_app(
         system_toolset = build_system_toolset(
             storage_provider=storage_provider,
             provider_registry=provider_registry,
-            vector_store_registry=vector_store_registry,
             semantic_search_registry=_test_ssp_registry,
         )
     if workspaces_toolset is None:
@@ -717,7 +706,6 @@ def create_test_app(
     provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001
     app.state.storage_provider = storage_provider
     app.state.provider_registry = provider_registry
-    app.state.vector_store_registry = vector_store_registry
     app.state.workspace_registry = workspace_registry
     app.state.system_toolset = system_toolset
     app.state.workspaces_toolset = workspaces_toolset

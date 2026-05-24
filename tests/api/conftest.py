@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport
 
 from matrix.api.app import create_test_app
-from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+from matrix.api.registries import ProviderRegistry
 from matrix.model.common import Identifiable
 from matrix.model.except_ import ConflictError, NotFoundError
 from matrix.model.storage import (
@@ -183,40 +183,13 @@ def fake_provider_registry(
 
 
 @pytest.fixture
-def fake_vector_store_registry(
-    fake_storage_provider: _FakeStorageProvider,
-) -> VectorStoreRegistry:
-    # Tests run against a stub config so ``get()`` works when needed
-    # without a live Postgres + pgvector. The factory returns a bare
-    # object(); tests that exercise the live flow swap in their own.
-    from matrix.model.provider import (
-        PgVectorConfig,
-        VectorStoreProviderConfig,
-        VectorStoreProviderType,
-    )
-
-    cfg = VectorStoreProviderConfig(
-        provider=VectorStoreProviderType.PGVECTOR,
-        config=PgVectorConfig(
-            hostname="x",
-            username="u",
-            password="p",  # type: ignore[arg-type]
-            database="d",
-        ),
-    )
-    return VectorStoreRegistry(cfg, factory=lambda c: object())  # type: ignore[arg-type]
-
-
-@pytest.fixture
 def app(
     fake_storage_provider: _FakeStorageProvider,
     fake_provider_registry: ProviderRegistry,
-    fake_vector_store_registry: VectorStoreRegistry,
 ) -> FastAPI:
     return create_test_app(
         storage_provider=fake_storage_provider,  # type: ignore[arg-type]
         provider_registry=fake_provider_registry,
-        vector_store_registry=fake_vector_store_registry,
     )
 
 

@@ -33,12 +33,10 @@ from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
 def app(
     fake_storage_provider,
     fake_provider_registry,
-    fake_vector_store_registry,
 ) -> FastAPI:
     return create_test_app(
         storage_provider=fake_storage_provider,
         provider_registry=fake_provider_registry,
-        vector_store_registry=fake_vector_store_registry,
     )
 
 

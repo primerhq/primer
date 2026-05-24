@@ -11,7 +11,7 @@ from pydantic import SecretStr
 
 from matrix.api.app import create_app, create_test_app
 from matrix.api.config import AppConfig
-from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+from matrix.api.registries import ProviderRegistry, SemanticSearchRegistry
 from matrix.model.scheduler import RuntimeMode
 
 
@@ -68,7 +68,7 @@ class TestCreateApp:
                 assert response.status_code == 200
                 assert app.state.storage_provider is sp_mock
                 assert isinstance(app.state.provider_registry, ProviderRegistry)
-                assert isinstance(app.state.vector_store_registry, VectorStoreRegistry)
+                assert isinstance(app.state.semantic_search_registry, SemanticSearchRegistry)
 
         sp_mock.initialize.assert_awaited_once()
         sp_mock.aclose.assert_awaited_once()
@@ -77,13 +77,12 @@ class TestCreateApp:
 class TestCreateTestApp:
     def test_seeds_state_directly(self) -> None:
         sp = MagicMock()
+        sp.get_storage = MagicMock(return_value=MagicMock())
         pr = MagicMock(spec=ProviderRegistry)
-        vsr = MagicMock(spec=VectorStoreRegistry)
         app = create_test_app(
             storage_provider=sp,
             provider_registry=pr,
-            vector_store_registry=vsr,
         )
         assert app.state.storage_provider is sp
         assert app.state.provider_registry is pr
-        assert app.state.vector_store_registry is vsr
+        assert isinstance(app.state.semantic_search_registry, SemanticSearchRegistry)

@@ -9,10 +9,10 @@ Three layers:
 3. Principal passthrough that pulls the optional
    ``X-Matrix-Principal`` request header.
 
-The lifespan handler (or test factory) MUST stash three attributes on
-``app.state`` before the first request: ``storage_provider``,
-``provider_registry``, ``vector_store_registry``. Each resolver
-defends against missing state by raising ``ConfigError``.
+The lifespan handler (or test factory) MUST stash two attributes on
+``app.state`` before the first request: ``storage_provider`` and
+``provider_registry``. Each resolver defends against missing state by
+raising ``ConfigError``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from fastapi import Depends, Header, HTTPException, Request
 
 from matrix.api.registries import (
     ProviderRegistry,
-    VectorStoreRegistry,
     WorkspaceRegistry,
 )
 from matrix.model.agent import Agent
@@ -60,16 +59,15 @@ def _assert_app_state_initialized(request: Request) -> None:
     state = request.app.state
     missing = [
         name
-        for name in ("storage_provider", "provider_registry", "vector_store_registry")
+        for name in ("storage_provider", "provider_registry")
         if not hasattr(state, name) or getattr(state, name) is None
     ]
     if missing:
         raise ConfigError(
             f"API state not initialised; missing attributes on app.state: "
             f"{', '.join(missing)}. The lifespan handler (or "
-            "create_test_app) must set storage_provider, "
-            "provider_registry, and vector_store_registry before any "
-            "request is served."
+            "create_test_app) must set storage_provider and "
+            "provider_registry before any request is served."
         )
 
 
@@ -81,11 +79,6 @@ def get_storage_provider(request: Request) -> "StorageProvider":
 def get_provider_registry(request: Request) -> ProviderRegistry:
     _assert_app_state_initialized(request)
     return request.app.state.provider_registry
-
-
-def get_vector_store_registry(request: Request) -> VectorStoreRegistry:
-    _assert_app_state_initialized(request)
-    return request.app.state.vector_store_registry
 
 
 def get_semantic_search_registry(request: Request) -> "SemanticSearchRegistry":
@@ -315,7 +308,6 @@ __all__ = [
     "get_session_storage",
     "get_storage_provider",
     "get_toolset_storage",
-    "get_vector_store_registry",
     "get_worker_pool",
     "get_workspace_provider_storage",
     "get_workspace_registry",

@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import SecretStr
 
-from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+from matrix.api.registries import ProviderRegistry
 from matrix.model.agent import Agent, AgentModel
 from matrix.model.collection import Collection, CollectionEmbedder
 from matrix.model.except_ import ConflictError, NotFoundError
@@ -127,16 +127,10 @@ def pr(sp: _SP) -> ProviderRegistry:
 
 
 @pytest.fixture
-def vsr(sp: _SP) -> VectorStoreRegistry:
-    return VectorStoreRegistry(sp, factory=lambda c: object())  # type: ignore[arg-type]
-
-
-@pytest.fixture
-def system_toolset(sp: _SP, pr: ProviderRegistry, vsr: VectorStoreRegistry):
+def system_toolset(sp: _SP, pr: ProviderRegistry):
     provider = build_system_toolset(
         storage_provider=sp,  # type: ignore[arg-type]
         provider_registry=pr,
-        vector_store_registry=vsr,
     )
     pr._system_toolset_provider = provider  # type: ignore[attr-defined]
     return provider

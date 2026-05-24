@@ -33,8 +33,9 @@ def _default_factory(row: "SemanticSearchProvider") -> "VectorStoreProvider":  #
     and the same config classes), so the existing
     VectorStoreProviderFactory can dispatch without modification.
     """
-    # TODO(task-8): collapse the SSP and VSP type families so the
-    # adapter shim below is no longer needed.
+    # NOTE: VectorStoreProviderConfig / VectorStoreProviderType are internal
+    # adapter shapes (not public API). They bridge the SSP row to the
+    # existing VectorStoreProviderFactory dispatch.
     from matrix.model.provider import (
         VectorStoreProviderConfig,
         VectorStoreProviderType,
