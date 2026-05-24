@@ -34,6 +34,12 @@ from matrix.api.routers import (
 from matrix.api.routers.semantic_search import semantic_search_router
 from matrix.api.version import API_VERSION, APP_VERSION
 from matrix.internal_collections import build_subsystem, load_config_or_none
+
+# Importing this module registers the Slack adapter factory with
+# matrix.channel.factory. Safe at module level; defers the
+# heavyweight slack_bolt imports until the first Channel of
+# provider=slack is constructed.
+import matrix.channel.slack.factory  # noqa: F401
 from matrix.model.scheduler import RuntimeMode, SchedulerProviderType
 from matrix.toolset.misc import build_misc_toolset
 from matrix.toolset.search import build_search_toolset
