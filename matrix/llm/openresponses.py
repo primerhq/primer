@@ -234,7 +234,7 @@ def _tool_to_openai(tool: Tool) -> dict[str, Any]:
         "type": "function",
         "name": tool.id,
         "description": tool.description,
-        "parameters": tool.schema,
+        "parameters": tool.args_schema,
     }
 
 

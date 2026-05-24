@@ -292,7 +292,7 @@ def _tools_to_gemini(tools: list[Tool] | None) -> list[gtypes.Tool]:
                 gtypes.FunctionDeclaration(
                     name=t.id,
                     description=t.description,
-                    parameters_json_schema=t.schema,
+                    parameters_json_schema=t.args_schema,
                 )
                 for t in tools
             ]

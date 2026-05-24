@@ -209,7 +209,7 @@ def _tools_to_ollama(tools: list[Tool] | None) -> list[dict[str, Any]] | None:
             "function": {
                 "name": t.id,
                 "description": t.description,
-                "parameters": t.schema,
+                "parameters": t.args_schema,
             },
         }
         for t in tools

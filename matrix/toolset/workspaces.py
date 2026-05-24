@@ -371,7 +371,7 @@ def _tool(
             id=name,
             description=description,
             toolset_id=WORKSPACES_TOOLSET_ID,
-            schema=args_cls.model_json_schema(),
+            args_schema=args_cls.model_json_schema(),
         ),
         handler,
     )

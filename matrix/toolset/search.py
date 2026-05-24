@@ -133,7 +133,7 @@ def _descriptor(name: str, pretty: str) -> Tool:
             "internal collections subsystem has not been bootstrapped."
         ),
         toolset_id=SEARCH_TOOLSET_ID,
-        schema=_SearchArgs.model_json_schema(),
+        args_schema=_SearchArgs.model_json_schema(),
     )
 
 

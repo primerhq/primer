@@ -439,7 +439,7 @@ class McpToolsetProvider(ToolsetProvider):
             id=t.name,
             description=t.description or "",
             toolset_id=self._toolset_id,
-            schema=t.inputSchema or {"type": "object", "properties": {}},
+            args_schema=t.inputSchema or {"type": "object", "properties": {}},
         )
 
     def _mcp_call_result_to_matrix(

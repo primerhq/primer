@@ -481,13 +481,13 @@ class Tool(Describeable):
     and a JSON Schema describing its argument object. Adapters wrap the
     same shape into provider-specific envelopes:
 
-    * OpenAI Responses: ``{type: "function", name=id, description, parameters=schema}``.
-    * Anthropic: ``{name=id, description, input_schema=schema}``
+    * OpenAI Responses: ``{type: "function", name=id, description, parameters=args_schema}``.
+    * Anthropic: ``{name=id, description, input_schema=args_schema}``
       (rename of the schema key).
     * Google GenAI: nested under
-      ``Tool(function_declarations=[FunctionDeclaration(name=id, description=..., parameters_json_schema=schema)])``.
+      ``Tool(function_declarations=[FunctionDeclaration(name=id, description=..., parameters_json_schema=args_schema)])``.
     * Ollama: older Chat Completions nesting,
-      ``{type: "function", function: {name=id, description, parameters=schema}}``.
+      ``{type: "function", function: {name=id, description, parameters=args_schema}}``.
 
     The :attr:`id` is the wire-level identifier the model uses to
     invoke the tool — it appears as the ``name`` field in
@@ -497,20 +497,35 @@ class Tool(Describeable):
     correct :class:`Toolset` for execution.
 
     For Pydantic-defined arguments, callers can derive the schema:
-    ``schema=MyArgsModel.model_json_schema()``.
+    ``args_schema=MyArgsModel.model_json_schema()``.
+
+    Wire compatibility: the JSON key on both input and output is
+    ``"schema"`` (preserved via Pydantic aliases) so existing REST
+    clients, the operator console, and the E2E test surface keep
+    working. Python code reads/writes ``args_schema``; constructors
+    accept either name (``populate_by_name=True``).
     """
 
-    # ``schema`` shadows BaseModel's deprecated ``schema()`` method; opt out
-    # of Pydantic's protected-namespace check so the field is allowed cleanly.
-    model_config = ConfigDict(protected_namespaces=())
+    # ``populate_by_name`` lets callers pass either the Python field name
+    # (``args_schema``) or the JSON wire alias (``schema``) to the
+    # constructor. ``serialize_by_alias`` makes ``model_dump()`` /
+    # ``model_dump_json()`` default to the alias so the REST surface and
+    # operator console keep seeing ``"schema"`` without every callsite
+    # having to pass ``by_alias=True``.
+    model_config = ConfigDict(
+        populate_by_name=True,
+        serialize_by_alias=True,
+    )
 
     toolset_id: str = Field(
         ...,
         min_length=1,
         description="Identifier of the Toolset this tool belongs to (matches Toolset.id).",
     )
-    schema: dict[str, Any] = Field(
+    args_schema: dict[str, Any] = Field(
         ...,
+        validation_alias="schema",
+        serialization_alias="schema",
         description="JSON Schema describing the tool's argument object.",
     )
 

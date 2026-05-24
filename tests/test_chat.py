@@ -827,43 +827,43 @@ class TestTool:
             id="get_weather",
             description="Get weather for a city.",
             toolset_id="weather_toolset",
-            schema={"type": "object"},
+            args_schema={"type": "object"},
         )
         assert t.id == "get_weather"
         assert t.description == "Get weather for a city."
         assert t.toolset_id == "weather_toolset"
-        assert t.schema == {"type": "object"}
+        assert t.args_schema == {"type": "object"}
 
     def test_inherits_from_describeable(self):
         # Tool is a Describeable, which is an Identifiable.
-        t = Tool(id="x", description="y", toolset_id="ts", schema={"type": "object"})
+        t = Tool(id="x", description="y", toolset_id="ts", args_schema={"type": "object"})
         assert isinstance(t, Describeable)
         assert isinstance(t, Identifiable)
 
     def test_id_required(self):
         with pytest.raises(ValidationError):
-            Tool(description="y", toolset_id="ts", schema={"type": "object"})
+            Tool(description="y", toolset_id="ts", args_schema={"type": "object"})
 
     def test_id_min_length(self):
         # Identifiable enforces min_length=1 on id.
         with pytest.raises(ValidationError):
-            Tool(id="", description="y", toolset_id="ts", schema={"type": "object"})
+            Tool(id="", description="y", toolset_id="ts", args_schema={"type": "object"})
 
     def test_description_required(self):
         with pytest.raises(ValidationError):
-            Tool(id="x", toolset_id="ts", schema={"type": "object"})
+            Tool(id="x", toolset_id="ts", args_schema={"type": "object"})
 
     def test_toolset_id_required(self):
         with pytest.raises(ValidationError):
-            Tool(id="x", description="y", schema={"type": "object"})
+            Tool(id="x", description="y", args_schema={"type": "object"})
 
     def test_toolset_id_min_length(self):
         with pytest.raises(ValidationError):
-            Tool(id="x", description="y", toolset_id="", schema={"type": "object"})
+            Tool(id="x", description="y", toolset_id="", args_schema={"type": "object"})
 
     def test_toolset_id_must_be_string(self):
         with pytest.raises(ValidationError):
-            Tool(id="x", description="y", toolset_id=123, schema={"type": "object"})
+            Tool(id="x", description="y", toolset_id=123, args_schema={"type": "object"})
 
     def test_schema_required(self):
         with pytest.raises(ValidationError):
@@ -871,7 +871,7 @@ class TestTool:
 
     def test_schema_must_be_dict(self):
         with pytest.raises(ValidationError):
-            Tool(id="x", description="y", toolset_id="ts", schema="not a dict")
+            Tool(id="x", description="y", toolset_id="ts", args_schema="not a dict")
 
     def test_complex_schema(self):
         complex_schema = {
@@ -888,37 +888,38 @@ class TestTool:
             id="weather",
             description="weather",
             toolset_id="weather_toolset",
-            schema=complex_schema,
+            args_schema=complex_schema,
         )
-        assert t.schema == complex_schema
+        assert t.args_schema == complex_schema
 
     def test_empty_schema_dict_accepted(self):
         # An empty dict is still a valid (if useless) JSON Schema.
-        t = Tool(id="x", description="y", toolset_id="ts", schema={})
-        assert t.schema == {}
+        t = Tool(id="x", description="y", toolset_id="ts", args_schema={})
+        assert t.args_schema == {}
 
     def test_json_round_trip(self):
         t = Tool(
             id="lookup",
             description="Look something up.",
             toolset_id="search_toolset",
-            schema={"type": "object", "properties": {"q": {"type": "string"}}},
+            args_schema={"type": "object", "properties": {"q": {"type": "string"}}},
         )
         restored = Tool.model_validate_json(t.model_dump_json())
         assert restored.id == t.id
         assert restored.description == t.description
         assert restored.toolset_id == t.toolset_id
-        assert restored.schema == t.schema
+        assert restored.args_schema == t.args_schema
 
     def test_json_serialised_uses_schema_key(self):
-        # The Python attribute is `schema`; the JSON key is also "schema".
-        t = Tool(id="x", description="y", toolset_id="ts", schema={"type": "object"})
+        # Python attribute is `args_schema`; JSON key is "schema" via
+        # `serialization_alias` so the wire shape is unchanged.
+        t = Tool(id="x", description="y", toolset_id="ts", args_schema={"type": "object"})
         dumped = t.model_dump()
         assert "schema" in dumped
         assert dumped["schema"] == {"type": "object"}
 
     def test_json_serialised_includes_toolset_id_key(self):
-        t = Tool(id="x", description="y", toolset_id="my_toolset", schema={})
+        t = Tool(id="x", description="y", toolset_id="my_toolset", args_schema={})
         dumped = t.model_dump()
         assert "toolset_id" in dumped
         assert dumped["toolset_id"] == "my_toolset"
@@ -932,15 +933,15 @@ class TestTool:
             id="weather",
             description="Get weather",
             toolset_id="weather_toolset",
-            schema=WeatherArgs.model_json_schema(),
+            args_schema=WeatherArgs.model_json_schema(),
         )
-        assert "properties" in t.schema
-        assert "city" in t.schema["properties"]
+        assert "properties" in t.args_schema
+        assert "city" in t.args_schema["properties"]
 
     def test_multiple_tools_can_share_toolset_id(self):
         # Many tools may belong to the same toolset (the common case for MCP).
-        t1 = Tool(id="t1", description="x", toolset_id="shared", schema={})
-        t2 = Tool(id="t2", description="y", toolset_id="shared", schema={})
+        t1 = Tool(id="t1", description="x", toolset_id="shared", args_schema={})
+        t2 = Tool(id="t2", description="y", toolset_id="shared", args_schema={})
         assert t1.toolset_id == t2.toolset_id == "shared"
         assert t1.id != t2.id
 

@@ -59,7 +59,7 @@ def _tool(name: str, *, toolset_id: str) -> Tool:
         id=name,
         description=f"a test tool named {name}",
         toolset_id=toolset_id,
-        schema={"type": "object", "properties": {}, "additionalProperties": False},
+        args_schema={"type": "object", "properties": {}, "additionalProperties": False},
     )
 
 

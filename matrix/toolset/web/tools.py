@@ -113,7 +113,7 @@ def make_web_search_descriptor(toolset_id: str) -> Tool:
             "events, or finding canonical documentation pages."
         ),
         toolset_id=toolset_id,
-        schema=WebSearchArgs.model_json_schema(),
+        args_schema=WebSearchArgs.model_json_schema(),
     )
 
 
@@ -127,7 +127,7 @@ def make_http_request_descriptor(toolset_id: str) -> Tool:
             "body is truncated past the configured byte cap."
         ),
         toolset_id=toolset_id,
-        schema=HttpRequestArgs.model_json_schema(),
+        args_schema=HttpRequestArgs.model_json_schema(),
     )
 
 

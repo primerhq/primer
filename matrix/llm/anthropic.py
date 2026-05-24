@@ -183,7 +183,7 @@ def _tools_to_anthropic(tools: list[Tool] | None) -> list[dict[str, Any]] | None
         {
             "name": t.id,
             "description": t.description,
-            "input_schema": t.schema,
+            "input_schema": t.args_schema,
         }
         for t in tools
     ]

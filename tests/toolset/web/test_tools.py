@@ -113,7 +113,7 @@ class TestDescriptors:
         assert t.id == "web-search"
         assert t.toolset_id == "web"
         # JSON schema describes the args model.
-        props = t.schema.get("properties", {})
+        props = t.args_schema.get("properties", {})
         assert "query" in props
         assert "count" in props
         assert "safe_search" in props
@@ -122,7 +122,7 @@ class TestDescriptors:
         t = make_http_request_descriptor("web")
         assert t.id == "http-request"
         assert t.toolset_id == "web"
-        props = t.schema.get("properties", {})
+        props = t.args_schema.get("properties", {})
         assert {"url", "method", "headers", "body", "timeout_seconds"}.issubset(
             props.keys()
         )

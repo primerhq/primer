@@ -573,7 +573,7 @@ def build_misc_toolset(
                     "do not estimate."
                 ),
                 toolset_id=toolset_id,
-                schema=_GetDatetimeArgs.model_json_schema(),
+                args_schema=_GetDatetimeArgs.model_json_schema(),
             ),
             _get_datetime_handler,
         ),
@@ -599,7 +599,7 @@ def build_misc_toolset(
                     "skipped the prompt."
                 ),
                 toolset_id=toolset_id,
-                schema=_AskUserArgs.model_json_schema(),
+                args_schema=_AskUserArgs.model_json_schema(),
             ),
             _ask_user_handler,
         ),
@@ -618,7 +618,7 @@ def build_misc_toolset(
                     "additionally includes ``cancelled: true``."
                 ),
                 toolset_id=toolset_id,
-                schema=_SleepArgs.model_json_schema(),
+                args_schema=_SleepArgs.model_json_schema(),
             ),
             _sleep_handler,
         ),
@@ -634,7 +634,7 @@ def build_misc_toolset(
                     "Returns ``{uuids: [...]}``."
                 ),
                 toolset_id=toolset_id,
-                schema=_UuidV4Args.model_json_schema(),
+                args_schema=_UuidV4Args.model_json_schema(),
             ),
             _uuid_v4_handler,
         ),
@@ -649,7 +649,7 @@ def build_misc_toolset(
                     "safe. Returns ``{algorithm, hex_digest}``."
                 ),
                 toolset_id=toolset_id,
-                schema=_HashArgs.model_json_schema(),
+                args_schema=_HashArgs.model_json_schema(),
             ),
             _hash_handler,
         ),
@@ -670,7 +670,7 @@ def build_misc_toolset(
                     "``{expression, result}``."
                 ),
                 toolset_id=toolset_id,
-                schema=_CalculateArgs.model_json_schema(),
+                args_schema=_CalculateArgs.model_json_schema(),
             ),
             _calculate_handler,
         ),

@@ -17,7 +17,7 @@ def _make_tool(name: str, toolset_id: str = "ts1") -> Tool:
         id=name,
         description=f"tool {name}",
         toolset_id=toolset_id,
-        schema={"type": "object", "properties": {}},
+        args_schema={"type": "object", "properties": {}},
     )
 
 

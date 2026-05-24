@@ -342,7 +342,7 @@ class TestBootstrap:
                         id=tn,
                         toolset_id="_system",
                         description=f"{tn} description",
-                        schema={"type": "object"},
+                        args_schema={"type": "object"},
                     )
 
         subsystem = build_subsystem(

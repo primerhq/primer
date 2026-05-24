@@ -321,7 +321,7 @@ class TestTools:
             id="get_weather",
             description="Get the weather",
             toolset_id="weather_kit",
-            schema={
+            args_schema={
                 "type": "object",
                 "properties": {"city": {"type": "string"}},
                 "required": ["city"],
@@ -1029,7 +1029,7 @@ class TestStream:
             id="search",
             description="Search",
             toolset_id="default",
-            schema={"type": "object", "properties": {}, "required": []},
+            args_schema={"type": "object", "properties": {}, "required": []},
         )
         async for _ in llm.stream(
             model="claude-sonnet-4-5",

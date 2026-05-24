@@ -383,7 +383,7 @@ class TestToolDefinitions:
             id="search",
             description="Search the web",
             toolset_id="default",
-            schema={"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+            args_schema={"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
         )
         out = _tools_to_gemini([tool])
         assert len(out) == 1
@@ -399,9 +399,9 @@ class TestToolDefinitions:
 
     def test_multiple_tools_fold_into_one_wrapper(self) -> None:
         tools = [
-            Tool(id="a", description="A", toolset_id="t", schema={"type": "object"}),
-            Tool(id="b", description="B", toolset_id="t", schema={"type": "object"}),
-            Tool(id="c", description="C", toolset_id="t", schema={"type": "object"}),
+            Tool(id="a", description="A", toolset_id="t", args_schema={"type": "object"}),
+            Tool(id="b", description="B", toolset_id="t", args_schema={"type": "object"}),
+            Tool(id="c", description="C", toolset_id="t", args_schema={"type": "object"}),
         ]
         out = _tools_to_gemini(tools)
         assert len(out) == 1
@@ -903,7 +903,7 @@ class TestStream:
         client.aio.models.generate_content_stream.return_value = _aiter(_ok_chunks())
         tool = Tool(
             id="search", description="Search", toolset_id="t",
-            schema={"type": "object", "properties": {}, "required": []},
+            args_schema={"type": "object", "properties": {}, "required": []},
         )
         async for _ in llm.stream(
             model="gemini-2.5-flash",

@@ -198,7 +198,7 @@ def _tool(
         id=tool_id,
         description=description,
         toolset_id=toolset_id,
-        schema={"type": "object"},
+        args_schema={"type": "object"},
     )
 
 

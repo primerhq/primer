@@ -42,7 +42,7 @@ def _make_tool(toolset_id: str, name: str) -> Tool:
         id=name,
         description=f"test tool {name}",
         toolset_id=toolset_id,
-        schema={"type": "object"},
+        args_schema={"type": "object"},
     )
 
 

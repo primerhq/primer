@@ -243,7 +243,7 @@ class TestCatalog:
         async for t in system_toolset.list_tools():
             assert t.description, f"empty description on {t.id}"
             assert len(t.description) > 30, f"too-thin description on {t.id}"
-            assert isinstance(t.schema, dict)
+            assert isinstance(t.args_schema, dict)
 
 
 # ===========================================================================

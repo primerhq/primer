@@ -213,7 +213,7 @@ def _tool(name: str = "echo") -> Tool:
         id=name,
         description="echoes its input",
         toolset_id="t1",
-        schema={"type": "object", "properties": {}, "additionalProperties": True},
+        args_schema={"type": "object", "properties": {}, "additionalProperties": True},
     )
 
 

@@ -141,7 +141,7 @@ class TestListToolsStdio:
         async with create_connected_server_and_client_session(server) as session:
             provider = _InMemoryMcpToolsetProvider(toolset_id="ts1", session=session)
             tools = {t.id: t async for t in provider.list_tools()}
-        assert tools["echo"].schema == {
+        assert tools["echo"].args_schema == {
             "type": "object",
             "properties": {"text": {"type": "string"}},
             "required": ["text"],

@@ -374,7 +374,7 @@ def _workspace_tool_descriptor(
         id=scoped_id,
         description=ws_tool.description,
         toolset_id=WORKSPACE_TOOLSET_ID,
-        schema=ws_tool.parameters().model_json_schema(),
+        args_schema=ws_tool.parameters().model_json_schema(),
     )
 
 

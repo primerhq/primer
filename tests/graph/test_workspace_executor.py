@@ -85,7 +85,7 @@ class _FakeToolsetProvider:
             id=self._tool_id,
             description=f"fake tool {self._tool_id}",
             toolset_id="fake",
-            schema={"type": "object", "properties": {}},
+            args_schema={"type": "object", "properties": {}},
         )
 
     async def call(

@@ -32,7 +32,7 @@ from matrix.model.provider import (
 )
 
 
-def _lmstudio_reachable(host: str = "localhost", port: int = 1234) -> bool:
+def _lmstudio_reachable(host: str = "127.0.0.1", port: int = 8080) -> bool:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(0.5)
     try:
@@ -80,7 +80,7 @@ async def test_real_openai_smoke() -> None:
 
 @pytest.mark.skipif(
     not _lmstudio_reachable(),
-    reason="LM Studio not reachable on localhost:1234",
+    reason="LM Studio not reachable on 127.0.0.1:8080",
 )
 async def test_lmstudio_smoke() -> None:
     # Pull whatever the user has loaded locally; LM Studio shows it
@@ -91,8 +91,8 @@ async def test_lmstudio_smoke() -> None:
         provider=LLMProviderType.OPENRESPONSES,
         models=[LLMModel(name=model_name, context_length=8192)],
         config=OpenResponsesConfig(
-            url=HttpUrl("http://localhost:1234/v1/"),
-            api_key=SecretStr(""),
+            url=HttpUrl("http://127.0.0.1:8080/v1/"),
+            api_key=SecretStr("***REMOVED***"),
             flavor=OpenResponsesFlavor.LMSTUDIO,
         ),
         limits=Limits(max_concurrency=1),

@@ -279,7 +279,7 @@ def _crud_tools_for(
                 "arguments returns ``is_error=true``."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_PaginationArgs.model_json_schema(),
+            args_schema=_PaginationArgs.model_json_schema(),
         ),
         _list_handler,
     )
@@ -306,7 +306,7 @@ def _crud_tools_for(
                 "with ``type=not-found`` if no row has that id."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_GetByIdArgs.model_json_schema(),
+            args_schema=_GetByIdArgs.model_json_schema(),
         ),
         _get_handler,
     )
@@ -349,7 +349,7 @@ def _crud_tools_for(
                 "schema violation returns ``type=validation-error``."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema={
+            args_schema={
                 "type": "object",
                 "properties": {"entity": entity_schema},
                 "required": ["entity"],
@@ -404,7 +404,7 @@ def _crud_tools_for(
                 "``type=conflict``."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema={
+            args_schema={
                 "type": "object",
                 "properties": {
                     "id": {
@@ -449,7 +449,7 @@ def _crud_tools_for(
                 "id."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_DeleteByIdArgs.model_json_schema(),
+            args_schema=_DeleteByIdArgs.model_json_schema(),
         ),
         _delete_handler,
     )
@@ -485,7 +485,7 @@ def _crud_tools_for(
                 "operator and operand shape."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_FindArgs.model_json_schema(),
+            args_schema=_FindArgs.model_json_schema(),
         ),
         _find_handler,
     )
@@ -541,7 +541,7 @@ def _fetch_models_tool(
                 "identifiers the provider currently exposes."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_ProviderIdArgs.model_json_schema(),
+            args_schema=_ProviderIdArgs.model_json_schema(),
         ),
         _handler,
     )
@@ -612,7 +612,7 @@ def _list_toolset_tools_tool(
                 "id, description, schema, and originating toolset_id."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_ToolsetIdArgs.model_json_schema(),
+            args_schema=_ToolsetIdArgs.model_json_schema(),
         ),
         _handler,
     )
@@ -658,7 +658,7 @@ def _call_tool_tool(
                 "passed through unchanged so the model can act on them."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_CallToolArgs.model_json_schema(),
+            args_schema=_CallToolArgs.model_json_schema(),
         ),
         _handler,
     )
@@ -749,7 +749,7 @@ def _collection_extras(
                 "does not exist."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_CollectionDocumentsListArgs.model_json_schema(),
+            args_schema=_CollectionDocumentsListArgs.model_json_schema(),
         ),
         _list_docs,
     )
@@ -799,7 +799,7 @@ def _collection_extras(
                 "``find_documents`` tool with a hand-built Predicate."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_CollectionFindByMetaArgs.model_json_schema(),
+            args_schema=_CollectionFindByMetaArgs.model_json_schema(),
         ),
         _find_by_meta,
     )
@@ -831,7 +831,7 @@ def _collection_extras(
                 "filtering in the meantime."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_CollectionSearchArgs.model_json_schema(),
+            args_schema=_CollectionSearchArgs.model_json_schema(),
         ),
         _search,
     )
@@ -864,7 +864,7 @@ def _collection_extras(
                 "ingestion pipeline lands."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_CollectionIdArgs.model_json_schema(),
+            args_schema=_CollectionIdArgs.model_json_schema(),
         ),
         _refresh,
     )
@@ -956,7 +956,7 @@ def _document_extras(
                 "``put_document``."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_DocumentIdArgs.model_json_schema(),
+            args_schema=_DocumentIdArgs.model_json_schema(),
         ),
         _get_content,
     )
@@ -997,7 +997,7 @@ def _document_extras(
                 "row-level CRUD without content semantics."
             ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            schema=_PutDocumentArgs.model_json_schema(),
+            args_schema=_PutDocumentArgs.model_json_schema(),
         ),
         _put_document,
     )

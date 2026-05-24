@@ -3,10 +3,11 @@
 Covers backlog items T0037 (resume→pause→resume→cancel walk) and
 T0056 (pause then resume returns to RUNNING).
 
-These tests require LM Studio running at ``http://localhost:1234`` with
-at least one chat-completion model loaded (see docs/testing/02-bringup.md
-§ "Available local model server"). The module probes LM Studio at
-collection time and `pytest.skip`s the whole file if it isn't reachable.
+These tests require LM Studio reachable at ``http://127.0.0.1:8080``
+(bearer ``***REMOVED***``) with at least one chat-completion model loaded
+(see docs/testing/02-bringup.md § "Available local model server"). The
+module probes LM Studio at collection time and `pytest.skip`s the whole
+file if it isn't reachable.
 
 Timing semantics — important:
 the worker pool actually processes turns once a session reaches
@@ -29,13 +30,14 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import httpx
 import pytest
 
 
-_LM_STUDIO_URL = "http://localhost:1234"
+_LM_STUDIO_URL = "http://127.0.0.1:8080"
+_LM_STUDIO_API_KEY = "***REMOVED***"
 
 
 def _discover_chat_model() -> str | None:
@@ -46,7 +48,11 @@ def _discover_chat_model() -> str | None:
     """
     try:
         import json
-        with urlopen(f"{_LM_STUDIO_URL}/v1/models", timeout=3) as resp:
+        req = Request(
+            f"{_LM_STUDIO_URL}/v1/models",
+            headers={"Authorization": f"Bearer {_LM_STUDIO_API_KEY}"},
+        )
+        with urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
         print(f"[lmstudio probe] unreachable: {exc}", file=sys.stderr)
@@ -84,7 +90,7 @@ def _llm_provider_body(entity_id: str, model_id: str) -> dict:
         "models": [{"name": model_id, "context_length": 8192}],
         "config": {
             "url": f"{_LM_STUDIO_URL}/v1",
-            "api_key": "lm-studio",
+            "api_key": _LM_STUDIO_API_KEY,
             "flavor": "lmstudio",
         },
         "limits": {"max_concurrency": 1},
