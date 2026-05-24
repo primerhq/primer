@@ -18,9 +18,8 @@ Pins the cascade-block contract end-to-end. The block is what makes
 collections "load-bearing" on their SSP rather than orphan-prone.
 
 Envelope shapes (verified against the live server):
-  - 409 cascade-block: FastAPI HTTPException with dict detail,
-    response is {"detail": {"type": "/errors/conflict", "title": "...",
-    "detail": "..."}}  — nested under the top-level "detail" key.
+  - 409 cascade-block: RFC 7807 flat envelope {"type": "/errors/conflict",
+    "status": 409, "detail": "...", "instance": "...", "extensions": {...}}
   - 404 not-found: RFC 7807 flat envelope {"type": "/errors/not-found",
     "status": 404, "detail": "...", "instance": "...", "extensions": {...}}
 """
@@ -96,17 +95,13 @@ async def test_semantic_search_full_journey(
         assert items[0]["search_provider_id"] == ssp_id, items[0]
 
         # ----- Cascade-block: DELETE SSP while collection is live -----
-        # The hook raises HTTPException(409, detail={...}) so the response
-        # is {"detail": {"type": "/errors/conflict", "title": "...",
-        # "detail": "..."}}.  Not the flat RFC 7807 envelope.
+        # The hook raises ConflictError → RFC 7807 flat envelope.
         r = await client.delete(f"/v1/ssp/{ssp_id}")
         assert r.status_code == 409, r.text
         body = r.json()
-        inner = body.get("detail", {})
-        assert isinstance(inner, dict), body
-        assert inner.get("type") == "/errors/conflict", body
+        assert body.get("type") == "/errors/conflict", body
         # Detail names the referencing collection id
-        assert coll_id in inner.get("detail", ""), body
+        assert coll_id in body.get("detail", ""), body
 
         # ----- Confirm SSP row is STILL present (cascade-block worked) -----
         r = await client.get(f"/v1/ssp/{ssp_id}")

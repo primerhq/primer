@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, Path, Request
 
 from matrix.api.deps import get_semantic_search_registry, get_semantic_search_storage
 from matrix.api.errors import common_responses
 from matrix.api.routers._crud import make_crud_router
+from matrix.model.except_ import ConflictError
 from matrix.model.provider import SemanticSearchProvider
 from matrix.model.storage import FieldRef, Op, OffsetPage, Predicate, Value
 
@@ -104,16 +105,9 @@ async def _on_delete(entity_id: str, request: Request) -> None:
 
     if collisions:
         collection_ids = [c.id for c in collisions]
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "type": "/errors/conflict",
-                "title": "SemanticSearchProvider in use",
-                "detail": (
-                    f"Cannot delete SemanticSearchProvider {entity_id!r}: "
-                    f"referenced by Collection(s): {collection_ids}"
-                ),
-            },
+        raise ConflictError(
+            f"Cannot delete SemanticSearchProvider {entity_id!r}: "
+            f"referenced by Collection(s): {collection_ids}"
         )
 
     # No collisions — invalidate the cached adapter.
