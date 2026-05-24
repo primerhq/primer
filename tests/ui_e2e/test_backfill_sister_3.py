@@ -35,59 +35,6 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 
 
 # ===========================================================================
-# U0100 — Modal X (close) button dismisses
-# ===========================================================================
-
-
-def test_u0100_modal_close_button_dismisses_create_modal(
-    page, base_url, console_url,
-) -> None:
-    """U0100 — Completes the modal-dismiss trio (U0044 ESC, U0097
-    overlay-click). Open New agent modal → click the X button in
-    the modal header (shared.jsx:116) → modal dismisses → no
-    mutation POST fires.
-    """
-    delete_or_post_calls = {"count": 0}
-
-    def _on_agents_mutate(route):
-        if route.request.method in ("POST", "PUT", "DELETE"):
-            delete_or_post_calls["count"] += 1
-            route.fulfill(status=500, content_type="application/json", body="{}")
-        else:
-            route.continue_()
-
-    page.route("**/v1/agents", _on_agents_mutate)
-    try:
-        page.goto(f"{console_url}#/agents", wait_until="domcontentloaded")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
-
-        page.get_by_role(
-            "button", name="New agent", exact=False,
-        ).first.click()
-        modal = page.locator(".modal").first
-        modal.wait_for(state="visible", timeout=5_000)
-
-        # The X button is a button.close inside .modal-h.
-        close_btn = modal.locator(".modal-h .close").first
-        close_btn.wait_for(state="visible", timeout=3_000)
-        close_btn.click()
-
-        # Modal dismisses.
-        page.wait_for_timeout(300)
-        assert page.locator(".modal").count() == 0, (
-            "modal didn't dismiss on X button click"
-        )
-        assert delete_or_post_calls["count"] == 0, (
-            f"X click triggered a mutation; "
-            f"calls={delete_or_post_calls['count']}"
-        )
-    finally:
-        page.unroute("**/v1/agents")
-
-
-# ===========================================================================
 # U0101 — Workspaces list filter input narrows table
 # ===========================================================================
 

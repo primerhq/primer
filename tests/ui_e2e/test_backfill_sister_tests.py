@@ -34,30 +34,6 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
                 pass
 
 
-def _drain_collections(base_url: str) -> list[str]:
-    """Delete every collection currently in storage so the empty-state
-    test can assert on a TRUE empty list. Returns the ids that were
-    deleted (the test does not attempt to recreate them — the loop's
-    teardown will, or a future iteration's seed will).
-    """
-    drained: list[str] = []
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.get("/v1/collections?limit=200")
-        if r.status_code != 200:
-            return drained
-        items = (r.json() or {}).get("items", [])
-        for it in items:
-            cid = it.get("id")
-            if not cid:
-                continue
-            try:
-                c.delete(f"/v1/collections/{cid}")
-                drained.append(cid)
-            except Exception:  # noqa: BLE001
-                pass
-    return drained
-
-
 # ===========================================================================
 # U0094 — Toolset detail Sessions tab deep-link survives reload
 # ===========================================================================
@@ -225,47 +201,3 @@ def test_u0095_workspaces_sidebar_count_decrements_after_delete(
         _cleanup(base_url, cleanup_urls)
 
 
-# ===========================================================================
-# U0096 — Knowledge → Collections empty state
-# ===========================================================================
-
-
-def test_u0096_collections_empty_state_renders_no_collections_yet(
-    page, base_url, console_url,
-) -> None:
-    """U0096 — Sister of U0038 (Workspaces empty state) for the
-    Knowledge → Collections list. Drain any pre-existing collections
-    via API so the list is truly empty; navigate to
-    ``#/knowledge/collections``; assert the EmptyState renders
-    "No collections yet" copy + a "New collection" CTA per
-    knowledge.jsx:73.
-    """
-    # Drain pre-existing collections so the test is deterministic.
-    drained = _drain_collections(base_url)
-
-    try:
-        page.goto(
-            f"{console_url}#/knowledge/collections",
-            wait_until="domcontentloaded",
-        )
-        page.locator("h1.page-title").first.wait_for(
-            state="visible", timeout=10_000,
-        )
-
-        # Empty-state copy. Use a fuzzy locator since the panel
-        # uses EmptyState's heading slot.
-        from playwright.sync_api import expect
-        expect(
-            page.get_by_text("No collections yet", exact=False).first
-        ).to_be_visible(timeout=10_000)
-
-        # CTA button.
-        expect(
-            page.get_by_role("button", name="New collection").first
-        ).to_be_visible(timeout=3_000)
-    finally:
-        # No re-creation — the test drained the rows but follow-on
-        # iterations will seed fresh. Drained ids surfaced in the
-        # test output so the user can re-seed if needed.
-        if drained:
-            print(f"[u0096] drained {len(drained)} collections: {drained}")

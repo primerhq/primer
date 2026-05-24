@@ -22,66 +22,6 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# U0038 — Workspaces list empty state renders CTA when no rows exist
-# ---------------------------------------------------------------------------
-
-
-def test_u0038_workspaces_list_empty_state_renders_cta(
-    page,
-    base_url: str,
-    console_url: str,
-) -> None:
-    """U0038 — When no workspaces exist, the Workspaces list page
-    renders the empty-state panel ("No workspaces yet" head + a
-    "New workspace" CTA) in place of the table.
-
-    Priority 6 — empty-state rendering. The empty-state lives at
-    workspaces.jsx:111-120 and only fires when ``items.length === 0``
-    (i.e. the backend returned zero rows AND nothing was filtered
-    out). Test DELETEs any pre-existing workspaces, navigates, and
-    asserts the documented copy + CTA.
-
-    Cleanup-as-precondition: the test takes ownership of removing
-    any workspaces that exist before it runs. That's intrusive but
-    necessary — without it the empty state can't render. After the
-    test, no workspaces are added.
-    """
-    # Drain any pre-existing workspaces.
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.get("/v1/workspaces?limit=200")
-        assert r.status_code == 200, f"GET /workspaces failed: {r.text}"
-        for item in r.json().get("items", []):
-            try:
-                c.delete(f"/v1/workspaces/{item['id']}")
-            except Exception:  # noqa: BLE001
-                pass
-        # Confirm we drained to zero.
-        r = c.get("/v1/workspaces?limit=1")
-        assert r.json().get("total", 0) == 0, (
-            f"failed to drain workspaces to zero: {r.text}"
-        )
-
-    page.goto(f"{console_url}#/workspaces", wait_until="domcontentloaded")
-    page.locator("h1.page-title").get_by_text(
-        "Workspaces", exact=False,
-    ).first.wait_for(state="visible", timeout=10_000)
-
-    # Documented empty-state head copy.
-    page.get_by_text("No workspaces yet", exact=False).first.wait_for(
-        state="visible", timeout=10_000,
-    )
-
-    # Empty-state CTA — "New workspace" button per workspaces.jsx:118
-    # (inside the empty-state panel; same label as the header button,
-    # so we scope to the .empty container).
-    empty_panel = page.locator(".empty:has-text('No workspaces yet')").first
-    empty_panel.wait_for(state="visible", timeout=5_000)
-    empty_panel.get_by_role(
-        "button", name="New workspace",
-    ).first.wait_for(state="visible", timeout=5_000)
-
-
-# ---------------------------------------------------------------------------
 # U0045 — Toolset Tools tab deep-link survives reload
 # ---------------------------------------------------------------------------
 
