@@ -466,17 +466,23 @@ function App() {
     );
   } else if (page === "llm" || page === "embedding" || page === "rerank") {
     const label = { llm: "LLM", embedding: "Embedding", rerank: "Cross-Encoder" }[page];
-    pageHeader = (
-      <>
-        <div>
-          <div className="crumb">
-            <a onClick={() => navigate("dashboard")}>Providers</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>{label}</span>
+    // On detail (params.id present), ProvidersPage renders its own page
+    // header (crumb + mono id + Invalidate/Delete/Back actions). Leave
+    // pageHeader null so we don't double-render.
+    if (!params.id) {
+      const pluralPath = page === "rerank" ? "cross_encoder_providers" : `${page}_providers`;
+      pageHeader = (
+        <>
+          <div>
+            <div className="crumb">
+              <a onClick={() => navigate("dashboard")}>Providers</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>{label}</span>
+            </div>
+            <h1 className="page-title">{label} providers</h1>
+            <div className="page-sub">Backed by <span className="mono">/v1/{pluralPath}</span></div>
           </div>
-          <h1 className="page-title">{label} providers</h1>
-          <div className="page-sub">Backed by <span className="mono">/v1/{page}_providers</span></div>
-        </div>
-      </>
-    );
+        </>
+      );
+    }
     pageBody = <ProvidersPage kind={page} sessions={sessions} pushToast={pushToast} />;
   } else if (page === "toolsets-user") {
     pageHeader = (
