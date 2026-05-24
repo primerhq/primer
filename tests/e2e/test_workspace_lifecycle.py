@@ -3658,13 +3658,19 @@ async def test_t0369_workspace_files_put_absolute_path_returns_4xx(
     no traversal allowed; never 5xx /errors/internal.
 
     Test both POSIX (/etc/passwd) and Windows (C:\\Windows\\foo)
-    style absolute paths to cover both platforms.
+    style absolute paths to cover both platforms. Note: ``C:\\…`` is
+    a valid relative path on POSIX (no drive letters) so the Windows
+    string is only checked when running on Windows.
     """
+    import os
     import urllib.parse
     provider_id, template_id = await _setup_provider_template(
         client, suffix=unique_suffix, root=tmp_path,
     )
     workspace_id: str | None = None
+    paths_to_test = ["/etc/passwd"]
+    if os.name == "nt":
+        paths_to_test.append("C:\\Windows\\foo.txt")
     try:
         ws = await client.post(
             "/v1/workspaces", json=_workspace_body(template_id=template_id),
@@ -3672,7 +3678,7 @@ async def test_t0369_workspace_files_put_absolute_path_returns_4xx(
         assert ws.status_code == 201, ws.text
         workspace_id = ws.json()["id"]
 
-        for absolute_path in ("/etc/passwd", "C:\\Windows\\foo.txt"):
+        for absolute_path in paths_to_test:
             encoded = urllib.parse.quote(absolute_path, safe="")
             resp = await client.put(
                 f"/v1/workspaces/{workspace_id}/files?path={encoded}",

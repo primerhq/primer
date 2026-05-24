@@ -79,9 +79,9 @@ async def test_t0100_openapi_spec_byte_stable_across_fetches(
     insertion order leaking from a runtime-built spec) would break
     SDK code-generators that diff the schema between releases.
     """
-    first = await client.get("/openapi.json")
+    first = await client.get("/v1/openapi.json")
     assert first.status_code == 200, first.text
-    second = await client.get("/openapi.json")
+    second = await client.get("/v1/openapi.json")
     assert second.status_code == 200, second.text
     # Byte-exact comparison; no whitespace tolerance.
     assert first.content == second.content, (

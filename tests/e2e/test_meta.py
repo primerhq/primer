@@ -320,7 +320,7 @@ async def test_t0259_head_openapi_returns_headers_only(
     behaviour on the always-mounted /openapi.json (per spec §1).
     Body must be empty; status code must match GET (or 405).
     """
-    resp = await client.head("/openapi.json")
+    resp = await client.head("/v1/openapi.json")
     assert resp.status_code in (200, 405), resp.text
     assert resp.content == b"", resp.content
     if resp.status_code == 200:

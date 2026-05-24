@@ -16,7 +16,7 @@ async def test_t0049_openapi_json_lists_documented_routes(
 ) -> None:
     """T0049 — `GET /openapi.json` returns 200, parses as JSON, and
     contains the major documented route prefixes."""
-    resp = await client.get("/openapi.json")
+    resp = await client.get("/v1/openapi.json")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     paths = body.get("paths") or {}
@@ -82,7 +82,7 @@ async def test_t0231_openapi_paths_cover_all_documented_routers(
     mount a new one — without exhaustive coverage, the existing T0049
     spot-check could pass with a partial surface.
     """
-    resp = await client.get("/openapi.json")
+    resp = await client.get("/v1/openapi.json")
     assert resp.status_code == 200, resp.text
     paths = (resp.json().get("paths") or {})
     declared = list(paths.keys())
@@ -137,7 +137,7 @@ async def test_t0232_openapi_problem_schema_referenced_from_errors(
     breaks the documented contract, the test catches it before clients
     rely on it.
     """
-    resp = await client.get("/openapi.json")
+    resp = await client.get("/v1/openapi.json")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     schemas = (body.get("components") or {}).get("schemas") or {}
@@ -209,7 +209,7 @@ async def test_t0255_openapi_includes_pagination_envelope_schemas(
     "at least one schema matches each shape" rather than a specific
     schema name — FastAPI/Pydantic may emit different class names.
     """
-    resp = await client.get("/openapi.json")
+    resp = await client.get("/v1/openapi.json")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     schemas = (body.get("components") or {}).get("schemas") or {}
@@ -269,7 +269,7 @@ async def test_t0339_openapi_every_crud_entity_has_six_ops(
     NB: WorkspaceProvider has no PUT (per spec §12), so it's
     excluded; Workspace is bespoke (no generator) so also excluded.
     """
-    resp = await client.get("/openapi.json")
+    resp = await client.get("/v1/openapi.json")
     assert resp.status_code == 200, resp.text
     paths = (resp.json().get("paths") or {})
 
@@ -352,7 +352,7 @@ async def test_t0340_openapi_no_unreferenced_schemas(
     are referenced indirectly through their parent type's anyOf list.
     """
     import json
-    resp = await client.get("/openapi.json")
+    resp = await client.get("/v1/openapi.json")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     schemas = (body.get("components") or {}).get("schemas") or {}
