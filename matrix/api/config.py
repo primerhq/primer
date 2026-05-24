@@ -1,10 +1,13 @@
 """Application configuration loaded from env vars (and an optional TOML file).
 
-Carries database connection parameters only. Provider configs, toolset
-config — all live in storage rows and are managed via the API itself.
-The lifespan handler in :mod:`matrix.api.app` builds
-:class:`StorageProvider` from this and seeds empty registries that
-lazy-instantiate adapters from rows on demand.
+Carries DB connection parameters (via a provider-factory shape) plus
+HTTP/scheduler/worker knobs. Provider rows, toolset rows, vector-store
+rows all live in storage and are managed via the API itself.
+
+Every field has a default. The zero-config path — no env vars, no
+TOML, no init args — constructs successfully and is interpreted by
+``matrix.api.app._build_storage_provider`` as "embedded SQLite at
+``~/.matrix/db/data.sqlite``".
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -21,6 +24,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from matrix.model.provider import StorageProviderConfig
 from matrix.model.scheduler import (
     RuntimeMode,
     SchedulerProviderConfig,
@@ -37,27 +41,15 @@ class AppConfig(BaseSettings):
         extra="ignore",
     )
 
-    # --- Storage (Postgres only in v1) -----------------------------------
-    db_host: str = Field(..., description="Postgres host.")
-    db_port: int = Field(default=5432, description="Postgres port.")
-    db_database: str = Field(..., description="Postgres database name.")
-    db_user: str = Field(..., description="Postgres user.")
-    db_password: SecretStr = Field(..., description="Postgres password.")
-    db_min_pool_size: int = Field(
-        default=5,
-        ge=1,
+    # --- Storage ---------------------------------------------------------
+    db: StorageProviderConfig | None = Field(
+        default=None,
         description=(
-            "Lower bound for the connection pool. Defaults to 5 so the "
-            "yielding-tools background tasks (LISTEN + polling timer / "
-            "sweeper / watcher / mcp-bridge) have headroom alongside the "
-            "worker pool. Smaller pools deadlock the lifespan on slow "
-            "Windows postgres handshakes."
+            "Entity-storage backend. None (default) means 'use embedded "
+            "SQLite at ~/.matrix/db/data.sqlite'. Set to a "
+            "StorageProviderConfig with provider='postgres' (or 'sqlite' "
+            "with a custom path) to override."
         ),
-    )
-    db_max_pool_size: int = Field(
-        default=20,
-        ge=1,
-        description="Upper bound for the connection pool.",
     )
 
     # --- HTTP server -----------------------------------------------------
@@ -68,63 +60,50 @@ class AppConfig(BaseSettings):
     runtime_mode: RuntimeMode = Field(
         default=RuntimeMode.API_PLUS_WORKER,
         description=(
-            "What this process should do: serve HTTP only ('api'), run "
-            "the worker pool only ('worker'), or both ('api+worker'). "
-            "See docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md "
-            "§9 for the full lifespan-wiring contract."
+            "What this process should do: 'api' / 'worker' / 'api+worker'. "
+            "See docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md."
         ),
     )
     scheduler: SchedulerProviderConfig | None = Field(
         default=None,
         description=(
-            "Scheduler backend. REQUIRED when runtime_mode != 'api'. "
-            "Use 'postgres' for production (lease columns + LISTEN/NOTIFY), "
-            "'in_memory' for single-process dev or tests."
+            "Scheduler backend. None (default) means 'use the in-memory "
+            "scheduler' — appropriate for single-process embedded use. "
+            "Set provider='postgres' for production deployments."
         ),
     )
     worker: WorkerConfig = Field(
         default_factory=WorkerConfig,
-        description=(
-            "Worker pool knobs (concurrency, lease TTL, heartbeat cadence, "
-            "retry policy). Ignored when runtime_mode == 'api'."
-        ),
+        description="Worker pool knobs (concurrency, lease TTL, etc.).",
     )
 
     # --- MCP toolset stdio safety ----------------------------------------
     mcp_stdio_allowed_commands: list[str] | None = Field(
         default=None,
         description=(
-            "Safelist of executable names that an MCP Toolset row with "
-            "transport='stdio' is allowed to launch. ``None`` (the "
-            "default) disables the check, which is acceptable when "
-            "Toolset creation is operator-restricted; in any "
-            "multi-tenant or otherwise less-trusted deployment this "
-            "MUST be set to a tight allowlist (e.g. ['python', 'node']) "
-            "or stdio toolsets MUST be disabled at the upstream auth "
-            "layer."
+            "Safelist of executable names that an MCP Toolset with "
+            "transport='stdio' is allowed to launch. None disables the "
+            "check."
         ),
     )
 
     # --- Misc ------------------------------------------------------------
     log_level: Literal["debug", "info", "warning", "error"] = Field(
         default="info",
-        description="Log level for both application logs and uvicorn access logs.",
+        description="Log level for application + uvicorn access logs.",
     )
     log_file: Path | None = Field(
         default=None,
         description=(
-            "When set, application logs are written to this file (rotated "
-            "at 10 MB, 5 backups) instead of stderr. The parent directory "
-            "is created on demand. ``None`` (the default) keeps the "
-            "stdout/stderr behaviour."
+            "If set, application logs are written to this file (rotated). "
+            "None keeps stdout/stderr behaviour."
         ),
     )
     log_json: bool = Field(
         default=True,
         description=(
-            "When True (default) emit one JSON object per log line — "
-            "suitable for aggregators. Set False for the human-readable "
-            "single-line dev formatter."
+            "True (default) emits one JSON object per log line. "
+            "False uses a human-readable single-line formatter."
         ),
     )
 
@@ -139,9 +118,9 @@ class AppConfig(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         """Source priority: init args > env > TOML > .env > secrets file.
 
-        TOML file path is read from ``$MATRIX_CONFIG_PATH`` at
-        instantiation time (not at class-definition time) so tests
-        that ``monkeypatch.setenv`` see the right value.
+        TOML path is read from ``$MATRIX_CONFIG_PATH`` at instantiation
+        time. The CLI's YAML loader feeds its parsed dict through
+        ``init_settings`` so a CLI-supplied YAML wins over env vars.
         """
         toml_path = os.environ.get("MATRIX_CONFIG_PATH") or None
         sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings]

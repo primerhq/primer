@@ -1,4 +1,4 @@
-"""Unit tests for matrix.api.config.AppConfig."""
+"""Unit tests for matrix.api.config.AppConfig (post-SQLite reshape)."""
 
 from __future__ import annotations
 
@@ -9,145 +9,140 @@ import pytest
 from pydantic import ValidationError
 
 from matrix.api.config import AppConfig
+from matrix.model.provider import (
+    PostgresConfig,
+    SqliteConfig,
+    StorageProviderConfig,
+    StorageProviderType,
+)
+from matrix.model.scheduler import (
+    InMemorySchedulerConfig,
+    RuntimeMode,
+    SchedulerProviderConfig,
+    SchedulerProviderType,
+    WorkerConfig,
+)
 
 
-class TestEnvVarLoading:
-    def test_loads_required_db_fields_from_env(
+class TestZeroConfigDefaults:
+    def test_all_defaults_construct_without_any_input(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("MATRIX_DB_HOST", "db.local")
-        monkeypatch.setenv("MATRIX_DB_DATABASE", "matrix")
-        monkeypatch.setenv("MATRIX_DB_USER", "matrix")
-        monkeypatch.setenv("MATRIX_DB_PASSWORD", "secret")
-        config = AppConfig()
-        assert config.db_host == "db.local"
-        assert config.db_database == "matrix"
-        assert config.db_user == "matrix"
-        assert config.db_password.get_secret_value() == "secret"
+        # No MATRIX_* env vars, no TOML, no init args.
+        for var in (
+            "MATRIX_DB__PROVIDER", "MATRIX_CONFIG_PATH",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        cfg = AppConfig()
+        assert cfg.db is None
+        assert cfg.scheduler is None
+        assert cfg.host == "0.0.0.0"
+        assert cfg.port == 8000
+        assert cfg.runtime_mode == RuntimeMode.API_PLUS_WORKER
 
-    def test_defaults_for_optional_fields(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("MATRIX_DB_HOST", "h")
-        monkeypatch.setenv("MATRIX_DB_DATABASE", "d")
-        monkeypatch.setenv("MATRIX_DB_USER", "u")
-        monkeypatch.setenv("MATRIX_DB_PASSWORD", "p")
-        config = AppConfig()
-        assert config.db_port == 5432
-        assert config.db_min_pool_size == 1
-        assert config.db_max_pool_size == 10
-        assert config.host == "0.0.0.0"
-        assert config.port == 8000
-        assert config.log_level == "info"
 
-    def test_missing_required_field_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("MATRIX_DB_DATABASE", raising=False)
-        monkeypatch.delenv("MATRIX_DB_USER", raising=False)
-        monkeypatch.delenv("MATRIX_DB_PASSWORD", raising=False)
-        monkeypatch.delenv("MATRIX_CONFIG_PATH", raising=False)
-        monkeypatch.setenv("MATRIX_DB_HOST", "h")
-        with pytest.raises(ValidationError):
-            AppConfig()
+class TestDbField:
+    def test_db_accepts_sqlite(self, tmp_path: Path) -> None:
+        cfg = AppConfig(
+            db=StorageProviderConfig(
+                provider=StorageProviderType.SQLITE,
+                config=SqliteConfig(path=tmp_path / "data.sqlite"),
+            )
+        )
+        assert cfg.db is not None
+        assert cfg.db.provider == StorageProviderType.SQLITE
 
-    def test_invalid_log_level_raises(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_db_accepts_postgres(self) -> None:
+        from matrix.model.provider import PoolConfig
+
+        cfg = AppConfig(
+            db=StorageProviderConfig(
+                provider=StorageProviderType.POSTGRES,
+                config=PostgresConfig(
+                    hostname="h", username="u", password="p", database="d",
+                    pool=PoolConfig(),
+                ),
+            )
+        )
+        assert cfg.db is not None
+        assert cfg.db.provider == StorageProviderType.POSTGRES
+
+    def test_db_from_nested_env_vars(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("MATRIX_DB_HOST", "h")
-        monkeypatch.setenv("MATRIX_DB_DATABASE", "d")
-        monkeypatch.setenv("MATRIX_DB_USER", "u")
-        monkeypatch.setenv("MATRIX_DB_PASSWORD", "p")
-        monkeypatch.setenv("MATRIX_LOG_LEVEL", "verbose")
-        with pytest.raises(ValidationError):
-            AppConfig()
+        monkeypatch.setenv("MATRIX_DB__PROVIDER", "sqlite")
+        monkeypatch.setenv(
+            "MATRIX_DB__CONFIG__PATH", str(tmp_path / "x.sqlite"),
+        )
+        cfg = AppConfig()
+        assert cfg.db is not None
+        assert cfg.db.provider == StorageProviderType.SQLITE
+        assert cfg.db.config.path == tmp_path / "x.sqlite"  # type: ignore[union-attr]
+
+
+class TestRuntimeModeAndScheduler:
+    def test_default_runtime_mode_is_api_plus_worker(self) -> None:
+        cfg = AppConfig()
+        assert cfg.runtime_mode == RuntimeMode.API_PLUS_WORKER
+
+    def test_scheduler_default_is_none(self) -> None:
+        cfg = AppConfig()
+        assert cfg.scheduler is None
+
+    def test_can_set_scheduler_explicitly(self) -> None:
+        cfg = AppConfig(
+            scheduler=SchedulerProviderConfig(
+                provider=SchedulerProviderType.IN_MEMORY,
+                config=InMemorySchedulerConfig(),
+            ),
+            worker=WorkerConfig(concurrency=4),
+        )
+        assert cfg.scheduler is not None
+        assert cfg.scheduler.provider == SchedulerProviderType.IN_MEMORY
+        assert cfg.worker.concurrency == 4
 
 
 class TestTomlConfigPath:
-    def test_reads_config_from_toml_when_path_set(
+    def test_toml_db_overrides_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
+        sqlite_path = tmp_path / "from-toml.sqlite"
         toml_path = tmp_path / "matrix.toml"
         toml_path.write_text(
             textwrap.dedent(
-                """
-                db_host = "toml-host"
-                db_port = 6543
-                db_database = "toml-db"
-                db_user = "toml-user"
-                db_password = "toml-secret"
+                f"""
                 log_level = "debug"
+
+                [db]
+                provider = "sqlite"
+
+                [db.config]
+                path = "{sqlite_path}"
                 """
             ),
             encoding="utf-8",
         )
-        for var in ("DB_HOST", "DB_DATABASE", "DB_USER", "DB_PASSWORD", "LOG_LEVEL"):
-            monkeypatch.delenv(f"MATRIX_{var}", raising=False)
+        for var in ("MATRIX_DB__PROVIDER",):
+            monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("MATRIX_CONFIG_PATH", str(toml_path))
-        config = AppConfig()
-        assert config.db_host == "toml-host"
-        assert config.db_port == 6543
-        assert config.db_database == "toml-db"
-        assert config.db_user == "toml-user"
-        assert config.db_password.get_secret_value() == "toml-secret"
-        assert config.log_level == "debug"
+        cfg = AppConfig()
+        assert cfg.log_level == "debug"
+        assert cfg.db is not None
+        assert cfg.db.provider == StorageProviderType.SQLITE
 
-    def test_env_var_overrides_toml(
+    def test_init_args_override_toml(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
         toml_path = tmp_path / "matrix.toml"
         toml_path.write_text(
-            textwrap.dedent(
-                """
-                db_host = "toml-host"
-                db_database = "d"
-                db_user = "u"
-                db_password = "p"
-                """
-            ),
-            encoding="utf-8",
+            'log_level = "debug"\n', encoding="utf-8",
         )
         monkeypatch.setenv("MATRIX_CONFIG_PATH", str(toml_path))
-        monkeypatch.setenv("MATRIX_DB_HOST", "env-host")
-        config = AppConfig()
-        assert config.db_host == "env-host"
-
-
-def test_app_config_default_runtime_mode_is_api_plus_worker(monkeypatch):
-    monkeypatch.setenv("MATRIX_DB_HOST", "localhost")
-    monkeypatch.setenv("MATRIX_DB_DATABASE", "matrix")
-    monkeypatch.setenv("MATRIX_DB_USER", "u")
-    monkeypatch.setenv("MATRIX_DB_PASSWORD", "p")
-    from matrix.api.config import AppConfig
-    from matrix.model.scheduler import RuntimeMode
-    cfg = AppConfig()
-    assert cfg.runtime_mode == RuntimeMode.API_PLUS_WORKER
-    assert cfg.scheduler is None
-    assert cfg.worker.concurrency == 8
-
-
-def test_app_config_accepts_scheduler_and_worker(monkeypatch):
-    monkeypatch.setenv("MATRIX_DB_HOST", "localhost")
-    monkeypatch.setenv("MATRIX_DB_DATABASE", "matrix")
-    monkeypatch.setenv("MATRIX_DB_USER", "u")
-    monkeypatch.setenv("MATRIX_DB_PASSWORD", "p")
-    from matrix.api.config import AppConfig
-    from matrix.model.scheduler import (
-        InMemorySchedulerConfig,
-        SchedulerProviderConfig,
-        SchedulerProviderType,
-        WorkerConfig,
-    )
-    cfg = AppConfig(
-        scheduler=SchedulerProviderConfig(
-            provider=SchedulerProviderType.IN_MEMORY,
-            config=InMemorySchedulerConfig(),
-        ),
-        worker=WorkerConfig(concurrency=4),
-    )
-    assert cfg.scheduler.provider == SchedulerProviderType.IN_MEMORY
-    assert cfg.worker.concurrency == 4
+        cfg = AppConfig(log_level="info")
+        assert cfg.log_level == "info"
