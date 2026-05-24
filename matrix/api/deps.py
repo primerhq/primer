@@ -89,6 +89,11 @@ def get_vector_store_registry(request: Request) -> VectorStoreRegistry:
 
 
 def get_semantic_search_registry(request: Request) -> "SemanticSearchRegistry":
+    """Return the per-process SemanticSearchRegistry stored on app.state.
+
+    Raises 503 ``/errors/subsystem-inactive`` if the registry wasn't
+    constructed at lifespan time (test paths that skip registry wiring).
+    """
     from matrix.api.registries.semantic_search_registry import (
         SemanticSearchRegistry,
     )

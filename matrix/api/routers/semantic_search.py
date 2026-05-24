@@ -48,7 +48,12 @@ async def _on_create(entity_id: str, request: Request) -> None:
 
 
 async def _on_update(entity_id: str, request: Request) -> None:
-    """Invalidate the cached VectorStoreProvider for the updated row."""
+    """Invalidate the cached VectorStoreProvider instance for this SSP row.
+
+    Called after PUT /v1/ssp/{id}; the next call to
+    SemanticSearchRegistry.get_provider(id) will re-resolve the row
+    from storage and reconstruct the live backend.
+    """
     registry = getattr(request.app.state, "semantic_search_registry", None)
     if registry is not None:
         await registry.invalidate(entity_id)

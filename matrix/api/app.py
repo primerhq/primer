@@ -18,6 +18,8 @@ from matrix.api.registries import (
     VectorStoreRegistry,
     WorkspaceRegistry,
 )
+from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
+from matrix.model.provider import SemanticSearchProvider
 from matrix.api.routers import (
     chats as chats_router,
     compute,
@@ -66,8 +68,6 @@ def _make_lifespan(config: AppConfig):
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
         vector_store_registry = VectorStoreRegistry(config.vector_store)
-        from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
-        from matrix.model.provider import SemanticSearchProvider
         semantic_search_registry = SemanticSearchRegistry(
             storage=storage_provider.get_storage(SemanticSearchProvider),
         )
