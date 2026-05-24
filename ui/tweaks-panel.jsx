@@ -156,25 +156,13 @@ const __TWEAKS_STYLE = `
     filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))}
 `;
 
-// ── useTweaks ───────────────────────────────────────────────────────────────
-// Single source of truth for tweak values. setTweak persists via the host
-// (__edit_mode_set_keys → host rewrites the EDITMODE block on disk).
-function useTweaks(defaults) {
-  const [values, setValues] = React.useState(defaults);
-  // Accepts either setTweak('key', value) or setTweak({ key: value, ... }) so a
-  // useState-style call doesn't write a "[object Object]" key into the persisted
-  // JSON block.
-  const setTweak = React.useCallback((keyOrEdits, val) => {
-    const edits = typeof keyOrEdits === 'object' && keyOrEdits !== null
-      ? keyOrEdits : { [keyOrEdits]: val };
-    setValues((prev) => ({ ...prev, ...edits }));
-    window.parent.postMessage({ type: '__edit_mode_set_keys', edits }, '*');
-    // Same-window signal so in-page listeners (deck-stage rail thumbnails)
-    // can react — the parent message only reaches the host, not peers.
-    window.dispatchEvent(new CustomEvent('tweakchange', { detail: edits }));
-  }, []);
-  return [values, setTweak];
-}
+// useTweaks lives in foundation/tweaks.js — it's the single source of truth
+// for tweak values (module-level shared store, listeners Set, _tweaks test
+// seam, instanceLabel default). Earlier revisions of this file shipped a
+// local copy that silently shadowed the foundation export because this file
+// loads after foundation/tweaks.js in index.html; that's been removed so the
+// foundation binding survives. Consumers reach it via the existing
+// window.useTweaks global (or window.matrixApi.useTweaks).
 
 // ── TweaksPanel ─────────────────────────────────────────────────────────────
 // Floating shell. Registers the protocol listener BEFORE announcing
@@ -561,8 +549,11 @@ function TweakButton({ label, onClick, secondary = false }) {
   );
 }
 
+// useTweaks is intentionally NOT re-exported here — foundation/tweaks.js owns
+// window.useTweaks and would have its module-level store clobbered if this
+// file overwrote the binding.
 Object.assign(window, {
-  useTweaks, TweaksPanel, TweakSection, TweakRow,
+  TweaksPanel, TweakSection, TweakRow,
   TweakSlider, TweakToggle, TweakRadio, TweakSelect,
   TweakText, TweakNumber, TweakColor, TweakButton,
 });
