@@ -219,6 +219,7 @@ class TestCatalog:
             ("document", "documents"),
             ("agent_thread", "agent_threads"),
             ("graph_thread", "graph_threads"),
+            ("semantic_search_provider", "semantic_search_providers"),
         ]:
             for verb in ("list", "get", "create", "update", "delete", "find"):
                 expected = (
@@ -238,6 +239,7 @@ class TestCatalog:
         assert "refresh_collection" in names
         assert "get_document_content" in names
         assert "put_document" in names
+        assert "invalidate_semantic_search_provider" in names
 
     @pytest.mark.asyncio
     async def test_each_tool_has_non_empty_description(self, system_toolset) -> None:

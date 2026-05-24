@@ -97,6 +97,7 @@ def _make_lifespan(config: AppConfig):
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             vector_store_registry=vector_store_registry,
+            semantic_search_registry=semantic_search_registry,
         )
         provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
         # Build the always-on _workspaces toolset.
@@ -687,11 +688,19 @@ def create_test_app(
     _install_request_id(app)
     if workspace_registry is None:
         workspace_registry = WorkspaceRegistry(storage_provider)
+    # Wire the SemanticSearchRegistry so /v1/ssp endpoints work in tests.
+    from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
+    from matrix.model.provider import SemanticSearchProvider
+    _test_ssp_registry = SemanticSearchRegistry(
+        storage=storage_provider.get_storage(SemanticSearchProvider),
+        factory=lambda row: object(),  # type: ignore[arg-type]
+    )
     if system_toolset is None:
         system_toolset = build_system_toolset(
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             vector_store_registry=vector_store_registry,
+            semantic_search_registry=_test_ssp_registry,
         )
     if workspaces_toolset is None:
         workspaces_toolset = build_workspaces_toolset(
@@ -714,16 +723,10 @@ def create_test_app(
     app.state.workspaces_toolset = workspaces_toolset
     app.state.misc_toolset = misc_toolset
     app.state.web_toolset = web_toolset
+    app.state.semantic_search_registry = _test_ssp_registry
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
     app.state.search_toolset = None
-    # Wire the SemanticSearchRegistry so /v1/ssp endpoints work in tests.
-    from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
-    from matrix.model.provider import SemanticSearchProvider
-    app.state.semantic_search_registry = SemanticSearchRegistry(
-        storage=storage_provider.get_storage(SemanticSearchProvider),
-        factory=lambda row: object(),  # type: ignore[arg-type]
-    )
     # Attach an in-memory scheduler so the /workers router has something
     # to depend on. The test app does not run a real WorkerPool.
     from matrix.scheduler.in_memory import InMemoryScheduler

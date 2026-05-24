@@ -10,9 +10,10 @@ configuration that drives them.
 Tool catalog
 ------------
 
-Per-entity CRUD set (9 entities × 6 tools = 54 tools) for:
+Per-entity CRUD set (10 entities × 6 tools = 60 tools) for:
     llm_provider, embedding_provider, cross_encoder_provider, toolset,
-    agent, graph, collection, document, vector_store_config
+    agent, graph, collection, document, agent_thread, graph_thread,
+    semantic_search_provider
 
 Plus entity-specific operations:
 * ``fetch_llm_provider_models``, ``fetch_embedding_provider_models``,
@@ -61,6 +62,7 @@ from matrix.model.provider import (
     CrossEncoderProvider,
     EmbeddingProvider,
     LLMProvider,
+    SemanticSearchProvider,
     Toolset,
 )
 from matrix.model.storage import (
@@ -75,6 +77,7 @@ from matrix.toolset.internal import InternalToolsetProvider, ToolHandler
 
 if TYPE_CHECKING:
     from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+    from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
     from matrix.int.storage_provider import StorageProvider
 
 
@@ -1015,6 +1018,7 @@ def build_system_toolset(
     storage_provider: "StorageProvider",
     provider_registry: "ProviderRegistry",
     vector_store_registry: "VectorStoreRegistry",
+    semantic_search_registry: "SemanticSearchRegistry | None" = None,
     toolset_id: str = SYSTEM_TOOLSET_ID,
 ) -> InternalToolsetProvider:
     """Construct the immutable ``_system`` toolset.
@@ -1039,6 +1043,10 @@ def build_system_toolset(
     async def _inv_ts(eid: str) -> None:
         await provider_registry.invalidate_toolset(eid)
 
+    async def _inv_ssp(eid: str) -> None:
+        if semantic_search_registry is not None:
+            await semantic_search_registry.invalidate(eid)
+
     # ---- CRUD sets ----------------------------------------------------
     # Note: VectorStoreConfig was removed from this set when vector
     # store configuration moved into AppConfig (it is no longer a
@@ -1054,6 +1062,7 @@ def build_system_toolset(
         ("document", "documents", Document, None, None, None),
         ("agent_thread", "agent_threads", Thread, None, None, None),
         ("graph_thread", "graph_threads", GraphThread, None, None, None),
+        ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp),
     ]
     for label, plural, cls, on_c, on_u, on_d in crud_specs:
         registry.update(
@@ -1067,6 +1076,47 @@ def build_system_toolset(
                 on_delete=on_d,
             )
         )
+
+    # ---- SemanticSearchProvider explicit invalidation tool -----------
+    class _InvalidateSSPArgs(BaseModel):
+        """Force-expire the cached VectorStoreProvider for one SSP row."""
+
+        id: str = Field(
+            ...,
+            min_length=1,
+            description=(
+                "Id of the SemanticSearchProvider row whose cached "
+                "VectorStoreProvider instance should be evicted. The "
+                "next call that needs the backend will re-resolve the "
+                "row from storage and reconstruct the adapter."
+            ),
+        )
+
+    async def _invalidate_ssp_handler(arguments: dict[str, Any]) -> ToolCallResult:
+        try:
+            args = _InvalidateSSPArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        if semantic_search_registry is not None:
+            await semantic_search_registry.invalidate(args.id)
+        return _ok({"invalidated": True, "id": args.id})
+
+    registry["invalidate_semantic_search_provider"] = (
+        Tool(
+            id="invalidate_semantic_search_provider",
+            description=(
+                "Expire the cached VectorStoreProvider adapter for a "
+                "SemanticSearchProvider row. Call this after updating "
+                "the provider row so the next search request rebuilds "
+                "the adapter from the new config. Safe to call even if "
+                "no cached instance exists (no-op). Returns "
+                "``{'invalidated': true, 'id': '...'}``."
+            ),
+            toolset_id=SYSTEM_TOOLSET_ID,
+            args_schema=_InvalidateSSPArgs.model_json_schema(),
+        ),
+        _invalidate_ssp_handler,
+    )
 
     # ---- Provider-specific fetch_models ------------------------------
     for label, pretty, method in (
