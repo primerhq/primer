@@ -288,6 +288,7 @@ def _make_lifespan(config: AppConfig):
                 provider_registry=provider_registry,
                 router_registry=router_registry,
                 approval_resolver=approval_resolver,
+                channel_dispatcher=channel_dispatcher,
             )
             logger.info("lifespan: worker_pool.start() begin")
             await worker_pool.start()

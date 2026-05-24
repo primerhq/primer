@@ -381,11 +381,86 @@ async def _resume_tool_approval(
     )
 
 
+# ===========================================================================
+# Post-park channel dispatch
+# ===========================================================================
+
+
+from matrix.channel.adapter import PromptEnvelope
+
+
+async def _dispatch_to_channels(
+    *,
+    dispatcher,
+    session,
+    yielded,
+) -> None:
+    """Fan a parked-on-user-input session out to every channel
+    associated with the session's workspace.
+
+    Fire-and-forget at the call site (the worker schedules this
+    on the event loop). Internal errors are logged; this function
+    never raises.
+    """
+    import logging
+    if dispatcher is None:
+        return
+    tool_name = yielded.tool_name
+    if tool_name == "ask_user":
+        metadata = yielded.resume_metadata or {}
+        envelope = PromptEnvelope(
+            kind="ask_user",
+            workspace_id=session.workspace_id,
+            session_id=session.id,
+            tool_call_id=_tool_call_id_from_event_key(yielded.event_key),
+            prompt=metadata.get("prompt", ""),
+            response_schema=metadata.get("response_schema"),
+            choices=None,
+            timeout_at_iso=None,
+        )
+    elif tool_name == "_approval":
+        metadata = yielded.resume_metadata or {}
+        original = metadata.get("original_call") or {}
+        gate_reason = metadata.get("gate_reason")
+        prompt = (
+            f"Approve {original.get('name', '<unknown>')}"
+            f"({original.get('arguments') or {}})?"
+        )
+        if gate_reason:
+            prompt += f"\nReason: {gate_reason}"
+        envelope = PromptEnvelope(
+            kind="tool_approval",
+            workspace_id=session.workspace_id,
+            session_id=session.id,
+            tool_call_id=original.get("id") or _tool_call_id_from_event_key(yielded.event_key),
+            prompt=prompt,
+            response_schema=None,
+            choices=["Approve", "Reject"],
+            timeout_at_iso=None,
+        )
+    else:
+        return
+    try:
+        await dispatcher.dispatch_prompt(envelope=envelope)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "_dispatch_to_channels failed for session %s", session.id,
+        )
+
+
+def _tool_call_id_from_event_key(event_key: str) -> str:
+    """Pull the tool_call_id segment out of an event_key."""
+    parts = event_key.split(":")
+    return parts[-1] if len(parts) >= 3 else ""
+
+
 __all__ = [
     "ParkedState",
     "PARKED_STATE_SCHEMA_VERSION",
     "ResumePayload",
+    "_dispatch_to_channels",
     "_resume_tool_approval",
+    "_tool_call_id_from_event_key",
     "classify_resume_payload",
     "make_cancelled_payload",
     "make_timeout_payload",

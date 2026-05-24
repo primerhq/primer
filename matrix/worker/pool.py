@@ -33,6 +33,7 @@ from matrix.model.scheduler import WorkerConfig
 from matrix.model.session import Session, SessionStatus
 from matrix.model.yield_ import YieldToWorker
 from matrix.worker.turn import _CancelScope, compute_backoff
+from matrix.worker.yield_runtime import _dispatch_to_channels
 
 if TYPE_CHECKING:
     from matrix.agent.approval import ApprovalResolver
@@ -56,6 +57,7 @@ class WorkerPool:
         provider_registry: "ProviderRegistry",
         router_registry: "RouterRegistry | None" = None,
         approval_resolver: "ApprovalResolver | None" = None,
+        channel_dispatcher=None,
     ) -> None:
         self.config = config
         self._scheduler = scheduler
@@ -67,6 +69,7 @@ class WorkerPool:
         # work; _CallableRouter edges will raise at runtime.
         self._router_registry = router_registry
         self._approval_resolver = approval_resolver
+        self._channel_dispatcher = channel_dispatcher
 
         self._worker_id: str = ""
         self._tasks: list[asyncio.Task] = []
@@ -928,6 +931,15 @@ class WorkerPool:
             parked_at=parked_at,
             parked_state=parked_state.to_jsonable(),
         )
+
+        if self._channel_dispatcher is not None:
+            asyncio.create_task(
+                _dispatch_to_channels(
+                    dispatcher=self._channel_dispatcher,
+                    session=session,
+                    yielded=yielded,
+                )
+            )
 
     async def _handle_cancel(
         self, lease: Lease, session: Session,
