@@ -25,7 +25,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Body, Depends, HTTPException, Path, Query, Request
+from fastapi import Body, Depends, Path, Query, Request
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
 from matrix.api.deps import (
@@ -93,25 +94,15 @@ async def _validate_ssp_immutable(
 ) -> None:
     """on_pre_update hook: reject changes to search_provider_id after create."""
     if existing.search_provider_id != entity.search_provider_id:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "type": "/errors/validation-error",
-                "title": "Immutable field",
-                "detail": (
-                    "Collection.search_provider_id is immutable after "
-                    "create. A future 'reindex' operation will permit moves."
-                ),
-                "extensions": {
-                    "errors": [
-                        {
-                            "loc": ["body", "search_provider_id"],
-                            "msg": "field is immutable after create",
-                            "type": "value_error.immutable",
-                        }
-                    ],
-                },
-            },
+        raise RequestValidationError(
+            errors=[
+                {
+                    "type": "value_error",
+                    "loc": ("body", "search_provider_id"),
+                    "msg": "field is immutable after create",
+                    "input": entity.search_provider_id,
+                }
+            ]
         )
 
 

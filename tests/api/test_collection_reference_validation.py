@@ -66,10 +66,8 @@ async def test_put_collection_changing_ssp_returns_422(client):
         )
         assert r.status_code == 422, r.text
         body = r.json()
-        # HTTPException detail is nested under "detail" key in FastAPI's
-        # default exception handler.
-        inner = body.get("detail", body)
-        errors = inner.get("extensions", {}).get("errors", [])
+        assert body.get("type") == "/errors/validation-error", body
+        errors = body.get("extensions", {}).get("errors", [])
         assert any(
             "search_provider_id" in (e.get("loc") or [])
             for e in errors
