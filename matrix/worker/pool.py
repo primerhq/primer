@@ -35,6 +35,7 @@ from matrix.model.yield_ import YieldToWorker
 from matrix.worker.turn import _CancelScope, compute_backoff
 
 if TYPE_CHECKING:
+    from matrix.agent.approval import ApprovalResolver
     from matrix.api.registries import ProviderRegistry, WorkspaceRegistry
     from matrix.graph.router import RouterRegistry
     from matrix.int.storage_provider import StorageProvider
@@ -54,6 +55,7 @@ class WorkerPool:
         workspace_registry: "WorkspaceRegistry",
         provider_registry: "ProviderRegistry",
         router_registry: "RouterRegistry | None" = None,
+        approval_resolver: "ApprovalResolver | None" = None,
     ) -> None:
         self.config = config
         self._scheduler = scheduler
@@ -64,6 +66,7 @@ class WorkerPool:
         # dispatch. None means only _StaticEdge + _JsonPathRouter edges
         # work; _CallableRouter edges will raise at runtime.
         self._router_registry = router_registry
+        self._approval_resolver = approval_resolver
 
         self._worker_id: str = ""
         self._tasks: list[asyncio.Task] = []
@@ -461,6 +464,8 @@ class WorkerPool:
         tool_manager = ToolExecutionManager.for_workspace(
             toolset_providers=toolset_providers,
             session=agent_session,
+            approval_resolver=self._approval_resolver,
+            provider_registry=self._provider_registry,
         )
 
         executor = WorkspaceAgentExecutor(
@@ -572,8 +577,14 @@ class WorkerPool:
                 return ToolExecutionManager.for_workspace(
                     toolset_providers=toolset_providers,
                     session=workspace_session,
+                    approval_resolver=self._approval_resolver,
+                    provider_registry=self._provider_registry,
                 )
-            return ToolExecutionManager(toolset_providers=toolset_providers)
+            return ToolExecutionManager(
+                toolset_providers=toolset_providers,
+                approval_resolver=self._approval_resolver,
+                provider_registry=self._provider_registry,
+            )
 
         # ④ Optional handles wired in later phases.
 

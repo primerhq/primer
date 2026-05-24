@@ -28,10 +28,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
+from matrix.agent.approval import (
+    ApprovalContext,
+    ApprovalResolver,
+    evaluate_approval_gate,
+)
 from matrix.int.toolset import ToolsetProvider
 from matrix.model.chat import Tool, ToolCallPart, ToolResultPart
 from matrix.model.except_ import (
@@ -40,6 +46,7 @@ from matrix.model.except_ import (
     MatrixError,
     UnsupportedContentError,
 )
+from matrix.model.yield_ import Yielded, YieldToWorker
 
 
 if TYPE_CHECKING:
@@ -88,10 +95,14 @@ class ToolExecutionManager:
         toolset_providers: dict[str, ToolsetProvider] | None = None,
         workspace_tools: "dict[str, WorkspaceTool] | None" = None,
         workspace_session: "AgentSession | None" = None,
+        approval_resolver: ApprovalResolver | None = None,
+        provider_registry: object | None = None,
     ) -> None:
         self._toolsets: dict[str, ToolsetProvider] = dict(toolset_providers or {})
         self._workspace_tools: dict[str, "WorkspaceTool"] = dict(workspace_tools or {})
         self._workspace_session = workspace_session
+        self._approval_resolver = approval_resolver
+        self._provider_registry = provider_registry
         # Built lazily on first list_tools / execute.
         # Scoped tool id (``toolset_id__bare_name``) -> (toolset_id, bare_name).
         # Tool ids surfaced to the LLM are scoped to avoid collisions across
@@ -129,6 +140,8 @@ class ToolExecutionManager:
         *,
         toolset_providers: dict[str, ToolsetProvider],
         session: "AgentSession",
+        approval_resolver: ApprovalResolver | None = None,
+        provider_registry: object | None = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -140,6 +153,8 @@ class ToolExecutionManager:
             toolset_providers=toolset_providers,
             workspace_tools=ws_tools,
             workspace_session=session,
+            approval_resolver=approval_resolver,
+            provider_registry=provider_registry,
         )
 
     async def list_tools(
@@ -194,12 +209,17 @@ class ToolExecutionManager:
         call: ToolCallPart,
         *,
         principal: str | None = None,
+        bypass_approval: bool = False,
     ) -> ToolResultPart:
         """Dispatch one tool call; return a ToolResultPart for the LLM.
 
         ``call.name`` is the **scoped** id (``toolset_id__bare_name``) the
         catalog returned from :meth:`list_tools`. The dispatcher splits
         the scope and forwards the bare name to the underlying provider.
+
+        If ``bypass_approval`` is True, the approval gate is skipped even
+        when a resolver is configured. The worker's resume path sets this
+        after the operator has approved the call.
         """
         # Lazy-build the index if list_tools wasn't called yet.
         if self._catalogue is None:
@@ -209,15 +229,66 @@ class ToolExecutionManager:
         # via ``_workspace_scoped`` (scoped_id -> bare_name).
         ws_bare = self._workspace_scoped.get(call.name)
         if ws_bare is not None:
+            # Resolve toolset/bare name for workspace tools for the gate.
+            toolset_id = "workspace"
+            bare_name = ws_bare
+        else:
+            entry = self._tool_to_toolset.get(call.name)
+            if entry is None:
+                raise UnsupportedContentError(
+                    f"unknown tool {call.name!r}; not registered with any toolset "
+                    "or workspace"
+                )
+            toolset_id, bare_name = entry
+
+        # Approval gate — runs after routing resolution, before dispatch.
+        if not bypass_approval and self._approval_resolver is not None:
+            policy = await self._approval_resolver.find(
+                toolset_id=toolset_id, tool_name=bare_name,
+            )
+            if policy is not None and policy.enabled:
+                ctx = ApprovalContext(
+                    tool_name=bare_name,
+                    toolset_id=toolset_id,
+                    arguments=call.arguments or {},
+                    agent_id=getattr(self, "_agent_id", None),
+                    session_id=getattr(self, "_session_id", None),
+                    chat_id=getattr(self, "_chat_id", None),
+                    requested_at=datetime.now(UTC),
+                )
+                verdict = await evaluate_approval_gate(
+                    policy=policy,
+                    context=ctx,
+                    provider_registry=self._provider_registry,
+                )
+                if verdict.required:
+                    session_or_chat = (
+                        ctx.session_id or ctx.chat_id or "unknown"
+                    )
+                    raise YieldToWorker(
+                        Yielded(
+                            tool_name="_approval",
+                            event_key=(
+                                f"tool_approval:{session_or_chat}:{call.id}"
+                            ),
+                            timeout=policy.timeout_seconds,
+                            resume_metadata={
+                                "policy_id": policy.id,
+                                "approval_type": policy.approval.type.value,
+                                "gate_reason": verdict.reason,
+                                "original_call": {
+                                    "id": call.id,
+                                    "name": call.name,
+                                    "arguments": call.arguments or {},
+                                },
+                            },
+                        ),
+                        tool_call_id=call.id,
+                    )
+
+        if ws_bare is not None:
             return await self._dispatch_workspace(call, bare_name=ws_bare)
 
-        entry = self._tool_to_toolset.get(call.name)
-        if entry is None:
-            raise UnsupportedContentError(
-                f"unknown tool {call.name!r}; not registered with any toolset "
-                "or workspace"
-            )
-        toolset_id, bare_name = entry
         return await self._dispatch_toolset(
             call,
             toolset_id=toolset_id,

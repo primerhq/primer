@@ -266,6 +266,7 @@ def _make_lifespan(config: AppConfig):
                 workspace_registry=workspace_registry,
                 provider_registry=provider_registry,
                 router_registry=router_registry,
+                approval_resolver=approval_resolver,
             )
             logger.info("lifespan: worker_pool.start() begin")
             await worker_pool.start()
