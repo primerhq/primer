@@ -30,6 +30,7 @@ from matrix.api.routers import (
     workspaces as workspaces_router,
     yields as yields_router,
 )
+from matrix.api.routers.semantic_search import semantic_search_router
 from matrix.api.version import API_VERSION, APP_VERSION
 from matrix.internal_collections import build_subsystem, load_config_or_none
 from matrix.model.except_ import ConfigError
@@ -65,6 +66,12 @@ def _make_lifespan(config: AppConfig):
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
         vector_store_registry = VectorStoreRegistry(config.vector_store)
+        from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
+        from matrix.model.provider import SemanticSearchProvider
+        semantic_search_registry = SemanticSearchRegistry(
+            storage=storage_provider.get_storage(SemanticSearchProvider),
+        )
+        app.state.semantic_search_registry = semantic_search_registry
         workspace_registry = WorkspaceRegistry(storage_provider)
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
@@ -335,6 +342,10 @@ def _make_lifespan(config: AppConfig):
             except Exception:
                 logger.exception("provider_registry.aclose failed")
             try:
+                await semantic_search_registry.aclose()
+            except Exception:
+                logger.exception("semantic_search_registry.aclose failed")
+            try:
                 await vector_store_registry.aclose()
             except Exception:
                 logger.exception("vector_store_registry.aclose failed")
@@ -405,6 +416,7 @@ def _mount_routers(
     app.include_router(providers.embedding_provider_router, prefix=prefix)
     app.include_router(providers.cross_encoder_provider_router, prefix=prefix)
     app.include_router(providers.toolset_router, prefix=prefix)
+    app.include_router(semantic_search_router, prefix=prefix)
     # Phase 2 — compute (Agent + Graph)
     app.include_router(compute.agent_router, prefix=prefix)
     app.include_router(compute.graph_router, prefix=prefix)
@@ -705,6 +717,13 @@ def create_test_app(
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
     app.state.search_toolset = None
+    # Wire the SemanticSearchRegistry so /v1/ssp endpoints work in tests.
+    from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
+    from matrix.model.provider import SemanticSearchProvider
+    app.state.semantic_search_registry = SemanticSearchRegistry(
+        storage=storage_provider.get_storage(SemanticSearchProvider),
+        factory=lambda row: object(),  # type: ignore[arg-type]
+    )
     # Attach an in-memory scheduler so the /workers router has something
     # to depend on. The test app does not run a real WorkerPool.
     from matrix.scheduler.in_memory import InMemoryScheduler

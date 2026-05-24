@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Header, HTTPException, Request
 
 from matrix.api.registries import (
     ProviderRegistry,
@@ -86,6 +86,29 @@ def get_provider_registry(request: Request) -> ProviderRegistry:
 def get_vector_store_registry(request: Request) -> VectorStoreRegistry:
     _assert_app_state_initialized(request)
     return request.app.state.vector_store_registry
+
+
+def get_semantic_search_registry(request: Request) -> "SemanticSearchRegistry":
+    from matrix.api.registries.semantic_search_registry import (
+        SemanticSearchRegistry,
+    )
+    reg = getattr(request.app.state, "semantic_search_registry", None)
+    if reg is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "/errors/subsystem-inactive",
+                "title": "SemanticSearch registry not configured",
+            },
+        )
+    return reg
+
+
+def get_semantic_search_storage(
+    storage_provider=Depends(get_storage_provider),
+) -> "Storage":
+    from matrix.model.provider import SemanticSearchProvider
+    return storage_provider.get_storage(SemanticSearchProvider)
 
 
 def get_workspace_registry(request: Request) -> WorkspaceRegistry:
@@ -282,6 +305,8 @@ __all__ = [
     "get_principal",
     "get_provider_registry",
     "get_scheduler",
+    "get_semantic_search_registry",
+    "get_semantic_search_storage",
     "get_session_storage",
     "get_storage_provider",
     "get_toolset_storage",
