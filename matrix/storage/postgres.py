@@ -64,6 +64,11 @@ from matrix.model.storage import (
     PageRequest,
     Predicate,
 )
+from matrix.storage._cursor import (
+    _decode_cursor,
+    _encode_cursor_for,
+    _resolve_dotted,
+)
 from matrix.storage._predicate import _PredicateTranslator, render_order_by
 
 
@@ -562,49 +567,3 @@ class PostgresStorage(Storage[ModelT]):
             return ServerError(f"Postgres error: {exc}", cause=exc)
         return ProviderError(f"storage backend error: {exc}", cause=exc)
 
-
-# ===========================================================================
-# Cursor encoding
-# ===========================================================================
-
-
-def _encode_cursor_for(
-    entity: Identifiable,
-    order_by: list[OrderBy] | None,
-) -> str:
-    """Build the cursor that seeks past ``entity``.
-
-    Encodes the values of every order_by key + the entity's id (the
-    implicit ``ASC`` tiebreaker). The result is opaque base64 JSON.
-    """
-    keys: list[dict[str, Any]] = []
-    dumped = entity.model_dump(mode="json")
-    for ob in order_by or []:
-        if ob.field == "id":
-            value: Any = dumped.get("id")
-        else:
-            value = _resolve_dotted(dumped, ob.field)
-        keys.append({"field": ob.field, "value": value, "direction": ob.direction})
-    keys.append({"field": "id", "value": dumped["id"], "direction": "asc"})
-    payload = json.dumps({"keys": keys}, separators=(",", ":"))
-    return base64.urlsafe_b64encode(payload.encode("utf-8")).rstrip(b"=").decode("ascii")
-
-
-def _decode_cursor(cursor: str) -> dict[str, Any]:
-    """Inverse of :func:`_encode_cursor_for`. Raises on malformed input."""
-    try:
-        padding = "=" * (-len(cursor) % 4)
-        raw = base64.urlsafe_b64decode(cursor + padding)
-        return json.loads(raw.decode("utf-8"))
-    except Exception as exc:
-        raise BadRequestError(f"malformed cursor: {exc}", cause=exc) from exc
-
-
-def _resolve_dotted(d: dict[str, Any], path: str) -> Any:
-    """Walk a dotted path through a dumped model dict."""
-    cur: Any = d
-    for part in path.split("."):
-        if not isinstance(cur, dict):
-            return None
-        cur = cur.get(part)
-    return cur
