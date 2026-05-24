@@ -44,7 +44,9 @@ def test_provider_row_discriminator_mismatch_rejected():
         ChannelProvider(
             id="cp-2",
             provider=ChannelProviderType.SLACK,
-            config=TelegramChannelProviderConfig(),
+            config=TelegramChannelProviderConfig(
+                bot_token=SecretStr("123456:abcdefghijklmnopqrstuvwxyz123456"),
+            ),
         )
 
 
@@ -89,3 +91,25 @@ def test_slack_config_accepts_valid_token_prefixes():
         bot_token=SecretStr("xoxb-1234567890-abc"),
     )
     assert c.signing_secret is None
+
+
+def test_telegram_config_requires_token_shape():
+    import pytest
+    from pydantic import SecretStr, ValidationError
+    from matrix.model.channel import TelegramChannelProviderConfig
+    with pytest.raises(ValidationError):
+        TelegramChannelProviderConfig(bot_token=SecretStr("short"))
+    TelegramChannelProviderConfig(
+        bot_token=SecretStr("123456:abcdefghijklmnopqrstuvwxyz123456"),
+    )
+
+
+def test_telegram_poll_timeout_bounds():
+    import pytest
+    from pydantic import SecretStr, ValidationError
+    from matrix.model.channel import TelegramChannelProviderConfig
+    with pytest.raises(ValidationError):
+        TelegramChannelProviderConfig(
+            bot_token=SecretStr("123456:abcdefghijklmnopqrstuvwxyz123456"),
+            poll_timeout_seconds=100,
+        )
