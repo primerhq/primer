@@ -83,6 +83,27 @@ def _make_lifespan(config: AppConfig):
             storage=storage_provider.get_storage(ToolApprovalPolicy),
         )
         app.state.approval_resolver = approval_resolver
+
+        from matrix.api.registries.channel_registry import ChannelRegistry
+        from matrix.channel.dispatcher import ChannelDispatcher
+        from matrix.channel.inbox import ChannelInbox
+        from matrix.model.channel import (
+            Channel, ChannelProvider, WorkspaceChannelAssociation,
+        )
+
+        channel_inbox = ChannelInbox(
+            event_bus=getattr(app.state, "event_bus", None),
+        )
+        channel_registry = ChannelRegistry(
+            channel_storage=storage_provider.get_storage(Channel),
+            channel_provider_storage=storage_provider.get_storage(ChannelProvider),
+            association_storage=storage_provider.get_storage(WorkspaceChannelAssociation),
+            inbox=channel_inbox,
+        )
+        channel_dispatcher = ChannelDispatcher(registry=channel_registry)
+        app.state.channel_inbox = channel_inbox
+        app.state.channel_registry = channel_registry
+        app.state.channel_dispatcher = channel_dispatcher
         workspace_registry = WorkspaceRegistry(storage_provider)
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
@@ -349,6 +370,10 @@ def _make_lifespan(config: AppConfig):
                         "internal_collections.aclose failed"
                     )
             try:
+                await channel_registry.aclose()
+            except Exception:
+                logger.exception("channel_registry.aclose failed")
+            try:
                 await provider_registry.aclose()
             except Exception:
                 logger.exception("provider_registry.aclose failed")
@@ -455,6 +480,15 @@ def _mount_routers(
     # Tool approval policies (§2 task 5): CRUD + invalidate endpoint.
     from matrix.api.routers.tool_approval import make_tool_approval_router
     app.include_router(make_tool_approval_router(), prefix=prefix)
+    # Channel providers, channels, and workspace channel associations (§3 tasks 5-6).
+    from matrix.api.routers.channels import (
+        make_channel_provider_router,
+        make_channel_router,
+        make_workspace_channel_association_router,
+    )
+    app.include_router(make_channel_provider_router(), prefix=prefix)
+    app.include_router(make_channel_router(), prefix=prefix)
+    app.include_router(make_workspace_channel_association_router(), prefix=prefix)
 
 
 def create_app(config: AppConfig) -> FastAPI:
@@ -742,6 +776,26 @@ def create_test_app(
     from matrix.bus.in_memory import InMemoryEventBus
     _test_event_bus = InMemoryEventBus()
     app.state.event_bus = _test_event_bus
+    # Channel subsystem — registry + dispatcher for test fixtures.
+    from matrix.api.registries.channel_registry import ChannelRegistry as _CR
+    from matrix.channel.dispatcher import ChannelDispatcher as _CD
+    from matrix.channel.inbox import ChannelInbox as _CI
+    from matrix.model.channel import (
+        Channel as _Channel,
+        ChannelProvider as _ChannelProvider,
+        WorkspaceChannelAssociation as _WCA,
+    )
+    _test_channel_inbox = _CI(event_bus=None)
+    _test_channel_registry = _CR(
+        channel_storage=storage_provider.get_storage(_Channel),
+        channel_provider_storage=storage_provider.get_storage(_ChannelProvider),
+        association_storage=storage_provider.get_storage(_WCA),
+        inbox=_test_channel_inbox,
+    )
+    _test_channel_dispatcher = _CD(registry=_test_channel_registry)
+    app.state.channel_inbox = _test_channel_inbox
+    app.state.channel_registry = _test_channel_registry
+    app.state.channel_dispatcher = _test_channel_dispatcher
     _mount_routers(app)
     register_error_handlers(app)
     return app

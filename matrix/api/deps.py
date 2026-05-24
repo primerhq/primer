@@ -297,6 +297,27 @@ def get_approval_resolver(request: Request):
     return resolver
 
 
+def get_channel_registry(request: Request):
+    reg = getattr(request.app.state, "channel_registry", None)
+    if reg is None:
+        raise ConfigError("channel_registry not initialised")
+    return reg
+
+
+def get_channel_dispatcher(request: Request):
+    d = getattr(request.app.state, "channel_dispatcher", None)
+    if d is None:
+        raise ConfigError("channel_dispatcher not initialised")
+    return d
+
+
+def get_channel_inbox(request: Request):
+    i = getattr(request.app.state, "channel_inbox", None)
+    if i is None:
+        raise ConfigError("channel_inbox not initialised")
+    return i
+
+
 def get_principal(
     x_matrix_principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
 ) -> str | None:
@@ -308,6 +329,9 @@ __all__ = [
     "PRINCIPAL_HEADER",
     "get_approval_resolver",
     "get_agent_storage",
+    "get_channel_dispatcher",
+    "get_channel_inbox",
+    "get_channel_registry",
     "get_chat_storage",
     "get_collection_storage",
     "get_cross_encoder_provider_storage",

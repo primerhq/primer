@@ -44,6 +44,35 @@ class ChannelProvider(Identifiable):
     provider: ChannelProviderType = Field(...)
     config: ChannelProviderConfig = Field(...)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_config_type(cls, values):
+        """When ``config`` is a plain dict, construct the right config type.
+
+        Pydantic union parsing always picks the first matching variant
+        (``SlackChannelProviderConfig`` for ``{}``) regardless of the
+        ``provider`` value. We intercept *before* field parsing so we
+        can inject the correct concrete type from the provider name.
+        """
+        if not isinstance(values, dict):
+            return values
+        provider_val = values.get("provider")
+        config_val = values.get("config")
+        if provider_val is None or not isinstance(config_val, dict):
+            return values
+        # Resolve the provider string (may be an enum value or string).
+        pv = provider_val.value if hasattr(provider_val, "value") else str(provider_val)
+        cls_map = {
+            "slack": SlackChannelProviderConfig,
+            "telegram": TelegramChannelProviderConfig,
+            "discord": DiscordChannelProviderConfig,
+        }
+        config_cls = cls_map.get(pv)
+        if config_cls is not None:
+            values = dict(values)
+            values["config"] = config_cls(**config_val)
+        return values
+
     @model_validator(mode="after")
     def _validate_config_matches(self) -> "ChannelProvider":
         match self.provider:
