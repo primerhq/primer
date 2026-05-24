@@ -1,756 +1,240 @@
-/* global React, Icon, Btn, Modal, Banner */
+/* global React, Icon, Btn, Banner, relativeTime */
 
-const { apiFetch, useResource, useMutation, useRouter, useToast } = window.matrixApi;
+const PROVIDERS = {
+  llm: [
+    { id: "openai-1", vendor: "openai", api_base: "https://api.openai.com/v1", api_key_set: true, models: [{ id: "gpt-4o", ctx: 128000, tags: ["fast"] }, { id: "gpt-4o-mini", ctx: 128000, tags: ["cheap", "fast"] }, { id: "o1", ctx: 200000, tags: ["reasoning"] }], invalidate_ago: 180 },
+    { id: "anthropic-1", vendor: "anthropic", api_base: "https://api.anthropic.com/v1", api_key_set: true, models: [{ id: "claude-sonnet-4", ctx: 200000, tags: ["balanced"] }, { id: "claude-haiku-4-5", ctx: 200000, tags: ["fast"] }, { id: "claude-opus-4", ctx: 200000, tags: ["reasoning"] }], invalidate_ago: 60 * 30 },
+    { id: "openai-deleted", vendor: "openai", api_base: "https://api.openai.com/v1", api_key_set: false, models: [], invalidate_ago: 3600 * 12, broken: true },
+  ],
+  embedding: [
+    { id: "openai-emb-1", vendor: "openai", api_base: "https://api.openai.com/v1", api_key_set: true, models: [{ id: "text-embedding-3-large", ctx: 8192, tags: ["3072d"] }, { id: "text-embedding-3-small", ctx: 8192, tags: ["1536d"] }], invalidate_ago: 60 },
+    { id: "voyage-1", vendor: "voyageai", api_base: "https://api.voyageai.com/v1", api_key_set: true, models: [{ id: "voyage-3", ctx: 32000, tags: ["1024d"] }, { id: "voyage-3-lite", ctx: 32000, tags: ["512d"] }], invalidate_ago: 3600 },
+  ],
+  rerank: [
+    { id: "cohere-rerank-1", vendor: "cohere", api_base: "https://api.cohere.com/v1", api_key_set: true, models: [{ id: "rerank-english-v3", ctx: 4096, tags: ["english"] }, { id: "rerank-multilingual-v3", ctx: 4096, tags: ["multilingual"] }], invalidate_ago: 3600 * 4 },
+  ],
+};
 
 const VENDOR_COLORS = {
   openai: "var(--green)",
   anthropic: "var(--accent)",
   voyageai: "var(--blue)",
   cohere: "var(--violet)",
-  ollama: "var(--amber)",
-  google: "var(--blue)",
-  gemini: "var(--blue)",
-  huggingface: "var(--amber)",
-  openresponses: "var(--green)",
 };
 
-// kind URL segment + display label
-const KINDS = {
-  llm: { plural: "llm_providers", label: "LLM" },
-  embedding: { plural: "embedding_providers", label: "Embedding" },
-  rerank: { plural: "cross_encoder_providers", label: "Cross-Encoder" },
-  cross_encoder: { plural: "cross_encoder_providers", label: "Cross-Encoder" },
-};
-
-// ============================================================================
-// List page (parameterised by kind)
-// ============================================================================
-
-function ProvidersPage({ kind: kindProp }) {
-  const { navigate } = useRouter();
-  // Allow the kind to come either from a prop (legacy switch arm) or
-  // from the route itself if mounted directly.
-  const kindKey = kindProp === "rerank" ? "rerank" : kindProp;
-  const k = KINDS[kindKey];
-  if (!k) return <Banner kind="error" title="Unknown provider kind" detail={String(kindKey)} />;
-
-  const { push: pushToast } = useToast();
-  const list = useResource(`providers:${k.plural}`,
-    (s) => apiFetch("GET", "/" + k.plural + "?limit=200", null, { signal: s }), {});
-  const [createOpen, setCreateOpen] = React.useState(false);
-  const [textFilter, setTextFilter] = React.useState("");
-
-  const items = list.data?.items ?? [];
-  const filtered = items.filter((p) => !textFilter || p.id.toLowerCase().includes(textFilter.toLowerCase()));
+function ProvidersPage({ kind, sessions, pushToast }) {
+  const items = PROVIDERS[kind] || [];
+  const [sel, setSel] = React.useState(items[0]?.id || null);
+  const selected = items.find((p) => p.id === sel);
 
   return (
     <div className="col" style={{ gap: 14 }}>
-      <ProvidersHeader label={k.label} plural={k.plural} count={items.length} onRefresh={list.refetch} onNew={() => setCreateOpen(true)} />
-
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter providers…" value={textFilter} onChange={(e) => setTextFilter(e.target.value)} />
+          <input className="input" placeholder="Filter providers…" />
         </div>
         <div style={{ marginLeft: "auto" }}>
-          <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New {k.label.toLowerCase()} provider</Btn>
+          <Btn size="sm" kind="primary" icon="plus">New provider</Btn>
         </div>
       </div>
 
-      <div className="tbl-wrap">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Vendor</th>
-              <th style={{ textAlign: "right" }}>Models</th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.loading && items.length === 0 ? (
-              <tr><td colSpan={3} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
-            ) : list.error && items.length === 0 ? (
-              <tr><td colSpan={3} style={{ padding: 20, textAlign: "center" }}>
-                <span style={{ color: "var(--red)" }}>{list.error.title || list.error.message}</span>
-                {" · "}<a onClick={list.refetch} style={{ cursor: "pointer" }}>Retry</a>
-              </td></tr>
-            ) : filtered.length === 0 ? (
-              items.length === 0 ? (
-                <tr><td colSpan={3}>
-                  <div className="empty" style={{ padding: "40px 20px" }}>
-                    <div className="ico-wrap"><Icon name={k.plural === "llm_providers" ? "llm" : "emb"} size={22} /></div>
-                    <div className="head">No {k.label.toLowerCase()} providers yet</div>
-                    <div className="sub">Providers wrap upstream APIs (OpenAI, Anthropic, etc.) and present a uniform shape to the rest of the system.</div>
-                    <div className="actions"><Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New provider</Btn></div>
+      <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 18 }}>
+        <div className="col" style={{ gap: 6 }}>
+          {items.map((p) => (
+            <div
+              key={p.id}
+              onClick={() => setSel(p.id)}
+              className="panel"
+              style={{
+                cursor: "pointer",
+                borderColor: sel === p.id ? "var(--accent)" : "var(--border)",
+                background: sel === p.id ? "var(--accent-dim)" : undefined,
+              }}
+            >
+              <div className="panel-body" style={{ padding: "10px 12px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: VENDOR_COLORS[p.vendor] || "var(--text-3)" }}></div>
+                  <span className="mono" style={{ fontWeight: 500 }}>{p.id}</span>
+                  <div style={{ marginLeft: "auto" }}>
+                    {p.broken ? <span className="pill pill-failed"><span className="dot"></span>broken</span> : <span className="pill pill-ended"><span className="dot"></span>ok</span>}
                   </div>
-                </td></tr>
-              ) : (
-                <tr><td colSpan={3} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>No providers match.</td></tr>
-              )
-            ) : filtered.map((p) => {
-              const color = VENDOR_COLORS[p.provider] || "var(--text-3)";
-              const modelCount = (p.models || []).length;
-              return (
-                <tr key={p.id} onClick={() => navigate("/providers/" + kindKey + "/" + p.id)} style={{ cursor: "pointer" }}>
-                  <td className="mono">{p.id}</td>
-                  <td className="mono">
-                    <span className="dot" style={{ background: color, marginRight: 6, display: "inline-block", width: 8, height: 8, borderRadius: "50%" }}></span>
-                    {p.provider || "—"}
-                  </td>
-                  <td className="mono num tabular">{modelCount}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {createOpen && (
-        <NewProviderModal
-          kindKey={kindKey}
-          plural={k.plural}
-          label={k.label}
-          onClose={() => setCreateOpen(false)}
-          onCreate={(p) => {
-            setCreateOpen(false);
-            pushToast({ kind: "success", title: "Provider created", detail: p.id });
-            list.refetch();
-            navigate("/providers/" + kindKey + "/" + p.id);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-function ProvidersHeader({ label, plural, count, onRefresh, onNew }) {
-  return (
-    <div className="page-header" style={{ marginBottom: 0 }}>
-      <div>
-        <div className="crumb">
-          <span>Providers</span><span className="sep">/</span><span style={{ color: "var(--text)" }}>{label}</span>
+                </div>
+                <div className="muted text-sm mt-2" style={{ fontSize: 11 }}>
+                  <span className="mono">{p.vendor}</span> · {p.models.length} model{p.models.length === 1 ? "" : "s"} · invalidated {relativeTime(p.invalidate_ago)}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
-        <h1 className="page-title">{label} providers</h1>
-        <div className="page-sub tabular">{count} provider{count === 1 ? "" : "s"} · backed by <span className="mono">/v1/{plural}</span></div>
-      </div>
-      <div className="page-actions">
-        <Btn icon="refresh" kind="ghost" onClick={onRefresh}>Refresh</Btn>
-        <Btn icon="plus" kind="primary" onClick={onNew}>New {label.toLowerCase()} provider</Btn>
+
+        {selected && <ProviderDetail kind={kind} p={selected} sessions={sessions} pushToast={pushToast} />}
       </div>
     </div>
   );
 }
 
-// ============================================================================
-// Create modal — provider-pattern with rich per-provider controls.
-// ============================================================================
-//
-// PROVIDER_FIELDS is the single source of truth mirroring the backend's
-// provider enums + per-provider Config models in matrix/model/provider.py.
-// Keep these in sync when the backend grows a new provider type.
-//
-// Each kind (llm / embedding / rerank) maps provider-type-string ->
-//   { label, config: [field, ...], discoverable, suggestedModels, modelFields }
-//
-// field: { key, label, type, placeholder?, options?, required?, default? }
-//   type: "text" | "password" | "url" | "enum"
-//
-// discoverable: when true, the "Fetch Models" button calls
-//   POST /v1/{plural}/_discover_models with the draft {provider, config}
-//   and replaces the models table with the response. When false, the
-//   button populates the table from `suggestedModels` (hand-curated;
-//   the listed model names work but aren't authoritative — users can
-//   edit them in the table).
-//
-// modelFields: which columns the models-table renders for this provider.
-
-const PROVIDER_FIELDS = {
-  llm: {
-    openresponses: {
-      label: "OpenAI / OpenAI-compatible (openresponses)",
-      config: [
-        { key: "url", label: "Base URL", type: "url", placeholder: "https://api.openai.com/v1", required: true },
-        { key: "api_key", label: "API key", type: "password", required: true },
-        { key: "flavor", label: "Flavor", type: "enum", options: ["openai", "lmstudio", "other"], default: "other" },
-      ],
-      discoverable: true,
-      suggestedModels: [
-        { name: "gpt-4o", context_length: 128000 },
-        { name: "gpt-4o-mini", context_length: 128000 },
-        { name: "gpt-4-turbo", context_length: 128000 },
-      ],
-      modelFields: [
-        { key: "name", label: "Model name", type: "text", flex: 2 },
-        { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
-      ],
-    },
-    anthropic: {
-      label: "Anthropic",
-      config: [
-        { key: "api_key", label: "API key", type: "password", required: true },
-      ],
-      discoverable: false,
-      suggestedModels: [
-        { name: "claude-opus-4-5", context_length: 200000 },
-        { name: "claude-sonnet-4-5", context_length: 200000 },
-        { name: "claude-haiku-4-5", context_length: 200000 },
-      ],
-      modelFields: [
-        { key: "name", label: "Model name", type: "text", flex: 2 },
-        { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
-      ],
-    },
-    gemini: {
-      label: "Google Gemini",
-      config: [
-        { key: "api_key", label: "API key", type: "password", required: true },
-      ],
-      discoverable: false,
-      suggestedModels: [
-        { name: "gemini-2.5-pro", context_length: 2000000 },
-        { name: "gemini-2.5-flash", context_length: 1000000 },
-        { name: "gemini-2.0-flash", context_length: 1000000 },
-      ],
-      modelFields: [
-        { key: "name", label: "Model name", type: "text", flex: 2 },
-        { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
-      ],
-    },
-    ollama: {
-      label: "Ollama",
-      config: [
-        { key: "url", label: "Base URL", type: "url", placeholder: "http://localhost:11434", required: true },
-        { key: "api_key", label: "API key (optional)", type: "password" },
-      ],
-      discoverable: true,
-      suggestedModels: [
-        { name: "llama3.3:70b", context_length: 131072 },
-        { name: "qwen3:8b", context_length: 32768 },
-        { name: "gpt-oss:20b", context_length: 131072 },
-      ],
-      modelFields: [
-        { key: "name", label: "Model name", type: "text", flex: 2 },
-        { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
-      ],
-    },
-  },
-  embedding: {
-    openai: {
-      label: "OpenAI / OpenAI-compatible",
-      config: [
-        { key: "url", label: "Base URL", type: "url", placeholder: "https://api.openai.com/v1", required: true },
-        { key: "api_key", label: "API key", type: "password", required: true },
-        { key: "flavor", label: "Flavor", type: "enum", options: ["openai", "lmstudio", "other"], default: "other" },
-      ],
-      discoverable: true,
-      suggestedModels: [
-        { name: "text-embedding-3-small" },
-        { name: "text-embedding-3-large" },
-      ],
-      modelFields: [{ key: "name", label: "Model name", type: "text", flex: 1 }],
-    },
-    huggingface: {
-      label: "HuggingFace (local sentence-transformers)",
-      config: [
-        { key: "token", label: "HF token", type: "password", required: true, help: "Required to pull the transformer model — even public models." },
-      ],
-      discoverable: false,
-      suggestedModels: [
-        { name: "BAAI/bge-large-en-v1.5" },
-        { name: "BAAI/bge-base-en-v1.5" },
-        { name: "sentence-transformers/all-MiniLM-L6-v2" },
-        { name: "mixedbread-ai/mxbai-embed-large-v1" },
-      ],
-      modelFields: [{ key: "name", label: "Model name", type: "text", flex: 1 }],
-    },
-    gemini: {
-      label: "Google Gemini",
-      config: [
-        { key: "api_key", label: "API key", type: "password", required: true },
-      ],
-      discoverable: false,
-      suggestedModels: [
-        { name: "gemini-embedding-001" },
-        { name: "text-embedding-004" },
-      ],
-      modelFields: [{ key: "name", label: "Model name", type: "text", flex: 1 }],
-    },
-  },
-  rerank: {
-    huggingface: {
-      label: "HuggingFace (local sentence-transformers)",
-      config: [
-        { key: "token", label: "HF token (optional for public repos)", type: "password" },
-      ],
-      discoverable: false,
-      suggestedModels: [
-        { name: "BAAI/bge-reranker-v2-m3" },
-        { name: "cross-encoder/ms-marco-MiniLM-L-6-v2" },
-        { name: "cross-encoder/ms-marco-MiniLM-L-12-v2" },
-        { name: "mixedbread-ai/mxbai-rerank-large-v1" },
-      ],
-      modelFields: [
-        { key: "name", label: "Model name", type: "text", flex: 2 },
-        { key: "max_pair_length", label: "Max pair length", type: "number", flex: 1, min: 1 },
-      ],
-    },
-  },
-};
-
-// Normalize the kind URL segment ("rerank" / "cross_encoder") to the
-// PROVIDER_FIELDS key.
-const _normKind = (k) => (k === "cross_encoder" ? "rerank" : k);
-
-function NewProviderModal({ kindKey, plural, label, onClose, onCreate }) {
-  const { push: pushToast } = useToast();
-  const fieldKind = _normKind(kindKey);
-  const providers = PROVIDER_FIELDS[fieldKind] || {};
-  const providerOptions = Object.keys(providers);
-
-  const [id, setId] = React.useState("");
-  const [provider, setProvider] = React.useState(providerOptions[0] || "");
-  const [configValues, setConfigValues] = React.useState({});
-  const [models, setModels] = React.useState([]);
-  const [maxConcurrency, setMaxConcurrency] = React.useState(1);
-  const [fieldErrors, setFieldErrors] = React.useState({});
-
-  // Whenever the provider type changes, re-seed config defaults +
-  // wipe the models list (it would have the wrong shape).
-  React.useEffect(() => {
-    const def = providers[provider];
-    if (!def) return;
-    const seeded = {};
-    for (const f of def.config) {
-      if (f.default !== undefined) seeded[f.key] = f.default;
-    }
-    setConfigValues(seeded);
-    setModels([]);
-    setFieldErrors({});
-  }, [provider]);  // eslint-disable-line react-hooks/exhaustive-deps
-
-  const def = providers[provider];
-
-  const create = useMutation(
-    (body) => apiFetch("POST", "/" + plural, body),
-    {
-      invalidates: [`providers:${plural}`],
-      onSuccess: (p) => onCreate(p),
-      onError: (err) => {
-        if (err.status === 422 && Array.isArray(err.fieldErrors)) {
-          const next = {};
-          for (const fe of err.fieldErrors) next[(fe.loc || []).join(".")] = fe.msg;
-          setFieldErrors(next);
-        } else {
-          pushToast({ kind: "error", title: err.title || "Create failed", detail: err.detail || err.message, requestId: err.requestId });
-        }
-      },
-    }
-  );
-
-  const discover = useMutation(
-    (body) => apiFetch("POST", "/" + plural + "/_discover_models", body),
-    {
-      onSuccess: (r) => {
-        if (Array.isArray(r?.models) && r.models.length > 0) {
-          setModels(r.models.map((m) => ({ ...m })));
-          pushToast({ kind: "success", title: "Models fetched", detail: `${r.models.length} model${r.models.length === 1 ? "" : "s"} from the provider.` });
-        } else {
-          pushToast({ kind: "warning", title: "Provider returned no models", detail: "Check the URL / credentials, or add models manually." });
-        }
-      },
-      onError: (err) => pushToast({
-        kind: "error",
-        title: err.title || "Discovery failed",
-        detail: err.detail || err.message,
-        requestId: err.requestId,
-      }),
-    }
-  );
-
-  const handleFetchModels = () => {
-    if (def?.discoverable) {
-      discover.mutate({ provider, config: configValues });
-    } else if (def?.suggestedModels?.length) {
-      setModels(def.suggestedModels.map((m) => ({ ...m })));
-      pushToast({ kind: "info", title: "Models populated", detail: "Suggested defaults loaded — edit names as needed; provider does not expose a live list endpoint." });
-    }
-  };
-
-  const addModel = () => {
-    if (!def) return;
-    const empty = Object.fromEntries(def.modelFields.map((f) => [f.key, ""]));
-    setModels((arr) => [...arr, empty]);
-  };
-  const removeModel = (i) => setModels((arr) => arr.filter((_, idx) => idx !== i));
-  const updateModel = (i, patch) => setModels((arr) => arr.map((m, idx) => idx === i ? { ...m, ...patch } : m));
-
-  // Strip empty optional fields from the config payload before submit
-  // (e.g. an empty api_key on ollama should be omitted, not sent as "").
-  const cleanConfig = () => {
-    if (!def) return {};
-    const out = {};
-    for (const f of def.config) {
-      const v = configValues[f.key];
-      if (v !== undefined && v !== "" && v !== null) out[f.key] = v;
-    }
-    return out;
-  };
-
-  // Strip empty optional model fields (e.g. max_pair_length="").
-  const cleanModels = () => models.map((m) => {
-    const cleaned = {};
-    for (const f of def.modelFields) {
-      const v = m[f.key];
-      if (v === undefined || v === "" || v === null) continue;
-      cleaned[f.key] = f.type === "number" ? Number(v) : v;
-    }
-    return cleaned;
+function ProviderDetail({ kind, p, sessions, pushToast }) {
+  const [showKey, setShowKey] = React.useState(false);
+  const usedIn = window.MOCK.AGENTS.filter((a) => {
+    const d = (window.AGENT_DETAILS_FOR_PROVIDER && window.AGENT_DETAILS_FOR_PROVIDER[a.id]) || {};
+    return d.llm_provider_id === p.id;
   });
 
-  const submit = async () => {
-    setFieldErrors({});
-    const body = {
-      ...(id ? { id } : {}),
-      provider,
-      config: cleanConfig(),
-      models: cleanModels(),
-      limits: { max_concurrency: Number(maxConcurrency) || 1 },
-    };
-    try { await create.mutate(body); } catch (_e) {}
-  };
-
-  const canSubmit = !!provider
-    && models.length > 0
-    && def?.config.every((f) => !f.required || (configValues[f.key] != null && configValues[f.key] !== ""))
-    && !create.loading;
-
-  return (
-    <Modal
-      title={`New ${label.toLowerCase()} provider`}
-      onClose={onClose}
-      footer={
-        <>
-          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit}>
-            {create.loading ? "Creating…" : "Create"}
-          </Btn>
-        </>
-      }
-    >
-      <div className="field">
-        <label className="field-label">ID <span className="hint">optional — backend assigns if blank</span></label>
-        <input className="input" value={id} onChange={(e) => setId(e.target.value)} placeholder="auto-generated" style={{ width: "100%" }} />
-        {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
-      </div>
-
-      <div className="field">
-        <label className="field-label">Provider</label>
-        <select className="select" value={provider} onChange={(e) => setProvider(e.target.value)} style={{ width: "100%" }}>
-          {providerOptions.map((p) => <option key={p} value={p}>{providers[p].label}</option>)}
-        </select>
-        {/* T0379: documented anomaly surface — see docs/testing/05-ui-spec.md §5.
-            The backend does NOT cross-validate that the chosen `provider`
-            type and the supplied `config` shape agree (it'll happily
-            persist a row with mismatched provider + config and only
-            surface the bug at adapter-construction time on first use).
-            Surface this asymmetry on the form so operators don't ship
-            a misaligned row. */}
-        <div className="field-help">
-          Provider ↔ config alignment is NOT cross-validated server-side (T0379) — make sure the provider type above matches the config shape below.
-        </div>
-        {fieldErrors["body.provider"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider"]}</div>}
-      </div>
-
-      {def && def.config.map((f) => (
-        <ConfigField
-          key={f.key}
-          field={f}
-          value={configValues[f.key] ?? ""}
-          onChange={(v) => setConfigValues((cv) => ({ ...cv, [f.key]: v }))}
-          error={fieldErrors[`body.config.${f.key}`]}
-        />
-      ))}
-
-      <div className="field">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <label className="field-label">Models</label>
-          <div style={{ display: "flex", gap: 6 }}>
-            <Btn
-              size="sm"
-              kind="ghost"
-              icon="refresh"
-              onClick={handleFetchModels}
-              disabled={discover.loading || (def && !def.discoverable && !(def.suggestedModels?.length))}
-              title={
-                def?.discoverable
-                  ? "Live-probe the provider for its model list"
-                  : "Load curated suggestions (provider has no live list endpoint)"
-              }
-            >
-              {discover.loading ? "Fetching…" : (def?.discoverable ? "Fetch models" : "Suggest models")}
-            </Btn>
-            <Btn size="sm" kind="ghost" icon="plus" onClick={addModel}>Add</Btn>
-          </div>
-        </div>
-        {models.length === 0 && (
-          <div className="field-help muted">— no models — add at least one before saving (or use the buttons above).</div>
-        )}
-        {def && models.map((m, i) => (
-          <div key={i} style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
-            {def.modelFields.map((mf) => (
-              <input
-                key={mf.key}
-                className="input mono"
-                type={mf.type === "number" ? "number" : "text"}
-                {...(mf.min != null ? { min: mf.min } : {})}
-                value={m[mf.key] ?? ""}
-                placeholder={mf.label}
-                onChange={(e) => updateModel(i, { [mf.key]: e.target.value })}
-                style={{ flex: mf.flex || 1 }}
-              />
-            ))}
-            <Btn size="sm" kind="ghost" onClick={() => removeModel(i)} title="Remove">×</Btn>
-          </div>
-        ))}
-        {fieldErrors["body.models"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.models"]}</div>}
-        {/* T0025: documented anomaly surface — see docs/testing/05-ui-spec.md §5.
-            The /v1/{plural}/{id}/models endpoint returns this stored list,
-            NOT a live provider probe. The Fetch/Suggest button above is the
-            UI's escape hatch; this helper makes the static-list semantics
-            explicit so operators don't expect the list to refresh on its own. */}
-        <div className="field-help">
-          Model list comes from the provider row, not a live introspection (T0025).
-          Use the {def?.discoverable ? "Fetch" : "Suggest"} models button above to populate or refresh.
-        </div>
-      </div>
-
-      <div className="field">
-        <label className="field-label">Max concurrency <span className="hint">in-flight requests cap</span></label>
-        <input
-          className="input"
-          type="number"
-          min="1"
-          value={maxConcurrency}
-          onChange={(e) => setMaxConcurrency(e.target.value)}
-          style={{ width: 120 }}
-        />
-        {fieldErrors["body.limits.max_concurrency"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.limits.max_concurrency"]}</div>}
-      </div>
-    </Modal>
-  );
-}
-
-function ConfigField({ field, value, onChange, error }) {
-  return (
-    <div className="field">
-      <label className="field-label">
-        {field.label}
-        {!field.required && <span className="hint">optional</span>}
-      </label>
-      {field.type === "enum" ? (
-        <select className="select" value={value || field.default || ""} onChange={(e) => onChange(e.target.value)} style={{ width: "100%" }}>
-          {field.options.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-        </select>
-      ) : (
-        <input
-          className={`input ${field.type === "password" || field.type === "url" ? "mono" : ""}`}
-          type={field.type === "password" ? "password" : "text"}
-          value={value}
-          placeholder={field.placeholder || ""}
-          onChange={(e) => onChange(e.target.value)}
-          style={{ width: "100%" }}
-        />
-      )}
-      {field.help && <div className="field-help">{field.help}</div>}
-      {error && <div className="field-help" style={{ color: "var(--red)" }}>{error}</div>}
-    </div>
-  );
-}
-
-// ============================================================================
-// Provider detail
-// ============================================================================
-
-function ProviderDetail({ kind: kindProp }) {
-  const { params, navigate } = useRouter();
-  const { push: pushToast } = useToast();
-  const id = params.id;
-  const kindKey = kindProp === "rerank" ? "rerank" : kindProp;
-  const k = KINDS[kindKey];
-  if (!k) return <Banner kind="error" title="Unknown provider kind" detail={String(kindKey)} />;
-
-  const detail = useResource(`provider:${k.plural}:${id}`,
-    (s) => apiFetch("GET", "/" + k.plural + "/" + encodeURIComponent(id), null, { signal: s }),
-    { pollMs: null, deps: [k.plural, id] });
-  const models = useResource(`provider-models:${k.plural}:${id}`,
-    (s) => apiFetch("GET", "/" + k.plural + "/" + encodeURIComponent(id) + "/models", null, { signal: s }),
-    { pollMs: null, deps: [k.plural, id] });
-
-  const invalidate = useMutation(
-    () => apiFetch("POST", "/" + k.plural + "/" + encodeURIComponent(id) + "/invalidate"),
-    {
-      invalidates: [`providers:${k.plural}`, `provider:${k.plural}:${id}`],
-      onSuccess: () => pushToast({ kind: "info", title: "Cache dropped", detail: id }),
-      onError: (err) => pushToast({ kind: "error", title: "Invalidate failed", detail: err.detail || err.message, requestId: err.requestId }),
-    }
-  );
-  const delMut = useMutation(
-    () => apiFetch("DELETE", "/" + k.plural + "/" + encodeURIComponent(id)),
-    {
-      invalidates: [`providers:${k.plural}`],
-      onSuccess: () => { pushToast({ kind: "warning", title: "Provider deleted", detail: id }); navigate("/providers/" + kindKey); },
-      onError: (err) => pushToast({ kind: "error", title: "Delete failed", detail: err.detail || err.message, requestId: err.requestId }),
-    }
-  );
-  const [confirmDelete, setConfirmDelete] = React.useState(false);
-
-  if (detail.loading && !detail.data) {
-    return <>
-      <ProviderDetailHeader label={k.label} kindKey={kindKey} id={id} navigate={navigate} />
-      <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>
-    </>;
-  }
-  if (detail.error && !detail.data) {
-    return <>
-      <ProviderDetailHeader label={k.label} kindKey={kindKey} id={id} navigate={navigate} />
-      <Banner kind="error" title={detail.error.title || "Couldn't load provider"} detail={detail.error.detail || detail.error.message}
-        actions={<Btn size="sm" icon="chevron-left" onClick={() => navigate("/providers/" + kindKey)}>Back to list</Btn>} />
-    </>;
-  }
-  const p = detail.data;
-  const color = VENDOR_COLORS[p.provider] || "var(--text-3)";
-  const modelList = models.data?.models ?? [];
+  // Just use the simpler check
+  const referencingAgents = kind === "llm" ? lookupAgentsByProvider(p.id) : [];
+  const referencingCollections = kind === "embedding" ? lookupCollectionsByEmbProvider(p.id) : [];
 
   return (
     <div className="col" style={{ gap: 14 }}>
-      <ProviderDetailHeader
-        label={k.label}
-        kindKey={kindKey}
-        id={id}
-        navigate={navigate}
-        onInvalidate={() => invalidate.mutate()}
-        onDelete={() => setConfirmDelete(true)}
-      />
+      {p.broken && (
+        <Banner
+          kind="error"
+          title="Provider broken"
+          detail="No API key set — every call returns 502 /errors/provider-server-error."
+          actions={<Btn size="sm" kind="primary" icon="key">Set API key</Btn>}
+        />
+      )}
 
       <div className="panel">
         <div className="panel-h">
-          <span className="dot" style={{ background: color, display: "inline-block", width: 8, height: 8, borderRadius: "50%" }}></span>
-          <span className="mono">{p.id}</span>
-          <span className="sub mono">· {p.provider}</span>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: VENDOR_COLORS[p.vendor] || "var(--text-3)" }}></div>
+          <span className="mono" style={{ fontSize: 14, fontWeight: 600 }}>{p.id}</span>
+          <div className="right">
+            <Btn size="sm" kind="ghost" icon="refresh" onClick={() => pushToast({ kind: "success", title: "Cache invalidated", detail: `POST /v1/${kind}_providers/${p.id}/invalidate → 200` })}>Invalidate</Btn>
+            <Btn size="sm" kind="ghost" icon="external">View JSON</Btn>
+          </div>
         </div>
         <div className="panel-body">
-          <div className="muted text-sm mb-3">
-            Read-only render of the provider row. Edit via DELETE + POST; in-place PUT not exposed.
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <div className="col">
+              <div className="field">
+                <label className="field-label">id <span className="hint">read-only</span></label>
+                <input className="input mono" value={p.id} readOnly />
+              </div>
+              <div className="field">
+                <label className="field-label">vendor</label>
+                <select className="select mono" defaultValue={p.vendor} style={{ width: "100%" }}>
+                  <option>openai</option><option>anthropic</option><option>voyageai</option><option>cohere</option>
+                </select>
+              </div>
+              <div className="field">
+                <label className="field-label">api_base</label>
+                <input className="input mono" defaultValue={p.api_base} />
+              </div>
+              <div className="field">
+                <label className="field-label">api_key <span className="hint">SecretStr</span></label>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    className="input mono"
+                    type={showKey ? "text" : "password"}
+                    value={p.api_key_set ? (showKey ? "sk-proj-abc123…xyz" : "•••••••• (set)") : ""}
+                    readOnly
+                    style={{ flex: 1 }}
+                    placeholder="not set"
+                  />
+                  <button className="icon-btn" onClick={() => setShowKey(!showKey)} title={showKey ? "Hide" : "Show"}><Icon name={showKey ? "x" : "key"} size={12} /></button>
+                  <Btn size="sm" kind="ghost">Replace</Btn>
+                </div>
+                <div className="field-help">Replace must be clicked explicitly — avoids accidental clears.</div>
+              </div>
+            </div>
+
+            <div className="col">
+              <div className="muted text-sm mono mb-2" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>used in</div>
+              {referencingAgents.length === 0 && referencingCollections.length === 0 ? (
+                <div className="muted text-sm">No references yet.</div>
+              ) : (
+                <>
+                  {referencingAgents.map((a) => (
+                    <div key={a} className="ref-row">
+                      <Icon name="agent" size={13} className="ico" />
+                      <span className="label">Agent</span>
+                      <span className="val"><a>{a}</a></span>
+                    </div>
+                  ))}
+                  {referencingCollections.map((c) => (
+                    <div key={c} className="ref-row">
+                      <Icon name="collection" size={13} className="ico" />
+                      <span className="label">Collection</span>
+                      <span className="val"><a>{c}</a></span>
+                    </div>
+                  ))}
+                </>
+              )}
+              <div className="muted text-sm mt-3 mb-2 mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>last invalidate</div>
+              <div className="mono">{relativeTime(p.invalidate_ago)}</div>
+            </div>
           </div>
-          <div className="code-block" dangerouslySetInnerHTML={{ __html: window.matrixVendor.highlightJson(JSON.stringify(_redactSecrets(p), null, 2)) }} />
         </div>
       </div>
 
+      {/* Models */}
       <div className="panel">
         <div className="panel-h">
-          <Icon name="llm" size={13} className="muted" />
+          <Icon name={kind === "embedding" ? "emb" : kind === "rerank" ? "emb" : "llm"} size={13} className="muted" />
           <span>Models</span>
-          <span className="sub">· returns the static row list, not a live introspection (T0025)</span>
+          <span className="sub">· static list from provider row</span>
           <div className="right">
-            <Btn size="sm" icon="refresh" kind="ghost" onClick={models.refetch} disabled={models.loading}>Refresh</Btn>
+            <Btn size="sm" kind="ghost" icon="refresh">Refresh from provider</Btn>
           </div>
         </div>
         <div className="panel-body" style={{ padding: 0 }}>
-          {models.loading && modelList.length === 0 ? (
-            <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
-          ) : models.error ? (
-            <div style={{ padding: 14 }}>
-              <Banner kind="error" title={models.error.title || "Couldn't load models"} detail={models.error.detail || models.error.message} />
+          {p.models.length === 0 ? (
+            <div className="empty" style={{ padding: 20 }}>
+              <div className="muted text-sm">No models configured.</div>
             </div>
-          ) : modelList.length === 0 ? (
-            <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>No models on this row.</div>
           ) : (
             <table className="tbl">
-              <thead><tr><th>Model</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>model</th>
+                  <th>tags</th>
+                  <th style={{ textAlign: "right" }}>context</th>
+                  <th></th>
+                </tr>
+              </thead>
               <tbody>
-                {modelList.map((m, i) => (
-                  <tr key={typeof m === "string" ? m : (m.name || i)}>
-                    <td className="mono">{typeof m === "string" ? m : m.name}</td>
+                {p.models.map((m) => (
+                  <tr key={m.id}>
+                    <td className="mono">{m.id}</td>
+                    <td>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {m.tags.map((t) => (
+                          <span key={t} className="pill" style={{ background: "var(--bg-2)", color: "var(--text-2)", border: "1px solid var(--border)", fontSize: 10 }}>{t}</span>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="mono num tabular muted">{m.ctx.toLocaleString()}</td>
+                    <td style={{ textAlign: "right", paddingRight: 12 }}>
+                      <button className="icon-btn" style={{ width: 22, height: 22 }} title="Delete"><Icon name="x" size={10} /></button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+          <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
+            <Btn size="sm" kind="ghost" icon="plus">Add model</Btn>
+            <span className="muted text-sm" style={{ marginLeft: 10 }}>
+              <Icon name="info" size={11} style={{ verticalAlign: -2 }} /> "Refresh" returns the row's static list, not a live introspection of the upstream API.
+            </span>
+          </div>
         </div>
-      </div>
-
-      <div className="muted text-sm">
-        "Used in" panel (agents / collections / IC config) is deferred —
-        v1 doesn't reverse-index reference checks. Use the Agents page /
-        Knowledge / Internal Collections wizard directly.
-      </div>
-
-      {confirmDelete && (
-        <Modal
-          title={`Delete ${id}?`}
-          danger
-          onClose={() => setConfirmDelete(false)}
-          footer={
-            <>
-              <Btn kind="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Btn>
-              <Btn kind="danger" icon="trash" onClick={async () => { setConfirmDelete(false); try { await delMut.mutate(); } catch (_e) {} }}>Delete</Btn>
-            </>
-          }
-        >
-          <ul>
-            <li>Removes the provider row from storage.</li>
-            <li>Any agent / collection referencing this provider id will fail at next use.</li>
-            <li>Invalidates the backend's cached adapter (DELETE is wired through <span className="mono">invalidate</span> on the workspace registry side).</li>
-            <li>DELETE is NOT idempotent on entities — a second DELETE returns 404 (app spec §5).</li>
-          </ul>
-        </Modal>
-      )}
-    </div>
-  );
-}
-
-function ProviderDetailHeader({ label, kindKey, id, navigate, onInvalidate, onDelete }) {
-  return (
-    <div className="page-header" style={{ marginBottom: 0 }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="crumb">
-          <span>Providers</span><span className="sep">/</span>
-          <a onClick={() => navigate("/providers/" + kindKey)}>{label}</a>
-          <span className="sep">/</span>
-          <span className="mono" style={{ color: "var(--text)" }}>{id}</span>
-        </div>
-        <h1 className="page-title mono">{id}</h1>
-      </div>
-      <div className="page-actions">
-        {onInvalidate && <Btn icon="refresh" kind="ghost" onClick={onInvalidate}>Invalidate</Btn>}
-        {onDelete && <Btn icon="trash" kind="danger" onClick={onDelete}>Delete</Btn>}
-        <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("/providers/" + kindKey)}>Back</Btn>
       </div>
     </div>
   );
 }
 
-function _redactSecrets(row) {
-  // The backend already masks SecretStr fields on the wire (per app
-  // spec §7), so this is defensive belt-and-braces in case a future
-  // mistake echoes them. Scan for any string field named like
-  // "api_key" / "password" / "secret" and stringify as "•••• (set)".
-  const SECRET_RE = /(api_key|password|secret|token)/i;
-  function walk(v) {
-    if (v == null || typeof v !== "object") return v;
-    if (Array.isArray(v)) return v.map(walk);
-    const out = {};
-    for (const [k, val] of Object.entries(v)) {
-      if (typeof val === "string" && SECRET_RE.test(k) && val && !val.startsWith("•")) {
-        out[k] = "•••• (redacted by UI)";
-      } else {
-        out[k] = walk(val);
-      }
-    }
-    return out;
-  }
-  return walk(row);
+function lookupAgentsByProvider(providerId) {
+  // This is a hack since AGENT_DETAILS is local to agents.jsx
+  return Object.entries(window.AGENT_DETAILS_INDEX || {})
+    .filter(([_, d]) => d.llm_provider_id === providerId)
+    .map(([id]) => id);
+}
+
+function lookupCollectionsByEmbProvider(providerId) {
+  return (window.COLLECTIONS_INDEX || []).filter((c) => c.embedding_provider === providerId).map((c) => c.id);
 }
 
 window.ProvidersPage = ProvidersPage;
-window.ProviderDetail = ProviderDetail;

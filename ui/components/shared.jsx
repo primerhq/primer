@@ -54,7 +54,17 @@ const Icon = ({ name, size = 14, ...rest }) => {
   }
 };
 
-const StatusPill = ({ status, className = "" }) => {
+const StatusPill = ({ status, className = "", parked }) => {
+  // Parked overrides the visible label/color per UI spec A.2 — pill reads WAITING,
+  // amber, tooltip says "Parked on <tool_name>"
+  if (parked) {
+    return (
+      <span className={`pill pill-paused ${className}`} title={`Parked on ${parked}`}>
+        <span className="dot"></span>
+        waiting
+      </span>
+    );
+  }
   const labels = {
     created: "created",
     running: "running",
@@ -134,14 +144,22 @@ const Banner = ({ kind = "info", icon, title, detail, actions }) => (
 );
 
 const Sparkline = ({ values, width = 80, height = 24 }) => {
-  // Path math lives in window.matrixVendor.buildSparkline
-  // (ui/vendor/sparkline.js); this component just owns the SVG wrap.
-  const built = window.matrixVendor.buildSparkline(values, width, height);
-  if (!built) return null;
+  if (!values || values.length === 0) return null;
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const range = max - min || 1;
+  const step = width / (values.length - 1 || 1);
+  const pts = values.map((v, i) => {
+    const x = i * step;
+    const y = height - 2 - ((v - min) / range) * (height - 4);
+    return [x, y];
+  });
+  const path = pts.map((p, i) => (i === 0 ? `M${p[0]},${p[1]}` : `L${p[0]},${p[1]}`)).join(" ");
+  const area = `${path} L${width},${height} L0,${height} Z`;
   return (
-    <svg className="spark" width={built.width} height={built.height} viewBox={`0 0 ${built.width} ${built.height}`}>
-      <path d={built.area} className="area" />
-      <path d={built.path} />
+    <svg className="spark" width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+      <path d={area} className="area" />
+      <path d={path} />
     </svg>
   );
 };

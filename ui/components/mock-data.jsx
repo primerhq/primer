@@ -218,6 +218,129 @@ function buildSessions(now) {
       instructions: "Walk me through how session state propagates from scheduler.claim() through worker.run_turn() and back to storage.",
       error: null,
     },
+    // PARKED ON ask_user — needs operator input
+    {
+      id: "sess-ask-4a2c9e1f8b76",
+      status: "running",
+      parked_status: "parked",
+      parked_state: {
+        tool_call_id: "tc_8d2a4f1c",
+        parked_at: new Date(now - 1000 * 92),
+        yielded: {
+          tool_name: "ask_user",
+          resume_metadata: {
+            prompt: "I'm about to refund $148.50 to charge ch_3OZ4mQ as a full refund. Confirm before I issue?",
+          },
+        },
+      },
+      binding_kind: "agent",
+      agent_id: "stripe-refunds",
+      workspace_id: "ws-1a5e7d3f9c80",
+      graph_id: null,
+      created_at: new Date(now - 1000 * 320),
+      started_at: new Date(now - 1000 * 318),
+      last_turn_at: new Date(now - 1000 * 92),
+      turn_count: 2,
+      worker_id: "wrk-9d2f",
+      attempt: 1,
+      instructions: "Process the refund for charge ch_3OZ4mQ.",
+      error: null,
+    },
+    // PARKED ON ask_user — schema-driven
+    {
+      id: "sess-ask-9c4a2f8b1e75",
+      status: "running",
+      parked_status: "parked",
+      parked_state: {
+        tool_call_id: "tc_2e9c4a1b",
+        parked_at: new Date(now - 1000 * 22),
+        yielded: {
+          tool_name: "ask_user",
+          resume_metadata: {
+            prompt: "I need ticket triage metadata before continuing. Provide the queue assignment.",
+            response_schema: {
+              type: "object",
+              properties: {
+                queue: { type: "string", enum: ["billing", "technical", "sales"] },
+                priority: { type: "integer", minimum: 1, maximum: 5 },
+                tags: { type: "array", items: { type: "string" } },
+              },
+              required: ["queue", "priority"],
+            },
+          },
+        },
+      },
+      binding_kind: "agent",
+      agent_id: "support-triage",
+      workspace_id: "ws-3f8a9bc1d4e2",
+      graph_id: null,
+      created_at: new Date(now - 1000 * 180),
+      started_at: new Date(now - 1000 * 178),
+      last_turn_at: new Date(now - 1000 * 22),
+      turn_count: 1,
+      worker_id: "wrk-7c1b",
+      attempt: 1,
+      instructions: "Triage this support ticket and assign the right queue.",
+      error: null,
+    },
+    // PARKED ON sleep
+    {
+      id: "sess-slp-3e8a2c1f9d64",
+      status: "running",
+      parked_status: "parked",
+      parked_state: {
+        tool_call_id: "tc_4c1a8f2d",
+        parked_at: new Date(now - 1000 * 38),
+        yielded: {
+          tool_name: "sleep",
+          resume_metadata: {
+            duration_s: 300,
+            resume_at: new Date(now + 1000 * 262).toISOString(),
+          },
+        },
+      },
+      binding_kind: "agent",
+      agent_id: "doc-ingestion",
+      workspace_id: "ws-2d8f4a7c3b91",
+      graph_id: null,
+      created_at: new Date(now - 1000 * 240),
+      started_at: new Date(now - 1000 * 238),
+      last_turn_at: new Date(now - 1000 * 38),
+      turn_count: 3,
+      worker_id: "wrk-3a8e",
+      attempt: 1,
+      instructions: "Ingest the changelog, then poll for new entries every 5 minutes.",
+      error: null,
+    },
+    // PARKED ON watch_files
+    {
+      id: "sess-wch-6f3a9c2b8d14",
+      status: "running",
+      parked_status: "parked",
+      parked_state: {
+        tool_call_id: "tc_6c3f9a2b",
+        parked_at: new Date(now - 1000 * 124),
+        yielded: {
+          tool_name: "watch_files",
+          resume_metadata: {
+            paths: ["/tmp/inbox/*.json", "/var/spool/triage/*.eml", "src/handlers/webhook.py"],
+            coalesce_window_ms: 200,
+          },
+        },
+      },
+      binding_kind: "agent",
+      agent_id: "pr-reviewer",
+      workspace_id: "ws-7c2d4e9a8b15",
+      graph_id: null,
+      created_at: new Date(now - 1000 * 480),
+      started_at: new Date(now - 1000 * 478),
+      last_turn_at: new Date(now - 1000 * 124),
+      turn_count: 4,
+      worker_id: "wrk-9d2f",
+      attempt: 1,
+      instructions: "Watch the inbox and review any PRs that land.",
+      error: null,
+    },
     {
       id: "sess-2a6d4f8b1c95",
       status: "created",
@@ -387,4 +510,32 @@ const WORKERS = [
   { id: "wrk-1e5d", host: "matrix-w4.local", pid: 28404, status: "draining", capacity: 4, in_flight: 0, started_at: 8400, heartbeat: 1.5 },
 ];
 
-window.MOCK = { AGENTS, WORKSPACES, WORKSPACE_DETAILS, FILE_TREE, FILE_PREVIEWS, GIT_LOG, GRAPHS, WORKERS, buildSessions };
+// Semantic Search Providers
+const SSP_PROVIDERS = [
+  {
+    id: "pgvector-prod",
+    provider: "pgvector",
+    config: { hostname: "pg-prod.internal", port: 5432, database: "matrix", username: "matrix_rw", schema: "public", hnsw_m: 16, hnsw_ef_construction: 64 },
+    last_invalidated_ago: 14 * 60,
+    status: "ok",
+    created_at_ago: 3600 * 24 * 12,
+  },
+  {
+    id: "pgvectorscale-archive",
+    provider: "pgvectorscale",
+    config: { hostname: "ts-archive.internal", port: 5432, database: "archive", username: "matrix_ro", schema: "public", hnsw_m: 24, hnsw_ef_construction: 80, enable_diskann: true, num_neighbors: 50, search_list_size: 100 },
+    last_invalidated_ago: 3600 * 6,
+    status: "ok",
+    created_at_ago: 3600 * 24 * 38,
+  },
+  {
+    id: "pgvector-staging",
+    provider: "pgvector",
+    config: { hostname: "pg-staging.internal", port: 5432, database: "matrix", username: "matrix_rw", schema: "matrix_test", hnsw_m: 8, hnsw_ef_construction: 32 },
+    last_invalidated_ago: 90,
+    status: "amber",
+    created_at_ago: 3600 * 4,
+  },
+];
+
+window.MOCK = { AGENTS, WORKSPACES, WORKSPACE_DETAILS, FILE_TREE, FILE_PREVIEWS, GIT_LOG, GRAPHS, WORKERS, SSP_PROVIDERS, buildSessions };

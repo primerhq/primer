@@ -1,118 +1,72 @@
-/* global React, Icon, StatusPill, Btn, Sparkline, relativeTime */
+/* global React, Icon, StatusPill, Btn, Sparkline, relativeTime, Banner */
 
-const { apiFetch, useResource, useRouter } = window.matrixApi;
+function Dashboard({ sessions, workerStats, subsystemOn, onNavigate, onNewSession }) {
+  const runningCount = sessions.filter((s) => s.status === "running").length;
+  const pausedCount = sessions.filter((s) => s.status === "paused").length;
+  const last1h = sessions.filter((s) => Date.now() - s.created_at.getTime() < 3600 * 1000).length;
+  const errorsLast1h = sessions.filter((s) => s.status === "failed" && Date.now() - s.created_at.getTime() < 3600 * 1000).length;
 
-// Same 404-suppression shape as chrome.jsx (the IC config endpoint
-// returns 404 when the subsystem is OFF — that's the documented
-// signal, not an error).
-async function _fetchIcConfig(signal) {
-  try {
-    return await apiFetch("GET", "/internal_collections/config", null, { signal });
-  } catch (err) {
-    if (err && err.status === 404) return null;
-    throw err;
-  }
-}
+  const utilization = Math.round((workerStats.in_flight / Math.max(1, workerStats.capacity)) * 100);
+  const recentSessions = [...sessions]
+    .sort((a, b) => b.created_at - a.created_at)
+    .slice(0, 8);
 
-function Dashboard({ onNewSession }) {
-  const { navigate } = useRouter();
-
-  // Shared caches with topbar/sidebar — same /v1/health, /v1/workers,
-  // /v1/internal_collections/config polls; no duplicate traffic.
-  const health = useResource(
-    "topbar:health",
-    (s) => apiFetch("GET", "/health", null, { signal: s }),
-    { pollMs: 2000 }
-  );
-  const workers = useResource(
-    "sidebar:workers",
-    (s) => apiFetch("GET", "/workers", null, { signal: s }),
-    { pollMs: 5000 }
-  );
-  const ic = useResource("sidebar:ic-config", _fetchIcConfig, { pollMs: 30000 });
-
-  // Recent sessions for the bottom table. The default order from the
-  // list endpoint is created_at desc per the existing tests.
-  const recent = useResource(
-    "dashboard:recent-sessions",
-    (s) => apiFetch("GET", "/sessions?limit=8", null, { signal: s }),
-    { pollMs: 5000 }
-  );
-
-  // Worker pool sparkline — in-memory ring buffer, last 5 min at 2s = 150.
-  const sparkBuffer = React.useRef([]);
-  const [, sparkTick] = React.useState(0);
+  // Tick clock for live gauge animation
+  const [, force] = React.useState(0);
   React.useEffect(() => {
-    const inf = health.data?.worker_pool?.in_flight;
-    if (inf == null) return;
-    sparkBuffer.current.push(inf);
-    if (sparkBuffer.current.length > 150) sparkBuffer.current.shift();
-    sparkTick((x) => x + 1);
-  }, [health.data]);
+    const id = setInterval(() => force((x) => x + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
-  const wp = health.data?.worker_pool || {};
-  const sched = health.data?.scheduler || {};
-  const items = workers.data?.items ?? [];
-  const activeWorkers = items.filter((w) => w.status === "active").length;
-  const drainingWorkers = items.filter((w) => w.status === "draining").length;
-  const totalWorkers = items.length;
-  const inFlight = wp.in_flight ?? 0;
-  const capacity = wp.capacity ?? 0;
-  const utilization = capacity > 0 ? Math.round((inFlight / capacity) * 100) : 0;
-
-  const sessionsTotal = recent.data?.total ?? null;
-  const sessionRows = recent.data?.items ?? [];
-  const runningCount = sessionRows.filter((s) => s.status === "running").length;
-  const pausedCount = sessionRows.filter((s) => s.status === "paused").length;
-
-  const subsystemOn = ic.data != null;
+  // Generate live sparkline data — pseudo-stable
+  const sparkData = React.useMemo(() => {
+    const arr = [];
+    let v = workerStats.in_flight;
+    for (let i = 0; i < 30; i++) {
+      v += (Math.random() - 0.5) * 1.4;
+      v = Math.max(0, Math.min(workerStats.capacity, v));
+      arr.push(v);
+    }
+    arr[arr.length - 1] = workerStats.in_flight;
+    return arr;
+  }, [workerStats.in_flight, workerStats.capacity]);
 
   return (
     <div className="col" style={{ gap: 18 }}>
-      <DashboardHeader onNewSession={onNewSession} />
-
-      {/* Health strip */}
+      {/* System health strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
         <HealthCard
           icon="worker"
           label="Workers"
-          value={totalWorkers === 0 ? "—" : `${activeWorkers}/${totalWorkers}`}
-          sub={
-            capacity > 0
-              ? `${inFlight}/${capacity} in flight${drainingWorkers ? ` · ${drainingWorkers} draining` : ""}`
-              : "no worker pool attached"
-          }
-          status={
-            !sched.alive || capacity === 0 || activeWorkers === 0 ? "err"
-            : capacity > 0 && inFlight >= capacity * 0.8 ? "warn"
-            : "ok"
-          }
-          onClick={() => navigate("/workers")}
+          value={`${workerStats.active}/${workerStats.total}`}
+          sub={`${workerStats.in_flight}/${workerStats.capacity} in flight · 1 draining`}
+          status={workerStats.active === 0 ? "err" : (workerStats.in_flight / workerStats.capacity > 0.8 ? "warn" : "ok")}
+          onClick={() => onNavigate("workers")}
         />
         <HealthCard
           icon="zap"
           label="Sessions"
-          value={sessionsTotal == null ? "—" : sessionsTotal}
-          sub={`${runningCount} running · ${pausedCount} paused (top ${sessionRows.length})`}
+          value={runningCount}
+          sub={`${pausedCount} paused · ${last1h} created (1h)`}
           status="ok"
           accent
-          onClick={() => navigate("/sessions")}
+          onClick={() => onNavigate("sessions")}
         />
         <HealthCard
           icon="subsystem"
           label="Internal Collections"
           value={subsystemOn ? "ON" : "OFF"}
-          sub={subsystemOn ? "configured" : "not configured"}
+          sub={subsystemOn ? "last bootstrap 14m ago" : "configured · not bootstrapped"}
           status={subsystemOn ? "ok" : "warn"}
-          onClick={() => navigate("/subsystems/internal-collections")}
+          onClick={() => onNavigate("internal-collections")}
         />
         <HealthCard
           icon="alert"
           label="Errors (1h)"
-          value="—"
-          sub="endpoint not implemented (planned)"
-          status="ok"
-          onClick={() => navigate("/health")}
+          value={errorsLast1h}
+          sub={errorsLast1h === 0 ? "no 5xx responses" : "see /errors log"}
+          status={errorsLast1h > 0 ? "warn" : "ok"}
+          onClick={() => onNavigate("health")}
         />
       </div>
 
@@ -134,20 +88,15 @@ function Dashboard({ onNewSession }) {
                 <div>
                   <div className="muted text-sm mono">IN FLIGHT</div>
                   <div className="mono" style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em" }}>
-                    {inFlight}
-                    <span className="muted" style={{ fontSize: 18 }}> / {capacity || "—"}</span>
+                    {workerStats.in_flight}<span className="muted" style={{ fontSize: 18 }}> / {workerStats.capacity}</span>
                   </div>
                 </div>
-                {sparkBuffer.current.length > 0 ? (
-                  <Sparkline values={sparkBuffer.current} width={160} height={36} />
-                ) : (
-                  <span className="muted text-sm">collecting…</span>
-                )}
+                <Sparkline values={sparkData} width={160} height={36} />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-                <Metric label="in flight" value={inFlight} />
-                <Metric label="capacity" value={capacity || "—"} />
-                <Metric label="active workers" value={activeWorkers} />
+                <Metric label="claimed" value={workerStats.in_flight} />
+                <Metric label="queued" value={Math.max(0, runningCount - workerStats.in_flight)} />
+                <Metric label="capacity" value={workerStats.capacity} />
               </div>
             </div>
           </div>
@@ -159,12 +108,12 @@ function Dashboard({ onNewSession }) {
             <span>Quick actions</span>
           </div>
           <div className="panel-body" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <QuickAction icon="plus" label="New workspace" onClick={() => navigate("/workspaces", { create: "1" })} />
-            <QuickAction icon="plus" label="New agent" onClick={() => navigate("/agents", { create: "1" })} />
+            <QuickAction icon="plus" label="New workspace" onClick={() => onNavigate("workspaces")} />
+            <QuickAction icon="plus" label="New agent" onClick={() => onNavigate("agents")} />
             <QuickAction icon="zap" label="New session" onClick={onNewSession} />
-            <QuickAction icon="search" label="Search bench" onClick={() => navigate("/knowledge/search")} />
-            <QuickAction icon="external" label="OpenAPI" onClick={() => window.open("/v1/openapi.json", "_blank", "noopener,noreferrer")} />
-            <QuickAction icon="heart" label="Health" onClick={() => navigate("/health")} />
+            <QuickAction icon="collection" label="Collections" onClick={() => onNavigate("collections")} />
+            <QuickAction icon="worker" label="Workers" onClick={() => onNavigate("workers")} />
+            <QuickAction icon="external" label="OpenAPI" />
           </div>
         </div>
       </div>
@@ -174,72 +123,39 @@ function Dashboard({ onNewSession }) {
         <div className="panel-h">
           <Icon name="zap" size={13} className="muted" />
           <span>Recent sessions</span>
-          <span className="sub">· last {sessionRows.length}{sessionsTotal != null && sessionRows.length < sessionsTotal ? ` of ${sessionsTotal}` : ""}</span>
+          <span className="sub">· last {recentSessions.length}</span>
           <div className="right">
-            <Btn size="sm" kind="ghost" iconRight="chevron-right" onClick={() => navigate("/sessions")}>View all</Btn>
+            <Btn size="sm" kind="ghost" iconRight="chevron-right" onClick={() => onNavigate("sessions")}>View all</Btn>
           </div>
         </div>
         <div className="panel-body" style={{ padding: 0 }}>
-          {recent.loading && sessionRows.length === 0 ? (
-            <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
-          ) : recent.error && sessionRows.length === 0 ? (
-            <div style={{ padding: 20, textAlign: "center" }}>
-              <span style={{ color: "var(--red)" }}>{recent.error.title || recent.error.message}</span>
-              {" · "}<a onClick={recent.refetch} style={{ cursor: "pointer" }}>Retry</a>
-            </div>
-          ) : sessionRows.length === 0 ? (
-            <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
-              No sessions yet · <a onClick={onNewSession} style={{ cursor: "pointer", color: "var(--accent)" }}>+ New session</a>
-            </div>
-          ) : (
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>Status</th>
-                  <th>Session</th>
-                  <th>Agent / Graph</th>
-                  <th>Workspace</th>
-                  <th>Created</th>
-                  <th></th>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Session</th>
+                <th>Agent</th>
+                <th>Workspace</th>
+                <th style={{ textAlign: "right" }}>Turns</th>
+                <th>Created</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentSessions.map((s) => (
+                <tr key={s.id} onClick={() => onNavigate("session-detail", s.id)}>
+                  <td><StatusPill status={s.status} parked={s.parked_status === "parked" ? s.parked_state.yielded.tool_name : null} /></td>
+                  <td className="mono">{s.id.slice(0, 20)}<span className="muted">…</span></td>
+                  <td className="mono">{s.binding_kind === "graph" ? (<span style={{ color: "var(--violet)" }}>{s.graph_id}</span>) : s.agent_id}</td>
+                  <td className="mono muted">{s.workspace_id.slice(0, 14)}…</td>
+                  <td className="mono num tabular">{s.turn_count}</td>
+                  <td className="mono muted">{relativeTime((Date.now() - s.created_at.getTime()) / 1000)}</td>
+                  <td style={{ textAlign: "right", paddingRight: 12 }}><Icon name="chevron-right" size={12} className="muted" /></td>
                 </tr>
-              </thead>
-              <tbody>
-                {sessionRows.map((s) => (
-                  <tr key={s.id} onClick={() => navigate("/sessions/" + s.id)} style={{ cursor: "pointer" }}>
-                    <td><StatusPill status={s.status} /></td>
-                    <td className="mono">{s.id.slice(0, 24)}{s.id.length > 24 && <span className="muted">…</span>}</td>
-                    <td className="mono">
-                      {s.binding?.kind === "graph"
-                        ? <span style={{ color: "var(--violet)" }}>{s.binding.graph_id}</span>
-                        : s.binding?.agent_id || "—"}
-                    </td>
-                    <td className="mono muted">{(s.workspace_id || "").slice(0, 18)}{s.workspace_id && s.workspace_id.length > 18 && "…"}</td>
-                    <td className="mono muted">{s.created_at ? relativeTime((Date.now() - new Date(s.created_at).getTime()) / 1000) : "—"}</td>
-                    <td style={{ textAlign: "right", paddingRight: 12 }}><Icon name="chevron-right" size={12} className="muted" /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+              ))}
+            </tbody>
+          </table>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function DashboardHeader({ onNewSession }) {
-  return (
-    <div className="page-header" style={{ marginBottom: 0 }}>
-      <div>
-        <div className="crumb">
-          <span style={{ color: "var(--text)" }}>Dashboard</span>
-        </div>
-        <h1 className="page-title">Dashboard</h1>
-        <div className="page-sub">Operator overview · live <span className="mono">/v1/health</span> + <span className="mono">/v1/sessions</span></div>
-      </div>
-      <div className="page-actions">
-        <Btn icon="external" kind="ghost" onClick={() => window.open("/v1/openapi.json", "_blank", "noopener,noreferrer")}>View OpenAPI</Btn>
-        <Btn icon="plus" kind="primary" onClick={onNewSession}>New session</Btn>
       </div>
     </div>
   );
@@ -294,9 +210,11 @@ function QuickAction({ icon, label, onClick }) {
 }
 
 function Gauge({ value }) {
+  // Half-arc gauge
   const radius = 56;
   const stroke = 10;
   const cx = 70, cy = 70;
+  // Arc from 180° to 0° (full half-circle, top)
   const startAngle = Math.PI;
   const endAngle = 0;
   const valueAngle = Math.PI - (Math.PI * Math.min(100, Math.max(0, value)) / 100);

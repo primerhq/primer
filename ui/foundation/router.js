@@ -39,6 +39,16 @@
     { pattern: "/subsystems/internal-collections", page: "InternalCollectionsPage" },
     { pattern: "/workers",                         page: "WorkersPage" },
     { pattern: "/health",                          page: "HealthPage" },
+    // Phase 1 additions for redesigned console pages.
+    { pattern: "/ssp",                             page: "SemanticSearchListPage" },
+    { pattern: "/ssp/:id",                         page: "SemanticSearchDetailPage" },
+    { pattern: "/approvals",                       page: "ApprovalsPage" },
+    { pattern: "/channels/providers",              page: "ChannelProvidersPage" },
+    { pattern: "/channels/providers/:id",          page: "ChannelProviderDetailPage" },
+    { pattern: "/channels/channels",               page: "ChannelsListPage" },
+    { pattern: "/channels/associations",           page: "ChannelAssociationsPage" },
+    { pattern: "/chats",                           page: "ChatsListPage" },
+    { pattern: "/chats/:id",                       page: "ChatDetailPage" },
   ];
 
   function splitSegments(path) {
