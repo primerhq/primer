@@ -134,6 +134,17 @@ function App() {
     (signal) => window.matrixApi.apiFetch("GET", "/health", null, { signal }),
     { pollMs: 5000 }
   );
+  // Sidebar workspaces count — Workspaces is one of the few nav items
+  // with a count badge. The 5s poll cadence is what U0095 + U0024 pin
+  // (decrement / increment after API DELETE / POST without a manual
+  // refresh). Task 15 owns the broader sidebar wiring; this entry is
+  // here so the workspaces list+detail page can ride on the same
+  // resource as the sidebar without a second roundtrip.
+  const realWorkspaces = window.matrixApi.useResource(
+    "topbar:workspaces",
+    (signal) => window.matrixApi.apiFetch("GET", "/workspaces?limit=200", null, { signal }),
+    { pollMs: 5000 }
+  );
 
   // Semantic Search providers — controlled by the ssmState tweak
   const ssps = React.useMemo(() => {
@@ -200,7 +211,9 @@ function App() {
 
   const counts = {
     sessions: sessions.filter((s) => !["ended", "failed", "cancelled"].includes(s.status)).length,
-    workspaces: 4,
+    workspaces: Array.isArray(realWorkspaces.data?.items)
+      ? realWorkspaces.data.items.length
+      : 0,
     workers: workerStats.total,
     ssps: ssps.length,
     chats: (window.CHATS_DATA || []).filter((c) => c.status === "active").length,
@@ -682,9 +695,8 @@ function App() {
     );
     pageBody = (
       <WorkspacesPage
-        sessions={sessions}
         onOpen={(wid) => navigate("workspace-detail", wid)}
-        onCreate={() => pushToast({ kind: "success", title: "Workspace created", detail: "POST /v1/workspaces returned 201. Backend-generated id assigned." })}
+        pushToast={pushToast}
       />
     );
   } else if (page === "workspace-detail" && currentWorkspaceId) {

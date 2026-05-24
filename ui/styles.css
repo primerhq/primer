@@ -584,6 +584,25 @@ input, textarea, select { font: inherit; color: inherit; }
 .filter-bar .input-icon { flex: 0 0 auto; }
 .filter-bar .input-icon .input { width: 160px; min-width: 0; }
 .filter-bar .select { padding: 4px 22px 4px 8px; font-size: 12px; max-width: 120px; }
+/* ws-filter-select mirrors .select visually but stays out of the
+   `select.select` global selector so workspaces-list test U0023 can use
+   `page.locator("select.select").first` to target the modal's select
+   unambiguously. */
+.ws-filter-select {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 22px 4px 8px;
+  font-size: 12px;
+  color: var(--text);
+  outline: none;
+  max-width: 160px;
+  min-width: 0;
+}
+.ws-filter-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
 .filter-bar .chip-group { padding: 1px; }
 .filter-bar .sep-v { width: 1px; background: var(--border); align-self: stretch; height: 22px; align-self: center; }
 

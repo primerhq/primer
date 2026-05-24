@@ -1,136 +1,328 @@
 /* global React, Icon, StatusPill, Btn, Modal, Banner, relativeTime, fmtDate */
 
-function WorkspacesPage({ sessions, onOpen, onCreate }) {
+// Workspaces page + detail wired to the real API. The Designer's mock-data
+// scaffold was replaced in Phase 2 — every fetch goes through
+// window.matrixApi.{apiFetch, useResource, useMutation}. Cache-key convention
+// follows other components: "workspaces:list", "workspace-detail:${wid}",
+// "workspace-files:${wid}:${path}", "workspace-sessions:${wid}",
+// "workspace-log:${wid}:${limit}", "workspace-channels:${wid}".
+//
+// Babel-standalone shares the global scope across <script> tags so every
+// top-level binding in this file is prefixed with WS_ to avoid name clashes
+// with channels.jsx (ProviderBadge, Toggle) and others.
+
+const WS_TERMINAL = new Set(["ended", "completed", "failed", "cancelled"]);
+
+function _wsAgeSec(iso) {
+  if (!iso) return null;
+  if (iso instanceof Date) return (Date.now() - iso.getTime()) / 1000;
+  return (Date.now() - new Date(iso).getTime()) / 1000;
+}
+
+function _wsToastErr(pushToast, fallbackTitle) {
+  return (err) => {
+    if (typeof pushToast !== "function") return;
+    pushToast({
+      kind: "error",
+      title: err?.title || fallbackTitle,
+      detail: err?.detail || err?.message,
+      requestId: err?.requestId,
+    });
+  };
+}
+
+// ============================================================================
+// Workspaces list page
+// ============================================================================
+
+function WorkspacesPage({ onOpen, pushToast }) {
+  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [textQuery, setTextQuery] = React.useState("");
+  const [templateFilter, setTemplateFilter] = React.useState("");
+  const [providerFilter, setProviderFilter] = React.useState("");
+  const filterFocused = React.useRef(false);
+
+  const list = useResource(
+    "workspaces:list",
+    (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
+    { pollMs: 5000, pauseWhile: () => filterFocused.current }
+  );
+
+  const items = list.data?.items ?? [];
+
+  const filtered = React.useMemo(() => {
+    let arr = items;
+    if (textQuery) {
+      const q = textQuery.toLowerCase();
+      arr = arr.filter((w) =>
+        (w.id || "").toLowerCase().includes(q) ||
+        (w.template_id || "").toLowerCase().includes(q) ||
+        (w.provider_id || "").toLowerCase().includes(q)
+      );
+    }
+    if (templateFilter) arr = arr.filter((w) => w.template_id === templateFilter);
+    if (providerFilter) arr = arr.filter((w) => w.provider_id === providerFilter);
+    return arr;
+  }, [items, textQuery, templateFilter, providerFilter]);
+
+  const templates = React.useMemo(() => {
+    const set = new Set();
+    for (const w of items) if (w.template_id) set.add(w.template_id);
+    return [...set].sort();
+  }, [items]);
+  const providers = React.useMemo(() => {
+    const set = new Set();
+    for (const w of items) if (w.provider_id) set.add(w.provider_id);
+    return [...set].sort();
+  }, [items]);
+
+  const openRow = (wid) => {
+    if (typeof onOpen === "function") onOpen(wid);
+    else navigate("/workspaces/" + wid);
+  };
+
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter workspaces…" />
+          <input
+            className="input"
+            placeholder="Filter workspaces…"
+            value={textQuery}
+            onChange={(e) => setTextQuery(e.target.value)}
+            onFocus={() => { filterFocused.current = true; }}
+            onBlur={() => { filterFocused.current = false; }}
+          />
         </div>
         <div className="sep-v" />
-        <select className="select"><option>all templates</option></select>
-        <select className="select"><option>all providers</option></select>
-        <div style={{ marginLeft: "auto" }}>
+        <select
+          className="ws-filter-select"
+          value={templateFilter}
+          onChange={(e) => setTemplateFilter(e.target.value)}
+          data-testid="workspaces-template-filter"
+        >
+          <option value="">all templates</option>
+          {templates.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <select
+          className="ws-filter-select"
+          value={providerFilter}
+          onChange={(e) => setProviderFilter(e.target.value)}
+          data-testid="workspaces-provider-filter"
+        >
+          <option value="">all providers</option>
+          {providers.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
           <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New workspace</Btn>
         </div>
       </div>
 
-      <div className="tbl-wrap">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Template</th>
-              <th>Provider</th>
-              <th style={{ textAlign: "right" }}>Sessions</th>
-              <th>Created</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {window.MOCK.WORKSPACES.map((wid) => {
-              const d = window.MOCK.WORKSPACE_DETAILS[wid];
-              const onWs = sessions.filter((s) => s.workspace_id === wid && !["ended", "failed", "cancelled"].includes(s.status));
-              return (
-                <tr key={wid} onClick={() => onOpen(wid)}>
-                  <td className="mono">{wid}</td>
-                  <td className="mono">{d.template}</td>
-                  <td>
-                    <ProviderBadge kind={d.provider} />
-                  </td>
-                  <td className="mono num tabular">
-                    {onWs.length > 0 ? (
-                      <span style={{ color: "var(--blue)" }}>{onWs.length}</span>
-                    ) : (
-                      <span className="muted">0</span>
-                    )}
-                  </td>
-                  <td className="mono muted">{relativeTime(d.created_at_ago / 1000)}</td>
+      {list.error && items.length === 0 ? (
+        <Banner
+          kind="error"
+          title={list.error.title || "Couldn't load workspaces"}
+          detail={list.error.detail || list.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
+        />
+      ) : items.length === 0 && !list.loading ? (
+        <div className="panel">
+          <div className="empty">
+            <div className="ico-wrap"><Icon name="box" size={22} /></div>
+            <div className="head">No workspaces yet</div>
+            <div className="sub">A workspace is a materialised template — the per-session filesystem + state repo that agents read and write. Create one to get started.</div>
+            <div className="actions">
+              <Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New workspace</Btn>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Template</th>
+                <th>Provider</th>
+                <th>Created</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr><td colSpan={5} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+                  No workspaces match the current filter{textQuery ? ` "${textQuery}"` : ""}.
+                  {" · "}<a
+                    onClick={() => { setTextQuery(""); setTemplateFilter(""); setProviderFilter(""); }}
+                    style={{ cursor: "pointer", color: "var(--accent)" }}
+                  >Clear filters</a>
+                </td></tr>
+              ) : filtered.map((w) => (
+                <tr key={w.id} onClick={() => openRow(w.id)} style={{ cursor: "pointer" }}>
+                  <td className="mono">{w.id}</td>
+                  <td className="mono">{w.template_id}</td>
+                  <td className="mono muted">{w.provider_id}</td>
+                  <td className="mono muted">{w.created_at ? relativeTime(_wsAgeSec(w.created_at)) : "—"}</td>
                   <td style={{ textAlign: "right", paddingRight: 12 }}>
                     <Icon name="chevron-right" size={12} className="muted" />
                   </td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {createOpen && (
-        <Modal
-          title="New workspace"
+        <WS_NewWorkspaceModal
           onClose={() => setCreateOpen(false)}
-          footer={
-            <>
-              <Btn kind="ghost" onClick={() => setCreateOpen(false)}>Cancel</Btn>
-              <Btn kind="primary" icon="plus" onClick={() => { setCreateOpen(false); onCreate && onCreate(); }}>Create</Btn>
-            </>
-          }
-        >
-          <div className="field">
-            <label className="field-label">Template</label>
-            <select className="select" style={{ width: "100%" }}>
-              <option>python-3.11-slim</option>
-              <option>node-22</option>
-              <option>stripe-toolkit</option>
-            </select>
-          </div>
-          <div className="field">
-            <label className="field-label">Overrides <span className="hint">optional</span></label>
-            <textarea className="textarea mono" placeholder="env.MY_KEY=value&#10;init_commands += apt install jq" rows={3} />
-          </div>
-          <div className="banner banner-info" style={{ margin: 0, fontSize: 11.5 }}>
-            <Icon name="info" size={12} className="ico" />
-            <div>ID is generated by the backend — any <span className="mono">id</span> field in this body is silently ignored (spec §12).</div>
-          </div>
-        </Modal>
+          pushToast={pushToast}
+        />
       )}
     </div>
   );
 }
 
-function ProviderBadge({ kind }) {
-  const map = {
-    local: { label: "local", color: "var(--text-2)" },
-    container: { label: "container", color: "var(--blue)" },
-    k8s: { label: "k8s", color: "var(--violet)" },
+function WS_NewWorkspaceModal({ onClose, pushToast }) {
+  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
+  const templates = useResource(
+    "workspaces:templates",
+    (signal) => apiFetch("GET", "/workspace_templates?limit=200", null, { signal }),
+    {}
+  );
+  const tplItems = templates.data?.items ?? [];
+
+  const [templateId, setTemplateId] = React.useState("");
+
+  // Auto-pick the first template once it lands so a happy-path submission
+  // doesn't need a manual selection if the server only has one template.
+  React.useEffect(() => {
+    if (!templateId && tplItems.length > 0) {
+      setTemplateId(tplItems[0].id);
+    }
+  }, [tplItems, templateId]);
+
+  const create = useMutation(
+    (body) => apiFetch("POST", "/workspaces", body),
+    {
+      invalidates: ["workspaces:list"],
+      onSuccess: (row) => {
+        onClose();
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "success", title: "Workspace created", detail: row.id });
+        }
+        navigate("/workspaces/" + row.id);
+      },
+      onError: _wsToastErr(pushToast, "Create failed"),
+    }
+  );
+
+  const onCreate = () => {
+    if (!templateId) return;
+    create.mutate({ template_id: templateId });
   };
-  const m = map[kind] || map.local;
+
   return (
-    <span className="pill" style={{ background: "var(--bg-2)", color: m.color, border: "1px solid var(--border)" }}>
-      <span className="dot" style={{ background: m.color }}></span>
-      {m.label}
-    </span>
+    <Modal
+      title="New workspace"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn
+            kind="primary"
+            icon="plus"
+            disabled={!templateId || create.loading}
+            onClick={onCreate}
+          >Create</Btn>
+        </>
+      }
+    >
+      <div className="field">
+        <label className="field-label">Template</label>
+        {templates.loading && tplItems.length === 0 ? (
+          <div className="muted text-sm">Loading templates…</div>
+        ) : tplItems.length === 0 ? (
+          <div className="banner banner-warning" style={{ margin: 0, fontSize: 11.5 }}>
+            <Icon name="alert" size={12} className="ico" />
+            <div>No workspace_templates registered. Create one via the API or CLI before creating a workspace.</div>
+          </div>
+        ) : (
+          <select
+            className="select mono"
+            style={{ width: "100%" }}
+            value={templateId}
+            onChange={(e) => setTemplateId(e.target.value)}
+          >
+            {tplItems.map((t) => (
+              <option key={t.id} value={t.id}>{t.id}</option>
+            ))}
+          </select>
+        )}
+      </div>
+      <div className="banner banner-info" style={{ margin: 0, fontSize: 11.5 }}>
+        <Icon name="info" size={12} className="ico" />
+        <div>ID is generated by the backend — any <span className="mono">id</span> field in this body is silently ignored (spec §12).</div>
+      </div>
+    </Modal>
   );
 }
 
-// ----------------------------------------------------------------------
+// ============================================================================
 // Detail
-// ----------------------------------------------------------------------
+// ============================================================================
 
-function WorkspaceDetail({ workspaceId, sessions, onBack, onOpenSession, onNavigate, pushToast }) {
-  const [tab, setTab] = React.useState("files");
-  const [destroyOpen, setDestroyOpen] = React.useState(false);
-  const d = window.MOCK.WORKSPACE_DETAILS[workspaceId] || { template: "(unknown)", provider: "container", created_at_ago: 0 };
-  const wsSessions = sessions.filter((s) => s.workspace_id === workspaceId);
+const WS_TABS = ["files", "sessions", "log", "channels", "config", "destroy"];
+
+function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) {
+  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { params, query, navigate } = useRouter();
+  const wid = workspaceId || params.id;
+
+  const tab = WS_TABS.includes(query.tab) ? query.tab : "files";
+  const setTab = (t) => {
+    window.location.hash = "#/workspaces/" + encodeURIComponent(wid) + "?tab=" + t;
+  };
+
+  const ws = useResource(
+    `workspace-detail:${wid}`,
+    (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(wid)}`, null, { signal }),
+    { deps: [wid] }
+  );
+
+  // Only used to flag the Sessions tab badge — same poll cadence as the
+  // tab body itself (5s) so the count stays in sync with the rows.
+  const sessionsForBadge = useResource(
+    `workspace-sessions:${wid}`,
+    (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(wid)}/sessions?limit=200`, null, { signal }),
+    { pollMs: 5000, deps: [wid] }
+  );
+  const sessionCount = sessionsForBadge.data?.items?.length ?? null;
+
+  const tabs = [
+    { id: "files", label: "Files", icon: "doc" },
+    { id: "sessions", label: "Sessions", icon: "zap", count: sessionCount },
+    { id: "log", label: "Log", icon: "git-commit" },
+    { id: "channels", label: "Channels", icon: "bell" },
+    { id: "config", label: "Config", icon: "settings" },
+    { id: "destroy", label: "Destroy", icon: "trash", danger: true },
+  ];
 
   return (
     <div className="col" style={{ gap: 14 }}>
-      {/* Tabbed top */}
       <div className="panel">
         <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
-          {[
-            { id: "files", label: "Files", icon: "doc" },
-            { id: "sessions", label: "Sessions", icon: "zap", count: wsSessions.length },
-            { id: "log", label: "Log", icon: "git-commit" },
-            { id: "channels", label: "Channels", icon: "bell" },
-            { id: "config", label: "Config", icon: "settings" },
-            { id: "destroy", label: "Destroy", icon: "trash", danger: true },
-          ].map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.id}
+              type="button"
               onClick={() => setTab(t.id)}
               style={{
                 background: "none",
@@ -156,59 +348,92 @@ function WorkspaceDetail({ workspaceId, sessions, onBack, onOpenSession, onNavig
           ))}
         </div>
         <div className="panel-body" style={{ padding: 0 }}>
-          {tab === "files" && <FilesTab pushToast={pushToast} />}
-          {tab === "sessions" && <SessionsTab sessions={wsSessions} onOpen={onOpenSession} />}
-          {tab === "log" && <LogTab />}
-          {tab === "channels" && <ChannelsTab workspaceId={workspaceId} pushToast={pushToast} onNavigate={onNavigate} />}
-          {tab === "config" && <ConfigTab workspaceId={workspaceId} detail={d} />}
-          {tab === "destroy" && <DestroyTab workspaceId={workspaceId} wsSessions={wsSessions} onOpen={() => setDestroyOpen(true)} />}
+          {tab === "files" && <WS_FilesTab wid={wid} pushToast={pushToast} />}
+          {tab === "sessions" && <WS_SessionsTab wid={wid} onOpen={onOpenSession} />}
+          {tab === "log" && <WS_LogTab wid={wid} />}
+          {tab === "channels" && <WS_ChannelsTab wid={wid} pushToast={pushToast} />}
+          {tab === "config" && <WS_ConfigTab wid={wid} ws={ws} />}
+          {tab === "destroy" && <WS_DestroyTab wid={wid} pushToast={pushToast} sessionsForBadge={sessionsForBadge} />}
         </div>
       </div>
-
-      {destroyOpen && (
-        <Modal
-          title={`Destroy ${workspaceId}?`}
-          danger
-          onClose={() => setDestroyOpen(false)}
-          footer={
-            <>
-              <Btn kind="ghost" onClick={() => setDestroyOpen(false)}>Cancel</Btn>
-              <Btn kind="danger" icon="trash" onClick={() => { setDestroyOpen(false); pushToast({ kind: "warning", title: "Destroying workspace", detail: `${wsSessions.filter((s) => !["ended","failed","cancelled"].includes(s.status)).length} sessions will be cancelled first.` }); }}>
-                Destroy permanently
-              </Btn>
-            </>
-          }
-        >
-          <ul>
-            <li><strong>{wsSessions.filter((s) => !["ended","failed","cancelled"].includes(s.status)).length}</strong> active session(s) on this workspace will be <strong>cancelled before destroy</strong>.</li>
-            <li>The <span className="mono">.state</span> git repo will be deleted <strong>permanently</strong> — turn history will be gone.</li>
-            <li>Any files written by sessions are removed.</li>
-            <li>This cannot be undone.</li>
-          </ul>
-        </Modal>
-      )}
     </div>
   );
 }
 
-// ----- Files tab ------
+// ============================================================================
+// Files tab
+// ============================================================================
 
-function FilesTab({ pushToast }) {
-  const [openDirs, setOpenDirs] = React.useState(() => new Set(["/", "/src"]));
-  const [selected, setSelected] = React.useState("/src/main.py");
+function WS_FilesTab({ wid, pushToast }) {
+  const { useResource, useMutation, apiFetch } = window.matrixApi;
+  const [openDirs, setOpenDirs] = React.useState(() => new Set([""]));
+  const [selected, setSelected] = React.useState(null);
   const [editing, setEditing] = React.useState(false);
-  const [content, setContent] = React.useState(() => window.MOCK.FILE_PREVIEWS[selected] || "");
+  const [draft, setDraft] = React.useState("");
 
   const toggleDir = (path) => {
-    const next = new Set(openDirs);
-    if (next.has(path)) next.delete(path); else next.add(path);
-    setOpenDirs(next);
+    setOpenDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
   };
+
+  const tree = useResource(
+    `workspace-files:${wid}:`,
+    // API requires a non-empty path; "." is the documented root sentinel
+    // (matches matrix/api/routers/workspaces.py:375 default).
+    (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(wid)}/files?path=.`, null, { signal }),
+    { pollMs: 10000, deps: [wid] }
+  );
+
+  const fileContent = useResource(
+    `workspace-file-content:${wid}:${selected || ""}`,
+    (signal) => apiFetch(
+      "GET",
+      `/workspaces/${encodeURIComponent(wid)}/files/read?path=${encodeURIComponent(selected)}&encoding=text`,
+      null,
+      { signal }
+    ),
+    { deps: [wid, selected || ""], pauseWhile: () => !selected }
+  );
+
+  // Sync draft to fetched content when not editing.
+  React.useEffect(() => {
+    if (!editing && fileContent.data && typeof fileContent.data.content === "string") {
+      setDraft(fileContent.data.content);
+    }
+  }, [fileContent.data, editing]);
+
+  const saveFile = useMutation(
+    ({ content, encoding }) => apiFetch(
+      "PUT",
+      `/workspaces/${encodeURIComponent(wid)}/files?path=${encodeURIComponent(selected)}`,
+      { content, encoding }
+    ),
+    {
+      invalidates: [
+        `workspace-file-content:${wid}:${selected || ""}`,
+        `workspace-files:${wid}`,
+      ],
+      onSuccess: () => {
+        setEditing(false);
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "success", title: "File saved", detail: selected });
+        }
+      },
+      onError: _wsToastErr(pushToast, "Save failed"),
+    }
+  );
 
   const selectFile = (path) => {
     setSelected(path);
     setEditing(false);
-    setContent(window.MOCK.FILE_PREVIEWS[path] || `// Binary or unsupported preview\n// ${path}\n// ${(window.MOCK.FILE_TREE[path] || {}).size || 0} bytes`);
+  };
+
+  const onSave = () => {
+    if (!selected) return;
+    saveFile.mutate({ content: draft, encoding: "text" });
   };
 
   return (
@@ -218,44 +443,81 @@ function FilesTab({ pushToast }) {
         <div style={{ display: "flex", alignItems: "center", padding: "0 12px 8px", gap: 6 }}>
           <span className="mono muted text-sm">/ root</span>
           <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-            <button className="icon-btn" style={{ width: 22, height: 22 }} title="New file"><Icon name="plus" size={10} /></button>
-            <button className="icon-btn" style={{ width: 22, height: 22 }} title="Refresh"><Icon name="refresh" size={10} /></button>
+            <button className="icon-btn" style={{ width: 22, height: 22 }} title="Refresh" onClick={tree.refetch}><Icon name="refresh" size={10} /></button>
           </div>
         </div>
-        <DirNode path="/" depth={0} openDirs={openDirs} toggleDir={toggleDir} selected={selected} selectFile={selectFile} />
+        {tree.error ? (
+          <div className="muted text-sm" style={{ padding: "8px 12px" }}>
+            {tree.error.title || "Couldn't list files"}
+          </div>
+        ) : (
+          <WS_DirNode
+            wid={wid}
+            path=""
+            depth={0}
+            openDirs={openDirs}
+            toggleDir={toggleDir}
+            selected={selected}
+            selectFile={selectFile}
+            rootEntries={tree.data?.items ?? []}
+          />
+        )}
       </div>
 
       {/* Editor pane */}
       <div style={{ display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", padding: "8px 12px", borderBottom: "1px solid var(--border)", gap: 8 }}>
           <Icon name="doc" size={12} className="muted" />
-          <span className="mono" style={{ fontSize: 12 }}>{selected}</span>
-          <span className="muted mono text-sm">· {(window.MOCK.FILE_TREE[selected] || {}).size || 0} bytes</span>
+          <span className="mono" style={{ fontSize: 12 }}>{selected || <span className="muted">no file selected</span>}</span>
+          {fileContent.data?.size_bytes != null && (
+            <span className="muted mono text-sm">· {fileContent.data.size_bytes} bytes</span>
+          )}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            {editing ? (
+            {selected && (
               <>
-                <Btn size="sm" kind="ghost" onClick={() => { setEditing(false); setContent(window.MOCK.FILE_PREVIEWS[selected] || ""); }}>Discard</Btn>
-                <Btn size="sm" kind="primary" icon="check" onClick={() => { setEditing(false); pushToast({ kind: "success", title: "Saved", detail: `PUT ${selected} → 200` }); }}>Save</Btn>
-              </>
-            ) : (
-              <>
-                <Btn size="sm" kind="ghost" icon="external">Download</Btn>
-                <Btn size="sm" kind="ghost" icon="copy" onClick={() => setEditing(true)}>Edit</Btn>
+                {editing ? (
+                  <>
+                    <Btn size="sm" kind="ghost" onClick={() => { setEditing(false); setDraft(fileContent.data?.content || ""); }}>Discard</Btn>
+                    <Btn size="sm" kind="primary" icon="check" disabled={saveFile.loading} onClick={onSave}>Save</Btn>
+                  </>
+                ) : (
+                  <>
+                    <a
+                      href={`/v1/workspaces/${encodeURIComponent(wid)}/files/download?path=${encodeURIComponent(selected)}`}
+                      download
+                      style={{ textDecoration: "none" }}
+                    >
+                      <Btn size="sm" kind="ghost" icon="external">Download</Btn>
+                    </a>
+                    <Btn size="sm" kind="ghost" icon="copy" onClick={() => setEditing(true)}>Edit</Btn>
+                  </>
+                )}
               </>
             )}
           </div>
         </div>
         <div style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}>
-          {editing ? (
+          {!selected ? (
+            <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>
+              Click a file in the tree to view its contents.
+            </div>
+          ) : fileContent.loading && !fileContent.data ? (
+            <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>Loading…</div>
+          ) : fileContent.error ? (
+            <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>
+              {fileContent.error.title || "Couldn't read file"}
+              {fileContent.error.detail && <div className="text-sm">{fileContent.error.detail}</div>}
+            </div>
+          ) : editing ? (
             <textarea
               className="textarea mono"
               style={{ width: "100%", border: 0, borderRadius: 0, height: "100%", minHeight: 400, background: "var(--bg)", fontSize: 12, lineHeight: 1.55, padding: 14 }}
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
             />
           ) : (
             <pre className="mono" style={{ margin: 0, padding: 14, fontSize: 12, lineHeight: 1.55, color: "var(--text-2)", whiteSpace: "pre-wrap" }}>
-              <CodeHighlight code={content} lang={(window.MOCK.FILE_TREE[selected] || {}).lang} />
+              <WS_CodeHighlight code={fileContent.data?.content || ""} lang={_wsGuessLang(selected)} />
             </pre>
           )}
         </div>
@@ -264,75 +526,89 @@ function FilesTab({ pushToast }) {
   );
 }
 
-function DirNode({ path, depth, openDirs, toggleDir, selected, selectFile }) {
-  const dir = window.MOCK.FILE_TREE[path];
-  if (!dir) return null;
+function WS_DirNode({ wid, path, depth, openDirs, toggleDir, selected, selectFile, rootEntries }) {
+  // The root node receives its entries pre-fetched (so the tree is one round-
+  // trip when closed). Sub-directories lazy-fetch when they're opened.
+  const { useResource, apiFetch } = window.matrixApi;
+  const isRoot = depth === 0;
   const open = openDirs.has(path);
-  const children = dir.children || [];
-  // Render children sorted: dirs first
-  const sortedChildren = [...children].sort((a, b) => {
-    const pa = (path === "/" ? "/" : path + "/") + a;
-    const pb = (path === "/" ? "/" : path + "/") + b;
-    const isDirA = (window.MOCK.FILE_TREE[pa] || {}).type === "dir";
-    const isDirB = (window.MOCK.FILE_TREE[pb] || {}).type === "dir";
-    if (isDirA && !isDirB) return -1;
-    if (!isDirA && isDirB) return 1;
-    // System files (.state, .tmp) to the bottom
-    const aSys = a.startsWith(".");
-    const bSys = b.startsWith(".");
-    if (aSys && !bSys) return 1;
-    if (!aSys && bSys) return -1;
-    return a.localeCompare(b);
-  });
+
+  const sub = useResource(
+    `workspace-files:${wid}:${path}`,
+    (signal) => apiFetch(
+      "GET",
+      `/workspaces/${encodeURIComponent(wid)}/files?path=${encodeURIComponent(path || ".")}`,
+      null,
+      { signal }
+    ),
+    { deps: [wid, path], pauseWhile: () => isRoot || !open }
+  );
+
+  const entries = isRoot ? rootEntries : (sub.data?.items ?? []);
+  const sorted = React.useMemo(() => {
+    const arr = [...entries];
+    arr.sort((a, b) => {
+      const ad = a.kind === "dir";
+      const bd = b.kind === "dir";
+      if (ad && !bd) return -1;
+      if (!ad && bd) return 1;
+      const aSys = (a.path || "").split("/").pop().startsWith(".");
+      const bSys = (b.path || "").split("/").pop().startsWith(".");
+      if (aSys && !bSys) return 1;
+      if (!aSys && bSys) return -1;
+      return (a.path || "").localeCompare(b.path || "");
+    });
+    return arr;
+  }, [entries]);
+
   return (
     <div>
-      {path !== "/" && (
-        <FileRow
+      {!isRoot && (
+        <WS_FileRow
           path={path}
           name={path.split("/").pop()}
           isDir
           open={open}
           depth={depth - 1}
-          system={dir.system}
+          system={path.startsWith(".state") || path.startsWith(".tmp")}
           onClick={() => toggleDir(path)}
         />
       )}
-      {(path === "/" || open) &&
-        sortedChildren.map((childName) => {
-          const childPath = (path === "/" ? "/" : path + "/") + childName;
-          const child = window.MOCK.FILE_TREE[childPath];
-          if (!child) return null;
-          if (child.type === "dir") {
-            return (
-              <DirNode
-                key={childPath}
-                path={childPath}
-                depth={depth + 1}
-                openDirs={openDirs}
-                toggleDir={toggleDir}
-                selected={selected}
-                selectFile={selectFile}
-              />
-            );
-          }
+      {(isRoot || open) && sorted.map((e) => {
+        const baseName = (e.path || "").split("/").pop();
+        if (e.kind === "dir") {
           return (
-            <FileRow
-              key={childPath}
-              path={childPath}
-              name={childName}
-              depth={depth}
-              isSelected={childPath === selected}
-              onClick={() => selectFile(childPath)}
-              size={child.size}
-              system={childPath.startsWith("/.state") || childPath.startsWith("/.tmp")}
+            <WS_DirNode
+              key={e.path}
+              wid={wid}
+              path={e.path}
+              depth={depth + 1}
+              openDirs={openDirs}
+              toggleDir={toggleDir}
+              selected={selected}
+              selectFile={selectFile}
+              rootEntries={null}
             />
           );
-        })}
+        }
+        return (
+          <WS_FileRow
+            key={e.path}
+            path={e.path}
+            name={baseName}
+            depth={depth}
+            isSelected={e.path === selected}
+            onClick={() => selectFile(e.path)}
+            size={e.size_bytes}
+            system={(e.path || "").startsWith(".state") || (e.path || "").startsWith(".tmp")}
+          />
+        );
+      })}
     </div>
   );
 }
 
-function FileRow({ name, depth, isDir, open, isSelected, system, onClick, size }) {
+function WS_FileRow({ name, depth, isDir, open, isSelected, system, onClick, size }) {
   return (
     <div
       onClick={onClick}
@@ -341,7 +617,7 @@ function FileRow({ name, depth, isDir, open, isSelected, system, onClick, size }
         alignItems: "center",
         gap: 5,
         padding: "3px 12px",
-        paddingLeft: 12 + depth * 14,
+        paddingLeft: 12 + Math.max(0, depth) * 14,
         cursor: "pointer",
         background: isSelected ? "var(--accent-dim)" : undefined,
         color: system ? "var(--text-4)" : isSelected ? "var(--text)" : "var(--text-2)",
@@ -372,8 +648,15 @@ function FileRow({ name, depth, isDir, open, isSelected, system, onClick, size }
   );
 }
 
-function CodeHighlight({ code, lang }) {
-  // Very simple highlight (keywords, strings, numbers, comments)
+function _wsGuessLang(path) {
+  if (!path) return null;
+  if (path.endsWith(".py")) return "python";
+  if (path.endsWith(".json")) return "json";
+  if (path.endsWith(".js") || path.endsWith(".jsx") || path.endsWith(".ts") || path.endsWith(".tsx")) return "js";
+  return null;
+}
+
+function WS_CodeHighlight({ code, lang }) {
   const lines = (code || "").split("\n");
   const isPy = lang === "python";
   const kw = /\b(import|from|def|class|return|if|else|elif|async|await|yield|in|not|and|or|with|as|for|while|try|except|finally|raise|pass|None|True|False)\b/g;
@@ -384,11 +667,8 @@ function CodeHighlight({ code, lang }) {
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;");
-        // comments
         html = html.replace(/(#.*$)/g, '<span style="color:var(--text-4);font-style:italic">$1</span>');
-        // strings
         html = html.replace(/(""".*?"""|".*?"|'.*?')/g, '<span style="color:var(--green)">$1</span>');
-        // numbers
         html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span style="color:var(--amber)">$1</span>');
         if (isPy) {
           html = html.replace(kw, '<span style="color:var(--violet)">$1</span>');
@@ -404,9 +684,26 @@ function CodeHighlight({ code, lang }) {
   );
 }
 
-// ----- Sessions tab ------
+// ============================================================================
+// Sessions tab — SessionInfo field names per commit 505e76e
+// ============================================================================
 
-function SessionsTab({ sessions, onOpen }) {
+function WS_SessionsTab({ wid, onOpen }) {
+  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
+  const list = useResource(
+    `workspace-sessions:${wid}`,
+    (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(wid)}/sessions?limit=200`, null, { signal }),
+    { pollMs: 5000, deps: [wid] }
+  );
+  const items = list.data?.items ?? [];
+
+  const openRow = (sid) => {
+    if (typeof onOpen === "function") onOpen(sid);
+    else navigate("/sessions/" + sid);
+  };
+
   return (
     <div style={{ padding: 14 }}>
       <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
@@ -414,10 +711,18 @@ function SessionsTab({ sessions, onOpen }) {
           <div className="text-sm muted">Sessions running on this workspace</div>
         </div>
         <div style={{ marginLeft: "auto" }}>
-          <Btn size="sm" kind="primary" icon="plus">New session</Btn>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
         </div>
       </div>
-      {sessions.length === 0 ? (
+
+      {list.error && items.length === 0 ? (
+        <Banner
+          kind="error"
+          title={list.error.title || "Couldn't load sessions"}
+          detail={list.error.detail || list.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
+        />
+      ) : items.length === 0 ? (
         <div className="empty">
           <div className="ico-wrap"><Icon name="zap" size={18} /></div>
           <div className="head">No sessions</div>
@@ -426,17 +731,32 @@ function SessionsTab({ sessions, onOpen }) {
       ) : (
         <div className="tbl-wrap">
           <table className="tbl">
-            <thead><tr><th>Status</th><th>Session</th><th>Agent</th><th>Turns</th><th>Last turn</th></tr></thead>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Session</th>
+                <th>Agent</th>
+                <th>Started</th>
+                <th>Last activity</th>
+              </tr>
+            </thead>
             <tbody>
-              {sessions.map((s) => (
-                <tr key={s.id} onClick={() => onOpen(s.id)}>
-                  <td><StatusPill status={s.status} /></td>
-                  <td className="mono">{s.id}</td>
-                  <td className="mono">{s.agent_id || s.graph_id}</td>
-                  <td className="mono num tabular">{s.turn_count}</td>
-                  <td className="mono muted">{s.last_turn_at ? relativeTime((Date.now() - s.last_turn_at.getTime()) / 1000) : "—"}</td>
-                </tr>
-              ))}
+              {items.map((s) => {
+                // SessionInfo fields (per matrix/model/session.py:188):
+                // session_id, agent_id, status, started_at, last_activity_at
+                const sid = s.session_id;
+                const started = s.started_at ? _wsAgeSec(s.started_at) : null;
+                const last = s.last_activity_at ? _wsAgeSec(s.last_activity_at) : null;
+                return (
+                  <tr key={sid} onClick={() => openRow(sid)} style={{ cursor: "pointer" }}>
+                    <td><StatusPill status={s.status} /></td>
+                    <td className="mono">{sid}</td>
+                    <td className="mono">{s.agent_id || <span className="muted">—</span>}</td>
+                    <td className="mono muted">{started != null ? relativeTime(started) : "—"}</td>
+                    <td className="mono muted">{last != null ? relativeTime(last) : "—"}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -445,107 +765,98 @@ function SessionsTab({ sessions, onOpen }) {
   );
 }
 
-// ----- Log tab ------
+// ============================================================================
+// Log tab — manual refresh, no poll
+// ============================================================================
 
-function LogTab() {
+function WS_LogTab({ wid }) {
+  const { useResource, apiFetch } = window.matrixApi;
   const [limit, setLimit] = React.useState(50);
-  const entries = window.MOCK.GIT_LOG.slice(0, limit);
+
+  const log = useResource(
+    `workspace-log:${wid}:${limit}`,
+    (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(wid)}/log?limit=${limit}`, null, { signal }),
+    { deps: [wid, limit] }
+  );
+
+  const commits = log.data?.commits ?? [];
+
   return (
     <div style={{ padding: 14 }}>
-      <div className="muted text-sm mb-3">
-        <span className="mono">git log</span> of the workspace's <span className="mono">.state</span> repository · default limit 50, max 500
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+        <div className="muted text-sm">
+          <span className="mono">git log</span> of the workspace's <span className="mono">.state</span> repository · default limit 50, max 500
+        </div>
+        <div style={{ marginLeft: "auto" }}>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={log.refetch}>Refresh</Btn>
+        </div>
       </div>
-      <div style={{ position: "relative", paddingLeft: 18 }}>
-        <div style={{ position: "absolute", left: 6, top: 6, bottom: 6, width: 1, background: "var(--border)" }}></div>
-        {entries.map((e, i) => (
-          <div key={e.sha} style={{ position: "relative", padding: "6px 0 6px 16px", display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ position: "absolute", left: -4, top: 9, width: 11, height: 11, borderRadius: "50%", background: "var(--bg-2)", border: "2px solid var(--accent)" }}></div>
-            <span className="mono" style={{ color: "var(--accent)", fontSize: 12, fontWeight: 500 }}>{e.sha}</span>
-            <span className="muted mono text-sm">{relativeTime(e.at)}</span>
-            <span style={{ fontSize: 12.5 }}>"{e.msg}"</span>
+
+      {log.error && commits.length === 0 ? (
+        <Banner
+          kind="error"
+          title={log.error.title || "Couldn't load log"}
+          detail={log.error.detail || log.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={log.refetch}>Retry</Btn>}
+        />
+      ) : commits.length === 0 ? (
+        <div className="empty">
+          <div className="ico-wrap"><Icon name="git-commit" size={18} /></div>
+          <div className="head">No commits yet</div>
+          <div className="sub">The workspace's <span className="mono">.state</span> repo is empty until a session writes to it.</div>
+        </div>
+      ) : (
+        <>
+          <div style={{ position: "relative", paddingLeft: 18 }}>
+            <div style={{ position: "absolute", left: 6, top: 6, bottom: 6, width: 1, background: "var(--border)" }}></div>
+            {commits.map((e) => {
+              const sha = (e.sha || e.id || "").slice(0, 7);
+              const at = e.committed_at || e.at;
+              const sec = at ? _wsAgeSec(at) : null;
+              return (
+                <div key={e.sha || e.id} style={{ position: "relative", padding: "6px 0 6px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ position: "absolute", left: -4, top: 9, width: 11, height: 11, borderRadius: "50%", background: "var(--bg-2)", border: "2px solid var(--accent)" }}></div>
+                  <span className="mono" style={{ color: "var(--accent)", fontSize: 12, fontWeight: 500 }}>{sha}</span>
+                  {sec != null && <span className="muted mono text-sm">{relativeTime(sec)}</span>}
+                  <span style={{ fontSize: 12.5 }}>"{e.message || e.msg || ""}"</span>
+                </div>
+              );
+            })}
           </div>
-        ))}
-      </div>
-      <div style={{ marginTop: 14, display: "flex", justifyContent: "center" }}>
-        {limit < 500 && (
-          <Btn size="sm" kind="ghost" onClick={() => setLimit(Math.min(500, limit + 50))}>Load more</Btn>
-        )}
-      </div>
+          <div style={{ marginTop: 14, display: "flex", justifyContent: "center" }}>
+            {limit < 500 && (
+              <Btn size="sm" kind="ghost" onClick={() => setLimit(Math.min(500, limit + 50))}>Load more</Btn>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
-// ----- Config tab ------
+// ============================================================================
+// Channels tab — workspace-scoped channel associations
+// ============================================================================
 
-function ConfigTab({ workspaceId, detail }) {
-  return (
-    <div style={{ padding: 14 }}>
-      <div className="muted text-sm mb-3">
-        Materialised template + overrides. Lines in <strong>bold</strong> were injected by overrides.
-      </div>
-      <div className="code-block" style={{ maxHeight: 460, overflow: "auto" }}>
-        <span className="com"># template: {detail.template}</span>{"\n"}
-        <span className="com"># provider: {detail.provider}</span>{"\n"}
-        <span className="com"># workspace_id: {workspaceId}</span>{"\n\n"}
-        <span className="key">image</span>: <span className="str">"python:3.11-slim"</span>{"\n"}
-        <span className="key">workdir</span>: <span className="str">"/workspace"</span>{"\n\n"}
-        <span className="key">env</span>:{"\n"}
-        {"  "}<span className="key">PYTHONUNBUFFERED</span>: <span className="str">"1"</span>{"\n"}
-        {"  "}<span className="key">MATRIX_SESSION_ID</span>: <span className="str">"&lt;injected&gt;"</span>{"\n"}
-        {"  "}<span style={{ fontWeight: 700, color: "var(--text)" }}>STRIPE_API_KEY: <span className="str">"sk_test_..." </span></span>
-        <span style={{ background: "var(--accent-dim)", color: "var(--accent)", padding: "0 4px", borderRadius: 3, fontSize: 10, marginLeft: 4 }}>override</span>{"\n\n"}
-        <span className="key">init_commands</span>:{"\n"}
-        {"  "}- <span className="str">"pip install -r requirements.txt"</span>{"\n"}
-        {"  "}- <span style={{ fontWeight: 700, color: "var(--text)" }}>"apt install -y jq" </span>
-        <span style={{ background: "var(--accent-dim)", color: "var(--accent)", padding: "0 4px", borderRadius: 3, fontSize: 10, marginLeft: 4 }}>override</span>{"\n\n"}
-        <span className="key">resources</span>:{"\n"}
-        {"  "}<span className="key">cpu</span>: <span className="num">2</span>{"\n"}
-        {"  "}<span className="key">memory</span>: <span className="str">"4Gi"</span>{"\n"}
-      </div>
-    </div>
-  );
-}
-
-// ----- Destroy tab ------
-
-function DestroyTab({ workspaceId, wsSessions, onOpen }) {
-  const active = wsSessions.filter((s) => !["ended", "failed", "cancelled"].includes(s.status));
-  return (
-    <div style={{ padding: 14 }}>
-      <Banner
-        kind="error"
-        title="Permanent action"
-        detail="Destroying a workspace cancels any in-flight sessions, deletes the .state repo, and removes all files. This cannot be undone."
-      />
-      <div className="kv mt-3" style={{ gridTemplateColumns: "160px 1fr" }}>
-        <dt>workspace</dt><dd>{workspaceId}</dd>
-        <dt>active sessions</dt><dd>{active.length} {active.length > 0 && <span className="muted">(will be cancelled)</span>}</dd>
-        <dt>total sessions</dt><dd>{wsSessions.length}</dd>
-      </div>
-      <div className="mt-4">
-        <Btn kind="danger" icon="trash" onClick={onOpen}>Destroy workspace</Btn>
-      </div>
-    </div>
-  );
-}
-
-window.WorkspacesPage = WorkspacesPage;
-window.WorkspaceDetail = WorkspaceDetail;
-
-function ChannelsTab({ workspaceId, pushToast, onNavigate }) {
-  const associations = (window.CHANNEL_ASSOCIATIONS || []).filter((a) => a.workspace_id === workspaceId);
-  const channelsData = window.CHANNELS_DATA || [];
+function WS_ChannelsTab({ wid, pushToast }) {
+  const { useResource, useMutation, apiFetch } = window.matrixApi;
   const [showLink, setShowLink] = React.useState(false);
-  const [rows, setRows] = React.useState(associations);
 
-  const toggle = (id, field) => {
-    setRows((arr) => arr.map((r) => r.id === id ? { ...r, [field]: !r[field] } : r));
-    pushToast({ kind: "info", title: "Association updated", detail: `PUT /v1/workspace_channel_associations/${id}` });
-  };
-  const remove = (id) => {
-    setRows((arr) => arr.filter((r) => r.id !== id));
-    pushToast({ kind: "warning", title: "Association removed", detail: `DELETE /v1/workspace_channel_associations/${id}` });
-  };
+  // GET on the flat endpoint and filter client-side — the scoped GET path is
+  // not exposed (only POST scoped). Use the flat list and narrow by wid.
+  const all = useResource(
+    `workspace-channels:${wid}`,
+    (signal) => apiFetch("GET", "/workspace_channel_associations?limit=200", null, { signal }),
+    { deps: [wid] }
+  );
+  const rows = (all.data?.items ?? []).filter((a) => a.workspace_id === wid);
+
+  const channelsList = useResource(
+    `workspace-channels-options:${wid}`,
+    (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
+    { deps: [wid] }
+  );
+  const channels = channelsList.data?.items ?? [];
 
   return (
     <div style={{ padding: 14 }}>
@@ -557,7 +868,15 @@ function ChannelsTab({ workspaceId, pushToast, onNavigate }) {
           <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowLink(true)}>Link channel</Btn>
         </div>
       </div>
-      {rows.length === 0 ? (
+
+      {all.error && rows.length === 0 ? (
+        <Banner
+          kind="error"
+          title={all.error.title || "Couldn't load channels"}
+          detail={all.error.detail || all.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={all.refetch}>Retry</Btn>}
+        />
+      ) : rows.length === 0 ? (
         <div className="empty">
           <div className="ico-wrap"><Icon name="bell" size={18} /></div>
           <div className="head">No channels linked</div>
@@ -571,84 +890,268 @@ function ChannelsTab({ workspaceId, pushToast, onNavigate }) {
           <table className="tbl">
             <thead>
               <tr>
+                <th>Association</th>
                 <th>Channel</th>
-                <th>External</th>
                 <th>Enabled</th>
                 <th>ask_user</th>
                 <th>tool_approval</th>
-                <th></th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((a) => {
-                const ch = channelsData.find((c) => c.id === a.channel_id);
-                return (
-                  <tr key={a.id} style={{ opacity: a.enabled ? 1 : 0.55 }}>
-                    <td className="mono">{a.channel_id} {ch && <span className="muted text-sm">· {ch.label}</span>}</td>
-                    <td className="mono muted text-sm">{ch?.external_id || "—"}</td>
-                    <td><Toggle on={a.enabled} onChange={() => toggle(a.id, "enabled")} /></td>
-                    <td><Toggle on={a.forward_ask_user} onChange={() => toggle(a.id, "forward_ask_user")} /></td>
-                    <td><Toggle on={a.forward_tool_approval} onChange={() => toggle(a.id, "forward_tool_approval")} /></td>
-                    <td style={{ textAlign: "right", paddingRight: 12 }}>
-                      <button className="icon-btn" style={{ width: 22, height: 22 }} title="Remove" onClick={() => remove(a.id)}><Icon name="x" size={10} /></button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {rows.map((a) => (
+                <tr key={a.id}>
+                  <td className="mono">{a.id}</td>
+                  <td className="mono">{a.channel_id}</td>
+                  <td className="mono">{a.enabled ? "yes" : "no"}</td>
+                  <td className="mono">{a.forward_ask_user ? "yes" : "no"}</td>
+                  <td className="mono">{a.forward_tool_approval ? "yes" : "no"}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
       )}
+
       {showLink && (
-        <Modal
-          title="Link channel"
+        <WS_LinkChannelModal
+          wid={wid}
+          channels={channels}
           onClose={() => setShowLink(false)}
-          footer={<><Btn kind="ghost" onClick={() => setShowLink(false)}>Cancel</Btn><Btn kind="primary" icon="plus" onClick={() => { setShowLink(false); pushToast({ kind: "success", title: "Channel linked", detail: `POST /v1/workspaces/${workspaceId}/channel_associations → 201` }); }}>Link</Btn></>}
+          pushToast={pushToast}
+        />
+      )}
+    </div>
+  );
+}
+
+function WS_LinkChannelModal({ wid, channels, onClose, pushToast }) {
+  const { useMutation, apiFetch } = window.matrixApi;
+  const [channelId, setChannelId] = React.useState(channels[0]?.id || "");
+  const [enabled, setEnabled] = React.useState(true);
+  const [forwardAsk, setForwardAsk] = React.useState(true);
+  const [forwardApproval, setForwardApproval] = React.useState(true);
+  const [assocId, setAssocId] = React.useState("");
+
+  const link = useMutation(
+    (body) => apiFetch("POST", `/workspaces/${encodeURIComponent(wid)}/channel_associations`, body),
+    {
+      invalidates: [`workspace-channels:${wid}`],
+      onSuccess: () => {
+        onClose();
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "success", title: "Channel linked" });
+        }
+      },
+      onError: _wsToastErr(pushToast, "Link failed"),
+    }
+  );
+
+  const onLink = () => {
+    if (!channelId) return;
+    const body = {
+      id: assocId || `wca-${wid.slice(0, 6)}-${channelId.slice(0, 6)}-${Math.random().toString(36).slice(2, 8)}`,
+      workspace_id: wid,
+      channel_id: channelId,
+      enabled,
+      forward_ask_user: forwardAsk,
+      forward_tool_approval: forwardApproval,
+    };
+    link.mutate(body);
+  };
+
+  return (
+    <Modal
+      title="Link channel"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" icon="plus" disabled={!channelId || link.loading} onClick={onLink}>Link</Btn>
+        </>
+      }
+    >
+      <div className="field" style={{ marginBottom: 12 }}>
+        <label className="field-label">workspace <span className="hint">auto-filled</span></label>
+        <input className="input mono" value={wid} readOnly style={{ width: "100%" }} />
+      </div>
+      <div className="field">
+        <label className="field-label">channel</label>
+        {channels.length === 0 ? (
+          <div className="muted text-sm">No channels registered. Create one under Channels first.</div>
+        ) : (
+          <select
+            className="select mono"
+            style={{ width: "100%" }}
+            value={channelId}
+            onChange={(e) => setChannelId(e.target.value)}
+          >
+            {channels.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
+          </select>
+        )}
+      </div>
+      <div className="field">
+        <label className="field-label">association id <span className="hint">optional</span></label>
+        <input
+          className="input mono"
+          value={assocId}
+          onChange={(e) => setAssocId(e.target.value)}
+          placeholder="(auto-generated)"
+          style={{ width: "100%" }}
+        />
+      </div>
+      <div className="field" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /><span>Enabled</span>
+        </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+          <input type="checkbox" checked={forwardAsk} onChange={(e) => setForwardAsk(e.target.checked)} /><span>Forward ask_user prompts</span>
+        </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+          <input type="checkbox" checked={forwardApproval} onChange={(e) => setForwardApproval(e.target.checked)} /><span>Forward tool_approval requests</span>
+        </label>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// Config tab — derived from ws.data (no extra fetch)
+// ============================================================================
+
+function WS_ConfigTab({ wid, ws }) {
+  if (ws.loading && !ws.data) {
+    return <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>Loading workspace…</div>;
+  }
+  if (ws.error && !ws.data) {
+    return (
+      <div style={{ padding: 14 }}>
+        <Banner
+          kind="error"
+          title={ws.error.title || "Couldn't load workspace"}
+          detail={ws.error.detail || ws.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={ws.refetch}>Retry</Btn>}
+        />
+      </div>
+    );
+  }
+  const data = ws.data || {};
+  return (
+    <div style={{ padding: 14 }}>
+      <div className="muted text-sm mb-3">
+        Row materialised from <span className="mono">/v1/workspaces/{wid}</span>.
+      </div>
+      <dl className="kv" style={{ gridTemplateColumns: "160px 1fr" }}>
+        <dt>id</dt><dd className="mono">{data.id || wid}</dd>
+        <dt>template_id</dt><dd className="mono">{data.template_id || "—"}</dd>
+        <dt>provider_id</dt><dd className="mono">{data.provider_id || "—"}</dd>
+        <dt>created_at</dt><dd className="mono">{data.created_at ? fmtDate(new Date(data.created_at)) : "—"}</dd>
+      </dl>
+      {data.overrides && (
+        <div className="mt-4">
+          <div className="field-label" style={{ marginBottom: 6 }}>Overrides</div>
+          <div className="code-block" style={{ maxHeight: 360, overflow: "auto" }}>
+            {JSON.stringify(data.overrides, null, 2)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Destroy tab — confirmation modal then DELETE
+// ============================================================================
+
+function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
+  const { useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+  const [showConfirm, setShowConfirm] = React.useState(false);
+  const [cascadeError, setCascadeError] = React.useState(null);
+
+  const items = sessionsForBadge?.data?.items ?? [];
+  const active = items.filter((s) => !WS_TERMINAL.has(s.status));
+
+  const destroy = useMutation(
+    () => apiFetch("DELETE", `/workspaces/${encodeURIComponent(wid)}`),
+    {
+      invalidates: ["workspaces:list"],
+      onSuccess: () => {
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "warning", title: "Workspace destroyed", detail: wid });
+        }
+        navigate("/workspaces");
+      },
+      onError: (err) => {
+        if (err && err.status === 409) {
+          setCascadeError(err);
+          return;
+        }
+        if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err?.title || "Destroy failed",
+            detail: err?.detail || err?.message,
+            requestId: err?.requestId,
+          });
+        }
+      },
+    }
+  );
+
+  const onConfirm = () => {
+    setShowConfirm(false);
+    setCascadeError(null);
+    destroy.mutate();
+  };
+
+  return (
+    <div style={{ padding: 14 }}>
+      <Banner
+        kind="error"
+        title="Permanent action"
+        detail="Destroying a workspace cancels any in-flight sessions, deletes the .state repo, and removes all files. This cannot be undone."
+      />
+      {cascadeError && (
+        <div className="mt-3">
+          <Banner
+            kind="error"
+            title={cascadeError.title || "Destroy blocked"}
+            detail={cascadeError.detail || cascadeError.message || "Cascade conflict — resolve dependent rows first."}
+          />
+        </div>
+      )}
+      <div className="kv mt-3" style={{ gridTemplateColumns: "160px 1fr" }}>
+        <dt>workspace</dt><dd className="mono">{wid}</dd>
+        <dt>active sessions</dt><dd className="mono">{active.length} {active.length > 0 && <span className="muted">(will be cancelled)</span>}</dd>
+        <dt>total sessions</dt><dd className="mono">{items.length}</dd>
+      </div>
+      <div className="mt-4">
+        <Btn kind="danger" icon="trash" disabled={destroy.loading} onClick={() => setShowConfirm(true)}>Destroy workspace</Btn>
+      </div>
+
+      {showConfirm && (
+        <Modal
+          title={`Destroy ${wid}?`}
+          danger
+          onClose={() => setShowConfirm(false)}
+          footer={
+            <>
+              <Btn kind="ghost" onClick={() => setShowConfirm(false)}>Cancel</Btn>
+              <Btn kind="danger" icon="trash" disabled={destroy.loading} onClick={onConfirm}>Destroy permanently</Btn>
+            </>
+          }
         >
-          <div className="field" style={{ marginBottom: 12 }}>
-            <label className="field-label">workspace <span className="hint">auto-filled</span></label>
-            <input className="input mono" value={workspaceId} readOnly style={{ width: "100%" }} />
-          </div>
-          <div className="field">
-            <label className="field-label">channel</label>
-            <select className="select mono" style={{ width: "100%" }}>
-              {channelsData.map((c) => <option key={c.id}>{c.id} · {c.label}</option>)}
-            </select>
-          </div>
-          <div className="field" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-              <input type="checkbox" defaultChecked /><span>Enabled</span>
-            </label>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-              <input type="checkbox" defaultChecked /><span>Forward ask_user prompts</span>
-            </label>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-              <input type="checkbox" defaultChecked /><span>Forward tool_approval requests</span>
-            </label>
-          </div>
+          <ul>
+            <li><strong>{active.length}</strong> active session(s) on this workspace will be <strong>cancelled before destroy</strong>.</li>
+            <li>The <span className="mono">.state</span> git repo will be deleted <strong>permanently</strong> — turn history will be gone.</li>
+            <li>Any files written by sessions are removed.</li>
+            <li>This cannot be undone.</li>
+          </ul>
         </Modal>
       )}
     </div>
   );
 }
 
-function Toggle({ on, onChange }) {
-  return (
-    <button
-      onClick={onChange}
-      style={{
-        width: 32, height: 18, borderRadius: 10,
-        background: on ? "var(--accent)" : "var(--bg-2)",
-        border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
-        cursor: "pointer", padding: 0, position: "relative", transition: "0.15s",
-      }}
-    >
-      <span style={{
-        position: "absolute", top: 1, left: on ? 15 : 1,
-        width: 14, height: 14, borderRadius: "50%",
-        background: on ? "var(--accent-fg)" : "var(--text-3)",
-        transition: "0.15s",
-      }} />
-    </button>
-  );
-}
+window.WorkspacesPage = WorkspacesPage;
+window.WorkspaceDetail = WorkspaceDetail;
