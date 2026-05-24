@@ -25,6 +25,7 @@ dependencies = [
     "pgvector>=0.3.6",
     "pydantic>=2.13.3",
     "pydantic-settings>=2.6",
+    "regopy>=0.4",
     "python-multipart>=0.0.12",
     "pyyaml>=6.0",
     "sentence-transformers>=3.0.0",
