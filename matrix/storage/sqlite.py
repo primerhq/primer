@@ -21,6 +21,7 @@ Per-model tables are created lazily on first use (same as Postgres).
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from typing import Any, TypeVar
@@ -30,8 +31,8 @@ from pydantic import BaseModel
 
 from matrix.int.storage import Storage
 from matrix.int.storage_provider import StorageProvider
-from matrix.model.common import Identifiable
-from matrix.model.except_ import ConfigError, ProviderError
+from matrix.model.common import Identifiable, dump_for_storage
+from matrix.model.except_ import ConfigError, ConflictError, NotFoundError, ProviderError, ServerError
 from matrix.model.provider import SqliteConfig
 
 
@@ -132,10 +133,10 @@ class SqliteStorageProvider(StorageProvider):
 
 
 class SqliteStorage(Storage[ModelT]):
-    """Per-model SQLite-backed :class:`Storage` handle.
+    """Per-model :class:`Storage` handle backed by a SQLite JSON-blob table.
 
-    Lifecycle methods are stubbed in this task; CRUD lands in Task 5
-    and list/find in Task 6.
+    DDL runs lazily on first use; this matches the Postgres backend's
+    behaviour and keeps unused models out of the schema.
     """
 
     def __init__(
@@ -146,24 +147,125 @@ class SqliteStorage(Storage[ModelT]):
         self._provider = provider
         self._model = model_class
         self._table = _table_name_for(model_class)
+        self._table_ensured = False
 
-    async def get(self, id: str):  # noqa: A002 -- ABC signature
-        # Touching the provider triggers ConfigError if not initialised.
-        _ = self._provider.connection
-        raise NotImplementedError("filled in Task 5")
+    # ----- DDL ----------------------------------------------------------
 
-    async def create(self, entity):
-        _ = self._provider.connection
-        raise NotImplementedError("filled in Task 5")
+    async def _ensure_table(self) -> None:
+        if self._table_ensured:
+            return
+        ddl = (
+            f'CREATE TABLE IF NOT EXISTS "{self._table}" ('
+            "id TEXT PRIMARY KEY, "
+            "data TEXT NOT NULL, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')), "
+            "updated_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            ")"
+        )
+        # Access .connection first — propagates ConfigError unchanged if the
+        # provider has not been initialised yet.
+        conn = self._provider.connection
+        try:
+            await conn.execute(ddl)
+            await conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name=self._model.__name__, op="ensure_table",
+            ) from exc
+        self._table_ensured = True
 
-    async def update(self, entity):
-        _ = self._provider.connection
-        raise NotImplementedError("filled in Task 5")
+    # ----- serialisation ------------------------------------------------
+
+    def _to_row(self, entity: ModelT) -> tuple[str, str]:
+        dumped = dump_for_storage(entity)
+        entity_id = dumped.pop("id")
+        return entity_id, json.dumps(dumped, separators=(",", ":"))
+
+    def _from_row(self, id_: str, data_json: str) -> ModelT:
+        data = json.loads(data_json)
+        data["id"] = id_
+        return self._model.model_validate(data)
+
+    # ----- CRUD ---------------------------------------------------------
+
+    async def get(self, id: str) -> ModelT | None:  # noqa: A002
+        await self._ensure_table()
+        sql = f'SELECT id, data FROM "{self._table}" WHERE id = ?'
+        try:
+            cur = await self._provider.connection.execute(sql, (id,))
+            row = await cur.fetchone()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name=self._model.__name__, op="get",
+            ) from exc
+        if row is None:
+            return None
+        return self._from_row(row[0], row[1])
+
+    async def create(self, entity: ModelT) -> ModelT:
+        await self._ensure_table()
+        entity_id, data_json = self._to_row(entity)
+        sql = (
+            f'INSERT INTO "{self._table}" (id, data) VALUES (?, ?) '
+            f"RETURNING id, data"
+        )
+        try:
+            cur = await self._provider.connection.execute(
+                sql, (entity_id, data_json),
+            )
+            row = await cur.fetchone()
+            await self._provider.connection.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name=self._model.__name__, op="create",
+            ) from exc
+        # RETURNING guarantees a row on success.
+        assert row is not None
+        return self._from_row(row[0], row[1])
+
+    async def update(self, entity: ModelT) -> ModelT:
+        await self._ensure_table()
+        entity_id, data_json = self._to_row(entity)
+        sql = (
+            f'UPDATE "{self._table}" '
+            f"SET data = ?, updated_at = datetime('now') "
+            f"WHERE id = ? RETURNING id, data"
+        )
+        try:
+            cur = await self._provider.connection.execute(
+                sql, (data_json, entity_id),
+            )
+            row = await cur.fetchone()
+            await self._provider.connection.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name=self._model.__name__, op="update",
+            ) from exc
+        if row is None:
+            raise NotFoundError(
+                f"{self._model.__name__} with id {entity_id!r} not found"
+            )
+        return self._from_row(row[0], row[1])
 
     async def delete(self, id: str) -> None:  # noqa: A002
-        _ = self._provider.connection
-        raise NotImplementedError("filled in Task 5")
+        await self._ensure_table()
+        sql = f'DELETE FROM "{self._table}" WHERE id = ?'
+        try:
+            cur = await self._provider.connection.execute(sql, (id,))
+            await self._provider.connection.commit()
+            rowcount = cur.rowcount
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name=self._model.__name__, op="delete",
+            ) from exc
+        if rowcount == 0:
+            raise NotFoundError(
+                f"{self._model.__name__} with id {id!r} not found"
+            )
 
+    # list / find filled in Task 6 — keep the stubs that touch
+    # self._provider.connection so the not-initialised guard still
+    # fires for the existing Task-4 test.
     async def list(self, page, *, order_by=None):
         _ = self._provider.connection
         raise NotImplementedError("filled in Task 6")
@@ -177,7 +279,6 @@ class SqliteStorage(Storage[ModelT]):
 # Used by CRUD methods in Task 5.
 def _wrap_sqlite_error(exc: Exception, *, model_name: str, op: str) -> Exception:
     """Translate sqlite3 errors into matrix domain exceptions."""
-    from matrix.model.except_ import ConflictError, ServerError  # local: cycle-proof
 
     if isinstance(exc, sqlite3.IntegrityError):
         # UNIQUE violation surfaces as IntegrityError; the message
