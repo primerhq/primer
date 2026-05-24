@@ -184,6 +184,7 @@ class TestCollectionSystemFlag:
             id="c1",
             description="t",
             embedder=CollectionEmbedder(provider_id="p", model="m"),
+            search_provider_id="ssp-1",
         )
         assert c.system is False
 
@@ -193,6 +194,7 @@ class TestCollectionSystemFlag:
             description="System collection",
             embedder=CollectionEmbedder(provider_id="p", model="m"),
             system=True,
+            search_provider_id="ssp-1",
         )
         rehydrated = Collection.model_validate(original.model_dump())
         assert rehydrated.system is True
@@ -209,3 +211,42 @@ class TestCollectionSystemFlag:
         c = Collection.model_validate(legacy)
         assert c.system is False
         assert c.search is None
+
+
+# ===========================================================================
+# Collection.search_provider_id (required, immutable)
+# ===========================================================================
+
+
+class TestCollectionSearchProviderId:
+    def test_collection_requires_search_provider_id(self) -> None:
+        """Missing search_provider_id must raise ValidationError."""
+        with pytest.raises(ValidationError):
+            Collection(
+                id="c1",
+                description="missing ssp",
+                embedder=CollectionEmbedder(
+                    provider_id="emb-1", model="text-embedding-3",
+                ),
+                # NO search_provider_id
+            )
+
+    def test_collection_with_search_provider_id_constructs(self) -> None:
+        """Collection with search_provider_id must construct successfully."""
+        c = Collection(
+            id="c1",
+            description="ok",
+            embedder=CollectionEmbedder(provider_id="emb-1", model="text-embedding-3"),
+            search_provider_id="ssp-1",
+        )
+        assert c.search_provider_id == "ssp-1"
+
+    def test_collection_search_provider_id_min_length_one(self) -> None:
+        """Empty search_provider_id must raise ValidationError."""
+        with pytest.raises(ValidationError):
+            Collection(
+                id="c1",
+                description="empty ssp id",
+                embedder=CollectionEmbedder(provider_id="emb-1", model="text-embedding-3"),
+                search_provider_id="",
+            )

@@ -68,6 +68,15 @@ class Collection(Describeable):
             "collection's documents."
         ),
     )
+    search_provider_id: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Id of the SemanticSearchProvider backing this collection's "
+            "vector index. Bound at create; immutable thereafter (see "
+            "Collection PUT validator — wired in Task 5)."
+        ),
+    )
     search: CollectionSearch | None = Field(
         default=None,
         description=(
