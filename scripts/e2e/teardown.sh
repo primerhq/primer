@@ -9,6 +9,18 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+# Container-runtime autodetect (mirror of bringup.sh).
+RUNTIME="${MATRIX_E2E_CONTAINER_RUNTIME:-}"
+if [[ -z "$RUNTIME" ]]; then
+    if command -v podman >/dev/null 2>&1; then
+        RUNTIME="podman"
+    elif command -v docker >/dev/null 2>&1; then
+        RUNTIME="docker"
+    else
+        RUNTIME="podman"
+    fi
+fi
+
 E2E_DIR="$ROOT/tests/.e2e"
 PID_FILE="$E2E_DIR/server.pid"
 
@@ -34,8 +46,8 @@ fi
 
 # ---- 2. Bring Postgres down + drop its volume -------------------------------
 
-echo "[teardown] podman compose down -v (drops the matrix-pgdata volume)" >&2
-podman compose down -v >&2 || true
+echo "[teardown] $RUNTIME compose down -v (drops the matrix-pgdata volume)" >&2
+$RUNTIME compose down -v >&2 || true
 
 echo "[teardown] done" >&2
 exit 0

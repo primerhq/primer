@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # Bring up the matrix test environment.
 #
-# Container runtime: Podman (rootless or rootful — both work). The
-# compose file is the standard compose-spec format and is consumed by
-# `podman compose`. If you have Docker installed instead, the same
-# `docker compose <subcmd>` commands work against the same file —
-# substitute manually.
+# Container runtime: Podman or Docker. The script auto-detects which one
+# is on $PATH (podman first, then docker) and uses its `compose`
+# subcommand. Override with MATRIX_E2E_CONTAINER_RUNTIME=podman|docker
+# if both are installed and you need to pin one explicitly.
 #
 # Steps:
-#   1. podman compose up -d, wait for postgres healthcheck
+#   1. $RUNTIME compose up -d, wait for postgres healthcheck
 #   2. drop+recreate the matrix_e2e database with the pgvector extension
 #   3. render tests/.e2e/config.yaml
 #   4. launch `uv run matrix api --run-worker` in the background
@@ -43,6 +42,23 @@ case "${OS:-}${OSTYPE:-}" in
         ;;
 esac
 
+# Container-runtime autodetect. MATRIX_E2E_CONTAINER_RUNTIME pins it
+# explicitly; otherwise we prefer podman (the documented default) and
+# fall back to docker. Either way the variable expands to the binary
+# name; both have a `compose` subcommand against the same compose file.
+RUNTIME="${MATRIX_E2E_CONTAINER_RUNTIME:-}"
+if [[ -z "$RUNTIME" ]]; then
+    if command -v podman >/dev/null 2>&1; then
+        RUNTIME="podman"
+    elif command -v docker >/dev/null 2>&1; then
+        RUNTIME="docker"
+    else
+        echo "[bringup] FATAL: neither podman nor docker on PATH" >&2
+        exit 1
+    fi
+fi
+echo "[bringup] using container runtime: $RUNTIME" >&2
+
 E2E_DIR="$ROOT/tests/.e2e"
 LOG_DIR="$E2E_DIR/logs"
 CONFIG="$E2E_DIR/config.yaml"
@@ -63,14 +79,14 @@ mkdir -p "$E2E_DIR" "$LOG_DIR"
 # ---- 1. Docker --------------------------------------------------------------
 
 echo "[bringup] starting postgres container..." >&2
-podman compose up -d postgres >&2
+$RUNTIME compose up -d postgres >&2
 
 echo "[bringup] waiting for postgres healthcheck..." >&2
 deadline=$(( $(date +%s) + 60 ))
-until podman compose exec -T postgres pg_isready -U "$DB_USER" -d postgres -q; do
+until $RUNTIME compose exec -T postgres pg_isready -U "$DB_USER" -d postgres -q; do
     if [[ $(date +%s) -ge $deadline ]]; then
         echo "[bringup] FATAL: postgres failed healthcheck within 60s" >&2
-        podman compose logs --tail=50 postgres >&2 || true
+        $RUNTIME compose logs --tail=50 postgres >&2 || true
         exit 1
     fi
     sleep 1
@@ -80,11 +96,11 @@ echo "[bringup] postgres ready" >&2
 # ---- 2. Reset DB ------------------------------------------------------------
 
 echo "[bringup] resetting database $DB_NAME..." >&2
-podman compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
+$RUNTIME compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
     psql -U "$DB_USER" -d postgres -v ON_ERROR_STOP=1 \
     -c "DROP DATABASE IF EXISTS $DB_NAME;" \
     -c "CREATE DATABASE $DB_NAME;" >&2
-podman compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
+$RUNTIME compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
     psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
     -c "CREATE EXTENSION IF NOT EXISTS vector;" >&2
 echo "[bringup] database reset" >&2
@@ -93,16 +109,20 @@ echo "[bringup] database reset" >&2
 
 cat > "$CONFIG" <<EOF
 # Auto-rendered by scripts/e2e/bringup.sh — DO NOT EDIT MANUALLY.
-db_host: localhost
-db_port: 5432
-db_database: $DB_NAME
-db_user: $DB_USER
-db_password: $DB_PASSWORD
-# Yielding-tools (M2+) holds one perpetual LISTEN connection plus
-# several polling background tasks; min=1/max=5 deadlocks the
-# lifespan on Windows. min=5/max=20 leaves comfortable headroom.
-db_min_pool_size: 5
-db_max_pool_size: 20
+db:
+  provider: postgres
+  config:
+    hostname: localhost
+    port: 5432
+    database: $DB_NAME
+    username: $DB_USER
+    password: $DB_PASSWORD
+    # Yielding-tools (M2+) holds one perpetual LISTEN connection plus
+    # several polling background tasks; min=1/max=5 deadlocks the
+    # lifespan on Windows. min=5/max=20 leaves comfortable headroom.
+    pool:
+      min_size: 5
+      max_size: 20
 
 host: 127.0.0.1
 port: $PORT
