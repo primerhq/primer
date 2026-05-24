@@ -921,7 +921,7 @@ class SemanticSearchProvider(Identifiable):
     Stored as a CRUD-able row alongside LLMProvider, EmbeddingProvider,
     etc. The discriminated ``config`` carries backend-specific
     connection + index settings; the parent ``provider`` discriminator
-    chooses which dataclass shape is valid.
+    chooses which config shape is valid.
     """
 
     provider: SemanticSearchProviderType = Field(
@@ -930,10 +930,7 @@ class SemanticSearchProvider(Identifiable):
     )
     config: PgVectorConfig | PgVectorScaleConfig = Field(
         ...,
-        description=(
-            "Backend-specific config; must match the provider "
-            "discriminator (see validator)."
-        ),
+        description="Backend-specific connection settings; must match ``provider``.",
     )
 
     @model_validator(mode="after")
@@ -951,9 +948,3 @@ class SemanticSearchProvider(Identifiable):
                 "provider='pgvectorscale' requires a PgVectorScaleConfig in 'config'"
             )
         return self
-
-
-__all__ = [
-    "SemanticSearchProvider",
-    "SemanticSearchProviderType",
-]

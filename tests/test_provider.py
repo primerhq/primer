@@ -22,6 +22,11 @@ from matrix.model.provider import (
     McpConfig,
     OpenAIConfig,
     OpenAIEmbeddingFlavor,
+    PgVectorConfig,
+    PgVectorScaleConfig,
+    PoolConfig,
+    SemanticSearchProvider,
+    SemanticSearchProviderType,
     StdioConfig,
     Toolset,
     ToolsetProviderType,
@@ -793,14 +798,6 @@ class TestHttpConfigOAuth:
 
 
 def test_semantic_search_provider_pgvector_construction():
-    from matrix.model.provider import (
-        SemanticSearchProvider,
-        SemanticSearchProviderType,
-        PgVectorConfig,
-        PoolConfig,
-    )
-    from pydantic import SecretStr
-
     ssp = SemanticSearchProvider(
         id="ssp-test",
         provider=SemanticSearchProviderType.PGVECTOR,
@@ -818,20 +815,26 @@ def test_semantic_search_provider_pgvector_construction():
 
 
 def test_semantic_search_provider_mismatched_config_rejected():
-    import pytest
-    from matrix.model.provider import (
-        SemanticSearchProvider,
-        SemanticSearchProviderType,
-        PgVectorScaleConfig,
-    )
-    from pydantic import SecretStr, ValidationError
-    from matrix.model.provider import PoolConfig
-
     with pytest.raises(ValidationError):
         SemanticSearchProvider(
             id="ssp-test",
             provider=SemanticSearchProviderType.PGVECTOR,
             config=PgVectorScaleConfig(
+                hostname="h",
+                username="u",
+                password=SecretStr("p"),
+                database="db",
+                pool=PoolConfig(),
+            ),
+        )
+
+
+def test_semantic_search_provider_mismatched_config_rejected_pgvectorscale():
+    with pytest.raises(ValidationError):
+        SemanticSearchProvider(
+            id="ssp-test",
+            provider=SemanticSearchProviderType.PGVECTORSCALE,
+            config=PgVectorConfig(
                 hostname="h",
                 username="u",
                 password=SecretStr("p"),
