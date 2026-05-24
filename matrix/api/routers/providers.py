@@ -41,7 +41,7 @@ from matrix.api.deps import (
     get_toolset_storage,
 )
 from matrix.api.errors import common_responses
-from matrix.model.except_ import BadRequestError
+from matrix.model.except_ import BadRequestError, ConflictError
 from matrix.api.registries import ProviderRegistry
 from matrix.api.routers._crud import make_crud_router
 from matrix.model.provider import (
@@ -50,6 +50,8 @@ from matrix.model.provider import (
     LLMProvider,
     Toolset,
 )
+from matrix.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from matrix.model.tool_approval import ToolApprovalPolicy
 
 
 # ---- Discovery body shapes -------------------------------------------------
@@ -364,6 +366,30 @@ async def get_cross_encoder_provider_models(
     return {"models": list(models)}
 
 
+# ---- Toolset delete: cascade-block + invalidate ----------------------------
+
+
+async def _toolset_on_delete(entity_id: str, request: Request) -> None:
+    """Block delete when a ToolApprovalPolicy references this toolset; then invalidate."""
+    storage_provider = request.app.state.storage_provider
+    policy_storage = storage_provider.get_storage(ToolApprovalPolicy)
+    page = await policy_storage.find(
+        Predicate(
+            left=FieldRef(name="toolset_id"),
+            op=Op.EQ,
+            right=Value(value=entity_id),
+        ),
+        OffsetPage(offset=0, length=1),
+    )
+    if page.items:
+        raise ConflictError(
+            f"Toolset {entity_id!r} cannot be deleted while "
+            f"ToolApprovalPolicy {page.items[0].id!r} still "
+            "references it"
+        )
+    await _invalidate_toolset(entity_id, request)
+
+
 # ---- Toolset router --------------------------------------------------------
 
 toolset_router = make_crud_router(
@@ -372,7 +398,7 @@ toolset_router = make_crud_router(
     plural="toolsets",
     tag="toolsets",
     on_update=_invalidate_toolset,
-    on_delete=_invalidate_toolset,
+    on_delete=_toolset_on_delete,
 )
 
 
