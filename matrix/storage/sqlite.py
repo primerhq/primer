@@ -32,8 +32,27 @@ from pydantic import BaseModel
 from matrix.int.storage import Storage
 from matrix.int.storage_provider import StorageProvider
 from matrix.model.common import Identifiable, dump_for_storage
-from matrix.model.except_ import ConfigError, ConflictError, NotFoundError, ProviderError, ServerError
+from matrix.model.except_ import BadRequestError, ConfigError, ConflictError, NotFoundError, ProviderError, ServerError
 from matrix.model.provider import SqliteConfig
+from matrix.model.storage import (
+    CursorPage,
+    CursorPageResponse,
+    OffsetPage,
+    OffsetPageResponse,
+    OrderBy,
+    PageRequest,
+    Predicate,
+)
+from matrix.storage._cursor import (
+    _decode_cursor,
+    _encode_cursor_for,
+)
+from matrix.storage._sqlite_predicate import (
+    _SqlitePredicateTranslator,
+    _render_field_expr,
+    _render_typed_field_expr,
+    render_order_by_sqlite,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -263,16 +282,169 @@ class SqliteStorage(Storage[ModelT]):
                 f"{self._model.__name__} with id {id!r} not found"
             )
 
-    # list / find filled in Task 6 — keep the stubs that touch
-    # self._provider.connection so the not-initialised guard still
-    # fires for the existing Task-4 test.
-    async def list(self, page, *, order_by=None):
-        _ = self._provider.connection
-        raise NotImplementedError("filled in Task 6")
+    async def list(
+        self,
+        page: PageRequest,
+        *,
+        order_by: list[OrderBy] | None = None,
+    ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
+        return await self._paged(predicate=None, page=page, order_by=order_by)
 
-    async def find(self, predicate, page, *, order_by=None):
-        _ = self._provider.connection
-        raise NotImplementedError("filled in Task 6")
+    async def find(
+        self,
+        predicate: Predicate | None,
+        page: PageRequest,
+        *,
+        order_by: list[OrderBy] | None = None,
+    ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
+        return await self._paged(predicate=predicate, page=page, order_by=order_by)
+
+    async def _paged(
+        self,
+        *,
+        predicate: Predicate | None,
+        page: PageRequest,
+        order_by: list[OrderBy] | None,
+    ) -> OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]:
+        await self._ensure_table()
+        translator = _SqlitePredicateTranslator(self._model)
+        where_sql = "1=1"
+        if predicate is not None:
+            where_sql, _ = translator.translate(predicate)
+        order_clause = render_order_by_sqlite(self._model, order_by)
+        if isinstance(page, OffsetPage):
+            return await self._page_offset(
+                translator=translator,
+                where_sql=where_sql,
+                order_clause=order_clause,
+                page=page,
+            )
+        if isinstance(page, CursorPage):
+            return await self._page_cursor(
+                translator=translator,
+                where_sql=where_sql,
+                order_clause=order_clause,
+                order_by=order_by,
+                page=page,
+            )
+        raise BadRequestError(
+            f"unknown PageRequest variant {type(page).__name__!r}"
+        )
+
+    async def _page_offset(
+        self,
+        *,
+        translator: _SqlitePredicateTranslator,
+        where_sql: str,
+        order_clause: str,
+        page: OffsetPage,
+    ) -> OffsetPageResponse[ModelT]:
+        translator.append_param(page.length)
+        translator.append_param(page.offset)
+        params = list(translator._params)  # noqa: SLF001
+        count_params = params[:-2]
+        select_sql = (
+            f'SELECT id, data FROM "{self._table}" '
+            f"WHERE {where_sql} {order_clause} LIMIT ? OFFSET ?"
+        )
+        count_sql = (
+            f'SELECT count(*) FROM "{self._table}" WHERE {where_sql}'
+        )
+        try:
+            cur = await self._provider.connection.execute(select_sql, params)
+            rows = await cur.fetchall()
+            cur = await self._provider.connection.execute(count_sql, count_params)
+            row = await cur.fetchone()
+            total = int(row[0]) if row is not None else None
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name=self._model.__name__, op="list",
+            ) from exc
+        items = [self._from_row(r[0], r[1]) for r in rows]
+        return OffsetPageResponse[self._model](  # type: ignore[name-defined]
+            offset=page.offset,
+            length=len(items),
+            total=total,
+            items=items,
+        )
+
+    async def _page_cursor(
+        self,
+        *,
+        translator: _SqlitePredicateTranslator,
+        where_sql: str,
+        order_clause: str,
+        order_by: list[OrderBy] | None,
+        page: CursorPage,
+    ) -> CursorPageResponse[ModelT]:
+        cursor_clause = ""
+        if page.cursor is not None:
+            cursor_state = _decode_cursor(page.cursor)
+            cursor_clause = self._render_cursor_filter(
+                translator=translator,
+                cursor_state=cursor_state,
+            )
+        full_where = where_sql
+        if cursor_clause:
+            full_where = f"({where_sql}) AND ({cursor_clause})"
+        translator.append_param(page.length + 1)
+        params = list(translator._params)  # noqa: SLF001
+        select_sql = (
+            f'SELECT id, data FROM "{self._table}" '
+            f"WHERE {full_where} {order_clause} LIMIT ?"
+        )
+        try:
+            cur = await self._provider.connection.execute(select_sql, params)
+            rows = await cur.fetchall()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name=self._model.__name__, op="find",
+            ) from exc
+        has_more = len(rows) > page.length
+        if has_more:
+            rows = rows[: page.length]
+        items = [self._from_row(r[0], r[1]) for r in rows]
+        next_cursor: str | None = None
+        if has_more and items:
+            next_cursor = _encode_cursor_for(items[-1], order_by)
+        return CursorPageResponse[self._model](  # type: ignore[name-defined]
+            next_cursor=next_cursor,
+            items=items,
+        )
+
+    def _render_cursor_filter(
+        self,
+        *,
+        translator: _SqlitePredicateTranslator,
+        cursor_state: dict[str, Any],
+    ) -> str:
+        """Build the WHERE fragment that seeks past the cursor.
+
+        Cursor state shape:
+            {"keys": [{"field", "value", "direction"}, ..., {"field": "id", ...}]}
+        Lexicographic-expansion seek condition (same shape as the
+        Postgres backend; only the cell expressions differ).
+        """
+        keys = cursor_state.get("keys", [])
+        if not keys:
+            raise BadRequestError("cursor missing 'keys'")
+        clauses: list[str] = []
+        for prefix_len in range(len(keys)):
+            parts: list[str] = []
+            for k in keys[:prefix_len]:
+                expr = _render_field_expr(self._model, k["field"])
+                ph = translator.append_param(k["value"])
+                parts.append(f"({expr} = {ph})")
+            k = keys[prefix_len]
+            sql_op = ">" if k["direction"] == "asc" else "<"
+            if k["field"] == "id":
+                left = "id"
+            else:
+                left = _render_typed_field_expr(self._model, k["field"])
+            ph = translator.append_param(k["value"])
+            parts.append(f"({left} {sql_op} {ph})")
+            clauses.append("(" + " AND ".join(parts) + ")")
+        return "(" + " OR ".join(clauses) + ")"
 
 
 # Map sqlite3 exception classes onto matrix domain exceptions.
