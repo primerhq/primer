@@ -15,6 +15,7 @@ Three top-level provider kinds are supported:
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, HttpUrl, PositiveInt, SecretStr, model_validator
@@ -607,6 +608,7 @@ class StorageProviderType(str, Enum):
     """Supported Storage provider backends."""
 
     POSTGRES = "postgres"
+    SQLITE = "sqlite"
 
 
 # Internal adapter shape; not exposed via API.
@@ -711,6 +713,49 @@ class PostgresConfig(_PostgresBaseConfig):
     No vector extensions required; suitable for the generic CRUD +
     predicate-search :class:`Storage` interface backed by JSONB tables.
     """
+
+
+class SqliteConfig(BaseModel):
+    """Connection settings for the embedded SQLite Storage provider.
+
+    Single-file backend. aiosqlite serialises queries through one
+    connection so we expose no pool knobs. WAL mode is the
+    recommended default — concurrent readers + single writer.
+    """
+
+    path: Path = Field(
+        ...,
+        description=(
+            "Filesystem path to the SQLite database file. Parent "
+            "directories are created on demand at initialize() "
+            "time. Use a '.sqlite' or '.db' extension by convention."
+        ),
+    )
+    busy_timeout_ms: int = Field(
+        default=5000,
+        ge=0,
+        description=(
+            "PRAGMA busy_timeout in milliseconds — how long to wait "
+            "when another writer holds the lock before raising "
+            "SQLITE_BUSY. 5000 is generous for embedded use."
+        ),
+    )
+    synchronous: Literal["off", "normal", "full"] = Field(
+        default="normal",
+        description=(
+            "PRAGMA synchronous mode. 'normal' is the WAL-recommended "
+            "default (one fsync per checkpoint). 'full' = one fsync "
+            "per transaction. 'off' = no fsync (risk DB corruption "
+            "on power loss)."
+        ),
+    )
+    journal_mode: Literal["wal", "delete", "truncate", "memory"] = Field(
+        default="wal",
+        description=(
+            "PRAGMA journal_mode. 'wal' is the recommended default. "
+            "'memory' is for ephemeral test DBs only."
+        ),
+    )
 
 
 _DistanceMetric = Literal["cosine", "l2", "ip"]
@@ -855,7 +900,7 @@ class StorageProviderConfig(BaseModel):
         ...,
         description="Which Storage backend to use.",
     )
-    config: PostgresConfig = Field(
+    config: PostgresConfig | SqliteConfig = Field(
         ...,
         description="Backend-specific connection settings; must match ``provider``.",
     )
@@ -867,6 +912,12 @@ class StorageProviderConfig(BaseModel):
         ):
             raise ValueError(
                 "provider='postgres' requires a PostgresConfig in 'config'"
+            )
+        if self.provider == StorageProviderType.SQLITE and not isinstance(
+            self.config, SqliteConfig
+        ):
+            raise ValueError(
+                "provider='sqlite' requires a SqliteConfig in 'config'"
             )
         return self
 
