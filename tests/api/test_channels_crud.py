@@ -9,7 +9,8 @@ import pytest
 async def test_create_channel_under_provider(client):
     await client.post(
         "/v1/channel_providers",
-        json={"id": "cp-x", "provider": "discord", "config": {}},
+        json={"id": "cp-x", "provider": "discord",
+              "config": {"bot_token": "x" * 60}},
     )
     r = await client.post(
         "/v1/channels",

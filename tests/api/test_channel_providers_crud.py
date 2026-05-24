@@ -22,7 +22,8 @@ async def test_create_and_list(client):
 async def test_delete_blocked_when_channel_references(client):
     await client.post(
         "/v1/channel_providers",
-        json={"id": "cp-cas", "provider": "telegram", "config": {}},
+        json={"id": "cp-cas", "provider": "telegram",
+              "config": {"bot_token": "123456:abcdefghijklmnopqrstuvwxyz123456"}},
     )
     await client.post(
         "/v1/channels",
