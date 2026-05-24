@@ -101,6 +101,7 @@ class TestCollectionSearchField:
             "id": "c1",
             "description": "t",
             "embedder": {"provider_id": "p", "model": "m"},
+            "search_provider_id": "ssp-test",
             # NB: no "search" key.
         }
         c = Collection.model_validate(legacy)
@@ -211,6 +212,7 @@ class TestCollectionSystemFlag:
             "id": "c1",
             "description": "t",
             "embedder": {"provider_id": "p", "model": "m"},
+            "search_provider_id": "ssp-test",
             # NB: no "system" key, no "search" key.
         }
         c = Collection.model_validate(legacy)
