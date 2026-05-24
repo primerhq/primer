@@ -18,10 +18,13 @@ exposes model-bound :class:`matrix.int.Storage` handles via
 
 from matrix.storage.factory import StorageProviderFactory
 from matrix.storage.postgres import PostgresStorage, PostgresStorageProvider
+from matrix.storage.sqlite import SqliteStorage, SqliteStorageProvider
 
 
 __all__ = [
     "PostgresStorage",
     "PostgresStorageProvider",
+    "SqliteStorage",
+    "SqliteStorageProvider",
     "StorageProviderFactory",
 ]
