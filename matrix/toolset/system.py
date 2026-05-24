@@ -72,6 +72,7 @@ from matrix.model.storage import (
     Predicate,
 )
 from matrix.model.thread import Thread
+from matrix.model.tool_approval import ToolApprovalPolicy
 from matrix.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -1062,6 +1063,7 @@ def build_system_toolset(
         ("agent_thread", "agent_threads", Thread, None, None, None),
         ("graph_thread", "graph_threads", GraphThread, None, None, None),
         ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp),
+        ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, None, None),
     ]
     for label, plural, cls, on_c, on_u, on_d in crud_specs:
         registry.update(
