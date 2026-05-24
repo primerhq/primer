@@ -1,57 +1,130 @@
 /* global React, Icon, StatusPill, Btn, relativeTime, Banner */
 
-function SessionsList({ sessions, onOpenSession, filterPreset, onNewSession, demoState }) {
-  const [statusFilter, setStatusFilter] = React.useState(() => {
+const SL_STATUS_CHIPS = [
+  { s: "created",   color: "var(--text-3)" },
+  { s: "running",   color: "var(--blue)" },
+  { s: "waiting",   color: "var(--amber)" },
+  { s: "paused",    color: "var(--amber)" },
+  { s: "ended",     color: "var(--green)" },
+  { s: "failed",    color: "var(--red)" },
+  { s: "cancelled", color: "var(--text-4)" },
+];
+
+const SL_NON_TERMINAL = new Set(["created", "running", "paused", "waiting"]);
+const SL_PAGE_SIZE = 12;
+
+function _slAgeSec(iso) {
+  if (!iso) return null;
+  return (Date.now() - new Date(iso).getTime()) / 1000;
+}
+
+function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) {
+  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
+  // Local filter state. Seed status filter from filterPreset prop (set by
+  // dashboard "running" tile). Otherwise empty (= show everything).
+  const [statusSet, setStatusSet] = React.useState(() => {
     if (filterPreset === "running") return new Set(["running", "paused"]);
     return new Set();
   });
   const [agentFilter, setAgentFilter] = React.useState("");
   const [workspaceFilter, setWorkspaceFilter] = React.useState("");
-  const [query, setQuery] = React.useState("");
+  const [textQuery, setTextQuery] = React.useState("");
   const [sortBy, setSortBy] = React.useState("created_at");
   const [sortDir, setSortDir] = React.useState("desc");
-  const [selected, setSelected] = React.useState(new Set());
+  const [selected, setSelected] = React.useState(() => new Set());
   const [page, setPage] = React.useState(1);
-  const PAGE_SIZE = 12;
 
-  const toggleStatus = (s) => {
-    const next = new Set(statusFilter);
-    if (next.has(s)) next.delete(s); else next.add(s);
-    setStatusFilter(next);
-    setPage(1);
-  };
+  // Suspend polling while filter input is focused so an in-progress
+  // search doesn't get rug-pulled by a refresh.
+  const filterFocused = React.useRef(false);
 
-  const allFiltered = React.useMemo(() => {
-    let arr = [...sessions];
-    if (statusFilter.size > 0) {
-      arr = arr.filter((s) => {
-        // "waiting" filter matches parked sessions specifically
-        if (statusFilter.has("waiting") && s.parked_status === "parked") return true;
-        return statusFilter.has(s.status);
-      });
+  const list = useResource(
+    "sessions:list",
+    (signal) => apiFetch("GET", "/sessions?limit=200", null, { signal }),
+    {
+      pollMs: 3000,
+      pauseWhile: () => filterFocused.current,
     }
-    if (agentFilter) arr = arr.filter((s) => s.agent_id === agentFilter);
-    if (workspaceFilter) arr = arr.filter((s) => s.workspace_id === workspaceFilter);
-    if (query) {
-      const q = query.toLowerCase();
-      arr = arr.filter((s) => s.id.toLowerCase().includes(q) || (s.agent_id && s.agent_id.toLowerCase().includes(q)) || (s.workspace_id && s.workspace_id.toLowerCase().includes(q)));
+  );
+
+  // Combobox sources — cached for the page's lifetime.
+  const agents = useResource(
+    "sessions-list:agents",
+    (s) => apiFetch("GET", "/agents?limit=200", null, { signal: s }),
+    {}
+  );
+  const workspaces = useResource(
+    "sessions-list:workspaces",
+    (s) => apiFetch("GET", "/workspaces?limit=200", null, { signal: s }),
+    {}
+  );
+
+  const items = list.data?.items ?? [];
+
+  // Apply UI filters client-side.
+  const filtered = React.useMemo(() => {
+    let arr = items;
+    if (statusSet.size > 0) {
+      arr = arr.filter((s) => statusSet.has(s.status));
     }
+    if (agentFilter) {
+      arr = arr.filter((s) => (s.binding?.agent_id || s.agent_id) === agentFilter);
+    }
+    if (workspaceFilter) {
+      arr = arr.filter((s) => s.workspace_id === workspaceFilter);
+    }
+    if (textQuery) {
+      const q = textQuery.toLowerCase();
+      arr = arr.filter((s) =>
+        (s.id || "").toLowerCase().includes(q) ||
+        ((s.binding?.agent_id || s.agent_id || "")).toLowerCase().includes(q) ||
+        ((s.binding?.graph_id || s.graph_id || "")).toLowerCase().includes(q) ||
+        ((s.workspace_id || "")).toLowerCase().includes(q)
+      );
+    }
+    return arr;
+  }, [items, statusSet, agentFilter, workspaceFilter, textQuery]);
+
+  const sorted = React.useMemo(() => {
+    const arr = [...filtered];
     arr.sort((a, b) => {
-      let av = a[sortBy], bv = b[sortBy];
-      if (av instanceof Date) av = av.getTime();
-      if (bv instanceof Date) bv = bv.getTime();
-      if (av == null) av = 0;
-      if (bv == null) bv = 0;
+      let av, bv;
+      if (sortBy === "created_at" || sortBy === "last_turn_at") {
+        av = a[sortBy] ? new Date(a[sortBy]).getTime() : 0;
+        bv = b[sortBy] ? new Date(b[sortBy]).getTime() : 0;
+      } else if (sortBy === "agent_id") {
+        av = a.binding?.agent_id || a.agent_id || "";
+        bv = b.binding?.agent_id || b.agent_id || "";
+      } else if (sortBy === "worker_id") {
+        av = a.last_worker_id || a.worker_id || "";
+        bv = b.last_worker_id || b.worker_id || "";
+      } else {
+        av = a[sortBy];
+        bv = b[sortBy];
+        if (av == null) av = "";
+        if (bv == null) bv = "";
+      }
       if (av < bv) return sortDir === "asc" ? -1 : 1;
       if (av > bv) return sortDir === "asc" ? 1 : -1;
       return 0;
     });
     return arr;
-  }, [sessions, statusFilter, agentFilter, workspaceFilter, query, sortBy, sortDir]);
+  }, [filtered, sortBy, sortDir]);
 
-  const total = allFiltered.length;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const pageItems = allFiltered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const total = sorted.length;
+  const totalPages = Math.max(1, Math.ceil(total / SL_PAGE_SIZE));
+  const pageItems = sorted.slice((page - 1) * SL_PAGE_SIZE, page * SL_PAGE_SIZE);
+
+  const toggleStatus = (s) => {
+    setStatusSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(s)) next.delete(s); else next.add(s);
+      return next;
+    });
+    setPage(1);
+  };
 
   const setSort = (col) => {
     if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -62,7 +135,7 @@ function SessionsList({ sessions, onOpenSession, filterPreset, onNewSession, dem
     <th
       className={sortBy === col ? "sorted" : ""}
       onClick={() => setSort(col)}
-      style={{ textAlign: align || "left" }}
+      style={{ textAlign: align || "left", cursor: "pointer" }}
     >
       {children}
       <span className="sort-arrow">{sortBy === col ? (sortDir === "asc" ? "↑" : "↓") : "↕"}</span>
@@ -70,25 +143,45 @@ function SessionsList({ sessions, onOpenSession, filterPreset, onNewSession, dem
   );
 
   const toggleRow = (id) => {
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    setSelected(next);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
   const allSelected = pageItems.length > 0 && pageItems.every((s) => selected.has(s.id));
 
-  const liveRunning = sessions.filter((s) => s.status === "running" || s.status === "paused").length;
+  const openSession = (id) => {
+    if (typeof onOpenSession === "function") onOpenSession(id);
+    else navigate("/sessions/" + id);
+  };
 
-  // Demo: loading / error / empty states from tweaks
-  if (demoState === "loading") return <LoadingTable />;
+  // ---- Demo overrides (still honoured for tweaks panel) ----
+  if (demoState === "loading") return <SLLoadingTable />;
   if (demoState === "error") return (
     <Banner
       kind="error"
       title="Couldn't load sessions"
-      detail="GET /v1/sessions failed with 502 — provider-server-error. The scheduler is reachable but session storage is currently unreachable."
-      actions={<><Btn size="sm" icon="refresh">Retry</Btn><Btn size="sm" kind="ghost" icon="copy">Copy request-id</Btn></>}
+      detail="GET /v1/sessions failed with 502 — provider-server-error."
+      actions={<><Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn></>}
     />
   );
-  if (demoState === "empty") return <EmptySessions onNewSession={onNewSession} />;
+  if (demoState === "empty") return <SLEmptySessions onNewSession={onNewSession} />;
+
+  // ---- Real API states ----
+  if (list.error && items.length === 0) {
+    return (
+      <Banner
+        kind="error"
+        title={list.error.title || "Couldn't load sessions"}
+        detail={list.error.detail || list.error.message}
+        requestId={list.error.requestId}
+        actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
+      />
+    );
+  }
+  if (list.loading && items.length === 0) return <SLLoadingTable />;
+  if (items.length === 0) return <SLEmptySessions onNewSession={onNewSession} />;
 
   return (
     <div className="session-list-layout">
@@ -98,26 +191,21 @@ function SessionsList({ sessions, onOpenSession, filterPreset, onNewSession, dem
           <input
             className="input"
             placeholder="Filter id, agent, workspace…"
-            value={query}
-            onChange={(e) => { setQuery(e.target.value); setPage(1); }}
+            value={textQuery}
+            onChange={(e) => { setTextQuery(e.target.value); setPage(1); }}
+            onFocus={() => { filterFocused.current = true; }}
+            onBlur={() => { filterFocused.current = false; }}
           />
         </div>
         <div className="sep-v" />
         <div className="chip-group" title="filter by status">
-          {[
-            { s: "created", color: "var(--text-3)" },
-            { s: "running", color: "var(--blue)" },
-            { s: "waiting", color: "var(--amber)" },
-            { s: "paused", color: "var(--amber)" },
-            { s: "ended", color: "var(--green)" },
-            { s: "failed", color: "var(--red)" },
-            { s: "cancelled", color: "var(--text-4)" },
-          ].map(({ s, color }) => (
+          {SL_STATUS_CHIPS.map(({ s, color }) => (
             <span
               key={s}
-              className={`chip-dot ${statusFilter.has(s) ? "active" : ""}`}
+              className={`chip-dot ${statusSet.has(s) ? "active" : ""}`}
               onClick={() => toggleStatus(s)}
               title={s}
+              style={{ cursor: "pointer" }}
             >
               <span className="d" style={{ background: color }}></span>
             </span>
@@ -130,7 +218,7 @@ function SessionsList({ sessions, onOpenSession, filterPreset, onNewSession, dem
           onChange={(e) => { setAgentFilter(e.target.value); setPage(1); }}
         >
           <option value="">agent</option>
-          {window.MOCK.AGENTS.map((a) => (
+          {(agents.data?.items ?? []).map((a) => (
             <option key={a.id} value={a.id}>{a.id}</option>
           ))}
         </select>
@@ -140,8 +228,8 @@ function SessionsList({ sessions, onOpenSession, filterPreset, onNewSession, dem
           onChange={(e) => { setWorkspaceFilter(e.target.value); setPage(1); }}
         >
           <option value="">workspace</option>
-          {window.MOCK.WORKSPACES.map((w) => (
-            <option key={w} value={w}>{w.slice(0, 14)}…</option>
+          {(workspaces.data?.items ?? []).map((w) => (
+            <option key={w.id} value={w.id}>{w.id.slice(0, 14)}{w.id.length > 14 ? "…" : ""}</option>
           ))}
         </select>
         {selected.size > 0 && (
@@ -174,47 +262,64 @@ function SessionsList({ sessions, onOpenSession, filterPreset, onNewSession, dem
             </tr>
           </thead>
           <tbody>
-            {pageItems.map((s) => (
-              <tr
-                key={s.id}
-                className={selected.has(s.id) ? "selected" : ""}
-                onClick={() => onOpenSession(s.id)}
-              >
-                <td onClick={(e) => { e.stopPropagation(); toggleRow(s.id); }} style={{ width: 36 }}>
-                  <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleRow(s.id)} />
-                </td>
-                <td><StatusPill status={s.status} parked={s.parked_status === "parked" ? s.parked_state.yielded.tool_name : null} /></td>
-                <td className="mono">{s.id.slice(0, 18)}<span className="muted">…</span></td>
-                <td className="mono">
-                  {s.binding_kind === "graph" ? (
-                    <span>
-                      <Icon name="graph" size={11} style={{ display: "inline", verticalAlign: "-1px", color: "var(--violet)" }} />{" "}
-                      {s.graph_id}
-                    </span>
-                  ) : (
-                    <span>
-                      <Icon name="agent" size={11} style={{ display: "inline", verticalAlign: "-1px", color: "var(--text-3)" }} />{" "}
-                      {s.agent_id || <span className="muted">—</span>}
-                    </span>
-                  )}
-                </td>
-                <td className="mono muted">{s.workspace_id.slice(0, 16)}…</td>
-                <td className="mono num tabular">{s.turn_count}</td>
-                <td className="mono muted">{s.worker_id || "—"}</td>
-                <td className="mono muted">
-                  {s.last_turn_at ? relativeTime((Date.now() - s.last_turn_at.getTime()) / 1000) : "—"}
-                </td>
-                <td className="mono muted">{relativeTime((Date.now() - s.created_at.getTime()) / 1000)}</td>
-              </tr>
-            ))}
+            {pageItems.length === 0 ? (
+              <tr><td colSpan={9} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+                No sessions match the current filter{textQuery ? ` "${textQuery}"` : ""}.
+                {" · "}<a
+                  onClick={() => { setTextQuery(""); setStatusSet(new Set()); setAgentFilter(""); setWorkspaceFilter(""); }}
+                  style={{ cursor: "pointer", color: "var(--accent)" }}
+                >Clear filters</a>
+              </td></tr>
+            ) : pageItems.map((s) => {
+              const isGraph = (s.binding?.kind || s.binding_kind) === "graph";
+              const boundAgent = s.binding?.agent_id || s.agent_id;
+              const boundGraph = s.binding?.graph_id || s.graph_id;
+              const workerId = s.last_worker_id || s.worker_id;
+              const createdSec = _slAgeSec(s.created_at);
+              const lastTurnSec = _slAgeSec(s.last_turn_at);
+              return (
+                <tr
+                  key={s.id}
+                  className={selected.has(s.id) ? "selected" : ""}
+                  onClick={() => openSession(s.id)}
+                  style={{ cursor: "pointer" }}
+                >
+                  <td onClick={(e) => { e.stopPropagation(); toggleRow(s.id); }} style={{ width: 36 }}>
+                    <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleRow(s.id)} />
+                  </td>
+                  <td><StatusPill status={s.status} /></td>
+                  <td className="mono">{(s.id || "").length > 22 ? (s.id.slice(0, 22) + "…") : s.id}</td>
+                  <td className="mono">
+                    {isGraph ? (
+                      <span>
+                        <Icon name="graph" size={11} style={{ display: "inline", verticalAlign: "-1px", color: "var(--violet)" }} />{" "}
+                        {boundGraph || <span className="muted">—</span>}
+                      </span>
+                    ) : (
+                      <span>
+                        <Icon name="agent" size={11} style={{ display: "inline", verticalAlign: "-1px", color: "var(--text-3)" }} />{" "}
+                        {boundAgent || <span className="muted">—</span>}
+                      </span>
+                    )}
+                  </td>
+                  <td className="mono muted">{(s.workspace_id || "").slice(0, 16)}{(s.workspace_id || "").length > 16 ? "…" : ""}</td>
+                  <td className="mono num tabular">{s.turn_count ?? 0}</td>
+                  <td className="mono muted">{workerId || "—"}</td>
+                  <td className="mono muted">{lastTurnSec != null ? relativeTime(lastTurnSec) : "—"}</td>
+                  <td className="mono muted">{createdSec != null ? relativeTime(createdSec) : "—"}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         <div className="tbl-foot">
           <span className="tabular">
-            Showing <strong style={{ color: "var(--text)" }}>{(page - 1) * PAGE_SIZE + 1}</strong>–
-            <strong style={{ color: "var(--text)" }}>{Math.min(page * PAGE_SIZE, total)}</strong> of{" "}
+            Showing <strong style={{ color: "var(--text)" }}>{total === 0 ? 0 : (page - 1) * SL_PAGE_SIZE + 1}</strong>–
+            <strong style={{ color: "var(--text)" }}>{Math.min(page * SL_PAGE_SIZE, total)}</strong> of{" "}
             <strong style={{ color: "var(--text)" }}>{total}</strong>
-            <span style={{ marginLeft: 12 }}>· <a style={{ color: "var(--accent)", cursor: "pointer" }}>Switch to cursor mode</a></span>
+            {list.data?.total > items.length && (
+              <span className="muted text-sm"> (server reports {list.data.total} total)</span>
+            )}
           </span>
           <div className="pager">
             <button disabled={page === 1} onClick={() => setPage(page - 1)}><Icon name="chevron-left" size={12} /></button>
@@ -227,7 +332,7 @@ function SessionsList({ sessions, onOpenSession, filterPreset, onNewSession, dem
   );
 }
 
-function LoadingTable() {
+function SLLoadingTable() {
   return (
     <div className="tbl-wrap">
       <table className="tbl">
@@ -250,7 +355,7 @@ function LoadingTable() {
   );
 }
 
-function EmptySessions({ onNewSession }) {
+function SLEmptySessions({ onNewSession }) {
   return (
     <div className="panel">
       <div className="empty">

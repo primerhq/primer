@@ -1,6 +1,30 @@
 /* global React, Icon, StatusPill, Btn, Modal, Banner, relativeTime, fmtDate */
 
-function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
+const SESSION_TERMINAL = new Set(["ended", "completed", "failed", "cancelled"]);
+
+function _sdAgeSec(iso) {
+  if (!iso) return null;
+  if (iso instanceof Date) return (Date.now() - iso.getTime()) / 1000;
+  return (Date.now() - new Date(iso).getTime()) / 1000;
+}
+
+function _sdToastErr(pushToast, fallbackTitle) {
+  return (err) => {
+    if (typeof pushToast !== "function") return;
+    pushToast({
+      kind: "error",
+      title: err?.title || fallbackTitle,
+      detail: err?.detail || err?.message,
+      requestId: err?.requestId,
+    });
+  };
+}
+
+function SessionDetail({ sid: sidProp, pushToast, onBack }) {
+  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { params, navigate } = useRouter();
+  const sid = sidProp || params.id;
+
   const [steer, setSteer] = React.useState("");
   const [showCancel, setShowCancel] = React.useState(false);
   const [queuedInstructions, setQueuedInstructions] = React.useState([]);
@@ -8,47 +32,136 @@ function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
   const [errorOpen, setErrorOpen] = React.useState(true);
   const [metaOpen, setMetaOpen] = React.useState(false);
 
-  if (!session) return null;
-  const isTerminal = ["ended", "failed", "cancelled"].includes(session.status);
-  const isGraph = session.binding_kind === "graph";
-  const isParked = session.parked_status === "parked";
-  const parkedToolName = isParked ? session.parked_state.yielded.tool_name : null;
-
-  // Generate fake turns from session
-  const turns = generateTurns(session);
-
-  const handlePause = () => {
-    onPatchSession(session.id, { status: "paused" });
-    pushToast({ kind: "success", title: "Session paused", detail: "The worker will halt after the current turn completes." });
-  };
-  const handleResume = () => {
-    if (session.status === "running") {
-      pushToast({ kind: "info", title: "Already running", detail: "Resume is idempotent — returned 200 no-op." });
-      return;
+  // Top-level /v1/sessions/{id} is the authoritative path per app spec
+  // §12 (T0399/T0555/T0611). Poll every 2s while non-terminal; pause
+  // once terminal so we don't spam reads for unchanging rows. The
+  // status check uses a ref so the pauseWhile closure stays stable.
+  const lastStatusRef = React.useRef(null);
+  const detail = useResource(
+    `session-detail:${sid}`,
+    (signal) => apiFetch("GET", `/sessions/${encodeURIComponent(sid)}`, null, { signal }),
+    {
+      pollMs: 2000,
+      pauseWhile: () => SESSION_TERMINAL.has(lastStatusRef.current),
+      deps: [sid],
     }
-    onPatchSession(session.id, { status: "running" });
-    pushToast({ kind: "success", title: "Session resumed", detail: "Scheduler will hand it to the next available worker." });
-  };
-  const handleCancel = () => {
+  );
+
+  const session = detail.data;
+  React.useEffect(() => {
+    lastStatusRef.current = session?.status || null;
+  }, [session?.status]);
+  const wid = session?.workspace_id;
+  const isTerminal = session && SESSION_TERMINAL.has(session.status);
+  const isGraph = (session?.binding?.kind || session?.binding_kind) === "graph";
+
+  // Signal mutations. workspace-scoped endpoints per app spec §13.
+  // All invalidate session-detail + sessions:list for fast feedback.
+  const invalidates = [`session-detail:${sid}`, "sessions:list"];
+  const pauseMut = useMutation(
+    () => apiFetch("POST", `/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}/pause`),
+    {
+      invalidates,
+      onSuccess: () => pushToast && pushToast({
+        kind: "success",
+        title: "Session paused",
+        detail: "Worker will halt after current turn.",
+      }),
+      onError: _sdToastErr(pushToast, "Pause failed"),
+    }
+  );
+  const resumeMut = useMutation(
+    () => apiFetch("POST", `/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}/resume`),
+    {
+      invalidates,
+      onSuccess: () => pushToast && pushToast({
+        kind: "success",
+        title: "Resume signal sent",
+        detail: "Idempotent — 200 no-op if already running.",
+      }),
+      onError: _sdToastErr(pushToast, "Resume failed"),
+    }
+  );
+  const cancelMut = useMutation(
+    () => apiFetch("POST", `/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}/cancel`),
+    {
+      invalidates,
+      onSuccess: () => pushToast && pushToast({
+        kind: "warning",
+        title: "Cancel signal sent",
+        detail: "May take up to ~30s if the worker is mid-turn.",
+      }),
+      onError: _sdToastErr(pushToast, "Cancel failed"),
+    }
+  );
+  const steerMut = useMutation(
+    (instruction) => apiFetch("POST", `/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}/steer`, { instruction }),
+    {
+      invalidates,
+      onSuccess: () => pushToast && pushToast({
+        kind: "success",
+        title: "Steer queued",
+        detail: "Picked up at the next turn boundary.",
+      }),
+      onError: _sdToastErr(pushToast, "Steer failed"),
+    }
+  );
+
+  const onPause = () => { if (wid) pauseMut.mutate(); };
+  const onResume = () => { if (wid) resumeMut.mutate(); };
+  const onCancelConfirmed = () => {
     setShowCancel(false);
-    onPatchSession(session.id, { status: "cancelled" });
-    pushToast({ kind: "warning", title: "Cancel signal sent", detail: "May take up to ~30 s if the worker is mid-turn." });
+    if (wid) cancelMut.mutate();
   };
-  const handleCancelYield = () => {
-    if (!isParked) return;
-    onPatchSession(session.id, { parked_status: null, parked_state: null });
-    pushToast({ kind: "warning", title: "Yield cancelled", detail: `POST /v1/sessions/${session.id}/yields/${session.parked_state.tool_call_id}/cancel · reason=operator-skipped` });
-  };
-  const handleAskUserRespond = (payload) => {
-    onPatchSession(session.id, { parked_status: null, parked_state: null });
-    pushToast({ kind: "success", title: "Response sent", detail: `Session resumed with ${typeof payload === "string" ? `"${payload.slice(0, 32)}${payload.length > 32 ? "…" : ""}"` : "structured payload"}.` });
-  };
-  const handleSteer = () => {
-    if (!steer.trim()) return;
-    setQueuedInstructions((q) => [...q, { text: steer, at: new Date() }]);
-    pushToast({ kind: "success", title: "Steer queued", detail: "The instruction was appended to the session's pending queue." });
+  const onSteer = () => {
+    const text = steer.trim();
+    if (!text || !wid) return;
+    setQueuedInstructions((q) => [...q, { text, at: new Date() }]);
     setSteer("");
+    steerMut.mutate(text);
   };
+
+  // --- Render-state branches ---
+  if (detail.loading && !session) {
+    return (
+      <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>
+        Loading session {sid}…
+      </div>
+    );
+  }
+  if (detail.error && !session) {
+    if (detail.error.status === 404) {
+      return (
+        <div className="panel">
+          <div className="empty" style={{ padding: "40px 20px" }}>
+            <div className="ico-wrap"><Icon name="x-circle" size={22} /></div>
+            <div className="head">Session not found</div>
+            <div className="sub">No row at <span className="mono">/v1/sessions/{sid}</span>. It may have been deleted, or the id is wrong.</div>
+            <div className="actions">
+              <Btn kind="primary" icon="chevron-left" onClick={onBack || (() => navigate("/sessions"))}>Back to list</Btn>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <Banner
+        kind="error"
+        title={detail.error.title || "Couldn't load session"}
+        detail={detail.error.detail || detail.error.message}
+        requestId={detail.error.requestId}
+        actions={<Btn size="sm" icon="refresh" onClick={detail.refetch}>Retry</Btn>}
+      />
+    );
+  }
+  if (!session) return null;
+
+  const turns = Array.isArray(session.turns) ? session.turns : [];
+  const lastWorker = session.last_worker_id || session.worker_id;
+  const boundAgent = session.binding?.agent_id || session.agent_id;
+  const boundGraph = session.binding?.graph_id || session.graph_id;
+  const lastError = session.last_error || session.error;
+  const metadata = session.metadata || {};
 
   return (
     <div className="col">
@@ -58,27 +171,16 @@ function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
           icon="alert"
           title="Graph executor is unimplemented"
           detail="This session is bound to a graph. The graph executor currently raises NotImplementedError, so the session ends with `failed` on the first turn. Pinned in app spec §12."
-          actions={<Btn size="sm" kind="ghost">Open spec</Btn>}
         />
       )}
 
-      {isParked && parkedToolName === "ask_user" && (
-        <AskUserPanel session={session} onRespond={handleAskUserRespond} onSkip={handleCancelYield} pushToast={pushToast} />
+      {/* Yielding-tools surfaces. Each polls /ask_user/pending (404 = nothing). */}
+      <AskUserPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
+      {wid && (
+        <WatchFilesPanel sid={sid} wid={wid} session={session} pushToast={pushToast} />
       )}
-      {/* Tool-approval pending — pick the first pending approval scoped to this session */}
-      {(window.PENDING_APPROVALS || []).filter((a) => a.scope.kind === "session" && a.scope.id === session.id).slice(0, 1).map((a) => (
-        <ApprovalBanner
-          key={a.tool_call_id}
-          approval={a}
-          onApprove={() => pushToast({ kind: "success", title: "Approved", detail: `POST /v1/sessions/${session.id}/tool_approval/respond → 202` })}
-          onReject={(reason) => pushToast({ kind: "warning", title: "Rejected", detail: `"${reason}"` })}
-        />
-      ))}
-      {isParked && parkedToolName === "watch_files" && (
-        <WatchFilesPanel session={session} onCancelYield={handleCancelYield} />
-      )}
-      {isParked && parkedToolName === "sleep" && (
-        <SleepPanel session={session} onCancelYield={handleCancelYield} />
+      {wid && (
+        <SleepPanel sid={sid} wid={wid} session={session} pushToast={pushToast} />
       )}
 
       <div className="session-detail-grid">
@@ -95,71 +197,72 @@ function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
                   </button>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                  <StatusPill status={session.status} parked={parkedToolName} />
+                  <StatusPill status={session.status} />
                   <span className="muted text-sm">
-                    {isParked && (
-                      <>parked on <span className="mono" style={{ color: "var(--amber)" }}>{parkedToolName}</span> · {relativeTime((Date.now() - session.parked_state.parked_at.getTime()) / 1000)}</>
-                    )}
-                    {!isParked && session.status === "running" && `turn ${session.turn_count} · started ${relativeTime((Date.now() - session.started_at.getTime()) / 1000)}`}
-                    {!isParked && session.status === "paused" && `paused at turn ${session.turn_count}`}
-                    {!isParked && session.status === "created" && "awaiting worker claim"}
-                    {!isParked && session.status === "ended" && `completed ${session.turn_count} turns`}
-                    {!isParked && session.status === "failed" && "failed during execution"}
-                    {!isParked && session.status === "cancelled" && "cancelled by operator"}
+                    {session.status === "running" && `turn ${session.turn_count ?? 0}${session.started_at ? ` · started ${relativeTime(_sdAgeSec(session.started_at))}` : ""}`}
+                    {session.status === "paused" && `paused at turn ${session.turn_count ?? 0}`}
+                    {session.status === "created" && "awaiting worker claim"}
+                    {(session.status === "ended" || session.status === "completed") && `completed ${session.turn_count ?? 0} turn${(session.turn_count ?? 0) === 1 ? "" : "s"}`}
+                    {session.status === "failed" && "failed during execution"}
+                    {session.status === "cancelled" && "cancelled by operator"}
                   </span>
                 </div>
                 <dl className="kv">
                   <dt>bound</dt>
                   <dd>
                     {isGraph ? (
-                      <>graph · <a style={{ color: "var(--violet)" }}>{session.graph_id}</a></>
+                      <>graph · <a style={{ color: "var(--violet)", cursor: "pointer" }} onClick={() => navigate("/graphs/" + boundGraph)}>{boundGraph}</a></>
                     ) : (
-                      <>agent · <a style={{ color: "var(--accent)" }}>{session.agent_id}</a></>
+                      <>agent · <a style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => navigate("/agents/" + boundAgent)}>{boundAgent || "—"}</a></>
                     )}
                   </dd>
                   <dt>workspace</dt>
-                  <dd><a style={{ color: "var(--text)", cursor: "pointer" }}>{session.workspace_id}</a></dd>
-                  <dt>created</dt>
-                  <dd>{fmtDate(session.created_at)} <span className="muted">· {relativeTime((Date.now() - session.created_at.getTime()) / 1000)}</span></dd>
-                  {session.started_at && (
-                    <>
-                      <dt>started</dt>
-                      <dd>{fmtDate(session.started_at)}</dd>
-                    </>
-                  )}
-                  {session.last_turn_at && (
-                    <>
-                      <dt>last turn</dt>
-                      <dd>
-                        {fmtDate(session.last_turn_at)}{" "}
-                        <span className="muted">· {relativeTime((Date.now() - session.last_turn_at.getTime()) / 1000)}</span>
-                      </dd>
-                    </>
-                  )}
-                  <dt>attempt</dt>
-                  <dd>{session.attempt}</dd>
+                  <dd><a style={{ color: "var(--text)", cursor: "pointer" }} onClick={() => navigate("/workspaces/" + wid)}>{wid}</a></dd>
+                  {session.created_at && (<>
+                    <dt>created</dt>
+                    <dd>{fmtDate(new Date(session.created_at))} <span className="muted">· {relativeTime(_sdAgeSec(session.created_at))}</span></dd>
+                  </>)}
+                  {session.started_at && (<>
+                    <dt>started</dt>
+                    <dd>{fmtDate(new Date(session.started_at))}</dd>
+                  </>)}
+                  {session.last_turn_at && (<>
+                    <dt>last turn</dt>
+                    <dd>{fmtDate(new Date(session.last_turn_at))} <span className="muted">· {relativeTime(_sdAgeSec(session.last_turn_at))}</span></dd>
+                  </>)}
+                  {session.attempt != null && (<>
+                    <dt>attempt</dt>
+                    <dd>{session.attempt}</dd>
+                  </>)}
                   <dt>worker</dt>
-                  <dd>{session.worker_id ? <a style={{ color: "var(--text)" }}>{session.worker_id}</a> : <span className="muted">—</span>}</dd>
+                  <dd>{lastWorker ? <a style={{ color: "var(--text)", cursor: "pointer" }} onClick={() => navigate("/workers")}>{lastWorker}</a> : <span className="muted">—</span>}</dd>
                 </dl>
               </div>
-              <Btn size="sm" kind="ghost" icon="external">View JSON</Btn>
+              <Btn
+                size="sm"
+                kind="ghost"
+                icon="external"
+                onClick={() => window.open("/v1/sessions/" + encodeURIComponent(session.id), "_blank", "noopener,noreferrer")}
+              >View JSON</Btn>
             </div>
           </div>
 
           {/* Initial instructions */}
-          <div className="panel">
-            <div className="panel-h">
-              <span>Initial instructions</span>
-              <div className="right">
-                <span className="muted text-sm">{session.instructions.length} chars</span>
+          {(session.initial_instructions || session.instructions) && (
+            <div className="panel">
+              <div className="panel-h">
+                <span>Initial instructions</span>
+                <div className="right">
+                  <span className="muted text-sm">{(session.initial_instructions || session.instructions || "").length} chars</span>
+                </div>
+              </div>
+              <div className="panel-body" style={{ padding: 0 }}>
+                <div className="code-block" style={{ border: "none", borderRadius: 0, background: "transparent" }}>
+                  {session.initial_instructions || session.instructions}
+                </div>
               </div>
             </div>
-            <div className="panel-body" style={{ padding: 0 }}>
-              <div className="code-block" style={{ border: "none", borderRadius: 0, background: "transparent" }}>
-                {session.instructions}
-              </div>
-            </div>
-          </div>
+          )}
 
           {/* Turns timeline */}
           <div className="panel">
@@ -177,12 +280,14 @@ function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
               <div className="panel-body">
                 {turns.length === 0 ? (
                   <div className="muted text-sm" style={{ textAlign: "center", padding: 20 }}>
-                    No turns yet — session is awaiting worker claim.
+                    {session.status === "created"
+                      ? "No turns yet — session is awaiting worker claim."
+                      : "No turns yet on this session's row."}
                   </div>
                 ) : (
                   <div className="turn-list">
                     {turns.map((t, i) => (
-                      <Turn key={i} turn={t} index={i} />
+                      <TurnRow key={i} turn={t} index={i} />
                     ))}
                   </div>
                 )}
@@ -191,32 +296,30 @@ function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
           </div>
 
           {/* Last error */}
-          {session.error && (
+          {lastError && (
             <div className="panel" style={{ borderColor: "oklch(0.7 0.2 25 / 0.4)" }}>
               <div className="panel-h" onClick={() => setErrorOpen(!errorOpen)} style={{ cursor: "pointer", background: "var(--red-dim)" }}>
                 <Icon name={errorOpen ? "chevron-down" : "chevron-right"} size={12} style={{ color: "var(--red)" }} />
                 <Icon name="x-circle" size={13} style={{ color: "var(--red)" }} />
                 <span style={{ color: "var(--red)" }}>Last error</span>
-                <span className="mono sub">· {session.error.type}</span>
+                {lastError.type && <span className="mono sub">· {lastError.type}</span>}
                 <div className="right">
-                  <Btn size="sm" kind="ghost" icon="copy">Copy request-id</Btn>
+                  {lastError.extensions?.request_id && (
+                    <Btn
+                      size="sm"
+                      kind="ghost"
+                      icon="copy"
+                      onClick={(e) => { e.stopPropagation(); navigator.clipboard && navigator.clipboard.writeText(lastError.extensions.request_id); }}
+                    >Copy request-id</Btn>
+                  )}
                 </div>
               </div>
               {errorOpen && (
                 <div className="panel-body">
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{session.error.title}</div>
-                  <div className="muted text-sm mb-3">{session.error.detail}</div>
+                  {lastError.title && <div style={{ fontWeight: 600, marginBottom: 4 }}>{lastError.title}</div>}
+                  {lastError.detail && <div className="muted text-sm mb-3">{lastError.detail}</div>}
                   <div className="code-block">
-                    <button className="copy"><Icon name="copy" size={10} /> copy</button>
-                    <span className="com">{"// RFC 7807 envelope"}</span>{"\n"}
-                    {"{"}{"\n"}
-                    {"  "}<span className="key">"type"</span>{": "}<span className="str">"{session.error.type}"</span>,{"\n"}
-                    {"  "}<span className="key">"title"</span>{": "}<span className="str">"{session.error.title}"</span>,{"\n"}
-                    {"  "}<span className="key">"status"</span>{": "}<span className="num">{session.error.status}</span>,{"\n"}
-                    {"  "}<span className="key">"detail"</span>{": "}<span className="str">"{session.error.detail}"</span>,{"\n"}
-                    {"  "}<span className="key">"instance"</span>{": "}<span className="str">"{session.error.instance}"</span>,{"\n"}
-                    {"  "}<span className="key">"extensions"</span>{": "}{JSON.stringify(session.error.extensions, null, 2).split("\n").map((l, i) => i === 0 ? l : "  " + l).join("\n")}{"\n"}
-                    {"}"}
+                    {JSON.stringify(lastError, null, 2)}
                   </div>
                 </div>
               )}
@@ -224,26 +327,27 @@ function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
           )}
 
           {/* Metadata */}
-          <div className="panel">
-            <div className="panel-h" onClick={() => setMetaOpen(!metaOpen)} style={{ cursor: "pointer" }}>
-              <Icon name={metaOpen ? "chevron-down" : "chevron-right"} size={12} className="muted" />
-              <span>Metadata</span>
-              <span className="sub">· 4 keys</span>
-              <div className="right">
-                <Btn size="sm" kind="ghost" icon="plus">Add key</Btn>
+          {metadata && Object.keys(metadata).length > 0 && (
+            <div className="panel">
+              <div className="panel-h" onClick={() => setMetaOpen(!metaOpen)} style={{ cursor: "pointer" }}>
+                <Icon name={metaOpen ? "chevron-down" : "chevron-right"} size={12} className="muted" />
+                <span>Metadata</span>
+                <span className="sub">· {Object.keys(metadata).length} key{Object.keys(metadata).length === 1 ? "" : "s"}</span>
               </div>
+              {metaOpen && (
+                <div className="panel-body">
+                  <dl className="kv" style={{ gridTemplateColumns: "180px 1fr" }}>
+                    {Object.entries(metadata).map(([k, v]) => (
+                      <React.Fragment key={k}>
+                        <dt>{k}</dt>
+                        <dd className="mono">{typeof v === "object" ? JSON.stringify(v) : String(v)}</dd>
+                      </React.Fragment>
+                    ))}
+                  </dl>
+                </div>
+              )}
             </div>
-            {metaOpen && (
-              <div className="panel-body">
-                <dl className="kv" style={{ gridTemplateColumns: "180px 1fr" }}>
-                  <dt>source</dt><dd>"webhook"</dd>
-                  <dt>customer_id</dt><dd>"cust_8d2a"</dd>
-                  <dt>priority</dt><dd className="num">3</dd>
-                  <dt>tags</dt><dd>["billing","refund"]</dd>
-                </dl>
-              </div>
-            )}
-          </div>
+          )}
         </div>
 
         {/* RIGHT — controls + signals */}
@@ -256,60 +360,51 @@ function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
             </div>
             <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <Btn
-                disabled={session.status !== "running" || isParked}
+                disabled={session.status !== "running" || pauseMut.loading}
                 icon="pause"
-                onClick={handlePause}
-                title={session.status !== "running" ? "Enabled only when status = running" : isParked ? "Cancel the yield first" : ""}
-              >
-                Pause
-              </Btn>
-              <Btn icon="play" onClick={handleResume} title="Idempotent — returns 200 no-op if already running" disabled={isParked}>
-                Resume
-              </Btn>
-              {isParked && (
-                <Btn
-                  kind="ghost"
-                  icon="x"
-                  onClick={handleCancelYield}
-                  title={`Cancel the ${parkedToolName} yield and let the session continue`}
-                  style={{ color: "var(--amber)" }}
-                >
-                  Cancel yield
-                </Btn>
-              )}
+                onClick={onPause}
+                title={session.status !== "running" ? "Enabled only when status = running" : ""}
+              >Pause</Btn>
+              <Btn
+                icon="play"
+                onClick={onResume}
+                disabled={isTerminal || resumeMut.loading}
+                title="Idempotent — returns 200 no-op if already running (per app spec §13)"
+              >Resume</Btn>
               <Btn
                 kind="danger"
-                disabled={isTerminal}
+                disabled={isTerminal || cancelMut.loading}
                 icon="stop"
                 onClick={() => setShowCancel(true)}
-              >
-                End session
-              </Btn>
+              >Cancel</Btn>
               <div style={{ borderTop: "1px solid var(--border)", margin: "4px -14px 0" }} />
 
               <div className="field-label mt-2" style={{ marginBottom: 4 }}>
                 Steer instruction
-                <span className="hint">does not gate on status</span>
+                <span className="hint">does not gate on status — pinned spec §12</span>
               </div>
               <textarea
                 className="textarea mono"
-                placeholder='Drop a hint or new directive for the next turn…'
+                placeholder="Drop a hint or new directive for the next turn…"
                 value={steer}
                 onChange={(e) => setSteer(e.target.value)}
                 rows={3}
                 style={{ fontSize: 12 }}
               />
-              <Btn kind="primary" icon="send" onClick={handleSteer} disabled={!steer.trim()}>
-                Queue steer
-              </Btn>
+              <Btn
+                kind="primary"
+                icon="send"
+                onClick={onSteer}
+                disabled={!steer.trim() || steerMut.loading}
+              >Queue steer</Btn>
 
               {queuedInstructions.length > 0 && (
                 <div style={{ marginTop: 8 }}>
-                  <div className="field-label" style={{ marginBottom: 4 }}>Queued ({queuedInstructions.length})</div>
+                  <div className="field-label" style={{ marginBottom: 4 }}>Queued this session ({queuedInstructions.length})</div>
                   {queuedInstructions.map((q, i) => (
                     <div key={i} className="tool-call" style={{ flexDirection: "column", alignItems: "flex-start" }}>
                       <div style={{ color: "var(--text)", fontFamily: "inherit" }}>{q.text}</div>
-                      <div className="muted text-sm">queued {relativeTime((Date.now() - q.at.getTime()) / 1000)}</div>
+                      <div className="muted text-sm">queued {relativeTime(_sdAgeSec(q.at))}</div>
                     </div>
                   ))}
                 </div>
@@ -317,74 +412,42 @@ function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
             </div>
           </div>
 
-          {/* References */}
+          {/* References — cross-page anchors (U0105) */}
           <div className="panel">
             <div className="panel-h">
               <Icon name="fork" size={13} />
               <span>References</span>
             </div>
             <div className="panel-body" style={{ padding: "4px 14px" }}>
-              {!isGraph ? (
-                <>
-                  <div className="ref-row">
-                    <Icon name="agent" size={13} className="ico" />
-                    <span className="label">Agent</span>
-                    <span className="val"><a>{session.agent_id}</a></span>
-                    <span className="pill pill-ended"><span className="dot"></span>ok</span>
-                  </div>
-                  <div className="ref-row">
-                    <Icon name="llm" size={13} className="ico" />
-                    <span className="label">LLM</span>
-                    <span className="val">openai-1 <span className="muted">· gpt-4o</span></span>
-                    <span className="pill pill-ended"><span className="dot"></span>ok</span>
-                  </div>
-                  <div className="ref-row">
-                    <Icon name="tools" size={13} className="ico" />
-                    <span className="label">Toolset</span>
-                    <span className="val">_workspaces <span className="muted">· 8 tools</span></span>
-                    <span className="pill pill-ended"><span className="dot"></span>ok</span>
-                  </div>
-                  <div className="ref-row">
-                    <Icon name="tools" size={13} className="ico" />
-                    <span className="label">Toolset</span>
-                    <span className="val">stripe-mcp <span className="muted">· 14 tools</span></span>
-                    <span className="pill pill-ended"><span className="dot"></span>ok</span>
-                  </div>
-                </>
-              ) : (
+              {!isGraph && boundAgent && (
+                <div className="ref-row">
+                  <Icon name="agent" size={13} className="ico" />
+                  <span className="label">Agent</span>
+                  <span className="val"><a style={{ cursor: "pointer" }} onClick={() => navigate("/agents/" + boundAgent)}>{boundAgent}</a></span>
+                </div>
+              )}
+              {isGraph && boundGraph && (
                 <div className="ref-row">
                   <Icon name="graph" size={13} className="ico" />
                   <span className="label">Graph</span>
-                  <span className="val"><a>{session.graph_id}</a></span>
+                  <span className="val"><a style={{ cursor: "pointer" }} onClick={() => navigate("/graphs/" + boundGraph)}>{boundGraph}</a></span>
                   <span className="pill pill-failed"><span className="dot"></span>executor missing</span>
                 </div>
               )}
-              <div className="ref-row">
-                <Icon name="box" size={13} className="ico" />
-                <span className="label">Workspace</span>
-                <span className="val"><a>{session.workspace_id.slice(0, 16)}…</a></span>
-                <span className="pill pill-ended"><span className="dot"></span>active</span>
-              </div>
-              {session.worker_id && (
+              {wid && (
+                <div className="ref-row">
+                  <Icon name="box" size={13} className="ico" />
+                  <span className="label">Workspace</span>
+                  <span className="val"><a style={{ cursor: "pointer" }} onClick={() => navigate("/workspaces/" + wid)}>{wid}</a></span>
+                </div>
+              )}
+              {lastWorker && (
                 <div className="ref-row">
                   <Icon name="worker" size={13} className="ico" />
                   <span className="label">Worker</span>
-                  <span className="val"><a>{session.worker_id}</a></span>
-                  <span className="pill pill-claimed"><span className="dot"></span>claimed</span>
+                  <span className="val"><a style={{ cursor: "pointer" }} onClick={() => navigate("/workers")}>{lastWorker}</a></span>
                 </div>
               )}
-            </div>
-          </div>
-
-          {/* Stale-cache notice */}
-          <div className="banner banner-info" style={{ background: "var(--bg-1)", color: "var(--text-3)", borderColor: "var(--border)" }}>
-            <Icon name="info" size={14} className="ico" style={{ color: "var(--blue)" }} />
-            <div style={{ flex: 1 }}>
-              <div className="title" style={{ color: "var(--text)" }}>Reads are authoritative</div>
-              <div className="detail" style={{ color: "var(--text-3)" }}>
-                This view reads from <span className="mono" style={{ color: "var(--text)" }}>/v1/sessions/{`{id}`}</span>. The nested
-                workspace path can drift after signals (T0399 / T0555 / T0611).
-              </div>
             </div>
           </div>
         </div>
@@ -398,13 +461,13 @@ function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
           footer={
             <>
               <Btn kind="ghost" onClick={() => setShowCancel(false)}>Keep running</Btn>
-              <Btn kind="danger" icon="stop" onClick={handleCancel}>Cancel session</Btn>
+              <Btn kind="danger" icon="stop" onClick={onCancelConfirmed}>Cancel session</Btn>
             </>
           }
         >
           Sending a cancel signal to <strong className="mono" style={{ fontFamily: "inherit" }}>{session.id}</strong>.
           <ul>
-            <li>The worker will finish or abandon the current turn — this may take up to ~30 s.</li>
+            <li>The worker will finish or abandon the current turn — this may take up to ~30s.</li>
             <li>Any queued steer instructions will be discarded.</li>
             <li>The workspace and its <span className="mono" style={{ fontSize: 11 }}>.state</span> are not affected.</li>
           </ul>
@@ -414,31 +477,33 @@ function SessionDetail({ session, onBack, pushToast, onPatchSession }) {
   );
 }
 
-function Turn({ turn, index }) {
+function TurnRow({ turn, index }) {
   const [open, setOpen] = React.useState(turn.status === "running" || turn.status === "failed");
   return (
-    <div className={`turn ${turn.status}`}>
+    <div className={`turn ${turn.status || ""}`}>
       <div className="turn-dot">{turn.status === "running" ? <Icon name="zap" size={11} /> : index + 1}</div>
       <div className="turn-body">
         <div className="turn-h" onClick={() => setOpen(!open)} style={{ cursor: "pointer" }}>
           <Icon name={open ? "chevron-down" : "chevron-right"} size={11} className="muted" />
           <span>Turn {index + 1}</span>
-          <span className="time">· {turn.startedAt}</span>
-          <span className="dur">· {turn.duration}</span>
+          {turn.started_at && <span className="time">· {fmtDate(new Date(turn.started_at)).slice(11)}</span>}
+          {turn.duration_ms != null && <span className="dur">· {(turn.duration_ms / 1000).toFixed(1)}s</span>}
           {turn.status === "running" && <span className="pill pill-running" style={{ marginLeft: 4 }}><span className="dot"></span>running</span>}
           {turn.status === "failed" && <span className="pill pill-failed" style={{ marginLeft: 4 }}><span className="dot"></span>failed</span>}
         </div>
         {open && (
           <>
-            <div className="turn-meta">
-              {turn.tokensIn} in · {turn.tokensOut} out tokens · {turn.toolCalls.length} tool call{turn.toolCalls.length === 1 ? "" : "s"}
-            </div>
-            {turn.toolCalls.map((tc, i) => (
+            {(turn.tokens_in != null || turn.tokens_out != null) && (
+              <div className="turn-meta">
+                {turn.tokens_in ?? 0} in · {turn.tokens_out ?? 0} out tokens · {(turn.tool_calls?.length ?? 0)} tool call{(turn.tool_calls?.length ?? 0) === 1 ? "" : "s"}
+              </div>
+            )}
+            {(turn.tool_calls || []).map((tc, i) => (
               <div key={i} className="tool-call">
                 <span className="name">{tc.name}</span>
                 <span className="arrow">→</span>
-                <span className="muted">{tc.args}</span>
-                {tc.ok ? <span className="ok">✓ {tc.ms}ms</span> : <span className="fail">✕ {tc.error}</span>}
+                <span className="muted">{typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args)}</span>
+                {tc.ok ? <span className="ok">✓ {tc.ms}ms</span> : tc.error ? <span className="fail">✕ {tc.error}</span> : null}
               </div>
             ))}
             {turn.output && (
@@ -451,215 +516,197 @@ function Turn({ turn, index }) {
   );
 }
 
-function generateTurns(session) {
-  const n = session.turn_count;
-  if (n === 0) return [];
-  const turns = [];
-  const samples = {
-    "support-triage": [
-      { tools: [["read_email", "msg_id=im_8d2a", true, 124], ["zendesk.search_tickets", "subject~='refund'", true, 412]], out: "Identified as a refund request under $50 — routing to billing queue." },
-      { tools: [["zendesk.create_ticket", "queue=billing, priority=normal", true, 318]], out: "Created ticket #BT-4218 in billing queue." },
-      { tools: [["zendesk.add_comment", "ticket=BT-4218", true, 187]], out: "Drafted response; awaiting approval before send." },
-    ],
-    "pr-reviewer": [
-      { tools: [["github.get_pr", "number=4218", true, 220], ["fs.read_files", "diff", true, 92]], out: "Read 14 files (1,847 lines). Two areas to focus on." },
-      { tools: [["github.add_review_comment", "file=db/0017_*.sql line=42", true, 156], ["github.add_review_comment", "file=workers/scheduler.py line=180", true, 142]], out: "Posted 2 inline comments. Migration looks safe; retry logic has a race on cancellation." },
-    ],
-    "stripe-refunds": [
-      { tools: [["stripe.search_charges", "charge_id=ch_3OZ4mQ", true, 218]], out: "Found charge — verifying double-billing claim." },
-    ],
-    "code-explainer": [
-      { tools: [["fs.read", "path=scheduler.py", true, 64]], out: "Read scheduler.py (412 lines)." },
-      { tools: [["fs.read", "path=worker.py", true, 58], ["fs.read", "path=storage.py", true, 71]], out: "Read worker.py and storage.py." },
-      { tools: [], out: "Explained the claim→run_turn→commit flow with diagrams." },
-      { tools: [["fs.grep", "pattern='SELECT.*sessions'", true, 124]], out: "Found the 3 SQL queries that mutate session state." },
-      { tools: [], out: "Walked through the row-level locking strategy in detail." },
-    ],
-    "doc-ingestion": [
-      { tools: [["fs.ls", "path=docs/", true, 18]], out: "Discovered 142 markdown files." },
-      { tools: [["fs.read", "batch=1/4", true, 480], ["search.ingest", "collection=docs chunks=380", true, 1840]], out: "Ingested batch 1/4." },
-      { tools: [["fs.read", "batch=2/4", true, 510], ["search.ingest", "collection=docs chunks=410", true, 1920]], out: "Ingested batch 2/4." },
-      { tools: [["fs.read", "batch=3/4", true, 490], ["search.ingest", "collection=docs chunks=395", true, 1810]], out: "Ingested batch 3/4." },
-    ],
-    "sql-helper": [
-      { tools: [["db.introspect", "table=events", true, 88]], out: "", failed: true, errorText: "provider 502" },
-    ],
-    "release-notes": [
-      { tools: [["git.log", "abc123..def456", true, 142]], out: "Found 28 commits in range." },
-    ],
-  };
-  const samp = samples[session.agent_id] || samples["support-triage"];
-  for (let i = 0; i < n; i++) {
-    const s = samp[i % samp.length];
-    const sec = 1000 * (n - i) * 60;
-    const isLast = i === n - 1;
-    const status = session.status === "running" && isLast ? "running" :
-                   session.status === "failed" && isLast ? "failed" :
-                   s.failed ? "failed" : "ok";
-    turns.push({
-      status,
-      startedAt: fmtDate(new Date(Date.now() - sec)).slice(11),
-      duration: status === "running" ? "—" : `${(Math.random() * 5 + 1).toFixed(1)}s`,
-      tokensIn: Math.floor(Math.random() * 2000 + 500),
-      tokensOut: Math.floor(Math.random() * 800 + 100),
-      toolCalls: s.tools.map(([name, args, ok, ms]) => ({ name, args, ok, ms, error: ok ? null : "timeout" })),
-      output: status === "running" ? "" : (s.failed ? null : s.out),
-    });
-  }
-  return turns;
-}
-
 window.SessionDetail = SessionDetail;
 
 // =================================================================
-// Yielding-tools UI surfaces (spec A.1, A.3, A.4)
+// Yielding-tools UI surfaces
 // =================================================================
 
-function AskUserPanel({ session, onRespond, onSkip }) {
-  const meta = session.parked_state.yielded.resume_metadata || {};
-  const prompt = meta.prompt || "";
-  const schema = meta.response_schema;
-  const isLong = prompt.length > 80 || !!schema;
+// AskUserPanel — polls GET /v1/sessions/{sid}/ask_user/pending (200 =
+// render; 404 = render nothing). Submit/Skip post to the real
+// endpoints; 422/500 are surfaced INLINE via data-testid="ask-user-error"
+// (U0051/U0060), success surfaces as a toast (U0049/U0050).
+function AskUserPanel({ sid, sessionStatus, pushToast }) {
+  const { useResource, apiFetch } = window.matrixApi;
+  const isTerminal = SESSION_TERMINAL.has(sessionStatus);
 
-  const [text, setText] = React.useState("");
-  const [json, setJson] = React.useState("{\n  \n}");
-  const [err, setErr] = React.useState(null);
+  const pending = useResource(
+    `ask-user:${sid}`,
+    (signal) => apiFetch("GET", `/sessions/${encodeURIComponent(sid)}/ask_user/pending`, null, { signal }),
+    {
+      pollMs: isTerminal ? 0 : 2000,
+      deps: [sid, sessionStatus],
+    }
+  );
 
-  const jsonParsed = React.useMemo(() => {
-    if (!schema) return null;
-    try { return { ok: true, value: JSON.parse(json) }; }
-    catch (e) { return { ok: false, error: e.message }; }
-  }, [json, schema]);
+  const [draft, setDraft] = React.useState("");
+  const [submitting, setSubmitting] = React.useState(false);
+  const [skipping, setSkipping] = React.useState(false);
+  const [inlineError, setInlineError] = React.useState(null);
 
-  const canSend = schema
-    ? (jsonParsed && jsonParsed.ok && hasRequired(jsonParsed.value, schema))
-    : text.trim().length > 0;
+  // Clear local edit state when the prompt id changes.
+  const tcid = pending.data?.tool_call_id;
+  React.useEffect(() => {
+    setDraft("");
+    setInlineError(null);
+  }, [tcid]);
 
-  const submit = () => {
-    setErr(null);
-    if (schema) {
-      if (!jsonParsed.ok) { setErr(`Invalid JSON: ${jsonParsed.error}`); return; }
-      const missing = (schema.required || []).filter((k) => !(k in jsonParsed.value));
-      if (missing.length > 0) { setErr(`Missing required field${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`); return; }
-      if (jsonParsed.value.queue === "invalid") {
-        setErr(`queue: value is not a valid enumeration member; permitted: 'billing', 'technical', 'sales'`);
+  if (pending.error?.status === 404) return null;
+  if (!pending.data) return null;
+
+  const { prompt, response_schema, parked_at } = pending.data;
+  const expectsJson = response_schema && response_schema.type === "object";
+  const isShortPrompt = !prompt.includes("\n") && prompt.length <= 80;
+
+  const onSubmit = async () => {
+    if (!draft.trim()) return;
+    setSubmitting(true);
+    setInlineError(null);
+    let response = draft;
+    if (expectsJson) {
+      try {
+        response = JSON.parse(draft);
+      } catch (e) {
+        setInlineError("Response must be valid JSON: " + e.message);
+        setSubmitting(false);
         return;
       }
-      onRespond(jsonParsed.value);
-    } else {
-      onRespond(text);
+    }
+    try {
+      await apiFetch(
+        "POST",
+        `/sessions/${encodeURIComponent(sid)}/ask_user/respond`,
+        { tool_call_id: tcid, response },
+      );
+      if (pushToast) pushToast({ kind: "success", title: "Response sent", detail: "Session resuming." });
+      setDraft("");
+      pending.refetch();
+    } catch (err) {
+      // 422 + 500 + anything else: inline (NEVER toast). U0051/U0060.
+      setInlineError(err.detail || err.title || err.message || "Submit failed");
+    } finally {
+      setSubmitting(false);
     }
   };
 
+  const onSkip = async () => {
+    setSkipping(true);
+    setInlineError(null);
+    try {
+      await apiFetch(
+        "POST",
+        `/sessions/${encodeURIComponent(sid)}/yields/${encodeURIComponent(tcid)}/cancel`,
+        { reason: "operator skipped" },
+      );
+      if (pushToast) pushToast({
+        kind: "warning",
+        title: "Skipped",
+        detail: "Agent will continue without your input.",
+      });
+      setDraft("");
+      pending.refetch();
+    } catch (err) {
+      setInlineError(err.detail || err.title || err.message || "Skip failed");
+    } finally {
+      setSkipping(false);
+    }
+  };
+
+  const placeholder = expectsJson ? "JSON object…" : "";
+
   return (
-    <div className="panel" style={{ borderColor: "var(--amber)", boxShadow: "0 0 0 3px var(--amber-dim)" }}>
-      <div className="panel-h" style={{ background: "var(--amber-dim)" }}>
-        <Icon name="warn-circle" size={14} style={{ color: "var(--amber)" }} />
-        <span style={{ color: "var(--amber)" }}>Agent needs input</span>
-        <span className="mono sub">· ask_user · {session.parked_state.tool_call_id}</span>
-        <div className="right">
-          <span className="muted text-sm tabular">polling <span className="mono">/ask_user/pending</span> · 2s</span>
-        </div>
+    <div className="panel" style={{ borderColor: "oklch(0.7 0.18 240 / 0.4)" }} data-testid="ask-user-panel">
+      <div className="panel-h" style={{ background: "var(--blue-dim, transparent)" }}>
+        <Icon name="info" size={13} />
+        <span>Input requested</span>
+        {parked_at && (
+          <span className="sub muted">· waiting since {fmtDate(new Date(parked_at))}</span>
+        )}
       </div>
-      <div className="panel-body">
-        <div className="field" style={{ marginBottom: 12 }}>
-          <label className="field-label" style={{ color: "var(--text)" }}>
-            Prompt {schema && <span className="hint">· schema-driven response</span>}
-          </label>
-          <div style={{ padding: "10px 12px", background: "var(--bg-2)", borderRadius: 6, border: "1px solid var(--border)", fontSize: 13, lineHeight: 1.5 }}>{prompt}</div>
-        </div>
-
-        {schema ? (
-          <>
-            <div className="field" style={{ marginBottom: 8 }}>
-              <label className="field-label">response schema</label>
-              <div className="code-block" style={{ maxHeight: 140, overflow: "auto" }}>
-                {JSON.stringify(schema, null, 2)}
-              </div>
-            </div>
-            <div className="field">
-              <label className="field-label">response <span className="hint">json · validated client-side</span></label>
-              <textarea
-                className="textarea mono"
-                value={json}
-                onChange={(e) => setJson(e.target.value)}
-                rows={6}
-                style={{ fontSize: 12 }}
-                placeholder={`{\n  "queue": "billing",\n  "priority": 3\n}`}
-              />
-              {jsonParsed && !jsonParsed.ok && json.trim().length > 2 && (
-                <div className="field-help" style={{ color: "var(--red)" }}>
-                  <Icon name="x-circle" size={11} style={{ verticalAlign: -1, marginRight: 3 }} />
-                  {jsonParsed.error}
-                </div>
-              )}
-            </div>
-          </>
-        ) : isLong ? (
-          <div className="field">
-            <label className="field-label">your response</label>
-            <textarea
-              className="textarea"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={3}
-              placeholder="Type your reply…"
-              autoFocus
-            />
-          </div>
+      <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ whiteSpace: "pre-wrap", color: "var(--text)" }}>{prompt}</div>
+        {isShortPrompt && !expectsJson ? (
+          <input
+            type="text"
+            className="textarea"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                onSubmit();
+              }
+            }}
+            placeholder=""
+            disabled={submitting || skipping}
+            data-testid="ask-user-input"
+          />
         ) : (
-          <div className="field">
-            <label className="field-label">your response</label>
-            <input
-              className="input"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && canSend) submit(); }}
-              placeholder="Type your reply…"
-              autoFocus
-              style={{ width: "100%" }}
-            />
+          <textarea
+            className={"textarea" + (expectsJson ? " mono" : "")}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={placeholder}
+            rows={expectsJson ? 6 : 4}
+            disabled={submitting || skipping}
+            data-testid="ask-user-textarea"
+          />
+        )}
+        {inlineError && (
+          <div className="text-sm" style={{ color: "var(--red)" }} data-testid="ask-user-error">
+            {inlineError}
           </div>
         )}
-
-        {err && (
-          <div className="field-help" style={{ color: "var(--red)", marginTop: 0, marginBottom: 10 }}>
-            <Icon name="x-circle" size={11} style={{ verticalAlign: -1, marginRight: 3 }} />
-            {err}
-          </div>
-        )}
-
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
-          <Btn kind="primary" icon="send" disabled={!canSend} onClick={submit}>Send response</Btn>
-          <Btn kind="ghost" icon="x" onClick={onSkip} title="POST /yields/{tool_call_id}/cancel">Skip</Btn>
-          <div style={{ marginLeft: "auto" }} className="muted text-sm">
-            POST <span className="mono">/v1/sessions/{session.id.slice(0, 16)}…/ask_user/respond</span>
-          </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <Btn
+            kind="ghost"
+            onClick={onSkip}
+            disabled={submitting || skipping}
+            data-testid="ask-user-skip"
+          >
+            Skip this prompt
+          </Btn>
+          <Btn
+            kind="primary"
+            onClick={onSubmit}
+            disabled={!draft.trim() || submitting || skipping}
+            data-testid="ask-user-submit"
+          >
+            {submitting ? "Sending…" : "Send response"}
+          </Btn>
         </div>
       </div>
     </div>
   );
 }
 
-function hasRequired(obj, schema) {
-  if (!schema || !schema.required) return true;
-  return schema.required.every((k) => k in obj);
-}
+// WatchFilesPanel — polls /yields/active for this session and renders
+// the watch_files-yield panel when one is parked. Cancel posts the
+// tool-agnostic yield-cancel endpoint.
+function WatchFilesPanel({ sid, wid, session, pushToast }) {
+  // The session row's parked_state (when present) is the authoritative
+  // signal — the server keeps it in sync with the yield row. We rely on
+  // it directly rather than polling a separate endpoint.
+  const yld = session?.parked_state?.yielded;
+  const toolName = yld?.tool_name || (session?.parked_state ? session.parked_state.tool_name : null);
+  const isParked = session?.parked_status === "parked" || session?.parked_status === "waiting";
+  if (!isParked || toolName !== "watch_files") return null;
 
-function WatchFilesPanel({ session, onCancelYield }) {
-  const meta = session.parked_state.yielded.resume_metadata || {};
+  const tcid = session?.parked_state?.tool_call_id || yld?.tool_call_id;
+  const meta = yld?.resume_metadata || yld?.metadata || {};
   const paths = meta.paths || [];
   const win = meta.coalesce_window_ms;
-  const parkedSec = (Date.now() - session.parked_state.parked_at.getTime()) / 1000;
+  const parkedAt = session?.parked_state?.parked_at;
+  const parkedSec = parkedAt ? _sdAgeSec(parkedAt) : null;
 
   return (
-    <div className="panel">
+    <div className="panel" data-testid="watch-files-panel">
       <div className="panel-h">
         <Icon name="search" size={13} style={{ color: "var(--amber)" }} />
         <span style={{ color: "var(--amber)" }}>Watching</span>
-        <span className="mono sub">· watch_files · {session.parked_state.tool_call_id}</span>
+        <span className="mono sub">· watch_files · {tcid}</span>
         <div className="right">
-          <Btn size="sm" kind="ghost" icon="x" onClick={onCancelYield}>Cancel yield</Btn>
+          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} pushToast={pushToast} />
         </div>
       </div>
       <div className="panel-body">
@@ -673,31 +720,44 @@ function WatchFilesPanel({ session, onCancelYield }) {
               </div>
             ))}
           </div>
-          <span className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontSize: 10.5 }}>coalesce</span>
-          <span className="mono">{win}ms</span>
-          <span className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontSize: 10.5 }}>parked</span>
-          <span className="mono">{relativeTime(parkedSec)}</span>
+          {win != null && (<>
+            <span className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontSize: 10.5 }}>coalesce</span>
+            <span className="mono">{win}ms</span>
+          </>)}
+          {parkedSec != null && (<>
+            <span className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontSize: 10.5 }}>parked</span>
+            <span className="mono">{relativeTime(parkedSec)}</span>
+          </>)}
         </div>
       </div>
     </div>
   );
 }
 
-function SleepPanel({ session, onCancelYield }) {
-  const meta = session.parked_state.yielded.resume_metadata || {};
+// SleepPanel — same parked_state-driven approach as WatchFilesPanel.
+function SleepPanel({ sid, wid, session, pushToast }) {
+  const yld = session?.parked_state?.yielded;
+  const toolName = yld?.tool_name || (session?.parked_state ? session.parked_state.tool_name : null);
+  const isParked = session?.parked_status === "parked" || session?.parked_status === "waiting";
+  if (!isParked || toolName !== "sleep") return null;
+
+  const tcid = session?.parked_state?.tool_call_id || yld?.tool_call_id;
+  const meta = yld?.resume_metadata || yld?.metadata || {};
   const duration = meta.duration_s || 0;
   const resumeAt = meta.resume_at ? new Date(meta.resume_at) : null;
-  const elapsed = (Date.now() - session.parked_state.parked_at.getTime()) / 1000;
+  const parkedAt = session?.parked_state?.parked_at;
+  const elapsed = parkedAt ? (Date.now() - new Date(parkedAt).getTime()) / 1000 : 0;
   const remaining = Math.max(0, duration - elapsed);
   const pct = Math.min(100, (elapsed / Math.max(1, duration)) * 100);
+
   return (
-    <div className="panel">
+    <div className="panel" data-testid="sleep-panel">
       <div className="panel-h">
         <Icon name="clock" size={13} style={{ color: "var(--amber)" }} />
         <span style={{ color: "var(--amber)" }}>Sleeping</span>
-        <span className="mono sub">· sleep · {session.parked_state.tool_call_id}</span>
+        <span className="mono sub">· sleep · {tcid}</span>
         <div className="right">
-          <Btn size="sm" kind="ghost" icon="x" onClick={onCancelYield}>Cancel yield</Btn>
+          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} pushToast={pushToast} />
         </div>
       </div>
       <div className="panel-body">
@@ -713,6 +773,32 @@ function SleepPanel({ session, onCancelYield }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// Shared cancel-yield button (WatchFiles + Sleep panels).
+function CancelYieldBtn({ sid, wid, tcid, pushToast }) {
+  const { useMutation, apiFetch } = window.matrixApi;
+  const cancel = useMutation(
+    () => apiFetch(
+      "POST",
+      `/sessions/${encodeURIComponent(sid)}/yields/${encodeURIComponent(tcid)}/cancel`,
+      { reason: "operator cancelled" },
+    ),
+    {
+      invalidates: [`session-detail:${sid}`, `ask-user:${sid}`],
+      onSuccess: () => pushToast && pushToast({
+        kind: "warning",
+        title: "Yield cancelled",
+        detail: "Agent will continue.",
+      }),
+      onError: _sdToastErr(pushToast, "Cancel failed"),
+    }
+  );
+  return (
+    <Btn size="sm" kind="ghost" icon="x" disabled={cancel.loading || !tcid} onClick={() => cancel.mutate()}>
+      Cancel yield
+    </Btn>
   );
 }
 

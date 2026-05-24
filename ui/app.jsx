@@ -1,4 +1,4 @@
-/* global React, ReactDOM, Sidebar, Topbar, SessionsList, SessionDetail, Icon, Btn, CommandPalette, Banner, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, Sparkline */
+/* global React, ReactDOM, Sidebar, Topbar, SessionsList, SessionDetail, Icon, Btn, StatusPill, CommandPalette, Banner, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, Sparkline */
 
 const ACCENT_OPTIONS = {
   "Matrix green": { h: 145, c: 0.18, l: 0.85 },
@@ -288,16 +288,17 @@ function App() {
   let pageHeader = null;
   let pageBody = null;
 
-  if (page === "session-detail" && currentSession) {
+  if (page === "session-detail" && currentSessionId) {
     pageHeader = (
       <>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="crumb">
-            <a onClick={() => navigate("sessions")}>Sessions</a>
+            <a onClick={() => navigate("sessions")} style={{ cursor: "pointer" }}>Sessions</a>
             <span className="sep">/</span>
-            <span className="mono" style={{ color: "var(--text)" }}>{currentSession.id}</span>
+            <span className="mono" style={{ color: "var(--text)" }}>{currentSessionId}</span>
           </div>
-          <h1 className="page-title mono">{currentSession.id}</h1>
+          <h1 className="page-title mono">{currentSessionId}</h1>
+          <SessionStatusCaption sid={currentSessionId} />
         </div>
         <div className="page-actions">
           <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("sessions")}>Back to list</Btn>
@@ -306,10 +307,9 @@ function App() {
     );
     pageBody = (
       <SessionDetail
-        session={currentSession}
+        sid={currentSessionId}
         onBack={() => navigate("sessions")}
         pushToast={pushToast}
-        onPatchSession={onPatchSession}
       />
     );
   } else if (page === "internal-collections") {
@@ -986,6 +986,28 @@ function App() {
             Trigger 503 toast
           </button>
       </TweaksPanel>
+    </div>
+  );
+}
+
+// Renders the page-sub status pill on the session-detail page header.
+// Subscribes to the same `session-detail:${sid}` cache key as SessionDetail
+// so it reflects the polled status without a duplicate network call.
+function SessionStatusCaption({ sid }) {
+  const { useResource, apiFetch } = window.matrixApi;
+  const detail = useResource(
+    `session-detail:${sid}`,
+    (signal) => apiFetch("GET", `/sessions/${encodeURIComponent(sid)}`, null, { signal }),
+    { pollMs: 0, deps: [sid] }
+  );
+  const status = detail.data?.status;
+  if (!status) return <div className="page-sub" />;
+  const bound = detail.data?.binding?.agent_id || detail.data?.binding?.graph_id;
+  const kind = detail.data?.binding?.kind || (detail.data?.binding?.graph_id ? "graph" : "agent");
+  return (
+    <div className="page-sub tabular">
+      <StatusPill status={status} />
+      {bound && <span style={{ marginLeft: 8 }} className="mono muted">{kind} {bound}</span>}
     </div>
   );
 }
