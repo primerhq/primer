@@ -75,6 +75,14 @@ def _make_lifespan(config: AppConfig):
             storage=storage_provider.get_storage(SemanticSearchProvider),
         )
         app.state.semantic_search_registry = semantic_search_registry
+
+        from matrix.agent.approval import ApprovalResolver
+        from matrix.model.tool_approval import ToolApprovalPolicy
+
+        approval_resolver = ApprovalResolver(
+            storage=storage_provider.get_storage(ToolApprovalPolicy),
+        )
+        app.state.approval_resolver = approval_resolver
         workspace_registry = WorkspaceRegistry(storage_provider)
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
@@ -443,6 +451,9 @@ def _mount_routers(
     # the same listener / timer / sweeper / watcher / mcp-bridge
     # wakes parked chats just like parked sessions.
     app.include_router(chats_router.chats_router, prefix=prefix)
+    # Tool approval policies (§2 task 5): CRUD + invalidate endpoint.
+    from matrix.api.routers.tool_approval import make_tool_approval_router
+    app.include_router(make_tool_approval_router(), prefix=prefix)
 
 
 def create_app(config: AppConfig) -> FastAPI:
@@ -682,6 +693,12 @@ def create_test_app(
         storage=storage_provider.get_storage(SemanticSearchProvider),
         factory=lambda row: object(),  # type: ignore[arg-type]
     )
+    from matrix.agent.approval import ApprovalResolver as _AR
+    from matrix.model.tool_approval import ToolApprovalPolicy as _TAP
+    _test_approval_resolver = _AR(
+        storage=storage_provider.get_storage(_TAP),
+    )
+    app.state.approval_resolver = _test_approval_resolver
     if system_toolset is None:
         system_toolset = build_system_toolset(
             storage_provider=storage_provider,

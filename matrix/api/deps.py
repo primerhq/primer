@@ -280,6 +280,16 @@ def get_worker_pool(request: Request) -> "WorkerPool":
     return pool
 
 
+def get_approval_resolver(request: Request):
+    """Dependency: the singleton ApprovalResolver wired in lifespan."""
+    resolver = getattr(request.app.state, "approval_resolver", None)
+    if resolver is None:
+        raise ConfigError(
+            "approval_resolver not initialised on app.state"
+        )
+    return resolver
+
+
 def get_principal(
     x_matrix_principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
 ) -> str | None:
@@ -289,6 +299,7 @@ def get_principal(
 
 __all__ = [
     "PRINCIPAL_HEADER",
+    "get_approval_resolver",
     "get_agent_storage",
     "get_collection_storage",
     "get_cross_encoder_provider_storage",
