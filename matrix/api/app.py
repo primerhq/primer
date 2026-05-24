@@ -41,6 +41,7 @@ from matrix.internal_collections import build_subsystem, load_config_or_none
 # that provider type is constructed.
 import matrix.channel.slack.factory  # noqa: F401
 import matrix.channel.telegram.factory  # noqa: F401
+import matrix.channel.discord.factory  # noqa: F401
 from matrix.model.scheduler import RuntimeMode, SchedulerProviderType
 from matrix.toolset.misc import build_misc_toolset
 from matrix.toolset.search import build_search_toolset
