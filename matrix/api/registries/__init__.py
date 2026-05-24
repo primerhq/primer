@@ -8,12 +8,16 @@
 """
 
 from matrix.api.registries.provider_registry import ProviderRegistry
+from matrix.api.registries.semantic_search_registry import (
+    SemanticSearchRegistry,
+)
 from matrix.api.registries.vector_store_registry import VectorStoreRegistry
 from matrix.api.registries.workspace_registry import WorkspaceRegistry
 
 
 __all__ = [
     "ProviderRegistry",
+    "SemanticSearchRegistry",
     "VectorStoreRegistry",
     "WorkspaceRegistry",
 ]
