@@ -29,10 +29,12 @@ test and easy to reason about.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from matrix.model.chat import ToolCallPart, ToolResultPart
 from matrix.model.yield_ import (
     YieldCancelled,
     YieldTimeout,
@@ -292,10 +294,98 @@ def _parse_iso(value: str) -> datetime:
     return dt
 
 
+# ===========================================================================
+# Tool-approval resume path
+# ===========================================================================
+
+
+async def _resume_tool_approval(
+    *,
+    blob: dict,
+    payload: "dict | YieldTimeout | YieldCancelled | Any",
+    tool_manager: Any,
+) -> ToolResultPart:
+    """Resume a session parked on a tool-approval gate.
+
+    Classifies the event payload and either re-dispatches the
+    original tool call (decision=approved) or synthesises an error
+    ToolResultPart (decision=rejected, timeout, cancelled, or any
+    malformed payload — fail-closed).
+
+    Parameters
+    ----------
+    blob
+        The raw parked-state JSON blob (the ``"yielded"`` key carries
+        the Yielded sentinel including ``resume_metadata``).
+    payload
+        The classified resume payload — either a real event dict
+        (with ``"decision": "approved"`` or ``"decision": "rejected"``),
+        a :class:`YieldTimeout`, or a :class:`YieldCancelled`.
+        Any other type is treated as malformed and synthesises a
+        rejection.
+    tool_manager
+        A :class:`~matrix.agent.tool_manager.ToolExecutionManager`
+        (or compatible duck-type) that exposes
+        ``execute(call, *, bypass_approval=True) -> ToolResultPart``.
+        Only called on the approved path.
+
+    Returns
+    -------
+    ToolResultPart
+        Either the real tool result (approved) or a synthetic error
+        result (rejected / timeout / cancelled / malformed).
+    """
+    metadata = (blob.get("yielded") or {}).get("resume_metadata") or {}
+    original_raw = metadata.get("original_call") or {}
+    original_call = ToolCallPart(
+        id=original_raw.get("id", "unknown"),
+        name=original_raw.get("name", "unknown"),
+        arguments=original_raw.get("arguments") or {},
+    )
+
+    decision: str
+    reason: str | None
+    if isinstance(payload, YieldTimeout):
+        decision = "rejected"
+        reason = "timed-out"
+    elif isinstance(payload, YieldCancelled):
+        decision = "rejected"
+        reason = payload.reason or "cancelled"
+    elif isinstance(payload, dict):
+        raw_decision = payload.get("decision")
+        if raw_decision == "approved":
+            decision = "approved"
+            reason = payload.get("reason")
+        elif raw_decision == "rejected":
+            decision = "rejected"
+            reason = payload.get("reason")
+        else:
+            decision = "rejected"
+            reason = "malformed approval payload (missing decision)"
+    else:
+        decision = "rejected"
+        reason = "malformed approval payload (non-dict)"
+
+    if decision == "approved":
+        return await tool_manager.execute(original_call, bypass_approval=True)
+
+    return ToolResultPart(
+        id=original_call.id,
+        output=json.dumps({
+            "rejected": True,
+            "reason": reason or "(no reason supplied)",
+            "tool_name": original_call.name,
+            "arguments": original_call.arguments,
+        }),
+        error=True,
+    )
+
+
 __all__ = [
     "ParkedState",
     "PARKED_STATE_SCHEMA_VERSION",
     "ResumePayload",
+    "_resume_tool_approval",
     "classify_resume_payload",
     "make_cancelled_payload",
     "make_timeout_payload",
