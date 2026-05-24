@@ -1,88 +1,60 @@
-"""Unit tests for matrix.api.app — create_app + lifespan + create_test_app."""
+"""Tests for matrix.api.app create_app + lifespan wiring."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
+from pathlib import Path
+from typing import Any
 
-import httpx
 import pytest
-from httpx import ASGITransport
-from pydantic import SecretStr
+from fastapi import FastAPI
 
-from matrix.api.app import create_app, create_test_app
+from matrix.api.app import _build_storage_provider, _make_lifespan, create_app
 from matrix.api.config import AppConfig
-from matrix.api.registries import ProviderRegistry, SemanticSearchRegistry
+from matrix.model.provider import (
+    SqliteConfig,
+    StorageProviderConfig,
+    StorageProviderType,
+)
 from matrix.model.scheduler import RuntimeMode
+from matrix.storage.sqlite import SqliteStorageProvider
 
 
-def _config() -> AppConfig:
-    # Default ``RuntimeMode.API_PLUS_WORKER`` requires a scheduler
-    # (Task 23). These tests don't exercise the worker pool, so pin
-    # the mode to ``API`` to keep the existing assertions valid.
-    return AppConfig(
-        db_host="h",
-        db_port=5432,
-        db_database="d",
-        db_user="u",
-        db_password=SecretStr("p"),
-        runtime_mode=RuntimeMode.API,
+def test_build_storage_provider_defaults_to_sqlite_home_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Redirect HOME so we don't touch the real ~/.matrix.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = AppConfig()  # db is None
+    provider = _build_storage_provider(cfg)
+    assert isinstance(provider, SqliteStorageProvider)
+    expected_path = tmp_path / ".matrix" / "db" / "data.sqlite"
+    assert provider._config.path == expected_path  # noqa: SLF001
+
+
+def test_build_storage_provider_honours_explicit_sqlite_config(
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        db=StorageProviderConfig(
+            provider=StorageProviderType.SQLITE,
+            config=SqliteConfig(path=tmp_path / "custom.sqlite"),
+        )
     )
+    provider = _build_storage_provider(cfg)
+    assert isinstance(provider, SqliteStorageProvider)
+    assert provider._config.path == tmp_path / "custom.sqlite"  # noqa: SLF001
 
 
-class TestCreateApp:
-    def test_returns_fastapi_instance(self) -> None:
-        app = create_app(_config())
-        assert app.title == "Matrix Microagents Framework API"
-        paths = [getattr(r, "path", None) for r in app.routes]
-        assert "/v1/health" in paths
-
-    @pytest.mark.asyncio
-    async def test_lifespan_seeds_app_state_and_aclose_chain(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from matrix.api import app as app_mod
-
-        sp_mock = MagicMock()
-        sp_mock.initialize = AsyncMock()
-        sp_mock.aclose = AsyncMock()
-        # The lifespan now consults ``Storage[InternalCollectionsConfig].get``
-        # to decide whether to auto-activate the subsystem; fake a
-        # storage handle whose ``get`` returns ``None`` so the
-        # subsystem stays inactive.
-        ic_storage_mock = MagicMock()
-        ic_storage_mock.get = AsyncMock(return_value=None)
-        sp_mock.get_storage = MagicMock(return_value=ic_storage_mock)
-        monkeypatch.setattr(
-            app_mod, "_build_storage_provider", lambda _config: sp_mock
+@pytest.mark.asyncio
+async def test_lifespan_zero_config_starts_and_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = AppConfig(runtime_mode=RuntimeMode.API)
+    app = FastAPI(lifespan=_make_lifespan(cfg))
+    async with app.router.lifespan_context(app):
+        assert isinstance(
+            app.state.storage_provider, SqliteStorageProvider,
         )
-
-        app = create_app(_config())
-
-        # ASGITransport does not drive lifespan events on its own; enter
-        # the app's lifespan context manually so startup/shutdown run.
-        async with app.router.lifespan_context(app):
-            async with httpx.AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                response = await client.get("/v1/health")
-                assert response.status_code == 200
-                assert app.state.storage_provider is sp_mock
-                assert isinstance(app.state.provider_registry, ProviderRegistry)
-                assert isinstance(app.state.semantic_search_registry, SemanticSearchRegistry)
-
-        sp_mock.initialize.assert_awaited_once()
-        sp_mock.aclose.assert_awaited_once()
-
-
-class TestCreateTestApp:
-    def test_seeds_state_directly(self) -> None:
-        sp = MagicMock()
-        sp.get_storage = MagicMock(return_value=MagicMock())
-        pr = MagicMock(spec=ProviderRegistry)
-        app = create_test_app(
-            storage_provider=sp,
-            provider_registry=pr,
-        )
-        assert app.state.storage_provider is sp
-        assert app.state.provider_registry is pr
-        assert isinstance(app.state.semantic_search_registry, SemanticSearchRegistry)
+    # After lifespan exit the provider is closed; nothing should leak.

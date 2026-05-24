@@ -34,7 +34,6 @@ from matrix.api.routers import (
 from matrix.api.routers.semantic_search import semantic_search_router
 from matrix.api.version import API_VERSION, APP_VERSION
 from matrix.internal_collections import build_subsystem, load_config_or_none
-from matrix.model.except_ import ConfigError
 from matrix.model.scheduler import RuntimeMode, SchedulerProviderType
 from matrix.toolset.misc import build_misc_toolset
 from matrix.toolset.search import build_search_toolset
@@ -53,15 +52,21 @@ logger = logging.getLogger(__name__)
 def _make_lifespan(config: AppConfig):
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # Fail fast on a worker mode without a scheduler — saves spinning
-        # up the storage pool just to tear it back down. Task 23.
-        if config.runtime_mode in (
+        # When scheduler is unset, default to an in-memory scheduler
+        # so the zero-config path boots. Operators running worker mode
+        # in production should explicitly set a Postgres scheduler.
+        scheduler_config = config.scheduler
+        if scheduler_config is None and config.runtime_mode in (
             RuntimeMode.WORKER, RuntimeMode.API_PLUS_WORKER,
-        ) and config.scheduler is None:
-            raise ConfigError(
-                f"runtime_mode={config.runtime_mode.value!r} requires "
-                "scheduler config; set MATRIX_SCHEDULER__PROVIDER or "
-                "configure via TOML."
+        ):
+            from matrix.model.scheduler import (
+                InMemorySchedulerConfig,
+                SchedulerProviderConfig as _SchedulerProviderConfig,
+                SchedulerProviderType as _SchedulerProviderType,
+            )
+            scheduler_config = _SchedulerProviderConfig(
+                provider=_SchedulerProviderType.IN_MEMORY,
+                config=InMemorySchedulerConfig(),
             )
 
         storage_provider = _build_storage_provider(config)
@@ -135,12 +140,12 @@ def _make_lifespan(config: AppConfig):
 
         # --- Scheduler + worker pool wiring (Task 23) ----------------
         scheduler = None
-        if config.scheduler is not None:
+        if scheduler_config is not None:
             from matrix.scheduler.factory import SchedulerFactory
 
             logger.info("lifespan: creating scheduler")
             scheduler = SchedulerFactory.create(
-                config.scheduler, storage_provider=storage_provider,
+                scheduler_config, storage_provider=storage_provider,
             )
             logger.info("lifespan: scheduler.initialize() begin")
             await scheduler.initialize()
@@ -151,7 +156,7 @@ def _make_lifespan(config: AppConfig):
             # synchronised — sessions can be double-claimed. Production should
             # use the Postgres scheduler. See spec §9.1.
             if (
-                config.scheduler.provider == SchedulerProviderType.IN_MEMORY
+                scheduler_config.provider == SchedulerProviderType.IN_MEMORY
                 and config.runtime_mode != RuntimeMode.API
             ):
                 logger.warning(
@@ -354,35 +359,27 @@ def _make_lifespan(config: AppConfig):
     return _lifespan
 
 
-def _build_storage_provider(config: AppConfig) -> "StorageProvider":  # pragma: no cover
-    """Construct the Postgres storage provider from the AppConfig.
+def _build_storage_provider(config: AppConfig) -> "StorageProvider":
+    """Construct the storage provider from the AppConfig.
 
-    Marked no-cover because the production path requires a live
-    Postgres; tests monkeypatch this function with a fake
-    StorageProvider for the lifespan-handler test in test_app_factory.
+    When ``config.db`` is None, default to embedded SQLite at
+    ``~/.matrix/db/data.sqlite``. The parent directory is created
+    on demand inside :meth:`SqliteStorageProvider.initialize`.
     """
     from matrix.model.provider import (
-        PoolConfig,
-        PostgresConfig,
-        StorageProviderConfig,
-        StorageProviderType,
+        SqliteConfig as _SqliteConfig,
+        StorageProviderConfig as _StorageProviderConfig,
+        StorageProviderType as _StorageProviderType,
     )
     from matrix.storage.factory import StorageProviderFactory
 
-    sp_config = StorageProviderConfig(
-        provider=StorageProviderType.POSTGRES,
-        config=PostgresConfig(
-            hostname=config.db_host,
-            port=config.db_port,
-            database=config.db_database,
-            username=config.db_user,
-            password=config.db_password,
-            pool=PoolConfig(
-                min_size=config.db_min_pool_size,
-                max_size=config.db_max_pool_size,
-            ),
-        ),
-    )
+    sp_config = config.db
+    if sp_config is None:
+        default_path = Path.home() / ".matrix" / "db" / "data.sqlite"
+        sp_config = _StorageProviderConfig(
+            provider=_StorageProviderType.SQLITE,
+            config=_SqliteConfig(path=default_path),
+        )
     return StorageProviderFactory.create(sp_config)
 
 
