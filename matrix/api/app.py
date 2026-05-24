@@ -735,6 +735,13 @@ def create_test_app(
     from matrix.scheduler.in_memory import InMemoryScheduler
     app.state.scheduler = InMemoryScheduler()
     app.state.worker_pool = None
+    # Attach an in-memory event bus so yielding-tool endpoints (ask_user,
+    # tool_approval respond) can publish without raising ConfigError.
+    # Tests that need to inspect published events may monkey-patch
+    # app.state.event_bus.publish before sending their request.
+    from matrix.bus.in_memory import InMemoryEventBus
+    _test_event_bus = InMemoryEventBus()
+    app.state.event_bus = _test_event_bus
     _mount_routers(app)
     register_error_handlers(app)
     return app

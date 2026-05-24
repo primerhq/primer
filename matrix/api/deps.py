@@ -197,6 +197,13 @@ def get_session_storage(
     return sp.get_storage(Session)
 
 
+def get_chat_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+):
+    from matrix.model.chats import Chat
+    return sp.get_storage(Chat)
+
+
 def get_internal_collections_config_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
 ) -> "Storage[InternalCollectionsConfig]":
@@ -301,6 +308,7 @@ __all__ = [
     "PRINCIPAL_HEADER",
     "get_approval_resolver",
     "get_agent_storage",
+    "get_chat_storage",
     "get_collection_storage",
     "get_cross_encoder_provider_storage",
     "get_document_storage",
