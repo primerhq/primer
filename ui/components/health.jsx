@@ -1,40 +1,51 @@
 /* global React, Icon, Btn, Sparkline */
 
-function HealthPage({ workerStats, sessions }) {
-  // Client-side history for in_flight
-  const [history, setHistory] = React.useState(() => Array.from({ length: 60 }, (_, i) => Math.max(0, Math.round(Math.sin(i / 6) * 3 + workerStats.in_flight + Math.random() * 2 - 1))));
+function HealthPage({ sessions }) {
+  const { useResource, apiFetch } = window.matrixApi;
+  const health = useResource(
+    "health:root",
+    (signal) => apiFetch("GET", "/health", null, { signal }),
+    { pollMs: 5000 }
+  );
+
+  const data = health.data || {};
+  const wp = data.worker_pool || {};
+  const sched = data.scheduler || {};
+  const status = data.status;
+  const inFlight = typeof wp.in_flight === "number" ? wp.in_flight : 0;
+  const capacity = typeof wp.capacity === "number" && wp.capacity > 0 ? wp.capacity : 0;
+
+  // Client-side history for in_flight — seeded zero, appended on each poll.
+  const [history, setHistory] = React.useState(() => Array.from({ length: 60 }, () => 0));
   React.useEffect(() => {
-    const id = setInterval(() => {
-      setHistory((h) => [...h.slice(-59), workerStats.in_flight]);
-    }, 5000);
-    return () => clearInterval(id);
-  }, [workerStats.in_flight]);
+    if (health.data == null) return;
+    setHistory((h) => [...h.slice(-59), inFlight]);
+  }, [health.data, inFlight]);
 
-  const ok = workerStats.active > 0;
+  const ok = status === "ok" && sched.alive === true;
+  const schedMetrics = sched.metrics || {};
+  const poolMetricsRaw = wp.metrics || {};
 
-  // Mock scheduler metrics
+  // Build display rows defensively — show "—" for metrics not present in
+  // the snapshot (depends on scheduler/worker pool implementation).
+  const fmt = (v) => (v == null || v === "" ? "—" : v);
   const schedulerMetrics = [
-    { k: "alive", v: ok ? "true" : "false", emphasis: ok ? "green" : "red" },
-    { k: "claims_total", v: 18412 },
-    { k: "claims_rate (1m)", v: "2.1 /s" },
-    { k: "claim_latency_p50_ms", v: 11 },
-    { k: "claim_latency_p99_ms", v: 84 },
-    { k: "missed_heartbeats_total", v: 3 },
-    { k: "scheduler_loops_total", v: 281542 },
-    { k: "last_loop_at", v: "0.4s ago" },
+    { k: "alive", v: sched.alive === true ? "true" : "false", emphasis: sched.alive ? "green" : "red" },
+    { k: "claims_total", v: fmt(schedMetrics["matrix_scheduler_claims_total"]) },
+    { k: "claim_latency_p50_ms", v: fmt(schedMetrics["matrix_scheduler_claim_latency_p50_ms"]) },
+    { k: "claim_latency_p99_ms", v: fmt(schedMetrics["matrix_scheduler_claim_latency_p99_ms"]) },
+    { k: "missed_heartbeats_total", v: fmt(schedMetrics["matrix_scheduler_missed_heartbeats_total"]) },
+    { k: "scheduler_loops_total", v: fmt(schedMetrics["matrix_scheduler_loops_total"]) },
   ];
 
   const poolMetrics = [
-    { k: "workers_total", v: 4 },
-    { k: "workers_active", v: workerStats.active },
-    { k: "workers_draining", v: 1 },
-    { k: "in_flight", v: workerStats.in_flight, emphasis: workerStats.in_flight / workerStats.capacity > 0.8 ? "amber" : null },
-    { k: "capacity_total", v: workerStats.capacity },
-    { k: "sessions_completed_total", v: 2814 },
-    { k: "sessions_failed_total", v: 47, emphasis: "amber" },
-    { k: "turns_executed_total", v: 19283 },
-    { k: "turn_duration_p50_s", v: 2.4 },
-    { k: "turn_duration_p99_s", v: 18.2 },
+    { k: "in_flight", v: inFlight, emphasis: capacity > 0 && inFlight / capacity > 0.8 ? "amber" : null },
+    { k: "capacity_total", v: capacity || "—" },
+    { k: "sessions_completed_total", v: fmt(poolMetricsRaw["matrix_worker_sessions_completed_total"]) },
+    { k: "sessions_failed_total", v: fmt(poolMetricsRaw["matrix_worker_sessions_failed_total"]) },
+    { k: "turns_executed_total", v: fmt(poolMetricsRaw["matrix_worker_turns_executed_total"]) },
+    { k: "turn_duration_p50_s", v: fmt(poolMetricsRaw["matrix_worker_turn_duration_p50_s"]) },
+    { k: "turn_duration_p99_s", v: fmt(poolMetricsRaw["matrix_worker_turn_duration_p99_s"]) },
   ];
 
   return (
@@ -55,13 +66,16 @@ function HealthPage({ workerStats, sessions }) {
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em" }}>
-              {ok ? "All systems operational" : "Scheduler unreachable"}
+              {ok ? "All systems operational" : (health.data ? "Degraded" : (health.error ? "Health probe failed" : "Reading /v1/health…"))}
             </div>
             <div className="muted text-sm" style={{ marginTop: 2 }}>
-              <span className="mono">GET /v1/health</span> · last polled 1.2s ago · <span className="mono" style={{ color: "var(--text)" }}>200 OK</span>
+              <span className="mono">GET /v1/health</span>
+              {health.data && <> · <span className="mono" style={{ color: "var(--text)" }}>200 OK</span></>}
+              {health.error && <> · <span className="mono" style={{ color: "var(--red)" }}>error: {health.error.title || health.error.message}</span></>}
+              {data.version && <> · v<span className="mono">{data.version}</span></>}
             </div>
           </div>
-          <Btn icon="refresh" kind="ghost">Refresh now</Btn>
+          <Btn icon="refresh" kind="ghost" onClick={health.refetch}>Refresh now</Btn>
         </div>
       </div>
 
@@ -72,12 +86,12 @@ function HealthPage({ workerStats, sessions }) {
           <span>in_flight</span>
           <span className="sub">· last 5 min · 5s tick · client-side only</span>
           <div className="right">
-            <span className="mono tabular" style={{ fontSize: 20, fontWeight: 600 }}>{workerStats.in_flight}</span>
-            <span className="muted mono">/ {workerStats.capacity}</span>
+            <span className="mono tabular" style={{ fontSize: 20, fontWeight: 600 }}>{inFlight}</span>
+            <span className="muted mono">/ {capacity || "—"}</span>
           </div>
         </div>
         <div className="panel-body" style={{ padding: "16px 14px" }}>
-          <BigSpark values={history} capacity={workerStats.capacity} />
+          <BigSpark values={history} capacity={capacity || 1} />
         </div>
       </div>
 
@@ -86,6 +100,24 @@ function HealthPage({ workerStats, sessions }) {
         <MetricsPanel title="Scheduler" icon="settings" rows={schedulerMetrics} />
         <MetricsPanel title="Worker pool" icon="worker" rows={poolMetrics} />
       </div>
+
+      {health.error && (
+        <div className="panel" style={{ borderColor: "var(--red)" }}>
+          <div className="panel-body" style={{ padding: "12px 14px" }}>
+            <div className="mono" style={{ color: "var(--red)" }}>
+              {health.error.title || health.error.message || "Health probe failed"}
+            </div>
+            {health.error.detail && (
+              <div className="muted text-sm" style={{ marginTop: 4 }}>{health.error.detail}</div>
+            )}
+            {health.error.requestId && (
+              <div className="muted text-sm mono" style={{ marginTop: 4 }}>
+                request-id <span style={{ color: "var(--text)" }}>{health.error.requestId}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

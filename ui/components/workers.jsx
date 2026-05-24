@@ -1,6 +1,7 @@
 /* global React, Icon, Btn, Modal, relativeTime, fmtDate */
 
-function WorkersPage({ workers, sessions, onPatchWorker, pushToast }) {
+function WorkersPage({ sessions, pushToast }) {
+  const { useResource, useMutation, apiFetch } = window.matrixApi;
   const [drainTarget, setDrainTarget] = React.useState(null);
   const [, tick] = React.useState(0);
   // Tick heartbeats live
@@ -9,10 +10,53 @@ function WorkersPage({ workers, sessions, onPatchWorker, pushToast }) {
     return () => clearInterval(id);
   }, []);
 
+  const list = useResource(
+    "workers:list",
+    (signal) => apiFetch("GET", "/workers", null, { signal }),
+    { pollMs: 2000 }
+  );
+  const workers = (list.data?.items ?? []).map((w) => ({
+    // Real WorkerInfo: {id, host, pid, capacity, started_at, last_heartbeat, status}
+    // The Designer's row expects: in_flight, heartbeat (seconds-ago number).
+    ...w,
+    in_flight: typeof w.in_flight === "number" ? w.in_flight : 0,
+    heartbeat: w.last_heartbeat
+      ? Math.max(0, (Date.now() - new Date(w.last_heartbeat).getTime()) / 1000)
+      : 0,
+  }));
+
+  // Capture the most-recent drain target so onSuccess / onError can
+  // include the id in the toast (useMutation invokes hooks with `data`
+  // only — no echo of the request body).
+  const drainTargetRef = React.useRef(null);
+  const drainMut = useMutation(
+    (id) => {
+      drainTargetRef.current = id;
+      return apiFetch("POST", `/workers/${encodeURIComponent(id)}/drain`);
+    },
+    {
+      invalidates: ["workers:list"],
+      onSuccess: () =>
+        pushToast({
+          kind: "warning",
+          title: `Draining ${drainTargetRef.current || ""}`.trim(),
+          detail:
+            "In-flight sessions on this worker will finish before drain completes. New sessions won't be claimed.",
+        }),
+      onError: (err) =>
+        pushToast({
+          kind: "error",
+          title: err.title || "Drain failed",
+          detail: err.detail,
+          requestId: err.requestId,
+        }),
+    }
+  );
+
   const totals = workers.reduce(
     (acc, w) => {
-      acc.cap += w.capacity;
-      acc.flight += w.in_flight;
+      acc.cap += w.capacity || 0;
+      acc.flight += w.in_flight || 0;
       if (w.status === "active") acc.active += 1;
       if (w.status === "draining") acc.draining += 1;
       return acc;
@@ -24,8 +68,7 @@ function WorkersPage({ workers, sessions, onPatchWorker, pushToast }) {
   const confirmDrain = () => {
     const w = drainTarget;
     setDrainTarget(null);
-    onPatchWorker(w.id, { status: "draining" });
-    pushToast({ kind: "warning", title: `Draining ${w.id}`, detail: `In-flight sessions on this worker will finish before drain completes. New sessions won't be claimed.` });
+    if (w) drainMut.mutate(w.id);
   };
 
   return (
@@ -34,7 +77,7 @@ function WorkersPage({ workers, sessions, onPatchWorker, pushToast }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
         <SummaryStat label="Total" value={workers.length} sub="registered workers" />
         <SummaryStat label="Active" value={totals.active} sub={`${totals.draining} draining`} accent={totals.active === 0 ? "red" : "green"} />
-        <SummaryStat label="In flight" value={`${totals.flight} / ${totals.cap}`} sub="claim utilization" accent={totals.flight / totals.cap > 0.8 ? "amber" : "green"} />
+        <SummaryStat label="In flight" value={`${totals.flight} / ${totals.cap}`} sub="claim utilization" accent={totals.cap > 0 && totals.flight / totals.cap > 0.8 ? "amber" : "green"} />
         <SummaryStat label="Scheduler" value="alive" sub="last claim 2s ago" accent="green" />
       </div>
 
@@ -70,7 +113,13 @@ function WorkersPage({ workers, sessions, onPatchWorker, pushToast }) {
           </thead>
           <tbody>
             {workers.map((w) => (
-              <WorkerRow key={w.id} w={w} sessions={sessions} onDrain={onDrain} />
+              <WorkerRow
+                key={w.id}
+                w={w}
+                sessions={sessions || []}
+                onDrain={onDrain}
+                draining={drainMut.loading}
+              />
             ))}
           </tbody>
         </table>
@@ -104,11 +153,19 @@ function WorkersPage({ workers, sessions, onPatchWorker, pushToast }) {
   );
 }
 
-function WorkerRow({ w, sessions, onDrain }) {
-  const onWorker = sessions.filter((s) => s.worker_id === w.id && (s.status === "running" || s.status === "paused"));
-  const heartbeatAge = w.heartbeat + Math.floor(Math.random() * 2);
+function WorkerRow({ w, sessions, onDrain, draining }) {
+  const onWorker = sessions.filter(
+    (s) => s.worker_id === w.id && (s.status === "running" || s.status === "paused")
+  );
+  const heartbeatAge = w.heartbeat ?? 0;
   const heartbeatBad = heartbeatAge > 30;
-  const utilization = w.in_flight / w.capacity;
+  const capacity = w.capacity || 0;
+  const inFlight = w.in_flight || 0;
+  // Real WorkerInfo.started_at is an ISO string — relativeTime expects
+  // seconds-ago. Compute the delta defensively.
+  const startedAtSecondsAgo = w.started_at
+    ? Math.max(0, (Date.now() - new Date(w.started_at).getTime()) / 1000)
+    : null;
 
   return (
     <tr>
@@ -123,9 +180,9 @@ function WorkerRow({ w, sessions, onDrain }) {
         {w.status === "dead" && <span className="pill pill-failed"><span className="dot"></span>dead</span>}
       </td>
       <td>
-        <CapacityBar inFlight={w.in_flight} capacity={w.capacity} />
+        <CapacityBar inFlight={inFlight} capacity={capacity} />
         <div className="mono muted text-sm" style={{ marginTop: 2 }}>
-          {w.in_flight} / {w.capacity}
+          {inFlight} / {capacity}
           {onWorker.length > 0 && <> · <span style={{ color: "var(--blue)" }}>{onWorker.length} session{onWorker.length === 1 ? "" : "s"}</span></>}
         </div>
       </td>
@@ -139,16 +196,25 @@ function WorkerRow({ w, sessions, onDrain }) {
           {heartbeatAge.toFixed(1)}s ago
         </span>
       </td>
-      <td className="mono muted">{relativeTime(w.started_at)}</td>
+      <td className="mono muted">{startedAtSecondsAgo != null ? relativeTime(startedAtSecondsAgo) : "—"}</td>
       <td style={{ textAlign: "right", paddingRight: 12 }}>
-        <Btn size="sm" kind="ghost" icon="alert" disabled={w.status !== "active"} onClick={() => onDrain(w)}>Drain</Btn>
+        <Btn
+          size="sm"
+          kind="ghost"
+          icon="alert"
+          disabled={w.status !== "active" || draining}
+          onClick={() => onDrain(w)}
+        >
+          {draining ? "Draining…" : "Drain"}
+        </Btn>
       </td>
     </tr>
   );
 }
 
 function CapacityBar({ inFlight, capacity }) {
-  const segments = Array.from({ length: capacity });
+  const safe = Math.max(0, capacity | 0);
+  const segments = Array.from({ length: safe });
   return (
     <div style={{ display: "flex", gap: 2 }}>
       {segments.map((_, i) => {
@@ -160,7 +226,7 @@ function CapacityBar({ inFlight, capacity }) {
               flex: 1,
               height: 8,
               borderRadius: 2,
-              background: filled ? (inFlight / capacity > 0.8 ? "var(--amber)" : "var(--accent)") : "var(--bg-2)",
+              background: filled ? (safe > 0 && inFlight / safe > 0.8 ? "var(--amber)" : "var(--accent)") : "var(--bg-2)",
               border: "1px solid " + (filled ? "transparent" : "var(--border)"),
             }}
           />

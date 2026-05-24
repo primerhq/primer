@@ -120,6 +120,21 @@ function App() {
   const [sessions, setSessions] = React.useState(() => window.MOCK.buildSessions(Date.now()));
   const [workers, setWorkers] = React.useState(window.MOCK.WORKERS);
 
+  // Real-data overlay (Phase 2 wiring) — Topbar's worker pill, the
+  // Dashboard tiles, and the Health page all depend on /v1/workers
+  // and /v1/health. We poll both at the top so all consumers stay in
+  // sync without duplicating fetches.
+  const realWorkers = window.matrixApi.useResource(
+    "topbar:workers",
+    (signal) => window.matrixApi.apiFetch("GET", "/workers", null, { signal }),
+    { pollMs: 5000 }
+  );
+  const realHealth = window.matrixApi.useResource(
+    "topbar:health",
+    (signal) => window.matrixApi.apiFetch("GET", "/health", null, { signal }),
+    { pollMs: 5000 }
+  );
+
   // Semantic Search providers — controlled by the ssmState tweak
   const ssps = React.useMemo(() => {
     if (tweaks.ssmState === "none") return [];
@@ -151,28 +166,42 @@ function App() {
     return () => clearInterval(id);
   }, []);
 
-  // Tweak: simulate "worker pool at capacity" state
+  // Tweak: simulate "worker pool at capacity" state.
+  // Prefer real data from /v1/workers + /v1/health when present;
+  // fall back to mock values so the Tweaks demo states still work.
   const workerStats = React.useMemo(() => {
-    const running = sessions.filter((s) => s.status === "running").length;
-    const totalCap = workers.reduce((a, w) => a + w.capacity, 0);
-    const active = workers.filter((w) => w.status === "active").length;
-    const inFlight = workers.reduce((a, w) => a + w.in_flight, 0);
+    const realItems = realWorkers.data?.items;
+    const useReal = Array.isArray(realItems);
+    const totalCap = useReal
+      ? (typeof realHealth.data?.worker_pool?.capacity === "number"
+          ? realHealth.data.worker_pool.capacity
+          : realItems.reduce((a, w) => a + (w.capacity || 0), 0))
+      : workers.reduce((a, w) => a + w.capacity, 0);
+    const active = useReal
+      ? realItems.filter((w) => w.status === "active").length
+      : workers.filter((w) => w.status === "active").length;
+    const totalWorkers = useReal ? realItems.length : workers.length;
+    const inFlight = useReal
+      ? (typeof realHealth.data?.worker_pool?.in_flight === "number"
+          ? realHealth.data.worker_pool.in_flight
+          : 0)
+      : workers.reduce((a, w) => a + w.in_flight, 0);
     const overrideCap = tweaks.demoState === "capacity" ? 4 : totalCap;
     const overrideActive = tweaks.demoState === "no-workers" ? 0 : active;
     const overrideInFlight = tweaks.demoState === "capacity" ? Math.min(overrideCap, 4) : inFlight;
     return {
       active: overrideActive,
-      total: workers.length,
+      total: totalWorkers,
       capacity: overrideCap,
       in_flight: overrideInFlight,
       history: Array.from({ length: 30 }, (_, i) => Math.sin(i / 4) * 2 + 3 + Math.random()),
     };
-  }, [sessions, workers, tweaks.demoState]);
+  }, [sessions, workers, tweaks.demoState, realWorkers.data, realHealth.data]);
 
   const counts = {
     sessions: sessions.filter((s) => !["ended", "failed", "cancelled"].includes(s.status)).length,
     workspaces: 4,
-    workers: 4,
+    workers: workerStats.total,
     ssps: ssps.length,
     chats: (window.CHATS_DATA || []).filter((c) => c.status === "active").length,
     channels: (window.CHANNELS_DATA || []).length,
@@ -703,7 +732,7 @@ function App() {
           </div>
           <h1 className="page-title">Workers</h1>
           <div className="page-sub tabular">
-            {workers.length} workers · <span className="mono" style={{ color: "var(--blue)" }}>{workerStats.in_flight}</span>/{workerStats.capacity} in flight ·
+            {workerStats.total} workers · <span className="mono" style={{ color: "var(--blue)" }}>{workerStats.in_flight}</span>/{workerStats.capacity} in flight ·
             <span className="mono" style={{ marginLeft: 4, color: "var(--text-3)" }}>autorefresh every 2s</span>
           </div>
         </div>
@@ -713,7 +742,7 @@ function App() {
       </>
     );
     pageBody = (
-      <WorkersPage workers={workers} sessions={sessions} onPatchWorker={onPatchWorker} pushToast={pushToast} />
+      <WorkersPage sessions={sessions} pushToast={pushToast} />
     );
   } else if (page === "dashboard") {
     pageHeader = (

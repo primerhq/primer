@@ -1,6 +1,35 @@
 /* global React, Icon, StatusPill, Btn, Sparkline, relativeTime, Banner */
 
 function Dashboard({ sessions, workerStats, subsystemOn, onNavigate, onNewSession }) {
+  const { useResource, apiFetch } = window.matrixApi;
+
+  // Tile counts — three lightweight polls (every 5s).
+  const sessionsResource = useResource(
+    "dashboard:sessions",
+    (signal) => apiFetch("GET", "/sessions?limit=1", null, { signal }),
+    { pollMs: 5000 }
+  );
+  const workspacesResource = useResource(
+    "dashboard:workspaces",
+    (signal) => apiFetch("GET", "/workspaces?limit=1", null, { signal }),
+    { pollMs: 5000 }
+  );
+  const workersResource = useResource(
+    "dashboard:workers",
+    (signal) => apiFetch("GET", "/workers", null, { signal }),
+    { pollMs: 5000 }
+  );
+
+  const sessionsTotal = sessionsResource.data?.total;
+  const workspacesTotal = workspacesResource.data?.total;
+  const workersItems = workersResource.data?.items ?? [];
+  const workersTotalReal = workersItems.length;
+  const workersActiveReal = workersItems.filter((w) => w.status === "active").length;
+
+  // Legacy props still drive the running/paused breakdown + the gauge —
+  // we can derive these from /v1/sessions if needed in a follow-up, but
+  // for Task 2 we keep the live-mocked sessions until session-detail
+  // wiring lands.
   const runningCount = sessions.filter((s) => s.status === "running").length;
   const pausedCount = sessions.filter((s) => s.status === "paused").length;
   const last1h = sessions.filter((s) => Date.now() - s.created_at.getTime() < 3600 * 1000).length;
@@ -38,16 +67,16 @@ function Dashboard({ sessions, workerStats, subsystemOn, onNavigate, onNewSessio
         <HealthCard
           icon="worker"
           label="Workers"
-          value={`${workerStats.active}/${workerStats.total}`}
-          sub={`${workerStats.in_flight}/${workerStats.capacity} in flight · 1 draining`}
-          status={workerStats.active === 0 ? "err" : (workerStats.in_flight / workerStats.capacity > 0.8 ? "warn" : "ok")}
+          value={`${workersActiveReal}/${workersTotalReal}`}
+          sub={`${workerStats.in_flight}/${workerStats.capacity} in flight · ${workersItems.filter((w) => w.status === "draining").length} draining`}
+          status={workersActiveReal === 0 ? "err" : (workerStats.capacity > 0 && workerStats.in_flight / workerStats.capacity > 0.8 ? "warn" : "ok")}
           onClick={() => onNavigate("workers")}
         />
         <HealthCard
           icon="zap"
           label="Sessions"
-          value={runningCount}
-          sub={`${pausedCount} paused · ${last1h} created (1h)`}
+          value={sessionsTotal != null ? sessionsTotal : runningCount}
+          sub={workspacesTotal != null ? `${workspacesTotal} workspaces` : `${pausedCount} paused · ${last1h} created (1h)`}
           status="ok"
           accent
           onClick={() => onNavigate("sessions")}
