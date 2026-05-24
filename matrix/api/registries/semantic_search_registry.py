@@ -32,8 +32,9 @@ def _default_factory(row: "SemanticSearchProvider") -> "VectorStoreProvider":  #
     shape (the two type families share the same backend enum values
     and the same config classes), so the existing
     VectorStoreProviderFactory can dispatch without modification.
-    A follow-up task collapses the two families.
     """
+    # TODO(task-8): collapse the SSP and VSP type families so the
+    # adapter shim below is no longer needed.
     from matrix.model.provider import (
         VectorStoreProviderConfig,
         VectorStoreProviderType,
@@ -70,20 +71,47 @@ class SemanticSearchRegistry:
     async def get_provider(self, ssp_id: str) -> "VectorStoreProvider":
         """Resolve a row to its live VectorStoreProvider instance.
 
-        Raises :class:`matrix.model.except_.NotFoundError` if the row
-        doesn't exist in storage.
+        Cached per id. Slow I/O (storage lookup, factory invocation,
+        initialize) runs OUTSIDE ``self._lock`` so concurrent calls for
+        different ids don't serialise on each other. Concurrent calls
+        for the SAME id may construct twice but only one wins the
+        cache; the loser is aclose()'d to avoid leaking resources.
         """
+        # Fast path: cache hit.
         async with self._lock:
-            if ssp_id in self._instances:
-                return self._instances[ssp_id]
-            row = await self._storage.get(ssp_id)
-            provider = self._factory(row)
-            await provider.initialize()
-            self._instances[ssp_id] = provider
-            return provider
+            cached = self._instances.get(ssp_id)
+        if cached is not None:
+            return cached
+
+        # Slow path: resolve + construct + initialize OUTSIDE the lock.
+        row = await self._storage.get(ssp_id)
+        provider = self._factory(row)
+        await provider.initialize()
+
+        # Insert under the lock, with a re-check in case a concurrent
+        # caller beat us (or invalidate() ran in the meantime).
+        async with self._lock:
+            winner = self._instances.get(ssp_id)
+            if winner is not None:
+                # Concurrent get won the race; close our duplicate and
+                # return the cached winner.
+                close_loser = provider
+                provider = winner
+            else:
+                self._instances[ssp_id] = provider
+                close_loser = None
+        if close_loser is not None:
+            try:
+                await close_loser.aclose()
+            except Exception:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    "SemanticSearchRegistry: aclose() on race-loser instance for "
+                    "%r failed: %s", ssp_id, close_loser,
+                )
+        return provider
 
     async def get_store(self, ssp_id: str) -> "VectorStore":
-        """Convenience: resolve provider + return its VectorStore."""
+        """Convenience: resolve provider + return its VectorStore. Use when only the VectorStore interface is needed and provider lifecycle is managed elsewhere."""
         p = await self.get_provider(ssp_id)
         return p.get_vector_store()
 
@@ -102,5 +130,8 @@ class SemanticSearchRegistry:
         for inst in instances:
             try:
                 await inst.aclose()
-            except Exception:  # noqa: BLE001 — best-effort cleanup
-                logger.exception("SemanticSearchRegistry.aclose: instance close failed")
+            except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+                logger.warning(
+                    "SemanticSearchRegistry.aclose: instance close failed: %s",
+                    exc,
+                )

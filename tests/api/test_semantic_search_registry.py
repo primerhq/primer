@@ -116,3 +116,25 @@ async def test_registry_aclose_closes_all_cached():
     await reg.get_provider("b")
     await reg.aclose()
     assert all(i.closed for i in instances)
+
+
+@pytest.mark.asyncio
+async def test_registry_aclose_continues_after_exception():
+    """aclose() must close every cached instance even if one raises."""
+    class _FailingProvider(_StubProvider):
+        async def aclose(self):
+            await super().aclose()
+            raise RuntimeError("boom")
+    storage = _StubStorage({"a": _make_row("a"), "b": _make_row("b")})
+    instances: list[_StubProvider] = []
+    def factory(r):
+        # First instance raises on aclose; second succeeds.
+        inst = _FailingProvider(r) if r.id == "a" else _StubProvider(r)
+        instances.append(inst)
+        return inst
+    reg = SemanticSearchRegistry(storage=storage, factory=factory)
+    await reg.get_provider("a")
+    await reg.get_provider("b")
+    # Must not raise; both must have aclose() called.
+    await reg.aclose()
+    assert all(i.closed for i in instances)
