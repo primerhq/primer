@@ -113,3 +113,24 @@ def test_telegram_poll_timeout_bounds():
             bot_token=SecretStr("123456:abcdefghijklmnopqrstuvwxyz123456"),
             poll_timeout_seconds=100,
         )
+
+
+def test_discord_config_requires_long_token():
+    import pytest
+    from pydantic import SecretStr, ValidationError
+    from matrix.model.channel import DiscordChannelProviderConfig
+    with pytest.raises(ValidationError):
+        DiscordChannelProviderConfig(bot_token=SecretStr("tiny"))
+    cfg = DiscordChannelProviderConfig(
+        bot_token=SecretStr("a" * 60),
+    )
+    assert cfg.enable_dms is True
+
+
+def test_discord_config_enable_dms_toggles():
+    from pydantic import SecretStr
+    from matrix.model.channel import DiscordChannelProviderConfig
+    cfg = DiscordChannelProviderConfig(
+        bot_token=SecretStr("a" * 60), enable_dms=False,
+    )
+    assert cfg.enable_dms is False

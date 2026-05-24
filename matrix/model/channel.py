@@ -83,7 +83,32 @@ class TelegramChannelProviderConfig(BaseModel):
 
 
 class DiscordChannelProviderConfig(BaseModel):
-    """Stub — see Spec 3.3 for the real fields."""
+    """One Discord bot token + intent toggle."""
+
+    bot_token: SecretStr = Field(
+        ...,
+        description=(
+            "Discord bot token from the Developer Portal. Do NOT "
+            "include the 'Bot ' prefix; the adapter adds it."
+        ),
+    )
+    enable_dms: bool = Field(
+        default=True,
+        description=(
+            "Request dm_messages intent so the bot can read DM "
+            "channels. Turn off for guild-only deployments."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> "DiscordChannelProviderConfig":
+        tok = self.bot_token.get_secret_value()
+        if not tok or len(tok) < 30:
+            raise ValueError(
+                "bot_token must be the Developer Portal bot token "
+                "(>=30 chars); do NOT include the 'Bot ' prefix"
+            )
+        return self
 
 
 ChannelProviderConfig = Annotated[
