@@ -106,6 +106,17 @@ class SemanticCatalog:
         collection_storage: "Storage[Collection]",
         search_provider_id: str,
     ) -> None:
+        """Initialize the catalog with embedder and vector store.
+
+        Args:
+            embedder: The Embedder instance for generating vectors.
+            embedder_provider_id: Non-empty provider id for the embedder.
+            embedder_model: Non-empty model name for the embedder.
+            vector_store: The VectorStore instance for storing/retrieving vectors.
+            collection_storage: Storage for the system Collection rows.
+            search_provider_id: Non-empty semantic search provider id for the
+                backing system collections.
+        """
         if not embedder_provider_id:
             raise ConfigError("embedder_provider_id must be non-empty")
         if not embedder_model:

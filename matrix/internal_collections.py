@@ -161,6 +161,19 @@ class InternalCollectionsSubsystem:
         toolset_providers: dict[str, ToolsetProviderLike] | None = None,
         queue_max: int = 10_000,
     ) -> None:
+        """Initialize the subsystem with dependencies.
+
+        Args:
+            config: The InternalCollectionsConfig row defining embedding and
+                search provider details.
+            storage_provider: StorageProvider for accessing entity and config rows.
+            provider_registry: ProviderRegistry for embedder access.
+            semantic_search_registry: SemanticSearchRegistry for per-call semantic
+                search store access using config.search_provider_id.
+            toolset_providers: Optional pre-seeded mapping of reserved toolset ids
+                to their providers (e.g., _system, _search).
+            queue_max: Max size of the CDC event queue before dropping events.
+        """
         self._config = config
         self._sp = storage_provider
         self._pr = provider_registry

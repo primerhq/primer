@@ -255,6 +255,17 @@ class TestConstruction:
                 search_provider_id="ssp-test",
             )
 
+    def test_rejects_empty_search_provider_id(self) -> None:
+        with pytest.raises(ConfigError, match="search_provider_id"):
+            SemanticCatalog(
+                embedder=_FakeEmbedder(),  # type: ignore[arg-type]
+                embedder_provider_id="p1",
+                embedder_model="m1",
+                vector_store=_FakeVectorStore(),  # type: ignore[arg-type]
+                collection_storage=_FakeCollectionStorage(),  # type: ignore[arg-type]
+                search_provider_id="",
+            )
+
 
 # ===========================================================================
 # Initialize
