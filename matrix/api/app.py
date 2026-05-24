@@ -275,7 +275,7 @@ def _make_lifespan(config: AppConfig):
                 config=ic_config,
                 storage_provider=storage_provider,
                 provider_registry=provider_registry,
-                vector_store_registry=vector_store_registry,
+                semantic_search_registry=semantic_search_registry,
                 toolset_providers={
                     "_system": system_toolset,
                     "_workspaces": ws_toolset,

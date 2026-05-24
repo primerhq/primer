@@ -268,12 +268,14 @@ class _FakeVectorStore:
         return []
 
 
-class _FakeVSR:
+class _FakeSSR:
+    """Fake SemanticSearchRegistry: returns the given store for any ssp_id."""
+
     def __init__(self, store) -> None:
         self._store = store
         self.is_configured = True
 
-    async def get(self):
+    async def get_store(self, ssp_id: str):
         return self._store
 
     async def aclose(self):
@@ -429,7 +431,7 @@ class TestBootstrapIngestsWorkspacesTools:
         self, sp, workspace_registry, toolset
     ) -> None:
         store = _FakeVectorStore()
-        vsr = _FakeVSR(store)
+        ssr = _FakeSSR(store)
         embedder = _FakeEmbedder()
         pr = _FakePR(embedder)
 
@@ -437,6 +439,7 @@ class TestBootstrapIngestsWorkspacesTools:
             id=INTERNAL_COLLECTIONS_CONFIG_ID,
             embedding_provider_id="hf-1",
             embedding_model="all-MiniLM-L6-v2",
+            search_provider_id="ssp-test",
             cross_encoder=None,
             mmr=None,
             activated_at=None,
@@ -446,7 +449,7 @@ class TestBootstrapIngestsWorkspacesTools:
             config=cfg,
             storage_provider=sp,
             provider_registry=pr,
-            vector_store_registry=vsr,
+            semantic_search_registry=ssr,
             toolset_providers={"_workspaces": toolset},
         )
 

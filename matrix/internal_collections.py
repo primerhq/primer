@@ -56,6 +56,7 @@ from matrix.model.vector import EmbeddingRecord, SearchResult
 
 if TYPE_CHECKING:
     from matrix.api.registries import ProviderRegistry, VectorStoreRegistry
+    from matrix.api.registries.semantic_search_registry import SemanticSearchRegistry
     from matrix.int.storage_provider import StorageProvider
 
 
@@ -156,14 +157,14 @@ class InternalCollectionsSubsystem:
         config: InternalCollectionsConfig,
         storage_provider: "StorageProvider",
         provider_registry: "ProviderRegistry",
-        vector_store_registry: "VectorStoreRegistry",
+        semantic_search_registry: "SemanticSearchRegistry",
         toolset_providers: dict[str, ToolsetProviderLike] | None = None,
         queue_max: int = 10_000,
     ) -> None:
         self._config = config
         self._sp = storage_provider
         self._pr = provider_registry
-        self._vsr = vector_store_registry
+        self._semantic_search_registry = semantic_search_registry
         # Reserved-id toolset providers we need to enumerate during
         # bootstrap. The caller injects the live ``_system`` and
         # ``_search`` providers — we deliberately do not reach into
@@ -261,7 +262,9 @@ class InternalCollectionsSubsystem:
                 self._queue.task_done()
 
     async def _apply_event(self, event: IngestEvent) -> None:
-        store = await self._vsr.get()
+        store = await self._semantic_search_registry.get_store(
+            self._config.search_provider_id
+        )
         coll_id = INTERNAL_COLLECTION_IDS[event.entity_type]
         if event.op == "delete":
             await store.delete(coll_id, event.entity_id)
@@ -326,7 +329,9 @@ class InternalCollectionsSubsystem:
         await self._drain_queue()
         await self._materialise_collection_rows()
 
-        store = await self._vsr.get()
+        store = await self._semantic_search_registry.get_store(
+            self._config.search_provider_id
+        )
         embed_dim = await self._probe_embedding_dim()
         for entity_type in INTERNAL_COLLECTION_IDS:
             await store.create_collection(
@@ -381,7 +386,7 @@ class InternalCollectionsSubsystem:
                 ),
                 embedder=embedder,
                 system=True,
-                search_provider_id="_unused_placeholder",  # TODO(task-6): wire real SSP id from InternalCollectionsConfig.search_provider_id
+                search_provider_id=self._config.search_provider_id,
             )
             existing = await collections.get(coll_id)
             if existing is None:
@@ -514,7 +519,9 @@ class InternalCollectionsSubsystem:
                 "/v1/internal_collections/bootstrap to populate the "
                 "collections."
             )
-        store = await self._vsr.get()
+        store = await self._semantic_search_registry.get_store(
+            self._config.search_provider_id
+        )
         vector = await self._embed_text(query)
         coll_id = INTERNAL_COLLECTION_IDS[entity_type]
         return await store.search(coll_id, vector, top_k)
@@ -538,7 +545,7 @@ def build_subsystem(
     config: InternalCollectionsConfig,
     storage_provider: "StorageProvider",
     provider_registry: "ProviderRegistry",
-    vector_store_registry: "VectorStoreRegistry",
+    semantic_search_registry: "SemanticSearchRegistry",
     toolset_providers: dict[str, ToolsetProviderLike] | None = None,
 ) -> InternalCollectionsSubsystem:
     """Construct a subsystem instance. Caller starts the worker."""
@@ -546,7 +553,7 @@ def build_subsystem(
         config=config,
         storage_provider=storage_provider,
         provider_registry=provider_registry,
-        vector_store_registry=vector_store_registry,
+        semantic_search_registry=semantic_search_registry,
         toolset_providers=toolset_providers,
     )
 

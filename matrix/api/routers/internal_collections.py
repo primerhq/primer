@@ -50,6 +50,7 @@ from matrix.model.internal import (
     INTERNAL_COLLECTIONS_CONFIG_ID,
     InternalCollectionsConfig,
 )
+from matrix.model.provider import SemanticSearchProvider
 from matrix.model.search import CollectionCrossEncoder, MmrConfig
 
 
@@ -82,6 +83,14 @@ class InternalCollectionsConfigBody(BaseModel):
         description=(
             "Provider-side embedding model name. Must be one of the "
             "models permitted on the referenced provider."
+        ),
+    )
+    search_provider_id: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Id of the SemanticSearchProvider that backs the four reserved "
+            "internal collections. Must reference an existing SSP row."
         ),
     )
     cross_encoder: CollectionCrossEncoder | None = Field(
@@ -157,16 +166,28 @@ def _get_subsystem_or_none(request: Request):
     "/internal_collections/config",
     summary="Activate / re-configure the internal collections subsystem",
     response_model=InternalCollectionsConfig,
-    responses=common_responses(422, 500),
+    responses=common_responses(404, 422, 500),
 )
 async def put_config(
+    request: Request,
     body: InternalCollectionsConfigBody,
     storage=Depends(get_internal_collections_config_storage),
 ) -> InternalCollectionsConfig:
+    # Validate that search_provider_id references an existing SSP row.
+    storage_provider = request.app.state.storage_provider
+    ssp_storage = storage_provider.get_storage(SemanticSearchProvider)
+    ssp_row = await ssp_storage.get(body.search_provider_id)
+    if ssp_row is None:
+        raise NotFoundError(
+            f"search_provider_id {body.search_provider_id!r} does not refer "
+            "to a known SemanticSearchProvider."
+        )
+
     cfg = InternalCollectionsConfig(
         id=INTERNAL_COLLECTIONS_CONFIG_ID,
         embedding_provider_id=body.embedding_provider_id,
         embedding_model=body.embedding_model,
+        search_provider_id=body.search_provider_id,
         cross_encoder=body.cross_encoder,
         mmr=body.mmr,
         activated_at=None,
@@ -259,7 +280,7 @@ async def bootstrap(
         from matrix.toolset.search import build_search_toolset
 
         provider_registry = request.app.state.provider_registry
-        vector_store_registry = request.app.state.vector_store_registry
+        semantic_search_registry = request.app.state.semantic_search_registry
         storage_provider = request.app.state.storage_provider
         toolsets: dict[str, Any] = {}
         sys_ts = getattr(request.app.state, "system_toolset", None)
@@ -275,7 +296,7 @@ async def bootstrap(
             config=cfg,
             storage_provider=storage_provider,
             provider_registry=provider_registry,
-            vector_store_registry=vector_store_registry,
+            semantic_search_registry=semantic_search_registry,
             toolset_providers=toolsets,
         )
         request.app.state.internal_collections = subsystem

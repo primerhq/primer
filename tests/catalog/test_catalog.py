@@ -173,6 +173,7 @@ def _make_catalog() -> tuple[
         embedder_model="m1",
         vector_store=vstore,  # type: ignore[arg-type]
         collection_storage=storage,  # type: ignore[arg-type]
+        search_provider_id="ssp-test",
     )
     return catalog, embedder, vstore, storage
 
@@ -240,6 +241,7 @@ class TestConstruction:
                 embedder_model="m1",
                 vector_store=_FakeVectorStore(),  # type: ignore[arg-type]
                 collection_storage=_FakeCollectionStorage(),  # type: ignore[arg-type]
+                search_provider_id="ssp-test",
             )
 
     def test_rejects_empty_model_name(self) -> None:
@@ -250,6 +252,7 @@ class TestConstruction:
                 embedder_model="",
                 vector_store=_FakeVectorStore(),  # type: ignore[arg-type]
                 collection_storage=_FakeCollectionStorage(),  # type: ignore[arg-type]
+                search_provider_id="ssp-test",
             )
 
 

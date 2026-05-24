@@ -104,14 +104,18 @@ class SemanticCatalog:
         embedder_model: str,
         vector_store: "VectorStore",
         collection_storage: "Storage[Collection]",
+        search_provider_id: str,
     ) -> None:
         if not embedder_provider_id:
             raise ConfigError("embedder_provider_id must be non-empty")
         if not embedder_model:
             raise ConfigError("embedder_model must be non-empty")
+        if not search_provider_id:
+            raise ConfigError("search_provider_id must be non-empty")
         self._embedder = embedder
         self._embedder_provider_id = embedder_provider_id
         self._embedder_model = embedder_model
+        self._search_provider_id = search_provider_id
         self._vector_store = vector_store
         self._collection_storage = collection_storage
         self._initialized = False
@@ -184,7 +188,7 @@ class SemanticCatalog:
                     model=self._embedder_model,
                 ),
                 system=True,
-                search_provider_id="_unused_placeholder",  # TODO(task-6): wire real SSP id from SemanticCatalog configuration
+                search_provider_id=self._search_provider_id,
             )
             return await self._collection_storage.create(new_row)
         if not existing.system:

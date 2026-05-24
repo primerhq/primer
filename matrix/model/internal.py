@@ -79,6 +79,15 @@ class InternalCollectionsConfig(Identifiable):
             "reranking; vector-store score is preserved."
         ),
     )
+    search_provider_id: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Id of the SemanticSearchProvider that backs the four reserved "
+            "internal collections (_internal_agents, _internal_graphs, "
+            "_internal_collections, _internal_tools)."
+        ),
+    )
     mmr: MmrConfig | None = Field(
         default=None,
         description=(

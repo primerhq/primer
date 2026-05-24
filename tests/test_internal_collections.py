@@ -126,12 +126,14 @@ class _FakeVectorStore:
         return hits[:k]
 
 
-class _FakeVSR:
+class _FakeSSR:
+    """Fake SemanticSearchRegistry: returns the given store for any ssp_id."""
+
     def __init__(self, store: _FakeVectorStore) -> None:
         self._store = store
         self.is_configured = True
 
-    async def get(self):
+    async def get_store(self, ssp_id: str):
         return self._store
 
     async def aclose(self) -> None:
@@ -178,6 +180,7 @@ def cfg() -> InternalCollectionsConfig:
         id=INTERNAL_COLLECTIONS_CONFIG_ID,
         embedding_provider_id="hf-1",
         embedding_model="all-MiniLM-L6-v2",
+        search_provider_id="ssp-test",
         cross_encoder=None,
         mmr=None,
         activated_at=None,
@@ -205,17 +208,17 @@ def pr(embedder) -> _FakePR:
 
 
 @pytest.fixture
-def vsr(store) -> _FakeVSR:
-    return _FakeVSR(store)
+def ssr(store) -> _FakeSSR:
+    return _FakeSSR(store)
 
 
 @pytest.fixture
-def subsystem(cfg, sp, pr, vsr) -> InternalCollectionsSubsystem:
+def subsystem(cfg, sp, pr, ssr) -> InternalCollectionsSubsystem:
     return build_subsystem(
         config=cfg,
         storage_provider=sp,  # type: ignore[arg-type]
         provider_registry=pr,  # type: ignore[arg-type]
-        vector_store_registry=vsr,  # type: ignore[arg-type]
+        semantic_search_registry=ssr,  # type: ignore[arg-type]
     )
 
 
@@ -332,7 +335,7 @@ class TestBootstrap:
 
     @pytest.mark.asyncio
     async def test_bootstrap_ingests_injected_toolset_providers(
-        self, cfg, sp, pr, vsr, store
+        self, cfg, sp, pr, ssr, store
     ) -> None:
         from matrix.model.chat import Tool
 
@@ -350,7 +353,7 @@ class TestBootstrap:
             config=cfg,
             storage_provider=sp,  # type: ignore[arg-type]
             provider_registry=pr,  # type: ignore[arg-type]
-            vector_store_registry=vsr,  # type: ignore[arg-type]
+            semantic_search_registry=ssr,  # type: ignore[arg-type]
             toolset_providers={"_system": _ToolsetProvider()},
         )
         result = await subsystem.bootstrap()
@@ -480,3 +483,34 @@ class TestSearch:
         coll_ids = [c[0] for c in store.searches]
         assert INTERNAL_COLLECTION_IDS["agent"] in coll_ids
         await subsystem.aclose()
+
+
+# ===========================================================================
+# InternalCollectionsConfig model field tests
+# ===========================================================================
+
+
+def test_internal_collections_config_requires_search_provider_id():
+    import pytest
+    from pydantic import ValidationError
+    from matrix.model.internal import InternalCollectionsConfig
+
+    with pytest.raises(ValidationError):
+        InternalCollectionsConfig(
+            id="_internal_collections_config",
+            embedding_provider_id="emb-1",
+            embedding_model="m1",
+            # no search_provider_id
+        )
+
+
+def test_internal_collections_config_with_search_provider_id_constructs():
+    from matrix.model.internal import InternalCollectionsConfig
+
+    cfg = InternalCollectionsConfig(
+        id="_internal_collections_config",
+        embedding_provider_id="emb-1",
+        embedding_model="m1",
+        search_provider_id="ssp-1",
+    )
+    assert cfg.search_provider_id == "ssp-1"

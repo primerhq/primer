@@ -32,6 +32,8 @@ from matrix.model.provider import (
     HuggingFaceConfig,
     Limits,
     PgVectorConfig,
+    SemanticSearchProvider,
+    SemanticSearchProviderType,
     VectorStoreProviderConfig,
     VectorStoreProviderType,
 )
@@ -134,6 +136,19 @@ class _FakeEmbedder:
         return _R()
 
 
+class _FakeSSR:
+    """Fake SemanticSearchRegistry: returns the given store for any ssp_id."""
+
+    def __init__(self, store: _FakeStore) -> None:
+        self._store = store
+
+    async def get_store(self, ssp_id: str) -> _FakeStore:
+        return self._store
+
+    async def aclose(self) -> None:
+        return
+
+
 # ===========================================================================
 # Fixtures
 # ===========================================================================
@@ -194,7 +209,7 @@ def vsr(store) -> VectorStoreRegistry:
 
 
 @pytest.fixture
-async def app(sp, pr, vsr):
+async def app(sp, pr, vsr, store):
     # Seed the embedding provider row that the subsystem will look up
     # via ProviderRegistry.get_embedder. Tests that exercise bootstrap
     # rely on this row being present before they POST.
@@ -207,11 +222,25 @@ async def app(sp, pr, vsr):
             limits=Limits(max_concurrency=2),
         )
     )
-    return create_test_app(
+    # Seed the SSP row that put_config validates against.
+    await sp.get_storage(SemanticSearchProvider).create(
+        SemanticSearchProvider(
+            id="ssp-test",
+            provider=SemanticSearchProviderType.PGVECTOR,
+            config=PgVectorConfig(
+                hostname="x", username="u", password="p", database="d",  # type: ignore[arg-type]
+            ),
+        )
+    )
+    test_app = create_test_app(
         storage_provider=sp,  # type: ignore[arg-type]
         provider_registry=pr,
         vector_store_registry=vsr,
     )
+    # Override the semantic_search_registry with a fake that returns the
+    # test store so bootstrap can resolve vectors without a real database.
+    test_app.state.semantic_search_registry = _FakeSSR(store)
+    return test_app
 
 
 @pytest.fixture
@@ -236,6 +265,7 @@ def _config_body() -> dict:
     return {
         "embedding_provider_id": "hf-1",
         "embedding_model": "all-MiniLM-L6-v2",
+        "search_provider_id": "ssp-test",
     }
 
 
