@@ -173,7 +173,20 @@ mcp_stdio_allowed_commands:
 EOF
 echo "[bringup] rendered $CONFIG" >&2
 
-# ---- 4. Defensive: kill any leftover server from a previous crashed run -----
+# ---- 4. Defensive: stop the docker-compose matrix-app container if it's
+#         running. The UI loop's bring-up leaves the container alive between
+#         iterations (per docs/testing/04-ui-test-loop.md Phase 6 step 1) on
+#         the same host port we use here. The container's image is built
+#         from `./Dockerfile` at compose-up time, so it may carry older code
+#         than the host's working tree — letting it win the bind race causes
+#         spurious 404s when the host's newer routes aren't present.
+#         This stop is idempotent: no-op when the container isn't up.
+if "$RUNTIME" compose ps --services --filter "status=running" 2>/dev/null | grep -qx "matrix"; then
+    echo "[bringup] stopping leftover matrix-app container so the host process can bind $PORT..." >&2
+    "$RUNTIME" compose stop matrix >&2 || true
+fi
+
+# ---- 5. Defensive: kill any leftover host server from a previous crashed run
 
 if [[ -f "$PID_FILE" ]]; then
     old_pid="$(cat "$PID_FILE" || true)"
