@@ -306,6 +306,7 @@ async def chat_ws(
     sp = websocket.app.state.storage_provider
     chats_storage = sp.get_storage(Chat)
     messages_storage = sp.get_storage(ChatMessage)
+    event_bus = getattr(websocket.app.state, "event_bus", None)
 
     chat = await chats_storage.get(chat_id)
     if chat is None:
@@ -343,6 +344,12 @@ async def chat_ws(
                 await websocket.send_json({"kind": "pong"})
                 continue
             if kind == "interrupt":
+                if event_bus is not None:
+                    await _maybe_auto_reject_pending_approval(
+                        chat=chat,
+                        event_bus=event_bus,
+                        note="interrupted by operator",
+                    )
                 # M6 stub: emit an error marker. Real implementation
                 # would signal the in-flight turn to stop.
                 await _append_and_send(
@@ -352,6 +359,49 @@ async def chat_ws(
                     messages_storage,
                     kind="error",
                     payload={"message": "interrupted by client"},
+                )
+                continue
+            if kind == "tool_approval_decide":
+                tcid = incoming.get("tool_call_id")
+                decision = incoming.get("decision")
+                reason = incoming.get("reason")
+                if decision not in ("approved", "rejected"):
+                    await websocket.send_json({
+                        "kind": "error",
+                        "code": "tool_approval_bad_decision",
+                        "message": f"decision must be approved/rejected; got {decision!r}",
+                    })
+                    continue
+                blob = chat.parked_state or {}
+                yielded = blob.get("yielded") or {}
+                expected = (yielded.get("resume_metadata") or {}).get(
+                    "original_call", {},
+                ).get("id")
+                if expected != tcid:
+                    await websocket.send_json({
+                        "kind": "error",
+                        "code": "tool_approval_mismatch",
+                        "message": "tool_call_id does not match the pending approval",
+                    })
+                    continue
+                event_key = yielded.get("event_key")
+                if not event_key:
+                    await websocket.send_json({
+                        "kind": "error",
+                        "code": "tool_approval_missing_event_key",
+                        "message": "park is missing event_key",
+                    })
+                    continue
+                if event_bus is None:
+                    await websocket.send_json({
+                        "kind": "error",
+                        "code": "tool_approval_no_event_bus",
+                        "message": "event bus not available",
+                    })
+                    continue
+                await event_bus.publish(
+                    event_key,
+                    {"decision": decision, "reason": reason},
                 )
                 continue
             if kind != "user_message":
@@ -371,6 +421,12 @@ async def chat_ws(
                     }
                 )
                 continue
+            if event_bus is not None:
+                await _maybe_auto_reject_pending_approval(
+                    chat=chat,
+                    event_bus=event_bus,
+                    note="superseded by new user input",
+                )
             # Re-fetch the chat row so the runner sees the latest
             # last_seq (another worker may have appended messages).
             chat = await chats_storage.get(chat_id)
@@ -396,6 +452,28 @@ async def chat_ws(
                 )
     except WebSocketDisconnect:
         return
+
+
+async def _maybe_auto_reject_pending_approval(
+    *,
+    chat,
+    event_bus,
+    note: str,
+) -> None:
+    """Auto-publish a rejection if the chat is parked on _approval."""
+    if chat.parked_status not in ("parked", "resumable"):
+        return
+    blob = chat.parked_state or {}
+    yielded = blob.get("yielded") or {}
+    if yielded.get("tool_name") != "_approval":
+        return
+    event_key = yielded.get("event_key")
+    if not event_key:
+        return
+    await event_bus.publish(
+        event_key,
+        {"decision": "rejected", "reason": note},
+    )
 
 
 async def _append_and_send(
