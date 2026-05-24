@@ -182,9 +182,9 @@ def make_crud_router(
             raise NotFoundError(
                 f"{model_cls.__name__} {entity_id!r} does not exist"
             )
-        await storage.delete(entity_id)
         if on_delete is not None:
             await on_delete(entity_id, request)
+        await storage.delete(entity_id)
 
     # ---- GET /<plural>  (list) ------------------------------------------
     @router.get(
