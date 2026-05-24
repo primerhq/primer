@@ -8,6 +8,7 @@ assert on it.
 
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -16,17 +17,28 @@ from typer.testing import CliRunner
 
 import matrix.cli as cli_mod
 from matrix.api.config import AppConfig
+from matrix.model.provider import StorageProviderType
 from matrix.model.scheduler import RuntimeMode
 
 
+# ---------------------------------------------------------------------------
+# Shared YAML fixtures — use the NEW nested ``db:`` shape
+# ---------------------------------------------------------------------------
+
 _BASE_YAML = """\
-db_host: localhost
-db_port: 5432
-db_database: matrix
-db_user: matrix
-db_password: matrix
+db:
+  provider: sqlite
+  config:
+    path: /tmp/test-matrix.sqlite
 runtime_mode: api
 """
+
+_BASE_YAML_WITH_SCHEDULER = (
+    _BASE_YAML
+    + "scheduler:\n"
+      "  provider: in_memory\n"
+      "  config: {}\n"
+)
 
 
 @pytest.fixture
@@ -70,14 +82,11 @@ class TestLoadConfig:
     def test_loads_yaml_into_appconfig(self, base_config_file: Path):
         cfg = cli_mod._load_config(base_config_file, RuntimeMode.API)
         assert isinstance(cfg, AppConfig)
-        assert cfg.db_host == "localhost"
-        assert cfg.db_database == "matrix"
+        assert cfg.db is not None
+        assert cfg.db.provider == StorageProviderType.SQLITE
 
     def test_runtime_mode_override_wins(self, base_config_file: Path):
-        # YAML says runtime_mode=api, override forces API_PLUS_WORKER —
-        # but API_PLUS_WORKER requires scheduler config, so use plain API
-        # to verify the override mechanism without triggering validation
-        # that's unrelated to this test.
+        # YAML says runtime_mode=api — verify the override mechanism keeps it.
         cfg = cli_mod._load_config(base_config_file, RuntimeMode.API)
         assert cfg.runtime_mode == RuntimeMode.API
 
@@ -91,17 +100,95 @@ class TestLoadConfig:
         with pytest.raises(typer.BadParameter):
             cli_mod._load_config(bad, RuntimeMode.API)
 
-    def test_empty_file_treated_as_empty_mapping(self, tmp_path: Path):
-        # Empty YAML loads as None; helper should treat it as {} rather
-        # than crashing. It will fail AppConfig validation (db_host is
-        # required) but the failure should be a pydantic ValidationError,
-        # not a NoneType-attribute error.
+    def test_empty_file_treated_as_empty_mapping_gives_defaults(
+        self, tmp_path: Path,
+    ):
+        # Empty YAML loads as None; helper treats it as {} and builds
+        # AppConfig with all defaults (db=None is valid — zero-config SQLite).
         empty = tmp_path / "empty.yaml"
         empty.write_text("", encoding="utf-8")
-        from pydantic import ValidationError
+        cfg = cli_mod._load_config(empty, RuntimeMode.API)
+        assert isinstance(cfg, AppConfig)
+        assert cfg.db is None  # zero-config default
 
-        with pytest.raises(ValidationError):
-            cli_mod._load_config(empty, RuntimeMode.API)
+    # -----------------------------------------------------------------------
+    # New: auto-discovery tests
+    # -----------------------------------------------------------------------
+
+    def test_load_config_no_path_no_default_file_returns_all_defaults(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        # No --config, no ~/.matrix/config.yaml on disk
+        cfg = cli_mod._load_config(None, RuntimeMode.API)
+        assert cfg.db is None
+        assert cfg.runtime_mode == RuntimeMode.API
+
+    def test_load_config_picks_up_home_yaml_when_present(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        yaml_dir = tmp_path / ".matrix"
+        yaml_dir.mkdir()
+        (yaml_dir / "config.yaml").write_text(
+            textwrap.dedent(
+                f"""
+                db:
+                  provider: sqlite
+                  config:
+                    path: {tmp_path}/auto-discovered.sqlite
+                """
+            ),
+            encoding="utf-8",
+        )
+        cfg = cli_mod._load_config(None, RuntimeMode.API)
+        assert cfg.db is not None
+        assert cfg.db.provider == StorageProviderType.SQLITE
+
+    def test_load_config_explicit_path_overrides_home_yaml(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        home_dir = tmp_path / ".matrix"
+        home_dir.mkdir()
+        (home_dir / "config.yaml").write_text(
+            textwrap.dedent(
+                f"""
+                db:
+                  provider: sqlite
+                  config:
+                    path: {tmp_path}/home.sqlite
+                """
+            ),
+            encoding="utf-8",
+        )
+        explicit = tmp_path / "explicit.yaml"
+        explicit.write_text(
+            textwrap.dedent(
+                f"""
+                db:
+                  provider: sqlite
+                  config:
+                    path: {tmp_path}/explicit.sqlite
+                log_level: debug
+                """
+            ),
+            encoding="utf-8",
+        )
+        cfg = cli_mod._load_config(explicit, RuntimeMode.API)
+        assert cfg.log_level == "debug"
+        assert cfg.db.config.path == tmp_path / "explicit.sqlite"  # type: ignore[union-attr]
+
+    def test_load_config_missing_explicit_path_raises(self, tmp_path: Path):
+        with pytest.raises(Exception) as ei:
+            cli_mod._load_config(tmp_path / "does-not-exist.yaml", RuntimeMode.API)
+        assert "not found" in str(ei.value).lower()
 
 
 # ============================================================================
@@ -125,13 +212,7 @@ class TestApiCommand:
         # API_PLUS_WORKER requires a scheduler — use in_memory for the
         # test (no live Postgres needed).
         cfg_path = tmp_path / "config.yaml"
-        cfg_path.write_text(
-            _BASE_YAML
-            + "scheduler:\n"
-              "  provider: in_memory\n"
-              "  config: {}\n",
-            encoding="utf-8",
-        )
+        cfg_path.write_text(_BASE_YAML_WITH_SCHEDULER, encoding="utf-8")
         result = runner.invoke(
             cli_mod.app,
             ["api", "--config", str(cfg_path), "--run-worker"],
@@ -139,9 +220,19 @@ class TestApiCommand:
         assert result.exit_code == 0, result.output
         assert captured["config"].runtime_mode == RuntimeMode.API_PLUS_WORKER
 
-    def test_api_missing_config_arg_errors(self, runner: CliRunner):
+    def test_api_no_config_arg_uses_defaults(
+        self,
+        runner: CliRunner,
+        captured: dict,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # No ~/.matrix/config.yaml — should succeed with all-defaults AppConfig.
+        monkeypatch.setenv("HOME", str(tmp_path))
         result = runner.invoke(cli_mod.app, ["api"])
-        assert result.exit_code != 0
+        assert result.exit_code == 0, result.output
+        assert captured["config"].db is None
+        assert captured["config"].runtime_mode == RuntimeMode.API
 
 
 # ============================================================================
@@ -154,13 +245,7 @@ class TestWorkerCommand:
         self, runner: CliRunner, tmp_path: Path, captured: dict,
     ):
         cfg_path = tmp_path / "config.yaml"
-        cfg_path.write_text(
-            _BASE_YAML
-            + "scheduler:\n"
-              "  provider: in_memory\n"
-              "  config: {}\n",
-            encoding="utf-8",
-        )
+        cfg_path.write_text(_BASE_YAML_WITH_SCHEDULER, encoding="utf-8")
         result = runner.invoke(
             cli_mod.app, ["worker", "--config", str(cfg_path)],
         )
@@ -171,17 +256,24 @@ class TestWorkerCommand:
         self, runner: CliRunner, tmp_path: Path, captured: dict,
     ):
         cfg_path = tmp_path / "config.yaml"
-        cfg_path.write_text(
-            _BASE_YAML
-            + "scheduler:\n"
-              "  provider: in_memory\n"
-              "  config: {}\n",
-            encoding="utf-8",
-        )
+        cfg_path.write_text(_BASE_YAML_WITH_SCHEDULER, encoding="utf-8")
         result = runner.invoke(
             cli_mod.app, ["worker", "-c", str(cfg_path)],
         )
         assert result.exit_code == 0, result.output
+
+    def test_worker_no_config_arg_uses_defaults(
+        self,
+        runner: CliRunner,
+        captured: dict,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        result = runner.invoke(cli_mod.app, ["worker"])
+        assert result.exit_code == 0, result.output
+        assert captured["config"].db is None
+        assert captured["config"].runtime_mode == RuntimeMode.WORKER
 
 
 # ============================================================================
@@ -201,11 +293,6 @@ class TestApplyLogging:
         monkeypatch.setattr(cli_mod, "configure_logging", _fake_configure_logging)
 
         cfg = AppConfig(
-            db_host="localhost",
-            db_port=5432,
-            db_database="matrix",
-            db_user="matrix",
-            db_password="matrix",
             log_level="debug",
             log_file=tmp_path / "out.log",
             log_json=False,

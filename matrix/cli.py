@@ -1,41 +1,38 @@
 """Typer CLI: ``matrix api [--run-worker]`` and ``matrix worker``.
 
-Both entrypoints load a YAML config file that populates
-:class:`matrix.api.config.AppConfig`. The CLI is the single place that
-configures stdlib logging — library code never touches it.
+Both entrypoints load (or auto-discover) a YAML config file that
+populates :class:`matrix.api.config.AppConfig`. The CLI is the
+single place that configures stdlib logging — library code never
+touches it.
 
 Layout
 ------
-* ``matrix api --config config.yaml`` — serve the HTTP API.
-* ``matrix api --config config.yaml --run-worker`` — serve the API AND
-  run the in-process worker pool (debug / single-process dev only).
-* ``matrix worker --config config.yaml`` — run the worker pool. A
-  minimal HTTP surface (``/v1/health`` and ``/v1/workers``) is still
-  served for liveness/readiness probes and graceful drain control.
+* ``matrix api`` — serve the HTTP API. With no flags, auto-loads
+  ``~/.matrix/config.yaml`` if present, otherwise runs with
+  built-in defaults (embedded SQLite at
+  ``~/.matrix/db/data.sqlite``).
+* ``matrix api --config path/to/config.yaml`` — explicit config.
+* ``matrix api --run-worker`` — also start the in-process worker pool.
+* ``matrix worker`` — run the worker pool. A minimal HTTP surface
+  (``/v1/health`` and ``/v1/workers``) is still served for
+  liveness/readiness probes.
 
-YAML config schema mirrors :class:`AppConfig`. Example::
+YAML schema mirrors :class:`AppConfig`. Every field is optional;
+omit ``db`` entirely for the zero-config SQLite default. Example::
 
-    db_host: localhost
-    db_port: 5432
-    db_database: matrix
-    db_user: matrix
-    db_password: matrix
-    log_file: ./logs/matrix.log
-    log_level: info
-    scheduler:
-      provider: postgres
-      config: {}
-    vector_store:
-      provider: pgvector
+    db:
+      provider: sqlite
       config:
-        hostname: localhost
-        port: 5432
-        database: matrix
-        username: matrix
-        password: matrix
+        path: ~/.matrix/db/data.sqlite
 
-Env vars (``MATRIX_*``) still override any field absent from the YAML
-file — pydantic-settings handles the merge.
+    scheduler:
+      provider: in_memory
+      config: {}
+
+    log_level: info
+
+Env vars (``MATRIX_*``) override missing fields; CLI YAML wins
+over env vars (init args > env in pydantic-settings priority).
 """
 
 from __future__ import annotations
@@ -68,26 +65,49 @@ _LEVEL_MAP = {
 }
 
 
+_DEFAULT_HOME_YAML = Path("~/.matrix/config.yaml")
+
+
+def _resolve_config_path(explicit: Path | None) -> Path | None:
+    """Pick the YAML to load.
+
+    Priority: explicit ``--config`` > ``~/.matrix/config.yaml`` if
+    it exists > None (use built-in defaults).
+    """
+    if explicit is not None:
+        return explicit
+    home_yaml = _DEFAULT_HOME_YAML.expanduser()
+    if home_yaml.is_file():
+        return home_yaml
+    return None
+
+
 def _load_config(
-    config_path: Path,
+    config_path: Path | None,
     runtime_mode: RuntimeMode,
 ) -> AppConfig:
-    """Read the YAML config, force the runtime mode, build AppConfig."""
-    if not config_path.exists():
-        raise typer.BadParameter(f"config file not found: {config_path}")
-    with config_path.open("r", encoding="utf-8") as fh:
-        data: dict[str, Any] = yaml.safe_load(fh) or {}
-    if not isinstance(data, dict):
-        raise typer.BadParameter(
-            f"config file {config_path} must contain a YAML mapping at the root"
-        )
-    # CLI-chosen runtime_mode always wins over whatever the YAML says.
+    """Read the YAML config (or use built-in defaults) and build AppConfig."""
+    resolved = _resolve_config_path(config_path)
+    data: dict[str, Any] = {}
+    if resolved is not None:
+        if not resolved.exists():
+            raise typer.BadParameter(f"config file not found: {resolved}")
+        with resolved.open("r", encoding="utf-8") as fh:
+            loaded = yaml.safe_load(fh)
+        if loaded is None:
+            data = {}
+        elif isinstance(loaded, dict):
+            data = loaded
+        else:
+            raise typer.BadParameter(
+                f"config file {resolved} must contain a YAML mapping at the root"
+            )
+    # CLI-chosen runtime_mode always wins.
     data["runtime_mode"] = runtime_mode.value
     return AppConfig(**data)
 
 
 def _apply_logging(config: AppConfig) -> None:
-    """Configure the root logger from AppConfig before anything else logs."""
     configure_logging(
         level=_LEVEL_MAP[config.log_level],
         json_format=config.log_json,
@@ -96,12 +116,7 @@ def _apply_logging(config: AppConfig) -> None:
 
 
 def _run_uvicorn(config: AppConfig) -> None:  # pragma: no cover
-    """Build the FastAPI app and hand it to uvicorn.
-
-    Excluded from coverage because exercising it would require a live
-    Postgres + a real network bind. Tests patch this symbol to capture
-    the constructed AppConfig without spinning up a server.
-    """
+    """Build the FastAPI app and hand it to uvicorn."""
     app_obj = create_app(config)
     uvicorn.run(
         app_obj,
@@ -113,22 +128,20 @@ def _run_uvicorn(config: AppConfig) -> None:  # pragma: no cover
 
 @app.command("api")
 def run_api(
-    config: Path = typer.Option(  # noqa: B008
-        ...,
-        "--config",
-        "-c",
-        help="Path to the YAML config file (populates AppConfig).",
-        exists=False,  # checked in _load_config for a friendlier error
-        dir_okay=False,
-        readable=True,
+    config: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--config", "-c",
+        help=(
+            "Path to a YAML config file. When omitted, "
+            "~/.matrix/config.yaml is auto-loaded if it exists; "
+            "otherwise built-in defaults apply (embedded SQLite "
+            "at ~/.matrix/db/data.sqlite)."
+        ),
+        dir_okay=False, readable=True,
     ),
     run_worker: bool = typer.Option(
-        False,
-        "--run-worker",
-        help=(
-            "Also start the in-process worker pool (debug / single-process "
-            "dev only). Equivalent to runtime_mode=api+worker."
-        ),
+        False, "--run-worker",
+        help="Also start the in-process worker pool (dev / single-process).",
     ),
 ) -> None:
     """Serve the HTTP API."""
@@ -140,14 +153,14 @@ def run_api(
 
 @app.command("worker")
 def run_worker(
-    config: Path = typer.Option(  # noqa: B008
-        ...,
-        "--config",
-        "-c",
-        help="Path to the YAML config file (populates AppConfig).",
-        exists=False,
-        dir_okay=False,
-        readable=True,
+    config: Path | None = typer.Option(  # noqa: B008
+        None, "--config", "-c",
+        help=(
+            "Path to a YAML config file. When omitted, "
+            "~/.matrix/config.yaml is auto-loaded if it exists; "
+            "otherwise built-in defaults apply."
+        ),
+        dir_okay=False, readable=True,
     ),
 ) -> None:
     """Run the worker pool (with a minimal health/workers HTTP surface)."""
