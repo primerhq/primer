@@ -222,6 +222,7 @@ def _collection(
         id=coll_id,
         description=description,
         embedder=CollectionEmbedder(provider_id="p", model="m"),
+        search_provider_id="ssp-test",
     )
 
 
@@ -302,6 +303,7 @@ class TestInitialize:
                 id="_catalog_agents",
                 description="user squatting on the reserved id",
                 embedder=CollectionEmbedder(provider_id="p", model="m"),
+                search_provider_id="ssp-test",
                 system=False,
             )
         )
@@ -320,6 +322,7 @@ class TestInitialize:
                 id="_catalog_agents",
                 description="x",
                 embedder=CollectionEmbedder(provider_id="other", model="other"),
+                search_provider_id="ssp-test",
                 system=True,
             )
         )

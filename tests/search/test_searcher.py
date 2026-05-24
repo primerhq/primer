@@ -125,6 +125,7 @@ def _collection(*, search: CollectionSearch | None = None) -> Collection:
         id="c1",
         description="t",
         embedder=CollectionEmbedder(provider_id="p", model="m"),
+        search_provider_id="ssp-test",
         search=search,
     )
 

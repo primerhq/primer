@@ -49,6 +49,18 @@ _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
 # the per-request ProviderRegistry / VectorStoreRegistry.
 _OnMutateHook = Callable[[str, Request], Awaitable[None]] | None
 
+# Pre-write hook signature: ``(entity, request) -> None``.
+# Called BEFORE the storage write so the hook can raise HTTPException
+# to abort the operation (e.g. reference-integrity checks).
+_OnPreWriteHook = Callable[[Any, Request], Awaitable[None]] | None
+
+# Pre-update hook signature: ``(entity, existing, request) -> None``.
+# Called BEFORE storage.update with both the new entity body and the
+# prior stored row, enabling immutability checks.
+_OnPreUpdateHook = (
+    Callable[[Any, Any, Request], Awaitable[None]] | None
+)
+
 
 def make_crud_router(
     *,
@@ -59,6 +71,8 @@ def make_crud_router(
     on_create: _OnMutateHook = None,
     on_update: _OnMutateHook = None,
     on_delete: _OnMutateHook = None,
+    on_pre_create: _OnPreWriteHook = None,
+    on_pre_update: _OnPreUpdateHook = None,
     extra_get_responses: dict[int, dict[str, Any]] | None = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
@@ -75,9 +89,19 @@ def make_crud_router(
     tag
         OpenAPI tag for the router (groups endpoints in /docs).
     on_create / on_update / on_delete
-        Async callables ``async def(entity_id: str) -> None`` invoked
-        after each successful mutation. Used by provider routers to
+        Async callables ``async def(entity_id: str, request: Request) -> None``
+        invoked after each successful mutation. Used by provider routers to
         invalidate cached adapters in :class:`ProviderRegistry`.
+    on_pre_create
+        Async callable ``async def(entity, request: Request) -> None``
+        invoked BEFORE ``storage.create()``. Raise :class:`HTTPException`
+        to abort the create (e.g. reference-integrity checks).
+    on_pre_update
+        Async callable
+        ``async def(entity, existing, request: Request) -> None``
+        invoked BEFORE ``storage.update()`` with both the new entity body
+        and the prior stored row. Raise :class:`HTTPException` to abort
+        the update (e.g. immutability checks).
     extra_get_responses
         Extra response codes documented for the GET-by-id route (in
         addition to the standard 404).
@@ -103,6 +127,8 @@ def make_crud_router(
             raise ConflictError(
                 f"{model_cls.__name__} with id {entity.id!r} already exists"
             )
+        if on_pre_create is not None:
+            await on_pre_create(entity, request)
         created = await storage.create(entity)
         if on_create is not None:
             await on_create(created.id, request)
@@ -158,6 +184,8 @@ def make_crud_router(
             raise NotFoundError(
                 f"{model_cls.__name__} {entity_id!r} does not exist"
             )
+        if on_pre_update is not None:
+            await on_pre_update(entity, existing, request)
         updated = await storage.update(entity)
         if on_update is not None:
             await on_update(updated.id, request)

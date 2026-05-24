@@ -24,6 +24,7 @@ class TestCollectionSearchField:
             id="c1",
             description="t",
             embedder=CollectionEmbedder(provider_id="p", model="m"),
+            search_provider_id="ssp-test",
         )
         assert c.search is None
 
@@ -32,6 +33,7 @@ class TestCollectionSearchField:
             id="c1",
             description="t",
             embedder=CollectionEmbedder(provider_id="p", model="m"),
+            search_provider_id="ssp-test",
         )
         data = original.model_dump()
         assert data["search"] is None
@@ -43,6 +45,7 @@ class TestCollectionSearchField:
             id="c1",
             description="t",
             embedder=CollectionEmbedder(provider_id="p", model="m"),
+            search_provider_id="ssp-test",
             search=CollectionSearch(mmr=MmrConfig(lambda_mult=0.7, fetch_k=40)),
         )
         rehydrated = Collection.model_validate(original.model_dump())
@@ -57,6 +60,7 @@ class TestCollectionSearchField:
             id="c1",
             description="t",
             embedder=CollectionEmbedder(provider_id="p", model="m"),
+            search_provider_id="ssp-test",
             search=CollectionSearch(
                 cer=CollectionCrossEncoder(
                     provider_id="ce",
@@ -79,6 +83,7 @@ class TestCollectionSearchField:
             id="c1",
             description="t",
             embedder=CollectionEmbedder(provider_id="p", model="m"),
+            search_provider_id="ssp-test",
             search=CollectionSearch(
                 mmr=MmrConfig(),
                 cer=CollectionCrossEncoder(provider_id="ce", model="m"),

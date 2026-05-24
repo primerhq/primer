@@ -381,6 +381,7 @@ class InternalCollectionsSubsystem:
                 ),
                 embedder=embedder,
                 system=True,
+                search_provider_id="_unused_placeholder",  # TODO(task-6): wire real SSP id from InternalCollectionsConfig.search_provider_id
             )
             existing = await collections.get(coll_id)
             if existing is None:

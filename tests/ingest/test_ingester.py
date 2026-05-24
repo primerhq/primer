@@ -155,6 +155,7 @@ def _collection() -> Collection:
             provider_id="emb-1",
             model="fake-model",
         ),
+        search_provider_id="ssp-test",
     )
 
 

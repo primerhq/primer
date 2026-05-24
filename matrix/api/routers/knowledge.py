@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Body, Depends, Path, Query
+from fastapi import Body, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field
 
 from matrix.api.deps import (
@@ -40,12 +40,10 @@ from matrix.api.routers._cdc_hooks import make_cdc_hooks
 from matrix.api.routers._crud import make_crud_router
 from matrix.model.chat import TextPart
 from matrix.model.collection import Collection, Document
-
-
-_collection_create, _collection_update, _collection_delete = make_cdc_hooks(
-    "collection", Collection,
-)
 from matrix.model.except_ import NotFoundError
+from matrix.model.provider import SemanticSearchProvider
+
+
 from matrix.model.storage import (
     CursorPageResponse,
     FieldRef,
@@ -54,6 +52,11 @@ from matrix.model.storage import (
     OffsetPageResponse,
     Predicate,
     Value,
+)
+
+
+_collection_create, _collection_update, _collection_delete = make_cdc_hooks(
+    "collection", Collection,
 )
 
 
@@ -69,6 +72,49 @@ class _CollectionSearchBody(BaseModel):
     )
 
 
+# ---- Collection validation hooks -------------------------------------------
+
+
+async def _validate_ssp_exists(entity: Collection, request: Request) -> None:
+    """on_pre_create hook: verify search_provider_id points at an existing SSP."""
+    storage_provider = request.app.state.storage_provider
+    ssp_storage = storage_provider.get_storage(SemanticSearchProvider)
+    existing = await ssp_storage.get(entity.search_provider_id)
+    if existing is None:
+        raise NotFoundError(
+            f"Collection {entity.id!r}: search_provider_id "
+            f"{entity.search_provider_id!r} does not refer to a "
+            "known SemanticSearchProvider."
+        )
+
+
+async def _validate_ssp_immutable(
+    entity: Collection, existing: Collection, request: Request
+) -> None:
+    """on_pre_update hook: reject changes to search_provider_id after create."""
+    if existing.search_provider_id != entity.search_provider_id:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "type": "/errors/validation-error",
+                "title": "Immutable field",
+                "detail": (
+                    "Collection.search_provider_id is immutable after "
+                    "create. A future 'reindex' operation will permit moves."
+                ),
+                "extensions": {
+                    "errors": [
+                        {
+                            "loc": ["body", "search_provider_id"],
+                            "msg": "field is immutable after create",
+                            "type": "value_error.immutable",
+                        }
+                    ],
+                },
+            },
+        )
+
+
 # ---- Collection router -----------------------------------------------------
 
 collection_router = make_crud_router(
@@ -79,6 +125,8 @@ collection_router = make_crud_router(
     on_create=_collection_create,
     on_update=_collection_update,
     on_delete=_collection_delete,
+    on_pre_create=_validate_ssp_exists,
+    on_pre_update=_validate_ssp_immutable,
 )
 
 

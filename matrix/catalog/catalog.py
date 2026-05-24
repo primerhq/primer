@@ -184,6 +184,7 @@ class SemanticCatalog:
                     model=self._embedder_model,
                 ),
                 system=True,
+                search_provider_id="_unused_placeholder",  # TODO(task-6): wire real SSP id from SemanticCatalog configuration
             )
             return await self._collection_storage.create(new_row)
         if not existing.system:

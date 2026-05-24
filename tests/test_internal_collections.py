@@ -234,6 +234,7 @@ def _collection(id="kb-1") -> Collection:
         id=id,
         description="knowledge base of articles",
         embedder=CollectionEmbedder(provider_id="hf-1", model="m"),
+        search_provider_id="ssp-test",
     )
 
 

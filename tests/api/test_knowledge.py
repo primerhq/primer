@@ -14,11 +14,26 @@ import pytest
 from matrix.model.collection import Collection, CollectionEmbedder, Document
 
 
+_SSP_BODY = {
+    "id": "ssp-test",
+    "provider": "pgvector",
+    "config": {
+        "hostname": "localhost",
+        "port": 5432,
+        "database": "matrix",
+        "username": "matrix",
+        "password": "matrix",
+        "db_schema": "public",
+    },
+}
+
+
 def _collection(**overrides) -> Collection:
     body = dict(
         id="kb-1",
         description="test collection",
         embedder=CollectionEmbedder(provider_id="hf-1", model="all-MiniLM-L6-v2"),
+        search_provider_id="ssp-test",
     )
     body.update(overrides)
     return Collection(**body)
@@ -38,6 +53,7 @@ def _document(**overrides) -> Document:
 class TestCollectionRouter:
     @pytest.mark.asyncio
     async def test_round_trip(self, client) -> None:
+        await client.post("/v1/ssp", json=_SSP_BODY)
         body = _collection().model_dump(mode="json")
         post = await client.post("/v1/collections", json=body)
         assert post.status_code == 201, post.text
@@ -48,6 +64,7 @@ class TestCollectionRouter:
     async def test_list_collection_documents_works_when_collection_exists(
         self, client
     ) -> None:
+        await client.post("/v1/ssp", json=_SSP_BODY)
         await client.post("/v1/collections", json=_collection().model_dump(mode="json"))
         await client.post(
             "/v1/documents",

@@ -178,6 +178,7 @@ def _collection() -> Collection:
         id="kb-1",
         description="test collection",
         embedder=CollectionEmbedder(provider_id="hf-1", model="all-MiniLM-L6-v2"),
+        search_provider_id="ssp-test",
     )
 
 
