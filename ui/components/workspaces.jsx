@@ -755,12 +755,12 @@ function SessionsTab({ wid }) {
             <thead><tr><th>Status</th><th>Session</th><th>Bound</th><th>Turns</th><th>Last turn</th></tr></thead>
             <tbody>
               {items.map((s) => (
-                <tr key={s.id} onClick={() => navigate("/sessions/" + s.id)} style={{ cursor: "pointer" }}>
+                <tr key={s.session_id} onClick={() => navigate("/sessions/" + s.session_id)} style={{ cursor: "pointer" }}>
                   <td><StatusPill status={s.status} /></td>
-                  <td className="mono">{s.id}</td>
-                  <td className="mono">{s.binding?.agent_id || s.binding?.graph_id || <span className="muted">—</span>}</td>
+                  <td className="mono">{s.session_id}</td>
+                  <td className="mono">{s.agent_id || <span className="muted">—</span>}</td>
                   <td className="mono num tabular">{s.turn_count ?? 0}</td>
-                  <td className="mono muted">{s.last_turn_at ? relativeTime((Date.now() - new Date(s.last_turn_at).getTime()) / 1000) : "—"}</td>
+                  <td className="mono muted">{s.last_activity_at ? relativeTime((Date.now() - new Date(s.last_activity_at).getTime()) / 1000) : "—"}</td>
                 </tr>
               ))}
             </tbody>

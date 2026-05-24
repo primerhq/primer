@@ -74,10 +74,13 @@ services:
     ports:
       - "${MATRIX_PORT:-8765}:8765"
     volumes:
-      # Live-mount ui/ read-only so JSX/CSS edits are picked up by
-      # Babel-in-browser without rebuilding the image. The FastAPI
-      # static mount serves these at request time.
-      - ./ui:/app/ui:ro
+      # Live-mount ui/ so JSX/CSS edits are picked up by Babel-in-browser
+      # without rebuilding the image. The FastAPI static mount serves
+      # these at request time. RW (rather than :ro) so the nested
+      # brand/ bind mount below can create its mountpoint at container
+      # init under Docker's bind-recursive semantics; the container
+      # process never writes to /app/ui in practice.
+      - ./ui:/app/ui
       # Brand kit — mounted under ui/brand so the existing /console
       # static mount serves it at /console/brand/* without any
       # backend changes. Updates to brand/ on the host are picked up
