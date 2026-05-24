@@ -9,7 +9,8 @@ import pytest
 async def test_create_and_list(client):
     r = await client.post(
         "/v1/channel_providers",
-        json={"id": "cp-1", "provider": "slack", "config": {}},
+        json={"id": "cp-1", "provider": "slack",
+              "config": {"app_token": "xapp-test", "bot_token": "xoxb-test"}},
     )
     assert r.status_code == 201, r.text
     r = await client.get("/v1/channel_providers")

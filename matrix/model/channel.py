@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from matrix.model.common import Identifiable
 
@@ -17,7 +17,41 @@ class ChannelProviderType(str, Enum):
 
 
 class SlackChannelProviderConfig(BaseModel):
-    """Stub — see Spec 3.1 for the real fields."""
+    """Credentials for one Slack workspace (Slack-team)."""
+
+    app_token: SecretStr = Field(
+        ...,
+        description=(
+            "App-level token (xapp-…) required for Socket Mode. "
+            "Generated in the Slack app's Basic Information panel."
+        ),
+    )
+    bot_token: SecretStr = Field(
+        ...,
+        description=(
+            "Bot OAuth token (xoxb-…) used for chat.postMessage, "
+            "conversations.history, etc."
+        ),
+    )
+    signing_secret: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Optional. Unused in Socket Mode (signing only matters "
+            "for HTTP event delivery)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_tokens(self) -> "SlackChannelProviderConfig":
+        if not self.app_token.get_secret_value().startswith("xapp-"):
+            raise ValueError(
+                "app_token must start with 'xapp-' (Slack app-level token)"
+            )
+        if not self.bot_token.get_secret_value().startswith("xoxb-"):
+            raise ValueError(
+                "bot_token must start with 'xoxb-' (Slack bot token)"
+            )
+        return self
 
 
 class TelegramChannelProviderConfig(BaseModel):

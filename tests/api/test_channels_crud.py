@@ -22,7 +22,8 @@ async def test_create_channel_under_provider(client):
 async def test_unique_provider_external_id_pair(client):
     await client.post(
         "/v1/channel_providers",
-        json={"id": "cp-u", "provider": "slack", "config": {}},
+        json={"id": "cp-u", "provider": "slack",
+              "config": {"app_token": "xapp-test", "bot_token": "xoxb-test"}},
     )
     a = await client.post(
         "/v1/channels",

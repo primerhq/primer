@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from matrix.model.channel import (
     Channel,
@@ -16,6 +16,13 @@ from matrix.model.channel import (
 )
 
 
+def _valid_slack_config() -> SlackChannelProviderConfig:
+    return SlackChannelProviderConfig(
+        app_token=SecretStr("xapp-test"),
+        bot_token=SecretStr("xoxb-test"),
+    )
+
+
 def test_channel_provider_type_values_stable():
     assert ChannelProviderType.SLACK.value == "slack"
     assert ChannelProviderType.TELEGRAM.value == "telegram"
@@ -26,7 +33,7 @@ def test_provider_row_discriminator_slack():
     row = ChannelProvider(
         id="cp-1",
         provider=ChannelProviderType.SLACK,
-        config=SlackChannelProviderConfig(),
+        config=_valid_slack_config(),
     )
     assert row.provider == ChannelProviderType.SLACK
     assert isinstance(row.config, SlackChannelProviderConfig)
@@ -58,3 +65,27 @@ def test_association_defaults_forward_both():
     assert a.enabled is True
     assert a.forward_ask_user is True
     assert a.forward_tool_approval is True
+
+
+def test_slack_config_requires_xapp_prefix():
+    with pytest.raises(ValidationError):
+        SlackChannelProviderConfig(
+            app_token=SecretStr("nope"),
+            bot_token=SecretStr("xoxb-abc"),
+        )
+
+
+def test_slack_config_requires_xoxb_prefix():
+    with pytest.raises(ValidationError):
+        SlackChannelProviderConfig(
+            app_token=SecretStr("xapp-abc"),
+            bot_token=SecretStr("xowrong-abc"),
+        )
+
+
+def test_slack_config_accepts_valid_token_prefixes():
+    c = SlackChannelProviderConfig(
+        app_token=SecretStr("xapp-1-A1B2-1234567890-abc"),
+        bot_token=SecretStr("xoxb-1234567890-abc"),
+    )
+    assert c.signing_secret is None

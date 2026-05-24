@@ -10,7 +10,8 @@ async def _seed_provider_channel_workspace(client, tmp_path=None):
     import tempfile, os
     ws_path = str(tmp_path) if tmp_path is not None else tempfile.mkdtemp()
     await client.post("/v1/channel_providers",
-                      json={"id": "cp-a", "provider": "slack", "config": {}})
+                      json={"id": "cp-a", "provider": "slack",
+                            "config": {"app_token": "xapp-test", "bot_token": "xoxb-test"}})
     await client.post("/v1/channels",
                       json={"id": "ch-a", "provider_id": "cp-a", "external_id": "Ca"})
     await client.post("/v1/workspace_providers",

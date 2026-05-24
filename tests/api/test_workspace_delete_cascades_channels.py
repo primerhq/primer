@@ -8,7 +8,8 @@ import pytest
 @pytest.mark.asyncio
 async def test_workspace_delete_cascades(client, tmp_path):
     await client.post("/v1/channel_providers",
-                      json={"id": "cp", "provider": "slack", "config": {}})
+                      json={"id": "cp", "provider": "slack",
+                            "config": {"app_token": "xapp-test", "bot_token": "xoxb-test"}})
     await client.post("/v1/channels",
                       json={"id": "ch", "provider_id": "cp", "external_id": "Cz"})
     await client.post("/v1/workspace_providers",

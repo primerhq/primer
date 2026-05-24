@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 from matrix.api.registries.channel_registry import ChannelRegistry
 from matrix.channel.factory import (
@@ -48,7 +49,10 @@ async def test_for_workspace_returns_only_enabled_pairs(tmp_path: Path):
         a_storage = p.get_storage(WorkspaceChannelAssociation)
         await cp_storage.create(ChannelProvider(
             id="cp-1", provider=ChannelProviderType.SLACK,
-            config=SlackChannelProviderConfig(),
+            config=SlackChannelProviderConfig(
+            app_token=SecretStr("xapp-test"),
+            bot_token=SecretStr("xoxb-test"),
+        ),
         ))
         await c_storage.create(Channel(
             id="ch-1", provider_id="cp-1", external_id="C1",
@@ -97,7 +101,10 @@ async def test_get_adapter_caches_per_channel_id(tmp_path: Path):
         c_storage = p.get_storage(Channel)
         await cp_storage.create(ChannelProvider(
             id="cp-1", provider=ChannelProviderType.SLACK,
-            config=SlackChannelProviderConfig(),
+            config=SlackChannelProviderConfig(
+            app_token=SecretStr("xapp-test"),
+            bot_token=SecretStr("xoxb-test"),
+        ),
         ))
         await c_storage.create(Channel(
             id="ch-1", provider_id="cp-1", external_id="C1",
