@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "aiodocker>=0.21",
+    "aiosqlite>=0.20",
     "aiohttp>=3.11",
     "anthropic>=0.97.0",
     "asyncpg>=0.30.0",
