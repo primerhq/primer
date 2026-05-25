@@ -218,11 +218,7 @@ function SSPCreateModal({ onClose, pushToast }) {
   const { navigate } = useRouter();
 
   const [form, setForm] = React.useState({
-    // SSP ids are operator-meaningful (referenced by Collection.search_provider_id
-    // and shown in Knowledge bench breadcrumbs); the user must pick one.
-    // A blank default forces the submit guard below to surface the
-    // "value is required" inline error instead of silently submitting a
-    // random opaque id.
+    // SSP ids are operator-meaningful; the user must pick one.
     id: "",
     provider: "pgvector",
     hostname: "",
@@ -231,16 +227,23 @@ function SSPCreateModal({ onClose, pushToast }) {
     username: "",
     password: "",
     db_schema: "public",
+    // Lance-specific field — only used when provider="lance"
+    path: "",
+    distance: "cosine",
     hnsw_m: 16,
     hnsw_ef_construction: 64,
     enable_diskann: false,
     diskann_num_neighbors: 50,
     diskann_search_list_size: 100,
+    // Lance-only knob; ignored when provider is pgvector/pgvectorscale
+    index_min_rows: 1000,
   });
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const isScale = form.provider === "pgvectorscale";
+  const isLance = form.provider === "lance";
+  const isPostgresFamily = form.provider === "pgvector" || form.provider === "pgvectorscale";
 
   const create = useMutation(
     (body) => apiFetch("POST", "/ssp", body),
@@ -278,40 +281,50 @@ function SSPCreateModal({ onClose, pushToast }) {
   );
 
   const submit = () => {
-    // Client-side guard for the obvious required fields. Server-side
-    // 422 still wins (e.g. min_length checks); this is just to avoid
-    // a round-trip when fields are empty.
+    // Client-side guard for required fields, scoped per backend.
     const errs = {};
     if (!form.id) errs.id = "value is required";
-    if (!form.hostname) errs.hostname = "value is required";
-    if (!form.username) errs.username = "value is required";
-    if (!form.password) errs.password = "value is required";
-    if (!form.database) errs.database = "value is required";
+    if (isLance) {
+      if (!form.path) errs.path = "value is required";
+    } else {
+      if (!form.hostname) errs.hostname = "value is required";
+      if (!form.username) errs.username = "value is required";
+      if (!form.password) errs.password = "value is required";
+      if (!form.database) errs.database = "value is required";
+    }
     if (Object.keys(errs).length > 0) {
       setFieldErrors(errs);
       return;
     }
     setFieldErrors({});
 
-    // Shape the body per matrix.model.provider.SemanticSearchProvider:
-    //   { id, provider, config: { hostname, port, username, password,
-    //     database, db_schema, hnsw_m, hnsw_ef_construction,
-    //     enable_diskann?, diskann_num_neighbors?, diskann_search_list_size? } }
-    const config = {
-      hostname: form.hostname,
-      port: Number(form.port) || 5432,
-      username: form.username,
-      password: form.password,
-      database: form.database,
-      db_schema: form.db_schema || "public",
-      hnsw_m: Number(form.hnsw_m) || 16,
-      hnsw_ef_construction: Number(form.hnsw_ef_construction) || 64,
-    };
-    if (isScale) {
-      config.enable_diskann = !!form.enable_diskann;
-      if (form.enable_diskann) {
-        config.diskann_num_neighbors = Number(form.diskann_num_neighbors) || 50;
-        config.diskann_search_list_size = Number(form.diskann_search_list_size) || 100;
+    let config;
+    if (isLance) {
+      config = {
+        path: form.path,
+        distance: form.distance || "cosine",
+        hnsw_m: Number(form.hnsw_m) || 16,
+        hnsw_ef_construction: Number(form.hnsw_ef_construction) || 64,
+        hnsw_ef_search: 40,
+        index_min_rows: Number(form.index_min_rows) || 1000,
+      };
+    } else {
+      config = {
+        hostname: form.hostname,
+        port: Number(form.port) || 5432,
+        username: form.username,
+        password: form.password,
+        database: form.database,
+        db_schema: form.db_schema || "public",
+        hnsw_m: Number(form.hnsw_m) || 16,
+        hnsw_ef_construction: Number(form.hnsw_ef_construction) || 64,
+      };
+      if (isScale) {
+        config.enable_diskann = !!form.enable_diskann;
+        if (form.enable_diskann) {
+          config.diskann_num_neighbors = Number(form.diskann_num_neighbors) || 50;
+          config.diskann_search_list_size = Number(form.diskann_search_list_size) || 100;
+        }
       }
     }
     const body = { id: form.id, provider: form.provider, config };
@@ -349,30 +362,46 @@ function SSPCreateModal({ onClose, pushToast }) {
             <select className="select mono" value={form.provider} onChange={(e) => update("provider", e.target.value)} style={{ width: "100%" }}>
               <option value="pgvector">pgvector</option>
               <option value="pgvectorscale">pgvectorscale</option>
+              <option value="lance">lance (embedded)</option>
             </select>
           </FieldRow>
 
-          <Section label="Connection" />
-          <FieldRow label="hostname" err={fieldErrors.hostname}>
-            <input className="input mono" value={form.hostname} onChange={(e) => update("hostname", e.target.value)} placeholder="pg-prod.internal" style={{ width: "100%" }} />
-          </FieldRow>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 100px", gap: 10 }}>
-            <FieldRow label="database" err={fieldErrors.database}>
-              <input className="input mono" value={form.database} onChange={(e) => update("database", e.target.value)} style={{ width: "100%" }} />
+          {isPostgresFamily && (<>
+            <Section label="Connection" />
+            <FieldRow label="hostname" err={fieldErrors.hostname}>
+              <input className="input mono" value={form.hostname} onChange={(e) => update("hostname", e.target.value)} placeholder="pg-prod.internal" style={{ width: "100%" }} />
             </FieldRow>
-            <FieldRow label="port" err={fieldErrors.port}>
-              <input className="input mono" type="number" value={form.port} onChange={(e) => update("port", +e.target.value)} style={{ width: "100%" }} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 100px", gap: 10 }}>
+              <FieldRow label="database" err={fieldErrors.database}>
+                <input className="input mono" value={form.database} onChange={(e) => update("database", e.target.value)} style={{ width: "100%" }} />
+              </FieldRow>
+              <FieldRow label="port" err={fieldErrors.port}>
+                <input className="input mono" type="number" value={form.port} onChange={(e) => update("port", +e.target.value)} style={{ width: "100%" }} />
+              </FieldRow>
+            </div>
+            <FieldRow label="username" err={fieldErrors.username}>
+              <input className="input mono" value={form.username} onChange={(e) => update("username", e.target.value)} placeholder="matrix_rw" style={{ width: "100%" }} />
             </FieldRow>
-          </div>
-          <FieldRow label="username" err={fieldErrors.username}>
-            <input className="input mono" value={form.username} onChange={(e) => update("username", e.target.value)} placeholder="matrix_rw" style={{ width: "100%" }} />
-          </FieldRow>
-          <FieldRow label="password" hint="SecretStr · stored encrypted" err={fieldErrors.password}>
-            <input className="input mono" type="password" value={form.password} onChange={(e) => update("password", e.target.value)} placeholder="•••••••••" style={{ width: "100%" }} />
-          </FieldRow>
-          <FieldRow label="schema" err={fieldErrors.db_schema}>
-            <input className="input mono" value={form.db_schema} onChange={(e) => update("db_schema", e.target.value)} style={{ width: "100%" }} />
-          </FieldRow>
+            <FieldRow label="password" hint="SecretStr · stored encrypted" err={fieldErrors.password}>
+              <input className="input mono" type="password" value={form.password} onChange={(e) => update("password", e.target.value)} placeholder="•••••••••" style={{ width: "100%" }} />
+            </FieldRow>
+            <FieldRow label="schema" err={fieldErrors.db_schema}>
+              <input className="input mono" value={form.db_schema} onChange={(e) => update("db_schema", e.target.value)} style={{ width: "100%" }} />
+            </FieldRow>
+          </>)}
+
+          {isLance && (<>
+            <Section label="Filesystem" />
+            <FieldRow label="path" hint="absolute directory; created on first use" err={fieldErrors.path}>
+              <input
+                className="input mono"
+                value={form.path}
+                onChange={(e) => update("path", e.target.value)}
+                placeholder={`~/.matrix/lance/${form.id || "<id>"}/`}
+                style={{ width: "100%" }}
+              />
+            </FieldRow>
+          </>)}
 
           <Section label="HNSW knobs" />
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -384,27 +413,29 @@ function SSPCreateModal({ onClose, pushToast }) {
             </FieldRow>
           </div>
 
-          <Section label="DiskANN" sub="pgvectorscale only" />
-          {!isScale && (
-            <div className="banner banner-info" style={{ fontSize: 11.5, padding: "6px 10px", marginBottom: 10 }}>
-              <Icon name="info" size={11} className="ico" />
-              <div>Switch backend to <span className="mono">pgvectorscale</span> to enable DiskANN.</div>
-            </div>
-          )}
-          <fieldset disabled={!isScale} style={{ border: 0, padding: 0, margin: 0, opacity: isScale ? 1 : 0.4 }}>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: 12.5 }}>
-              <input type="checkbox" checked={form.enable_diskann} onChange={(e) => update("enable_diskann", e.target.checked)} />
-              <span>enable DiskANN index</span>
-            </label>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <FieldRow label="num_neighbors" err={fieldErrors.diskann_num_neighbors}>
-                <input className="input mono" type="number" value={form.diskann_num_neighbors} onChange={(e) => update("diskann_num_neighbors", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
-              </FieldRow>
-              <FieldRow label="search_list_size" err={fieldErrors.diskann_search_list_size}>
-                <input className="input mono" type="number" value={form.diskann_search_list_size} onChange={(e) => update("diskann_search_list_size", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
-              </FieldRow>
-            </div>
-          </fieldset>
+          {isPostgresFamily && (<>
+            <Section label="DiskANN" sub="pgvectorscale only" />
+            {!isScale && (
+              <div className="banner banner-info" style={{ fontSize: 11.5, padding: "6px 10px", marginBottom: 10 }}>
+                <Icon name="info" size={11} className="ico" />
+                <div>Switch backend to <span className="mono">pgvectorscale</span> to enable DiskANN.</div>
+              </div>
+            )}
+            <fieldset disabled={!isScale} style={{ border: 0, padding: 0, margin: 0, opacity: isScale ? 1 : 0.4 }}>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: 12.5 }}>
+                <input type="checkbox" checked={form.enable_diskann} onChange={(e) => update("enable_diskann", e.target.checked)} />
+                <span>enable DiskANN index</span>
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <FieldRow label="num_neighbors" err={fieldErrors.diskann_num_neighbors}>
+                  <input className="input mono" type="number" value={form.diskann_num_neighbors} onChange={(e) => update("diskann_num_neighbors", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
+                </FieldRow>
+                <FieldRow label="search_list_size" err={fieldErrors.diskann_search_list_size}>
+                  <input className="input mono" type="number" value={form.diskann_search_list_size} onChange={(e) => update("diskann_search_list_size", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
+                </FieldRow>
+              </div>
+            </fieldset>
+          </>)}
         </div>
         <div className="modal-f">
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
@@ -551,8 +582,12 @@ function SSPDetail({ sspId, pushToast }) {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="mono" style={{ fontSize: 16, fontWeight: 600 }}>{p.id}</div>
             <div className="muted text-sm mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {p.config?.username}@{p.config?.hostname}:{p.config?.port}/{p.config?.database}
-              {p.config?.db_schema ? ` · schema ${p.config.db_schema}` : ""}
+              {p.provider === "lance"
+                ? <>{p.config?.path}</>
+                : <>
+                    {p.config?.username}@{p.config?.hostname}:{p.config?.port}/{p.config?.database}
+                    {p.config?.db_schema ? ` · schema ${p.config.db_schema}` : ""}
+                  </>}
             </div>
           </div>
           <Btn
