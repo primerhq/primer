@@ -119,6 +119,27 @@ function Topbar({ workerStats, onNavigate, onOpenPalette }) {
   if (active === 0) pillClass = "err";
   else if (inFlight >= totalCap * 0.8) pillClass = "warn";
 
+  // IC bell: only render when the subsystem is configured-but-not-active
+  // (the "bootstrap required" state). Hidden when IC is OFF or fully active.
+  // Polls GET /v1/internal_collections/config (404 → OFF, 200 with
+  // activated_at null → configured, 200 with activated_at set → active).
+  const { useResource } = window.matrixApi || {};
+  const icProbe = useResource
+    ? useResource(
+        "chrome:ic-config",
+        async (signal) => {
+          try {
+            return await window.matrixApi.apiFetch("GET", "/internal_collections/config", null, { signal });
+          } catch (e) {
+            if (e && e.status === 404) return null;
+            throw e;
+          }
+        },
+        { pollMs: 30000 }
+      )
+    : { data: null, error: null };
+  const icBootstrapRequired = icProbe.data != null && !icProbe.data.activated_at;
+
   return (
     <header className="topbar">
       <div className="topbar-brand">
@@ -149,9 +170,16 @@ function Topbar({ workerStats, onNavigate, onOpenPalette }) {
           <span className="sep">·</span>
           <span>{inFlight} in flight</span>
         </div>
-        <button className="icon-btn warn" title="Subsystem warning: Internal Collections is configured but not bootstrapped">
-          <Icon name="bell" size={14} />
-        </button>
+        {icBootstrapRequired && (
+          <button
+            className="icon-btn warn"
+            title="Internal Collections subsystem: bootstrap required"
+            aria-label="Internal Collections subsystem: bootstrap required"
+            onClick={() => onNavigate("internal-collections")}
+          >
+            <Icon name="bell" size={14} />
+          </button>
+        )}
         <div className="user-avatar mono" title="No auth (roadmap)">OP</div>
       </div>
     </header>
