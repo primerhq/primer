@@ -1,185 +1,546 @@
-/* global React, Icon, Btn, StatusPill, Banner, relativeTime */
+/* global React, Icon, Btn, StatusPill, Modal, Banner, relativeTime */
 
-const COLLECTIONS = [
-  { id: "docs-public", search_provider_id: "pgvector-prod", desc: "Public-facing API docs", embedding_provider: "openai-emb-1", model: "text-embedding-3-large", docs: 1842, chunks: 18204, last_ingest: 540 },
-  { id: "internal-runbooks", search_provider_id: "pgvector-prod", desc: "On-call runbooks", embedding_provider: "openai-emb-1", model: "text-embedding-3-large", docs: 312, chunks: 4128, last_ingest: 3600 * 8 },
-  { id: "support-tickets-2024", search_provider_id: "pgvectorscale-archive", desc: "Closed tickets archive", embedding_provider: "voyage-1", model: "voyage-3", docs: 18420, chunks: 184200, last_ingest: 3600 * 24 },
-  { id: "code-symbols", search_provider_id: "pgvector-prod", desc: "Indexed source symbols", embedding_provider: "openai-emb-1", model: "text-embedding-3-small", docs: 8412, chunks: 28412, last_ingest: 120 },
-];
+// Knowledge: Collections + Documents + SearchBench wired to the real API.
+// The Designer's mock-data scaffold was replaced in Phase 2 — every fetch
+// goes through window.matrixApi.{apiFetch, useResource, useMutation,
+// useRouter}. Cache-key convention follows other components:
+//
+//   collections:list                — GET /collections?limit=200
+//   collections:embedding-providers — GET /embedding_providers?limit=200
+//   documents:list:${collectionId}  — GET /documents (filter by collection)
+//   collection-docs-count:${id}     — per-collection doc count probe
+//   knowledge:ic-config             — GET /internal_collections/config
+//                                      (404 → OFF, mirrors toolsets.jsx)
+//
+// Babel-standalone shares the global scope across <script> tags so every
+// top-level binding in this file is prefixed with KN_ to avoid name clashes
+// with other components (TS_*, AG_*, WS_*, etc.).
 
-const DOCUMENTS = [
-  { id: "doc-7f3a9c2b", collection: "docs-public", name: "api-reference.md", preview: "The Matrix API is organized around REST. All requests…", ingested: 540, status: "ok" },
-  { id: "doc-1c4d8b7e", collection: "docs-public", name: "quickstart.md", preview: "Spin up an agent in 5 minutes. Install with `pip install matrix-cli`…", ingested: 540, status: "ok" },
-  { id: "doc-9b2e6f1a", collection: "internal-runbooks", name: "on-call-rotation.md", preview: "If a worker pool drops below 50% capacity, the rotation triggers PD…", ingested: 3600 * 8, status: "ok" },
-  { id: "doc-4e8c2a1d", collection: "internal-runbooks", name: "incident-template.md", preview: "## Summary\\n## Impact\\n## Root cause\\n## Action items…", ingested: 3600 * 8, status: "ok" },
-  { id: "doc-2a6d4f8b", collection: "support-tickets-2024", name: "ticket-48201.txt", preview: "Customer reports double-billing on the Pro plan. Charge ch_3OZ…", ingested: 3600 * 24, status: "ok" },
-  { id: "doc-6c3f9a2b", collection: "code-symbols", name: "scheduler.py:claim_session", preview: "def claim_session(self, worker_id: str) -> Session | None:…", ingested: 120, status: "ok" },
-  { id: "doc-8d4a1f3b", collection: "docs-public", name: "predicates.md", preview: "Predicates are JSON trees evaluated server-side. Each node is either a clause or a group.", ingested: 540, status: "ok" },
-  { id: "doc-5b9e3c8a", collection: "code-symbols", name: "scheduler.py:assign_worker", preview: "def assign_worker(self, session: Session) -> str | None:…", ingested: 120, status: "pending" },
-];
+const KN_SEARCH_TARGETS = ["agents", "graphs", "tools"];
 
-function CollectionsPage({ onOpen, ssps, ssmState, onNavigate, onSearchCollection }) {
-  const [sel, setSel] = React.useState(null);
-  const [sspFilter, setSspFilter] = React.useState("");
-  const selected = sel ? COLLECTIONS.find((c) => c.id === sel) : null;
+function _knToastErr(pushToast, fallbackTitle) {
+  return (err) => {
+    if (typeof pushToast !== "function") return;
+    pushToast({
+      kind: "error",
+      title: err?.title || fallbackTitle,
+      detail: err?.detail || err?.message,
+      requestId: err?.requestId,
+    });
+  };
+}
 
-  const filtered = sspFilter ? COLLECTIONS.filter((c) => c.search_provider_id === sspFilter) : COLLECTIONS;
-  const noSSPs = ssmState === "none" || ssps.length === 0;
+// 404 → null suppression for IC config (mirrors toolsets.jsx).
+async function _knFetchIcConfig(signal) {
+  const { apiFetch } = window.matrixApi;
+  try {
+    return await apiFetch("GET", "/internal_collections/config", null, { signal });
+  } catch (err) {
+    if (err && err.status === 404) return null;
+    throw err;
+  }
+}
 
-  // Map of known SSPs for stale-check
-  const knownSSPs = new Set(ssps.map((p) => p.id));
+// ============================================================================
+// Collections page
+// ============================================================================
+
+function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) {
+  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
+  const list = useResource(
+    "collections:list",
+    (signal) => apiFetch("GET", "/collections?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+  const embedProviders = useResource(
+    "collections:embedding-providers",
+    (signal) => apiFetch("GET", "/embedding_providers?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+
+  const [selected, setSelected] = React.useState(null);
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [textFilter, setTextFilter] = React.useState("");
+
+  const items = list.data?.items ?? [];
+  const filtered = items.filter(
+    (c) => !textFilter || (c.id || "").toLowerCase().includes(textFilter.toLowerCase()),
+  );
+  const sel = selected ? items.find((c) => c.id === selected) : null;
 
   return (
     <div className="col" style={{ gap: 14 }}>
-      {noSSPs && (
-        <Banner
-          kind="warning"
-          title="No Semantic Search providers configured"
-          detail="Collections require a SemanticSearchProvider to back their vector index. Configure one before creating a collection."
-          actions={<Btn size="sm" kind="primary" icon="plus" onClick={() => onNavigate && onNavigate("semantic-search")}>Create one</Btn>}
-        />
-      )}
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter collections…" />
+          <input
+            className="input"
+            placeholder="Filter collections…"
+            value={textFilter}
+            onChange={(e) => setTextFilter(e.target.value)}
+          />
         </div>
-        <div className="sep-v" />
-        <select className="select" value={sspFilter} onChange={(e) => setSspFilter(e.target.value)}>
-          <option value="">all search providers</option>
-          {ssps.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
-        </select>
-        <div style={{ marginLeft: "auto" }}>
-          <Btn size="sm" kind="primary" icon="plus" disabled={noSSPs} title={noSSPs ? "Configure a Semantic Search provider first" : ""}>New collection</Btn>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
+          <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New collection</Btn>
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: selected ? "1.6fr 1fr" : "1fr", gap: 18 }}>
+
+      <div style={{ display: "grid", gridTemplateColumns: sel ? "1.6fr 1fr" : "1fr", gap: 18 }}>
         <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
                 <th>ID</th>
-                <th>Embedder</th>
-                <th>Search provider</th>
-                <th style={{ textAlign: "right" }}>Docs</th>
-                <th style={{ textAlign: "right" }}>Chunks</th>
-                <th>Last ingest</th>
-                <th style={{ width: 40 }}></th>
+                <th>Description</th>
+                <th>Embedding provider</th>
+                <th>Model</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((c) => {
-                const stale = !knownSSPs.has(c.search_provider_id);
-                return (
-                  <tr key={c.id} className={sel === c.id ? "selected" : ""} onClick={() => setSel(sel === c.id ? null : c.id)}>
-                    <td className="mono">
-                      {c.id}
-                      {stale && (
-                        <span className="pill pill-paused" style={{ marginLeft: 8, fontSize: 9.5 }}>
-                          <span className="dot"></span>stale: SSP deleted
-                        </span>
-                      )}
-                    </td>
-                    <td className="mono muted text-sm">{c.embedding_provider} <span style={{ color: "var(--text-4)" }}>· {c.model}</span></td>
-                    <td className="mono text-sm">
-                      <a
-                        style={{ color: stale ? "var(--red)" : "var(--accent)", cursor: "pointer" }}
-                        onClick={(e) => { e.stopPropagation(); onNavigate && !stale && onNavigate("ssp-detail", c.search_provider_id); }}
-                      >
-                        {c.search_provider_id}
-                      </a>
-                    </td>
-                    <td className="mono num tabular">{c.docs.toLocaleString()}</td>
-                    <td className="mono num tabular muted">{c.chunks.toLocaleString()}</td>
-                    <td className="mono muted">{relativeTime(c.last_ingest)}</td>
-                    <td onClick={(e) => e.stopPropagation()} style={{ textAlign: "right", paddingRight: 10 }}>
-                      <button
-                        className="icon-btn"
-                        style={{ width: 26, height: 26 }}
-                        title={stale ? "Provider deleted — search disabled" : `Search this collection`}
-                        disabled={stale}
-                        onClick={() => !stale && onSearchCollection && onSearchCollection(c.id)}
-                      >
-                        <Icon name="search" size={12} />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {list.loading && items.length === 0 ? (
+                <tr><td colSpan={4} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
+              ) : list.error && items.length === 0 ? (
+                <tr><td colSpan={4} style={{ padding: 20, textAlign: "center" }}>
+                  <span style={{ color: "var(--red)" }}>{list.error.title || list.error.message}</span>
+                  {" · "}<a onClick={list.refetch} style={{ cursor: "pointer" }}>Retry</a>
+                </td></tr>
+              ) : filtered.length === 0 ? (
+                items.length === 0 ? (
+                  <tr><td colSpan={4}>
+                    <KN_EmptyState
+                      ico="collection"
+                      head="No collections yet"
+                      sub="A collection groups documents for similarity search; each is bound to one embedding provider + model."
+                      cta={<Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New collection</Btn>}
+                    />
+                  </td></tr>
+                ) : (
+                  <tr><td colSpan={4} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+                    No collections match "{textFilter}".
+                  </td></tr>
+                )
+              ) : filtered.map((c) => (
+                <tr
+                  key={c.id}
+                  className={selected === c.id ? "selected" : ""}
+                  onClick={() => setSelected(selected === c.id ? null : c.id)}
+                  style={{ cursor: "pointer" }}
+                >
+                  <td className="mono">{c.id}</td>
+                  <td className="muted text-sm">
+                    {c.description || <span style={{ color: "var(--text-4)" }}>—</span>}
+                  </td>
+                  <td className="mono muted text-sm">{c.embedder?.provider_id || "—"}</td>
+                  <td className="mono muted text-sm">{c.embedder?.model || "—"}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
-        {selected && <CollectionDetail c={selected} onOpenDocs={() => onOpen(selected.id)} onNavigate={onNavigate} ssps={ssps} onSearchCollection={onSearchCollection} />}
+        {sel && (
+          <KN_CollectionDetail
+            c={sel}
+            pushToast={pushToast}
+            onOpenDocs={() => {
+              if (typeof onOpen === "function") onOpen(sel.id);
+              else navigate("/knowledge/documents", { collection: sel.id });
+            }}
+            onSearchCollection={onSearchCollection}
+            onNavigate={onNavigate}
+          />
+        )}
       </div>
+
+      {createOpen && (
+        <KN_NewCollectionModal
+          embedProviders={embedProviders.data?.items ?? []}
+          pushToast={pushToast}
+          onClose={() => setCreateOpen(false)}
+          onCreate={(c) => {
+            setCreateOpen(false);
+            if (typeof pushToast === "function") {
+              pushToast({ kind: "success", title: "Collection created", detail: c.id });
+            }
+            list.refetch();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function CollectionDetail({ c, onOpenDocs, onNavigate, ssps, onSearchCollection }) {
-  const stale = !ssps.some((p) => p.id === c.search_provider_id);
+function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onNavigate }) {
+  const { useResource, apiFetch } = window.matrixApi;
+  const docs = useResource(
+    `collection-docs-count:${c.id}`,
+    (signal) => apiFetch(
+      "GET",
+      `/collections/${encodeURIComponent(c.id)}/documents?limit=1`,
+      null,
+      { signal },
+    ),
+    { pollMs: null, deps: [c.id] },
+  );
+  return (
+    <div className="col" style={{ gap: 14 }}>
+      <div className="panel">
+        <div className="panel-h">
+          <Icon name="collection" size={13} className="muted" />
+          <span className="mono">{c.id}</span>
+          {c.system && <span className="pill" style={{ marginLeft: 8 }}><span className="dot"></span>system</span>}
+        </div>
+        <div className="panel-body">
+          <div className="kv" style={{ gridTemplateColumns: "120px 1fr" }}>
+            <dt>description</dt><dd>{c.description || <span className="muted">—</span>}</dd>
+            <dt>embedding</dt><dd className="mono">{c.embedder?.provider_id || "—"}</dd>
+            <dt>model</dt><dd className="mono">{c.embedder?.model || "—"}</dd>
+            <dt>docs</dt><dd className="mono num tabular">{docs.data?.total ?? "—"}</dd>
+          </div>
+          <div className="mt-3" style={{ display: "flex", gap: 6 }}>
+            <Btn size="sm" kind="primary" icon="doc" onClick={onOpenDocs}>View documents</Btn>
+            {typeof onSearchCollection === "function" && (
+              <Btn size="sm" kind="ghost" icon="search" onClick={() => onSearchCollection(c.id)}>Search</Btn>
+            )}
+          </div>
+        </div>
+      </div>
+      <KN_CollectionSearchPanel collection={c} pushToast={pushToast} />
+    </div>
+  );
+}
+
+function KN_CollectionSearchPanel({ collection, pushToast }) {
+  const { useMutation, apiFetch } = window.matrixApi;
+  const [query, setQuery] = React.useState("");
+  const [topK, setTopK] = React.useState(10);
+  const [hits, setHits] = React.useState(null);
+  const [latencyMs, setLatencyMs] = React.useState(null);
+
+  const search = useMutation(
+    async (body) => {
+      const t0 = performance.now();
+      const result = await apiFetch(
+        "POST",
+        `/collections/${encodeURIComponent(collection.id)}/search`,
+        body,
+      );
+      return { result, wallMs: Math.round(performance.now() - t0) };
+    },
+    {
+      onSuccess: ({ result, wallMs }) => {
+        setHits(result.hits || []);
+        setLatencyMs(wallMs);
+      },
+      onError: (err) => {
+        setHits(null);
+        setLatencyMs(null);
+        if (typeof pushToast !== "function") return;
+        if (err?.status === 404) {
+          pushToast({ kind: "error", title: "Collection not found", detail: collection.id, requestId: err.requestId });
+        } else {
+          pushToast({ kind: "error", title: err?.title || "Search failed", detail: err?.detail || err?.message, requestId: err?.requestId });
+        }
+      },
+    },
+  );
+
+  const run = () => {
+    if (!query.trim()) return;
+    search.mutate({ query, top_k: topK });
+  };
+
   return (
     <div className="panel">
       <div className="panel-h">
-        <Icon name="collection" size={13} className="muted" />
-        <span className="mono">{c.id}</span>
+        <Icon name="search" size={13} className="muted" />
+        <span>Search this collection</span>
+        <span className="sub muted">· <span className="mono">POST /v1/collections/{collection.id}/search</span></span>
       </div>
       <div className="panel-body">
-        {stale && (
-          <Banner
-            kind="error"
-            title="Search provider deleted"
-            detail={`This collection references SSP "${c.search_provider_id}" which no longer exists. The collection can't be searched until it's reassigned (no operator action available in v1 — pending reindex feature).`}
+        <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+          <textarea
+            className="textarea"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            rows={2}
+            style={{ flex: 1, fontFamily: "inherit", fontSize: 13 }}
+            placeholder="Natural-language query… (Enter to run · Shift+Enter for newline)"
+            onKeyDown={(e) => {
+              // Enter submits; Shift+Enter inserts newline. Ctrl/Cmd+Enter
+              // also submits for parity with the previous build.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                run();
+              }
+            }}
           />
+          <Btn kind="primary" icon="search" disabled={!query.trim() || search.loading} onClick={run}>
+            {search.loading ? "Searching…" : "Search"}
+          </Btn>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 10, fontSize: 12 }}>
+          <label className="muted" htmlFor={`kn-topk-${collection.id}`}>top_k</label>
+          <input
+            id={`kn-topk-${collection.id}`}
+            className="input"
+            type="number"
+            min="1"
+            max="100"
+            value={topK}
+            onChange={(e) => setTopK(Number(e.target.value) || 1)}
+            style={{ width: 70 }}
+          />
+          {latencyMs != null && (
+            <span className="muted tabular">· {latencyMs} ms · {hits?.length ?? 0} hit{hits?.length === 1 ? "" : "s"}</span>
+          )}
+        </div>
+
+        {hits != null && hits.length === 0 && (
+          <div className="muted text-sm mt-3">
+            No matches. Either the collection is empty, or the query doesn't match any indexed chunk well enough.
+          </div>
         )}
-        <div className="kv" style={{ gridTemplateColumns: "140px 1fr" }}>
-          <dt>search provider</dt>
-          <dd>
-            <a
-              className="mono"
-              style={{ color: stale ? "var(--red)" : "var(--accent)", cursor: "pointer" }}
-              onClick={() => onNavigate && !stale && onNavigate("ssp-detail", c.search_provider_id)}
-            >
-              {c.search_provider_id}{!stale && " →"}
-            </a>
-          </dd>
-          <dt>embedding</dt><dd>{c.embedding_provider}</dd>
-          <dt>model</dt><dd>{c.model}</dd>
-          <dt>docs</dt><dd>{c.docs.toLocaleString()}</dd>
-          <dt>chunks</dt><dd>{c.chunks.toLocaleString()}</dd>
-          <dt>last ingest</dt><dd>{relativeTime(c.last_ingest)}</dd>
-        </div>
-        <div className="mt-3" style={{ display: "flex", gap: 6 }}>
-          <Btn size="sm" kind="primary" icon="search" onClick={() => onSearchCollection && onSearchCollection(c.id)} disabled={stale}>Search this collection</Btn>
-          <Btn size="sm" kind="ghost" icon="doc" onClick={onOpenDocs} disabled={stale}>Documents</Btn>
-          <Btn size="sm" kind="ghost" icon="refresh" disabled={stale}>Re-ingest</Btn>
-        </div>
+        {hits != null && hits.length > 0 && (
+          <div className="mt-3" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {hits.map((h, i) => (
+              <div key={i} style={{ borderTop: "1px solid var(--border)", padding: "8px 0" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+                  <span className="mono num tabular muted">#{i + 1}</span>
+                  <span className="mono">{h.document_id}</span>
+                  <span className="muted">·</span>
+                  <span className="mono muted">{h.chunk_id}</span>
+                  {h.score != null && (
+                    <span className="muted" style={{ marginLeft: "auto" }}>score {Number(h.score).toFixed(4)}</span>
+                  )}
+                </div>
+                <div className="text-sm mt-1" style={{ whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
+                  {h.text}
+                </div>
+                {h.meta && Object.keys(h.meta).length > 0 && (
+                  <div className="muted text-sm mt-1 mono" style={{ fontSize: 10.5 }}>
+                    {Object.entries(h.meta).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" · ")}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function DocumentsPage({ filterCollection, onClearFilter }) {
-  const [filter, setFilter] = React.useState(filterCollection || "");
-  React.useEffect(() => { setFilter(filterCollection || ""); }, [filterCollection]);
-  const filtered = DOCUMENTS.filter((d) => !filter || d.collection === filter);
+function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate }) {
+  const { useMutation, apiFetch } = window.matrixApi;
+  const [id, setId] = React.useState("");
+  const [description, setDescription] = React.useState("");
+  const [providerId, setProviderId] = React.useState("");
+  const [model, setModel] = React.useState("");
+  const [fieldErrors, setFieldErrors] = React.useState({});
+
+  React.useEffect(() => {
+    if (!providerId && embedProviders.length > 0) setProviderId(embedProviders[0].id);
+  }, [embedProviders, providerId]);
+
+  // Model options come from the selected provider's row (T0025 — no live
+  // introspection; the provider stores its declared model list).
+  const selectedProvider = embedProviders.find((p) => p.id === providerId);
+  const modelOptions = selectedProvider?.models ?? [];
+  React.useEffect(() => {
+    if (modelOptions.length > 0 && !modelOptions.some((m) => m.name === model)) {
+      setModel(modelOptions[0].name);
+    }
+  }, [modelOptions]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const create = useMutation(
+    (body) => apiFetch("POST", "/collections", body),
+    {
+      invalidates: ["collections:list"],
+      onSuccess: (c) => onCreate(c),
+      onError: (err) => {
+        if (err && err.status === 422 && Array.isArray(err.fieldErrors)) {
+          const next = {};
+          for (const fe of err.fieldErrors) {
+            next[(fe.loc || []).join(".")] = fe.msg;
+          }
+          setFieldErrors(next);
+        } else if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err?.title || "Create failed",
+            detail: err?.detail || err?.message,
+            requestId: err?.requestId,
+          });
+        }
+      },
+    },
+  );
+
+  const submit = async () => {
+    setFieldErrors({});
+    const body = {
+      ...(id ? { id } : {}),
+      description: description || null,
+      embedder: { provider_id: providerId, model },
+    };
+    try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
+  };
+
+  return (
+    <Modal
+      title="New collection"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" icon="plus" onClick={submit} disabled={!providerId || !model || create.loading}>
+            {create.loading ? "Creating…" : "Create"}
+          </Btn>
+        </>
+      }
+    >
+      <div className="field">
+        <label className="field-label">ID <span className="hint">optional — backend assigns if blank</span></label>
+        <input
+          className="input"
+          value={id}
+          onChange={(e) => setId(e.target.value)}
+          placeholder="auto-generated"
+          style={{ width: "100%" }}
+        />
+        {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
+      </div>
+      <div className="field">
+        <label className="field-label">Description</label>
+        <input
+          className="input"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="optional"
+          style={{ width: "100%" }}
+        />
+      </div>
+      <div className="field">
+        <label className="field-label">Embedding provider</label>
+        <select
+          className="select"
+          value={providerId}
+          onChange={(e) => setProviderId(e.target.value)}
+          style={{ width: "100%" }}
+        >
+          <option value="">-- pick a provider --</option>
+          {embedProviders.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+        </select>
+        {embedProviders.length === 0 && (
+          <div className="field-help" style={{ color: "var(--amber)" }}>
+            No embedding providers configured. Create one at /providers/embedding first.
+          </div>
+        )}
+        {fieldErrors["body.embedder.provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.embedder.provider_id"]}</div>}
+      </div>
+      <div className="field">
+        <label className="field-label">Model</label>
+        <select
+          className="select"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          style={{ width: "100%" }}
+        >
+          <option value="">-- pick a model --</option>
+          {modelOptions.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
+        </select>
+        <div className="field-help">Model list comes from the provider row, not a live introspection (T0025).</div>
+        {fieldErrors["body.embedder.model"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.embedder.model"]}</div>}
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// Documents page
+// ============================================================================
+
+function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
+  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { query, navigate } = useRouter();
+  // Prefer the explicit prop (app.jsx passes docsFilterCollection) and fall
+  // back to the router query for deep-link cases.
+  const collectionFilter = (filterCollection != null && filterCollection !== "")
+    ? filterCollection
+    : (query.collection || "");
+
+  const list = useResource(
+    `documents:list:${collectionFilter}`,
+    (signal) => apiFetch(
+      "GET",
+      collectionFilter
+        ? `/collections/${encodeURIComponent(collectionFilter)}/documents?limit=200`
+        : "/documents?limit=200",
+      null,
+      { signal },
+    ),
+    { pollMs: null, deps: [collectionFilter] },
+  );
+  const collections = useResource(
+    "collections:list",
+    (signal) => apiFetch("GET", "/collections?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+
+  const [textFilter, setTextFilter] = React.useState("");
+  const [createOpen, setCreateOpen] = React.useState(false);
+
+  const items = list.data?.items ?? [];
+  const filtered = items.filter(
+    (d) => !textFilter
+      || (d.id || "").toLowerCase().includes(textFilter.toLowerCase())
+      || (d.name || "").toLowerCase().includes(textFilter.toLowerCase()),
+  );
+
+  // T0068 — POST /documents doesn't enforce referential integrity at
+  // create-time. Surface a ⚠ chip on orphan rows by joining against
+  // /v1/collections.
+  const knownCollections = new Set((collections.data?.items ?? []).map((c) => c.id));
+
+  const setCollectionFilter = (next) => {
+    // Drop the local state in app.jsx (if it's tracking us) and use the
+    // router for state.
+    if (typeof onClearFilter === "function" && !next) onClearFilter();
+    navigate("/knowledge/documents", next ? { collection: next } : {});
+  };
 
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter documents…" />
+          <input
+            className="input"
+            placeholder="Filter documents…"
+            value={textFilter}
+            onChange={(e) => setTextFilter(e.target.value)}
+          />
         </div>
         <div className="sep-v" />
-        <select className="select" value={filter} onChange={(e) => setFilter(e.target.value)}>
+        <select
+          className="select"
+          value={collectionFilter}
+          onChange={(e) => setCollectionFilter(e.target.value)}
+        >
           <option value="">all collections</option>
-          {COLLECTIONS.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
+          {(collections.data?.items ?? []).map((c) => (
+            <option key={c.id} value={c.id}>{c.id}</option>
+          ))}
         </select>
-        {filter && (
-          <Btn size="sm" kind="ghost" icon="x" onClick={() => { setFilter(""); onClearFilter && onClearFilter(); }}>Clear</Btn>
+        {collectionFilter && (
+          <Btn size="sm" kind="ghost" icon="x" onClick={() => setCollectionFilter("")}>Clear</Btn>
         )}
-        <div style={{ marginLeft: "auto" }}>
-          <Btn size="sm" kind="primary" icon="plus">Ingest document</Btn>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
+          <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>Ingest document</Btn>
         </div>
       </div>
 
@@ -190,58 +551,272 @@ function DocumentsPage({ filterCollection, onClearFilter }) {
               <th>ID</th>
               <th>Collection</th>
               <th>Name</th>
-              <th>Preview</th>
-              <th>Status</th>
-              <th>Ingested</th>
+              <th>Meta keys</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((d) => (
-              <tr key={d.id}>
-                <td className="mono">{d.id}</td>
-                <td className="mono muted text-sm">{d.collection}</td>
-                <td className="mono">{d.name}</td>
-                <td className="muted" style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5 }}>{d.preview}</td>
-                <td>
-                  {d.status === "ok" ? <span className="pill pill-ended"><span className="dot"></span>indexed</span> : <span className="pill pill-paused"><span className="dot"></span>pending</span>}
-                </td>
-                <td className="mono muted">{relativeTime(d.ingested)}</td>
-              </tr>
-            ))}
+            {list.loading && items.length === 0 ? (
+              <tr><td colSpan={4} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
+            ) : list.error && items.length === 0 ? (
+              <tr><td colSpan={4} style={{ padding: 20, textAlign: "center" }}>
+                <span style={{ color: "var(--red)" }}>{list.error.title || list.error.message}</span>
+                {" · "}<a onClick={list.refetch} style={{ cursor: "pointer" }}>Retry</a>
+              </td></tr>
+            ) : filtered.length === 0 ? (
+              items.length === 0 ? (
+                <tr><td colSpan={4}>
+                  <KN_EmptyState
+                    ico="doc"
+                    head="No documents yet"
+                    sub="Documents are ingested into a collection and indexed for similarity search."
+                    cta={<Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>Ingest document</Btn>}
+                  />
+                </td></tr>
+              ) : (
+                <tr><td colSpan={4} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+                  No documents match.
+                </td></tr>
+              )
+            ) : filtered.map((d) => {
+              const orphan = d.collection_id && !knownCollections.has(d.collection_id);
+              return (
+                <tr key={d.id}>
+                  <td className="mono">{d.id}</td>
+                  <td className="mono muted text-sm">
+                    {d.collection_id}
+                    {orphan && (
+                      <span
+                        title="Collection id not present in /v1/collections — known anomaly T0068: POST /documents does not enforce referential integrity at create-time"
+                        style={{ marginLeft: 6, color: "var(--amber)" }}
+                      >⚠</span>
+                    )}
+                  </td>
+                  <td className="mono">{d.name}</td>
+                  <td className="mono muted text-sm">
+                    {Object.keys(d.meta || {}).length === 0
+                      ? <span style={{ color: "var(--text-4)" }}>—</span>
+                      : Object.keys(d.meta).join(", ")}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+
+      {createOpen && (
+        <KN_NewDocumentModal
+          collections={collections.data?.items ?? []}
+          defaultCollection={collectionFilter}
+          pushToast={pushToast}
+          onClose={() => setCreateOpen(false)}
+          onCreate={(d) => {
+            setCreateOpen(false);
+            if (typeof pushToast === "function") {
+              pushToast({ kind: "success", title: "Document created", detail: d.id });
+            }
+            list.refetch();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-// ----------------------------------------------------------------------
-// Search test bench
-// ----------------------------------------------------------------------
+function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClose, onCreate }) {
+  const { useMutation, apiFetch } = window.matrixApi;
+  const [collectionId, setCollectionId] = React.useState(defaultCollection || "");
+  const [name, setName] = React.useState("");
+  const [text, setText] = React.useState("");
+  const [metaJson, setMetaJson] = React.useState("");
+  const [fieldErrors, setFieldErrors] = React.useState({});
 
-function SearchBench({ subsystemOn, collectionId }) {
-  const [query, setQuery] = React.useState("how does the scheduler claim a session?");
-  const [target, setTarget] = React.useState(collectionId ? "collections" : "collections");
-  const [collection, setCollection] = React.useState(collectionId || "docs-public");
+  React.useEffect(() => {
+    if (!collectionId && collections.length > 0) setCollectionId(collections[0].id);
+  }, [collections, collectionId]);
+
+  const create = useMutation(
+    (body) => apiFetch("POST", "/documents", body),
+    {
+      onSuccess: (d) => onCreate(d),
+      onError: (err) => {
+        if (err && err.status === 422 && Array.isArray(err.fieldErrors)) {
+          const next = {};
+          for (const fe of err.fieldErrors) {
+            next[(fe.loc || []).join(".")] = fe.msg;
+          }
+          setFieldErrors(next);
+        } else if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err?.title || "Create failed",
+            detail: err?.detail || err?.message,
+            requestId: err?.requestId,
+          });
+        }
+      },
+    },
+  );
+
+  const submit = async () => {
+    setFieldErrors({});
+    let meta = {};
+    if (metaJson.trim()) {
+      try { meta = JSON.parse(metaJson); }
+      catch (e) { setFieldErrors({ "body.meta": "Invalid JSON: " + e.message }); return; }
+    }
+    // Document.id is required by the backend (unlike most Identifiable
+    // entities which auto-generate). Mint a short-form id if blank.
+    const docId = "doc-" + Math.random().toString(16).slice(2, 10);
+    const body = {
+      id: docId,
+      collection_id: collectionId,
+      name: name || "(untitled)",
+      meta,
+    };
+    // Text payload is application-defined; v1 stores it in meta.text.
+    if (text) body.meta = { ...meta, text };
+    try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
+  };
+
+  return (
+    <Modal
+      title="Ingest document"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" icon="plus" onClick={submit} disabled={!collectionId || create.loading}>
+            {create.loading ? "Creating…" : "Create"}
+          </Btn>
+        </>
+      }
+    >
+      <div className="field">
+        <label className="field-label">Collection</label>
+        <select
+          className="select"
+          value={collectionId}
+          onChange={(e) => setCollectionId(e.target.value)}
+          style={{ width: "100%" }}
+        >
+          <option value="">-- pick a collection --</option>
+          {collections.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
+        </select>
+        {fieldErrors["body.collection_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.collection_id"]}</div>}
+      </div>
+      <div className="field">
+        <label className="field-label">Name</label>
+        <input
+          className="input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          style={{ width: "100%" }}
+        />
+        {fieldErrors["body.name"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.name"]}</div>}
+      </div>
+      <div className="field">
+        <label className="field-label">Text <span className="hint">stored under meta.text for v1</span></label>
+        <textarea
+          className="textarea"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={4}
+        />
+      </div>
+      <div className="field">
+        <label className="field-label">Meta (JSON)</label>
+        <textarea
+          className="textarea mono"
+          value={metaJson}
+          onChange={(e) => setMetaJson(e.target.value)}
+          rows={3}
+          placeholder='{ "source": "manual" }'
+        />
+        {fieldErrors["body.meta"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.meta"]}</div>}
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// Search bench — entity search probe across agents/graphs/tools
+// ============================================================================
+//
+// Per-collection search lives inline on the Collection detail panel
+// (KN_CollectionSearchPanel). What lives here is the "find entries by
+// description" probe — same shape as agents/graphs/tools — exposed via
+// the renamed "Entity search probe" sidebar entry.
+//
+// `subsystemOn` may be passed as a prop (from app.jsx tweaks) but we also
+// probe the real /v1/internal_collections/config so the banner reflects
+// the live API state when no prop is provided.
+
+function SearchBench({ subsystemOn: subsystemOnProp, collectionId }) {
+  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
+  // Source the toast push from the matrixApi namespace (toast.js publishes
+  // window.matrixApi.toastPush) so this works whether or not app.jsx forwards
+  // a pushToast prop into SearchBench.
+  const pushToast = window.matrixApi?.toastPush || (() => {});
+
+  const ic = useResource("knowledge:ic-config", _knFetchIcConfig, { pollMs: 30000 });
+  // subsystemOn: prefer the live IC probe when it has resolved; fall back to
+  // the app-level tweak. ic.data === null after the 404 path means OFF;
+  // ic.data being an object means ON.
+  const liveOn = ic.error == null ? (ic.data != null) : false;
+  const subsystemOn = subsystemOnProp != null ? !!subsystemOnProp : liveOn;
+
+  const [target, setTarget] = React.useState(KN_SEARCH_TARGETS[0]);
+  const [query, setQuery] = React.useState("");
   const [topK, setTopK] = React.useState(5);
-  const [rerank, setRerank] = React.useState(true);
-  const [latency, setLatency] = React.useState(0);
-  const [results, setResults] = React.useState(null);
-  const [running, setRunning] = React.useState(false);
 
-  // When scoped to a specific collection, lock the target + collection
+  const [results, setResults] = React.useState(null);
+  const [latencyMs, setLatencyMs] = React.useState(null);
+
+  // Scoped mode: caller pinned a specific collection. We always POST to
+  // /collections/{id}/search in that case (target picker is hidden).
   const isScoped = !!collectionId;
-  React.useEffect(() => { if (collectionId) setCollection(collectionId); }, [collectionId]);
+
+  const search = useMutation(
+    async (body) => {
+      const t0 = performance.now();
+      const path = isScoped
+        ? `/collections/${encodeURIComponent(collectionId)}/search`
+        : `/${target}/search`;
+      const result = await apiFetch("POST", path, body);
+      return { result, wallMs: performance.now() - t0 };
+    },
+    {
+      onSuccess: ({ result, wallMs }) => {
+        setResults(result.hits || []);
+        setLatencyMs(Math.round(wallMs));
+      },
+      onError: (err) => {
+        setResults(null);
+        if (err?.status === 503) {
+          pushToast({
+            kind: "warning",
+            title: "Subsystem inactive",
+            detail: "Bootstrap Internal Collections to enable search.",
+            requestId: err.requestId,
+          });
+        } else {
+          pushToast({
+            kind: "error",
+            title: err?.title || "Search failed",
+            detail: err?.detail || err?.message,
+            requestId: err?.requestId,
+          });
+        }
+      },
+    },
+  );
 
   const run = () => {
-    if (!subsystemOn) return;
-    setRunning(true);
-    setResults(null);
-    setTimeout(() => {
-      setLatency(Math.floor(Math.random() * 80 + 38));
-      setResults(generateResults(target, query, topK));
-      setRunning(false);
-    }, 380);
+    if (!query.trim()) return;
+    search.mutate({ query, top_k: topK });
   };
 
   return (
@@ -250,8 +825,15 @@ function SearchBench({ subsystemOn, collectionId }) {
         <Banner
           kind="error"
           title="Internal Collections subsystem is OFF"
-          detail="All search routes return 503 until the subsystem is configured and bootstrapped."
-          actions={<Btn size="sm" kind="primary" icon="settings">Configure</Btn>}
+          detail="All /search routes return 503 until the subsystem is configured and bootstrapped."
+          actions={
+            <Btn
+              size="sm"
+              kind="primary"
+              icon="settings"
+              onClick={() => navigate("/subsystems/internal-collections")}
+            >Configure</Btn>
+          }
         />
       )}
 
@@ -259,9 +841,9 @@ function SearchBench({ subsystemOn, collectionId }) {
         <div className="panel-h">
           <Icon name="search" size={13} className="muted" />
           <span>Query</span>
-          <span className="sub">· POST /v1/{target}/search</span>
+          <span className="sub">· POST /v1/{isScoped ? `collections/${collectionId}` : target}/search</span>
           <div className="right">
-            <span className={`mono text-sm ${subsystemOn ? "" : "muted"}`} style={{ color: subsystemOn ? "var(--green)" : "var(--text-3)" }}>
+            <span className="mono text-sm" style={{ color: subsystemOn ? "var(--green)" : "var(--text-3)" }}>
               ● {subsystemOn ? "subsystem ON" : "subsystem OFF"}
             </span>
           </div>
@@ -269,9 +851,14 @@ function SearchBench({ subsystemOn, collectionId }) {
         <div className="panel-body">
           {!isScoped && (
             <div className="chip-group" style={{ marginBottom: 10 }}>
-              {["agents", "graphs", "collections", "tools"].map((t) => (
-                <span key={t} className={`chip ${target === t ? "active" : ""}`} onClick={() => setTarget(t)}>
-                  <Icon name={t === "agents" ? "agent" : t === "graphs" ? "graph" : t === "collections" ? "collection" : "tools"} size={11} />
+              {KN_SEARCH_TARGETS.map((t) => (
+                <span
+                  key={t}
+                  className={`chip ${target === t ? "active" : ""}`}
+                  onClick={() => setTarget(t)}
+                  style={{ cursor: "pointer" }}
+                >
+                  <Icon name={t === "agents" ? "agent" : t === "graphs" ? "graph" : "tools"} size={11} />
                   <span>/{t}/search</span>
                 </span>
               ))}
@@ -284,37 +871,43 @@ function SearchBench({ subsystemOn, collectionId }) {
               onChange={(e) => setQuery(e.target.value)}
               rows={2}
               style={{ flex: 1, fontFamily: "inherit", fontSize: 13 }}
-              placeholder="Natural-language query…"
+              placeholder="Natural-language query… (Enter to run · Shift+Enter for newline)"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  run();
+                }
+              }}
             />
-            <Btn kind="primary" icon="search" disabled={!subsystemOn || running} onClick={run}>Search</Btn>
+            <Btn
+              kind="primary"
+              icon="search"
+              disabled={!subsystemOn || !query.trim() || search.loading}
+              onClick={run}
+            >
+              {search.loading ? "Searching…" : "Search"}
+            </Btn>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 10, fontSize: 12 }}>
-            {target === "collections" && !isScoped && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="muted">collection</span>
-                <select className="select" value={collection} onChange={(e) => setCollection(e.target.value)}>
-                  {COLLECTIONS.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
-                </select>
-              </div>
-            )}
             {isScoped && (
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span className="muted">collection</span>
-                <span className="mono" style={{ color: "var(--text)" }}>{collection}</span>
+                <span className="mono" style={{ color: "var(--text)" }}>{collectionId}</span>
               </div>
             )}
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span className="muted">top_k</span>
-              <input className="input" type="number" value={topK} onChange={(e) => setTopK(Math.max(1, +e.target.value))} style={{ width: 60 }} />
+              <input
+                className="input"
+                type="number"
+                value={topK}
+                onChange={(e) => setTopK(Math.max(1, Math.min(50, +e.target.value)))}
+                min={1}
+                max={50}
+                style={{ width: 60 }}
+              />
             </div>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-              <input type="checkbox" checked={rerank} onChange={(e) => setRerank(e.target.checked)} />
-              <span className="muted">cross-encoder rerank</span>
-            </label>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-              <input type="checkbox" defaultChecked />
-              <span className="muted">MMR</span>
-            </label>
+            <span className="muted text-sm">Backend silently ignores extra `filter`/`mmr` body fields (T0174).</span>
           </div>
         </div>
       </div>
@@ -326,25 +919,28 @@ function SearchBench({ subsystemOn, collectionId }) {
           <span>Results</span>
           {results && (
             <>
-              <span className="sub">· {results.length} hits</span>
-              <span className="sub">· <span className="mono" style={{ color: "var(--accent)" }}>{latency}ms</span></span>
+              <span className="sub">· {results.length} hit{results.length === 1 ? "" : "s"}</span>
+              {latencyMs != null && <span className="sub">· <span className="mono" style={{ color: "var(--accent)" }}>{latencyMs}ms</span></span>}
             </>
           )}
         </div>
         <div className="panel-body" style={{ padding: 0 }}>
-          {running ? (
+          {search.loading ? (
             <div style={{ padding: 24, textAlign: "center", color: "var(--text-3)" }}>
               <Icon name="zap" size={18} style={{ color: "var(--accent)" }} />
-              <div className="mt-2">Embedding query & running cosine search…</div>
+              <div className="mt-2">Embedding query & running vector search…</div>
             </div>
-          ) : !results ? (
+          ) : results == null ? (
             <div style={{ padding: 36, textAlign: "center", color: "var(--text-4)", fontSize: 13 }}>
-              Hit <kbd style={{ background: "var(--bg-2)", border: "1px solid var(--border)", padding: "1px 5px", borderRadius: 4, fontFamily: "IBM Plex Mono" }}>Search</kbd> to query.
+              Enter a query above and click <kbd style={{ background: "var(--bg-2)", border: "1px solid var(--border)", padding: "1px 5px", borderRadius: 4, fontFamily: "IBM Plex Mono" }}>Search</kbd>
+              <span className="muted text-sm">{" "}(Enter)</span>
             </div>
+          ) : results.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: "var(--text-3)" }}>No matches.</div>
           ) : (
             <div>
               {results.map((r, i) => (
-                <SearchResult key={i} r={r} rank={i + 1} />
+                <KN_SearchResult key={(r.document_id || r.chunk_id || i) + "-" + i} r={r} rank={i + 1} />
               ))}
             </div>
           )}
@@ -354,70 +950,67 @@ function SearchBench({ subsystemOn, collectionId }) {
   );
 }
 
-function SearchResult({ r, rank }) {
+function KN_SearchResult({ r, rank }) {
   const [open, setOpen] = React.useState(false);
   return (
     <div style={{ borderBottom: "1px solid var(--border)", padding: "10px 14px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ width: 24, textAlign: "center", color: "var(--text-3)" }} className="mono num tabular">{rank}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>{r.id}</div>
-          <div className="muted text-sm mono" style={{ fontSize: 11.5 }}>{r.collection} · {r.name}</div>
+          <div className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>{r.document_id || r.chunk_id || "(unnamed)"}</div>
+          <div className="muted text-sm mono" style={{ fontSize: 11.5 }}>
+            {r.chunk_id && r.document_id ? "chunk " + r.chunk_id : ""}
+          </div>
         </div>
-        <div>
-          <div className="mono tabular" style={{ fontSize: 14, fontWeight: 600, color: "var(--accent)", textAlign: "right" }}>{r.score.toFixed(3)}</div>
-          <div className="muted text-sm mono" style={{ fontSize: 10.5, textAlign: "right" }}>cosine</div>
-        </div>
+        {r.score != null && (
+          <div>
+            <div className="mono tabular" style={{ fontSize: 14, fontWeight: 600, color: "var(--accent)", textAlign: "right" }}>{Number(r.score).toFixed(3)}</div>
+            <div className="muted text-sm mono" style={{ fontSize: 10.5, textAlign: "right" }}>score</div>
+          </div>
+        )}
         <button className="icon-btn" onClick={() => setOpen(!open)}>
           <Icon name={open ? "chevron-down" : "chevron-right"} size={11} />
         </button>
       </div>
-      <div style={{ marginTop: 8, paddingLeft: 34, fontSize: 12, color: "var(--text-2)", lineHeight: 1.5 }}>
-        <Highlight text={r.snippet} />
-      </div>
-      {open && (
+      {r.text && (
+        <div style={{ marginTop: 8, paddingLeft: 34, fontSize: 12, color: "var(--text-2)", lineHeight: 1.5 }}>
+          <KN_Highlight text={r.text} />
+        </div>
+      )}
+      {open && r.meta && (
         <div style={{ paddingLeft: 34, marginTop: 8 }}>
-          <div className="muted text-sm mono mb-2">extensions:</div>
-          <div className="code-block">{JSON.stringify({ chunk_idx: r.chunk_idx, embedding_provider: "openai-emb-1", reranker_score: r.rerankerScore }, null, 2)}</div>
+          <div className="muted text-sm mono mb-2">meta:</div>
+          <div className="code-block">{JSON.stringify(r.meta, null, 2)}</div>
         </div>
       )}
     </div>
   );
 }
 
-function Highlight({ text }) {
-  // Highlight quoted words
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+function KN_Highlight({ text }) {
+  // Highlight **bolded** terms — backend convention for query-matched
+  // spans (when present in the snippet).
+  const parts = String(text).split(/(\*\*[^*]+\*\*)/g);
   return parts.map((p, i) => p.startsWith("**") ? (
     <span key={i} style={{ background: "var(--accent-dim)", color: "var(--accent)", padding: "0 2px", borderRadius: 2 }}>{p.slice(2, -2)}</span>
   ) : <span key={i}>{p}</span>);
 }
 
-function generateResults(target, query, topK) {
-  const corpus = {
-    collections: [
-      { id: "doc-6c3f9a2b#3", collection: "code-symbols", name: "scheduler.py:claim_session", snippet: "def **claim_session**(self, worker_id: str) -> Session | None:\n    \"\"\"Atomically claim the next eligible session for this worker.\"\"\"\n    with self._db.transaction() as cur:\n        row = cur.fetchone('SELECT id FROM sessions WHERE status=...')", score: 0.892, chunk_idx: 3, rerankerScore: 0.94 },
-      { id: "doc-7f3a9c2b#12", collection: "docs-public", name: "api-reference.md", snippet: "## Scheduler\n\nThe **scheduler** dispatches sessions to workers based on capacity. Each call to **claim** atomically reserves a session and returns it to the caller.", score: 0.812, chunk_idx: 12, rerankerScore: 0.88 },
-      { id: "doc-9b2e6f1a#1", collection: "internal-runbooks", name: "on-call-rotation.md", snippet: "If the **scheduler** fails to **claim** a session within 30s, the on-call rotation is paged via PagerDuty.", score: 0.748, chunk_idx: 1, rerankerScore: 0.81 },
-      { id: "doc-7f3a9c2b#28", collection: "docs-public", name: "api-reference.md", snippet: "**Claiming** a **session** requires a registered worker. The worker_id is propagated to the session row via UPDATE…RETURNING.", score: 0.701, chunk_idx: 28, rerankerScore: 0.79 },
-      { id: "doc-5b9e3c8a#1", collection: "code-symbols", name: "scheduler.py:assign_worker", snippet: "def assign_worker(self, session: Session) -> str | None:\n    # Inverse of claim — used by the scheduler loop", score: 0.682, chunk_idx: 1, rerankerScore: 0.74 },
-    ],
-    agents: [
-      { id: "agent#pr-reviewer", collection: "agents", name: "pr-reviewer", snippet: "**Reviews** pull requests and posts inline comments. Uses github-mcp toolset.", score: 0.681, chunk_idx: 0, rerankerScore: 0.72 },
-      { id: "agent#code-explainer", collection: "agents", name: "code-explainer", snippet: "Walks junior engineers through unfamiliar **code** paths.", score: 0.612, chunk_idx: 0, rerankerScore: 0.65 },
-    ],
-    graphs: [
-      { id: "graph#graph-tier1-escalation", collection: "graphs", name: "graph-tier1-escalation", snippet: "Tier-1 support triage → tier-2 escalation flow.", score: 0.502, chunk_idx: 0, rerankerScore: 0.55 },
-    ],
-    tools: [
-      { id: "tool#fs.grep", collection: "_workspaces", name: "fs.grep", snippet: "Search files with a pattern", score: 0.612, chunk_idx: 0, rerankerScore: 0.7 },
-      { id: "tool#fs.read", collection: "_workspaces", name: "fs.read", snippet: "Read a file from the workspace", score: 0.582, chunk_idx: 0, rerankerScore: 0.66 },
-    ],
-  };
-  return (corpus[target] || corpus.collections).slice(0, topK);
+// ============================================================================
+// Shared empty state
+// ============================================================================
+
+function KN_EmptyState({ ico, head, sub, cta }) {
+  return (
+    <div className="empty" style={{ padding: "40px 20px" }}>
+      <div className="ico-wrap"><Icon name={ico} size={22} /></div>
+      <div className="head">{head}</div>
+      <div className="sub">{sub}</div>
+      {cta && <div className="actions">{cta}</div>}
+    </div>
+  );
 }
 
 window.CollectionsPage = CollectionsPage;
 window.DocumentsPage = DocumentsPage;
 window.SearchBench = SearchBench;
-window.COLLECTIONS_INDEX = COLLECTIONS;

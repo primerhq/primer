@@ -562,8 +562,7 @@ function App() {
     );
     pageBody = (
       <CollectionsPage
-        ssps={ssps}
-        ssmState={tweaks.ssmState}
+        pushToast={pushToast}
         onOpen={(cid) => navigate("documents", cid)}
         onSearchCollection={(cid) => navigate("collection-search", cid)}
         onNavigate={navigate}
@@ -583,6 +582,7 @@ function App() {
     );
     pageBody = (
       <DocumentsPage
+        pushToast={pushToast}
         filterCollection={docsFilterCollection}
         onClearFilter={() => setDocsFilterCollection("")}
       />
