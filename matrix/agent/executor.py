@@ -174,7 +174,9 @@ class AgentExecutor(_BaseAgentExecutor):
         """Read every :class:`ThreadMessage` for the thread, in sequence order."""
         out: list[Message] = []
         cursor: str | None = None
-        page_size = 1000
+        # CursorPage.length is bounded at 200 server-side (storage.py:265);
+        # paginate at that cap. Loop continues until next_cursor is None.
+        page_size = 200
         while True:
             page = await self._messages.find(
                 Predicate(
@@ -298,7 +300,11 @@ class AgentExecutor(_BaseAgentExecutor):
                     op=Op.EQ,
                     right=Value(value=self._thread_id),
                 ),
-                CursorPage(cursor=cursor, length=1000),
+                # CursorPage.length is capped at 200 by the storage
+                # spec (matrix/model/storage.py:265). Loop until
+                # next_cursor is None to cover threads larger than
+                # one page.
+                CursorPage(cursor=cursor, length=200),
                 order_by=[OrderBy(field="sequence", direction="asc")],
             )
             out.extend(page.items)

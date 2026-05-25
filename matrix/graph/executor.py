@@ -279,7 +279,10 @@ class GraphExecutor(_BaseGraphExecutor):
                         right=Value(value=node_id),
                     ),
                 ),
-                CursorPage(cursor=cursor, length=1000),
+                # CursorPage.length is capped at 200 server-side
+                # (matrix/model/storage.py:265). Loop continues until
+                # next_cursor is None to cover larger result sets.
+                CursorPage(cursor=cursor, length=200),
                 order_by=[
                     OrderBy(field="iteration", direction="asc"),
                     OrderBy(field="sequence", direction="asc"),
