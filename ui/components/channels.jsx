@@ -1,26 +1,18 @@
 /* global React, Icon, Btn, Modal, Banner, relativeTime */
 
-const CHANNEL_PROVIDERS = [
-  { id: "cp-slack-prod", provider: "slack", config: { app_token: "xapp-•••••", bot_token: "xoxb-•••••", signing_secret: null }, created_at_ago: 3600 * 24 * 5 },
-  { id: "cp-telegram-ops", provider: "telegram", config: { bot_token: "123456:•••••", poll_timeout_seconds: 25 }, created_at_ago: 3600 * 24 * 2 },
-  { id: "cp-discord-comm", provider: "discord", config: { bot_token: "•••••", enable_dms: true }, created_at_ago: 3600 * 12 },
-];
+// Top-level scope is shared with the babel-standalone IIFE; prefix all
+// consts with CH_ to avoid clashes with other components (notably the
+// `PROVIDER_FIELDS` const which collided with providers.jsx during the
+// Task 3 wiring — see plan §"Task 3").
 
-const CHANNELS = [
-  { id: "ch-ops-alerts", provider_id: "cp-slack-prod", external_id: "C0123ABC456", label: "#ops-alerts" },
-  { id: "ch-eng-room", provider_id: "cp-slack-prod", external_id: "C0456DEF789", label: "#eng-room" },
-  { id: "ch-dev-test", provider_id: "cp-slack-prod", external_id: "D0789GHI012", label: "DM: @dev-test" },
-  { id: "ch-tg-ops", provider_id: "cp-telegram-ops", external_id: "-1001234567890", label: "Ops chat" },
-  { id: "ch-dc-general", provider_id: "cp-discord-comm", external_id: "1234567890123456", label: "#general" },
-];
+const { apiFetch, useResource, useMutation, useRouter } = window.matrixApi;
 
-const ASSOCIATIONS = [
-  { id: "wca-1", workspace_id: "ws-3f8a9bc1d4e2", channel_id: "ch-ops-alerts", enabled: true, forward_ask_user: true, forward_tool_approval: true },
-  { id: "wca-2", workspace_id: "ws-7c2d4e9a8b15", channel_id: "ch-eng-room", enabled: true, forward_ask_user: true, forward_tool_approval: false },
-  { id: "wca-3", workspace_id: "ws-1a5e7d3f9c80", channel_id: "ch-tg-ops", enabled: false, forward_ask_user: true, forward_tool_approval: true },
-];
+const CH_LIST_PROVIDERS = "channels:providers";
+const CH_LIST_CHANNELS = "channels:channels";
+const CH_LIST_ASSOCIATIONS = "channels:associations";
+const CH_DETAIL_PREFIX = "channel-provider-detail:";
 
-const PROVIDER_FIELDS = {
+const CH_PROVIDER_FIELDS = {
   slack: [
     { key: "app_token", label: "App token", placeholder: "xapp-…", secret: true, required: true, hint: "App-level token (Basic Information panel)" },
     { key: "bot_token", label: "Bot token", placeholder: "xoxb-…", secret: true, required: true, hint: "Bot OAuth token" },
@@ -36,13 +28,34 @@ const PROVIDER_FIELDS = {
   ],
 };
 
-const PROVIDER_COLORS = { slack: "var(--violet)", telegram: "var(--blue)", discord: "var(--accent)" };
+const CH_PROVIDER_COLORS = { slack: "var(--violet)", telegram: "var(--blue)", discord: "var(--accent)" };
+
+function CH_toastErr(pushToast, fallbackTitle) {
+  return (err) => {
+    if (typeof pushToast !== "function") return;
+    pushToast({
+      kind: "error",
+      title: err?.title || fallbackTitle,
+      detail: err?.detail || err?.message,
+      requestId: err?.requestId,
+    });
+  };
+}
+
+function CH_relAge(iso) {
+  if (!iso) return "—";
+  const t = typeof iso === "number" ? iso : new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const sec = Math.max(0, (Date.now() - t) / 1000);
+  return relativeTime(sec);
+}
 
 function ProviderBadge({ kind }) {
+  const tone = CH_PROVIDER_COLORS[kind] || "var(--text-3)";
   return (
-    <span className="pill" style={{ background: "var(--bg-2)", color: PROVIDER_COLORS[kind], border: "1px solid var(--border)" }}>
-      <span className="dot" style={{ background: PROVIDER_COLORS[kind] }}></span>
-      <span className="mono text-sm">{kind}</span>
+    <span className="pill" style={{ background: "var(--bg-2)", color: tone, border: "1px solid var(--border)" }}>
+      <span className="dot" style={{ background: tone }}></span>
+      <span className="mono text-sm">{kind || "unknown"}</span>
     </span>
   );
 }
@@ -51,31 +64,81 @@ function ProviderBadge({ kind }) {
 
 function ChannelProvidersPage({ onOpen, pushToast }) {
   const [showNew, setShowNew] = React.useState(false);
+  const [filter, setFilter] = React.useState("");
+  const [platform, setPlatform] = React.useState("");
+
+  const providers = useResource(
+    CH_LIST_PROVIDERS,
+    (signal) => apiFetch("GET", "/channel_providers?limit=200", null, { signal }),
+    {},
+  );
+  const channels = useResource(
+    CH_LIST_CHANNELS,
+    (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
+    {},
+  );
+
+  const items = providers.data?.items ?? [];
+  const channelItems = channels.data?.items ?? [];
+  const filtered = items.filter((p) => {
+    if (platform && p.provider !== platform) return false;
+    if (filter && !(p.id || "").toLowerCase().includes(filter.toLowerCase())) return false;
+    return true;
+  });
+
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter providers…" />
+          <input
+            className="input"
+            placeholder="Filter providers…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
         </div>
         <div className="sep-v" />
-        <select className="select"><option>all platforms</option><option>slack</option><option>telegram</option><option>discord</option></select>
+        <select className="select" value={platform} onChange={(e) => setPlatform(e.target.value)}>
+          <option value="">all platforms</option>
+          <option value="slack">slack</option>
+          <option value="telegram">telegram</option>
+          <option value="discord">discord</option>
+        </select>
         <div style={{ marginLeft: "auto" }}>
           <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowNew(true)}>New provider</Btn>
         </div>
       </div>
+
+      {providers.error && !providers.data && (
+        <Banner
+          kind="error"
+          title={providers.error.title || "Couldn't load channel providers"}
+          detail={providers.error.detail || providers.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={providers.refetch}>Retry</Btn>}
+        />
+      )}
+
       <div className="tbl-wrap">
         <table className="tbl">
           <thead><tr><th>ID</th><th>Platform</th><th style={{ textAlign: "right" }}>Channels</th><th>Created</th><th></th></tr></thead>
           <tbody>
-            {CHANNEL_PROVIDERS.map((p) => {
-              const chs = CHANNELS.filter((c) => c.provider_id === p.id);
+            {filtered.length === 0 && !providers.loading && (
+              <tr><td colSpan={5}>
+                <div className="empty" style={{ padding: 20 }}>
+                  <div className="head">No channel providers</div>
+                  <div className="sub">Create a Slack / Telegram / Discord provider to start routing messages.</div>
+                </div>
+              </td></tr>
+            )}
+            {filtered.map((p) => {
+              const chs = channelItems.filter((c) => c.provider_id === p.id);
               return (
-                <tr key={p.id} onClick={() => onOpen(p.id)}>
+                <tr key={p.id} onClick={() => onOpen(p.id)} style={{ cursor: "pointer" }}>
                   <td className="mono">{p.id}</td>
                   <td><ProviderBadge kind={p.provider} /></td>
                   <td className="mono num tabular">{chs.length}</td>
-                  <td className="mono muted">{relativeTime(p.created_at_ago)}</td>
+                  <td className="mono muted">{CH_relAge(p.created_at)}</td>
                   <td style={{ textAlign: "right", paddingRight: 12 }}><Icon name="chevron-right" size={12} className="muted" /></td>
                 </tr>
               );
@@ -83,15 +146,98 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
           </tbody>
         </table>
       </div>
-      {showNew && <NewChannelProviderModal onClose={() => setShowNew(false)} onCreate={() => { setShowNew(false); pushToast({ kind: "success", title: "Provider created", detail: "POST /v1/channel_providers → 201" }); }} />}
+
+      {showNew && (
+        <NewChannelProviderModal
+          onClose={() => setShowNew(false)}
+          onCreated={(row) => {
+            setShowNew(false);
+            if (pushToast) pushToast({ kind: "success", title: "Channel provider created", detail: row.id });
+            onOpen(row.id);
+          }}
+          pushToast={pushToast}
+        />
+      )}
     </div>
   );
 }
 
-function NewChannelProviderModal({ onClose, onCreate }) {
+function NewChannelProviderModal({ onClose, onCreated, pushToast }) {
+  const [id, setId] = React.useState("");
   const [provider, setProvider] = React.useState("slack");
-  const [values, setValues] = React.useState({});
-  const fields = PROVIDER_FIELDS[provider];
+  const [values, setValues] = React.useState(() => {
+    const seeded = {};
+    for (const f of CH_PROVIDER_FIELDS.slack) {
+      if (f.default !== undefined) seeded[f.key] = f.default;
+    }
+    return seeded;
+  });
+  const [fieldErrors, setFieldErrors] = React.useState({});
+
+  // Re-seed defaults whenever the provider type changes.
+  React.useEffect(() => {
+    const seeded = {};
+    for (const f of CH_PROVIDER_FIELDS[provider] || []) {
+      if (f.default !== undefined) seeded[f.key] = f.default;
+    }
+    setValues(seeded);
+    setFieldErrors({});
+  }, [provider]);
+
+  const fields = CH_PROVIDER_FIELDS[provider] || [];
+
+  const cleanConfig = () => {
+    const out = {};
+    for (const f of fields) {
+      const v = values[f.key];
+      if (v === undefined || v === null || v === "") continue;
+      if (f.type === "number") {
+        const n = Number(v);
+        if (Number.isFinite(n)) out[f.key] = n;
+      } else {
+        out[f.key] = v;
+      }
+    }
+    return out;
+  };
+
+  const create = useMutation(
+    (body) => apiFetch("POST", "/channel_providers", body),
+    {
+      invalidates: [CH_LIST_PROVIDERS],
+      onSuccess: (row) => { onCreated(row); },
+      onError: (err) => {
+        if (err.status === 422 && Array.isArray(err.fieldErrors)) {
+          const map = {};
+          for (const fe of err.fieldErrors) map[(fe.loc || []).join(".")] = fe.msg;
+          setFieldErrors(map);
+        } else {
+          if (pushToast) pushToast({
+            kind: "error",
+            title: err.title || "Create failed",
+            detail: err.detail || err.message,
+            requestId: err.requestId,
+          });
+        }
+      },
+    },
+  );
+
+  const submit = () => {
+    setFieldErrors({});
+    const body = {
+      ...(id ? { id } : {}),
+      provider,
+      config: cleanConfig(),
+    };
+    create.mutate(body);
+  };
+
+  const canSubmit = !create.loading && fields.every((f) => {
+    if (!f.required) return true;
+    const v = values[f.key];
+    return v !== undefined && v !== null && v !== "";
+  });
 
   return (
     <Modal
@@ -100,43 +246,80 @@ function NewChannelProviderModal({ onClose, onCreate }) {
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={onCreate}>Create provider</Btn>
+          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit}>
+            {create.loading ? "Creating…" : "Create provider"}
+          </Btn>
         </>
       }
     >
       <div className="field">
         <label className="field-label">id <span className="hint">auto-generated if blank</span></label>
-        <input className="input mono" placeholder="auto-generated" style={{ width: "100%" }} />
+        <input
+          className="input mono"
+          placeholder="auto-generated"
+          value={id}
+          onChange={(e) => setId(e.target.value)}
+          style={{ width: "100%" }}
+        />
+        {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
       </div>
       <div className="field">
         <label className="field-label">platform</label>
-        <select className="select mono" value={provider} onChange={(e) => { setProvider(e.target.value); setValues({}); }} style={{ width: "100%" }}>
+        <select
+          className="select mono"
+          value={provider}
+          onChange={(e) => setProvider(e.target.value)}
+          style={{ width: "100%" }}
+        >
           <option value="slack">Slack</option>
           <option value="telegram">Telegram</option>
           <option value="discord">Discord</option>
         </select>
+        {fieldErrors["body.provider"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider"]}</div>}
       </div>
       <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 12, marginTop: 4 }}>
         <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>{provider} config</div>
-        {fields.map((f) => (
-          <div className="field" key={f.key}>
-            <label className="field-label">
-              {f.label}
-              {f.required && <span className="hint" style={{ color: "var(--amber)" }}>required</span>}
-            </label>
-            {f.type === "checkbox" ? (
-              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-                <input type="checkbox" defaultChecked={f.default} onChange={(e) => setValues({ ...values, [f.key]: e.target.checked })} />
-                <span>{f.hint}</span>
+        {fields.map((f) => {
+          const errKey = `body.config.${f.key}`;
+          const err = fieldErrors[errKey];
+          return (
+            <div className="field" key={f.key}>
+              <label className="field-label">
+                {f.label}
+                {f.required && <span className="hint" style={{ color: "var(--amber)" }}>required</span>}
               </label>
-            ) : f.type === "number" ? (
-              <input className="input mono" type="number" defaultValue={f.default} onChange={(e) => setValues({ ...values, [f.key]: +e.target.value })} style={{ width: "100%" }} />
-            ) : (
-              <input className="input mono" type={f.secret ? "password" : "text"} placeholder={f.placeholder} onChange={(e) => setValues({ ...values, [f.key]: e.target.value })} style={{ width: "100%" }} />
-            )}
-            {f.hint && f.type !== "checkbox" && <div className="field-help">{f.hint}</div>}
-          </div>
-        ))}
+              {f.type === "checkbox" ? (
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+                  <input
+                    type="checkbox"
+                    checked={values[f.key] !== undefined ? !!values[f.key] : !!f.default}
+                    onChange={(e) => setValues({ ...values, [f.key]: e.target.checked })}
+                  />
+                  <span>{f.hint}</span>
+                </label>
+              ) : f.type === "number" ? (
+                <input
+                  className="input mono"
+                  type="number"
+                  value={values[f.key] ?? ""}
+                  onChange={(e) => setValues({ ...values, [f.key]: e.target.value === "" ? "" : Number(e.target.value) })}
+                  style={{ width: "100%" }}
+                />
+              ) : (
+                <input
+                  className="input mono"
+                  type={f.secret ? "password" : "text"}
+                  placeholder={f.placeholder}
+                  value={values[f.key] ?? ""}
+                  onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              )}
+              {f.hint && f.type !== "checkbox" && <div className="field-help">{f.hint}</div>}
+              {err && <div className="field-help" style={{ color: "var(--red)" }}>{err}</div>}
+            </div>
+          );
+        })}
       </div>
     </Modal>
   );
@@ -144,10 +327,71 @@ function NewChannelProviderModal({ onClose, onCreate }) {
 
 // ============== Provider detail ==============
 
-function ChannelProviderDetail({ providerId, onBack, pushToast }) {
-  const p = CHANNEL_PROVIDERS.find((x) => x.id === providerId);
+function ChannelProviderDetail({ providerId, pushToast }) {
+  const { navigate } = useRouter();
+  const detailKey = CH_DETAIL_PREFIX + providerId;
+  const [showDelete, setShowDelete] = React.useState(false);
+  const [deleteError, setDeleteError] = React.useState(null);
+
+  const detail = useResource(
+    detailKey,
+    (signal) => apiFetch("GET", `/channel_providers/${encodeURIComponent(providerId)}`, null, { signal }),
+    { deps: [providerId] },
+  );
+
+  // Channels under this provider — fetched from the channels list and
+  // filtered client-side (no per-provider sub-route on the server).
+  const channels = useResource(
+    CH_LIST_CHANNELS,
+    (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
+    {},
+  );
+  const chs = (channels.data?.items ?? []).filter((c) => c.provider_id === providerId);
+
+  const del = useMutation(
+    () => apiFetch("DELETE", `/channel_providers/${encodeURIComponent(providerId)}`),
+    {
+      invalidates: [CH_LIST_PROVIDERS, CH_LIST_CHANNELS],
+      onSuccess: () => {
+        if (pushToast) pushToast({ kind: "warning", title: "Provider deleted", detail: providerId });
+        setShowDelete(false);
+        navigate("/channels/providers");
+      },
+      onError: (err) => {
+        if (err?.status === 409) {
+          setDeleteError(err.detail || "Cannot delete — channels still reference this provider.");
+        } else {
+          setShowDelete(false);
+          CH_toastErr(pushToast, "Delete failed")(err);
+        }
+      },
+    },
+  );
+
+  if (detail.loading && !detail.data) {
+    return (
+      <div className="panel"><div className="panel-body" style={{ padding: 18 }}>
+        <span className="muted text-sm">Loading provider…</span>
+      </div></div>
+    );
+  }
+
+  if (detail.error && !detail.data) {
+    return (
+      <Banner
+        kind="error"
+        title={detail.error.title || `Couldn't load ${providerId}`}
+        detail={detail.error.detail || detail.error.message}
+        actions={<Btn size="sm" icon="refresh" onClick={detail.refetch}>Retry</Btn>}
+      />
+    );
+  }
+
+  const p = detail.data;
   if (!p) return null;
-  const chs = CHANNELS.filter((c) => c.provider_id === providerId);
+
+  const configFields = CH_PROVIDER_FIELDS[p.provider] || [];
+
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="panel">
@@ -155,25 +399,44 @@ function ChannelProviderDetail({ providerId, onBack, pushToast }) {
           <ProviderBadge kind={p.provider} />
           <div style={{ flex: 1 }}>
             <div className="mono" style={{ fontSize: 16, fontWeight: 600 }}>{p.id}</div>
-            <div className="muted text-sm mono">created {relativeTime(p.created_at_ago)}</div>
+            <div className="muted text-sm mono">created {CH_relAge(p.created_at)}</div>
           </div>
-          <Btn size="sm" kind="ghost" icon="zap" disabled title="Probe endpoint not yet implemented (backend follow-up)">Probe</Btn>
-          <Btn size="sm" kind="danger" icon="trash">Delete</Btn>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="zap"
+            disabled
+            title="Probe endpoint not yet implemented (backend follow-up)"
+          >
+            Probe
+          </Btn>
+          <Btn size="sm" kind="danger" icon="trash" onClick={() => { setDeleteError(null); setShowDelete(true); }}>Delete</Btn>
         </div>
       </div>
+
       <div className="panel">
         <div className="panel-h"><Icon name="settings" size={13} className="muted" /><span>Config</span></div>
         <div className="panel-body">
           <dl className="kv" style={{ gridTemplateColumns: "180px 1fr" }}>
-            {PROVIDER_FIELDS[p.provider].map((f) => (
-              <React.Fragment key={f.key}>
-                <dt>{f.key}</dt>
-                <dd>{f.secret ? (p.config[f.key] ? <span className="mono">{p.config[f.key]} (masked)</span> : <span className="muted">(not set)</span>) : <span className="mono">{String(p.config[f.key] ?? "—")}</span>}</dd>
-              </React.Fragment>
-            ))}
+            {configFields.map((f) => {
+              const v = p.config?.[f.key];
+              return (
+                <React.Fragment key={f.key}>
+                  <dt>{f.key}</dt>
+                  <dd>
+                    {f.secret
+                      ? (v
+                          ? <span className="mono">{String(v)} <span className="muted">(masked)</span></span>
+                          : <span className="muted">(not set)</span>)
+                      : <span className="mono">{v === undefined || v === null ? "—" : String(v)}</span>}
+                  </dd>
+                </React.Fragment>
+              );
+            })}
           </dl>
         </div>
       </div>
+
       <div className="panel">
         <div className="panel-h"><Icon name="bell" size={13} className="muted" /><span>Channels</span><span className="sub">· {chs.length}</span></div>
         <div className="panel-body" style={{ padding: 0 }}>
@@ -197,6 +460,43 @@ function ChannelProviderDetail({ providerId, onBack, pushToast }) {
           )}
         </div>
       </div>
+
+      {showDelete && (
+        <Modal
+          title={`Delete ${providerId}?`}
+          danger
+          onClose={() => { setShowDelete(false); setDeleteError(null); }}
+          footer={
+            <>
+              <Btn kind="ghost" onClick={() => { setShowDelete(false); setDeleteError(null); }}>Cancel</Btn>
+              <Btn
+                kind="danger"
+                icon="trash"
+                disabled={chs.length > 0 || del.loading}
+                onClick={() => del.mutate()}
+              >
+                {del.loading ? "Deleting…" : "Delete provider"}
+              </Btn>
+            </>
+          }
+        >
+          <div className="muted text-sm" style={{ marginBottom: 10 }}>
+            Deleting a channel provider is irreversible.
+            The server returns <span className="mono">409 Conflict</span> if any
+            channel still references it; remove those first.
+          </div>
+          {chs.length > 0 && (
+            <div className="field-help" style={{ color: "var(--amber)" }}>
+              {chs.length} channel{chs.length === 1 ? "" : "s"} currently reference this provider.
+            </div>
+          )}
+          {deleteError && (
+            <div style={{ marginTop: 10 }}>
+              <Banner kind="error" title="409 Conflict" detail={deleteError} />
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }
@@ -205,65 +505,305 @@ function ChannelProviderDetail({ providerId, onBack, pushToast }) {
 
 function ChannelsPage({ onNavigate, pushToast }) {
   const [showNew, setShowNew] = React.useState(false);
+  const [filter, setFilter] = React.useState("");
+  const [providerFilter, setProviderFilter] = React.useState("");
+
+  const providers = useResource(
+    CH_LIST_PROVIDERS,
+    (signal) => apiFetch("GET", "/channel_providers?limit=200", null, { signal }),
+    {},
+  );
+  const channels = useResource(
+    CH_LIST_CHANNELS,
+    (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
+    {},
+  );
+
+  const providerItems = providers.data?.items ?? [];
+  const channelItems = channels.data?.items ?? [];
+  const filtered = channelItems.filter((c) => {
+    if (providerFilter && c.provider_id !== providerFilter) return false;
+    if (!filter) return true;
+    const q = filter.toLowerCase();
+    return (
+      (c.id || "").toLowerCase().includes(q)
+      || (c.external_id || "").toLowerCase().includes(q)
+      || (c.label || "").toLowerCase().includes(q)
+    );
+  });
+
+  const del = useMutation(
+    (cid) => apiFetch("DELETE", `/channels/${encodeURIComponent(cid)}`),
+    {
+      invalidates: [CH_LIST_CHANNELS, CH_LIST_ASSOCIATIONS],
+      onSuccess: () => {
+        if (pushToast) pushToast({ kind: "warning", title: "Channel deleted" });
+      },
+      onError: (err) => {
+        if (err?.status === 409) {
+          if (pushToast) pushToast({
+            kind: "error",
+            title: "409 Conflict",
+            detail: err.detail || "Cannot delete — workspace associations still reference this channel.",
+            requestId: err.requestId,
+          });
+        } else {
+          CH_toastErr(pushToast, "Delete failed")(err);
+        }
+      },
+    },
+  );
+
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter channels…" />
+          <input
+            className="input"
+            placeholder="Filter channels…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
         </div>
         <div className="sep-v" />
-        <select className="select"><option>all providers</option>{CHANNEL_PROVIDERS.map((p) => <option key={p.id}>{p.id}</option>)}</select>
+        <select className="select" value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)}>
+          <option value="">all providers</option>
+          {providerItems.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+        </select>
         <div style={{ marginLeft: "auto" }}>
-          <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowNew(true)}>New channel</Btn>
+          <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowNew(true)} disabled={providerItems.length === 0}>
+            New channel
+          </Btn>
         </div>
       </div>
+
+      {channels.error && !channels.data && (
+        <Banner
+          kind="error"
+          title={channels.error.title || "Couldn't load channels"}
+          detail={channels.error.detail || channels.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={channels.refetch}>Retry</Btn>}
+        />
+      )}
+
       <div className="tbl-wrap">
         <table className="tbl">
-          <thead><tr><th>ID</th><th>Provider</th><th>External ID</th><th>Label</th></tr></thead>
+          <thead><tr><th>ID</th><th>Provider</th><th>External ID</th><th>Label</th><th></th></tr></thead>
           <tbody>
-            {CHANNELS.map((c) => {
-              const p = CHANNEL_PROVIDERS.find((x) => x.id === c.provider_id);
+            {filtered.length === 0 && !channels.loading && (
+              <tr><td colSpan={5}>
+                <div className="empty" style={{ padding: 20 }}>
+                  <div className="head">No channels</div>
+                  <div className="sub">
+                    {providerItems.length === 0
+                      ? "Create a channel provider first."
+                      : "Bind a Slack/Telegram/Discord conversation to a provider."}
+                  </div>
+                </div>
+              </td></tr>
+            )}
+            {filtered.map((c) => {
+              const p = providerItems.find((x) => x.id === c.provider_id);
               return (
                 <tr key={c.id}>
                   <td className="mono">{c.id}</td>
                   <td>
-                    <a className="mono" style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onNavigate("channel-provider-detail", c.provider_id)}>{c.provider_id}</a>
-                    <ProviderBadge kind={p?.provider || "slack"} />
+                    <a
+                      className="mono"
+                      style={{ color: "var(--accent)", cursor: "pointer", marginRight: 6 }}
+                      onClick={() => onNavigate("channel-provider-detail", c.provider_id)}
+                    >
+                      {c.provider_id}
+                    </a>
+                    {p && <ProviderBadge kind={p.provider} />}
                   </td>
                   <td className="mono muted">{c.external_id}</td>
                   <td>{c.label}</td>
+                  <td style={{ textAlign: "right", paddingRight: 12 }}>
+                    <button
+                      className="icon-btn"
+                      style={{ width: 22, height: 22 }}
+                      title="Delete channel"
+                      onClick={() => del.mutate(c.id)}
+                      disabled={del.loading}
+                    >
+                      <Icon name="trash" size={10} />
+                    </button>
+                  </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
+
       {showNew && (
-        <Modal
-          title="New channel"
+        <NewChannelModal
+          providers={providerItems}
           onClose={() => setShowNew(false)}
-          footer={<><Btn kind="ghost" onClick={() => setShowNew(false)}>Cancel</Btn><Btn kind="primary" icon="plus" onClick={() => { setShowNew(false); pushToast({ kind: "success", title: "Channel created", detail: "POST /v1/channels → 201" }); }}>Create channel</Btn></>}
-        >
-          <div className="field"><label className="field-label">id <span className="hint">auto</span></label><input className="input mono" placeholder="auto-generated" style={{ width: "100%" }} /></div>
-          <div className="field"><label className="field-label">provider</label><select className="select mono" style={{ width: "100%" }}>{CHANNEL_PROVIDERS.map((p) => <option key={p.id}>{p.id} ({p.provider})</option>)}</select></div>
-          <div className="field"><label className="field-label">external id</label><input className="input mono" placeholder="C0123ABC456 / chat-id / snowflake" style={{ width: "100%" }} /><div className="field-help">Slack: channel ID · Telegram: chat ID · Discord: snowflake</div></div>
-          <div className="field"><label className="field-label">label <span className="hint">optional · ≤200 chars</span></label><input className="input" placeholder="#ops-alerts" style={{ width: "100%" }} /></div>
-        </Modal>
+          onCreated={() => {
+            setShowNew(false);
+            if (pushToast) pushToast({ kind: "success", title: "Channel created" });
+          }}
+          pushToast={pushToast}
+        />
       )}
     </div>
+  );
+}
+
+function NewChannelModal({ providers, onClose, onCreated, pushToast }) {
+  const [id, setId] = React.useState("");
+  const [providerId, setProviderId] = React.useState(providers[0]?.id || "");
+  const [externalId, setExternalId] = React.useState("");
+  const [label, setLabel] = React.useState("");
+  const [fieldErrors, setFieldErrors] = React.useState({});
+
+  const create = useMutation(
+    (body) => apiFetch("POST", "/channels", body),
+    {
+      invalidates: [CH_LIST_CHANNELS],
+      onSuccess: () => onCreated(),
+      onError: (err) => {
+        if (err.status === 422 && Array.isArray(err.fieldErrors)) {
+          const map = {};
+          for (const fe of err.fieldErrors) map[(fe.loc || []).join(".")] = fe.msg;
+          setFieldErrors(map);
+        } else {
+          if (pushToast) pushToast({
+            kind: "error",
+            title: err.title || "Create failed",
+            detail: err.detail || err.message,
+            requestId: err.requestId,
+          });
+        }
+      },
+    },
+  );
+
+  const submit = () => {
+    setFieldErrors({});
+    const body = {
+      ...(id ? { id } : {}),
+      provider_id: providerId,
+      external_id: externalId,
+      ...(label ? { label } : {}),
+    };
+    create.mutate(body);
+  };
+
+  const canSubmit = !!providerId && !!externalId && !create.loading;
+
+  return (
+    <Modal
+      title="New channel"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit}>
+            {create.loading ? "Creating…" : "Create channel"}
+          </Btn>
+        </>
+      }
+    >
+      <div className="field">
+        <label className="field-label">id <span className="hint">auto</span></label>
+        <input
+          className="input mono"
+          placeholder="auto-generated"
+          value={id}
+          onChange={(e) => setId(e.target.value)}
+          style={{ width: "100%" }}
+        />
+        {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
+      </div>
+      <div className="field">
+        <label className="field-label">provider</label>
+        <select
+          className="select mono"
+          value={providerId}
+          onChange={(e) => setProviderId(e.target.value)}
+          style={{ width: "100%" }}
+        >
+          {providers.map((p) => <option key={p.id} value={p.id}>{p.id} ({p.provider})</option>)}
+        </select>
+        {fieldErrors["body.provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider_id"]}</div>}
+      </div>
+      <div className="field">
+        <label className="field-label">external id</label>
+        <input
+          className="input mono"
+          placeholder="C0123ABC456 / chat-id / snowflake"
+          value={externalId}
+          onChange={(e) => setExternalId(e.target.value)}
+          style={{ width: "100%" }}
+        />
+        <div className="field-help">Slack: channel ID · Telegram: chat ID · Discord: snowflake</div>
+        {fieldErrors["body.external_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.external_id"]}</div>}
+      </div>
+      <div className="field">
+        <label className="field-label">label <span className="hint">optional · ≤200 chars</span></label>
+        <input
+          className="input"
+          placeholder="#ops-alerts"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          style={{ width: "100%" }}
+        />
+        {fieldErrors["body.label"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.label"]}</div>}
+      </div>
+    </Modal>
   );
 }
 
 // ============== Associations ==============
 
 function AssociationsPage({ onNavigate, pushToast }) {
-  const [rows, setRows] = React.useState(ASSOCIATIONS);
   const [showNew, setShowNew] = React.useState(false);
 
-  const toggle = (id, field) => {
-    setRows((arr) => arr.map((r) => r.id === id ? { ...r, [field]: !r[field] } : r));
-    pushToast({ kind: "info", title: "Association updated", detail: `PUT /v1/workspace_channel_associations/${id}` });
+  const associations = useResource(
+    CH_LIST_ASSOCIATIONS,
+    (signal) => apiFetch("GET", "/workspace_channel_associations?limit=200", null, { signal }),
+    {},
+  );
+  const channels = useResource(
+    CH_LIST_CHANNELS,
+    (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
+    {},
+  );
+  const workspaces = useResource(
+    "channels:workspaces",
+    (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
+    {},
+  );
+
+  const items = associations.data?.items ?? [];
+  const channelItems = channels.data?.items ?? [];
+  const workspaceItems = workspaces.data?.items ?? [];
+
+  const updateAssoc = useMutation(
+    ({ aid, body }) => apiFetch("PUT", `/workspace_channel_associations/${encodeURIComponent(aid)}`, body),
+    {
+      invalidates: [CH_LIST_ASSOCIATIONS],
+      onError: CH_toastErr(pushToast, "Update failed"),
+    },
+  );
+
+  const deleteAssoc = useMutation(
+    (aid) => apiFetch("DELETE", `/workspace_channel_associations/${encodeURIComponent(aid)}`),
+    {
+      invalidates: [CH_LIST_ASSOCIATIONS],
+      onSuccess: () => {
+        if (pushToast) pushToast({ kind: "warning", title: "Association removed" });
+      },
+      onError: CH_toastErr(pushToast, "Delete failed"),
+    },
+  );
+
+  const toggle = (row, field) => {
+    updateAssoc.mutate({ aid: row.id, body: { [field]: !row[field] } });
   };
 
   return (
@@ -274,9 +814,27 @@ function AssociationsPage({ onNavigate, pushToast }) {
           <input className="input" placeholder="Filter associations…" />
         </div>
         <div style={{ marginLeft: "auto" }}>
-          <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowNew(true)}>New association</Btn>
+          <Btn
+            size="sm"
+            kind="primary"
+            icon="plus"
+            onClick={() => setShowNew(true)}
+            disabled={workspaceItems.length === 0 || channelItems.length === 0}
+          >
+            New association
+          </Btn>
         </div>
       </div>
+
+      {associations.error && !associations.data && (
+        <Banner
+          kind="error"
+          title={associations.error.title || "Couldn't load associations"}
+          detail={associations.error.detail || associations.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={associations.refetch}>Retry</Btn>}
+        />
+      )}
+
       <div className="tbl-wrap">
         <table className="tbl">
           <thead>
@@ -290,19 +848,37 @@ function AssociationsPage({ onNavigate, pushToast }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((a) => {
-              const ch = CHANNELS.find((c) => c.id === a.channel_id);
+            {items.length === 0 && !associations.loading && (
+              <tr><td colSpan={6}>
+                <div className="empty" style={{ padding: 20 }}>
+                  <div className="head">No associations</div>
+                  <div className="sub">Link a workspace to a channel to start fan-out.</div>
+                </div>
+              </td></tr>
+            )}
+            {items.map((a) => {
+              const ch = channelItems.find((c) => c.id === a.channel_id);
               return (
                 <tr key={a.id} style={{ opacity: a.enabled ? 1 : 0.5 }}>
                   <td className="mono">
                     <a style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onNavigate("workspace-detail", a.workspace_id)}>{a.workspace_id}</a>
                   </td>
-                  <td className="mono">{a.channel_id} {ch && <span className="muted text-sm">· {ch.label}</span>}</td>
-                  <td><Toggle on={a.enabled} onChange={() => toggle(a.id, "enabled")} /></td>
-                  <td><Toggle on={a.forward_ask_user} onChange={() => toggle(a.id, "forward_ask_user")} /></td>
-                  <td><Toggle on={a.forward_tool_approval} onChange={() => toggle(a.id, "forward_tool_approval")} /></td>
+                  <td className="mono">
+                    {a.channel_id} {ch && <span className="muted text-sm">· {ch.label}</span>}
+                  </td>
+                  <td><Toggle on={a.enabled} onChange={() => toggle(a, "enabled")} /></td>
+                  <td><Toggle on={a.forward_ask_user} onChange={() => toggle(a, "forward_ask_user")} /></td>
+                  <td><Toggle on={a.forward_tool_approval} onChange={() => toggle(a, "forward_tool_approval")} /></td>
                   <td style={{ textAlign: "right", paddingRight: 12 }}>
-                    <button className="icon-btn" style={{ width: 22, height: 22 }} title="Remove"><Icon name="x" size={10} /></button>
+                    <button
+                      className="icon-btn"
+                      style={{ width: 22, height: 22 }}
+                      title="Remove association"
+                      onClick={() => deleteAssoc.mutate(a.id)}
+                      disabled={deleteAssoc.loading}
+                    >
+                      <Icon name="x" size={10} />
+                    </button>
                   </td>
                 </tr>
               );
@@ -310,28 +886,108 @@ function AssociationsPage({ onNavigate, pushToast }) {
           </tbody>
         </table>
       </div>
+
       {showNew && (
-        <Modal
-          title="New workspace channel association"
+        <NewAssociationModal
+          workspaces={workspaceItems}
+          channels={channelItems}
           onClose={() => setShowNew(false)}
-          footer={<><Btn kind="ghost" onClick={() => setShowNew(false)}>Cancel</Btn><Btn kind="primary" icon="plus" onClick={() => { setShowNew(false); pushToast({ kind: "success", title: "Association created" }); }}>Create</Btn></>}
-        >
-          <div className="field"><label className="field-label">workspace</label><select className="select mono" style={{ width: "100%" }}>{window.MOCK.WORKSPACES.map((w) => <option key={w}>{w}</option>)}</select></div>
-          <div className="field"><label className="field-label">channel</label><select className="select mono" style={{ width: "100%" }}>{CHANNELS.map((c) => <option key={c.id}>{c.id} · {c.label}</option>)}</select></div>
-          <div className="field" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-              <input type="checkbox" defaultChecked /><span>Enabled <span className="muted">— adapter fan-outs route here</span></span>
-            </label>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-              <input type="checkbox" defaultChecked /><span>Forward ask_user <span className="muted">— channel-mediated user prompts</span></span>
-            </label>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-              <input type="checkbox" defaultChecked /><span>Forward tool_approval <span className="muted">— channel-mediated approvals</span></span>
-            </label>
-          </div>
-        </Modal>
+          onCreated={() => {
+            setShowNew(false);
+            if (pushToast) pushToast({ kind: "success", title: "Association created" });
+          }}
+          pushToast={pushToast}
+        />
       )}
     </div>
+  );
+}
+
+function NewAssociationModal({ workspaces, channels, onClose, onCreated, pushToast }) {
+  const [workspaceId, setWorkspaceId] = React.useState(workspaces[0]?.id || "");
+  const [channelId, setChannelId] = React.useState(channels[0]?.id || "");
+  const [enabled, setEnabled] = React.useState(true);
+  const [forwardAskUser, setForwardAskUser] = React.useState(true);
+  const [forwardToolApproval, setForwardToolApproval] = React.useState(true);
+  const [fieldErrors, setFieldErrors] = React.useState({});
+
+  const create = useMutation(
+    (body) => apiFetch("POST", "/workspace_channel_associations", body),
+    {
+      invalidates: [CH_LIST_ASSOCIATIONS],
+      onSuccess: () => onCreated(),
+      onError: (err) => {
+        if (err.status === 422 && Array.isArray(err.fieldErrors)) {
+          const map = {};
+          for (const fe of err.fieldErrors) map[(fe.loc || []).join(".")] = fe.msg;
+          setFieldErrors(map);
+        } else {
+          if (pushToast) pushToast({
+            kind: "error",
+            title: err.title || "Create failed",
+            detail: err.detail || err.message,
+            requestId: err.requestId,
+          });
+        }
+      },
+    },
+  );
+
+  const submit = () => {
+    setFieldErrors({});
+    create.mutate({
+      workspace_id: workspaceId,
+      channel_id: channelId,
+      enabled,
+      forward_ask_user: forwardAskUser,
+      forward_tool_approval: forwardToolApproval,
+    });
+  };
+
+  const canSubmit = !!workspaceId && !!channelId && !create.loading;
+
+  return (
+    <Modal
+      title="New workspace channel association"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit}>
+            {create.loading ? "Creating…" : "Create"}
+          </Btn>
+        </>
+      }
+    >
+      <div className="field">
+        <label className="field-label">workspace</label>
+        <select className="select mono" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} style={{ width: "100%" }}>
+          {workspaces.map((w) => <option key={w.id} value={w.id}>{w.id}</option>)}
+        </select>
+        {fieldErrors["body.workspace_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.workspace_id"]}</div>}
+      </div>
+      <div className="field">
+        <label className="field-label">channel</label>
+        <select className="select mono" value={channelId} onChange={(e) => setChannelId(e.target.value)} style={{ width: "100%" }}>
+          {channels.map((c) => <option key={c.id} value={c.id}>{c.id}{c.label ? ` · ${c.label}` : ""}</option>)}
+        </select>
+        {fieldErrors["body.channel_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.channel_id"]}</div>}
+      </div>
+      <div className="field" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+          <span>Enabled <span className="muted">— adapter fan-outs route here</span></span>
+        </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+          <input type="checkbox" checked={forwardAskUser} onChange={(e) => setForwardAskUser(e.target.checked)} />
+          <span>Forward ask_user <span className="muted">— channel-mediated user prompts</span></span>
+        </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+          <input type="checkbox" checked={forwardToolApproval} onChange={(e) => setForwardToolApproval(e.target.checked)} />
+          <span>Forward tool_approval <span className="muted">— channel-mediated approvals</span></span>
+        </label>
+      </div>
+    </Modal>
   );
 }
 
@@ -360,5 +1016,9 @@ window.ChannelProvidersPage = ChannelProvidersPage;
 window.ChannelProviderDetail = ChannelProviderDetail;
 window.ChannelsPage = ChannelsPage;
 window.AssociationsPage = AssociationsPage;
-window.CHANNEL_ASSOCIATIONS = ASSOCIATIONS;
-window.CHANNELS_DATA = CHANNELS;
+// Legacy mock exports kept as empty stubs — app.jsx reads
+// `window.CHANNELS_DATA` for the sidebar count. Task 14/15 owns
+// the proper sidebar wiring; until then keep the export present
+// so accessing `.length` doesn't break.
+window.CHANNEL_ASSOCIATIONS = [];
+window.CHANNELS_DATA = [];
