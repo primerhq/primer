@@ -395,6 +395,7 @@ function SSPCreateModal({ onClose, pushToast }) {
             <FieldRow label="path" hint="absolute directory; created on first use" err={fieldErrors.path}>
               <input
                 className="input mono"
+                data-testid="ssp-lance-path"
                 value={form.path}
                 onChange={(e) => update("path", e.target.value)}
                 placeholder={`~/.matrix/lance/${form.id || "<id>"}/`}
