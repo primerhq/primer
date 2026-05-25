@@ -148,22 +148,66 @@ async def get_chat(
 
 @chats_router.delete(
     "/chats/{chat_id}",
-    response_model=Chat,
-    summary="End a chat — transitions to status='ended'",
+    summary=(
+        "End a chat (default) or hard-delete chat + every message "
+        "(force=true)."
+    ),
     responses=common_responses(404, 409, 500),
 )
 async def end_chat(
     chat_id: str = Path(...),
+    force: bool = Query(
+        False,
+        description=(
+            "When true, removes the chat row and every persisted "
+            "chat_messages row regardless of status. The status-aware "
+            "soft-end semantic does not apply: an already-ended chat "
+            "deletes cleanly. Used by the operator console's 'Delete' "
+            "button when the operator wants the chat gone."
+        ),
+    ),
     sp=Depends(get_storage_provider),
-) -> Chat:
-    storage = sp.get_storage(Chat)
-    chat = await storage.get(chat_id)
+):
+    chat_storage = sp.get_storage(Chat)
+    chat = await chat_storage.get(chat_id)
     if chat is None:
         raise NotFoundError(f"Chat {chat_id!r} does not exist")
+
+    if force:
+        message_storage = sp.get_storage(ChatMessage)
+        # Drain every message row for this chat. CursorPage.length is
+        # capped at 200 server-side; loop until next_cursor is None.
+        from matrix.model.storage import CursorPage
+
+        cursor: str | None = None
+        while True:
+            page = await message_storage.find(
+                Predicate(
+                    left=FieldRef(name="chat_id"),
+                    op=Op.EQ,
+                    right=Value(value=chat_id),
+                ),
+                CursorPage(cursor=cursor, length=200),
+                order_by=[OrderBy(field="seq", direction="asc")],
+            )
+            for row in page.items:
+                try:
+                    await message_storage.delete(row.id)
+                except NotFoundError:
+                    pass
+            cursor = getattr(page, "next_cursor", None)
+            if not cursor:
+                break
+        try:
+            await chat_storage.delete(chat_id)
+        except NotFoundError:
+            pass
+        return {"id": chat_id, "deleted": True}
+
     if chat.status == "ended":
         raise ConflictError(f"Chat {chat_id!r} is already ended")
     chat.status = "ended"
-    return await storage.update(chat)
+    return await chat_storage.update(chat)
 
 
 @chats_router.get(
@@ -329,10 +373,24 @@ async def chat_ws(
             websocket, chat_id, cursor, sp,
         )
 
-        runner = ChatTurnRunner(
-            chat_storage=chats_storage,
-            message_storage=messages_storage,
-        )
+        # Resolve the agent + LLM + tool stack for the chat's pinned
+        # agent. Failures surface as a one-shot error frame followed
+        # by close(4500) — keeps the protocol unambiguous and avoids
+        # half-broken sockets that look connected but never produce
+        # assistant tokens.
+        try:
+            runner = await _build_runner(
+                websocket=websocket,
+                chat=chat,
+                chats_storage=chats_storage,
+                messages_storage=messages_storage,
+            )
+        except _ChatBuildError as exc:
+            await websocket.send_json(
+                {"kind": "error", "code": exc.code, "message": exc.message},
+            )
+            await websocket.close(code=4500, reason=exc.code)
+            return
 
         while True:
             try:
@@ -499,6 +557,107 @@ async def _append_and_send(
     chat.last_seq = next_seq
     await chats_storage.update(chat)
     await websocket.send_json(_message_to_wire(row))
+
+
+class _ChatBuildError(Exception):
+    """Raised by :func:`_build_runner` when the chat can't be served.
+
+    Carries a structured ``code`` + ``message`` so the WS handler can
+    emit a typed error frame before closing.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+async def _build_runner(
+    *,
+    websocket: WebSocket,
+    chat: Chat,
+    chats_storage,
+    messages_storage,
+) -> ChatTurnRunner:
+    """Resolve the agent + LLM + tool stack and build a turn runner.
+
+    Run once per WS connection (not per user_message) — the resolution
+    is moderately expensive (provider-registry lookups, toolset
+    enumeration, model lookup) and the resolved set is stable while
+    the chat is open.
+    """
+    from matrix.agent.tool_manager import ToolExecutionManager
+    from matrix.model.except_ import ConfigError
+    from matrix.model.provider import LLMProvider
+
+    app_state = websocket.app.state
+    sp = app_state.storage_provider
+    provider_registry = getattr(app_state, "provider_registry", None)
+    if provider_registry is None:
+        raise _ChatBuildError(
+            "provider_registry_missing",
+            "provider_registry not initialised on app.state",
+        )
+
+    agent_storage = sp.get_storage(Agent)
+    agent = await agent_storage.get(chat.agent_id)
+    if agent is None:
+        raise _ChatBuildError(
+            "agent_not_found",
+            f"chat's pinned agent {chat.agent_id!r} no longer exists",
+        )
+
+    try:
+        llm = await provider_registry.get_llm(agent.model.provider_id)
+    except (NotFoundError, ConfigError) as exc:
+        raise _ChatBuildError("llm_provider_unresolved", str(exc)) from exc
+
+    llm_provider_storage = sp.get_storage(LLMProvider)
+    provider_row = await llm_provider_storage.get(agent.model.provider_id)
+    if provider_row is None:
+        raise _ChatBuildError(
+            "llm_provider_missing",
+            f"LLMProvider {agent.model.provider_id!r} not found",
+        )
+    llm_model = next(
+        (m for m in provider_row.models if m.name == agent.model.model_name),
+        None,
+    )
+    if llm_model is None:
+        raise _ChatBuildError(
+            "llm_model_unresolved",
+            (
+                f"LLMProvider {agent.model.provider_id!r} does not list "
+                f"model {agent.model.model_name!r}; configured: "
+                f"{[m.name for m in provider_row.models]}"
+            ),
+        )
+
+    toolset_providers: dict[str, Any] = {}
+    for toolset_id in (agent.tools or []):
+        try:
+            toolset_providers[toolset_id] = await provider_registry.get_toolset(
+                toolset_id,
+            )
+        except (NotFoundError, ConfigError) as exc:
+            raise _ChatBuildError(
+                "toolset_unresolved",
+                f"toolset {toolset_id!r}: {exc}",
+            ) from exc
+
+    tool_manager = ToolExecutionManager(
+        toolset_providers=toolset_providers,
+        provider_registry=provider_registry,
+    )
+
+    return ChatTurnRunner(
+        agent=agent,
+        llm=llm,
+        llm_model=llm_model,
+        tool_manager=tool_manager,
+        chat_storage=chats_storage,
+        message_storage=messages_storage,
+    )
 
 
 __all__ = [

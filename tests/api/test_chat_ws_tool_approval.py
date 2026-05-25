@@ -11,16 +11,60 @@ pattern as the existing ``test_chats.py`` WS suite.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
+from pydantic import SecretStr
 
 from matrix.api.app import create_test_app
 from matrix.model.agent import Agent, AgentModel
+from matrix.model.chat import Done, Message, StreamEvent, TextDelta
 from matrix.model.chats import Chat
+from matrix.model.provider import (
+    AnthropicConfig,
+    Limits,
+    LLMModel,
+    LLMProvider,
+    LLMProviderType,
+)
+
+
+class _ApprovalFakeLLM:
+    """Deterministic fake LLM matching the test_chats.py pattern.
+
+    The tool-approval tests never actually drive a full LLM turn —
+    they exercise the WS frame routing (user_message → auto-reject,
+    interrupt → auto-reject, tool_approval_decide → publish). The
+    fake just has to be a usable :class:`LLM`-shaped object so the
+    chat runner builds without raising.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def list_models(self):
+        return ["m"]
+
+    def stream(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamEvent]:
+        self.calls.append({"model": model, "messages": list(messages), **kwargs})
+        return self._stream_impl()
+
+    async def _stream_impl(self) -> AsyncIterator[StreamEvent]:
+        yield TextDelta(text="ok", index=0)
+        yield Done(stop_reason="stop", raw_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +100,16 @@ def _approval_blob(*, tool_call_id: str, chat_id: str) -> dict[str, Any]:
 
 
 @pytest.fixture
-def app(fake_storage_provider, fake_provider_registry) -> FastAPI:
+def fake_llm() -> _ApprovalFakeLLM:
+    return _ApprovalFakeLLM()
+
+
+@pytest.fixture
+def app(fake_storage_provider, fake_provider_registry, fake_llm) -> FastAPI:
+    async def _get_llm(_pid: str) -> _ApprovalFakeLLM:
+        return fake_llm
+
+    fake_provider_registry.get_llm = _get_llm  # type: ignore[assignment]
     return create_test_app(
         storage_provider=fake_storage_provider,
         provider_registry=fake_provider_registry,
@@ -65,6 +118,17 @@ def app(fake_storage_provider, fake_provider_registry) -> FastAPI:
 
 @pytest_asyncio.fixture
 async def seeded_agent(app: FastAPI) -> Agent:
+    llm_storage = app.state.storage_provider.get_storage(LLMProvider)
+    await llm_storage.create(
+        LLMProvider(
+            id="llm-p",
+            provider=LLMProviderType.ANTHROPIC,
+            models=[LLMModel(name="m", context_length=8000)],
+            config=AnthropicConfig(api_key=SecretStr("test-only")),
+            limits=Limits(max_concurrency=1),
+        ),
+    )
+
     storage = app.state.storage_provider.get_storage(Agent)
     agent = Agent(
         id="ag-approval",

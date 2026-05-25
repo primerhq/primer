@@ -2,23 +2,80 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
 from matrix.api.app import create_test_app
 from matrix.model.agent import Agent, AgentModel
+from matrix.model.chat import Done, Message, StreamEvent, TextDelta
 from matrix.model.chats import Chat, ChatMessage
+from matrix.model.provider import (
+    AnthropicConfig,
+    Limits,
+    LLMModel,
+    LLMProvider,
+    LLMProviderType,
+)
+
+
+class _ChatTestFakeLLM:
+    """Deterministic fake LLM for the chat tests.
+
+    Replaces the M6 stub's hard-coded ``(stub) heard: <input>`` string
+    with a single TextDelta + Done — the same three-frame shape the
+    cursor-replay tests assume.
+    """
+
+    def __init__(self, reply_text: str = "ok") -> None:
+        self._reply_text = reply_text
+        self.calls: list[dict[str, Any]] = []
+
+    async def list_models(self):
+        return ["m"]
+
+    def stream(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamEvent]:
+        self.calls.append({"model": model, "messages": list(messages), **kwargs})
+        return self._stream_impl()
+
+    async def _stream_impl(self) -> AsyncIterator[StreamEvent]:
+        yield TextDelta(text=self._reply_text, index=0)
+        yield Done(stop_reason="stop", raw_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.fixture
+def fake_llm() -> _ChatTestFakeLLM:
+    return _ChatTestFakeLLM()
 
 
 @pytest.fixture
 def app(
     fake_storage_provider,
     fake_provider_registry,
+    fake_llm,
 ) -> FastAPI:
+    # Wire the fake LLM through the provider registry so the chat
+    # runner's `provider_registry.get_llm(...)` lookup resolves
+    # without spinning up a real provider adapter.
+    async def _get_llm(_pid: str) -> _ChatTestFakeLLM:
+        return fake_llm
+
+    fake_provider_registry.get_llm = _get_llm  # type: ignore[assignment]
     return create_test_app(
         storage_provider=fake_storage_provider,
         provider_registry=fake_provider_registry,
@@ -35,6 +92,20 @@ async def client(app):
 
 @pytest_asyncio.fixture
 async def seeded_agent(app):
+    # Chat resolves the agent's pinned LLMProvider + model row at WS
+    # connect time, so both the Agent and an LLMProvider row carrying
+    # the model name must exist before any user_message frame.
+    llm_storage = app.state.storage_provider.get_storage(LLMProvider)
+    await llm_storage.create(
+        LLMProvider(
+            id="llm-p",
+            provider=LLMProviderType.ANTHROPIC,
+            models=[LLMModel(name="m", context_length=8000)],
+            config=AnthropicConfig(api_key=SecretStr("test-only")),
+            limits=Limits(max_concurrency=1),
+        ),
+    )
+
     storage = app.state.storage_provider.get_storage(Agent)
     agent = Agent(
         id="ag-chat",
@@ -120,6 +191,64 @@ class TestEndChat:
         resp = await client.delete(f"/v1/chats/{cid}")
         assert resp.status_code == 409
 
+    async def test_delete_force_hard_deletes_chat_and_messages(
+        self, client, app, seeded_agent,
+    ):
+        # Seed a chat row + a few message rows under it.
+        create = await client.post("/v1/chats", json={"agent_id": "ag-chat"})
+        cid = create.json()["id"]
+        msgs = app.state.storage_provider.get_storage(ChatMessage)
+        for seq, kind in enumerate(["user_message", "assistant_token", "done"], start=1):
+            await msgs.create(
+                ChatMessage(
+                    id=ChatMessage.make_id(cid, seq),
+                    chat_id=cid,
+                    seq=seq,
+                    kind=kind,  # type: ignore[arg-type]
+                    payload={},
+                    created_at=datetime.now(timezone.utc),
+                ),
+            )
+
+        # force=true → 200 with delete payload + chat + messages gone.
+        resp = await client.delete(f"/v1/chats/{cid}?force=true")
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"id": cid, "deleted": True}
+
+        # Verify storage is empty.
+        chats = app.state.storage_provider.get_storage(Chat)
+        assert await chats.get(cid) is None
+        for seq in (1, 2, 3):
+            assert await msgs.get(ChatMessage.make_id(cid, seq)) is None
+
+        # And the resource has actually gone — subsequent GET 404s.
+        resp = await client.get(f"/v1/chats/{cid}")
+        assert resp.status_code == 404
+
+    async def test_delete_force_works_on_already_ended_chat(
+        self, client, app, seeded_agent,
+    ):
+        """T0765 still pins 409 on a plain DELETE; force=true overrides
+        that and removes the chat even when status='ended'."""
+        create = await client.post("/v1/chats", json={"agent_id": "ag-chat"})
+        cid = create.json()["id"]
+        # Soft-end first.
+        await client.delete(f"/v1/chats/{cid}")
+        # Plain DELETE again → 409 conflict (existing semantic).
+        again = await client.delete(f"/v1/chats/{cid}")
+        assert again.status_code == 409
+        # force=true → succeeds, removes the row.
+        forced = await client.delete(f"/v1/chats/{cid}?force=true")
+        assert forced.status_code == 200, forced.text
+        chats = app.state.storage_provider.get_storage(Chat)
+        assert await chats.get(cid) is None
+
+    async def test_delete_force_404s_for_unknown_chat(
+        self, client, seeded_agent,
+    ):
+        resp = await client.delete("/v1/chats/no-such-chat?force=true")
+        assert resp.status_code == 404
+
 
 # ===========================================================================
 # GET /v1/chats/{id}/messages
@@ -169,14 +298,15 @@ class TestListMessages:
 
 @pytest.mark.asyncio
 class TestChatWebSocket:
-    async def test_ws_send_user_message_streams_back_stub_reply(
-        self, app, seeded_agent,
+    async def test_ws_send_user_message_streams_back_llm_reply(
+        self, app, fake_llm, seeded_agent,
     ):
         from starlette.testclient import TestClient as SyncTestClient
 
         # Create chat via the REST endpoint using the same app.
         # FastAPI's WS testing uses the sync TestClient because the
         # ASGI WebSocket protocol is easier to drive synchronously.
+        fake_llm._reply_text = "hello back"
         with SyncTestClient(app) as sclient:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             assert r.status_code == 201
@@ -189,8 +319,14 @@ class TestChatWebSocket:
                 assert got[0]["kind"] == "user_message"
                 assert got[0]["content"] == "hi"
                 assert got[1]["kind"] == "assistant_token"
-                assert "(stub) heard: hi" in got[1]["delta"]
+                assert got[1]["delta"] == "hello back"
                 assert got[2]["kind"] == "done"
+                assert got[2]["stop_reason"] == "stop"
+        # The fake LLM should have been invoked exactly once for this
+        # one-turn chat, with the user message as the prompt's tail.
+        assert len(fake_llm.calls) == 1
+        prompt = fake_llm.calls[0]["messages"]
+        assert prompt[-1].role == "user"
 
     async def test_ws_replays_history_when_cursor_below_last_seq(
         self, app, seeded_agent,

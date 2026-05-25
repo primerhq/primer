@@ -38,18 +38,44 @@ function CT_textOf(m) {
 // ============================================================================
 
 function ChatsPage({ onOpen, pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
   const { navigate } = useRouter();
   const [showNew, setShowNew] = React.useState(false);
   const [textQuery, setTextQuery] = React.useState("");
   const [agentFilter, setAgentFilter] = React.useState("");
   const [page, setPage] = React.useState(1);
+  const [pendingDelete, setPendingDelete] = React.useState(null);
   const filterFocused = React.useRef(false);
 
   const list = useResource(
     "chats:list",
     (signal) => apiFetch("GET", "/chats?limit=200", null, { signal }),
     { pollMs: 5000, pauseWhile: () => filterFocused.current }
+  );
+
+  const remove = useMutation(
+    (cid) => apiFetch("DELETE", `/chats/${encodeURIComponent(cid)}?force=true`),
+    {
+      invalidates: ["chats:list"],
+      onSuccess: () => {
+        const cid = pendingDelete?.id;
+        setPendingDelete(null);
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "success", title: "Chat deleted", detail: cid });
+        }
+        list.refetch();
+      },
+      onError: (err) => {
+        if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err?.title || "Delete failed",
+            detail: err?.detail || err?.message,
+            requestId: err?.requestId,
+          });
+        }
+      },
+    },
   );
 
   const items = list.data?.items ?? [];
@@ -194,7 +220,22 @@ function ChatsPage({ onOpen, pushToast }) {
                     </td>
                     <td className="mono num tabular">{c.last_seq ?? 0}</td>
                     <td className="mono muted">{createdSec != null ? relativeTime(createdSec) : "—"}</td>
-                    <td style={{ textAlign: "right", paddingRight: 12 }}><Icon name="chevron-right" size={12} className="muted" /></td>
+                    <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }}>
+                      <button
+                        className="row-action"
+                        title="Delete chat"
+                        data-testid={`chat-row-delete-${c.id}`}
+                        onClick={(e) => { e.stopPropagation(); setPendingDelete(c); }}
+                        style={{
+                          background: "none", border: "none", cursor: "pointer",
+                          color: "var(--text-3)", padding: "2px 6px",
+                          marginRight: 4,
+                        }}
+                      >
+                        <Icon name="trash" size={13} />
+                      </button>
+                      <Icon name="chevron-right" size={12} className="muted" />
+                    </td>
                   </tr>
                 );
               })}
@@ -217,6 +258,32 @@ function ChatsPage({ onOpen, pushToast }) {
 
       {showNew && (
         <CT_NewChatModal onClose={() => setShowNew(false)} pushToast={pushToast} />
+      )}
+
+      {pendingDelete && (
+        <Modal
+          title="Delete chat"
+          danger
+          onClose={() => { if (!remove.loading) setPendingDelete(null); }}
+          footer={
+            <>
+              <Btn kind="ghost" onClick={() => setPendingDelete(null)} disabled={remove.loading}>Cancel</Btn>
+              <Btn
+                kind="danger"
+                icon="trash"
+                onClick={() => remove.mutate(pendingDelete.id)}
+                disabled={remove.loading}
+              >
+                {remove.loading ? "Deleting…" : "Delete chat"}
+              </Btn>
+            </>
+          }
+        >
+          <p>
+            Permanently delete <strong className="mono">{pendingDelete.id}</strong>?
+            All persisted messages are removed. This cannot be undone.
+          </p>
+        </Modal>
       )}
     </div>
   );
