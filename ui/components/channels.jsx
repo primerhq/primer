@@ -935,7 +935,12 @@ function NewAssociationModal({ workspaces, channels, onClose, onCreated, pushToa
 
   const submit = () => {
     setFieldErrors({});
+    // WorkspaceChannelAssociation requires an explicit `id` in the
+    // POST body — the make_crud_router does NOT auto-allocate it for
+    // this entity (unlike Channel / ChannelProvider, which do).
+    // Generate a short opaque id client-side; server 409s on duplicate.
     create.mutate({
+      id: "assoc-" + Math.random().toString(36).slice(2, 14),
       workspace_id: workspaceId,
       channel_id: channelId,
       enabled,
