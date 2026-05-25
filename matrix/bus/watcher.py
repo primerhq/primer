@@ -2,12 +2,16 @@
 
 Spec: ``docs/superpowers/specs/2026-05-22-yielding-tools-design.md`` §8.3.
 
-Two classes:
+Three public classes + one protocol:
 
-* :class:`LocalWorkspaceWatcher` — the unit. Polls mtimes for a list
-  of workspace-relative paths, fires an async ``on_change`` callback
-  with a coalesced batch of change events whenever something shifts.
-  No bus, no scheduler — pure file-system observation. Trivially
+* :class:`StatProbe` — protocol describing how to snapshot a list of
+  paths. Two implementations are provided:
+  :class:`HostStatProbe` (host-side ``os.stat``) and
+  :class:`SandboxStatProbe` (exec-based, for container / k8s workspaces).
+* :class:`WorkspaceFilesWatcher` — the unit. Polls via a ``StatProbe``
+  for a list of workspace-relative paths, fires an async ``on_change``
+  callback with a coalesced batch of change events whenever something
+  shifts. No bus, no scheduler — pure observation. Trivially
   unit-testable.
 * :class:`WatcherManager` — the lifecycle owner. Periodically scans
   the scheduler for sessions parked on ``watch:*`` keys, starts a
@@ -24,22 +28,32 @@ Why a polling watcher instead of ``watchdog`` / inotify in v1?
   paths for low-frequency changes — polling at 500ms is fine.
 
 A ``watchdog`` migration is straightforward later: the
-:class:`LocalWorkspaceWatcher` surface (constructor + start/stop +
+:class:`WorkspaceFilesWatcher` surface (constructor + start/stop +
 on_change callback) doesn't change, only its insides.
+
+Container / k8s workspaces use a different probe backend: instead of
+host-side os.stat, they exec ``stat -c '%n|%Y|%s'`` inside the sandbox.
+One exec call per poll cycle batches all of a watcher's paths to
+amortise the docker-exec overhead (~100ms per call). Operators
+watching more than ~50 paths per session will see noticeable polling
+latency; the host-side variant has no such ceiling.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shlex
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from matrix.int.event_bus import EventBus
 
 if TYPE_CHECKING:
+    from matrix.int.sandbox import Sandbox
     from matrix.scheduler.in_memory import InMemoryScheduler
     from matrix.scheduler.postgres import PostgresScheduler
 
@@ -51,16 +65,233 @@ DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 DEFAULT_SCAN_INTERVAL_SECONDS = 2.0
 DEFAULT_BATCH_WINDOW_MS = 250
 
+# Maximum paths per single sandbox exec() call to stay under ARG_MAX.
+# A bash -c script string is bounded by ARG_MAX (typically 128KB).
+# With paths of up to ~256 bytes each, 50 paths * 256 = ~12KB, well
+# within limit. Paths over 50 are split into multiple exec calls.
+_SANDBOX_BATCH_SIZE = 50
+
 
 # ===========================================================================
-# LocalWorkspaceWatcher
+# StatProbe protocol
 # ===========================================================================
 
 
-class LocalWorkspaceWatcher:
+@runtime_checkable
+class StatProbe(Protocol):
+    """Snapshot the (mtime, size, exists) state of a list of paths.
+
+    Per call, returns a dict keyed by the path string (as it was
+    passed in). Each value is a (mtime_seconds_or_None, size_or_None,
+    exists_bool) triple. mtime is integer seconds since the epoch
+    (best portability — sandbox stat -c '%Y' returns seconds); size
+    is bytes; exists is True iff the path resolved to something on
+    the filesystem. Non-existent paths report (None, None, False) —
+    they're a valid state, not an error, and may exist in a later
+    poll.
+    """
+
+    async def snapshot(
+        self, paths: list[str],
+    ) -> dict[str, tuple[int | float | None, int | None, bool]]:
+        ...
+
+
+# ===========================================================================
+# HostStatProbe
+# ===========================================================================
+
+
+class HostStatProbe:
+    """StatProbe that calls os.stat() on host filesystem paths.
+
+    Each path in ``paths`` is resolved as ``root / path``. ENOENT →
+    (None, None, False). Other OSError → (None, None, False) with a
+    warning logged (permission denied etc. are 'no event' from the
+    agent's view).
+
+    Returns float mtime (sub-second precision from st_mtime_ns) to
+    correctly detect rapid back-to-back writes within the same wall-clock
+    second. The SandboxStatProbe returns integer seconds (stat -c %Y
+    only provides second resolution), so both are acceptable by the
+    callers which only care about change detection, not the exact value.
+    """
+
+    def __init__(self, *, root: Path) -> None:
+        self._root = root
+
+    async def snapshot(
+        self, paths: list[str],
+    ) -> dict[str, tuple[int | float | None, int | None, bool]]:
+        out: dict[str, tuple[int | None, int | None, bool]] = {}
+        for rel in paths:
+            out[rel] = _host_stat(self._root / rel)
+        return out
+
+
+def _host_stat(p: Path) -> tuple[float | None, int | None, bool]:
+    """Return (mtime_float, size, exists) for a host path.
+
+    Uses ``st_mtime`` (float, nanosecond precision on most modern kernels)
+    rather than truncating to integer seconds so that two rapid writes
+    within the same wall-clock second are still distinguishable.
+    """
+    try:
+        st = p.stat()
+        return (st.st_mtime, st.st_size, True)
+    except FileNotFoundError:
+        return (None, None, False)
+    except OSError as exc:
+        logger.warning(
+            "watch-files: os.stat(%s) failed: %s — treating as missing",
+            p, exc,
+        )
+        return (None, None, False)
+
+
+# ===========================================================================
+# SandboxStatProbe
+# ===========================================================================
+
+
+class SandboxStatProbe:
+    """StatProbe that execs ``stat`` inside a :class:`~matrix.int.sandbox.Sandbox`.
+
+    All paths are workspace-relative (e.g. ``"src/main.py"``).
+    They are joined with ``workspace_root`` before being passed to the
+    sandbox script (e.g. ``"/workspace/src/main.py"``).
+
+    Paths containing newlines are rejected at construction time with
+    :class:`ValueError` — the output parser splits on ``\\n``.
+
+    Each :meth:`snapshot` call batches up to ``_SANDBOX_BATCH_SIZE``
+    paths into one exec call to amortise the docker-exec overhead.
+    """
+
+    def __init__(self, *, sandbox: "Sandbox", workspace_root: str) -> None:
+        self._sandbox = sandbox
+        self._workspace_root = workspace_root.rstrip("/")
+
+    def _abs(self, rel: str) -> str:
+        return f"{self._workspace_root}/{rel}"
+
+    async def snapshot(
+        self, paths: list[str],
+    ) -> dict[str, tuple[int | float | None, int | None, bool]]:
+        # Reject newlines early — they would break our line-oriented parsing.
+        for rel in paths:
+            if "\n" in rel:
+                raise ValueError(
+                    f"SandboxStatProbe: path contains a newline: {rel!r}"
+                )
+
+        out: dict[str, tuple[int | None, int | None, bool]] = {}
+        # Seed all as missing; successful parse rows will overwrite.
+        for rel in paths:
+            out[rel] = (None, None, False)
+
+        # Process in batches to avoid ARG_MAX overflow.
+        # See module-level _SANDBOX_BATCH_SIZE comment.
+        for i in range(0, len(paths), _SANDBOX_BATCH_SIZE):
+            batch = paths[i : i + _SANDBOX_BATCH_SIZE]
+            batch_result = await self._exec_batch(batch)
+            out.update(batch_result)
+
+        return out
+
+    async def _exec_batch(
+        self, paths: list[str],
+    ) -> dict[str, tuple[int | float | None, int | None, bool]]:
+        """Run a single stat exec for the given relative paths."""
+        out: dict[str, tuple[int | float | None, int | None, bool]] = {}
+
+        # Build a shell script that, for each path, either prints
+        # <rel_path>|<mtime_sec>|<size_bytes> or <rel_path>|MISS|MISS.
+        # We iterate over the workspace-absolute paths in the script;
+        # the output uses the relative path so we can match back to
+        # the caller's keys without stripping the workspace_root prefix.
+        parts: list[str] = []
+        rel_to_abs: dict[str, str] = {}
+        for rel in paths:
+            abs_p = self._abs(rel)
+            rel_to_abs[rel] = abs_p
+            # shlex.quote ensures no shell injection from the path string.
+            q = shlex.quote(abs_p)
+            rel_q = shlex.quote(rel)
+            parts.append(
+                f"if [ -e {q} ]; then "
+                f"stat -c {rel_q}'|%Y|%s' {q}; "
+                f"else echo {rel_q}'|MISS|MISS'; fi"
+            )
+        script = "; ".join(parts)
+
+        try:
+            result = await self._sandbox.exec(
+                ["sh", "-c", script],
+                workdir=self._workspace_root,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SandboxStatProbe: sandbox.exec raised: %s — "
+                "treating all paths as missing",
+                exc,
+            )
+            for rel in paths:
+                out[rel] = (None, None, False)
+            return out
+
+        if result.exit_code != 0:
+            logger.debug(
+                "SandboxStatProbe: exec exited %d (stderr=%r) — "
+                "treating all paths as missing",
+                result.exit_code, result.stderr[:200],
+            )
+            for rel in paths:
+                out[rel] = (None, None, False)
+            return out
+
+        # Parse output: each line is <rel_path>|<mtime>|<size>  or  <rel_path>|MISS|MISS
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts_row = line.split("|", 2)
+            if len(parts_row) != 3:  # noqa: PLR2004
+                logger.warning(
+                    "SandboxStatProbe: malformed stat output line %r — skipping",
+                    line,
+                )
+                continue
+            rel_path, mtime_raw, size_raw = parts_row
+            if mtime_raw == "MISS" or size_raw == "MISS":
+                out[rel_path] = (None, None, False)
+            else:
+                try:
+                    out[rel_path] = (int(mtime_raw), int(size_raw), True)
+                except ValueError:
+                    logger.warning(
+                        "SandboxStatProbe: could not parse stat values "
+                        "mtime=%r size=%r for path %r — skipping",
+                        mtime_raw, size_raw, rel_path,
+                    )
+
+        return out
+
+
+# ===========================================================================
+# WorkspaceFilesWatcher
+# ===========================================================================
+
+
+class WorkspaceFilesWatcher:
     """Polling watcher for a fixed list of workspace-relative paths.
 
-    Each path is stat()ed every ``poll_interval_seconds``. When a
+    Backend-agnostic: works against any object that implements the
+    StatProbe protocol. The hot loop calls probe.snapshot(paths)
+    every poll_interval_seconds, diffs against the previous
+    snapshot, and emits a coalesced batch via on_change.
+
+    Each path is snapshotted every ``poll_interval_seconds``. When a
     change is detected (mtime delta, file appeared, or file
     disappeared), the watcher waits ``batch_window_ms`` for more
     changes, collects them, and fires ``on_change`` once with the
@@ -70,10 +301,6 @@ class LocalWorkspaceWatcher:
     watcher emits whatever it had at window-close, then re-arms the
     detection state and waits for the next change.
 
-    Directories are stat()ed too: a directory's mtime changes when
-    children are added / removed. For finer per-file events inside a
-    directory the caller should list those children explicitly.
-
     Lifecycle: ``start()`` schedules the asyncio task; ``stop()``
     cancels it and awaits exit. ``start`` is idempotent (re-calling
     is a no-op); ``stop`` is idempotent (re-calling does nothing).
@@ -82,22 +309,22 @@ class LocalWorkspaceWatcher:
     def __init__(
         self,
         *,
-        workspace_root: Path,
+        probe: StatProbe,
         paths: list[str],
-        batch_window_ms: int = DEFAULT_BATCH_WINDOW_MS,
-        poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         on_change: Callable[[list[dict]], Awaitable[None]],
+        poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
+        batch_window_ms: int = DEFAULT_BATCH_WINDOW_MS,
     ) -> None:
-        self._root = workspace_root
+        self._probe = probe
         self._paths = list(paths)
         self._batch_window_ms = batch_window_ms
         self._poll = poll_interval_seconds
         self._on_change = on_change
         self._task: asyncio.Task | None = None
         self._stopping = False
-        # Path → mtime (None if file doesn't exist). Populated on the
-        # first stat baseline; subsequent polls diff against this dict.
-        self._state: dict[str, float | None] = {}
+        # Path → (mtime, size, exists). Populated on the first snapshot
+        # baseline; subsequent polls diff against this dict.
+        self._state: dict[str, tuple[int | float | None, int | None, bool]] = {}
 
     def start(self) -> None:
         if self._task is not None:
@@ -121,14 +348,14 @@ class LocalWorkspaceWatcher:
     async def _run(self) -> None:
         # Establish baseline before announcing any changes — only
         # mutations AFTER the watcher started are interesting.
-        self._state = self._snapshot()
+        self._state = await self._probe.snapshot(self._paths)
         while not self._stopping:
             try:
                 await asyncio.sleep(self._poll)
             except asyncio.CancelledError:
                 break
             try:
-                changes = self._diff_against_state()
+                changes = await self._diff_against_state()
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
                     "watch-files: stat poll failed: %s", exc,
@@ -144,7 +371,13 @@ class LocalWorkspaceWatcher:
                     await asyncio.sleep(self._batch_window_ms / 1000.0)
                 except asyncio.CancelledError:
                     break
-                extra = self._diff_against_state()
+                try:
+                    extra = await self._diff_against_state()
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception(
+                        "watch-files: stat poll (batch window) failed: %s", exc,
+                    )
+                    extra = []
                 if extra:
                     # Merge: later events on the same path win.
                     by_path: dict[str, dict] = {c["path"]: c for c in changes}
@@ -158,29 +391,30 @@ class LocalWorkspaceWatcher:
                     "watch-files: on_change callback raised: %s", exc,
                 )
 
-    def _snapshot(self) -> dict[str, float | None]:
-        out: dict[str, float | None] = {}
-        for rel in self._paths:
-            out[rel] = _stat_mtime(self._root / rel)
-        return out
-
-    def _diff_against_state(self) -> list[dict]:
+    async def _diff_against_state(self) -> list[dict]:
         """Return change events for paths whose mtime/existence shifted.
 
         Mutates ``self._state`` to the new snapshot so subsequent
         polls see the new baseline (i.e. each change is reported
         exactly once).
         """
+        new_snap = await self._probe.snapshot(self._paths)
         changes: list[dict] = []
         for rel in self._paths:
             old = self._state.get(rel)
-            new = _stat_mtime(self._root / rel)
-            if old == new:
+            new = new_snap.get(rel, (None, None, False))
+            old_mtime = old[0] if old is not None else None
+            old_exists = old[2] if old is not None else False
+            new_mtime = new[0]
+            new_exists = new[2]
+            # Determine if anything changed: either existence or mtime
+            changed = (old_exists != new_exists) or (old_mtime != new_mtime)
+            if not changed:
                 continue
             self._state[rel] = new
-            if old is None and new is not None:
+            if not old_exists and new_exists:
                 event_type = "created"
-            elif old is not None and new is None:
+            elif old_exists and not new_exists:
                 event_type = "deleted"
             else:
                 event_type = "modified"
@@ -189,8 +423,8 @@ class LocalWorkspaceWatcher:
                     "path": rel,
                     "event_type": event_type,
                     "mtime_after": (
-                        datetime.fromtimestamp(new, tz=timezone.utc).isoformat()
-                        if new is not None
+                        datetime.fromtimestamp(new_mtime, tz=timezone.utc).isoformat()
+                        if new_mtime is not None
                         else None
                     ),
                 }
@@ -198,33 +432,19 @@ class LocalWorkspaceWatcher:
         return changes
 
 
-def _stat_mtime(p: Path) -> float | None:
-    """Return ``p``'s mtime, or ``None`` if the path doesn't exist.
-
-    Wraps ``Path.stat()`` so FileNotFoundError (and PermissionError —
-    typical on Windows when an antivirus has the file open) cleanly
-    translate to ``None`` rather than crashing the polling loop.
-    """
-    try:
-        return p.stat().st_mtime
-    except FileNotFoundError:
-        return None
-    except OSError:
-        # Permission denied, file in use on Windows, etc. — treat as
-        # "unknown state" so the loop doesn't spin on it.
-        return None
-
-
 # ===========================================================================
 # WatcherManager
 # ===========================================================================
 
 
-WorkspaceRootResolver = Callable[[str], Awaitable[Path | None]]
+WorkspaceProbeResolver = Callable[[str], Awaitable["StatProbe | None"]]
+
+# Keep the old name available for any external code that may reference it.
+WorkspaceRootResolver = WorkspaceProbeResolver
 
 
 class WatcherManager:
-    """Lifecycle owner for :class:`LocalWorkspaceWatcher` instances.
+    """Lifecycle owner for :class:`WorkspaceFilesWatcher` instances.
 
     On each scan:
 
@@ -244,7 +464,7 @@ class WatcherManager:
         *,
         bus: EventBus,
         scheduler,
-        workspace_root_resolver: WorkspaceRootResolver,
+        workspace_root_resolver: WorkspaceProbeResolver,
         scan_interval_seconds: float = DEFAULT_SCAN_INTERVAL_SECONDS,
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
     ) -> None:
@@ -256,7 +476,7 @@ class WatcherManager:
         self._task: asyncio.Task | None = None
         self._stopping = False
         # event_key → live watcher
-        self._watchers: dict[str, LocalWorkspaceWatcher] = {}
+        self._watchers: dict[str, WorkspaceFilesWatcher] = {}
 
     def start(self) -> None:
         if self._task is not None:
@@ -322,10 +542,10 @@ class WatcherManager:
                 event_key,
             )
             return
-        root = await self._resolve(workspace_id)
-        if root is None:
+        probe = await self._resolve(workspace_id)
+        if probe is None:
             logger.warning(
-                "watcher-manager: workspace %s has no root path; "
+                "watcher-manager: workspace %s has no probe; "
                 "skipping watch park %s",
                 workspace_id, event_key,
             )
@@ -344,8 +564,8 @@ class WatcherManager:
         async def on_change(changes: list[dict], _key=event_key) -> None:
             await self._bus.publish(_key, {"changes": changes})
 
-        watcher = LocalWorkspaceWatcher(
-            workspace_root=root,
+        watcher = WorkspaceFilesWatcher(
+            probe=probe,
             paths=paths,
             batch_window_ms=batch_window_ms,
             poll_interval_seconds=self._poll,
@@ -354,8 +574,8 @@ class WatcherManager:
         watcher.start()
         self._watchers[event_key] = watcher
         logger.info(
-            "watcher-manager: started watcher for %s (paths=%s, root=%s)",
-            event_key, paths, root,
+            "watcher-manager: started watcher for %s (paths=%s)",
+            event_key, paths,
         )
 
     async def _stop_watcher(self, event_key: str) -> None:
@@ -458,7 +678,11 @@ __all__ = [
     "DEFAULT_BATCH_WINDOW_MS",
     "DEFAULT_POLL_INTERVAL_SECONDS",
     "DEFAULT_SCAN_INTERVAL_SECONDS",
-    "LocalWorkspaceWatcher",
+    "HostStatProbe",
+    "SandboxStatProbe",
+    "StatProbe",
+    "WorkspaceFilesWatcher",
     "WatcherManager",
+    "WorkspaceProbeResolver",
     "WorkspaceRootResolver",
 ]

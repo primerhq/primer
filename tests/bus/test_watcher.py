@@ -1,18 +1,19 @@
-"""Tests for the LocalWorkspaceWatcher + WatcherManager.
+"""Tests for WorkspaceFilesWatcher + WatcherManager.
 
 Two layers:
 
-* :class:`LocalWorkspaceWatcher` — the unit. Polls mtimes for a list
-  of paths under a workspace root, fires a callback when changes
-  land, coalesces bursts with ``batch_window_ms``.
+* :class:`WorkspaceFilesWatcher` — the unit. Polls via a StatProbe for
+  a list of paths, fires a callback when changes land, coalesces bursts
+  with ``batch_window_ms``.
 * :class:`WatcherManager` — the lifecycle owner. Periodically scans
   the scheduler for ``watch:*`` parks and starts / stops watchers to
   match. Publishes change bursts on the event bus on behalf of each
   watcher.
 
-The tests use real on-disk files (under ``tmp_path``) because that's
-the path the production watcher exercises. They use very short poll
-windows so each test runs in milliseconds.
+The tests use real on-disk files (under ``tmp_path``) via
+:class:`HostStatProbe` because that's the path the production watcher
+exercises for local workspaces. They use very short poll windows so each
+test runs in milliseconds.
 """
 
 from __future__ import annotations
@@ -24,7 +25,11 @@ from pathlib import Path
 import pytest
 
 from matrix.bus.in_memory import InMemoryEventBus
-from matrix.bus.watcher import LocalWorkspaceWatcher, WatcherManager
+from matrix.bus.watcher import (
+    HostStatProbe,
+    WatcherManager,
+    WorkspaceFilesWatcher,
+)
 from matrix.model.session import (
     AgentSessionBinding,
     Session,
@@ -34,12 +39,12 @@ from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
 
 
 # ===========================================================================
-# LocalWorkspaceWatcher (unit)
+# WorkspaceFilesWatcher (unit)
 # ===========================================================================
 
 
 @pytest.mark.asyncio
-class TestLocalWorkspaceWatcher:
+class TestWorkspaceFilesWatcher:
     async def test_emits_modified_event_on_mtime_change(self, tmp_path):
         f = tmp_path / "a.txt"
         f.write_text("v1")
@@ -48,8 +53,9 @@ class TestLocalWorkspaceWatcher:
         async def on_change(changes):
             received.append(changes)
 
-        w = LocalWorkspaceWatcher(
-            workspace_root=tmp_path,
+        probe = HostStatProbe(root=tmp_path)
+        w = WorkspaceFilesWatcher(
+            probe=probe,
             paths=["a.txt"],
             batch_window_ms=20,
             poll_interval_seconds=0.02,
@@ -81,8 +87,9 @@ class TestLocalWorkspaceWatcher:
         async def on_change(changes):
             received.append(changes)
 
-        w = LocalWorkspaceWatcher(
-            workspace_root=tmp_path,
+        probe = HostStatProbe(root=tmp_path)
+        w = WorkspaceFilesWatcher(
+            probe=probe,
             paths=["new.txt"],
             batch_window_ms=20,
             poll_interval_seconds=0.02,
@@ -112,8 +119,9 @@ class TestLocalWorkspaceWatcher:
         async def on_change(changes):
             received.append(changes)
 
-        w = LocalWorkspaceWatcher(
-            workspace_root=tmp_path,
+        probe = HostStatProbe(root=tmp_path)
+        w = WorkspaceFilesWatcher(
+            probe=probe,
             paths=["doomed.txt"],
             batch_window_ms=20,
             poll_interval_seconds=0.02,
@@ -145,8 +153,9 @@ class TestLocalWorkspaceWatcher:
         async def on_change(changes):
             received.append(changes)
 
-        w = LocalWorkspaceWatcher(
-            workspace_root=tmp_path,
+        probe = HostStatProbe(root=tmp_path)
+        w = WorkspaceFilesWatcher(
+            probe=probe,
             paths=["a", "b"],
             batch_window_ms=150,  # generous window — both writes fall in
             poll_interval_seconds=0.02,
@@ -170,8 +179,9 @@ class TestLocalWorkspaceWatcher:
             await w.stop()
 
     async def test_stop_is_idempotent(self, tmp_path):
-        w = LocalWorkspaceWatcher(
-            workspace_root=tmp_path,
+        probe = HostStatProbe(root=tmp_path)
+        w = WorkspaceFilesWatcher(
+            probe=probe,
             paths=["a"],
             batch_window_ms=10,
             poll_interval_seconds=0.02,
@@ -230,16 +240,16 @@ def _make_watch_parked_session(
     return sess
 
 
-class _StaticPathResolver:
-    """Test stand-in for the production workspace_root resolver.
+class _StaticProbeResolver:
+    """Test stand-in for the production probe resolver.
 
-    Holds a fixed mapping ``workspace_id → root_path``.
+    Holds a fixed mapping ``workspace_id → StatProbe``.
     """
 
-    def __init__(self, mapping: dict[str, Path]) -> None:
+    def __init__(self, mapping: dict[str, object]) -> None:
         self._mapping = mapping
 
-    async def resolve(self, workspace_id: str) -> Path | None:
+    async def resolve(self, workspace_id: str) -> object:
         return self._mapping.get(workspace_id)
 
 
@@ -274,7 +284,8 @@ class TestWatcherManager:
             next_attempt_at=datetime.now(timezone.utc),
         )
 
-        resolver = _StaticPathResolver({"ws-A": tmp_path})
+        probe = HostStatProbe(root=tmp_path)
+        resolver = _StaticProbeResolver({"ws-A": probe})
         mgr = WatcherManager(
             bus=bus,
             scheduler=scheduler,
@@ -326,7 +337,8 @@ class TestWatcherManager:
             runnable=False,
             next_attempt_at=datetime.now(timezone.utc),
         )
-        resolver = _StaticPathResolver({"ws-B": tmp_path})
+        probe = HostStatProbe(root=tmp_path)
+        resolver = _StaticProbeResolver({"ws-B": probe})
         mgr = WatcherManager(
             bus=bus,
             scheduler=scheduler,
@@ -393,7 +405,8 @@ class TestWatcherManager:
             runnable=False,
             next_attempt_at=datetime.now(timezone.utc),
         )
-        resolver = _StaticPathResolver({"ws-C": tmp_path})
+        probe = HostStatProbe(root=tmp_path)
+        resolver = _StaticProbeResolver({"ws-C": probe})
         mgr = WatcherManager(
             bus=bus,
             scheduler=scheduler,

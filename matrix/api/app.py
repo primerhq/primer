@@ -222,7 +222,11 @@ def _make_lifespan(config: AppConfig):
             from matrix.bus.scheduler_tasks import (
                 TimeoutSweeper, TimerScheduler,
             )
-            from matrix.bus.watcher import WatcherManager
+            from matrix.bus.watcher import (
+                HostStatProbe,
+                SandboxStatProbe,
+                WatcherManager,
+            )
             from matrix.scheduler.postgres import PostgresScheduler
 
             # Pair the bus to the scheduler flavour: postgres scheduler
@@ -256,21 +260,34 @@ def _make_lifespan(config: AppConfig):
             timeout_sweeper.start()
 
             # watch_files watcher manager — resolves workspace_id →
-            # filesystem root via the workspace registry. Returns None
-            # for non-local backends (sandbox/container/k8s) so the
-            # manager logs a warning and skips them; native watcher
-            # support for those backends is future work.
-            async def _resolve_root(workspace_id: str):
+            # StatProbe via the workspace registry.
+            # Local workspaces expose a `root` Path → HostStatProbe.
+            # Container / k8s workspaces expose `_sandbox` + `_workspace_root`
+            # → SandboxStatProbe (batched `stat` exec per poll cycle).
+            # Unknown / destroyed workspaces → None (manager skips).
+            async def _resolve_probe(workspace_id: str):
                 try:
                     ws = await workspace_registry.get_workspace(workspace_id)
                 except Exception:
                     return None
+                # Local workspace exposes `root` (a Path); wrap in HostStatProbe.
                 root = getattr(ws, "root", None)
-                return root
+                if root is not None:
+                    return HostStatProbe(root=root)
+                # Sandbox workspace (container / k8s) exposes a sandbox +
+                # workspace_root.
+                sandbox = getattr(ws, "_sandbox", None)
+                workspace_root = getattr(ws, "_workspace_root", None)
+                if sandbox is not None and workspace_root is not None:
+                    return SandboxStatProbe(
+                        sandbox=sandbox,
+                        workspace_root=workspace_root,
+                    )
+                return None
             watcher_manager = WatcherManager(
                 bus=event_bus,
                 scheduler=scheduler,
-                workspace_root_resolver=_resolve_root,
+                workspace_root_resolver=_resolve_probe,
             )
             watcher_manager.start()
             logger.info("lifespan: watcher manager started")
