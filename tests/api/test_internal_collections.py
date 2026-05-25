@@ -374,7 +374,7 @@ class TestSearchToolset:
         await client.put("/v1/internal_collections/config", json=_config_body())
         await client.post("/v1/internal_collections/bootstrap")
 
-        provider = await pr.get_toolset("_search")
+        provider = await pr.get_toolset("search")
         names = [t.id async for t in provider.list_tools()]
         assert "search_agents" in names
         assert "search_graphs" in names
@@ -397,4 +397,4 @@ class TestSearchToolset:
         self, client, pr
     ) -> None:
         with pytest.raises(NotFoundError):
-            await pr.get_toolset("_search")
+            await pr.get_toolset("search")

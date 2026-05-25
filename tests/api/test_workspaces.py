@@ -644,7 +644,7 @@ class TestLogSubResource:
 class TestWorkspacesToolsetRegistration:
     @pytest.mark.asyncio
     async def test_resolves_through_provider_registry(self, app, pr) -> None:
-        provider = await pr.get_toolset("_workspaces")
+        provider = await pr.get_toolset("workspaces")
         names = [t.id async for t in provider.list_tools()]
         for name in (
             "list_workspace_providers",
@@ -664,7 +664,7 @@ class TestWorkspacesToolsetRegistration:
 
     @pytest.mark.asyncio
     async def test_create_provider_via_toolset(self, app, pr) -> None:
-        provider = await pr.get_toolset("_workspaces")
+        provider = await pr.get_toolset("workspaces")
         body = _provider().model_dump(mode="json")
         result = await provider.call(
             tool_name="create_workspace_provider",
@@ -674,6 +674,6 @@ class TestWorkspacesToolsetRegistration:
 
     @pytest.mark.asyncio
     async def test_invalidate_workspaces_is_noop(self, app, pr) -> None:
-        await pr.invalidate_toolset("_workspaces")
-        provider = await pr.get_toolset("_workspaces")
+        await pr.invalidate_toolset("workspaces")
+        provider = await pr.get_toolset("workspaces")
         assert provider is app.state.workspaces_toolset

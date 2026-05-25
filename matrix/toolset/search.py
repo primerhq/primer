@@ -1,4 +1,4 @@
-"""``_search`` internal toolset — one search tool per Describeable entity.
+"""``search`` internal toolset — one search tool per Describeable entity.
 
 Activated only when the internal collections subsystem is configured
 and bootstrapped. The toolset exposes:
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-SEARCH_TOOLSET_ID = "_search"
+SEARCH_TOOLSET_ID = "search"
 
 
 class _SearchArgs(BaseModel):

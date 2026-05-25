@@ -3,7 +3,7 @@
 // Top-level scope is shared with the babel-standalone IIFE; prefix all
 // consts with AP_ to avoid clashes with other components.
 
-const AP_INTERNAL_TOOLSETS = ["_workspaces", "_system", "_misc", "_search", "web"];
+const AP_INTERNAL_TOOLSETS = ["workspaces", "system", "misc", "search", "web"];
 
 function AP_ageSec(iso) {
   if (!iso) return null;
@@ -484,7 +484,7 @@ function AP_NewPolicyModal({ onClose, pushToast }) {
   const { useResource, useMutation, apiFetch } = window.matrixApi;
   const [type, setType] = React.useState("required");
   const [id, setId] = React.useState("");
-  const [toolsetId, setToolsetId] = React.useState("_workspaces");
+  const [toolsetId, setToolsetId] = React.useState("workspaces");
   const [toolName, setToolName] = React.useState("");
   const [timeoutSec, setTimeoutSec] = React.useState("");
   const [policyRego, setPolicyRego] = React.useState(

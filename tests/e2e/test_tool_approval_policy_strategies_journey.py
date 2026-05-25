@@ -163,7 +163,7 @@ async def test_t0858_tool_approval_policy_multi_strategy_journey(
         # ----- 1. required strategy CRUD round-trip + toggle -----
         # T0824 + T0831 in one walk.
         required_pid = f"pol-req-{unique_suffix}"
-        required_toolset = "_workspaces"
+        required_toolset = "workspaces"
         required_tool = f"req.fs.delete.{unique_suffix}"
         body = _required_policy_body(
             required_pid,

@@ -1,6 +1,6 @@
-"""``_workspaces`` reserved internal toolset — dogfoods the workspace API.
+"""``workspaces`` reserved internal toolset — dogfoods the workspace API.
 
-Always available (built once at app startup, like ``_system``). The
+Always available (built once at app startup, like ``system``). The
 internal collections subsystem ingests its tools into the
 ``_internal_tools`` collection during bootstrap so agents can search
 for them.
@@ -73,7 +73,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-WORKSPACES_TOOLSET_ID = "_workspaces"
+WORKSPACES_TOOLSET_ID = "workspaces"
 
 
 # ===========================================================================

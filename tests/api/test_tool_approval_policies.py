@@ -17,7 +17,7 @@ _REGO_BROKEN = "this is not valid rego"
 async def test_create_required_policy_ok(client):
     body = {
         "id": "p-req-1",
-        "toolset_id": "_system",
+        "toolset_id": "system",
         "tool_name": "delete_session",
         "approval": {"type": "required"},
     }
@@ -30,7 +30,7 @@ async def test_create_required_policy_ok(client):
 async def test_create_policy_rego_compile_fail_422(client):
     body = {
         "id": "p-rego-bad",
-        "toolset_id": "_system",
+        "toolset_id": "system",
         "tool_name": "x",
         "approval": {"type": "policy", "policy": _REGO_BROKEN},
     }
@@ -45,7 +45,7 @@ async def test_create_policy_rego_compile_fail_422(client):
 async def test_create_policy_rego_compile_ok(client):
     body = {
         "id": "p-rego-ok",
-        "toolset_id": "_system",
+        "toolset_id": "system",
         "tool_name": "x",
         "approval": {"type": "policy", "policy": _REGO_OK},
     }
@@ -57,7 +57,7 @@ async def test_create_policy_rego_compile_ok(client):
 async def test_create_llm_policy_unknown_provider_422(client):
     body = {
         "id": "p-llm-bad",
-        "toolset_id": "_system",
+        "toolset_id": "system",
         "tool_name": "x",
         "approval": {
             "type": "llm",
@@ -74,7 +74,7 @@ async def test_create_llm_policy_unknown_provider_422(client):
 async def test_duplicate_toolset_tool_409(client):
     body = {
         "id": "p-1",
-        "toolset_id": "_system",
+        "toolset_id": "system",
         "tool_name": "shell_exec",
         "approval": {"type": "required"},
     }
@@ -89,7 +89,7 @@ async def test_duplicate_toolset_tool_409(client):
 async def test_list_and_delete(client):
     body = {
         "id": "p-list",
-        "toolset_id": "_system",
+        "toolset_id": "system",
         "tool_name": "y",
         "approval": {"type": "required"},
     }

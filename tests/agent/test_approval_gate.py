@@ -23,7 +23,7 @@ from matrix.model.tool_approval import (
 def _ctx() -> ApprovalContext:
     return ApprovalContext(
         tool_name="shell_exec",
-        toolset_id="_system",
+        toolset_id="system",
         arguments={"cmd": "rm -rf /tmp/x"},
         agent_id="agt",
         session_id="sess",
@@ -35,7 +35,7 @@ def _ctx() -> ApprovalContext:
 @pytest.mark.asyncio
 async def test_required_always_trips():
     policy = ToolApprovalPolicy(
-        id="r", toolset_id="_system", tool_name="shell_exec",
+        id="r", toolset_id="system", tool_name="shell_exec",
         approval=RequiredApprovalConfig(),
     )
     v = await evaluate_approval_gate(
@@ -47,7 +47,7 @@ async def test_required_always_trips():
 @pytest.mark.asyncio
 async def test_policy_returns_required_with_reason():
     policy = ToolApprovalPolicy(
-        id="p", toolset_id="_system", tool_name="shell_exec",
+        id="p", toolset_id="system", tool_name="shell_exec",
         approval=PolicyApprovalConfig(
             policy=(
                 "package matrix.tool_approval\n"
@@ -69,7 +69,7 @@ async def test_policy_returns_required_with_reason():
 @pytest.mark.asyncio
 async def test_policy_returns_not_required():
     policy = ToolApprovalPolicy(
-        id="p", toolset_id="_system", tool_name="shell_exec",
+        id="p", toolset_id="system", tool_name="shell_exec",
         approval=PolicyApprovalConfig(
             policy=(
                 "package matrix.tool_approval\n"
@@ -86,7 +86,7 @@ async def test_policy_returns_not_required():
 @pytest.mark.asyncio
 async def test_policy_compile_failure_fails_closed():
     policy = ToolApprovalPolicy(
-        id="p", toolset_id="_system", tool_name="shell_exec",
+        id="p", toolset_id="system", tool_name="shell_exec",
         approval=PolicyApprovalConfig(policy="this is not rego at all"),
     )
     v = await evaluate_approval_gate(
@@ -99,7 +99,7 @@ async def test_policy_compile_failure_fails_closed():
 @pytest.mark.asyncio
 async def test_llm_judge_returns_structured_verdict(monkeypatch):
     policy = ToolApprovalPolicy(
-        id="l", toolset_id="_system", tool_name="shell_exec",
+        id="l", toolset_id="system", tool_name="shell_exec",
         approval=LlmApprovalConfig(
             provider_id="prov", model="m", prompt="judge!",
         ),
@@ -122,7 +122,7 @@ async def test_llm_judge_returns_structured_verdict(monkeypatch):
 @pytest.mark.asyncio
 async def test_llm_judge_failure_fails_closed(monkeypatch):
     policy = ToolApprovalPolicy(
-        id="l", toolset_id="_system", tool_name="shell_exec",
+        id="l", toolset_id="system", tool_name="shell_exec",
         approval=LlmApprovalConfig(
             provider_id="prov", model="m", prompt="judge!",
         ),

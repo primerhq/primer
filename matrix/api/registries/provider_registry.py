@@ -89,13 +89,24 @@ def _default_cross_encoder_factory(  # pragma: no cover
             )
 
 
-_SYSTEM_TOOLSET_ID = "_system"
-_SEARCH_TOOLSET_ID = "_search"
-_WORKSPACES_TOOLSET_ID = "_workspaces"
-_MISC_TOOLSET_ID = "_misc"
-# Reserved builtin id WITHOUT leading underscore (legacy — the `web`
-# toolset shipped before the underscore-prefix convention was settled).
+_SYSTEM_TOOLSET_ID = "system"
+_SEARCH_TOOLSET_ID = "search"
+_WORKSPACES_TOOLSET_ID = "workspaces"
+_MISC_TOOLSET_ID = "misc"
+# `web` has always been prefix-less; unchanged.
 _WEB_TOOLSET_ID = "web"
+
+# Backward-compat: the four `_*` ids shipped before the underscore-
+# prefix convention was retired. Agents persisted before the rename
+# may still reference them, so the registry maps the old ids to the
+# new ones transparently on lookup. Remove this map after a deprecation
+# window (when the operator-saved configs have been re-saved).
+_TOOLSET_ID_ALIASES: dict[str, str] = {
+    "_system": "system",
+    "_workspaces": "workspaces",
+    "_search": "search",
+    "_misc": "misc",
+}
 
 
 def _build_default_toolset_factory(
@@ -124,7 +135,7 @@ def _build_default_toolset_factory(
                 f"toolset {toolset.id!r} declares provider='internal' "
                 "but internal toolsets are constructed by the app "
                 "lifespan, not from a row. Reserved internal toolset "
-                "ids start with '_'."
+                "ids are: system, workspaces, search, misc, web."
             )
         raise ConfigError(
             f"unknown toolset provider type {toolset.provider!r}"
@@ -166,26 +177,26 @@ class ProviderRegistry:
             cross_encoder_factory or _default_cross_encoder_factory
         )
         self._toolset_factory = toolset_factory or _default_toolset_factory
-        # Reserved id ``_system`` resolves to this immutable provider
+        # Reserved id ``system`` resolves to this immutable provider
         # without consulting storage. Set via app lifespan; tests
         # may leave it None and use the row-based path.
         self._system_toolset_provider = system_toolset_provider
-        # Reserved id ``_search`` resolves to this provider when the
+        # Reserved id ``search`` resolves to this provider when the
         # internal collections subsystem is active. Set lazily by the
         # subsystem bootstrap (or the lifespan handler if a config row
         # already exists at startup); ``None`` means the subsystem is
-        # inactive and ``get_toolset('_search')`` raises NotFoundError.
+        # inactive and ``get_toolset('search')`` raises NotFoundError.
         self._search_toolset_provider = search_toolset_provider
-        # Reserved id ``_workspaces`` resolves to this immutable
-        # provider — always built at app startup. Mirrors ``_system``:
+        # Reserved id ``workspaces`` resolves to this immutable
+        # provider — always built at app startup. Mirrors ``system``:
         # its tools dogfood the workspace REST API to agents.
         self._workspaces_toolset_provider = workspaces_toolset_provider
-        # Reserved id ``_misc`` resolves to this immutable provider —
+        # Reserved id ``misc`` resolves to this immutable provider —
         # always built at app startup. Stateless utilities
         # (get_datetime, sleep, uuid_v4, hash, calculate).
         self._misc_toolset_provider = misc_toolset_provider
-        # Reserved id ``web`` (no underscore prefix — legacy) resolves
-        # to the immutable web toolset built at app startup.
+        # Reserved id ``web`` (no underscore prefix) resolves to the
+        # immutable web toolset built at app startup.
         # DuckDuckGo search + http-request primitives.
         self._web_toolset_provider = web_toolset_provider
 
@@ -240,28 +251,31 @@ class ProviderRegistry:
             return adapter
 
     async def get_toolset(self, toolset_id: str) -> ToolsetProvider:
-        # Reserved id `_system` short-circuits storage. Returns the
+        # Transparently resolve old `_*` ids to new prefix-less ids so
+        # agent rows persisted before the rename continue to work.
+        toolset_id = _TOOLSET_ID_ALIASES.get(toolset_id, toolset_id)
+        # Reserved id `system` short-circuits storage. Returns the
         # singleton built at app startup; immutable, never re-created.
         if (
             self._system_toolset_provider is not None
             and toolset_id == _SYSTEM_TOOLSET_ID
         ):
             return self._system_toolset_provider
-        # Reserved id `_search` resolves to the search toolset built
+        # Reserved id `search` resolves to the search toolset built
         # when the internal collections subsystem is activated.
         if (
             self._search_toolset_provider is not None
             and toolset_id == _SEARCH_TOOLSET_ID
         ):
             return self._search_toolset_provider
-        # Reserved id `_workspaces` resolves to the always-on
+        # Reserved id `workspaces` resolves to the always-on
         # workspace dogfood toolset built at app startup.
         if (
             self._workspaces_toolset_provider is not None
             and toolset_id == _WORKSPACES_TOOLSET_ID
         ):
             return self._workspaces_toolset_provider
-        # Reserved id `_misc` resolves to the always-on misc utility
+        # Reserved id `misc` resolves to the always-on misc utility
         # toolset built at app startup.
         if (
             self._misc_toolset_provider is not None
@@ -309,6 +323,8 @@ class ProviderRegistry:
             await adapter.aclose()
 
     async def invalidate_toolset(self, toolset_id: str) -> None:
+        # Transparently resolve old `_*` ids to new prefix-less ids.
+        toolset_id = _TOOLSET_ID_ALIASES.get(toolset_id, toolset_id)
         # The reserved internal toolsets are immutable; invalidation
         # is a no-op so the singletons survive any cascade triggered
         # by an accidental write to the reserved ids.

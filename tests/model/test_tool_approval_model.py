@@ -41,7 +41,7 @@ def test_llm_requires_provider_model_prompt():
 def test_policy_model_round_trip():
     row = ToolApprovalPolicy(
         id="approve-shell",
-        toolset_id="_system",
+        toolset_id="system",
         tool_name="shell_exec",
         approval=PolicyApprovalConfig(policy="package m\nrequired := false"),
     )
@@ -55,7 +55,7 @@ def test_policy_model_round_trip():
 def test_policy_discriminator_picks_required():
     row = ToolApprovalPolicy(
         id="r",
-        toolset_id="_system",
+        toolset_id="system",
         tool_name="t",
         approval={"type": "required"},
     )
@@ -65,7 +65,7 @@ def test_policy_discriminator_picks_required():
 def test_policy_discriminator_picks_llm():
     row = ToolApprovalPolicy(
         id="r",
-        toolset_id="_system",
+        toolset_id="system",
         tool_name="t",
         approval={
             "type": "llm",
@@ -81,7 +81,7 @@ def test_policy_discriminator_picks_llm():
 def test_timeout_seconds_optional_positive():
     row = ToolApprovalPolicy(
         id="r",
-        toolset_id="_system",
+        toolset_id="system",
         tool_name="t",
         approval=RequiredApprovalConfig(),
         timeout_seconds=120.0,
@@ -90,7 +90,7 @@ def test_timeout_seconds_optional_positive():
     with pytest.raises(ValidationError):
         ToolApprovalPolicy(
             id="r",
-            toolset_id="_system",
+            toolset_id="system",
             tool_name="t",
             approval=RequiredApprovalConfig(),
             timeout_seconds=0.0,
@@ -100,7 +100,7 @@ def test_timeout_seconds_optional_positive():
 def test_disabled_flag_optional_default_true():
     row = ToolApprovalPolicy(
         id="r",
-        toolset_id="_system",
+        toolset_id="system",
         tool_name="t",
         approval=RequiredApprovalConfig(),
     )

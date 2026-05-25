@@ -344,7 +344,7 @@ class TestBootstrap:
                 for tn in ("foo", "bar"):
                     yield Tool(
                         id=tn,
-                        toolset_id="_system",
+                        toolset_id="system",
                         description=f"{tn} description",
                         args_schema={"type": "object"},
                     )
@@ -354,13 +354,13 @@ class TestBootstrap:
             storage_provider=sp,  # type: ignore[arg-type]
             provider_registry=pr,  # type: ignore[arg-type]
             semantic_search_registry=ssr,  # type: ignore[arg-type]
-            toolset_providers={"_system": _ToolsetProvider()},
+            toolset_providers={"system": _ToolsetProvider()},
         )
         result = await subsystem.bootstrap()
         assert result["counts"]["tools"] == 2
         tools_coll = INTERNAL_COLLECTION_IDS["tool"]
-        assert (tools_coll, "_system::foo", "0") in store.records
-        assert (tools_coll, "_system::bar", "0") in store.records
+        assert (tools_coll, "system::foo", "0") in store.records
+        assert (tools_coll, "system::bar", "0") in store.records
         await subsystem.aclose()
 
 

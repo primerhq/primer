@@ -265,7 +265,7 @@ async def test_t0850_tool_approval_required_park_journey(
             "/v1/tool_approval_policies",
             json={
                 "id": policy_id,
-                "toolset_id": "_workspaces",
+                "toolset_id": "workspaces",
                 "tool_name": "write_workspace_file",
                 "enabled": True,
                 "approval": {"type": "required"},

@@ -1,6 +1,6 @@
 """E2E: built-in (always-on) toolset listings.
 
-Covers backlog items T0140 (`_system` toolset) and T0141 (`_workspaces`
+Covers backlog items T0140 (`system` toolset) and T0141 (`workspaces`
 toolset). Spec §8 lists both as always-on; the lifespan handler builds
 them at startup and registers them with the ProviderRegistry, so a
 `GET /v1/toolsets/{id}/tools` against either id should succeed without
@@ -17,14 +17,14 @@ import pytest
 async def test_t0140_system_toolset_lists_tools(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0140 — `GET /v1/toolsets/_system/tools` returns 200 with a
+    """T0140 — `GET /v1/toolsets/system/tools` returns 200 with a
     non-empty list whose entries carry the documented fields:
     ``id``, ``description``, ``schema``, ``toolset_id``.
 
     NB: tools expose an ``id`` (not ``name``) — this is the canonical
     invocation handle the model uses.
     """
-    resp = await client.get("/v1/toolsets/_system/tools")
+    resp = await client.get("/v1/toolsets/system/tools")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     tools = body.get("tools")
@@ -34,7 +34,7 @@ async def test_t0140_system_toolset_lists_tools(
         assert "description" in tool, tool
         assert isinstance(tool["id"], str) and tool["id"], tool
         # toolset_id should consistently identify the parent toolset
-        assert tool.get("toolset_id") == "_system", tool
+        assert tool.get("toolset_id") == "system", tool
 
 
 # ============================================================================
@@ -122,12 +122,12 @@ async def test_t0706_toolset_invalidate_then_tools_clean_envelope(
 async def test_t0141_workspaces_toolset_lists_tools(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0141 — `GET /v1/toolsets/_workspaces/tools` returns 200 with
+    """T0141 — `GET /v1/toolsets/workspaces/tools` returns 200 with
     the workspace-tool family. The exact tool ids are implementation
     detail, but at minimum some tool's id or description should
     reference exec / file operations.
     """
-    resp = await client.get("/v1/toolsets/_workspaces/tools")
+    resp = await client.get("/v1/toolsets/workspaces/tools")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     tools = body.get("tools")
@@ -145,11 +145,11 @@ async def test_t0141_workspaces_toolset_lists_tools(
 
     # Each tool also reports the toolset_id consistently
     for tool in tools:
-        assert tool.get("toolset_id") == "_workspaces", tool
+        assert tool.get("toolset_id") == "workspaces", tool
 
 
 # ============================================================================
-# T0494 — Built-in `_misc` toolset lists expected tools and dispatches
+# T0494 — Built-in `misc` toolset lists expected tools and dispatches
 # ============================================================================
 
 
@@ -162,14 +162,14 @@ _EXPECTED_MISC_TOOL_IDS = {
 async def test_t0494_misc_toolset_lists_expected_tools(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0494 — `GET /v1/toolsets/_misc/tools` returns the six
+    """T0494 — `GET /v1/toolsets/misc/tools` returns the six
     misc utility tools (get_datetime, sleep, uuid_v4, hash,
     calculate, ask_user). Each carries the documented Tool fields and
-    the canonical ``toolset_id`` of `_misc`. Mirrors T0140 (`_system`)
-    and T0141 (`_workspaces`) for the third always-on built-in
+    the canonical ``toolset_id`` of `misc`. Mirrors T0140 (`system`)
+    and T0141 (`workspaces`) for the third always-on built-in
     toolset.
     """
-    resp = await client.get("/v1/toolsets/_misc/tools")
+    resp = await client.get("/v1/toolsets/misc/tools")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     tools = body.get("tools")
@@ -184,7 +184,7 @@ async def test_t0494_misc_toolset_lists_expected_tools(
         assert isinstance(tool["id"], str) and tool["id"], tool
         assert isinstance(tool.get("description"), str), tool
         assert tool.get("description"), tool
-        assert tool.get("toolset_id") == "_misc", tool
+        assert tool.get("toolset_id") == "misc", tool
         # Each tool exposes a JSON schema for its arguments
         assert isinstance(tool.get("schema"), dict), tool
 
@@ -193,7 +193,7 @@ async def test_t0494_misc_toolset_lists_expected_tools(
 async def test_t0494_misc_calculate_dispatches_end_to_end(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0494 (extension) — Exercise the `_misc` toolset via the
+    """T0494 (extension) — Exercise the `misc` toolset via the
     system toolset's `call_tool` meta-dispatch. Proves the registry
     wiring + at least one misc tool's handler actually executes
     end-to-end through the full HTTP path. Uses ``calculate`` which
@@ -207,7 +207,7 @@ async def test_t0494_misc_calculate_dispatches_end_to_end(
     of the `calculate` tool as a proxy for "the handler exists and
     is correctly wired".
     """
-    resp = await client.get("/v1/toolsets/_misc/tools")
+    resp = await client.get("/v1/toolsets/misc/tools")
     assert resp.status_code == 200, resp.text
     tools = resp.json()["tools"]
 
@@ -316,7 +316,7 @@ async def test_t0189_tools_endpoint_on_missing_toolset_returns_404(
 
 
 # ============================================================================
-# T0190 — DELETE on built-in `_system` toolset returns clean 4xx envelope
+# T0190 — DELETE on built-in `system` toolset returns clean 4xx envelope
 # ============================================================================
 
 
@@ -324,13 +324,13 @@ async def test_t0189_tools_endpoint_on_missing_toolset_returns_404(
 async def test_t0190_delete_builtin_system_toolset_clean_4xx(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0190 — `_system` is an always-on toolset built at lifespan
+    """T0190 — `system` is an always-on toolset built at lifespan
     startup (no row in storage). DELETE on its id must produce a
     documented envelope — either 404 because there's no storage row to
     delete, or a different documented 4xx if the handler special-cases
     the built-in id. The contract pin is "no /errors/internal, no 5xx".
     """
-    resp = await client.delete("/v1/toolsets/_system")
+    resp = await client.delete("/v1/toolsets/system")
     assert resp.status_code < 500, resp.text
     if resp.status_code >= 400:
         envelope = resp.json()
@@ -339,16 +339,16 @@ async def test_t0190_delete_builtin_system_toolset_clean_4xx(
 
     # Whether DELETE returned 404 or 204, the built-in MUST still be
     # functional immediately after — its tools list still resolves.
-    after = await client.get("/v1/toolsets/_system/tools")
+    after = await client.get("/v1/toolsets/system/tools")
     assert after.status_code == 200, (
-        f"DELETE attempt on built-in _system toolset must not disable "
+        f"DELETE attempt on built-in system toolset must not disable "
         f"the always-on provider; got {after.status_code}: {after.text}"
     )
     assert isinstance(after.json().get("tools"), list)
 
 
 # ============================================================================
-# T0191 — PUT on built-in `_system` toolset returns clean 4xx envelope
+# T0191 — PUT on built-in `system` toolset returns clean 4xx envelope
 # ============================================================================
 
 
@@ -356,7 +356,7 @@ async def test_t0190_delete_builtin_system_toolset_clean_4xx(
 async def test_t0191_put_builtin_system_toolset_clean_envelope(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0191 — PUT on the always-on `_system` toolset id. The handler
+    """T0191 — PUT on the always-on `system` toolset id. The handler
     must not crash on the built-in identifier — must surface either a
     clean 4xx (rejection) or 200/204 (silently accepted). NEVER 500
     /errors/internal.
@@ -366,14 +366,14 @@ async def test_t0191_put_builtin_system_toolset_clean_envelope(
     always-on provider.
     """
     body = {
-        "id": "_system",
+        "id": "system",
         "provider": "mcp",
         "config": {
             "transport": "stdio",
             "config": {"command": ["echo"]},
         },
     }
-    resp = await client.put("/v1/toolsets/_system", json=body)
+    resp = await client.put("/v1/toolsets/system", json=body)
     assert resp.status_code < 500, resp.text
     if resp.status_code >= 400:
         envelope = resp.json()
@@ -381,9 +381,9 @@ async def test_t0191_put_builtin_system_toolset_clean_envelope(
         assert envelope["type"] != "/errors/internal", envelope
 
     # Built-in must still resolve its tools regardless
-    after = await client.get("/v1/toolsets/_system/tools")
+    after = await client.get("/v1/toolsets/system/tools")
     assert after.status_code == 200, (
-        f"PUT attempt on built-in _system must not disable the "
+        f"PUT attempt on built-in system must not disable the "
         f"always-on provider; /tools got {after.status_code}: "
         f"{after.text}"
     )
@@ -391,7 +391,7 @@ async def test_t0191_put_builtin_system_toolset_clean_envelope(
 
 
 # ============================================================================
-# T0246 — DELETE built-in `_workspaces` toolset returns clean envelope
+# T0246 — DELETE built-in `workspaces` toolset returns clean envelope
 # ============================================================================
 
 
@@ -399,21 +399,21 @@ async def test_t0191_put_builtin_system_toolset_clean_envelope(
 async def test_t0246_delete_builtin_workspaces_toolset_clean_envelope(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0246 — Mirror of T0190 (DELETE _system) for the second built-in
-    toolset. The always-on _workspaces provider has no storage row;
+    """T0246 — Mirror of T0190 (DELETE system) for the second built-in
+    toolset. The always-on workspaces provider has no storage row;
     DELETE on its id must produce a clean envelope and the built-in
     /tools endpoint must still work afterward.
     """
-    resp = await client.delete("/v1/toolsets/_workspaces")
+    resp = await client.delete("/v1/toolsets/workspaces")
     assert resp.status_code < 500, resp.text
     if resp.status_code >= 400:
         envelope = resp.json()
         assert envelope["type"].startswith("/errors/"), envelope
         assert envelope["type"] != "/errors/internal", envelope
 
-    after = await client.get("/v1/toolsets/_workspaces/tools")
+    after = await client.get("/v1/toolsets/workspaces/tools")
     assert after.status_code == 200, (
-        f"DELETE attempt on built-in _workspaces toolset must not "
+        f"DELETE attempt on built-in workspaces toolset must not "
         f"disable the always-on provider; /tools got "
         f"{after.status_code}: {after.text}"
     )
@@ -421,7 +421,7 @@ async def test_t0246_delete_builtin_workspaces_toolset_clean_envelope(
 
 
 # ============================================================================
-# T0247 — DELETE _search toolset before subsystem activation
+# T0247 — DELETE search toolset before subsystem activation
 # ============================================================================
 
 
@@ -429,7 +429,7 @@ async def test_t0246_delete_builtin_workspaces_toolset_clean_envelope(
 async def test_t0247_delete_search_toolset_before_activation_clean(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0247 — `_search` is the third built-in toolset, but it's only
+    """T0247 — `search` is the third built-in toolset, but it's only
     materialized once the internal-collections subsystem is active
     (per spec §8). Before activation, attempting to DELETE it must
     produce a clean envelope (no /errors/internal); subsequent
@@ -438,7 +438,7 @@ async def test_t0247_delete_search_toolset_before_activation_clean(
     The bringup never activates the subsystem at start-time, so this
     test runs on the inactive state by default.
     """
-    resp = await client.delete("/v1/toolsets/_search")
+    resp = await client.delete("/v1/toolsets/search")
     assert resp.status_code < 500, resp.text
     if resp.status_code >= 400:
         envelope = resp.json()
@@ -472,7 +472,7 @@ async def test_t0247_delete_search_toolset_before_activation_clean(
         )
         assert put.status_code == 200, (
             f"subsystem activation should succeed after the DELETE "
-            f"attempt on _search; got {put.status_code}: {put.text}"
+            f"attempt on search; got {put.status_code}: {put.text}"
         )
         config_created = True
     finally:

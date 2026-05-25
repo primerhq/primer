@@ -1,9 +1,9 @@
-"""Built-in ``_misc`` toolset — small portable utilities for agents.
+"""Built-in ``misc`` toolset — small portable utilities for agents.
 
 Catch-all for cheap, side-effect-free helpers that LLMs often want but
 can't reliably compute themselves: current time, controlled pacing,
 stable id generation, content hashing, and arithmetic. Like
-``_system`` and ``_workspaces``, ``_misc`` is reserved (its toolset id
+``system`` and ``workspaces``, ``misc`` is reserved (its toolset id
 short-circuits the normal ``Toolset`` row lookup in
 :class:`matrix.api.registries.ProviderRegistry`) and built once at
 app startup.
@@ -50,7 +50,7 @@ from matrix.toolset.internal import InternalToolsetProvider, ToolHandler
 logger = logging.getLogger(__name__)
 
 
-MISC_TOOLSET_ID = "_misc"
+MISC_TOOLSET_ID = "misc"
 
 
 # ===========================================================================

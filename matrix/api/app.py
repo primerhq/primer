@@ -115,7 +115,7 @@ def _make_lifespan(config: AppConfig):
         workspace_registry = WorkspaceRegistry(storage_provider)
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
-        # ``get_toolset('_system')`` to it.
+        # ``get_toolset('system')`` to it.
         # Resolve the MCP stdio allowlist from AppConfig and bake it into
         # the toolset factory so every MCP provider built from a row is
         # consistently constrained.
@@ -325,13 +325,13 @@ def _make_lifespan(config: AppConfig):
                 provider_registry=provider_registry,
                 semantic_search_registry=semantic_search_registry,
                 toolset_providers={
-                    "_system": system_toolset,
-                    "_workspaces": ws_toolset,
-                    "_misc": misc_toolset,
+                    "system": system_toolset,
+                    "workspaces": ws_toolset,
+                    "misc": misc_toolset,
                 },
             )
             search_toolset = build_search_toolset(ic_subsystem)
-            ic_subsystem.register_toolset_provider("_search", search_toolset)
+            ic_subsystem.register_toolset_provider("search", search_toolset)
             provider_registry._search_toolset_provider = search_toolset  # noqa: SLF001
             app.state.internal_collections = ic_subsystem
             app.state.search_toolset = search_toolset

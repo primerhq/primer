@@ -285,13 +285,13 @@ async def bootstrap(
         toolsets: dict[str, Any] = {}
         sys_ts = getattr(request.app.state, "system_toolset", None)
         if sys_ts is not None:
-            toolsets["_system"] = sys_ts
+            toolsets["system"] = sys_ts
         ws_ts = getattr(request.app.state, "workspaces_toolset", None)
         if ws_ts is not None:
-            toolsets["_workspaces"] = ws_ts
+            toolsets["workspaces"] = ws_ts
         misc_ts = getattr(request.app.state, "misc_toolset", None)
         if misc_ts is not None:
-            toolsets["_misc"] = misc_ts
+            toolsets["misc"] = misc_ts
         subsystem = build_subsystem(
             config=cfg,
             storage_provider=storage_provider,
@@ -303,7 +303,7 @@ async def bootstrap(
         search_ts = build_search_toolset(subsystem)
         provider_registry._search_toolset_provider = search_ts  # noqa: SLF001
         request.app.state.search_toolset = search_ts
-        subsystem.register_toolset_provider("_search", search_ts)
+        subsystem.register_toolset_provider("search", search_ts)
 
     return await subsystem.bootstrap()
 

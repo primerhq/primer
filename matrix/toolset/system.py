@@ -1,8 +1,8 @@
-"""Built-in ``_system`` toolset — exposes the full REST surface as agent tools.
+"""Built-in ``system`` toolset — exposes the full REST surface as agent tools.
 
 The system toolset is **immutable** (its provider instance is constructed
 once at app startup and lives for the process lifetime) and **reserved**
-(its toolset id ``_system`` short-circuits the normal ``Toolset`` row
+(its toolset id ``system`` short-circuits the normal ``Toolset`` row
 lookup in :class:`matrix.api.registries.ProviderRegistry`). It dogfoods
 the entire matrix REST API to agents so they can self-administer the
 configuration that drives them.
@@ -90,7 +90,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_TOOLSET_ID = "_system"
+SYSTEM_TOOLSET_ID = "system"
 
 
 # ===========================================================================

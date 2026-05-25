@@ -33,43 +33,43 @@ class _FakeStorage:
 async def test_resolver_returns_none_when_missing():
     storage = _FakeStorage([])
     r = ApprovalResolver(storage=storage)
-    assert await r.find(toolset_id="_system", tool_name="x") is None
+    assert await r.find(toolset_id="system", tool_name="x") is None
 
 
 @pytest.mark.asyncio
 async def test_resolver_returns_match():
     policy = ToolApprovalPolicy(
-        id="p", toolset_id="_system", tool_name="shell_exec",
+        id="p", toolset_id="system", tool_name="shell_exec",
         approval=RequiredApprovalConfig(),
     )
     storage = _FakeStorage([policy])
     r = ApprovalResolver(storage=storage)
-    hit = await r.find(toolset_id="_system", tool_name="shell_exec")
+    hit = await r.find(toolset_id="system", tool_name="shell_exec")
     assert hit is not None and hit.id == "p"
 
 
 @pytest.mark.asyncio
 async def test_resolver_caches_within_ttl():
     policy = ToolApprovalPolicy(
-        id="p", toolset_id="_system", tool_name="shell_exec",
+        id="p", toolset_id="system", tool_name="shell_exec",
         approval=RequiredApprovalConfig(),
     )
     storage = _FakeStorage([policy])
     r = ApprovalResolver(storage=storage, cache_ttl_seconds=60.0)
-    await r.find(toolset_id="_system", tool_name="shell_exec")
-    await r.find(toolset_id="_system", tool_name="shell_exec")
+    await r.find(toolset_id="system", tool_name="shell_exec")
+    await r.find(toolset_id="system", tool_name="shell_exec")
     assert storage.find_calls == 1
 
 
 @pytest.mark.asyncio
 async def test_resolver_invalidate_clears_cache():
     policy = ToolApprovalPolicy(
-        id="p", toolset_id="_system", tool_name="shell_exec",
+        id="p", toolset_id="system", tool_name="shell_exec",
         approval=RequiredApprovalConfig(),
     )
     storage = _FakeStorage([policy])
     r = ApprovalResolver(storage=storage, cache_ttl_seconds=60.0)
-    await r.find(toolset_id="_system", tool_name="shell_exec")
+    await r.find(toolset_id="system", tool_name="shell_exec")
     r.invalidate()
-    await r.find(toolset_id="_system", tool_name="shell_exec")
+    await r.find(toolset_id="system", tool_name="shell_exec")
     assert storage.find_calls == 2

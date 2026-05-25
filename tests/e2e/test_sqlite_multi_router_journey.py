@@ -228,7 +228,7 @@ async def test_t0852_sqlite_multi_router_crud_journey(tmp_path: Path) -> None:
                 "/v1/tool_approval_policies",
                 json={
                     "id": policy_id,
-                    "toolset_id": "_system",
+                    "toolset_id": "system",
                     "tool_name": "delete_session",
                     "approval": {"type": "required"},
                 },

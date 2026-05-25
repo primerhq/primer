@@ -13,7 +13,7 @@
 // with agents.jsx (AG_TABS), providers.jsx (PROVIDER_FIELDS), and
 // workspaces.jsx (WS_TERMINAL).
 
-const TS_BUILTIN_IDS = ["_system", "_workspaces", "_search", "_misc", "web"];
+const TS_BUILTIN_IDS = ["system", "workspaces", "search", "misc", "web"];
 
 const TS_TABS = [
   { id: "config", label: "Config", icon: "settings" },
@@ -141,7 +141,7 @@ function TS_UserToolsets({ pushToast }) {
                   <div className="empty" style={{ padding: "40px 20px" }}>
                     <div className="ico-wrap"><Icon name="tools" size={22} /></div>
                     <div className="head">No user toolsets yet</div>
-                    <div className="sub">User toolsets are MCP servers (stdio or http). Built-in toolsets (_system, _workspaces, _search, web) live on a separate page.</div>
+                    <div className="sub">User toolsets are MCP servers (stdio or http). Built-in toolsets (system, workspaces, search, web) live on a separate page.</div>
                     <div className="actions"><Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New toolset</Btn></div>
                   </div>
                 </td></tr>
@@ -307,7 +307,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast }) {
           <option value="mcp">MCP server</option>
         </select>
         <div className="field-help">
-          Internal toolsets (<span className="mono">_system</span>, <span className="mono">_workspaces</span>, <span className="mono">_misc</span>, <span className="mono">_search</span>, <span className="mono">web</span>) are runtime built-ins — they cannot be created via this form.
+          Internal toolsets (<span className="mono">system</span>, <span className="mono">workspaces</span>, <span className="mono">misc</span>, <span className="mono">search</span>, <span className="mono">web</span>) are runtime built-ins — they cannot be created via this form.
         </div>
         {fieldErrors["body.provider"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider"]}</div>}
       </div>
@@ -836,7 +836,7 @@ function _tsPillCls(status) {
 
 function TS_BuiltinToolsets({ pushToast }) {
   const { useResource, apiFetch } = window.matrixApi;
-  // Probe IC config — _search is available only when the subsystem is ON.
+  // Probe IC config — search is available only when the subsystem is ON.
   const ic = useResource(
     "toolsets:ic-config",
     async (signal) => {
@@ -855,13 +855,13 @@ function TS_BuiltinToolsets({ pushToast }) {
       <Banner
         kind="info"
         title="Built-in toolsets are read-only"
-        detail="These are wired by the runtime — you can't create, edit, or delete them. _search becomes available once Internal Collections is bootstrapped."
+        detail="These are wired by the runtime — you can't create, edit, or delete them. search becomes available once Internal Collections is bootstrapped."
       />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        <TS_BuiltinCard id="_system" tagline="Operator + diagnostic tools (always on)" icon="settings" available />
-        <TS_BuiltinCard id="_workspaces" tagline="File ops + exec inside the bound workspace (always on)" icon="box" available />
+        <TS_BuiltinCard id="system" tagline="Operator + diagnostic tools (always on)" icon="settings" available />
+        <TS_BuiltinCard id="workspaces" tagline="File ops + exec inside the bound workspace (always on)" icon="box" available />
         <TS_BuiltinCard
-          id="_search"
+          id="search"
           tagline={subsystemOn
             ? "Semantic search over indexed entities (subsystem ON)"
             : "Semantic search — unavailable while Internal Collections subsystem is OFF"}

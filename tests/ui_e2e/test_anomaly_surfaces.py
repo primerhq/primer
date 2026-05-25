@@ -381,7 +381,7 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
     a ``tools.error?.status === 500`` only collapses that panel,
     not the parent ``<AgentToolsTab>``.
 
-    Good toolset: the built-in ``_misc`` internal toolset (always
+    Good toolset: the built-in ``misc`` internal toolset (always
     available, returns 5 tools per matrix/toolset/misc.py).
     Bad toolset: an MCP-HTTP toolset pointing at an unreachable
     URL — identical pattern to U0008's T0711 trigger.
@@ -423,7 +423,7 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
                 "provider_id": provider_id,
                 "model_name": "fake-model",
             },
-            "tools": ["_misc", bad_toolset_id],
+            "tools": ["misc", bad_toolset_id],
             "system_prompt": ["test"],
         })
         assert r.status_code == 201, f"seed agent failed: {r.text}"
@@ -438,11 +438,11 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
             state="visible", timeout=10_000,
         )
 
-        # Good toolset panel renders the _misc id as a header. At
-        # least one of the 5 _misc tools (e.g. uuid_v4) must appear
+        # Good toolset panel renders the misc id as a header. At
+        # least one of the 5 misc tools (e.g. uuid_v4) must appear
         # as a clickable row — confirms the panel rendered through
         # to ToolEntry rows.
-        page.locator(".panel-h:has(.mono:text('_misc'))").first.wait_for(
+        page.locator(".panel-h:has(.mono:text('misc'))").first.wait_for(
             state="visible", timeout=15_000,
         )
         page.get_by_text("uuid_v4", exact=False).first.wait_for(

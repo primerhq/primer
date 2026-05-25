@@ -370,7 +370,7 @@ async def seeded(toolset):
 class TestCatalog:
     @pytest.mark.asyncio
     async def test_toolset_id_and_count(self, toolset) -> None:
-        assert WORKSPACES_TOOLSET_ID == "_workspaces"
+        assert WORKSPACES_TOOLSET_ID == "workspaces"
         names = [t.id async for t in toolset.list_tools()]
         # 24 original + watch_files (yielding-tools M4) = 25.
         assert len(names) == 25
@@ -450,7 +450,7 @@ class TestBootstrapIngestsWorkspacesTools:
             storage_provider=sp,
             provider_registry=pr,
             semantic_search_registry=ssr,
-            toolset_providers={"_workspaces": toolset},
+            toolset_providers={"workspaces": toolset},
         )
 
         result = await subsystem.bootstrap()
@@ -465,16 +465,16 @@ class TestBootstrapIngestsWorkspacesTools:
         ws_ingested = {
             doc_id
             for doc_id in ingested_ids
-            if doc_id.startswith("_workspaces::")
+            if doc_id.startswith("workspaces::")
         }
         # 24 original + watch_files (yielding-tools M4) = 25.
         assert len(ws_ingested) == 25
         for expected in (
-            "_workspaces::list_workspace_providers",
-            "_workspaces::create_workspace_template",
-            "_workspaces::list_workspace_files",
-            "_workspaces::pause_workspace_session",
-            "_workspaces::get_workspace_log",
+            "workspaces::list_workspace_providers",
+            "workspaces::create_workspace_template",
+            "workspaces::list_workspace_files",
+            "workspaces::pause_workspace_session",
+            "workspaces::get_workspace_log",
         ):
             assert expected in ws_ingested, f"missing {expected}"
 

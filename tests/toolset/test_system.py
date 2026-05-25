@@ -195,7 +195,7 @@ def _thread() -> Thread:
 class TestCatalog:
     @pytest.mark.asyncio
     async def test_toolset_id_is_reserved(self, system_toolset) -> None:
-        assert SYSTEM_TOOLSET_ID == "_system"
+        assert SYSTEM_TOOLSET_ID == "system"
         async for t in system_toolset.list_tools():
             assert t.toolset_id == SYSTEM_TOOLSET_ID
 
