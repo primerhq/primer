@@ -1164,9 +1164,34 @@ class WorkerPool:
             role="tool",
             parts=[tool_result_part],
         )
-        await executor.inject_resume_messages(
-            [*rehydrated_assistant, tool_result_msg],
-        )
+        # Persist + clean transition. If commit_state rejects (e.g.
+        # the on-disk AgentSession is already ENDED from a prior
+        # failed turn — possible after a fatal LLM error in the
+        # preceding cycle), fall through to a clean terminal state:
+        # clear_park so the row isn't stuck as a `resumable` orphan,
+        # and end the session as failed. Without this branch the
+        # row sits forever at parked_status='resumable' with the
+        # bus event re-armed but no consumer that can ever succeed.
+        try:
+            await executor.inject_resume_messages(
+                [*rehydrated_assistant, tool_result_msg],
+            )
+        except Exception:
+            logger.exception(
+                "resume: persist failed for session %s — clearing "
+                "park and ending session as failed so the row isn't "
+                "stuck at parked_status='resumable'",
+                sid,
+            )
+            await self._scheduler.clear_park(sid)
+            await self._scheduler.complete_turn(
+                self._worker_id, sid,
+                expected_turn_no=lease.turn_no,
+                new_status=SessionStatus.ENDED,
+                ended_reason="failed",
+                re_enqueue=False,
+            )
+            return
 
         # ----- Clear park + re-enqueue ------------------------------
         await self._scheduler.clear_park(sid)
