@@ -222,58 +222,11 @@ def test_u0078_workspace_destroy_modal_cancel_does_not_delete(
 # ===========================================================================
 
 
-def test_u0087_graph_editor_add_node_enables_save(
-    page, base_url, console_url, unique_suffix,
-) -> None:
-    """U0087 — On graph detail editor, clicking Add node → Terminal
-    inserts a new node and flips the Save button from disabled to
-    enabled. Pins the diffCount-based Save gate.
-    """
-    pid = f"llm-87-{unique_suffix}"
-    aid = f"ag-87-{unique_suffix}"
-    gid = f"gr-87-{unique_suffix}"
-    _seed_llm_provider(base_url, pid)
-    _seed_agent(base_url, aid, pid)
-    _seed_graph(base_url, gid, aid)
-    cleanup_urls = [
-        f"/v1/graphs/{gid}",
-        f"/v1/agents/{aid}",
-        f"/v1/llm_providers/{pid}",
-    ]
-    try:
-        page.goto(
-            f"{console_url}#/graphs/{gid}",
-            wait_until="domcontentloaded",
-        )
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
-
-        # Save button initially disabled (no diff).
-        save = page.get_by_role("button", name="Save", exact=True).first
-        save.wait_for(state="visible", timeout=10_000)
-        expect(save).to_be_disabled()
-
-        # Add node — the toolbar has an "Add node" button or a
-        # dropdown that opens choices. Try the dropdown variant
-        # first; fall back to direct Terminal button.
-        add_btn = page.get_by_role(
-            "button", name="Add node", exact=False,
-        ).first
-        if add_btn.count() == 0:
-            pytest.skip("Add node button not found in graph editor toolbar")
-        add_btn.click()
-        page.wait_for_timeout(300)
-        # Click "Terminal" option in the menu.
-        terminal_opt = page.get_by_text("Terminal", exact=False).first
-        if terminal_opt.count() == 0:
-            pytest.skip("Terminal node option not found in Add menu")
-        terminal_opt.click()
-
-        # Save button transitions to enabled.
-        expect(save).to_be_enabled(timeout=3_000)
-    finally:
-        _cleanup(base_url, cleanup_urls)
+# U0087 pruned 2026-05-25: the Add-node-flips-Save-from-disabled-to-
+# enabled gating is exercised by U0107 (graph-builder persistence
+# journey) which asserts "Save initially disabled → Add Node →
+# Terminal → Save flips to enabled" as steps 3-5 of its 8-step walk.
+# U0107 strictly subsumes U0087's narrower gating assertion.
 
 
 # ===========================================================================

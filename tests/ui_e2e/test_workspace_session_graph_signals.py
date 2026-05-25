@@ -251,79 +251,13 @@ def test_u0081_sessions_list_status_chip_filter_narrows_table(
 # ===========================================================================
 
 
-def test_u0086_graph_create_modal_navigates_to_detail(
-    page, base_url, console_url, unique_suffix,
-) -> None:
-    """U0086 — Open /graphs, click "New graph" → modal → fill id +
-    submit → success path navigates to #/graphs/{id} and the
-    status panel renders.
-
-    Pins the NewGraphModal create → navigate flow in graphs.jsx.
-    """
-    pid = f"llm-86-{unique_suffix}"
-    aid = f"ag-86-{unique_suffix}"
-    gid = f"gr-86-{unique_suffix}"
-    _seed_llm_provider(base_url, pid)
-    _seed_agent(base_url, aid, pid)
-    cleanup_urls = [
-        f"/v1/graphs/{gid}",
-        f"/v1/agents/{aid}",
-        f"/v1/llm_providers/{pid}",
-    ]
-    try:
-        page.goto(
-            f"{console_url}#/graphs",
-            wait_until="domcontentloaded",
-        )
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
-
-        # Click "New graph" button.
-        new_btn = page.get_by_role(
-            "button", name="New graph", exact=False,
-        ).first
-        new_btn.wait_for(state="visible", timeout=10_000)
-        new_btn.click()
-
-        # Modal opens — fill id field. The form has id + description +
-        # seedAgentId (preselected). We don't strictly need to set id;
-        # backend allocates one if blank. But the test asserts navigation
-        # to a known id, so we fill.
-        # Look for the id input by its placeholder or label.
-        # The NewGraphModal renders an id text input (per agents.jsx
-        # pattern). Find any visible textbox that isn't the description.
-        # First textbox in modal scope is id; second is description.
-        modal = page.locator(".modal").first
-        modal.wait_for(state="visible", timeout=5_000)
-        textboxes = modal.get_by_role("textbox").all()
-        assert len(textboxes) >= 1, "no textboxes in NewGraphModal"
-        textboxes[0].fill(gid)
-
-        # Click "Create" button.
-        create_btn = page.get_by_role(
-            "button", name="Create", exact=True,
-        ).first
-        create_btn.wait_for(state="visible", timeout=5_000)
-        create_btn.click()
-
-        # Page navigates to graph detail.
-        deadline = time.monotonic() + 10.0
-        navigated = False
-        while time.monotonic() < deadline:
-            if f"/graphs/{gid}" in page.url:
-                navigated = True
-                break
-            page.wait_for_timeout(200)
-        assert navigated, (
-            f"page didn't navigate to /graphs/{gid}; url={page.url!r}"
-        )
-        # Graph detail header renders the graph id.
-        page.locator("h1.page-title").get_by_text(gid).first.wait_for(
-            state="visible", timeout=10_000,
-        )
-    finally:
-        _cleanup(base_url, cleanup_urls)
+# U0086 pruned 2026-05-25: the NewGraphModal POST → /graphs/{id}
+# navigate flow is fully exercised end-to-end by U0107 (graph-builder
+# persistence journey, test_graph_builder_persistence_journey.py).
+# U0107 walks /graphs list → New-graph modal → submit → navigate to
+# /graphs/{gid} → Add Node → Save → reload → breadcrumb back to list,
+# which strictly subsumes U0086's narrower modal-create-then-navigate
+# assertion.
 
 
 # ===========================================================================
