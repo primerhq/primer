@@ -1,152 +1,137 @@
-/* global React, Icon, StatusPill, Btn, Banner, relativeTime */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, relativeTime */
 
-const AGENT_DETAILS = {
-  "support-triage": {
-    desc: "Routes inbound support tickets to the right queue. Drafts replies for refund requests under $50.",
-    llm_provider_id: "openai-1",
-    llm_model: "gpt-4o",
-    system_prompt: `You are a customer support triage agent. Your job is to read inbound emails and decide which Zendesk queue they belong in (billing, technical, sales). For refund requests under $50 you may draft a reply directly.`,
-    toolsets: ["_workspaces", "zendesk-mcp"],
-    metadata: { team: "support", priority_tier: 1 },
-    ok: true,
-    issues: [],
-  },
-  "stripe-refunds": {
-    desc: "Issues partial refunds against Stripe based on policy.",
-    llm_provider_id: "anthropic-1",
-    llm_model: "claude-sonnet-4",
-    system_prompt: `You are a refunds processor with read+write access to Stripe.`,
-    toolsets: ["stripe-mcp", "_system"],
-    metadata: {},
-    ok: true,
-    issues: [],
-  },
-  "pr-reviewer": {
-    desc: "Reviews pull requests and posts inline comments.",
-    llm_provider_id: "anthropic-1",
-    llm_model: "claude-sonnet-4",
-    system_prompt: `You are a senior engineer reviewing pull requests.`,
-    toolsets: ["github-mcp", "_workspaces"],
-    metadata: { team: "platform" },
-    ok: true,
-    issues: [],
-  },
-  "code-explainer": {
-    desc: "Walks junior engineers through unfamiliar code paths.",
-    llm_provider_id: "anthropic-1",
-    llm_model: "claude-sonnet-4",
-    system_prompt: `You are a senior engineer explaining unfamiliar code.`,
-    toolsets: ["_workspaces"],
-    metadata: {},
-    ok: true,
-    issues: [],
-  },
-  "doc-ingestion": {
-    desc: "Ingests new docs into the knowledge base.",
-    llm_provider_id: "openai-1",
-    llm_model: "gpt-4o-mini",
-    system_prompt: `You ingest markdown docs into the docs collection.`,
-    toolsets: ["_workspaces", "_search"],
-    metadata: {},
-    ok: false,
-    issues: [
-      { kind: "toolset_missing", target: "_search", detail: "Internal Collections subsystem is not bootstrapped — toolset _search returns 503 on every call." },
-    ],
-  },
-  "sql-helper": {
-    desc: "Translates English into safe read-only SQL.",
-    llm_provider_id: "openai-1",
-    llm_model: "gpt-4o",
-    system_prompt: `You translate English to read-only PostgreSQL.`,
-    toolsets: ["postgres-readonly-mcp"],
-    metadata: {},
-    ok: true,
-    issues: [],
-  },
-  "release-notes": {
-    desc: "Drafts release notes from a range of commits.",
-    llm_provider_id: "anthropic-1",
-    llm_model: "claude-sonnet-4",
-    system_prompt: `Generate human-readable release notes from a commit range.`,
-    toolsets: ["github-mcp", "_workspaces"],
-    metadata: {},
-    ok: true,
-    issues: [],
-  },
-  "agent-broken-llm": {
-    desc: "Test fixture with a deleted LLM provider.",
-    llm_provider_id: "openai-deleted",
-    llm_model: "gpt-4o",
-    system_prompt: "(test fixture)",
-    toolsets: [],
-    metadata: { fixture: true },
-    ok: false,
-    issues: [
-      { kind: "llm_provider_missing", target: "openai-deleted", detail: "LLM provider 'openai-deleted' no longer exists. Update the agent's llm_provider_id." },
-    ],
-  },
+// Agents page + detail wired to the real API. The Designer's mock-data
+// scaffold was replaced in Phase 2 — every fetch goes through
+// window.matrixApi.{apiFetch, useResource, useMutation}. Cache-key convention
+// follows other components: "agents:list", "agent-detail:${aid}",
+// "agent-status:${aid}", "agent-sessions:${aid}", "toolset-tools:${tid}".
+//
+// Babel-standalone shares the global scope across <script> tags so every
+// top-level binding in this file is prefixed with AG_ to avoid name clashes
+// with providers.jsx (PROVIDER_FIELDS) and workspaces.jsx (WS_TERMINAL).
+
+const AG_TABS = [
+  { id: "config",   label: "Config",   icon: "settings" },
+  { id: "tools",    label: "Tools",    icon: "tools" },
+  { id: "sessions", label: "Sessions", icon: "zap" },
+  { id: "metadata", label: "Metadata", icon: "doc" },
+];
+
+const AG_PROVIDER_COLORS = {
+  openai: "var(--green)",
+  anthropic: "var(--accent)",
+  voyageai: "var(--blue)",
+  cohere: "var(--violet)",
+  ollama: "var(--amber)",
+  google: "var(--blue)",
+  gemini: "var(--blue)",
+  huggingface: "var(--amber)",
+  openresponses: "var(--green)",
 };
 
-const TOOLSET_TOOLS = {
-  "_workspaces": [
-    { id: "fs.read", desc: "Read a file from the workspace" },
-    { id: "fs.write", desc: "Write a file" },
-    { id: "fs.ls", desc: "List directory" },
-    { id: "fs.grep", desc: "Search files with a pattern" },
-    { id: "fs.delete", desc: "Delete a file" },
-    { id: "exec.shell", desc: "Run a shell command" },
-    { id: "git.log", desc: "Read the workspace .state log" },
-    { id: "git.commit", desc: "Commit pending changes" },
-  ],
-  "_system": [
-    { id: "system.now", desc: "Current UTC time" },
-    { id: "system.sleep", desc: "Sleep for n seconds" },
-  ],
-  "_search": [
-    { id: "search.query", desc: "Semantic search over a collection" },
-    { id: "search.ingest", desc: "Ingest chunks into a collection" },
-  ],
-  "github-mcp": [
-    { id: "github.get_pr", desc: "Fetch a PR by number" },
-    { id: "github.list_files", desc: "List files in a PR diff" },
-    { id: "github.add_review_comment", desc: "Post an inline review comment" },
-    { id: "github.add_issue_comment", desc: "Comment on an issue or PR thread" },
-    { id: "github.merge_pr", desc: "Merge a PR" },
-    { id: "github.create_branch", desc: "Create a branch" },
-  ],
-  "stripe-mcp": [
-    { id: "stripe.search_charges", desc: "Search charges by criteria" },
-    { id: "stripe.create_refund", desc: "Issue a refund" },
-    { id: "stripe.get_customer", desc: "Fetch customer by id" },
-    { id: "stripe.list_invoices", desc: "List invoices for a customer" },
-  ],
-  "zendesk-mcp": [
-    { id: "zendesk.search_tickets", desc: "Search tickets" },
-    { id: "zendesk.create_ticket", desc: "Open a new ticket" },
-    { id: "zendesk.add_comment", desc: "Append a comment" },
-  ],
-  "postgres-readonly-mcp": [
-    { id: "db.introspect", desc: "Read schema" },
-    { id: "db.query", desc: "Run a read-only SQL query" },
-  ],
-};
+function _agToastErr(pushToast, fallbackTitle) {
+  return (err) => {
+    if (typeof pushToast !== "function") return;
+    pushToast({
+      kind: "error",
+      title: err?.title || fallbackTitle,
+      detail: err?.detail || err?.message,
+      requestId: err?.requestId,
+    });
+  };
+}
 
-function AgentsPage({ onOpen, sessions, onNewSession }) {
-  const [query, setQuery] = React.useState("");
-  const filtered = window.MOCK.AGENTS.filter((a) => !query || a.id.toLowerCase().includes(query.toLowerCase()) || a.desc.toLowerCase().includes(query.toLowerCase()));
+// ============================================================================
+// Agents list page
+// ============================================================================
+
+function AgentsPage({ onOpen, pushToast }) {
+  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [textFilter, setTextFilter] = React.useState("");
+  const filterFocused = React.useRef(false);
+
+  const list = useResource(
+    "agents:list",
+    (signal) => apiFetch("GET", "/agents?limit=200", null, { signal }),
+    { pollMs: null }
+  );
+  const providers = useResource(
+    "agents:llm-providers",
+    (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
+    { pollMs: null }
+  );
+
+  const items = list.data?.items ?? [];
+  const filtered = React.useMemo(() => {
+    if (!textFilter) return items;
+    const q = textFilter.toLowerCase();
+    return items.filter((a) =>
+      (a.id || "").toLowerCase().includes(q) ||
+      (a.description || "").toLowerCase().includes(q)
+    );
+  }, [items, textFilter]);
+
+  // Per-row status — fetch /agents/{id}/status once per visible row.
+  const [perRowStatus, setPerRowStatus] = React.useState({});
+  React.useEffect(() => {
+    if (items.length === 0) {
+      setPerRowStatus({});
+      return undefined;
+    }
+    const ctrl = new AbortController();
+    Promise.all(
+      items.map((a) =>
+        apiFetch("GET", `/agents/${encodeURIComponent(a.id)}/status`, null, { signal: ctrl.signal })
+          .then((r) => [a.id, r])
+          .catch((e) => [a.id, { ok: null, error: e?.title || e?.message }])
+      )
+    ).then((entries) => setPerRowStatus(Object.fromEntries(entries)));
+    return () => ctrl.abort();
+  }, [list.data]);
+
+  // Per-row session count, best-effort.
+  const [perRowSessions, setPerRowSessions] = React.useState({});
+  React.useEffect(() => {
+    if (items.length === 0) {
+      setPerRowSessions({});
+      return undefined;
+    }
+    const ctrl = new AbortController();
+    Promise.all(
+      items.map((a) =>
+        apiFetch("GET", `/sessions?agent_id=${encodeURIComponent(a.id)}&limit=1`, null, { signal: ctrl.signal })
+          .then((r) => [a.id, r.total ?? (r.items?.length ?? 0)])
+          .catch(() => [a.id, null])
+      )
+    ).then((entries) => setPerRowSessions(Object.fromEntries(entries)));
+    return () => ctrl.abort();
+  }, [list.data]);
+
+  const openRow = (aid) => {
+    if (typeof onOpen === "function") onOpen(aid);
+    else navigate("/agents/" + aid);
+  };
 
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter agents…" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input
+            className="input"
+            placeholder="Filter agents…"
+            value={textFilter}
+            onChange={(e) => setTextFilter(e.target.value)}
+            onFocus={() => { filterFocused.current = true; }}
+            onBlur={() => { filterFocused.current = false; }}
+          />
         </div>
-        <div className="sep-v" />
-        <select className="select"><option>all providers</option><option>openai</option><option>anthropic</option></select>
-        <select className="select"><option>all statuses</option><option>ok</option><option>issues</option></select>
-        <div style={{ marginLeft: "auto" }}>
-          <Btn size="sm" kind="primary" icon="plus">New agent</Btn>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
+          <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New agent</Btn>
         </div>
       </div>
 
@@ -154,107 +139,412 @@ function AgentsPage({ onOpen, sessions, onNewSession }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th style={{ width: 30 }}><input type="checkbox" /></th>
               <th>ID</th>
               <th>Description</th>
-              <th>Provider</th>
-              <th>Toolsets</th>
+              <th>Provider · model</th>
+              <th>Tools</th>
               <th style={{ textAlign: "right" }}>Sessions</th>
-              <th style={{ width: 80 }}>Status</th>
-              <th></th>
+              <th style={{ width: 100 }}>Status</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((a) => {
-              const d = AGENT_DETAILS[a.id] || { ok: true, toolsets: [] };
-              const onAgent = sessions.filter((s) => s.agent_id === a.id).length;
+            {list.loading && items.length === 0 ? (
+              <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
+            ) : list.error && items.length === 0 ? (
+              <tr><td colSpan={6} style={{ padding: 20, textAlign: "center" }}>
+                <span style={{ color: "var(--red)" }}>{list.error.title || list.error.message}</span>
+                {" · "}<a onClick={list.refetch} style={{ cursor: "pointer" }}>Retry</a>
+              </td></tr>
+            ) : filtered.length === 0 ? (
+              items.length === 0 ? (
+                <tr><td colSpan={6}>
+                  <div className="empty" style={{ padding: "40px 20px" }}>
+                    <div className="ico-wrap"><Icon name="agent" size={22} /></div>
+                    <div className="head">No agents yet</div>
+                    <div className="sub">Agents pair an LLM provider with a system prompt and a list of toolsets, then run inside a session.</div>
+                    <div className="actions"><Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New agent</Btn></div>
+                  </div>
+                </td></tr>
+              ) : (
+                <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>No agents match.</td></tr>
+              )
+            ) : filtered.map((a) => {
+              const providerId = a.model?.provider_id;
+              const modelName = a.model?.model_name;
+              const provider = (providers.data?.items ?? []).find((p) => p.id === providerId);
+              const vendorColor = AG_PROVIDER_COLORS[provider?.provider] || "var(--text-3)";
+              const status = perRowStatus[a.id];
+              const sessionCount = perRowSessions[a.id];
               return (
-                <tr key={a.id} onClick={() => onOpen(a.id)}>
-                  <td onClick={(e) => e.stopPropagation()}><input type="checkbox" /></td>
+                <tr key={a.id} onClick={() => openRow(a.id)} style={{ cursor: "pointer" }}>
                   <td className="mono">{a.id}</td>
-                  <td className="muted" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.desc}</td>
-                  <td>
-                    {a.provider ? (
-                      <span className="mono text-sm" style={{ color: a.provider === "openai" ? "var(--green)" : "var(--accent)" }}>{a.provider}</span>
-                    ) : (
-                      <span className="muted">(missing)</span>
-                    )}
+                  <td className="muted text-sm" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {a.description || <span style={{ color: "var(--text-4)" }}>—</span>}
                   </td>
-                  <td className="mono muted text-sm" style={{ fontSize: 11.5 }}>
-                    {d.toolsets.slice(0, 2).join(", ")}{d.toolsets.length > 2 && <span> +{d.toolsets.length - 2}</span>}
+                  <td className="mono text-sm">
+                    {providerId
+                      ? <>
+                          <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: vendorColor, marginRight: 6 }}></span>
+                          {providerId}{modelName ? <span className="muted"> · {modelName}</span> : null}
+                        </>
+                      : <span className="muted">(unconfigured)</span>}
                   </td>
-                  <td className="mono num tabular">{onAgent || <span className="muted">0</span>}</td>
+                  <td className="mono muted text-sm">{(a.tools ?? []).length}</td>
+                  <td className="mono num tabular">
+                    {sessionCount == null
+                      ? <span className="muted">…</span>
+                      : sessionCount > 0
+                        ? <span style={{ color: "var(--blue)" }}>{sessionCount}</span>
+                        : <span className="muted">0</span>}
+                  </td>
                   <td>
-                    {d.ok ? (
+                    {status == null ? (
+                      <span className="muted">…</span>
+                    ) : status.ok === true ? (
                       <span className="pill pill-ended"><span className="dot"></span>ok</span>
+                    ) : status.ok === false ? (
+                      <span className="pill pill-failed"><span className="dot"></span>{(status.issues || []).length} issue{(status.issues || []).length === 1 ? "" : "s"}</span>
                     ) : (
-                      <span className="pill pill-failed"><span className="dot"></span>{d.issues.length} issue{d.issues.length === 1 ? "" : "s"}</span>
+                      <span className="muted" title={status.error}>err</span>
                     )}
                   </td>
-                  <td style={{ textAlign: "right", paddingRight: 12 }}><Icon name="chevron-right" size={12} className="muted" /></td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
+
+      {createOpen && (
+        <AG_NewAgentModal
+          onClose={() => setCreateOpen(false)}
+          pushToast={pushToast}
+          onCreate={(row) => {
+            setCreateOpen(false);
+            if (typeof pushToast === "function") {
+              pushToast({ kind: "success", title: "Agent created", detail: row.id });
+            }
+            list.refetch();
+            navigate("/agents/" + row.id);
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function AgentDetail({ agentId, sessions, onTest, pushToast }) {
-  const a = window.MOCK.AGENTS.find((x) => x.id === agentId);
-  const d = AGENT_DETAILS[agentId];
-  const [tab, setTab] = React.useState("config");
-  const onAgentSessions = sessions.filter((s) => s.agent_id === agentId).slice(0, 6);
+// ============================================================================
+// New agent modal
+// ============================================================================
 
-  if (!a || !d) return null;
+function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
+  const { useResource, useMutation, apiFetch } = window.matrixApi;
+  const providers = useResource(
+    "agents:llm-providers",
+    (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
+    { pollMs: null }
+  );
+  const toolsets = useResource(
+    "agents:toolsets",
+    (signal) => apiFetch("GET", "/toolsets?limit=200", null, { signal }),
+    { pollMs: null }
+  );
+
+  const [id, setId] = React.useState("");
+  const [description, setDescription] = React.useState("");
+  const [providerId, setProviderId] = React.useState("");
+  const [modelName, setModelName] = React.useState("");
+  const [systemPrompt, setSystemPrompt] = React.useState("");
+  const [selectedTools, setSelectedTools] = React.useState([]);
+  const [temperature, setTemperature] = React.useState("");
+  const [fieldErrors, setFieldErrors] = React.useState({});
+
+  React.useEffect(() => {
+    if (!providerId && providers.data?.items?.length) {
+      setProviderId(providers.data.items[0].id);
+    }
+  }, [providers.data, providerId]);
+
+  const selectedProvider = (providers.data?.items ?? []).find((p) => p.id === providerId);
+  const modelOptions = selectedProvider?.models ?? [];
+
+  React.useEffect(() => {
+    if (modelOptions.length > 0 && !modelOptions.some((m) => m.name === modelName)) {
+      setModelName(modelOptions[0].name);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelOptions]);
+
+  const toggleTool = (tid) => {
+    setSelectedTools((prev) => (prev.includes(tid) ? prev.filter((x) => x !== tid) : [...prev, tid]));
+  };
+
+  const create = useMutation(
+    (body) => apiFetch("POST", "/agents", body),
+    {
+      invalidates: ["agents:list"],
+      onSuccess: (row) => onCreate(row),
+      onError: (err) => {
+        if (err.status === 422 && Array.isArray(err.fieldErrors)) {
+          const map = {};
+          for (const fe of err.fieldErrors) map[(fe.loc || []).join(".")] = fe.msg;
+          setFieldErrors(map);
+        } else if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err.title || "Create failed",
+            detail: err.detail || err.message,
+            requestId: err.requestId,
+          });
+        }
+      },
+    }
+  );
+
+  const submit = async () => {
+    setFieldErrors({});
+    const body = {
+      ...(id ? { id } : {}),
+      description: description || "(no description)",
+      model: { provider_id: providerId, model_name: modelName },
+      tools: selectedTools,
+      system_prompt: systemPrompt ? [systemPrompt] : [],
+    };
+    if (temperature !== "" && !Number.isNaN(+temperature)) {
+      body.temperature = Number(temperature);
+    }
+    try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
+  };
+
+  return (
+    <Modal
+      title="New agent"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn
+            kind="primary"
+            icon="plus"
+            onClick={submit}
+            disabled={!providerId || !modelName || create.loading}
+          >
+            {create.loading ? "Creating…" : "Create"}
+          </Btn>
+        </>
+      }
+    >
+      <div className="field">
+        <label className="field-label" htmlFor="na-id">
+          ID <span className="hint">optional — backend assigns if blank</span>
+        </label>
+        <input
+          id="na-id"
+          className="input"
+          value={id}
+          onChange={(e) => setId(e.target.value)}
+          placeholder="auto-generated"
+          style={{ width: "100%" }}
+        />
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="na-description">Description</label>
+        <input
+          id="na-description"
+          className="input"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          style={{ width: "100%" }}
+        />
+        {fieldErrors["body.description"] && (
+          <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.description"]}</div>
+        )}
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="na-llm-provider">LLM provider</label>
+        <select
+          id="na-llm-provider"
+          className="select"
+          value={providerId}
+          onChange={(e) => setProviderId(e.target.value)}
+          style={{ width: "100%" }}
+        >
+          <option value="">-- pick a provider --</option>
+          {(providers.data?.items ?? []).map((p) => (
+            <option key={p.id} value={p.id}>{p.id}</option>
+          ))}
+        </select>
+        {(providers.data?.items ?? []).length === 0 && !providers.loading && (
+          <div className="field-help" style={{ color: "var(--amber)" }}>
+            No LLM providers configured. Create one at <span className="mono">/providers/llm</span> first.
+          </div>
+        )}
+        {fieldErrors["body.model.provider_id"] && (
+          <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.provider_id"]}</div>
+        )}
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="na-model">Model</label>
+        <select
+          id="na-model"
+          className="select"
+          value={modelName}
+          onChange={(e) => setModelName(e.target.value)}
+          style={{ width: "100%" }}
+        >
+          <option value="">-- pick a model --</option>
+          {modelOptions.map((m) => (
+            <option key={m.name} value={m.name}>{m.name}</option>
+          ))}
+        </select>
+        <div className="field-help">Model list comes from the provider row, not a live introspection (T0025).</div>
+        {fieldErrors["body.model.model_name"] && (
+          <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.model_name"]}</div>
+        )}
+      </div>
+      <div className="field">
+        <label className="field-label">Toolsets <span className="hint">optional</span></label>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {(toolsets.data?.items ?? []).map((t) => (
+            <span
+              key={t.id}
+              className={`chip ${selectedTools.includes(t.id) ? "active" : ""}`}
+              onClick={() => toggleTool(t.id)}
+              style={{ cursor: "pointer" }}
+            >{t.id}</span>
+          ))}
+          {(toolsets.data?.items ?? []).length === 0 && !toolsets.loading && (
+            <span className="muted text-sm">No toolsets configured.</span>
+          )}
+        </div>
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="na-system-prompt">
+          System prompt <span className="hint">optional · stored as a single-segment list</span>
+        </label>
+        <textarea
+          id="na-system-prompt"
+          className="textarea"
+          value={systemPrompt}
+          onChange={(e) => setSystemPrompt(e.target.value)}
+          rows={4}
+        />
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="na-temperature">
+          Temperature <span className="hint">optional · default is provider-decided</span>
+        </label>
+        <input
+          id="na-temperature"
+          className="input"
+          type="number"
+          step="0.05"
+          min="0"
+          value={temperature}
+          onChange={(e) => setTemperature(e.target.value)}
+          style={{ width: 100 }}
+        />
+        {fieldErrors["body.temperature"] && (
+          <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.temperature"]}</div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// Agent detail page
+// ============================================================================
+
+function AgentDetail({ agentId, pushToast }) {
+  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { params, query, navigate } = useRouter();
+  const id = agentId || params.id;
+  const tab = AG_TABS.some((t) => t.id === query.tab) ? query.tab : "config";
+  const setTab = (t) => navigate("/agents/" + id + "?tab=" + t);
+
+  const detail = useResource(
+    "agent-detail:" + id,
+    (signal) => apiFetch("GET", "/agents/" + encodeURIComponent(id), null, { signal }),
+    { pollMs: null, deps: [id] }
+  );
+  const status = useResource(
+    "agent-status:" + id,
+    (signal) => apiFetch("GET", "/agents/" + encodeURIComponent(id) + "/status", null, { signal }),
+    { pollMs: 30000, deps: [id] }
+  );
+
+  const delMut = useMutation(
+    () => apiFetch("DELETE", "/agents/" + encodeURIComponent(id)),
+    {
+      invalidates: ["agents:list"],
+      onSuccess: () => {
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "warning", title: "Agent deleted", detail: id });
+        }
+        navigate("/agents");
+      },
+      onError: (err) => {
+        if (err.status === 409) {
+          setDeleteError(err.detail || err.title || "Cannot delete — referenced by other entities");
+        } else if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err.title || "Delete failed",
+            detail: err.detail || err.message,
+            requestId: err.requestId,
+          });
+        }
+      },
+    }
+  );
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const [deleteError, setDeleteError] = React.useState(null);
+  const [newSessionOpen, setNewSessionOpen] = React.useState(false);
+
+  if (detail.loading && !detail.data) {
+    return (
+      <div className="col" style={{ gap: 14 }}>
+        <AG_DetailActions onTest={() => setNewSessionOpen(true)} onDelete={() => { setDeleteError(null); setConfirmDelete(true); }} onBack={() => navigate("/agents")} />
+        <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>
+      </div>
+    );
+  }
+  if (detail.error && !detail.data) {
+    return (
+      <div className="col" style={{ gap: 14 }}>
+        <AG_DetailActions onTest={() => setNewSessionOpen(true)} onDelete={() => { setDeleteError(null); setConfirmDelete(true); }} onBack={() => navigate("/agents")} />
+        <Banner
+          kind="error"
+          title={detail.error.title || "Couldn't load agent"}
+          detail={detail.error.detail || detail.error.message}
+          actions={<Btn size="sm" icon="chevron-left" onClick={() => navigate("/agents")}>Back to list</Btn>}
+        />
+      </div>
+    );
+  }
+
+  const a = detail.data;
 
   return (
     <div className="col" style={{ gap: 14 }}>
-      {/* Status panel */}
-      <div className="panel" style={{
-        background: d.ok ? "linear-gradient(90deg, var(--green-dim) 0%, var(--bg-1) 50%)" : "linear-gradient(90deg, var(--red-dim) 0%, var(--bg-1) 50%)",
-        borderColor: d.ok ? "oklch(0.75 0.15 145 / 0.3)" : "oklch(0.7 0.2 25 / 0.3)",
-      }}>
-        <div className="panel-body" style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px" }}>
-          <Icon name={d.ok ? "check-circle" : "x-circle"} size={28} style={{ color: d.ok ? "var(--green)" : "var(--red)", flexShrink: 0 }} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>
-              {d.ok ? "All references resolve" : `${d.issues.length} issue${d.issues.length === 1 ? "" : "s"} blocking new sessions`}
-            </div>
-            <div className="muted text-sm">
-              <span className="mono">GET /v1/agents/{agentId}/status</span> · last checked just now
-            </div>
-            {!d.ok && (
-              <div className="mt-2">
-                {d.issues.map((iss, i) => (
-                  <div key={i} className="ref-row" style={{ borderColor: "var(--red-dim)" }}>
-                    <Icon name="alert" size={12} className="ico" style={{ color: "var(--red)" }} />
-                    <span className="label" style={{ color: "var(--red)" }}>{iss.kind}</span>
-                    <span className="val">{iss.detail}</span>
-                    <Btn size="sm" kind="ghost">Jump to fix</Btn>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          <Btn icon="play" kind="primary" onClick={onTest}>Test agent</Btn>
-        </div>
-      </div>
+      <AG_DetailActions
+        onTest={() => setNewSessionOpen(true)}
+        onDelete={() => { setDeleteError(null); setConfirmDelete(true); }}
+        onBack={() => navigate("/agents")}
+      />
 
-      {/* Tabbed body */}
+      <AG_StatusPanel id={id} status={status} />
+
       <div className="panel">
         <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
-          {[
-            { id: "config", label: "Config", icon: "settings" },
-            { id: "tools", label: "Tools", icon: "tools" },
-            { id: "sessions", label: "Sessions", icon: "zap", count: onAgentSessions.length },
-            { id: "metadata", label: "Metadata", icon: "doc" },
-          ].map((t) => (
+          {AG_TABS.map((t) => (
             <button
               key={t.id}
+              role="tab"
+              aria-selected={tab === t.id}
               onClick={() => setTab(t.id)}
+              className={tab === t.id ? "active" : ""}
               style={{
                 background: "none",
                 border: "none",
@@ -272,233 +562,622 @@ function AgentDetail({ agentId, sessions, onTest, pushToast }) {
             >
               <Icon name={t.icon} size={13} />
               {t.label}
-              {t.count != null && t.count > 0 && <span className="count" style={{ marginLeft: 4 }}>{t.count}</span>}
             </button>
           ))}
         </div>
         <div className="panel-body" style={{ padding: 0 }}>
-          {tab === "config" && <ConfigPanel agentId={agentId} a={a} d={d} />}
-          {tab === "tools" && <ToolsPanel d={d} pushToast={pushToast} />}
-          {tab === "sessions" && <AgentSessions sessions={onAgentSessions} />}
-          {tab === "metadata" && <MetadataPanel d={d} />}
+          {tab === "config" && <AG_ConfigTab agent={a} />}
+          {tab === "tools" && <AG_ToolsTab agent={a} />}
+          {tab === "sessions" && <AG_SessionsTab agentId={id} />}
+          {tab === "metadata" && <AG_MetadataTab agent={a} />}
         </div>
+      </div>
+
+      {confirmDelete && (
+        <Modal
+          title={`Delete ${id}?`}
+          danger
+          onClose={() => setConfirmDelete(false)}
+          footer={
+            <>
+              <Btn kind="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Btn>
+              <Btn
+                kind="danger"
+                icon="trash"
+                disabled={delMut.loading}
+                onClick={async () => {
+                  try { await delMut.mutate(); } catch (_e) { /* surfaced via onError */ }
+                }}
+              >Delete</Btn>
+            </>
+          }
+        >
+          {deleteError && (
+            <Banner
+              kind="error"
+              title="Delete blocked"
+              detail={deleteError}
+            />
+          )}
+          <ul>
+            <li>Removes the agent row from storage.</li>
+            <li>Any session bound to this agent that is still running will fail on the next turn-claim.</li>
+            <li>DELETE is NOT idempotent — a second DELETE returns 404 (app spec §5).</li>
+          </ul>
+        </Modal>
+      )}
+
+      {newSessionOpen && (
+        <AG_NewSessionModal
+          onClose={() => setNewSessionOpen(false)}
+          defaultAgentId={id}
+          pushToast={pushToast}
+        />
+      )}
+    </div>
+  );
+}
+
+// Internal action bar — rendered INSIDE the page body so the
+// .page-header .page-actions selector resolves to the buttons even
+// though app.jsx renders its own outer page-header.
+function AG_DetailActions({ onTest, onDelete, onBack }) {
+  return (
+    <div className="page-header" style={{ marginBottom: 0, justifyContent: "flex-end" }}>
+      <div className="page-actions">
+        <Btn icon="play" kind="primary" onClick={onTest}>Test agent</Btn>
+        <Btn icon="trash" kind="danger" onClick={onDelete}>Delete</Btn>
+        <Btn icon="chevron-left" kind="ghost" onClick={onBack}>Back</Btn>
       </div>
     </div>
   );
 }
 
-function ConfigPanel({ agentId, a, d }) {
+function AG_StatusPanel({ id, status }) {
+  const ok = status.data?.ok === true;
+  const issues = status.data?.issues || [];
+  const colour = status.data == null ? "var(--text-3)" : ok ? "var(--green)" : "var(--red)";
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 18, padding: 18 }}>
-      <div className="col" style={{ gap: 14 }}>
-        <div className="field">
-          <label className="field-label">id <span className="hint">read-only</span></label>
-          <div style={{ display: "flex", gap: 6 }}>
-            <input className="input mono" value={agentId} readOnly style={{ flex: 1 }} />
-            <button className="icon-btn"><Icon name="copy" size={12} /></button>
+    <div
+      className="panel"
+      style={{
+        background: ok
+          ? "linear-gradient(90deg, var(--green-dim) 0%, var(--bg-1) 50%)"
+          : status.data == null
+            ? undefined
+            : "linear-gradient(90deg, var(--red-dim) 0%, var(--bg-1) 50%)",
+        borderColor: ok
+          ? "oklch(0.75 0.15 145 / 0.3)"
+          : status.data == null
+            ? undefined
+            : "oklch(0.7 0.2 25 / 0.3)",
+      }}
+    >
+      <div className="panel-body" style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "14px 18px" }}>
+        <Icon
+          name={ok ? "check-circle" : status.data == null ? "info" : "x-circle"}
+          size={28}
+          style={{ color: colour, flexShrink: 0 }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>
+            {status.loading && status.data == null
+              ? "Checking references…"
+              : status.error
+                ? "Status check failed"
+                : ok
+                  ? "All references resolve"
+                  : `${issues.length} issue${issues.length === 1 ? "" : "s"} blocking new sessions`}
           </div>
-        </div>
-        <div className="field">
-          <label className="field-label">description</label>
-          <textarea className="textarea" defaultValue={d.desc} rows={2} />
-        </div>
-        <div className="field">
-          <label className="field-label">system prompt</label>
-          <textarea className="textarea mono" defaultValue={d.system_prompt} rows={6} />
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <div className="field">
-            <label className="field-label">llm_provider_id</label>
-            <select className="select mono" defaultValue={d.llm_provider_id} style={{ width: "100%" }}>
-              <option>openai-1</option>
-              <option>anthropic-1</option>
-              <option>openai-deleted</option>
-            </select>
+          <div className="muted text-sm">
+            <span className="mono">GET /v1/agents/{id}/status</span> · last checked just now · polled every 30s
+            {status.error && (
+              <> · <span style={{ color: "var(--red)" }}>{status.error.title || status.error.message}</span></>
+            )}
           </div>
-          <div className="field">
-            <label className="field-label">model</label>
-            <select className="select mono" defaultValue={d.llm_model} style={{ width: "100%" }}>
-              <option>gpt-4o</option>
-              <option>gpt-4o-mini</option>
-              <option>claude-sonnet-4</option>
-              <option>claude-haiku-4-5</option>
-            </select>
-          </div>
-        </div>
-        <div className="field">
-          <label className="field-label">toolsets</label>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "4px 0" }}>
-            {d.toolsets.map((t) => (
-              <span key={t} className="pill" style={{ background: "var(--bg-2)", color: "var(--text-2)", border: "1px solid var(--border)", padding: "3px 8px" }}>
-                <Icon name="tools" size={10} />
-                <span className="mono">{t}</span>
-                <Icon name="x" size={10} className="muted" style={{ cursor: "pointer", marginLeft: 2 }} />
-              </span>
-            ))}
-            <button className="pb-add"><Icon name="plus" size={10} /> add toolset</button>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-          <Btn kind="ghost">Discard</Btn>
-          <Btn kind="primary" icon="check">Save changes</Btn>
-        </div>
-      </div>
-
-      {/* References sidebar */}
-      <div className="col" style={{ gap: 10 }}>
-        <div className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>references</div>
-        <div className="ref-row">
-          <Icon name="llm" size={13} className="ico" />
-          <span className="label">LLM</span>
-          <span className="val">{d.llm_provider_id}</span>
-          {d.issues.some((i) => i.kind === "llm_provider_missing") ? (
-            <span className="pill pill-failed"><span className="dot"></span>missing</span>
-          ) : (
-            <span className="pill pill-ended"><span className="dot"></span>ok</span>
+          {issues.length > 0 && (
+            <div className="mt-2">
+              {issues.map((iss, i) => (
+                <div key={i} className="ref-row" style={{ borderColor: "var(--red-dim)" }}>
+                  <Icon name="alert" size={12} className="ico" style={{ color: "var(--red)" }} />
+                  <span className="label" style={{ color: "var(--red)" }}>{iss.kind || "issue"}</span>
+                  <span className="val">{iss.detail || iss.message || JSON.stringify(iss)}</span>
+                </div>
+              ))}
+            </div>
           )}
         </div>
-        {d.toolsets.map((t) => {
-          const missing = d.issues.some((i) => i.target === t);
-          return (
-            <div key={t} className="ref-row">
-              <Icon name="tools" size={13} className="ico" />
-              <span className="label">Toolset</span>
-              <span className="val">{t} <span className="muted">· {(TOOLSET_TOOLS[t] || []).length} tools</span></span>
-              {missing ? (
-                <span className="pill pill-failed"><span className="dot"></span>503</span>
-              ) : (
-                <span className="pill pill-ended"><span className="dot"></span>ok</span>
-              )}
-            </div>
-          );
-        })}
-        <div className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5, marginTop: 8 }}>used in graphs</div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Config tab — read-only JSON + References cross-check
+// ============================================================================
+
+function AG_ConfigTab({ agent }) {
+  const hl = window.matrixVendor?.highlightJson;
+  const pretty = JSON.stringify(agent, null, 2);
+  return (
+    <div style={{ padding: 14 }}>
+      <div className="muted text-sm mb-3">
+        Read-only render. PUT-replace edit deferred; use DELETE + POST for
+        now. References panel below cross-checks the bound provider + toolsets.
+      </div>
+      {hl
+        ? <div className="code-block" dangerouslySetInnerHTML={{ __html: hl(pretty) }} />
+        : <pre className="code-block">{pretty}</pre>}
+      <AG_ReferencesPanel agent={agent} />
+    </div>
+  );
+}
+
+function AG_ReferencesPanel({ agent }) {
+  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+  const providerId = agent.model?.provider_id;
+  const provider = useResource(
+    providerId ? `llm-provider:${providerId}` : "llm-provider:none",
+    (signal) =>
+      providerId
+        ? apiFetch("GET", "/llm_providers/" + encodeURIComponent(providerId), null, { signal })
+        : Promise.resolve(null),
+    { pollMs: null, deps: [providerId] }
+  );
+
+  return (
+    <div className="mt-3 panel">
+      <div className="panel-h">
+        <Icon name="fork" size={13} />
+        <span>References</span>
+      </div>
+      <div className="panel-body" style={{ padding: "4px 14px" }}>
         <div className="ref-row">
-          <Icon name="graph" size={13} className="ico" />
-          <span className="val">graph-tier1-escalation</span>
+          <Icon name="llm" size={13} className="ico" />
+          <span className="label">LLM provider</span>
+          <span className="val">
+            <a
+              onClick={() => providerId && navigate("/providers/llm/" + providerId)}
+              style={{ cursor: providerId ? "pointer" : "default" }}
+            >{providerId || "—"}</a>
+          </span>
+          {provider.loading ? (
+            <span className="muted text-sm">checking…</span>
+          ) : provider.error?.status === 404 ? (
+            <span className="pill pill-failed"><span className="dot"></span>missing</span>
+          ) : provider.data ? (
+            <span className="pill pill-ended"><span className="dot"></span>ok</span>
+          ) : null}
         </div>
-      </div>
-    </div>
-  );
-}
-
-function ToolsPanel({ d, pushToast }) {
-  const allTools = d.toolsets.flatMap((t) => (TOOLSET_TOOLS[t] || []).map((tool) => ({ ...tool, toolset: t })));
-  const [openTool, setOpenTool] = React.useState(allTools[0] && `${allTools[0].toolset}/${allTools[0].id}`);
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", minHeight: 360 }}>
-      <div style={{ borderRight: "1px solid var(--border)", overflow: "auto", padding: "10px 0" }}>
-        <div className="muted text-sm" style={{ padding: "0 14px 8px", fontSize: 11.5 }}>
-          {allTools.length} tools across {d.toolsets.length} toolset{d.toolsets.length === 1 ? "" : "s"}
-        </div>
-        {d.toolsets.map((ts) => (
-          <div key={ts}>
-            <div style={{ padding: "8px 14px 4px", fontSize: 10.5, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{ts}</div>
-            {(TOOLSET_TOOLS[ts] || []).map((tool) => {
-              const key = `${ts}/${tool.id}`;
-              const sel = key === openTool;
-              return (
-                <div
-                  key={tool.id}
-                  onClick={() => setOpenTool(key)}
-                  style={{
-                    padding: "5px 14px",
-                    cursor: "pointer",
-                    background: sel ? "var(--accent-dim)" : undefined,
-                    fontSize: 12.5,
-                  }}
-                >
-                  <div className="mono" style={{ color: sel ? "var(--text)" : "var(--text-2)" }}>{tool.id}</div>
-                  <div className="muted text-sm" style={{ fontSize: 11, marginTop: 1 }}>{tool.desc}</div>
-                </div>
-              );
-            })}
+        {(agent.tools || []).map((tsId) => (
+          <AG_ToolsetRefRow key={tsId} tsId={tsId} navigate={navigate} />
+        ))}
+        {(agent.tools || []).length === 0 && (
+          <div className="ref-row">
+            <Icon name="tools" size={13} className="ico" />
+            <span className="label">Toolsets</span>
+            <span className="val muted">none</span>
           </div>
-        ))}
-      </div>
-      <div style={{ padding: 18 }}>
-        <ToolDetail allTools={allTools} key={openTool} openTool={openTool} pushToast={pushToast} />
+        )}
       </div>
     </div>
   );
 }
 
-function ToolDetail({ allTools, openTool, pushToast }) {
-  const tool = allTools.find((t) => `${t.toolset}/${t.id}` === openTool);
-  if (!tool) return null;
+function AG_ToolsetRefRow({ tsId, navigate }) {
+  const { useResource, apiFetch } = window.matrixApi;
+  const tools = useResource(
+    `toolset-tools:${tsId}`,
+    (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(tsId) + "/tools", null, { signal }),
+    { pollMs: null, deps: [tsId] }
+  );
+  const count = tools.data?.tools?.length;
+  const t711 = tools.error?.status === 500;
   return (
-    <div className="col" style={{ gap: 14 }}>
-      <div>
-        <div className="mono" style={{ fontSize: 16, fontWeight: 600 }}>{tool.id}</div>
-        <div className="muted text-sm mt-2">{tool.desc} · from <span className="mono">{tool.toolset}</span></div>
+    <div className="ref-row">
+      <Icon name="tools" size={13} className="ico" />
+      <span className="label">Toolset</span>
+      <span className="val">
+        <a
+          onClick={() => !tsId.startsWith("_") && tsId !== "web" && navigate("/toolsets/" + tsId)}
+          style={{ cursor: "pointer" }}
+        >{tsId}</a>
+        {count != null && (
+          <span className="muted text-sm"> · {count} tool{count === 1 ? "" : "s"}</span>
+        )}
+      </span>
+      {tools.loading ? (
+        <span className="muted text-sm">…</span>
+      ) : t711 ? (
+        <span className="pill pill-failed" title="T0711 — MCP-HTTP 500 leak"><span className="dot"></span>T0711</span>
+      ) : tools.error ? (
+        <span className="pill pill-failed"><span className="dot"></span>err</span>
+      ) : (
+        <span className="pill pill-ended"><span className="dot"></span>ok</span>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Tools tab — per-toolset isolation (U0009 / T0711 contract)
+// ============================================================================
+
+function AG_ToolsTab({ agent }) {
+  const toolsets = agent.tools || [];
+  if (toolsets.length === 0) {
+    return (
+      <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>
+        No toolsets bound to this agent.
       </div>
-      <div className="field">
-        <label className="field-label">arguments <span className="hint">json-schema rendered</span></label>
-        <div className="code-block">
-{`{
-  "type": "object",
-  "properties": {
-    "path": { "type": "string", "description": "Workspace-relative path" },
-    "encoding": { "type": "string", "enum": ["utf-8", "binary"], "default": "utf-8" }
-  },
-  "required": ["path"]
-}`}
+    );
+  }
+  return (
+    <div style={{ padding: 14 }}>
+      <div className="muted text-sm mb-3">
+        Flattened union of every tool exposed by this agent's {toolsets.length} bound
+        toolset{toolsets.length === 1 ? "" : "s"}. Each card lists the canonical
+        tool <span className="mono">id</span> (T0140/T0141 — not <span className="mono">name</span>).
+      </div>
+      {toolsets.map((tsId) => <AG_ToolsetSection key={tsId} tsId={tsId} />)}
+    </div>
+  );
+}
+
+function AG_ToolsetSection({ tsId }) {
+  const { useResource, apiFetch } = window.matrixApi;
+  const tools = useResource(
+    `toolset-tools:${tsId}`,
+    (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(tsId) + "/tools", null, { signal }),
+    { pollMs: null, deps: [tsId] }
+  );
+
+  // T0711 MCP-HTTP leak — for any toolset returning 500, surface the
+  // anomaly block instead of crashing the rest of the page (U0009).
+  if (tools.error?.status === 500) {
+    return (
+      <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="panel-h">
+          <Icon name="tools" size={12} className="muted" />
+          <span className="mono">{tsId}</span>
+          <span className="pill pill-failed" style={{ marginLeft: 6 }}><span className="dot"></span>T0711</span>
+        </div>
+        <div className="panel-body">
+          <Banner
+            kind="error"
+            title="Tools list unavailable"
+            detail="The documented bug pinned by T0711 — MCP-HTTP transport leaks 500/errors/internal when the remote server is unreachable. Visit the toolset detail to Invalidate the cached provider and retry."
+            actions={<Btn size="sm" icon="refresh" onClick={tools.refetch}>Retry</Btn>}
+          />
         </div>
       </div>
-      <div className="field">
-        <label className="field-label">test call</label>
-        <textarea className="textarea mono" rows={3} placeholder='{"path": "src/main.py"}' />
-        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-          <Btn size="sm" kind="primary" icon="play" onClick={() => pushToast({ kind: "success", title: "Tool call OK", detail: "Returned 2841 bytes in 84ms" })}>Call</Btn>
+    );
+  }
+  if (tools.error) {
+    return (
+      <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="panel-h">
+          <Icon name="tools" size={12} className="muted" />
+          <span className="mono">{tsId}</span>
+          <span className="pill pill-failed" style={{ marginLeft: 6 }}><span className="dot"></span>error</span>
         </div>
+        <div className="panel-body">
+          <Banner
+            kind="error"
+            title={tools.error.title || "Couldn't load tools"}
+            detail={tools.error.detail || tools.error.message}
+            actions={<Btn size="sm" icon="refresh" onClick={tools.refetch}>Retry</Btn>}
+          />
+        </div>
+      </div>
+    );
+  }
+  if (tools.loading && !tools.data) {
+    return (
+      <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="panel-h">
+          <Icon name="tools" size={12} className="muted" />
+          <span className="mono">{tsId}</span>
+        </div>
+        <div className="panel-body">
+          <div className="muted text-sm" style={{ textAlign: "center" }}>Loading…</div>
+        </div>
+      </div>
+    );
+  }
+  const items = tools.data?.tools || [];
+  return (
+    <div className="panel" style={{ marginBottom: 14 }}>
+      <div className="panel-h">
+        <Icon name="tools" size={12} className="muted" />
+        <span className="mono">{tsId}</span>
+        <span className="sub">· {items.length} tool{items.length === 1 ? "" : "s"}</span>
+      </div>
+      <div className="panel-body" style={{ padding: 0 }}>
+        {items.length === 0 ? (
+          <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>No tools.</div>
+        ) : items.map((tool, i) => <AG_ToolEntry key={tool.id || i} tool={tool} />)}
       </div>
     </div>
   );
 }
 
-function AgentSessions({ sessions }) {
-  if (sessions.length === 0) return <div style={{ padding: 24 }} className="muted">No sessions yet for this agent.</div>;
+function AG_ToolEntry({ tool }) {
+  const [open, setOpen] = React.useState(false);
+  const hl = window.matrixVendor?.highlightJson;
   return (
-    <table className="tbl">
-      <thead><tr><th>Status</th><th>Session</th><th>Workspace</th><th>Turns</th><th>Created</th></tr></thead>
-      <tbody>
-        {sessions.map((s) => (
-          <tr key={s.id}>
-            <td><StatusPill status={s.status} /></td>
-            <td className="mono">{s.id}</td>
-            <td className="mono muted">{s.workspace_id.slice(0, 16)}…</td>
-            <td className="mono num tabular">{s.turn_count}</td>
-            <td className="mono muted">{relativeTime((Date.now() - s.created_at.getTime()) / 1000)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <div
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", cursor: "pointer" }}
+        onClick={() => setOpen(!open)}
+      >
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={11} className="muted" />
+        <span className="mono" style={{ flex: 1, minWidth: 0 }}>{tool.id}</span>
+        {tool.description && (
+          <span className="muted text-sm" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {tool.description}
+          </span>
+        )}
+        <Btn
+          size="sm"
+          kind="ghost"
+          disabled
+          title="Tool invocation endpoint not yet implemented (planned — backend-additions §2.2)"
+        >Test call</Btn>
+      </div>
+      {open && tool.schema && (
+        <div style={{ padding: "8px 14px 12px" }}>
+          {hl
+            ? <div className="code-block" dangerouslySetInnerHTML={{ __html: hl(JSON.stringify(tool.schema, null, 2)) }} />
+            : <pre className="code-block">{JSON.stringify(tool.schema, null, 2)}</pre>}
+        </div>
+      )}
+    </div>
   );
 }
 
-function MetadataPanel({ d }) {
+// ============================================================================
+// Sessions tab — server-filtered by agent_id
+// ============================================================================
+
+function AG_SessionsTab({ agentId }) {
+  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+  const sessions = useResource(
+    `agent-sessions:${agentId}`,
+    (signal) => apiFetch("GET", "/sessions?agent_id=" + encodeURIComponent(agentId) + "&limit=200", null, { signal }),
+    { pollMs: 5000, deps: [agentId] }
+  );
+  const items = sessions.data?.items ?? [];
   return (
-    <div style={{ padding: 18 }}>
-      <div className="muted text-sm mb-3">Free-form metadata. Editable.</div>
-      <table className="tbl">
-        <thead><tr><th>key</th><th>value</th><th style={{ width: 30 }}></th></tr></thead>
-        <tbody>
-          {Object.entries(d.metadata || {}).map(([k, v]) => (
-            <tr key={k}>
-              <td className="mono">{k}</td>
-              <td className="mono">{JSON.stringify(v)}</td>
-              <td style={{ textAlign: "right" }}><button className="icon-btn" style={{ width: 22, height: 22 }}><Icon name="x" size={10} /></button></td>
-            </tr>
+    <div style={{ padding: 14 }}>
+      <div className="muted text-sm mb-3">
+        Sessions bound to <span className="mono">{agentId}</span>, server-filtered.
+      </div>
+      {sessions.loading && items.length === 0 ? (
+        <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>Loading…</div>
+      ) : items.length === 0 ? (
+        <div className="empty" style={{ padding: "30px 20px" }}>
+          <div className="ico-wrap"><Icon name="zap" size={18} /></div>
+          <div className="head">No sessions</div>
+          <div className="sub">Use the Test agent button above to start one.</div>
+        </div>
+      ) : (
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead>
+              <tr><th>Status</th><th>Session</th><th>Workspace</th><th>Turns</th><th>Created</th></tr>
+            </thead>
+            <tbody>
+              {items.map((s) => (
+                <tr
+                  key={s.id || s.session_id}
+                  onClick={() => navigate("/sessions/" + (s.id || s.session_id))}
+                  style={{ cursor: "pointer" }}
+                >
+                  <td><StatusPill status={s.status} /></td>
+                  <td className="mono">{s.id || s.session_id}</td>
+                  <td className="mono muted">
+                    {(s.workspace_id || "").slice(0, 18)}
+                    {s.workspace_id && s.workspace_id.length > 18 ? "…" : ""}
+                  </td>
+                  <td className="mono num tabular">{s.turn_count ?? 0}</td>
+                  <td className="mono muted">
+                    {s.created_at
+                      ? relativeTime((Date.now() - new Date(s.created_at).getTime()) / 1000)
+                      : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Metadata tab
+// ============================================================================
+
+function AG_MetadataTab({ agent }) {
+  const meta = agent.metadata || {};
+  const keys = Object.keys(meta);
+  return (
+    <div style={{ padding: 14 }}>
+      <div className="muted text-sm mb-3">
+        Free-form key/value bag on the agent row. {keys.length} key{keys.length === 1 ? "" : "s"}.
+      </div>
+      {keys.length === 0 ? (
+        <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>No metadata.</div>
+      ) : (
+        <dl className="kv" style={{ gridTemplateColumns: "200px 1fr" }}>
+          {keys.map((k) => (
+            <React.Fragment key={k}>
+              <dt>{k}</dt>
+              <dd className="mono">{typeof meta[k] === "object" ? JSON.stringify(meta[k]) : String(meta[k])}</dd>
+            </React.Fragment>
           ))}
-        </tbody>
-      </table>
-      <div className="mt-3">
-        <Btn size="sm" kind="ghost" icon="plus">Add key</Btn>
-      </div>
+        </dl>
+      )}
     </div>
+  );
+}
+
+// ============================================================================
+// Test agent → cross-page NewSessionModal
+// ============================================================================
+//
+// U0082 contract: opens with title="New session", Workspace select is
+// .nth(0), Agent select is .nth(1), Agent pre-bound to defaultAgentId,
+// workspace options populated from /workspaces?limit=200.
+
+function AG_NewSessionModal({ onClose, defaultAgentId, pushToast }) {
+  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
+  const workspaces = useResource(
+    "test-agent:workspaces",
+    (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
+    { pollMs: null }
+  );
+  const agents = useResource(
+    "test-agent:agents",
+    (signal) => apiFetch("GET", "/agents?limit=200", null, { signal }),
+    { pollMs: null }
+  );
+
+  const wsItems = workspaces.data?.items ?? [];
+  const agentItems = agents.data?.items ?? [];
+
+  const [workspaceId, setWorkspaceId] = React.useState("");
+  const [agentId, setAgentId] = React.useState(defaultAgentId || "");
+  const [instructions, setInstructions] = React.useState("");
+  const [autoStart, setAutoStart] = React.useState(true);
+
+  // Auto-pick first workspace once the list loads (only if none picked).
+  React.useEffect(() => {
+    if (!workspaceId && wsItems.length > 0) setWorkspaceId(wsItems[0].id);
+  }, [wsItems, workspaceId]);
+
+  // Defensive: keep defaultAgentId sticky even if user opens / changes
+  // selection then re-opens.
+  React.useEffect(() => {
+    if (defaultAgentId) setAgentId(defaultAgentId);
+  }, [defaultAgentId]);
+
+  const create = useMutation(
+    ({ wid, body }) => apiFetch("POST", `/workspaces/${encodeURIComponent(wid)}/sessions`, body),
+    {
+      invalidates: ["sessions:list"],
+      onSuccess: (row) => {
+        onClose();
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "success", title: "Session created", detail: row?.id });
+        }
+        if (row?.id) navigate("/sessions/" + row.id);
+      },
+      onError: _agToastErr(pushToast, "Create session failed"),
+    }
+  );
+
+  const submit = async () => {
+    if (!workspaceId || !agentId) return;
+    const body = {
+      binding: { kind: "agent", agent_id: agentId },
+      auto_start: autoStart,
+    };
+    if (instructions.trim()) body.initial_instructions = instructions.trim();
+    try { await create.mutate({ wid: workspaceId, body }); } catch (_e) { /* surfaced via onError */ }
+  };
+
+  return (
+    <Modal
+      title="New session"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn
+            kind="primary"
+            icon="plus"
+            onClick={submit}
+            disabled={!workspaceId || !agentId || create.loading}
+          >
+            {create.loading ? "Creating…" : "Create"}
+          </Btn>
+        </>
+      }
+    >
+      <div className="field">
+        <label className="field-label" htmlFor="ns-workspace">Workspace</label>
+        <select
+          id="ns-workspace"
+          className="select"
+          value={workspaceId}
+          onChange={(e) => setWorkspaceId(e.target.value)}
+          style={{ width: "100%" }}
+        >
+          {wsItems.length === 0 && <option value="">-- no workspaces --</option>}
+          {wsItems.map((w) => (
+            <option key={w.id} value={w.id}>{w.id}</option>
+          ))}
+        </select>
+        {wsItems.length === 0 && !workspaces.loading && (
+          <div className="field-help" style={{ color: "var(--amber)" }}>
+            No workspaces. Create one at <span className="mono">/workspaces</span> first.
+          </div>
+        )}
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="ns-agent">Agent</label>
+        <select
+          id="ns-agent"
+          className="select"
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
+          style={{ width: "100%" }}
+        >
+          {/* Keep defaultAgentId as an option even if not yet in the loaded
+              list — guarantees U0082's preselect-by-prop holds while the
+              agents.list refetch is in flight. */}
+          {defaultAgentId && !agentItems.some((a) => a.id === defaultAgentId) && (
+            <option value={defaultAgentId}>{defaultAgentId}</option>
+          )}
+          {agentItems.map((a) => (
+            <option key={a.id} value={a.id}>{a.id}</option>
+          ))}
+        </select>
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="ns-instructions">
+          Initial instructions <span className="hint">optional</span>
+        </label>
+        <textarea
+          id="ns-instructions"
+          className="textarea"
+          rows={4}
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          placeholder="Tell the agent what to do…"
+        />
+      </div>
+      <div className="field">
+        <label className="field-label" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={autoStart}
+            onChange={(e) => setAutoStart(e.target.checked)}
+          />
+          <span>auto_start</span>
+        </label>
+        <div className="field-help">If unchecked, the session is created but not handed to a worker — useful for staging.</div>
+      </div>
+    </Modal>
   );
 }
 
 window.AgentsPage = AgentsPage;
 window.AgentDetail = AgentDetail;
-window.AGENT_DETAILS_INDEX = AGENT_DETAILS;

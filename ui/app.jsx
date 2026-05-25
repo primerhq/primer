@@ -650,9 +650,8 @@ function App() {
     );
     pageBody = (
       <AgentsPage
-        sessions={sessions}
         onOpen={(aid) => navigate("agent-detail", aid)}
-        onNewSession={() => setNewSessionOpen(true)}
+        pushToast={pushToast}
       />
     );
   } else if (page === "agent-detail" && currentAgentId) {
@@ -674,8 +673,6 @@ function App() {
     pageBody = (
       <AgentDetail
         agentId={currentAgentId}
-        sessions={sessions}
-        onTest={() => setNewSessionOpen(true)}
         pushToast={pushToast}
       />
     );
