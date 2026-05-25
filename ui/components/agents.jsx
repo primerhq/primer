@@ -249,6 +249,25 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
     (signal) => apiFetch("GET", "/toolsets?limit=200", null, { signal }),
     { pollMs: null }
   );
+  const builtins = useResource(
+    "agents:toolsets:builtin",
+    (signal) => apiFetch("GET", "/toolsets/builtin", null, { signal }),
+    { pollMs: null }
+  );
+
+  const allToolsets = React.useMemo(() => {
+    const userRows = (toolsets.data?.items ?? []).map((t) => ({
+      id: t.id, label: t.id, builtin: false, available: true, description: t.description || "",
+    }));
+    const builtinRows = (builtins.data?.items ?? []).map((b) => ({
+      id: b.id,
+      label: b.label || b.id,
+      builtin: true,
+      available: b.available !== false,
+      description: b.description || "",
+    }));
+    return [...builtinRows, ...userRows];
+  }, [toolsets.data, builtins.data]);
 
   const [id, setId] = React.useState("");
   const [description, setDescription] = React.useState("");
@@ -403,18 +422,36 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
         )}
       </div>
       <div className="field">
-        <label className="field-label">Toolsets <span className="hint">optional</span></label>
+        <label className="field-label">
+          Toolsets <span className="hint">optional · built-ins are always available</span>
+        </label>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {(toolsets.data?.items ?? []).map((t) => (
-            <span
-              key={t.id}
-              className={`chip ${selectedTools.includes(t.id) ? "active" : ""}`}
-              onClick={() => toggleTool(t.id)}
-              style={{ cursor: "pointer" }}
-            >{t.id}</span>
-          ))}
-          {(toolsets.data?.items ?? []).length === 0 && !toolsets.loading && (
-            <span className="muted text-sm">No toolsets configured.</span>
+          {allToolsets.map((t) => {
+            const selected = selectedTools.includes(t.id);
+            const disabled = !t.available;
+            const title = t.description
+              ? `${t.description}${disabled ? " · unavailable" : ""}`
+              : (disabled ? "unavailable" : undefined);
+            return (
+              <span
+                key={t.id}
+                className={`chip ${selected ? "active" : ""}`}
+                onClick={() => { if (!disabled) toggleTool(t.id); }}
+                style={{
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.5 : 1,
+                }}
+                title={title}
+              >
+                {t.label}
+                {t.builtin && (
+                  <span className="muted text-sm" style={{ marginLeft: 4 }}>· built-in</span>
+                )}
+              </span>
+            );
+          })}
+          {allToolsets.length === 0 && !toolsets.loading && !builtins.loading && (
+            <span className="muted text-sm">No toolsets available.</span>
           )}
         </div>
       </div>
