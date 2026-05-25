@@ -83,15 +83,18 @@ const StatusPill = ({ status, className = "", parked }) => {
   );
 };
 
-const Btn = ({ children, kind = "default", size, icon, iconRight, disabled, onClick, title, type = "button" }) => {
+const Btn = ({ children, kind = "default", size, icon, iconRight, disabled, onClick, title, type = "button", ...rest }) => {
   const cls = ["btn"];
   if (kind === "primary") cls.push("btn-primary");
   if (kind === "danger") cls.push("btn-danger");
   if (kind === "ghost") cls.push("btn-ghost");
   if (size === "sm") cls.push("btn-sm");
   if (size === "lg") cls.push("btn-lg");
+  // Forward arbitrary HTML attrs (data-testid, aria-*, etc.) so call
+  // sites that set them — e.g. data-testid="approval-approve" in
+  // approvals.jsx — actually surface them on the rendered <button>.
   return (
-    <button type={type} className={cls.join(" ")} disabled={disabled} onClick={onClick} title={title}>
+    <button type={type} className={cls.join(" ")} disabled={disabled} onClick={onClick} title={title} {...rest}>
       {icon && <Icon name={icon} size={13} />}
       {children}
       {iconRight && <Icon name={iconRight} size={13} />}
