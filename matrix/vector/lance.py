@@ -161,9 +161,67 @@ class LanceVectorStoreProvider(VectorStoreProvider):
             self._store = LanceVectorStore(provider=self)
         return self._store
 
+    # ---------- Catalogue helpers -----------------------------------------
+
+    async def _open_catalogue(self) -> "lancedb.AsyncTable":
+        """Open (or create) the catalogue table. Idempotent."""
+        response = await self.db.list_tables()
+        names = response.tables
+        if _CATALOGUE_TABLE in names:
+            return await self.db.open_table(_CATALOGUE_TABLE)
+        # AsyncConnection.create_table accepts either `data` (any
+        # Arrow-compatible payload) or `schema` (when the table is
+        # initially empty). Passing the schema avoids constructing an
+        # empty pyarrow.Table.
+        return await self.db.create_table(
+            _CATALOGUE_TABLE, schema=_catalogue_schema()
+        )
+
+    async def _read_catalogue(self) -> list[dict[str, Any]]:
+        """Return every catalogue row, ordered by collection_id."""
+        tbl = await self._open_catalogue()
+        rows = await tbl.query().to_list()
+        rows.sort(key=lambda r: r["collection_id"])
+        return rows
+
+    async def _catalogue_get(self, collection_id: str) -> dict[str, Any] | None:
+        tbl = await self._open_catalogue()
+        rows = await tbl.query().where(
+            f"collection_id = '{collection_id}'"
+        ).to_list()
+        return rows[0] if rows else None
+
+    async def _catalogue_insert(
+        self,
+        *,
+        collection_id: str,
+        table_name: str,
+        dimensions: int,
+        distance: str,
+    ) -> None:
+        tbl = await self._open_catalogue()
+        row = {
+            "collection_id": collection_id,
+            "table_name": table_name,
+            "dimensions": int(dimensions),
+            "distance": distance,
+            "indexed": False,
+        }
+        await tbl.add([row])
+
+    async def _catalogue_mark_indexed(self, collection_id: str) -> None:
+        tbl = await self._open_catalogue()
+        # AsyncTable.update signature on lancedb 0.15+:
+        # `update(updates: dict, where: str | None = None)`.
+        await tbl.update(
+            updates={"indexed": True},
+            where=f"collection_id = '{collection_id}'",
+        )
+
     async def maintain_indexes(self) -> list[MaintenanceReport]:
-        # Catalogue + per-table optimize. Stubbed in Task 6.
-        raise NotImplementedError  # filled in Task 6
+        # Filled in Task 6; the stub returns [] so consumers that
+        # invoke it (e.g. tests that don't pin this branch) don't crash.
+        return []
 
 
 class LanceVectorStore(VectorStore):
@@ -176,8 +234,54 @@ class LanceVectorStore(VectorStore):
     # the file imports cleanly; tests for each method live in the same
     # task that fills it in.
 
-    async def create_collection(self, *args, **kwargs):
-        raise NotImplementedError  # Task 4
+    async def create_collection(
+        self,
+        collection_id: str,
+        *,
+        dimensions: int,
+        distance: str = "cosine",
+    ) -> None:
+        if distance not in _DISTANCE_LANCE:
+            raise BadRequestError(
+                f"unsupported distance {distance!r}; expected one of "
+                f"{sorted(_DISTANCE_LANCE)}"
+            )
+        lance_distance = _DISTANCE_LANCE[distance]
+        table_name = _table_name_for_collection(collection_id)
+
+        existing = await self._provider._catalogue_get(collection_id)
+        if existing is not None:
+            if int(existing["dimensions"]) != int(dimensions):
+                raise ConflictError(
+                    f"collection {collection_id!r} already exists with "
+                    f"dimensions={existing['dimensions']}; cannot recreate "
+                    f"with dimensions={dimensions}"
+                )
+            if existing["distance"] != lance_distance:
+                raise ConflictError(
+                    f"collection {collection_id!r} already exists with "
+                    f"distance={existing['distance']!r}; cannot recreate "
+                    f"with distance={lance_distance!r}"
+                )
+            return  # idempotent no-op
+
+        # Create the per-collection table from the bare schema. Lance
+        # materialises an empty dataset; rows arrive via put().
+        schema = _record_schema(dimensions)
+        try:
+            await self._provider.db.create_table(table_name, schema=schema)
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to create Lance table {table_name!r}: {exc}",
+                cause=exc,
+            ) from exc
+
+        await self._provider._catalogue_insert(
+            collection_id=collection_id,
+            table_name=table_name,
+            dimensions=dimensions,
+            distance=lance_distance,
+        )
 
     async def put(self, *args, **kwargs):
         raise NotImplementedError  # Task 5
