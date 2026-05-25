@@ -36,24 +36,9 @@ async def _delete_toolsets(client: httpx.AsyncClient, ids: list[str]) -> None:
         await client.delete(f"/v1/toolsets/{entity_id}")
 
 
-@pytest.mark.asyncio
-async def test_t0011_pagination_exactly_limit_items(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0011 — create N items, GET with ?limit=N returns exactly N."""
-    prefix = f"ts-t0011-{unique_suffix}"
-    ids = await _seed_toolsets(client, prefix, 5)
-    try:
-        resp = await client.get("/v1/toolsets?limit=5&offset=0")
-        assert resp.status_code == 200, resp.text
-        page = resp.json()
-        assert page["length"] == 5
-        assert len(page["items"]) == 5
-        # Total is across the whole table, but it must be >= what we
-        # just inserted.
-        assert page["total"] >= 5
-    finally:
-        await _delete_toolsets(client, ids)
+# T0011 (create N items, GET ?limit=N returns N) pruned: T0118 walks
+# 7 items in chunks of 3 and T0195 walks 5 items at limit=1 — both
+# subsume the "exactly limit" assertion. Removed as redundant.
 
 
 @pytest.mark.asyncio
