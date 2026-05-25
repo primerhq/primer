@@ -62,11 +62,19 @@ services:
         condition: service_healthy
     environment:
       # Database: connect by compose-network DNS, NOT localhost.
-      MATRIX_DB_HOST: postgres
-      MATRIX_DB_PORT: 5432
-      MATRIX_DB_DATABASE: ${MATRIX_DB_DATABASE:-matrix}
-      MATRIX_DB_USER: ${MATRIX_DB_USER:-matrix}
-      MATRIX_DB_PASSWORD: ${MATRIX_DB_PASSWORD:-matrix}
+      # AppConfig after the §1 SQLite refactor expects nested db.*
+      # via env_nested_delimiter="__"; the legacy flat MATRIX_DB_HOST
+      # etc. keys are silently ignored. Without this, storage defaults
+      # to embedded SQLite at ~/.matrix/db/data.sqlite and the
+      # PostgresScheduler crashes on .pool attribute access.
+      MATRIX_DB__PROVIDER: postgres
+      MATRIX_DB__CONFIG__HOSTNAME: postgres
+      MATRIX_DB__CONFIG__PORT: 5432
+      MATRIX_DB__CONFIG__DATABASE: ${MATRIX_DB_DATABASE:-matrix}
+      MATRIX_DB__CONFIG__USERNAME: ${MATRIX_DB_USER:-matrix}
+      MATRIX_DB__CONFIG__PASSWORD: ${MATRIX_DB_PASSWORD:-matrix}
+      # Scheduler: in-process Postgres (default for production).
+      MATRIX_SCHEDULER__PROVIDER: postgres
       # Bind to all interfaces inside the container so the host port
       # mapping can reach the server.
       MATRIX_HOST: 0.0.0.0
