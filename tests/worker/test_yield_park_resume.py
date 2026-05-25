@@ -263,6 +263,59 @@ class TestResumeFlow:
         )
         assert n == 0
 
+    @pytest.mark.asyncio
+    async def test_clear_park_nulls_all_parked_columns(
+        self, scheduler: InMemoryScheduler,
+    ):
+        """clear_park is the post-resume sweep: NULLs every parked_*
+        column on the session row so subsequent claims see a normal
+        non-parked session, and a stale park can't leak into a fresh
+        turn's lifecycle. Idempotent on already-cleared rows.
+        """
+        sess = await _register_worker_and_inject(
+            scheduler, "sess-clear",
+            worker_id=None, lease_runnable=False,
+        )
+        # Stamp a parked-resumable shape (mirrors what mark_resumable
+        # leaves behind right before the worker dispatches a resume).
+        sess.parked_status = "resumable"
+        sess.parked_event_key = "timer:tc-clear"
+        sess.parked_until = datetime.now(timezone.utc) + timedelta(seconds=30)
+        sess.parked_at = datetime.now(timezone.utc)
+        sess.parked_state = {
+            "schema_version": 1,
+            "yielded": {
+                "tool_name": "sleep",
+                "event_key": "timer:tc-clear",
+                "timeout": 30.0,
+                "resume_metadata": {},
+            },
+            "llm_messages": [],
+            "turn_no": 0,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "resume_event_payload": {"woken": True},
+        }
+
+        await scheduler.clear_park("sess-clear")
+
+        assert sess.parked_status is None
+        assert sess.parked_event_key is None
+        assert sess.parked_until is None
+        assert sess.parked_at is None
+        assert sess.parked_state is None
+
+        # Idempotent: second call on an already-clear row is a no-op.
+        await scheduler.clear_park("sess-clear")
+        assert sess.parked_status is None
+
+    @pytest.mark.asyncio
+    async def test_clear_park_on_unknown_session_is_noop(
+        self, scheduler: InMemoryScheduler,
+    ):
+        # No exception, no side effect — defensive against the worker
+        # racing storage on a row that's already been deleted.
+        await scheduler.clear_park("sess-does-not-exist")
+
 
 # ===========================================================================
 # End-to-end park → mark_resumable → resume hook

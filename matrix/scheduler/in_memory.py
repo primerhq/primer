@@ -298,6 +298,22 @@ class InMemoryScheduler(Scheduler):
             lease.next_attempt_at = datetime.now(timezone.utc)
             return CompleteTurnResult.SUCCESS
 
+    async def clear_park(self, session_id: str) -> None:
+        """NULL every parked_* column on the session row.
+
+        Idempotent: unknown session id or already-cleared row is
+        a silent no-op (mirrors PostgresScheduler.clear_park).
+        """
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return
+            session.parked_status = None
+            session.parked_event_key = None
+            session.parked_until = None
+            session.parked_at = None
+            session.parked_state = None
+
     async def mark_resumable(
         self,
         event_key: str,

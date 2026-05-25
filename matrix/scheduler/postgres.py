@@ -528,6 +528,33 @@ class PostgresScheduler(Scheduler):
                     raise _LeaseLostMarker()
                 return CompleteTurnResult.SUCCESS
 
+    async def clear_park(self, session_id: str) -> None:
+        """NULL every parked_* JSONB field on the session row.
+
+        Used by the worker's resume path once a resumable park has
+        been consumed (resume hook ran, synthesised tool_result
+        persisted). After this returns the row is indistinguishable
+        from a non-parked session to the claim path.
+
+        Idempotent: missing row or already-cleared row is a silent
+        no-op (no RAISE, no error). Matches the ABC's contract so
+        the worker can call this without first checking row state.
+        """
+        sql = """
+            UPDATE sessions
+            SET data = (data
+                - 'parked_status'
+                - 'parked_event_key'
+                - 'parked_until'
+                - 'parked_at'
+                - 'parked_state'
+            ),
+            updated_at = now()
+            WHERE id = $1
+        """
+        async with self._storage.pool.acquire() as conn:
+            await conn.execute(sql, session_id)
+
     async def mark_resumable(
         self,
         event_key: str,

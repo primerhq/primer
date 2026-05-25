@@ -208,6 +208,22 @@ class Scheduler(ABC):
         wakes immediately.
         """
 
+    @abstractmethod
+    async def clear_park(self, session_id: str) -> None:
+        """NULL every parked_* column on the session row.
+
+        Called by the worker's resume path AFTER the resume hook
+        has produced its result and the synthesised tool_result
+        message has been persisted to history. Once cleared the
+        row looks like a normal non-parked session again to the
+        claim path; a subsequent claim picks it up as a fresh turn.
+
+        Idempotent: clearing an already-clear row (or a row that
+        never existed) is a silent no-op — the worker doesn't
+        need to gate on row existence, and a concurrent storage
+        delete can't surface as a 5xx through this path.
+        """
+
     # ---- Hints + cancel --------------------------------------------------
 
     @abstractmethod
