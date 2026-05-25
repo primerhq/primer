@@ -19,6 +19,7 @@ dependencies = [
     "jinja2>=3.1.0",
     "jsonschema>=4.20",
     "kubernetes-asyncio>=32.0",
+    "lancedb>=0.15",
     "mcp>=1.16.0",
     "ollama>=0.6.1",
     "openai>=1.50.0",
