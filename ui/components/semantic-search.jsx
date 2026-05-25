@@ -1,9 +1,85 @@
 /* global React, Icon, Btn, Modal, Banner, relativeTime, fmtDate */
 
-function SSPListPage({ ssps, onOpen, onCreate, pushToast, ssmState }) {
-  const [createOpen, setCreateOpen] = React.useState(false);
+// Semantic-Search Provider (SSP) pages — wired to the real API.
+//
+// Endpoints (CLAUDE.md §3.2):
+//   GET    /v1/ssp?limit=200          — list (5s poll)
+//   GET    /v1/ssp/{id}               — detail
+//   POST   /v1/ssp                    — create (422 → inline fieldErrors)
+//   POST   /v1/ssp/{id}/invalidate    — drop cached adapter
+//   DELETE /v1/ssp/{id}               — delete (409 if any Collection refs it)
+//
+// Cache keys:
+//   ssp:list             — list page (and the sidebar count, via app.jsx)
+//   ssp-detail:${id}     — per-row detail probe
+//
+// Babel-standalone shares the global scope across <script> tags so every
+// top-level binding in this file is prefixed with SSP_ to avoid clashes
+// with other components (IC_*, WS_*, TS_*, KN_*, ...).
 
-  if (ssmState === "none" || ssps.length === 0) {
+const SSP_CACHE_LIST = "ssp:list";
+const SSP_CACHE_DETAIL_PREFIX = "ssp-detail:";
+
+function _sspToastErr(pushToast, fallbackTitle) {
+  return (err) => {
+    if (typeof pushToast !== "function") return;
+    pushToast({
+      kind: "error",
+      title: err?.title || fallbackTitle,
+      detail: err?.detail || err?.message,
+      requestId: err?.requestId,
+    });
+  };
+}
+
+function _sspAgeSec(iso) {
+  if (!iso) return null;
+  if (iso instanceof Date) return (Date.now() - iso.getTime()) / 1000;
+  return (Date.now() - new Date(iso).getTime()) / 1000;
+}
+
+// ----------------------------------------------------------------------
+// List page
+// ----------------------------------------------------------------------
+
+function SSPListPage({ onOpen, pushToast }) {
+  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [textQuery, setTextQuery] = React.useState("");
+  const [backendFilter, setBackendFilter] = React.useState("");
+  const filterFocused = React.useRef(false);
+
+  const list = useResource(
+    SSP_CACHE_LIST,
+    (signal) => apiFetch("GET", "/ssp?limit=200", null, { signal }),
+    { pollMs: 5000, pauseWhile: () => filterFocused.current }
+  );
+
+  const items = Array.isArray(list.data?.items) ? list.data.items : [];
+
+  const filtered = React.useMemo(() => {
+    let arr = items;
+    if (textQuery) {
+      const q = textQuery.toLowerCase();
+      arr = arr.filter((p) =>
+        (p.id || "").toLowerCase().includes(q) ||
+        (p.config?.hostname || "").toLowerCase().includes(q) ||
+        (p.config?.database || "").toLowerCase().includes(q)
+      );
+    }
+    if (backendFilter) arr = arr.filter((p) => p.provider === backendFilter);
+    return arr;
+  }, [items, textQuery, backendFilter]);
+
+  const openRow = (id) => {
+    if (typeof onOpen === "function") onOpen(id);
+    else navigate(`/ssp/${encodeURIComponent(id)}`);
+  };
+
+  // Empty state — show a friendly create prompt when there are no providers.
+  if (!list.loading && items.length === 0 && !list.error) {
     return (
       <>
         <Banner
@@ -27,7 +103,7 @@ function SSPListPage({ ssps, onOpen, onCreate, pushToast, ssmState }) {
         {createOpen && (
           <SSPCreateModal
             onClose={() => setCreateOpen(false)}
-            onCreate={(p) => { setCreateOpen(false); onCreate(p); }}
+            pushToast={pushToast}
           />
         )}
       </>
@@ -39,53 +115,84 @@ function SSPListPage({ ssps, onOpen, onCreate, pushToast, ssmState }) {
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter providers…" />
+          <input
+            className="input"
+            placeholder="Filter providers…"
+            value={textQuery}
+            onChange={(e) => setTextQuery(e.target.value)}
+            onFocus={() => { filterFocused.current = true; }}
+            onBlur={() => { filterFocused.current = false; }}
+          />
         </div>
         <div className="sep-v" />
-        <select className="select"><option>all backends</option><option>pgvector</option><option>pgvectorscale</option></select>
+        <select
+          className="select"
+          value={backendFilter}
+          onChange={(e) => setBackendFilter(e.target.value)}
+        >
+          <option value="">all backends</option>
+          <option value="pgvector">pgvector</option>
+          <option value="pgvectorscale">pgvectorscale</option>
+        </select>
         <span className="muted text-sm tabular" style={{ marginLeft: "auto" }}>
           <span className="mono" style={{ color: "var(--green)" }}>● live</span> · /v1/ssp every 5s
         </span>
         <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New provider</Btn>
       </div>
 
-      <div className="tbl-wrap">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Backend</th>
-              <th>Host</th>
-              <th>Schema</th>
-              <th>Status</th>
-              <th>Last invalidated</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {ssps.map((p) => (
-              <tr key={p.id} onClick={() => onOpen(p.id)}>
-                <td className="mono">{p.id}</td>
-                <td><BackendBadge kind={p.provider} /></td>
-                <td className="mono muted text-sm">{p.config.hostname}<span style={{ color: "var(--text-4)" }}>:{p.config.port}</span></td>
-                <td className="mono muted text-sm">{p.config.schema}</td>
-                <td>
-                  {p.status === "ok" && <span className="pill pill-ended"><span className="dot"></span>reachable</span>}
-                  {p.status === "amber" && <span className="pill pill-paused"><span className="dot"></span>invalidated</span>}
-                  {p.status === "err" && <span className="pill pill-failed"><span className="dot"></span>unreachable</span>}
-                </td>
-                <td className="mono muted">{relativeTime(p.last_invalidated_ago)}</td>
-                <td style={{ textAlign: "right", paddingRight: 12 }}><Icon name="chevron-right" size={12} className="muted" /></td>
+      {list.error && items.length === 0 ? (
+        <Banner
+          kind="error"
+          title={list.error.title || "Couldn't load providers"}
+          detail={list.error.detail || list.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
+        />
+      ) : (
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Backend</th>
+                <th>Host</th>
+                <th>Schema</th>
+                <th>Database</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+                  No providers match the current filter{textQuery ? ` "${textQuery}"` : ""}.
+                  {" · "}<a
+                    onClick={() => { setTextQuery(""); setBackendFilter(""); }}
+                    style={{ cursor: "pointer", color: "var(--accent)" }}
+                  >Clear filters</a>
+                </td></tr>
+              ) : filtered.map((p) => (
+                <tr key={p.id} onClick={() => openRow(p.id)} style={{ cursor: "pointer" }}>
+                  <td className="mono">{p.id}</td>
+                  <td><BackendBadge kind={p.provider} /></td>
+                  <td className="mono muted text-sm">
+                    {p.config?.hostname || "—"}
+                    {p.config?.port ? <span style={{ color: "var(--text-4)" }}>:{p.config.port}</span> : null}
+                  </td>
+                  <td className="mono muted text-sm">{p.config?.db_schema || "public"}</td>
+                  <td className="mono muted text-sm">{p.config?.database || "—"}</td>
+                  <td style={{ textAlign: "right", paddingRight: 12 }}>
+                    <Icon name="chevron-right" size={12} className="muted" />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {createOpen && (
         <SSPCreateModal
           onClose={() => setCreateOpen(false)}
-          onCreate={(p) => { setCreateOpen(false); onCreate(p); }}
+          pushToast={pushToast}
         />
       )}
     </div>
@@ -106,7 +213,10 @@ function BackendBadge({ kind }) {
 // Create modal
 // ----------------------------------------------------------------------
 
-function SSPCreateModal({ onClose, onCreate }) {
+function SSPCreateModal({ onClose, pushToast }) {
+  const { useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
   const [form, setForm] = React.useState({
     id: `pg-${Math.random().toString(36).slice(2, 8)}`,
     provider: "pgvector",
@@ -115,30 +225,92 @@ function SSPCreateModal({ onClose, onCreate }) {
     database: "matrix",
     username: "",
     password: "",
-    schema: "public",
+    db_schema: "public",
     hnsw_m: 16,
     hnsw_ef_construction: 64,
     enable_diskann: false,
-    num_neighbors: 50,
-    search_list_size: 100,
+    diskann_num_neighbors: 50,
+    diskann_search_list_size: 100,
   });
-  const [errors, setErrors] = React.useState({});
+  const [fieldErrors, setFieldErrors] = React.useState({});
 
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const isScale = form.provider === "pgvectorscale";
 
+  const create = useMutation(
+    (body) => apiFetch("POST", "/ssp", body),
+    {
+      invalidates: [SSP_CACHE_LIST],
+      onSuccess: (row) => {
+        onClose();
+        if (pushToast) {
+          pushToast({
+            kind: "success",
+            title: "Provider created",
+            detail: `${row.id} (${row.provider}) · POST /v1/ssp → 201`,
+          });
+        }
+        navigate(`/ssp/${encodeURIComponent(row.id)}`);
+      },
+      onError: (err) => {
+        if (err?.status === 422 && Array.isArray(err.fieldErrors)) {
+          const next = {};
+          for (const fe of err.fieldErrors) {
+            // Pydantic loc is like ["body", "config", "hostname"] — strip
+            // the leading "body" and join the rest.
+            const loc = (fe.loc || []).filter((seg) => seg !== "body");
+            next[loc.join(".")] = fe.msg;
+            // Also key by the bare last segment so the simple field rows
+            // below can find their error without knowing the full path.
+            if (loc.length > 0) next[loc[loc.length - 1]] = fe.msg;
+          }
+          setFieldErrors(next);
+        } else {
+          _sspToastErr(pushToast, "Create failed")(err);
+        }
+      },
+    }
+  );
+
   const submit = () => {
+    // Client-side guard for the obvious required fields. Server-side
+    // 422 still wins (e.g. min_length checks); this is just to avoid
+    // a round-trip when fields are empty.
     const errs = {};
+    if (!form.id) errs.id = "value is required";
     if (!form.hostname) errs.hostname = "value is required";
     if (!form.username) errs.username = "value is required";
     if (!form.password) errs.password = "value is required";
     if (!form.database) errs.database = "value is required";
     if (Object.keys(errs).length > 0) {
-      setErrors(errs);
+      setFieldErrors(errs);
       return;
     }
-    setErrors({});
-    onCreate(form);
+    setFieldErrors({});
+
+    // Shape the body per matrix.model.provider.SemanticSearchProvider:
+    //   { id, provider, config: { hostname, port, username, password,
+    //     database, db_schema, hnsw_m, hnsw_ef_construction,
+    //     enable_diskann?, diskann_num_neighbors?, diskann_search_list_size? } }
+    const config = {
+      hostname: form.hostname,
+      port: Number(form.port) || 5432,
+      username: form.username,
+      password: form.password,
+      database: form.database,
+      db_schema: form.db_schema || "public",
+      hnsw_m: Number(form.hnsw_m) || 16,
+      hnsw_ef_construction: Number(form.hnsw_ef_construction) || 64,
+    };
+    if (isScale) {
+      config.enable_diskann = !!form.enable_diskann;
+      if (form.enable_diskann) {
+        config.diskann_num_neighbors = Number(form.diskann_num_neighbors) || 50;
+        config.diskann_search_list_size = Number(form.diskann_search_list_size) || 100;
+      }
+    }
+    const body = { id: form.id, provider: form.provider, config };
+    create.mutate(body).catch(() => { /* onError already handled */ });
   };
 
   return (
@@ -159,7 +331,7 @@ function SSPCreateModal({ onClose, onCreate }) {
           <button className="close" onClick={onClose}><Icon name="x" size={14} /></button>
         </div>
         <div className="modal-b" style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
-          <FieldRow label="id" hint="must be unique" err={errors.id}>
+          <FieldRow label="id" hint="must be unique" err={fieldErrors.id}>
             <input className="input mono" value={form.id} onChange={(e) => update("id", e.target.value)} style={{ width: "100%" }} />
           </FieldRow>
           <FieldRow label="backend">
@@ -170,33 +342,33 @@ function SSPCreateModal({ onClose, onCreate }) {
           </FieldRow>
 
           <Section label="Connection" />
-          <FieldRow label="hostname" err={errors.hostname}>
+          <FieldRow label="hostname" err={fieldErrors.hostname}>
             <input className="input mono" value={form.hostname} onChange={(e) => update("hostname", e.target.value)} placeholder="pg-prod.internal" style={{ width: "100%" }} />
           </FieldRow>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 100px", gap: 10 }}>
-            <FieldRow label="database" err={errors.database}>
+            <FieldRow label="database" err={fieldErrors.database}>
               <input className="input mono" value={form.database} onChange={(e) => update("database", e.target.value)} style={{ width: "100%" }} />
             </FieldRow>
-            <FieldRow label="port">
+            <FieldRow label="port" err={fieldErrors.port}>
               <input className="input mono" type="number" value={form.port} onChange={(e) => update("port", +e.target.value)} style={{ width: "100%" }} />
             </FieldRow>
           </div>
-          <FieldRow label="username" err={errors.username}>
+          <FieldRow label="username" err={fieldErrors.username}>
             <input className="input mono" value={form.username} onChange={(e) => update("username", e.target.value)} placeholder="matrix_rw" style={{ width: "100%" }} />
           </FieldRow>
-          <FieldRow label="password" hint="SecretStr · stored encrypted" err={errors.password}>
+          <FieldRow label="password" hint="SecretStr · stored encrypted" err={fieldErrors.password}>
             <input className="input mono" type="password" value={form.password} onChange={(e) => update("password", e.target.value)} placeholder="•••••••••" style={{ width: "100%" }} />
           </FieldRow>
-          <FieldRow label="schema">
-            <input className="input mono" value={form.schema} onChange={(e) => update("schema", e.target.value)} style={{ width: "100%" }} />
+          <FieldRow label="schema" err={fieldErrors.db_schema}>
+            <input className="input mono" value={form.db_schema} onChange={(e) => update("db_schema", e.target.value)} style={{ width: "100%" }} />
           </FieldRow>
 
           <Section label="HNSW knobs" />
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <FieldRow label="M" hint="graph degree">
+            <FieldRow label="M" hint="graph degree" err={fieldErrors.hnsw_m}>
               <input className="input mono" type="number" value={form.hnsw_m} onChange={(e) => update("hnsw_m", +e.target.value)} style={{ width: "100%" }} />
             </FieldRow>
-            <FieldRow label="ef_construction" hint="build-time accuracy">
+            <FieldRow label="ef_construction" hint="build-time accuracy" err={fieldErrors.hnsw_ef_construction}>
               <input className="input mono" type="number" value={form.hnsw_ef_construction} onChange={(e) => update("hnsw_ef_construction", +e.target.value)} style={{ width: "100%" }} />
             </FieldRow>
           </div>
@@ -214,18 +386,20 @@ function SSPCreateModal({ onClose, onCreate }) {
               <span>enable DiskANN index</span>
             </label>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <FieldRow label="num_neighbors">
-                <input className="input mono" type="number" value={form.num_neighbors} onChange={(e) => update("num_neighbors", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
+              <FieldRow label="num_neighbors" err={fieldErrors.diskann_num_neighbors}>
+                <input className="input mono" type="number" value={form.diskann_num_neighbors} onChange={(e) => update("diskann_num_neighbors", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
               </FieldRow>
-              <FieldRow label="search_list_size">
-                <input className="input mono" type="number" value={form.search_list_size} onChange={(e) => update("search_list_size", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
+              <FieldRow label="search_list_size" err={fieldErrors.diskann_search_list_size}>
+                <input className="input mono" type="number" value={form.diskann_search_list_size} onChange={(e) => update("diskann_search_list_size", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
               </FieldRow>
             </div>
           </fieldset>
         </div>
         <div className="modal-f">
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit}>Create</Btn>
+          <Btn kind="primary" icon="plus" onClick={submit} disabled={create.loading}>
+            {create.loading ? "Creating…" : "Create"}
+          </Btn>
         </div>
       </div>
     </div>
@@ -261,28 +435,125 @@ function Section({ label, sub }) {
 // Detail page
 // ----------------------------------------------------------------------
 
-function SSPDetail({ sspId, ssps, onBack, pushToast, onDelete }) {
-  const p = ssps.find((x) => x.id === sspId);
+function SSPDetail({ sspId, pushToast }) {
+  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { navigate } = useRouter();
+
   const [tab, setTab] = React.useState("overview");
   const [showDelete, setShowDelete] = React.useState(false);
+  const [deleteError, setDeleteError] = React.useState(null);
 
+  const detailKey = SSP_CACHE_DETAIL_PREFIX + sspId;
+  const detail = useResource(
+    detailKey,
+    (signal) => apiFetch("GET", `/ssp/${encodeURIComponent(sspId)}`, null, { signal }),
+    { deps: [sspId] }
+  );
+
+  // Collections that reference this SSP — used by the "Collections" tab
+  // and the delete-confirmation 409 preview. /v1/collections is a CRUD
+  // list endpoint; we pull up to 500 and filter client-side. (Server
+  // returns the 409 if we still try to delete, so this is just the UX
+  // preview — the source of truth is the backend cascade-block hook.)
+  const collections = useResource(
+    `ssp-detail:${sspId}:collections`,
+    (signal) => apiFetch("GET", "/collections?limit=500", null, { signal }),
+    { deps: [sspId] }
+  );
+  const referencingCollections = React.useMemo(() => {
+    const items = collections.data?.items ?? [];
+    return items.filter((c) => c.search_provider_id === sspId);
+  }, [collections.data, sspId]);
+
+  const invalidate = useMutation(
+    () => apiFetch("POST", `/ssp/${encodeURIComponent(sspId)}/invalidate`),
+    {
+      invalidates: [detailKey],
+      onSuccess: () => {
+        if (pushToast) {
+          pushToast({
+            kind: "success",
+            title: "Cache dropped",
+            detail: `POST /v1/ssp/${sspId}/invalidate → 204. Next call resolves a fresh connection.`,
+          });
+        }
+      },
+      onError: _sspToastErr(pushToast, "Invalidate failed"),
+    }
+  );
+
+  const del = useMutation(
+    () => apiFetch("DELETE", `/ssp/${encodeURIComponent(sspId)}`),
+    {
+      invalidates: [SSP_CACHE_LIST],
+      onSuccess: () => {
+        if (pushToast) {
+          pushToast({
+            kind: "warning",
+            title: "Provider deleted",
+            detail: `DELETE /v1/ssp/${sspId} → 204`,
+          });
+        }
+        setShowDelete(false);
+        navigate("/ssp");
+      },
+      onError: (err) => {
+        if (err?.status === 409) {
+          setDeleteError(err.detail || "Cannot delete — referenced by a Collection.");
+        } else {
+          setShowDelete(false);
+          _sspToastErr(pushToast, "Delete failed")(err);
+        }
+      },
+    }
+  );
+
+  if (detail.loading && !detail.data) {
+    return (
+      <div className="panel">
+        <div className="panel-body" style={{ padding: 18 }}>
+          <span className="muted text-sm">Loading provider…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (detail.error && !detail.data) {
+    return (
+      <Banner
+        kind="error"
+        title={detail.error.title || `Couldn't load ${sspId}`}
+        detail={detail.error.detail || detail.error.message}
+        actions={<Btn size="sm" icon="refresh" onClick={detail.refetch}>Retry</Btn>}
+      />
+    );
+  }
+
+  const p = detail.data;
   if (!p) return null;
-
-  const referencingCollections = (window.COLLECTIONS_INDEX || []).filter((c) => c.search_provider_id === sspId);
 
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="panel">
         <div className="panel-body" style={{ padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
           <BackendBadge kind={p.provider} />
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div className="mono" style={{ fontSize: 16, fontWeight: 600 }}>{p.id}</div>
-            <div className="muted text-sm mono">
-              {p.config.username}@{p.config.hostname}:{p.config.port}/{p.config.database} · schema {p.config.schema}
+            <div className="muted text-sm mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {p.config?.username}@{p.config?.hostname}:{p.config?.port}/{p.config?.database}
+              {p.config?.db_schema ? ` · schema ${p.config.db_schema}` : ""}
             </div>
           </div>
-          <Btn size="sm" kind="ghost" icon="refresh" onClick={() => pushToast({ kind: "success", title: "Cache invalidated", detail: `POST /v1/ssp/${p.id}/invalidate → 200. Next call resolves a fresh connection.` })}>Invalidate</Btn>
-          <Btn size="sm" kind="danger" icon="trash" onClick={() => setShowDelete(true)}>Delete</Btn>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="refresh"
+            onClick={() => invalidate.mutate()}
+            disabled={invalidate.loading}
+          >
+            {invalidate.loading ? "Invalidating…" : "Invalidate"}
+          </Btn>
+          <Btn size="sm" kind="danger" icon="trash" onClick={() => { setDeleteError(null); setShowDelete(true); }}>Delete</Btn>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
@@ -322,22 +593,26 @@ function SSPDetail({ sspId, ssps, onBack, pushToast, onDelete }) {
         <Modal
           title={`Delete ${sspId}?`}
           danger
-          onClose={() => setShowDelete(false)}
+          onClose={() => { setShowDelete(false); setDeleteError(null); }}
           footer={
             <>
-              <Btn kind="ghost" onClick={() => setShowDelete(false)}>Cancel</Btn>
+              <Btn kind="ghost" onClick={() => { setShowDelete(false); setDeleteError(null); }}>Cancel</Btn>
               <Btn
                 kind="danger"
                 icon="trash"
-                disabled={referencingCollections.length > 0}
-                onClick={() => { setShowDelete(false); onDelete(sspId); }}
+                disabled={referencingCollections.length > 0 || del.loading}
+                onClick={() => del.mutate().catch(() => { /* onError handled */ })}
               >
-                Delete provider
+                {del.loading ? "Deleting…" : "Delete provider"}
               </Btn>
             </>
           }
         >
-          {referencingCollections.length > 0 ? (
+          {deleteError ? (
+            <>
+              <strong style={{ color: "var(--red)" }}>409 Conflict</strong> — {deleteError}
+            </>
+          ) : referencingCollections.length > 0 ? (
             <>
               <strong style={{ color: "var(--red)" }}>409 Conflict</strong> — this provider is referenced by{" "}
               <strong>{referencingCollections.length}</strong> collection{referencingCollections.length === 1 ? "" : "s"}:
@@ -350,7 +625,7 @@ function SSPDetail({ sspId, ssps, onBack, pushToast, onDelete }) {
             <>
               No collections reference this provider. Deletion is safe.
               <ul>
-                <li>The vector tables in <span className="mono">{p.config.schema}</span> are <strong>not</strong> dropped.</li>
+                <li>The vector tables in <span className="mono">{p.config?.db_schema || "public"}</span> are <strong>not</strong> dropped.</li>
                 <li>The provider row is removed; the cached connection is closed.</li>
               </ul>
             </>
@@ -364,31 +639,27 @@ function SSPDetail({ sspId, ssps, onBack, pushToast, onDelete }) {
 function SSPOverview({ p }) {
   return (
     <dl className="kv" style={{ gridTemplateColumns: "200px 1fr" }}>
-      <dt>id</dt><dd>{p.id}</dd>
+      <dt>id</dt><dd className="mono">{p.id}</dd>
       <dt>backend</dt><dd><BackendBadge kind={p.provider} /></dd>
-      <dt>host</dt><dd>{p.config.hostname}:{p.config.port}</dd>
-      <dt>database</dt><dd>{p.config.database}</dd>
-      <dt>schema</dt><dd>{p.config.schema}</dd>
-      <dt>created</dt><dd>{relativeTime(p.created_at_ago)}</dd>
-      <dt>last_invalidated_at</dt><dd>{relativeTime(p.last_invalidated_ago)}</dd>
+      <dt>host</dt><dd className="mono">{p.config?.hostname}:{p.config?.port}</dd>
+      <dt>database</dt><dd className="mono">{p.config?.database}</dd>
+      <dt>schema</dt><dd className="mono">{p.config?.db_schema || "public"}</dd>
+      <dt>distance_metric</dt><dd className="mono">{p.config?.distance_metric || "cosine"}</dd>
+      <dt>hnsw_m</dt><dd className="mono">{p.config?.hnsw_m ?? 16}</dd>
+      <dt>hnsw_ef_construction</dt><dd className="mono">{p.config?.hnsw_ef_construction ?? 64}</dd>
     </dl>
   );
 }
 
 function SSPConfig({ p }) {
-  // Redacted config: password masked
-  const redacted = {
-    ...p.config,
-    password: "**********",
-  };
+  // Server already redacts SecretStr fields to "**********" — we just
+  // render whatever the API returned. Showing the raw JSON keeps the
+  // shape visible (operators can copy-paste into a debug ticket).
   return (
     <div>
       <div className="muted text-sm mb-2">Server returns this redacted config — the password is never sent over the wire.</div>
-      <div className="code-block" style={{ maxHeight: 360, overflow: "auto" }}>
-        {JSON.stringify({ id: p.id, provider: p.provider, config: redacted }, null, 2)}
-      </div>
-      <div className="mt-3">
-        <Btn size="sm" kind="ghost" icon="copy">Edit</Btn>
+      <div className="code-block" style={{ maxHeight: 360, overflow: "auto", whiteSpace: "pre", fontFamily: "var(--font-mono, monospace)", fontSize: 12 }}>
+        {JSON.stringify({ id: p.id, provider: p.provider, config: p.config }, null, 2)}
       </div>
     </div>
   );
@@ -406,15 +677,24 @@ function SSPCollections({ collections, sspId }) {
   }
   return (
     <table className="tbl">
-      <thead><tr><th>ID</th><th>Description</th><th>Embedding</th><th style={{ textAlign: "right" }}>Docs</th><th>Activated</th></tr></thead>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Description</th>
+          <th>Embedding</th>
+        </tr>
+      </thead>
       <tbody>
         {collections.map((c) => (
           <tr key={c.id}>
             <td className="mono">{c.id}</td>
-            <td className="muted">{c.desc || <span style={{ color: "var(--text-4)" }}>—</span>}</td>
-            <td className="mono muted text-sm">{c.embedding_provider} <span style={{ color: "var(--text-4)" }}>· {c.model}</span></td>
-            <td className="mono num tabular">{c.docs?.toLocaleString() || 0}</td>
-            <td className="mono muted">{relativeTime(c.last_ingest || 0)}</td>
+            <td className="muted">{c.description || c.desc || <span style={{ color: "var(--text-4)" }}>—</span>}</td>
+            <td className="mono muted text-sm">
+              {c.embedding_provider_id || c.embedding_provider || "—"}
+              {(c.embedding_model || c.model) ? (
+                <span style={{ color: "var(--text-4)" }}> · {c.embedding_model || c.model}</span>
+              ) : null}
+            </td>
           </tr>
         ))}
       </tbody>
