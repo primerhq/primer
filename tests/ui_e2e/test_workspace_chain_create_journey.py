@@ -44,13 +44,6 @@ def _cleanup(
             except Exception: pass
 
 
-def _click_via_js(locator) -> None:
-    """Workaround for modal-taller-than-viewport: Playwright's .click()
-    refuses to act on out-of-viewport elements; dispatching the click
-    via JS evaluate bypasses that."""
-    locator.evaluate("el => el.click()")
-
-
 def test_workspace_chain_create_journey(
     page,
     base_url: str,
@@ -81,7 +74,7 @@ def test_workspace_chain_create_journey(
         expect(modal).to_be_visible(timeout=5_000)
         modal.locator("input.input.mono").first.fill(provider_id)
         modal.locator("[data-testid='ws-provider-path']").fill(f"/tmp/{provider_id}")
-        _click_via_js(modal.get_by_role("button", name="Create").first)
+        modal.get_by_role("button", name="Create").first.click()
         expect(modal).not_to_be_visible(timeout=10_000)
         page.wait_for_url(
             f"**/console/#/workspaces/providers/{provider_id}**",
@@ -112,7 +105,7 @@ def test_workspace_chain_create_journey(
 
         modal.locator("input.input.mono").first.fill(template_id)
         modal.locator("[data-testid='ws-template-description']").fill("chain test template")
-        _click_via_js(modal.get_by_role("button", name="Create").first)
+        modal.get_by_role("button", name="Create").first.click()
         expect(modal).not_to_be_visible(timeout=10_000)
         page.wait_for_url(
             f"**/console/#/workspaces/templates/{template_id}**",
@@ -145,7 +138,7 @@ def test_workspace_chain_create_journey(
                 break
             page.wait_for_timeout(500)
         template_select.select_option(template_id)
-        _click_via_js(modal.get_by_role("button", name="Create").first)
+        modal.get_by_role("button", name="Create").first.click()
 
         # Modal closes; URL navigates to the workspace detail page.
         expect(modal).not_to_be_visible(timeout=15_000)

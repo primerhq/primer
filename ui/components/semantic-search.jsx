@@ -340,20 +340,14 @@ function SSPCreateModal({ onClose, pushToast }) {
     <div className="modal-overlay" onClick={onClose}>
       <div
         className="modal"
-        style={{
-          width: 540,
-          maxWidth: "calc(100vw - 40px)",
-          maxHeight: "calc(100vh - 40px)",
-          display: "flex",
-          flexDirection: "column",
-        }}
+        style={{ width: 540 }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-h">
           <span className="title">New Semantic Search provider</span>
           <button className="close" onClick={onClose}><Icon name="x" size={14} /></button>
         </div>
-        <div className="modal-b" style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
+        <div className="modal-b">
           <FieldRow label="id" hint="must be unique" err={fieldErrors.id}>
             <input
               className="input mono"

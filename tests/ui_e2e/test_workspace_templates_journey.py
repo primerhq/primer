@@ -85,10 +85,7 @@ def test_workspace_template_create_edit_delete_journey(
 
         submit = modal.get_by_role("button", name="Create").first
         expect(submit).to_be_enabled()
-        # The template modal is tall (many fields). The footer is outside
-        # the viewport because the fixed overlay cannot be scrolled by the
-        # page — use JS dispatch to reach the button reliably.
-        submit.evaluate("el => el.click()")
+        submit.click()
 
         expect(modal).not_to_be_visible(timeout=10_000)
         page.wait_for_url(
@@ -110,7 +107,7 @@ def test_workspace_template_create_edit_delete_journey(
         expect(desc_input).to_have_value("dev workspace v1")
         desc_input.fill("dev workspace v2")
         save_btn = edit_modal.get_by_role("button", name="Save", exact=True).first
-        save_btn.evaluate("el => el.click()")
+        save_btn.click()
 
         expect(edit_modal).not_to_be_visible(timeout=10_000)
         # Detail header reflects the new description (the resource refetches).
