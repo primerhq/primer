@@ -115,6 +115,27 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             files={"messages.jsonl": new_text},
         )
 
+    async def inject_resume_messages(
+        self, messages: list[Message],
+    ) -> None:
+        """Append ``messages`` to the session's history without driving
+        a new turn.
+
+        The worker pool's resume path calls this with the
+        [assistant_message_with_tool_use, tool_result_message] pair
+        rehydrated from ParkedState. After persistence the worker
+        clears the park columns and re-enqueues the session;
+        a subsequent normal claim picks up and runs the next LLM
+        turn against the augmented history.
+
+        Thin wrapper around ``_persist_turn`` so the worker doesn't
+        have to reach into a protected method. No status mutation —
+        the worker drives the session through the scheduler API.
+        """
+        if not messages:
+            return
+        await self._persist_turn(messages)
+
     async def _replace_compacted_head(
         self,
         compacted: list[Message],

@@ -33,7 +33,13 @@ from matrix.model.scheduler import WorkerConfig
 from matrix.model.session import Session, SessionStatus
 from matrix.model.yield_ import YieldToWorker
 from matrix.worker.turn import _CancelScope, compute_backoff
-from matrix.worker.yield_runtime import _dispatch_to_channels
+from matrix.worker.yield_resume_registry import get_resume_hook
+from matrix.worker.yield_runtime import (
+    _dispatch_to_channels,
+    _resume_tool_approval,
+    classify_resume_payload,
+    ParkedState,
+)
 
 if TYPE_CHECKING:
     from matrix.agent.approval import ApprovalResolver
@@ -710,6 +716,12 @@ class WorkerPool:
             # user already gave up on; also handles the race where the API
             # set the flag while we were spinning up.
             if session.cancel_requested:
+                # Cancel-during-park (spec §7.3 step 3 / §7.4): if the
+                # row is parked or resumable, NULL the parked columns
+                # before ending so a future inspector doesn't see a
+                # dead park blob on an ENDED row.
+                if session.parked_status is not None:
+                    await self._scheduler.clear_park(sid)
                 await self._scheduler.complete_turn(
                     self._worker_id, sid,
                     expected_turn_no=lease.turn_no,
@@ -727,6 +739,17 @@ class WorkerPool:
                     re_enqueue=False,
                 )
                 outcome = "success"
+                return
+
+            # Yielding-tools resume branch (spec §7.3). If the scheduler
+            # handed us a resumable row, the park's event has fired —
+            # rehydrate parked_state, dispatch the resume hook, persist
+            # the synthesised tool_result into history, clear park
+            # columns, re-enqueue. The continuation LLM call runs on
+            # the NEXT normal claim against the augmented history.
+            if session.parked_status == "resumable":
+                await self._handle_resume(lease, session)
+                outcome = "resumed"
                 return
 
             workspace = await self._load_workspace_for_persist(session.workspace_id)
@@ -950,6 +973,196 @@ class WorkerPool:
                     yielded=yielded,
                 )
             )
+
+    async def _handle_resume(
+        self, lease: Lease, session: Session,
+    ) -> None:
+        """Drive a resumable park to its conclusion (spec §7.3).
+
+        The scheduler claim path admits ``parked_status='resumable'``
+        rows; this branch is the dispatch:
+
+          1. Rehydrate ``ParkedState`` from the blob.
+          2. Classify the resume payload (real event / timeout /
+             cancelled).
+          3. Call the resume hook — ``_resume_tool_approval`` inline
+             for the special ``_approval`` tool name, the registry's
+             ``get_resume_hook`` for everything else.
+          4. Persist [rehydrated_assistant_with_tool_use,
+             synthesised_tool_result] via the executor's
+             ``inject_resume_messages``.
+          5. ``clear_park`` to NULL parked columns.
+          6. ``complete_turn(RUNNING, re_enqueue=True)`` so the next
+             normal claim drives the continuation LLM turn.
+
+        Imports happen lazily inside the function body so this module
+        doesn't pull executor / chat-model deps at startup. Mirrors
+        the pattern used by ``_build_executor`` for consistency.
+
+        Graph-bound sessions don't park in production (spec §10), but
+        defensively: if one arrives here we end the row as ``failed``
+        rather than reach into a path the graph executor doesn't
+        expose.
+        """
+        # Imports are lazy: yield_runtime imports chat models, which
+        # pulls in pydantic etc. Worker pool startup avoids that.
+        import json
+        from matrix.model.chat import Message, ToolResultPart
+
+        sid = session.id
+
+        # Defensive guard: graph-bound sessions don't have an
+        # `inject_resume_messages` surface (graph executor runs to
+        # completion in one turn). Treat this as a programming bug
+        # rather than silently mis-resuming.
+        if session.binding.kind != "agent":
+            logger.error(
+                "resume: non-agent session %s arrived at the resume "
+                "branch with parked_state — clearing park and ending "
+                "as failed (graph sessions are not supposed to park)",
+                sid,
+            )
+            await self._scheduler.clear_park(sid)
+            await self._scheduler.complete_turn(
+                self._worker_id, sid,
+                expected_turn_no=lease.turn_no,
+                new_status=SessionStatus.ENDED,
+                ended_reason="failed",
+                re_enqueue=False,
+            )
+            return
+
+        # ----- Rehydrate ParkedState from the JSONB blob ------------
+        blob = session.parked_state or {}
+        try:
+            parked = ParkedState.from_jsonable(blob)
+        except (KeyError, ValueError, TypeError):
+            logger.exception(
+                "resume: malformed parked_state for session %s — "
+                "clearing park + failing the session",
+                sid,
+            )
+            await self._scheduler.clear_park(sid)
+            await self._scheduler.complete_turn(
+                self._worker_id, sid,
+                expected_turn_no=lease.turn_no,
+                new_status=SessionStatus.ENDED,
+                ended_reason="failed",
+                re_enqueue=False,
+            )
+            return
+
+        if session.parked_at is None:
+            # Shouldn't happen — parked_status==resumable but no
+            # parked_at means the park-write was malformed. Fail
+            # closed for the same reason as the rehydrate branch.
+            logger.error(
+                "resume: session %s has parked_status=resumable but "
+                "parked_at=None — failing the session",
+                sid,
+            )
+            await self._scheduler.clear_park(sid)
+            await self._scheduler.complete_turn(
+                self._worker_id, sid,
+                expected_turn_no=lease.turn_no,
+                new_status=SessionStatus.ENDED,
+                ended_reason="failed",
+                re_enqueue=False,
+            )
+            return
+
+        resume_payload = classify_resume_payload(
+            parked, parked_at=session.parked_at,
+        )
+
+        # ----- Build the agent executor + tool_manager --------------
+        workspace = await self._load_workspace_for_persist(
+            session.workspace_id,
+        )
+        # _build_agent_executor returns a _TurnDriver wrapping a
+        # WorkspaceAgentExecutor. The resume path needs the inner
+        # executor to call inject_resume_messages + (for _approval)
+        # the inner _tool_manager to re-dispatch with bypass_approval.
+        executor_or_driver = await self._build_agent_executor(
+            session, workspace,
+        )
+        # Driver wraps executor as `_executor`; the test-fakes pass
+        # the executor through directly. Tolerate both.
+        executor = getattr(executor_or_driver, "_executor", executor_or_driver)
+        tool_manager = getattr(executor, "_tool_manager", None)
+
+        tool_name = parked.yielded.tool_name
+
+        # ----- Dispatch the resume hook -----------------------------
+        if tool_name == "_approval":
+            # The approval gate's resume needs a live ToolExecutionManager
+            # to re-dispatch the original call with bypass_approval=True
+            # on the approved path. Falls through to synthetic
+            # rejection on YieldTimeout / YieldCancelled / malformed.
+            tool_result_part = await _resume_tool_approval(
+                blob=blob,
+                payload=resume_payload.payload,
+                tool_manager=tool_manager,
+            )
+        else:
+            # Generic resume hook from the registry. Hook may be
+            # sync (current convention for sleep/ask_user/watch_files)
+            # or async — await if awaitable.
+            try:
+                hook = get_resume_hook(tool_name)
+            except Exception:  # ConfigError on unknown tool
+                logger.exception(
+                    "resume: no hook registered for tool %r on "
+                    "session %s — failing",
+                    tool_name, sid,
+                )
+                await self._scheduler.clear_park(sid)
+                await self._scheduler.complete_turn(
+                    self._worker_id, sid,
+                    expected_turn_no=lease.turn_no,
+                    new_status=SessionStatus.ENDED,
+                    ended_reason="failed",
+                    re_enqueue=False,
+                )
+                return
+            hook_result = hook(
+                parked.yielded.resume_metadata,
+                resume_payload.payload,
+            )
+            if asyncio.iscoroutine(hook_result):
+                hook_result = await hook_result
+            # ToolCallResult -> ToolResultPart (line-for-line per
+            # matrix/model/chat.py:256's documented recipe).
+            tool_result_part = ToolResultPart(
+                id=parked.tool_call_id or "unknown",
+                output=hook_result.output,
+                error=hook_result.is_error,
+            )
+
+        # ----- Persist the [assistant_tool_use, tool_result] pair ----
+        # The assistant message that emitted the tool_use lives in
+        # parked_state.llm_messages (stamped by the executor at park
+        # time — see matrix/agent/base.py). Rehydrate as typed
+        # Messages, then build the matching tool-role message.
+        rehydrated_assistant = [
+            Message.model_validate(m) for m in parked.llm_messages
+        ]
+        tool_result_msg = Message(
+            role="tool",
+            parts=[tool_result_part],
+        )
+        await executor.inject_resume_messages(
+            [*rehydrated_assistant, tool_result_msg],
+        )
+
+        # ----- Clear park + re-enqueue ------------------------------
+        await self._scheduler.clear_park(sid)
+        await self._scheduler.complete_turn(
+            self._worker_id, sid,
+            expected_turn_no=lease.turn_no,
+            new_status=SessionStatus.RUNNING,
+            re_enqueue=True,
+        )
 
     async def _handle_cancel(
         self, lease: Lease, session: Session,
