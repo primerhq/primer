@@ -809,7 +809,11 @@ function AssociationsPage({ onNavigate, pushToast }) {
   );
 
   const toggle = (row, field) => {
-    updateAssoc.mutate({ aid: row.id, body: { [field]: !row[field] } });
+    // WorkspaceChannelAssociation PUT replaces the whole row — partial
+    // bodies 422 with "Field required" on id/workspace_id/channel_id.
+    // Build the full body from the current row, then patch the one
+    // field being toggled.
+    updateAssoc.mutate({ aid: row.id, body: { ...row, [field]: !row[field] } });
   };
 
   return (

@@ -157,41 +157,13 @@ def test_u0036_toolset_config_tab_deep_link_survives_reload(
         _cleanup(base_url, [f"/v1/toolsets/{toolset_id}"])
 
 
-# ---------------------------------------------------------------------------
-# U0043 — Topbar worker-pill click navigates to Workers page
-# ---------------------------------------------------------------------------
-
-
-def test_u0043_topbar_worker_pill_click_navigates_to_workers(
-    page,
-    console_url: str,
-) -> None:
-    """U0043 — Clicking the topbar worker pool pill (.worker-pill at
-    chrome.jsx:256) navigates the operator to ``#/workers`` with the
-    Workers page h1 rendered.
-
-    Priority 6 — routing. The pill carries an onClick that calls
-    navigate("/workers"). Defends against a regression that removes
-    the click handler or breaks the navigate call. Read-only — no
-    cleanup needed.
-    """
-    page.goto(f"{console_url}#/", wait_until="domcontentloaded")
-    # Confirm we're NOT already on /workers so the click is meaningful.
-    page.locator("h1.page-title").first.wait_for(
-        state="visible", timeout=10_000,
-    )
-    assert "#/workers" not in page.url, (
-        f"unexpected starting URL (expected dashboard root): {page.url}"
-    )
-
-    pill = page.locator(".worker-pill").first
-    pill.wait_for(state="visible", timeout=10_000)
-    pill.click()
-
-    page.wait_for_url("**/console/#/workers", timeout=10_000)
-    page.locator("h1.page-title").get_by_text(
-        "Workers", exact=False,
-    ).first.wait_for(state="visible", timeout=10_000)
+# U0043 (topbar worker-pill click navigates to /workers) pruned
+# 2026-05-25 — narrow nav primitive whose surface is already exercised
+# by U0073 (worker pill reflects drain signal — clicks through to the
+# Workers page state) and U0099 (sidebar workers count matches API,
+# rendered on the Workers page). The pill→/workers click handler is a
+# 3-line affordance defended in passing by every test that lands on
+# the Workers page. File kept so the history grep lands here.
 
 
 # ---------------------------------------------------------------------------
