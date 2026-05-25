@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, relativeTime, fmtDate */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, ApprovalBanner, relativeTime, fmtDate */
 
 const SESSION_TERMINAL = new Set(["ended", "completed", "failed", "cancelled"]);
 
@@ -176,6 +176,7 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
 
       {/* Yielding-tools surfaces. Each polls /ask_user/pending (404 = nothing). */}
       <AskUserPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
+      <ApprovalBannerPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
       {wid && (
         <WatchFilesPanel sid={sid} wid={wid} session={session} pushToast={pushToast} />
       )}
@@ -802,6 +803,29 @@ function CancelYieldBtn({ sid, wid, tcid, pushToast }) {
   );
 }
 
+// ApprovalBannerPanel — polls GET /v1/sessions/{sid}/tool_approval/pending
+// (200 = render banner; 404 = render nothing) and renders ApprovalBanner
+// from approvals.jsx. The banner owns the respond mutation; this wrapper
+// owns the poll so session-detail can keep wiring concerns local.
+function ApprovalBannerPanel({ sid, sessionStatus, pushToast }) {
+  const { useResource, apiFetch } = window.matrixApi;
+  const isTerminal = SESSION_TERMINAL.has(sessionStatus);
+  const pending = useResource(
+    `tool-approval:session:${sid}`,
+    (signal) => apiFetch("GET", `/sessions/${encodeURIComponent(sid)}/tool_approval/pending`, null, { signal }),
+    {
+      pollMs: isTerminal ? 0 : 2000,
+      deps: [sid, sessionStatus],
+    },
+  );
+  if (pending.error?.status === 404) return null;
+  if (!pending.data) return null;
+  return (
+    <ApprovalBanner data={pending.data} scope="sessions" id={sid} pushToast={pushToast} />
+  );
+}
+
 window.AskUserPanel = AskUserPanel;
 window.WatchFilesPanel = WatchFilesPanel;
 window.SleepPanel = SleepPanel;
+window.ApprovalBannerPanel = ApprovalBannerPanel;
