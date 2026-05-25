@@ -13,9 +13,10 @@ from matrix.model.provider import (
 class VectorStoreProviderFactory:
     """Construct a :class:`VectorStoreProvider` from a discriminated config.
 
-    Two backends are supported today: pgvector and pgvectorscale. Both
-    share the per-collection HNSW table layout; pgvectorscale also
-    installs the ``vectorscale`` extension. Adding a new backend
+    Three backends are supported: pgvector, pgvectorscale, and lance
+    (LanceDB embedded). The first two share the per-collection HNSW
+    table layout on Postgres; lance persists every collection as a
+    Lance dataset under a single directory. Adding a new backend
     means adding a new :class:`VectorStoreProviderType` enum value,
     a new ``*Config`` Pydantic model, and a new branch here.
     """
@@ -37,6 +38,10 @@ class VectorStoreProviderFactory:
             )
 
             return PgVectorScaleStoreProvider(config.config)  # type: ignore[arg-type]
+        if config.provider == VectorStoreProviderType.LANCE:
+            from matrix.vector.lance import LanceVectorStoreProvider
+
+            return LanceVectorStoreProvider(config.config)  # type: ignore[arg-type]
         raise ConfigError(
             f"unknown VectorStoreProviderType {config.provider!r}"
         )

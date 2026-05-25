@@ -138,3 +138,28 @@ async def test_registry_aclose_continues_after_exception():
     # Must not raise; both must have aclose() called.
     await reg.aclose()
     assert all(i.closed for i in instances)
+
+
+# ---------- Factory dispatch to lance backend ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_default_factory_dispatches_lance(tmp_path):
+    """Verify SemanticSearchRegistry._default_factory dispatches a
+    lance-backed row to LanceVectorStoreProvider."""
+    pytest.importorskip("lancedb")  # type: ignore[arg-type]
+    from matrix.api.registries.semantic_search_registry import _default_factory
+    from matrix.model.provider import (
+        LanceConfig,
+        SemanticSearchProvider,
+        SemanticSearchProviderType,
+    )
+    from matrix.vector.lance import LanceVectorStoreProvider
+
+    row = SemanticSearchProvider(
+        id="ssp-lance",
+        provider=SemanticSearchProviderType.LANCE,
+        config=LanceConfig(path=tmp_path / "lance"),
+    )
+    instance = _default_factory(row)
+    assert isinstance(instance, LanceVectorStoreProvider)
