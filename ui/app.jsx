@@ -857,7 +857,7 @@ function App() {
         </div>
       </>
     );
-    pageBody = <div className="panel"><div className="panel-body"><span className="muted">Coming soon (Task 3)…</span></div></div>;
+    pageBody = <window.WorkspaceTemplatesPage pushToast={pushToast} />;
   } else if (page === "workspace-template-detail" && params.id) {
     pageHeader = (
       <>
@@ -870,7 +870,7 @@ function App() {
         <div className="page-actions"><Btn icon="chevron-left" kind="ghost" onClick={() => navigate("workspace-templates")}>Back</Btn></div>
       </>
     );
-    pageBody = <div className="panel"><div className="panel-body"><span className="muted">Coming soon (Task 3)…</span></div></div>;
+    pageBody = <window.WorkspaceTemplateDetail templateId={params.id} pushToast={pushToast} />;
   } else if (page === "health") {
     pageHeader = (
       <>
