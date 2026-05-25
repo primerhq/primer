@@ -779,7 +779,7 @@ function App() {
           </div>
           <h1 className="page-title">Workspaces</h1>
           <div className="page-sub tabular">
-            {window.MOCK.WORKSPACES.length} workspaces · <span className="mono" style={{ color: "var(--blue)" }}>{sessions.filter((s) => !["ended","failed","cancelled"].includes(s.status)).length}</span> active sessions
+            Materialised workspaces with their bound sessions
           </div>
         </div>
       </>
@@ -801,8 +801,7 @@ function App() {
           </div>
           <h1 className="page-title mono">{currentWorkspaceId}</h1>
           <div className="page-sub">
-            <span className="mono">{(window.MOCK.WORKSPACE_DETAILS[currentWorkspaceId] || {}).template}</span> ·
-            <span className="muted"> created {relativeTime(((window.MOCK.WORKSPACE_DETAILS[currentWorkspaceId] || {}).created_at_ago || 0) / 1000)}</span>
+            <span className="muted">Materialised workspace</span>
           </div>
         </div>
         <div className="page-actions">
