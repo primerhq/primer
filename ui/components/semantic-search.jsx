@@ -79,14 +79,14 @@ function SSPListPage({ onOpen, pushToast }) {
   };
 
   // Empty state — show a friendly create prompt when there are no providers.
+  // Matches the visual contract used by the other provider pages
+  // (LLM / Embedding / Cross-Encoder): the empty-state card on its own,
+  // no preamble Banner. Operators get the call-to-action below; the
+  // implication that downstream features need a provider is conveyed by
+  // the empty-state copy rather than a separate warning.
   if (!list.loading && items.length === 0 && !list.error) {
     return (
       <>
-        <Banner
-          kind="warning"
-          title="No Semantic Search providers configured"
-          detail="Collections and the Internal Collections subsystem can't be created until you add one."
-        />
         <div className="panel">
           <div className="empty">
             <div className="ico-wrap"><Icon name="subsystem" size={22} /></div>
@@ -218,7 +218,12 @@ function SSPCreateModal({ onClose, pushToast }) {
   const { navigate } = useRouter();
 
   const [form, setForm] = React.useState({
-    id: `pg-${Math.random().toString(36).slice(2, 8)}`,
+    // SSP ids are operator-meaningful (referenced by Collection.search_provider_id
+    // and shown in Knowledge bench breadcrumbs); the user must pick one.
+    // A blank default forces the submit guard below to surface the
+    // "value is required" inline error instead of silently submitting a
+    // random opaque id.
+    id: "",
     provider: "pgvector",
     hostname: "",
     port: 5432,
@@ -332,7 +337,13 @@ function SSPCreateModal({ onClose, pushToast }) {
         </div>
         <div className="modal-b" style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
           <FieldRow label="id" hint="must be unique" err={fieldErrors.id}>
-            <input className="input mono" value={form.id} onChange={(e) => update("id", e.target.value)} style={{ width: "100%" }} />
+            <input
+              className="input mono"
+              value={form.id}
+              onChange={(e) => update("id", e.target.value)}
+              placeholder="pg-prod-main"
+              style={{ width: "100%" }}
+            />
           </FieldRow>
           <FieldRow label="backend">
             <select className="select mono" value={form.provider} onChange={(e) => update("provider", e.target.value)} style={{ width: "100%" }}>

@@ -82,6 +82,7 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 \
 ENTRYPOINT ["/usr/local/bin/matrix-entrypoint.sh"]
 
 # Default command. Override at `podman run` time or via compose
-# `command:` if you want a non-worker process (e.g. `matrix api`
-# without --run-worker, or `matrix worker` alone).
-CMD ["matrix", "api", "--config", "/app/config.yaml", "--run-worker"]
+# `command:` if you want a non-worker process (e.g. `matrix api
+# --no-worker` for an API-only node, or `matrix worker` alone). Default
+# is api+worker (single-process).
+CMD ["matrix", "api", "--config", "/app/config.yaml"]

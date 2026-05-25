@@ -1,9 +1,9 @@
 /* global React, Icon, StatusPill, Btn, Sparkline, relativeTime, Banner */
 
-function Dashboard({ sessions, workerStats, subsystemOn, onNavigate, onNewSession }) {
+function Dashboard({ workerStats, subsystemOn, onNavigate, onNewSession }) {
   const { useResource, apiFetch } = window.matrixApi;
 
-  // Tile counts — three lightweight polls (every 5s).
+  // Tile counts — lightweight polls (every 5s).
   const sessionsResource = useResource(
     "dashboard:sessions",
     (signal) => apiFetch("GET", "/sessions?limit=1", null, { signal }),
@@ -19,6 +19,54 @@ function Dashboard({ sessions, workerStats, subsystemOn, onNavigate, onNewSessio
     (signal) => apiFetch("GET", "/workers", null, { signal }),
     { pollMs: 5000 }
   );
+  // Recent sessions table — newest 8 rows, descending by created_at.
+  // Real data; previously read from a mock array that didn't reflect
+  // the actual server state (rows for non-existent sessions).
+  const recentSessionsResource = useResource(
+    "dashboard:recent-sessions",
+    (signal) => apiFetch(
+      "GET", "/sessions?limit=8&order_by=created_at:desc", null, { signal },
+    ),
+    { pollMs: 5000 }
+  );
+  // Running / paused breakdown for the Sessions tile sub-line. Cheap
+  // count probes via /sessions/find with a status predicate.
+  const runningResource = useResource(
+    "dashboard:running",
+    (signal) => apiFetch(
+      "POST",
+      "/sessions/find",
+      {
+        predicate: {
+          kind: "predicate",
+          left: { kind: "field", name: "status" },
+          op: "=",
+          right: { kind: "value", value: "running" },
+        },
+        page: { kind: "offset", offset: 0, length: 1 },
+      },
+      { signal },
+    ),
+    { pollMs: 5000 }
+  );
+  const pausedResource = useResource(
+    "dashboard:paused",
+    (signal) => apiFetch(
+      "POST",
+      "/sessions/find",
+      {
+        predicate: {
+          kind: "predicate",
+          left: { kind: "field", name: "status" },
+          op: "=",
+          right: { kind: "value", value: "paused" },
+        },
+        page: { kind: "offset", offset: 0, length: 1 },
+      },
+      { signal },
+    ),
+    { pollMs: 5000 }
+  );
 
   const sessionsTotal = sessionsResource.data?.total;
   const workspacesTotal = workspacesResource.data?.total;
@@ -26,19 +74,19 @@ function Dashboard({ sessions, workerStats, subsystemOn, onNavigate, onNewSessio
   const workersTotalReal = workersItems.length;
   const workersActiveReal = workersItems.filter((w) => w.status === "active").length;
 
-  // Legacy props still drive the running/paused breakdown + the gauge —
-  // we can derive these from /v1/sessions if needed in a follow-up, but
-  // for Task 2 we keep the live-mocked sessions until session-detail
-  // wiring lands.
-  const runningCount = sessions.filter((s) => s.status === "running").length;
-  const pausedCount = sessions.filter((s) => s.status === "paused").length;
-  const last1h = sessions.filter((s) => Date.now() - s.created_at.getTime() < 3600 * 1000).length;
-  const errorsLast1h = sessions.filter((s) => s.status === "failed" && Date.now() - s.created_at.getTime() < 3600 * 1000).length;
+  const runningCount = runningResource.data?.total ?? 0;
+  const pausedCount = pausedResource.data?.total ?? 0;
+  // No cheap server-side aggregate for "errors in the last hour" yet —
+  // it'd need a created_at-range predicate + status filter. Surface 0
+  // here rather than a fabricated number; the Errors tile clicks
+  // through to /health for the real story.
+  const errorsLast1h = 0;
+  const last1h = 0;
 
-  const utilization = Math.round((workerStats.in_flight / Math.max(1, workerStats.capacity)) * 100);
-  const recentSessions = [...sessions]
-    .sort((a, b) => b.created_at - a.created_at)
-    .slice(0, 8);
+  const utilization = workerStats.capacity > 0
+    ? Math.round((workerStats.in_flight / workerStats.capacity) * 100)
+    : 0;
+  const recentSessions = recentSessionsResource.data?.items ?? [];
 
   // Tick clock for live gauge animation
   const [, force] = React.useState(0);
@@ -171,17 +219,40 @@ function Dashboard({ sessions, workerStats, subsystemOn, onNavigate, onNewSessio
               </tr>
             </thead>
             <tbody>
-              {recentSessions.map((s) => (
-                <tr key={s.id} onClick={() => onNavigate("session-detail", s.id)}>
-                  <td><StatusPill status={s.status} parked={s.parked_status === "parked" ? s.parked_state.yielded.tool_name : null} /></td>
-                  <td className="mono">{s.id.slice(0, 20)}<span className="muted">…</span></td>
-                  <td className="mono">{s.binding_kind === "graph" ? (<span style={{ color: "var(--violet)" }}>{s.graph_id}</span>) : s.agent_id}</td>
-                  <td className="mono muted">{s.workspace_id.slice(0, 14)}…</td>
-                  <td className="mono num tabular">{s.turn_count}</td>
-                  <td className="mono muted">{relativeTime((Date.now() - s.created_at.getTime()) / 1000)}</td>
-                  <td style={{ textAlign: "right", paddingRight: 12 }}><Icon name="chevron-right" size={12} className="muted" /></td>
-                </tr>
-              ))}
+              {recentSessions.length === 0 && !recentSessionsResource.loading ? (
+                <tr><td colSpan={7} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+                  No sessions yet — created sessions land here, newest first.
+                </td></tr>
+              ) : recentSessions.map((s) => {
+                const isGraph = (s.binding?.kind || s.binding_kind) === "graph";
+                const boundAgent = s.binding?.agent_id || s.agent_id || "";
+                const boundGraph = s.binding?.graph_id || s.graph_id || "";
+                const parkedTool = s.parked_status === "parked"
+                  ? (s.parked_state?.yielded?.tool_name || null)
+                  : null;
+                const createdAgeSec = s.created_at
+                  ? Math.max(0, (Date.now() - new Date(s.created_at).getTime()) / 1000)
+                  : null;
+                return (
+                  <tr key={s.id} onClick={() => onNavigate("session-detail", s.id)}>
+                    <td><StatusPill status={s.status} parked={parkedTool} /></td>
+                    <td className="mono">{(s.id || "").length > 22 ? (s.id.slice(0, 22) + "…") : s.id}</td>
+                    <td className="mono">
+                      {isGraph
+                        ? <span style={{ color: "var(--violet)" }}>{boundGraph || "—"}</span>
+                        : (boundAgent || <span className="muted">—</span>)}
+                    </td>
+                    <td className="mono muted">
+                      {s.workspace_id ? (s.workspace_id.length > 16 ? (s.workspace_id.slice(0, 14) + "…") : s.workspace_id) : "—"}
+                    </td>
+                    <td className="mono num tabular">{s.turn_no ?? 0}</td>
+                    <td className="mono muted">
+                      {createdAgeSec != null ? relativeTime(createdAgeSec) : "—"}
+                    </td>
+                    <td style={{ textAlign: "right", paddingRight: 12 }}><Icon name="chevron-right" size={12} className="muted" /></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

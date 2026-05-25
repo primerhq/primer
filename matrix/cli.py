@@ -1,4 +1,4 @@
-"""Typer CLI: ``matrix api [--run-worker]`` and ``matrix worker``.
+"""Typer CLI: ``matrix api [--no-worker]`` and ``matrix worker``.
 
 Both entrypoints load (or auto-discover) a YAML config file that
 populates :class:`matrix.api.config.AppConfig`. The CLI is the
@@ -7,12 +7,13 @@ touches it.
 
 Layout
 ------
-* ``matrix api`` — serve the HTTP API. With no flags, auto-loads
-  ``~/.matrix/config.yaml`` if present, otherwise runs with
-  built-in defaults (embedded SQLite at
+* ``matrix api`` — serve the HTTP API AND start an in-process worker
+  pool. With no flags, auto-loads ``~/.matrix/config.yaml`` if
+  present, otherwise runs with built-in defaults (embedded SQLite at
   ``~/.matrix/db/data.sqlite``).
 * ``matrix api --config path/to/config.yaml`` — explicit config.
-* ``matrix api --run-worker`` — also start the in-process worker pool.
+* ``matrix api --no-worker`` — serve the API only; the worker pool is
+  expected to run in a separate ``matrix worker`` process.
 * ``matrix worker`` — run the worker pool. A minimal HTTP surface
   (``/v1/health`` and ``/v1/workers``) is still served for
   liveness/readiness probes.
@@ -139,13 +140,17 @@ def run_api(
         ),
         dir_okay=False, readable=True,
     ),
-    run_worker: bool = typer.Option(
-        False, "--run-worker",
-        help="Also start the in-process worker pool (dev / single-process).",
+    no_worker: bool = typer.Option(
+        False, "--no-worker",
+        help=(
+            "Serve the API only; do NOT start the in-process worker pool. "
+            "Default is api+worker (single-process) — pass this when the "
+            "worker is running in a separate `matrix worker` process."
+        ),
     ),
 ) -> None:
-    """Serve the HTTP API."""
-    mode = RuntimeMode.API_PLUS_WORKER if run_worker else RuntimeMode.API
+    """Serve the HTTP API (and an in-process worker by default)."""
+    mode = RuntimeMode.API if no_worker else RuntimeMode.API_PLUS_WORKER
     cfg = _load_config(config, mode)
     _apply_logging(cfg)
     _run_uvicorn(cfg)

@@ -192,33 +192,36 @@ class TestLoadConfig:
 
 
 # ============================================================================
-# `matrix api` — with and without --run-worker
+# `matrix api` — with and without --no-worker
 # ============================================================================
 
 
 class TestApiCommand:
-    def test_api_default_forces_runtime_mode_api(
-        self, runner: CliRunner, base_config_file: Path, captured: dict,
-    ):
-        result = runner.invoke(
-            cli_mod.app, ["api", "--config", str(base_config_file)],
-        )
-        assert result.exit_code == 0, result.output
-        assert captured["config"].runtime_mode == RuntimeMode.API
-
-    def test_api_run_worker_flag_forces_api_plus_worker(
+    def test_api_default_forces_runtime_mode_api_plus_worker(
         self, runner: CliRunner, tmp_path: Path, captured: dict,
     ):
-        # API_PLUS_WORKER requires a scheduler — use in_memory for the
-        # test (no live Postgres needed).
+        # Default (no flag) starts an in-process worker pool alongside the
+        # API — single-process is the friendly default. API_PLUS_WORKER
+        # requires a scheduler config; the lifespan auto-defaults to
+        # in_memory when none is set, but tests bypass lifespan, so we
+        # pass an explicit one to AppConfig.
         cfg_path = tmp_path / "config.yaml"
         cfg_path.write_text(_BASE_YAML_WITH_SCHEDULER, encoding="utf-8")
         result = runner.invoke(
-            cli_mod.app,
-            ["api", "--config", str(cfg_path), "--run-worker"],
+            cli_mod.app, ["api", "--config", str(cfg_path)],
         )
         assert result.exit_code == 0, result.output
         assert captured["config"].runtime_mode == RuntimeMode.API_PLUS_WORKER
+
+    def test_api_no_worker_flag_forces_runtime_mode_api(
+        self, runner: CliRunner, base_config_file: Path, captured: dict,
+    ):
+        result = runner.invoke(
+            cli_mod.app,
+            ["api", "--config", str(base_config_file), "--no-worker"],
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["config"].runtime_mode == RuntimeMode.API
 
     def test_api_no_config_arg_uses_defaults(
         self,
@@ -227,12 +230,14 @@ class TestApiCommand:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        # No ~/.matrix/config.yaml — should succeed with all-defaults AppConfig.
+        # No ~/.matrix/config.yaml — should succeed with all-defaults
+        # AppConfig. Default runtime_mode is now api+worker; the lifespan
+        # will auto-resolve the scheduler to in_memory at boot.
         monkeypatch.setenv("HOME", str(tmp_path))
         result = runner.invoke(cli_mod.app, ["api"])
         assert result.exit_code == 0, result.output
         assert captured["config"].db is None
-        assert captured["config"].runtime_mode == RuntimeMode.API
+        assert captured["config"].runtime_mode == RuntimeMode.API_PLUS_WORKER
 
 
 # ============================================================================

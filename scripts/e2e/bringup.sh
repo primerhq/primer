@@ -10,7 +10,7 @@
 #   1. $RUNTIME compose up -d, wait for postgres healthcheck
 #   2. drop+recreate the matrix_e2e database with the pgvector extension
 #   3. render tests/.e2e/config.yaml
-#   4. launch `uv run matrix api --run-worker` in the background
+#   4. launch `uv run matrix api` in the background (worker runs by default)
 #   5. poll /v1/health until 200 (30 s timeout)
 #
 # Exit code 0 means the server is up and ready for tests.
@@ -204,7 +204,7 @@ fi
 echo "[bringup] launching matrix on port $PORT..." >&2
 : > "$STDOUT_FILE"
 (
-    uv run matrix api --config "$CONFIG" --run-worker \
+    uv run matrix api --config "$CONFIG" \
         > "$STDOUT_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     disown

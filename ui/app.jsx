@@ -197,12 +197,19 @@ function App() {
     { pollMs: 5000 }
   );
 
-  // Semantic Search providers — controlled by the ssmState tweak
-  const ssps = React.useMemo(() => {
-    if (tweaks.ssmState === "none") return [];
-    if (tweaks.ssmState === "many") return window.MOCK.SSP_PROVIDERS;
-    return window.MOCK.SSP_PROVIDERS.slice(0, 1);
-  }, [tweaks.ssmState]);
+  // Semantic Search providers — sidebar count + downstream consumers
+  // (Dashboard, knowledge pages) read this. Source: live GET /v1/ssp.
+  // Sidebar badges hide when the value is undefined (chrome.jsx:98) so
+  // the badge only appears once the first response lands.
+  const realSsps = window.matrixApi.useResource(
+    "sidebar:ssps",
+    (signal) => window.matrixApi.apiFetch("GET", "/ssp?limit=200", null, { signal }),
+    { pollMs: 5000 }
+  );
+  const ssps = React.useMemo(
+    () => (Array.isArray(realSsps.data?.items) ? realSsps.data.items : []),
+    [realSsps.data]
+  );
 
   const [tick, setTick] = React.useState(0);
 
@@ -228,37 +235,29 @@ function App() {
     return () => clearInterval(id);
   }, []);
 
-  // Tweak: simulate "worker pool at capacity" state.
-  // Prefer real data from /v1/workers + /v1/health when present;
-  // fall back to mock values so the Tweaks demo states still work.
+  // Worker pool stats — source of truth for the topbar pill, dashboard
+  // worker tile, and the workers-page subhead. Reads only the real
+  // /v1/workers + /v1/health endpoints; no mock fallback or demoState
+  // override (those leaked fake numbers when the app was started
+  // without an in-process worker pool, e.g. `matrix api --no-worker`).
   const workerStats = React.useMemo(() => {
-    const realItems = realWorkers.data?.items;
-    const useReal = Array.isArray(realItems);
-    const totalCap = useReal
-      ? (typeof realHealth.data?.worker_pool?.capacity === "number"
-          ? realHealth.data.worker_pool.capacity
-          : realItems.reduce((a, w) => a + (w.capacity || 0), 0))
-      : workers.reduce((a, w) => a + w.capacity, 0);
-    const active = useReal
-      ? realItems.filter((w) => w.status === "active").length
-      : workers.filter((w) => w.status === "active").length;
-    const totalWorkers = useReal ? realItems.length : workers.length;
-    const inFlight = useReal
-      ? (typeof realHealth.data?.worker_pool?.in_flight === "number"
-          ? realHealth.data.worker_pool.in_flight
-          : 0)
-      : workers.reduce((a, w) => a + w.in_flight, 0);
-    const overrideCap = tweaks.demoState === "capacity" ? 4 : totalCap;
-    const overrideActive = tweaks.demoState === "no-workers" ? 0 : active;
-    const overrideInFlight = tweaks.demoState === "capacity" ? Math.min(overrideCap, 4) : inFlight;
+    const realItems = Array.isArray(realWorkers.data?.items)
+      ? realWorkers.data.items
+      : [];
+    const wpHealth = realHealth.data?.worker_pool || {};
+    const capacity = typeof wpHealth.capacity === "number"
+      ? wpHealth.capacity
+      : realItems.reduce((a, w) => a + (w.capacity || 0), 0);
+    const inFlight = typeof wpHealth.in_flight === "number"
+      ? wpHealth.in_flight
+      : 0;
     return {
-      active: overrideActive,
-      total: totalWorkers,
-      capacity: overrideCap,
-      in_flight: overrideInFlight,
-      history: Array.from({ length: 30 }, (_, i) => Math.sin(i / 4) * 2 + 3 + Math.random()),
+      active: realItems.filter((w) => w.status === "active").length,
+      total: realItems.length,
+      capacity,
+      in_flight: inFlight,
     };
-  }, [sessions, workers, tweaks.demoState, realWorkers.data, realHealth.data]);
+  }, [realWorkers.data, realHealth.data]);
 
   // Counts dict consumed by <Sidebar>. Each value is rendered as a
   // small badge next to its nav row when defined; undefined values hide
@@ -862,7 +861,6 @@ function App() {
     );
     pageBody = (
       <Dashboard
-        sessions={sessions}
         workerStats={workerStats}
         subsystemOn={subsystemOn}
         onNavigate={navigate}
