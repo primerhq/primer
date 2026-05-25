@@ -84,7 +84,23 @@ function SSPListPage({ onOpen, pushToast }) {
   // no preamble Banner. Operators get the call-to-action below; the
   // implication that downstream features need a provider is conveyed by
   // the empty-state copy rather than a separate warning.
-  if (!list.loading && items.length === 0 && !list.error) {
+  //
+  // Important: both the empty-state and populated branches MUST render
+  // the modal at the same React tree position so that polled refetches
+  // (which briefly flip ``list.loading`` true→false) don't unmount and
+  // re-mount the modal, wiping its internal form state. We achieve
+  // that by computing the body once and always rendering ``modal`` as
+  // a single fragment sibling at the bottom of the return.
+  const isEmpty = !list.loading && items.length === 0 && !list.error;
+
+  const modal = createOpen ? (
+    <SSPCreateModal
+      onClose={() => setCreateOpen(false)}
+      pushToast={pushToast}
+    />
+  ) : null;
+
+  if (isEmpty) {
     return (
       <>
         <div className="panel">
@@ -100,102 +116,93 @@ function SSPListPage({ onOpen, pushToast }) {
             </div>
           </div>
         </div>
-        {createOpen && (
-          <SSPCreateModal
-            onClose={() => setCreateOpen(false)}
-            pushToast={pushToast}
-          />
-        )}
+        {modal}
       </>
     );
   }
 
   return (
-    <div className="col" style={{ gap: 14 }}>
-      <div className="filter-bar">
-        <div className="input-icon">
-          <Icon name="search" size={13} className="icon" />
-          <input
-            className="input"
-            placeholder="Filter providers…"
-            value={textQuery}
-            onChange={(e) => setTextQuery(e.target.value)}
-            onFocus={() => { filterFocused.current = true; }}
-            onBlur={() => { filterFocused.current = false; }}
+    <>
+      <div className="col" style={{ gap: 14 }}>
+        <div className="filter-bar">
+          <div className="input-icon">
+            <Icon name="search" size={13} className="icon" />
+            <input
+              className="input"
+              placeholder="Filter providers…"
+              value={textQuery}
+              onChange={(e) => setTextQuery(e.target.value)}
+              onFocus={() => { filterFocused.current = true; }}
+              onBlur={() => { filterFocused.current = false; }}
+            />
+          </div>
+          <div className="sep-v" />
+          <select
+            className="select"
+            value={backendFilter}
+            onChange={(e) => setBackendFilter(e.target.value)}
+          >
+            <option value="">all backends</option>
+            <option value="pgvector">pgvector</option>
+            <option value="pgvectorscale">pgvectorscale</option>
+          </select>
+          <span className="muted text-sm tabular" style={{ marginLeft: "auto" }}>
+            <span className="mono" style={{ color: "var(--green)" }}>● live</span> · /v1/ssp every 5s
+          </span>
+          <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New provider</Btn>
+        </div>
+
+        {list.error && items.length === 0 ? (
+          <Banner
+            kind="error"
+            title={list.error.title || "Couldn't load providers"}
+            detail={list.error.detail || list.error.message}
+            actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
           />
-        </div>
-        <div className="sep-v" />
-        <select
-          className="select"
-          value={backendFilter}
-          onChange={(e) => setBackendFilter(e.target.value)}
-        >
-          <option value="">all backends</option>
-          <option value="pgvector">pgvector</option>
-          <option value="pgvectorscale">pgvectorscale</option>
-        </select>
-        <span className="muted text-sm tabular" style={{ marginLeft: "auto" }}>
-          <span className="mono" style={{ color: "var(--green)" }}>● live</span> · /v1/ssp every 5s
-        </span>
-        <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New provider</Btn>
-      </div>
-
-      {list.error && items.length === 0 ? (
-        <Banner
-          kind="error"
-          title={list.error.title || "Couldn't load providers"}
-          detail={list.error.detail || list.error.message}
-          actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
-        />
-      ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Backend</th>
-                <th>Host</th>
-                <th>Schema</th>
-                <th>Database</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 ? (
-                <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
-                  No providers match the current filter{textQuery ? ` "${textQuery}"` : ""}.
-                  {" · "}<a
-                    onClick={() => { setTextQuery(""); setBackendFilter(""); }}
-                    style={{ cursor: "pointer", color: "var(--accent)" }}
-                  >Clear filters</a>
-                </td></tr>
-              ) : filtered.map((p) => (
-                <tr key={p.id} onClick={() => openRow(p.id)} style={{ cursor: "pointer" }}>
-                  <td className="mono">{p.id}</td>
-                  <td><BackendBadge kind={p.provider} /></td>
-                  <td className="mono muted text-sm">
-                    {p.config?.hostname || "—"}
-                    {p.config?.port ? <span style={{ color: "var(--text-4)" }}>:{p.config.port}</span> : null}
-                  </td>
-                  <td className="mono muted text-sm">{p.config?.db_schema || "public"}</td>
-                  <td className="mono muted text-sm">{p.config?.database || "—"}</td>
-                  <td style={{ textAlign: "right", paddingRight: 12 }}>
-                    <Icon name="chevron-right" size={12} className="muted" />
-                  </td>
+        ) : (
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Backend</th>
+                  <th>Host</th>
+                  <th>Schema</th>
+                  <th>Database</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {createOpen && (
-        <SSPCreateModal
-          onClose={() => setCreateOpen(false)}
-          pushToast={pushToast}
-        />
-      )}
-    </div>
+              </thead>
+              <tbody>
+                {filtered.length === 0 ? (
+                  <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+                    No providers match the current filter{textQuery ? ` "${textQuery}"` : ""}.
+                    {" · "}<a
+                      onClick={() => { setTextQuery(""); setBackendFilter(""); }}
+                      style={{ cursor: "pointer", color: "var(--accent)" }}
+                    >Clear filters</a>
+                  </td></tr>
+                ) : filtered.map((p) => (
+                  <tr key={p.id} onClick={() => openRow(p.id)} style={{ cursor: "pointer" }}>
+                    <td className="mono">{p.id}</td>
+                    <td><BackendBadge kind={p.provider} /></td>
+                    <td className="mono muted text-sm">
+                      {p.config?.hostname || "—"}
+                      {p.config?.port ? <span style={{ color: "var(--text-4)" }}>:{p.config.port}</span> : null}
+                    </td>
+                    <td className="mono muted text-sm">{p.config?.db_schema || "public"}</td>
+                    <td className="mono muted text-sm">{p.config?.database || "—"}</td>
+                    <td style={{ textAlign: "right", paddingRight: 12 }}>
+                      <Icon name="chevron-right" size={12} className="muted" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      {modal}
+    </>
   );
 }
 
