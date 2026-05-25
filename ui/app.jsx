@@ -64,6 +64,7 @@ function App() {
     }
     if (root === "toolsets") {
       if (path.startsWith("/toolsets/builtin")) return "toolsets-builtin";
+      if (params.id) return "toolset-detail";
       return "toolsets-user";
     }
     if (root === "providers") {
@@ -86,6 +87,7 @@ function App() {
   const currentSspId = page === "ssp-detail" ? params.id : null;
   const currentChatId = page === "chat-detail" ? params.id : null;
   const currentChannelProviderId = page === "channel-provider-detail" ? params.id : null;
+  const currentToolsetId = page === "toolset-detail" ? params.id : null;
   const docsFilterCollection = query.collection || "";
   // Reflect collection filter in the URL — Documents page reads it back via query.
   const setDocsFilterCollection = (cid) => {
@@ -249,6 +251,7 @@ function App() {
       "collection-search": (e) => e ? `/knowledge/search?collection=${encodeURIComponent(e)}` : "/knowledge/search",
       "toolsets-user": "/toolsets",
       "toolsets-builtin": "/toolsets/builtin",
+      "toolset-detail": (e) => `/toolsets/${e}`,
       llm: "/providers/llm",
       embedding: "/providers/embedding",
       rerank: "/providers/cross_encoder",
@@ -523,6 +526,28 @@ function App() {
       </>
     );
     pageBody = <ToolsetsPage kind="builtin" pushToast={pushToast} />;
+  } else if (page === "toolset-detail" && currentToolsetId) {
+    pageHeader = (
+      <>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="crumb">
+            <a onClick={() => navigate("toolsets-user")}>Toolsets</a>
+            <span className="sep">/</span>
+            <span className="mono" style={{ color: "var(--text)" }}>{currentToolsetId}</span>
+          </div>
+          <h1 className="page-title mono">{currentToolsetId}</h1>
+        </div>
+        <div className="page-actions">
+          <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("toolsets-user")}>Back</Btn>
+        </div>
+      </>
+    );
+    pageBody = (
+      <ToolsetDetail
+        toolsetId={currentToolsetId}
+        pushToast={pushToast}
+      />
+    );
   } else if (page === "collections") {
     pageHeader = (
       <>
@@ -853,6 +878,7 @@ function App() {
           : page === "collection-search" ? "collections"
           : page === "chat-detail" ? "chats"
           : page === "channel-provider-detail" ? "channel-providers"
+          : page === "toolset-detail" ? "toolsets-user"
           : page
         }
         onNavigate={navigate}
