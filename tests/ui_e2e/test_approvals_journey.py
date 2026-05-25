@@ -11,9 +11,12 @@ surfaces post-Designer reconciliation:
   detail page (cross-page state coherence — same pending data backs
   both surfaces) → click Approve on the banner → second "Decision sent"
   toast → API GET /v1/sessions/{sid}/tool_approval/pending still 200
-  (worker-pool resume dispatch is unwired per roadmap §7, so the
-  decision is published onto the bus but parked_state is not cleared;
-  the test pins what's observable today and accepts the documented gap).
+  (parked_state survives the respond POST in THIS setup because the
+  asyncpg-injected session has no session_leases row, so
+  mark_resumable's lease UPDATE no-ops and the worker pool never
+  claims the row to drive the resume cycle. Roadmap §7 resume wiring
+  IS landed; the API-loop's T0861 covers the full resume cycle when
+  a lease row is present).
 
 Subsystems exercised in one test:
 
@@ -30,9 +33,12 @@ Subsystems exercised in one test:
      (shared `tool-approval:session:{sid}` cache key).
 
 The asyncpg-based _approval-park injection mirrors
-`tests/e2e/test_tool_approval_pending_respond.py` — the worker pool's
-resume wiring is unwired (roadmap §7), so direct JSONB injection is
-the only way to surface a parked _approval row for a UI-visible test.
+`tests/e2e/test_tool_approval_pending_respond.py`. Direct JSONB
+injection is used because (a) a real LLM-driven park requires LM
+Studio compat work, and (b) the injection here intentionally
+omits the session_leases row so the resume cycle DOESN'T fire —
+the UI-side click flow is what's under test, not the backend
+cycle. T0861 covers the end-to-end resume cycle separately.
 
 Covers backlog item U0109. Pure operator-journey: no LLM, no real
 network beyond localhost. Cleanup via API.
@@ -282,11 +288,16 @@ def test_u0109_approvals_operator_journey(
         (approvals.jsx `disabled={!reason.trim() || respond.loading}`).
       * "Decision sent" toast appears on a successful Reject + Approve.
       * Cross-page: session-detail's ApprovalBanner renders on the
-        same row because the backend state remains parked (worker
-        resume dispatch unwired per roadmap §7, so a decision POST
-        is accepted but doesn't clear parked_state — this is a
-        documented gap, and the test pins the UI half of what's
-        observable today).
+        same row because the parked_state survives the respond POST
+        in THIS test's setup — the asyncpg-injected session has no
+        session_leases row, so mark_resumable's lease UPDATE is a
+        no-op and the worker pool never claims the row to drive the
+        resume cycle. (Roadmap §7 resume wiring landed 2026-05-25
+        in commits 068184a/496c886/731a05b/f83fee7; T0861 covers
+        the full park→respond→resume cycle when the lease row IS
+        present. A future U-test could repeat that on the UI side
+        with explicit lease injection — for now U0109 stays focused
+        on the click-flow surface.)
     """
     ids = _seed_session_ladder(base_url, unique_suffix)
     sid = ids["session"]
@@ -357,11 +368,13 @@ def test_u0109_approvals_operator_journey(
         expect(toast).to_be_visible(timeout=10_000)
 
         # --- 6. Cross-page: navigate to session detail ----------------
-        # Worker-pool resume dispatch is unwired (roadmap §7), so the
-        # row's parked_state hasn't been cleared. Both the approvals
-        # list and the session-detail banner are driven by the same
-        # GET /v1/sessions/{sid}/tool_approval/pending — that endpoint
-        # still returns 200 because the parked_state blob is intact.
+        # parked_state survives the respond POST in this setup because
+        # the asyncpg-injected session has no session_leases row →
+        # mark_resumable's lease UPDATE is a no-op → the worker pool
+        # never claims the row to run the resume cycle. Both the
+        # approvals list and the session-detail banner are driven by
+        # GET /v1/sessions/{sid}/tool_approval/pending, which still
+        # returns 200 because parked_state is intact.
         page.goto(
             f"{console_url}#/sessions/{sid}",
             wait_until="domcontentloaded",

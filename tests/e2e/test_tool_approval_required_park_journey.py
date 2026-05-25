@@ -24,10 +24,17 @@ Covers backlog item T0850.
 
 The follow-up step (POST /respond → session resumes → tool actually
 fires → transcript carries the result) is intentionally NOT
-asserted: the worker pool's resume dispatch site is unwired today
-(known gap; design spec in docs/superpowers/specs/2026-05-22-
-yielding-tools-design.md §7.3). The test pins the park-time
-observable state — everything that already works in production.
+asserted in THIS test — but the resume wiring is now landed
+(commits 068184a/496c886/731a05b/f83fee7 from the 2026-05-25
+roadmap §7 engagement). The end-to-end approval-resume cycle is
+covered by T0861 (test_resume_cycle_e2e_journey.py) which uses
+asyncpg injection instead of a real LLM. T0850 stays focused on
+the LM-Studio-driven park-time observable state — everything from
+the agent emitting the gated tool_call through to the operator
+seeing the pending row. Re-asserting the resume LLM-side
+continuation here would require LM Studio to handle the
+post-respond turn cleanly, which is a separate LM-Studio-compat
+issue tracked elsewhere.
 """
 
 from __future__ import annotations
@@ -199,9 +206,10 @@ async def test_t0850_tool_approval_required_park_journey(
       8. POST /v1/sessions/{id}/tool_approval/respond with
          decision='approved' — assert 202 + {"status":"accepted"}.
 
-    Does NOT assert the post-approve resume path: the worker's
-    resume dispatch site is unwired in production today; that's a
-    follow-up.
+    Does NOT assert the post-approve resume continuation here:
+    T0861 covers the resume-cycle end-to-end via asyncpg
+    injection. Re-asserting it through the LLM-driven path
+    requires a separate LM-Studio-compat sweep.
     """
     suffix = unique_suffix
     assert _MODEL_ID is not None  # guarded by pytestmark.skipif
@@ -327,14 +335,12 @@ async def test_t0850_tool_approval_required_park_journey(
         assert r.status_code == 202, r.text
         assert r.json() == {"status": "accepted"}, r.text
 
-        # NOTE: end-to-end resume (worker re-claims, fires the
-        # approved tool call, transcript reflects the result) is NOT
-        # asserted here. The resume dispatch site at
-        # matrix/worker/pool.py:_run_one_turn is unwired in
-        # production; see docs/superpowers/specs/2026-05-22-yielding-
-        # tools-design.md §7.3. Once that lands, extend this test
-        # with: poll /v1/sessions/{id} for parked_status → null +
-        # turn_no advance + workspace /log for the write commit.
+        # NOTE: T0861 (test_resume_cycle_e2e_journey.py) pins the
+        # end-to-end post-approve resume cycle via asyncpg injection
+        # (parked_status → null + turn_no advance). This test stays
+        # focused on the LM-Studio-driven park-time observable state.
+        # A future LLM-driven continuation assertion would need a
+        # separate LM-Studio-compat sweep on the post-respond turn.
 
     finally:
         # Best-effort cleanup. The session cancel route is workspace-
