@@ -914,7 +914,11 @@ class LanceConfig(BaseModel):
     )
     distance: Literal["cosine", "l2", "dot"] = Field(
         default="cosine",
-        description="Distance metric used by every collection on this SSP.",
+        description=(
+            "Distance metric used by every collection on this SSP. "
+            "'dot' is LanceDB's label for inner-product; pgvector "
+            "calls the same metric 'ip' (see PgVectorConfig.distance_metric)."
+        ),
     )
     hnsw_m: PositiveInt = Field(
         default=16,
@@ -925,11 +929,19 @@ class LanceConfig(BaseModel):
     )
     hnsw_ef_construction: PositiveInt = Field(
         default=64,
-        description="HNSW build-time accuracy. Mirrors PgVectorConfig.",
+        description=(
+            "HNSW 'ef_construction' -- candidate list size during "
+            "index build. Higher = better recall, slower build. "
+            "Mirrors PgVectorConfig.hnsw_ef_construction's default."
+        ),
     )
     hnsw_ef_search: PositiveInt = Field(
         default=40,
-        description="HNSW query-time search width. Mirrors PgVectorConfig.",
+        description=(
+            "HNSW query-time candidate list size. Higher = better "
+            "recall, slower queries. Mirrors PgVectorConfig.hnsw_ef_search "
+            "(the pgvector variant exposes this via the hnsw.ef_search GUC)."
+        ),
     )
     index_min_rows: PositiveInt = Field(
         default=1000,

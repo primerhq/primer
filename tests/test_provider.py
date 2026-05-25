@@ -872,6 +872,7 @@ class TestLanceConfig:
             hnsw_ef_search=80,
             index_min_rows=5000,
         )
+        assert cfg.path == tmp_path
         assert cfg.distance == "l2"
         assert cfg.hnsw_m == 32
         assert cfg.hnsw_ef_construction == 128
@@ -947,3 +948,41 @@ class TestSemanticSearchProviderLanceBackend:
                 config=LanceConfig(path=tmp_path),
             )
         assert "PgVectorConfig" in str(ei.value)
+
+
+class TestVectorStoreProviderConfigLanceBackend:
+    """The internal VectorStoreProviderConfig adapter accepts the same
+    backend kinds as the public SemanticSearchProvider; verify the
+    LANCE branch validates symmetrically."""
+
+    def test_lance_config_round_trip(self, tmp_path):
+        from matrix.model.provider import (
+            LanceConfig,
+            VectorStoreProviderConfig,
+            VectorStoreProviderType,
+        )
+
+        cfg = VectorStoreProviderConfig(
+            provider=VectorStoreProviderType.LANCE,
+            config=LanceConfig(path=tmp_path),
+        )
+        assert cfg.provider == VectorStoreProviderType.LANCE
+        assert isinstance(cfg.config, LanceConfig)
+
+    def test_lance_provider_with_pgvector_config_rejected(self):
+        from pydantic import ValidationError
+        from matrix.model.provider import (
+            PgVectorConfig,
+            VectorStoreProviderConfig,
+            VectorStoreProviderType,
+        )
+
+        with pytest.raises(ValidationError) as ei:
+            VectorStoreProviderConfig(
+                provider=VectorStoreProviderType.LANCE,
+                config=PgVectorConfig(
+                    hostname="x", port=5432, username="u",
+                    password="p", database="d",
+                ),
+            )
+        assert "LanceConfig" in str(ei.value)
