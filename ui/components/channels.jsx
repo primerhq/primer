@@ -280,7 +280,13 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast }) {
       <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 12, marginTop: 4 }}>
         <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>{provider} config</div>
         {fields.map((f) => {
-          const errKey = `body.config.${f.key}`;
+          // The server's per-config field_validators emit loc=("body",
+          // "{field}") because ChannelProvider._coerce_config_type pre-
+          // instantiates the inner config (e.g. SlackChannelProviderConfig)
+          // inside its model_validator(mode="before"), so the "config"
+          // path segment is lost from the ValidationError's loc tuple.
+          // Match the server emission rather than the request-body shape.
+          const errKey = `body.${f.key}`;
           const err = fieldErrors[errKey];
           return (
             <div className="field" key={f.key}>

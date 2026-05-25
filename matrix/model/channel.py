@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Union
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 from matrix.model.common import Identifiable
 
@@ -41,17 +41,28 @@ class SlackChannelProviderConfig(BaseModel):
         ),
     )
 
-    @model_validator(mode="after")
-    def _validate_tokens(self) -> "SlackChannelProviderConfig":
-        if not self.app_token.get_secret_value().startswith("xapp-"):
+    # Per-field validators so loc tuples carry the field name
+    # (loc=("body","config","app_token") etc.), letting the UI modal
+    # render an inline error under the offending field. A combined
+    # @model_validator would flatten the loc to ("body",) and the
+    # modal's per-field error lookup would miss it entirely.
+    @field_validator("app_token")
+    @classmethod
+    def _validate_app_token(cls, v: SecretStr) -> SecretStr:
+        if not v.get_secret_value().startswith("xapp-"):
             raise ValueError(
                 "app_token must start with 'xapp-' (Slack app-level token)"
             )
-        if not self.bot_token.get_secret_value().startswith("xoxb-"):
+        return v
+
+    @field_validator("bot_token")
+    @classmethod
+    def _validate_bot_token(cls, v: SecretStr) -> SecretStr:
+        if not v.get_secret_value().startswith("xoxb-"):
             raise ValueError(
                 "bot_token must start with 'xoxb-' (Slack bot token)"
             )
-        return self
+        return v
 
 
 class TelegramChannelProviderConfig(BaseModel):
@@ -72,14 +83,15 @@ class TelegramChannelProviderConfig(BaseModel):
         ),
     )
 
-    @model_validator(mode="after")
-    def _validate(self) -> "TelegramChannelProviderConfig":
-        tok = self.bot_token.get_secret_value()
+    @field_validator("bot_token")
+    @classmethod
+    def _validate_bot_token(cls, v: SecretStr) -> SecretStr:
+        tok = v.get_secret_value()
         if ":" not in tok or len(tok) < 20:
             raise ValueError(
                 "bot_token must be in the '123456:ABCDEF...' shape"
             )
-        return self
+        return v
 
 
 class DiscordChannelProviderConfig(BaseModel):
@@ -100,15 +112,16 @@ class DiscordChannelProviderConfig(BaseModel):
         ),
     )
 
-    @model_validator(mode="after")
-    def _validate(self) -> "DiscordChannelProviderConfig":
-        tok = self.bot_token.get_secret_value()
+    @field_validator("bot_token")
+    @classmethod
+    def _validate_bot_token(cls, v: SecretStr) -> SecretStr:
+        tok = v.get_secret_value()
         if not tok or len(tok) < 30:
             raise ValueError(
                 "bot_token must be the Developer Portal bot token "
                 "(>=30 chars); do NOT include the 'Bot ' prefix"
             )
-        return self
+        return v
 
 
 ChannelProviderConfig = Annotated[
