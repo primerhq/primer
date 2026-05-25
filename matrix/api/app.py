@@ -234,6 +234,13 @@ def _make_lifespan(config: AppConfig):
                 event_bus = InMemoryEventBus()
             logger.info("lifespan: event bus initialise")
             await event_bus.initialize()
+            # Re-bind the channel inbox now that the event bus exists.
+            # ChannelInbox was constructed earlier (lines 102-104) with
+            # event_bus=None because the bus is built later in the
+            # lifespan (the bus depends on the scheduler, which depends
+            # on the storage layer). Without this re-bind, the inbox's
+            # publish path crashes with AttributeError on .publish.
+            channel_inbox._event_bus = event_bus
             logger.info("lifespan: starting yield listener / timer / sweeper")
             yield_listener = YieldEventListener(
                 bus=event_bus, scheduler=scheduler,
