@@ -124,3 +124,156 @@ async def test_create_collection_ip_distance_maps_to_dot(lance_provider):
     await store.create_collection("col-a", dimensions=4, distance="ip")
     rows = await lance_provider._read_catalogue()
     assert rows[0]["distance"] == "dot"
+
+
+# ---------- put / get / delete --------------------------------------------
+
+
+def _record(*, doc, chunk, vec, text="t", meta=None):
+    from matrix.model.vector import EmbeddingRecord
+    return EmbeddingRecord(
+        collection_id="col-a",
+        document_id=doc,
+        chunk_id=chunk,
+        text=text,
+        vector=vec,
+        meta=meta or {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_put_then_get_round_trips(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    rec = _record(doc="d1", chunk="c1", vec=[0.1, 0.2, 0.3],
+                  text="hello", meta={"k": "v"})
+    await store.put(rec)
+
+    got = await store.get("col-a", "d1")
+    assert len(got) == 1
+    assert got[0].document_id == "d1"
+    assert got[0].chunk_id == "c1"
+    assert got[0].text == "hello"
+    assert got[0].meta == {"k": "v"}
+    assert list(got[0].vector) == pytest.approx([0.1, 0.2, 0.3])
+
+
+@pytest.mark.asyncio
+async def test_put_upserts_on_composite_key(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    await store.put(_record(doc="d1", chunk="c1", vec=[0.1, 0.2, 0.3], text="v1"))
+    await store.put(_record(doc="d1", chunk="c1", vec=[0.9, 0.8, 0.7], text="v2"))
+    got = await store.get("col-a", "d1")
+    assert len(got) == 1
+    assert got[0].text == "v2"
+    assert list(got[0].vector) == pytest.approx([0.9, 0.8, 0.7])
+
+
+@pytest.mark.asyncio
+async def test_get_orders_by_chunk_id(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    for cid in ["c-3", "c-1", "c-2"]:
+        await store.put(_record(doc="d1", chunk=cid, vec=[0.0, 0.0, 0.0]))
+    got = await store.get("col-a", "d1")
+    assert [r.chunk_id for r in got] == ["c-1", "c-2", "c-3"]
+
+
+@pytest.mark.asyncio
+async def test_get_missing_document_returns_empty(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    assert await store.get("col-a", "missing-doc") == []
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_all_chunks(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    await store.put(_record(doc="d1", chunk="c1", vec=[0.1, 0.1, 0.1]))
+    await store.put(_record(doc="d1", chunk="c2", vec=[0.2, 0.2, 0.2]))
+    await store.delete("col-a", "d1")
+    assert await store.get("col-a", "d1") == []
+
+
+@pytest.mark.asyncio
+async def test_delete_is_idempotent(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    await store.delete("col-a", "never-existed")  # no error
+
+
+# ---------- search --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_returns_top_k_ordered_by_similarity(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    await store.put(_record(doc="d1", chunk="c1", vec=[1.0, 0.0, 0.0], text="x-axis"))
+    await store.put(_record(doc="d2", chunk="c1", vec=[0.0, 1.0, 0.0], text="y-axis"))
+    await store.put(_record(doc="d3", chunk="c1", vec=[0.0, 0.0, 1.0], text="z-axis"))
+
+    hits = await store.search("col-a", [0.95, 0.05, 0.0], k=2)
+    assert len(hits) == 2
+    # Top hit should be the x-axis vector (highest cosine sim).
+    assert hits[0].record.document_id == "d1"
+    # Scores monotone non-increasing.
+    assert hits[0].score is None or hits[0].score >= hits[1].score
+
+
+@pytest.mark.asyncio
+async def test_search_empty_collection_returns_empty(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    hits = await store.search("col-a", [0.1, 0.2, 0.3], k=5)
+    assert hits == []
+
+
+# ---------- search_by_meta -----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_search_by_meta_flat_keys(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    await store.put(_record(doc="d1", chunk="c1", vec=[0.0]*3, meta={"src": "a"}))
+    await store.put(_record(doc="d2", chunk="c1", vec=[0.0]*3, meta={"src": "b"}))
+    await store.put(_record(doc="d3", chunk="c1", vec=[0.0]*3, meta={"src": "a"}))
+    hits = await store.search_by_meta("col-a", {"src": "a"})
+    assert sorted(r.document_id for r in hits) == ["d1", "d3"]
+
+
+@pytest.mark.asyncio
+async def test_search_by_meta_empty_returns_all(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    await store.put(_record(doc="d1", chunk="c1", vec=[0.0]*3))
+    await store.put(_record(doc="d2", chunk="c1", vec=[0.0]*3))
+    hits = await store.search_by_meta("col-a", {})
+    assert len(hits) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_by_meta_nested(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    await store.put(_record(doc="d1", chunk="c1", vec=[0.0]*3,
+                            meta={"src": {"kind": "wiki"}}))
+    await store.put(_record(doc="d2", chunk="c1", vec=[0.0]*3,
+                            meta={"src": {"kind": "rss"}}))
+    hits = await store.search_by_meta("col-a", {"src": {"kind": "wiki"}})
+    assert [r.document_id for r in hits] == ["d1"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_collection_raises_bad_request(lance_provider):
+    from matrix.model.except_ import BadRequestError
+    store = lance_provider.get_vector_store()
+    with pytest.raises(BadRequestError):
+        await store.put(_record(doc="d1", chunk="c1", vec=[0.0, 0.0, 0.0]))
+    with pytest.raises(BadRequestError):
+        await store.search("missing-coll", [0.0, 0.0, 0.0], k=1)
+    with pytest.raises(BadRequestError):
+        await store.get("missing-coll", "d1")

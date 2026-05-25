@@ -51,6 +51,81 @@ from matrix.model.vector import EmbeddingRecord, SearchResult, Vector
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _similarity(distance_metric: str, raw_distance: float) -> float:
+    """Map LanceDB's distance value to a similarity score per the
+    VectorStore convention (higher = more similar)."""
+    if distance_metric == "cosine":
+        # LanceDB cosine returns 1 - cosine_similarity in [0, 2].
+        return 1.0 - float(raw_distance)
+    if distance_metric == "l2":
+        return 1.0 / (1.0 + float(raw_distance))
+    if distance_metric == "dot":
+        # dot returns the negated inner product (lower = better).
+        return -float(raw_distance)
+    return float(raw_distance)
+
+
+def _meta_predicate(meta: dict[str, Any]) -> str | None:
+    """Build a SQL filter expression that matches ``meta``.
+
+    NOTE: LanceDB 0.30.2's ``json_extract`` only accepts ``LargeBinary``
+    columns, which is incompatible with the ``utf8`` schema used for
+    ``meta``. This function returns ``None`` unconditionally so that
+    ``search_by_meta`` fetches all rows and applies the predicate in
+    Python. The helper is kept for API completeness and future-compat.
+    """
+    return None  # client-side filtering applied in search_by_meta
+
+
+def _walk_meta(value: Any, *, path: str, out: list[str]) -> None:
+    """Recursively collect leaf-level match clauses for ``value``."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _walk_meta(v, path=f"{path}.{k}", out=out)
+        return
+    if isinstance(value, str):
+        escaped = value.replace("'", "''")
+        out.append(f"json_extract(meta, '{path}') = '{escaped}'")
+    elif isinstance(value, bool):
+        out.append(f"json_extract(meta, '{path}') = {str(value).lower()}")
+    elif isinstance(value, (int, float)):
+        out.append(f"CAST(json_extract(meta, '{path}') AS DOUBLE) = {value}")
+    elif value is None:
+        out.append(f"json_extract(meta, '{path}') IS NULL")
+    else:
+        encoded = json.dumps(value).replace("'", "''")
+        out.append(f"json_extract(meta, '{path}') = '{encoded}'")
+
+
+def _meta_matches(row_meta_json: str, filter_meta: dict[str, Any]) -> bool:
+    """Return True if ``row_meta_json`` (JSON string) contains every
+    key/value pair in ``filter_meta`` (supports nested dicts)."""
+    if not filter_meta:
+        return True
+    try:
+        row_meta = json.loads(row_meta_json) if row_meta_json else {}
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return _meta_deep_match(row_meta, filter_meta)
+
+
+def _meta_deep_match(row: Any, pattern: Any) -> bool:
+    """Recursively check that every key in ``pattern`` matches ``row``."""
+    if isinstance(pattern, dict):
+        if not isinstance(row, dict):
+            return False
+        return all(
+            k in row and _meta_deep_match(row[k], v)
+            for k, v in pattern.items()
+        )
+    return row == pattern
+
+
 _COLLECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CATALOGUE_TABLE = "_matrix_collections"
 
@@ -230,6 +305,30 @@ class LanceVectorStore(VectorStore):
     def __init__(self, *, provider: LanceVectorStoreProvider) -> None:
         self._provider = provider
 
+    # ---------- Internal helpers -----------------------------------------
+
+    async def _open_table(self, collection_id: str) -> "lancedb.AsyncTable":
+        """Resolve the per-collection Lance table; BadRequestError when
+        the collection has never been created."""
+        cat = await self._provider._catalogue_get(collection_id)
+        if cat is None:
+            raise BadRequestError(
+                f"collection {collection_id!r} is not registered on this "
+                f"SemanticSearchProvider"
+            )
+        return await self._provider.db.open_table(cat["table_name"])
+
+    @staticmethod
+    def _row_to_record(row: dict[str, Any], collection_id: str) -> EmbeddingRecord:
+        return EmbeddingRecord(
+            collection_id=collection_id,
+            document_id=row["document_id"],
+            chunk_id=row["chunk_id"],
+            text=row["text"],
+            vector=list(row["vector"]),
+            meta=json.loads(row["meta"]) if row.get("meta") else {},
+        )
+
     # All abstract methods filled in subsequent tasks. Provide stubs so
     # the file imports cleanly; tests for each method live in the same
     # task that fills it in.
@@ -283,17 +382,123 @@ class LanceVectorStore(VectorStore):
             distance=lance_distance,
         )
 
-    async def put(self, *args, **kwargs):
-        raise NotImplementedError  # Task 5
+    async def put(self, record: EmbeddingRecord) -> None:
+        table = await self._open_table(record.collection_id)
+        cat = await self._provider._catalogue_get(record.collection_id)
+        assert cat is not None  # _open_table would have raised
+        expected_dim = int(cat["dimensions"])
+        if len(record.vector) != expected_dim:
+            raise BadRequestError(
+                f"vector length {len(record.vector)} does not match "
+                f"collection {record.collection_id!r} dimensions={expected_dim}"
+            )
+        row = {
+            "document_id": record.document_id,
+            "chunk_id": record.chunk_id,
+            "text": record.text,
+            "vector": [float(x) for x in record.vector],
+            "meta": json.dumps(record.meta or {}, sort_keys=True),
+        }
+        try:
+            await (
+                table.merge_insert(["document_id", "chunk_id"])
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute([row])
+            )
+        except Exception as exc:
+            raise ProviderError(
+                f"LanceDB put failed for {record.collection_id}/"
+                f"{record.document_id}/{record.chunk_id}: {exc}",
+                cause=exc,
+            ) from exc
 
-    async def search(self, *args, **kwargs):
-        raise NotImplementedError  # Task 5
+        # Lazy ANN-index build is wired in Task 6.
 
-    async def search_by_meta(self, *args, **kwargs):
-        raise NotImplementedError  # Task 5
+    async def get(
+        self,
+        collection_id: str,
+        document_id: str,
+    ) -> list[EmbeddingRecord]:
+        table = await self._open_table(collection_id)
+        rows = await (
+            table.query()
+            .where(f"document_id = '{document_id}'")
+            .to_list()
+        )
+        rows.sort(key=lambda r: r["chunk_id"])
+        return [self._row_to_record(r, collection_id) for r in rows]
 
-    async def get(self, *args, **kwargs):
-        raise NotImplementedError  # Task 5
+    async def delete(
+        self,
+        collection_id: str,
+        document_id: str,
+    ) -> None:
+        table = await self._open_table(collection_id)
+        try:
+            await table.delete(f"document_id = '{document_id}'")
+        except Exception as exc:
+            raise ProviderError(
+                f"LanceDB delete failed for {collection_id}/{document_id}: {exc}",
+                cause=exc,
+            ) from exc
 
-    async def delete(self, *args, **kwargs):
-        raise NotImplementedError  # Task 5
+    async def search(
+        self,
+        collection_id: str,
+        vector: Vector,
+        k: int,
+    ) -> list[SearchResult]:
+        table = await self._open_table(collection_id)
+        cat = await self._provider._catalogue_get(collection_id)
+        assert cat is not None
+        expected_dim = int(cat["dimensions"])
+        if len(vector) != expected_dim:
+            raise BadRequestError(
+                f"query vector length {len(vector)} does not match "
+                f"collection {collection_id!r} dimensions={expected_dim}"
+            )
+        try:
+            # NOTE: table.search() in lancedb 0.30.2 is async (a coroutine);
+            # table.vector_search() is synchronous and returns a builder
+            # directly. Use vector_search() to avoid needing two awaits.
+            rows = await (
+                table.vector_search([float(x) for x in vector])
+                .limit(int(k))
+                .to_list()
+            )
+        except Exception as exc:
+            raise ProviderError(
+                f"LanceDB search failed in {collection_id}: {exc}",
+                cause=exc,
+            ) from exc
+
+        distance_metric = cat["distance"]
+        results: list[SearchResult] = []
+        for row in rows:
+            record = self._row_to_record(row, collection_id)
+            raw = row.get("_distance")
+            score = _similarity(distance_metric, raw) if raw is not None else None
+            results.append(SearchResult(record=record, score=score))
+        return results
+
+    async def search_by_meta(
+        self,
+        collection_id: str,
+        meta: dict[str, Any],
+    ) -> list[EmbeddingRecord]:
+        table = await self._open_table(collection_id)
+        # NOTE: LanceDB 0.30.2's json_extract() only accepts LargeBinary
+        # columns; the 'meta' column is utf8. SQL-level filtering is
+        # therefore not available. We fetch all rows and filter in Python.
+        try:
+            rows = await table.query().to_list()
+        except Exception as exc:
+            raise ProviderError(
+                f"LanceDB search_by_meta failed in {collection_id}: {exc}",
+                cause=exc,
+            ) from exc
+        if meta:
+            rows = [r for r in rows if _meta_matches(r.get("meta", "{}"), meta)]
+        rows.sort(key=lambda r: (r["document_id"], r["chunk_id"]))
+        return [self._row_to_record(r, collection_id) for r in rows]
