@@ -97,9 +97,16 @@ def evaluate_policy(policy_text: str, input: dict[str, Any]) -> RegoVerdict:
     """One-shot evaluation (no cache). Useful for the create-time validator."""
     try:
         import regopy
-    except ImportError as exc:  # pragma: no cover — declared in pyproject
+    except (ImportError, OSError) as exc:
+        # ImportError = regopy not installed.
+        # OSError = regopy installed but its ctypes shared object
+        # (`rego` cdll) can't be loaded — typically a missing
+        # system dep like libatomic.so.1 on slim Docker images.
+        # Either case is an environmental misconfiguration, not a
+        # bad policy; surface as a RegoCompileError so the
+        # validator returns a clean 422 instead of leaking 500.
         raise RegoCompileError(
-            "regopy is required for tool-approval policies"
+            f"regopy unavailable for tool-approval policies: {exc}"
         ) from exc
     try:
         interpreter = regopy.Interpreter()

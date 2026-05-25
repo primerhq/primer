@@ -114,10 +114,15 @@ async def _validate_approval_config(
 
 
 def _validation_error(*, field_path: str, message: str) -> RequestValidationError:
+    # Prepend "body" to the loc to match FastAPI/Pydantic's standard
+    # body-field-error convention. The UI's modal lookups (approvals.jsx
+    # fieldErr("body.approval.policy") etc.) expect this prefix; without
+    # it the inline error renders as an empty string while the toast
+    # path also stays silent.
     return RequestValidationError(
         errors=[
             {
-                "loc": tuple(field_path.split(".")),
+                "loc": ("body",) + tuple(field_path.split(".")),
                 "msg": message,
                 "type": "value_error",
             }

@@ -34,11 +34,17 @@ ENV PYTHONUNBUFFERED=1 \
 #                     workspace's .state/ versioned-state repo. Workspace
 #                     creation (POST /v1/workspaces) and all graph-bound
 #                     session dispatch fail without it.
+# - libatomic1        required by the regopy shared-object (the Rego
+#                     evaluator for ToolApprovalPolicy(type="policy")).
+#                     Without it, `import regopy` raises OSError from
+#                     ctypes.LoadLibrary and every policy-type create
+#                     leaks as 500 instead of the intended 422. Surfaced
+#                     by U0114 (UI loop) on the matrix-app image.
 # Most python deps (asyncpg, grpcio, pgvector, torch, transformers)
 # ship manylinux wheels for cp313, so no build toolchain is needed.
 # Add `build-essential` here if a future dep requires compilation.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates git \
+    && apt-get install -y --no-install-recommends curl ca-certificates git libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv (standalone binary, ~25 MB) directly to /usr/local/bin so
