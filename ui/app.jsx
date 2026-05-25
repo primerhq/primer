@@ -148,6 +148,55 @@ function App() {
     { pollMs: 5000 }
   );
 
+  // Sidebar Sessions / Chats / Channels counts — small probes that only
+  // need ``total`` (limit=1 keeps the response minimal). Task 15 wires
+  // these so the nav badges reflect global counts instead of the mock
+  // sessions-array length. U0002 pins Sessions; chats/channels have no
+  // dedicated test yet (manual smoke).
+  const sessionsCount = window.matrixApi.useResource(
+    "sidebar:sessions",
+    (signal) => window.matrixApi.apiFetch("GET", "/sessions?limit=1", null, { signal }),
+    { pollMs: 5000 }
+  );
+  const chatsCount = window.matrixApi.useResource(
+    "sidebar:chats",
+    (signal) => window.matrixApi.apiFetch("GET", "/chats?limit=1", null, { signal }),
+    { pollMs: 5000 }
+  );
+  const channelsCount = window.matrixApi.useResource(
+    "sidebar:channels",
+    (signal) => window.matrixApi.apiFetch("GET", "/channels?limit=1", null, { signal }),
+    { pollMs: 5000 }
+  );
+  // Approvals_pending — client-side aggregation: parked sessions
+  // (`/sessions/find` with parked_status=parked predicate) +
+  // parked chats (no /chats/find route; GET + client filter, matching
+  // the ApprovalsPage approach in approvals.jsx). The predicate uses
+  // ``kind`` discriminators per the Task 12 wiring.
+  const parkedSessionsCount = window.matrixApi.useResource(
+    "sidebar:parked-sessions",
+    (signal) => window.matrixApi.apiFetch(
+      "POST",
+      "/sessions/find",
+      {
+        predicate: {
+          kind: "predicate",
+          left: { kind: "field", name: "parked_status" },
+          op: "=",
+          right: { kind: "value", value: "parked" },
+        },
+        page: { kind: "offset", offset: 0, length: 1 },
+      },
+      { signal },
+    ),
+    { pollMs: 5000 }
+  );
+  const parkedChatsList = window.matrixApi.useResource(
+    "sidebar:parked-chats",
+    (signal) => window.matrixApi.apiFetch("GET", "/chats?limit=200", null, { signal }),
+    { pollMs: 5000 }
+  );
+
   // Semantic Search providers — controlled by the ssmState tweak
   const ssps = React.useMemo(() => {
     if (tweaks.ssmState === "none") return [];
@@ -211,16 +260,27 @@ function App() {
     };
   }, [sessions, workers, tweaks.demoState, realWorkers.data, realHealth.data]);
 
+  // Counts dict consumed by <Sidebar>. Each value is rendered as a
+  // small badge next to its nav row when defined; undefined values hide
+  // the badge entirely (chrome.jsx:98). The live API counts use the
+  // OffsetPageResponse ``total`` field — None when the backend can't
+  // produce it cheaply, but our storage layers always do.
+  const parkedChatsItems = parkedChatsList.data?.items;
+  const approvalsPending =
+    (parkedSessionsCount.data?.total ?? 0) +
+    (Array.isArray(parkedChatsItems)
+      ? parkedChatsItems.filter((c) => c.parked_status === "parked").length
+      : 0);
   const counts = {
-    sessions: sessions.filter((s) => !["ended", "failed", "cancelled"].includes(s.status)).length,
+    sessions: sessionsCount.data?.total,
     workspaces: Array.isArray(realWorkspaces.data?.items)
       ? realWorkspaces.data.items.length
       : 0,
     workers: workerStats.total,
     ssps: ssps.length,
-    chats: (window.CHATS_DATA || []).filter((c) => c.status === "active").length,
-    channels: (window.CHANNELS_DATA || []).length,
-    approvals_pending: (window.PENDING_APPROVALS || []).length,
+    chats: chatsCount.data?.total,
+    channels: channelsCount.data?.total,
+    approvals_pending: approvalsPending,
   };
 
   const subsystemOn = !!tweaks.subsystemOn;
