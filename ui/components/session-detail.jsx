@@ -451,6 +451,39 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
               )}
             </div>
           </div>
+
+          {/* T0399 stale-cache notice — unconditional per design §3.7
+              (anomaly-surface for the workspace-path-drifts-after-signals
+              issue tracked as T0399/T0555/T0611). U0013 pins this banner's
+              copy + presence. */}
+          <div
+            className="banner banner-info"
+            style={{
+              background: "var(--bg-1)",
+              color: "var(--text-3)",
+              borderColor: "var(--border)",
+            }}
+          >
+            <Icon
+              name="info"
+              size={14}
+              className="ico"
+              style={{ color: "var(--blue)" }}
+            />
+            <div style={{ flex: 1 }}>
+              <div className="title" style={{ color: "var(--text)" }}>
+                Reads are authoritative
+              </div>
+              <div className="detail" style={{ color: "var(--text-3)" }}>
+                This view reads from{" "}
+                <span className="mono" style={{ color: "var(--text)" }}>
+                  /v1/sessions/{`{id}`}
+                </span>
+                . The nested workspace path is known to drift after
+                signals (T0399 / T0555 / T0611).
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
