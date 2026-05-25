@@ -900,15 +900,25 @@ class WorkerPool:
             resume_metadata=resume_metadata,
         )
 
+        # In-progress turn messages: the executor stamps
+        # ``YieldToWorker.llm_messages`` with the assistant message
+        # that emitted the tool_use (loop.py appends it before
+        # _dispatch_tool_calls). Round-trip through model_dump so
+        # the JSONB column carries canonical Matrix message-dicts
+        # — ParkedState.from_jsonable rebuilds typed Messages on
+        # resume. Tools that synthesise their result from metadata
+        # alone (e.g. sleep) work even with an empty list; tools
+        # that need the tool_use in history (e.g. _approval's
+        # synthesised tool_result message) rely on this being
+        # populated.
+        captured_messages = yield_exc.llm_messages or []
+        llm_message_dicts = [
+            m.model_dump(mode="json") for m in captured_messages
+        ]
+
         parked_state = ParkedState(
             yielded=yielded_stamped,
-            # M1 placeholder: the executor doesn't yet hand us back
-            # the in-progress message history. M2+ extends this so
-            # the resume can re-enter the LLM call. For now the
-            # sleep tool's resume synthesises its result from
-            # resume_metadata alone, so an empty history still works
-            # end-to-end for the prototype.
-            llm_messages=[],
+            llm_messages=llm_message_dicts,
             turn_no=lease.turn_no,
             started_at=parked_at,
             tool_call_id=yield_exc.tool_call_id,

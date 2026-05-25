@@ -415,6 +415,102 @@ class TestSingleTurn:
 
 
 # ===========================================================================
+# Yield mid-turn captures in-progress llm_messages onto YieldToWorker
+# ===========================================================================
+
+
+class TestYieldHistoryCapture:
+    @pytest.mark.asyncio
+    async def test_yield_to_worker_carries_in_progress_assistant_message(
+        self,
+    ) -> None:
+        """When a tool handler raises YieldToWorker mid-turn, the
+        executor must stamp the in-progress turn's assistant message
+        (the one that carried the tool_use) onto the exception's
+        ``llm_messages`` attribute so the worker can persist it
+        into ParkedState.
+
+        This is load-bearing for the resume path: the assistant
+        message containing the original tool_use has NOT been
+        ``_persist_turn``'d yet at the moment YieldToWorker fires
+        (persistence happens at end-of-stream — see base.py's
+        ``produced_assistant`` guard). Without this stamp, the
+        resume path has no preceding tool_use to pair the
+        synthesised tool_result against, and the LLM history would
+        be malformed.
+        """
+        from matrix.model.yield_ import YieldToWorker, Yielded
+        from matrix.model.chat import ToolCallPart
+
+        # The LLM emits a tool_call that the handler will reject with
+        # YieldToWorker. We only need ONE script (the loop bails out
+        # before re-invoking the LLM).
+        llm = _FakeLLM(
+            scripts=[
+                [
+                    StreamStart(model="gpt-4o-mini"),
+                    ToolCallStart(id="call-yield", name="t1__yieldy", index=0),
+                    ToolCallEnd(id="call-yield", arguments={}, index=0),
+                    Done(stop_reason="tool_use", raw_reason="tool_use"),
+                ],
+            ]
+        )
+
+        # Handler raises YieldToWorker — same shape the approval gate
+        # raises (matrix/agent/tool_manager.py:268 inline form).
+        async def _yieldy_handler(name, args, principal):
+            raise YieldToWorker(
+                Yielded(
+                    tool_name="yieldy",
+                    event_key="test:yield:call-yield",
+                    timeout=60.0,
+                    resume_metadata={"probe": True},
+                ),
+                tool_call_id="call-yield",
+            )
+
+        executor, _, _, _ = await _build_executor(
+            llm=llm,
+            handler=_yieldy_handler,
+            tools=[_tool("yieldy")],
+        )
+
+        with pytest.raises(YieldToWorker) as info:
+            await _drain(
+                executor.invoke(
+                    [Message(role="user", parts=[TextPart(text="run yieldy")])]
+                )
+            )
+
+        exc = info.value
+        # Sanity: the exception carries the yielded sentinel.
+        assert exc.yielded.tool_name == "yieldy"
+        assert exc.tool_call_id == "call-yield"
+
+        # The load-bearing assertion: llm_messages contains the
+        # in-progress assistant message with the tool_use part.
+        assert exc.llm_messages is not None, (
+            "YieldToWorker.llm_messages must be populated by the "
+            "executor before the exception escapes invoke()"
+        )
+        assert len(exc.llm_messages) == 1, (
+            f"expected exactly the in-progress assistant message; "
+            f"got: {exc.llm_messages!r}"
+        )
+        msg = exc.llm_messages[0]
+        assert msg.role == "assistant"
+        tool_call_parts = [
+            p for p in msg.parts if isinstance(p, ToolCallPart)
+        ]
+        assert len(tool_call_parts) == 1, (
+            f"expected the assistant message to carry exactly one "
+            f"ToolCallPart; got parts: {msg.parts!r}"
+        )
+        assert tool_call_parts[0].id == "call-yield"
+        assert tool_call_parts[0].name == "t1__yieldy"
+
+
+# ===========================================================================
 # History loading on second invoke
 # ===========================================================================
 

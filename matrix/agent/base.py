@@ -242,19 +242,37 @@ class _BaseAgentExecutor(ABC):
         # directly into ``full_turn_messages`` for end-of-turn
         # persistence below.
         last_input_tokens_holder: list[int | None] = []
-        async for event in run_agent_turn(
-            agent=self._agent,
-            llm=self._llm,
-            llm_model=self._model,
-            tool_manager=self._tool_manager,
-            prompt=prompt,
-            response_format=response_format,
-            principal=self._principal,
-            messages_out=full_turn_messages,
-            last_input_tokens_out=last_input_tokens_holder,
-        ):
-            await self._emit(event)
-            yield event
+        from matrix.model.yield_ import YieldToWorker
+        try:
+            async for event in run_agent_turn(
+                agent=self._agent,
+                llm=self._llm,
+                llm_model=self._model,
+                tool_manager=self._tool_manager,
+                prompt=prompt,
+                response_format=response_format,
+                principal=self._principal,
+                messages_out=full_turn_messages,
+                last_input_tokens_out=last_input_tokens_holder,
+            ):
+                await self._emit(event)
+                yield event
+        except YieldToWorker as exc:
+            # The tool engine raised mid-turn. ``full_turn_messages``
+            # already contains the assistant message that carried the
+            # tool_use (loop.py:143 appends it before dispatch), but
+            # ``_persist_turn`` hasn't run yet (we only persist on a
+            # clean end-of-stream below). Stamp the delta onto the
+            # exception so the worker's park hook can preserve it in
+            # the parked_state blob — load-bearing for the resume
+            # path's [assistant_tool_use, tool_result] history
+            # injection.
+            #
+            # The slice strips ``new_messages`` (which the executor's
+            # caller already has) so the stamp is just what this turn
+            # accumulated up to the yield point.
+            exc.llm_messages = list(full_turn_messages[len(new_messages):])
+            raise
 
         if last_input_tokens_holder:
             self._last_input_tokens = last_input_tokens_holder[0]

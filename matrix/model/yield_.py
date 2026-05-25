@@ -212,8 +212,22 @@ class YieldToWorker(Exception):
     produces when the event eventually fires.
 
     Carries the :class:`Yielded` sentinel plus enough context for
-    the worker to construct the parked-state blob (the in-progress
-    LLM message history is added by the worker's park path itself).
+    the worker to construct the parked-state blob.
+
+    ``llm_messages`` holds the in-progress turn's assistant +
+    tool-result messages — populated by the executor's ``invoke``
+    just before re-raising, so the worker's park hook can persist
+    them into :class:`ParkedState`. Load-bearing for the resume
+    path: the assistant message that emitted the tool_use is
+    accumulated in the executor's frame BUT not yet
+    ``_persist_turn``'d when the yield fires (persistence happens
+    at end-of-stream). Without this field the resume path would
+    have no preceding tool_use to pair the synthesised tool_result
+    against, and the LLM history would be malformed.
+
+    Tools that raise YieldToWorker themselves (e.g. the approval
+    gate in :mod:`matrix.agent.tool_manager`) do NOT need to
+    populate this — the executor stamps it on the way out.
     """
 
     def __init__(
@@ -221,6 +235,7 @@ class YieldToWorker(Exception):
         yielded: Yielded,
         *,
         tool_call_id: str,
+        llm_messages: list | None = None,
     ) -> None:
         super().__init__(
             f"tool {yielded.tool_name!r} yielded; "
@@ -229,6 +244,11 @@ class YieldToWorker(Exception):
         )
         self.yielded = yielded
         self.tool_call_id = tool_call_id
+        # The executor stamps in-progress turn messages here on the
+        # way out (matrix/agent/base.py). Default ``None`` lets
+        # callers that raise directly leave it for the executor to
+        # fill in.
+        self.llm_messages: list | None = llm_messages
 
 
 __all__ = [
