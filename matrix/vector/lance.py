@@ -15,8 +15,11 @@ catalogue. The HNSW index variant LanceDB exposes is ``IVF_HNSW_SQ``.
 
 Storage layout: ``meta`` is persisted as a JSON-serialised utf8
 column rather than a struct because Arrow cannot represent
-open-ended object schemas. ``search_by_meta`` builds its predicate
-using LanceDB's SQL ``json_extract``.
+open-ended object schemas. ``search_by_meta`` deserialises every
+candidate row and matches in Python (LanceDB 0.30.2's SQL
+``json_extract`` requires a ``LargeBinary`` column type that our
+utf8 layout doesn't satisfy; the Python-side fallback preserves
+contract semantics at the cost of a linear scan).
 """
 
 from __future__ import annotations
@@ -124,6 +127,17 @@ def _meta_deep_match(row: Any, pattern: Any) -> bool:
             for k, v in pattern.items()
         )
     return row == pattern
+
+
+def _escape_sql_string(value: str) -> str:
+    """Escape a string for safe single-quoted SQL literal use.
+
+    LanceDB's filter API does not (as of 0.30.2) expose parameterised
+    queries on the AsyncTable surface — only inline SQL expressions.
+    Use SQL-standard single-quote doubling to neutralise apostrophes
+    in user-supplied identifiers like document_id.
+    """
+    return value.replace("'", "''")
 
 
 _COLLECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -262,7 +276,7 @@ class LanceVectorStoreProvider(VectorStoreProvider):
     async def _catalogue_get(self, collection_id: str) -> dict[str, Any] | None:
         tbl = await self._open_catalogue()
         rows = await tbl.query().where(
-            f"collection_id = '{collection_id}'"
+            f"collection_id = '{_escape_sql_string(collection_id)}'"
         ).to_list()
         return rows[0] if rows else None
 
@@ -290,7 +304,7 @@ class LanceVectorStoreProvider(VectorStoreProvider):
         # `update(updates: dict, where: str | None = None)`.
         await tbl.update(
             updates={"indexed": True},
-            where=f"collection_id = '{collection_id}'",
+            where=f"collection_id = '{_escape_sql_string(collection_id)}'",
         )
 
     async def maintain_indexes(self) -> list[MaintenanceReport]:
@@ -395,10 +409,24 @@ class LanceVectorStore(VectorStore):
         # Map our distance vocabulary to what lancedb.index expects.
         # lancedb accepts "l2", "cosine", "dot".
         dist = distance_metric  # already in lancedb's vocabulary
+        cfg = self._provider.config
 
+        # HnswSq and HnswPq both accept m= and ef_construction= kwargs
+        # (confirmed on lancedb 0.30.2). IvfPq does not expose these params.
         index_configs = [
-            HnswSq(distance_type=dist, num_partitions=1),  # modern HNSW variant
-            HnswPq(distance_type=dist, num_partitions=1, num_sub_vectors=1),
+            HnswSq(
+                distance_type=dist,
+                num_partitions=1,
+                m=int(cfg.hnsw_m),
+                ef_construction=int(cfg.hnsw_ef_construction),
+            ),  # modern HNSW variant
+            HnswPq(
+                distance_type=dist,
+                num_partitions=1,
+                num_sub_vectors=1,
+                m=int(cfg.hnsw_m),
+                ef_construction=int(cfg.hnsw_ef_construction),
+            ),
             IvfPq(distance_type=dist, num_partitions=1, num_sub_vectors=1),
         ]
         for cfg in index_configs:
@@ -528,7 +556,7 @@ class LanceVectorStore(VectorStore):
         table = await self._open_table(collection_id)
         rows = await (
             table.query()
-            .where(f"document_id = '{document_id}'")
+            .where(f"document_id = '{_escape_sql_string(document_id)}'")
             .to_list()
         )
         rows.sort(key=lambda r: r["chunk_id"])
@@ -541,7 +569,7 @@ class LanceVectorStore(VectorStore):
     ) -> None:
         table = await self._open_table(collection_id)
         try:
-            await table.delete(f"document_id = '{document_id}'")
+            await table.delete(f"document_id = '{_escape_sql_string(document_id)}'")
         except Exception as exc:
             raise ProviderError(
                 f"LanceDB delete failed for {collection_id}/{document_id}: {exc}",
@@ -570,6 +598,7 @@ class LanceVectorStore(VectorStore):
             rows = await (
                 table.vector_search([float(x) for x in vector])
                 .limit(int(k))
+                .ef(int(self._provider.config.hnsw_ef_search))
                 .to_list()
             )
         except Exception as exc:

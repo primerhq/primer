@@ -304,6 +304,59 @@ async def test_index_built_when_row_count_crosses_threshold(tmp_path):
         await p.aclose()
 
 
+# ---------- HNSW config knobs ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hnsw_custom_knobs_reach_index(tmp_path):
+    """Custom hnsw_m and ef_construction are passed to the index builder.
+
+    LanceDB 0.30.2 does not expose m/ef_construction on list_indices()
+    output, so we verify the code path (index builds without error and
+    catalogue marks indexed=True) rather than introspecting the stored
+    values.
+    """
+    cfg = LanceConfig(
+        path=tmp_path / "lance",
+        hnsw_m=8,
+        hnsw_ef_construction=32,
+        hnsw_ef_search=20,
+        index_min_rows=2,
+    )
+    p = LanceVectorStoreProvider(cfg)
+    await p.initialize()
+    try:
+        store = p.get_vector_store()
+        await store.create_collection("col-a", dimensions=3)
+        # Put enough rows to cross the threshold and trigger _build_index.
+        await store.put(_record(doc="d1", chunk="c1", vec=[0.1, 0.0, 0.0]))
+        await store.put(_record(doc="d2", chunk="c1", vec=[0.0, 0.1, 0.0]))
+        row = await p._catalogue_get("col-a")
+        assert row["indexed"] is True, "index must be built after crossing threshold"
+        # Search with ef_search knob must not raise.
+        hits = await store.search("col-a", [1.0, 0.0, 0.0], k=2)
+        assert len(hits) == 2
+    finally:
+        await p.aclose()
+
+
+# ---------- SQL-safety on document_id ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_document_id_with_apostrophe_round_trips(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    weird = "O'Brien-doc"
+    await store.put(_record(doc=weird, chunk="c1", vec=[0.1, 0.2, 0.3]))
+    got = await store.get("col-a", weird)
+    assert len(got) == 1
+    assert got[0].document_id == weird
+    # delete also works
+    await store.delete("col-a", weird)
+    assert await store.get("col-a", weird) == []
+
+
 # ---------- maintain_indexes ---------------------------------------------
 
 

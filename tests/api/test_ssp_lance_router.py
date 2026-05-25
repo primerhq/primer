@@ -43,7 +43,6 @@ async def test_ssp_lance_get_round_trip(client, tmp_path):
         got = r.json()
         assert got["provider"] == "lance"
         assert got["config"]["path"] == path
-        assert got["config"]["distance"] == "cosine"
         assert got["config"]["hnsw_m"] == 16
         assert got["config"]["index_min_rows"] == 1000
     finally:

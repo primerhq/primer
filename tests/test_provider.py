@@ -855,7 +855,6 @@ class TestLanceConfig:
 
         cfg = LanceConfig(path=tmp_path)
         assert cfg.path == tmp_path
-        assert cfg.distance == "cosine"
         assert cfg.hnsw_m == 16
         assert cfg.hnsw_ef_construction == 64
         assert cfg.hnsw_ef_search == 40
@@ -866,14 +865,12 @@ class TestLanceConfig:
 
         cfg = LanceConfig(
             path=tmp_path,
-            distance="l2",
             hnsw_m=32,
             hnsw_ef_construction=128,
             hnsw_ef_search=80,
             index_min_rows=5000,
         )
         assert cfg.path == tmp_path
-        assert cfg.distance == "l2"
         assert cfg.hnsw_m == 32
         assert cfg.hnsw_ef_construction == 128
         assert cfg.hnsw_ef_search == 80
@@ -885,13 +882,6 @@ class TestLanceConfig:
 
         with pytest.raises(ValidationError):
             LanceConfig()  # type: ignore[call-arg]
-
-    def test_distance_enum_rejects_unknown(self, tmp_path):
-        from pydantic import ValidationError
-        from matrix.model.provider import LanceConfig
-
-        with pytest.raises(ValidationError):
-            LanceConfig(path=tmp_path, distance="hamming")  # type: ignore[arg-type]
 
 
 class TestSemanticSearchProviderLanceBackend:

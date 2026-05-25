@@ -229,7 +229,6 @@ function SSPCreateModal({ onClose, pushToast }) {
     db_schema: "public",
     // Lance-specific field — only used when provider="lance"
     path: "",
-    distance: "cosine",
     hnsw_m: 16,
     hnsw_ef_construction: 64,
     enable_diskann: false,
@@ -302,7 +301,6 @@ function SSPCreateModal({ onClose, pushToast }) {
     if (isLance) {
       config = {
         path: form.path,
-        distance: form.distance || "cosine",
         hnsw_m: Number(form.hnsw_m) || 16,
         hnsw_ef_construction: Number(form.hnsw_ef_construction) || 64,
         hnsw_ef_search: 40,
@@ -672,7 +670,11 @@ function SSPDetail({ sspId, pushToast }) {
             <>
               No collections reference this provider. Deletion is safe.
               <ul>
-                <li>The vector tables in <span className="mono">{p.config?.db_schema || "public"}</span> are <strong>not</strong> dropped.</li>
+                <li>
+                  {p.provider === "lance"
+                    ? <>The LanceDB datasets in <span className="mono">{p.config?.path}</span> are <strong>not</strong> removed.</>
+                    : <>The vector tables in <span className="mono">{p.config?.db_schema || "public"}</span> are <strong>not</strong> dropped.</>}
+                </li>
                 <li>The provider row is removed; the cached connection is closed.</li>
               </ul>
             </>
@@ -684,6 +686,19 @@ function SSPDetail({ sspId, pushToast }) {
 }
 
 function SSPOverview({ p }) {
+  if (p.provider === "lance") {
+    return (
+      <dl className="kv" style={{ gridTemplateColumns: "200px 1fr" }}>
+        <dt>id</dt><dd className="mono">{p.id}</dd>
+        <dt>backend</dt><dd><BackendBadge kind={p.provider} /></dd>
+        <dt>path</dt><dd className="mono">{p.config?.path}</dd>
+        <dt>hnsw_m</dt><dd className="mono">{p.config?.hnsw_m ?? 16}</dd>
+        <dt>hnsw_ef_construction</dt><dd className="mono">{p.config?.hnsw_ef_construction ?? 64}</dd>
+        <dt>hnsw_ef_search</dt><dd className="mono">{p.config?.hnsw_ef_search ?? 40}</dd>
+        <dt>index_min_rows</dt><dd className="mono">{p.config?.index_min_rows ?? 1000}</dd>
+      </dl>
+    );
+  }
   return (
     <dl className="kv" style={{ gridTemplateColumns: "200px 1fr" }}>
       <dt>id</dt><dd className="mono">{p.id}</dd>

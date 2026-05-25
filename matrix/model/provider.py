@@ -912,14 +912,6 @@ class LanceConfig(BaseModel):
             "process. Use an absolute path."
         ),
     )
-    distance: Literal["cosine", "l2", "dot"] = Field(
-        default="cosine",
-        description=(
-            "Distance metric used by every collection on this SSP. "
-            "'dot' is LanceDB's label for inner-product; pgvector "
-            "calls the same metric 'ip' (see PgVectorConfig.distance_metric)."
-        ),
-    )
     hnsw_m: PositiveInt = Field(
         default=16,
         description=(
