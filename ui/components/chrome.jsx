@@ -6,7 +6,6 @@ const NAV = [
     items: [
       { id: "dashboard", label: "Dashboard", icon: "home" },
       { id: "sessions", label: "Sessions", icon: "zap", countKey: "sessions" },
-      { id: "workspaces", label: "Workspaces", icon: "box", countKey: "workspaces" },
     ],
   },
   {
@@ -22,6 +21,14 @@ const NAV = [
     items: [
       { id: "collections", label: "Collections", icon: "collection" },
       { id: "documents", label: "Documents", icon: "doc" },
+    ],
+  },
+  {
+    group: "Workspaces",
+    items: [
+      { id: "workspaces", label: "Workspaces", icon: "box", countKey: "workspaces" },
+      { id: "workspace-templates", label: "Templates", icon: "tools" },
+      { id: "workspace-providers", label: "Providers", icon: "box" },
     ],
   },
   {
@@ -194,7 +201,7 @@ function CommandPalette({ onClose, onNavigate, sessions }) {
 
   const ql = q.toLowerCase();
   const matches = [
-    ...["dashboard", "sessions", "workspaces", "agents", "graphs", "collections", "documents", "toolsets-user", "toolsets-builtin", "llm", "embedding", "rerank", "semantic-search", "internal-collections", "workers", "health"]
+    ...["dashboard", "sessions", "workspaces", "workspace-templates", "workspace-providers", "agents", "graphs", "collections", "documents", "toolsets-user", "toolsets-builtin", "llm", "embedding", "rerank", "semantic-search", "internal-collections", "workers", "health"]
       .filter((p) => p.includes(ql))
       .map((p) => ({ kind: "page", id: p, label: `Go to ${p.replace(/-/g, " ").replace(/^\w/, (c) => c.toUpperCase())}` })),
     ...sessions

@@ -41,7 +41,13 @@ function App() {
     const root = m ? m[1] : "";
     if (root === "" || root === "dashboard") return "dashboard";
     if (root === "sessions") return params.id ? "session-detail" : "sessions";
-    if (root === "workspaces") return params.id ? "workspace-detail" : "workspaces";
+    if (root === "workspaces") {
+      if (path.startsWith("/workspaces/providers/") && params.id) return "workspace-provider-detail";
+      if (path.startsWith("/workspaces/providers")) return "workspace-providers";
+      if (path.startsWith("/workspaces/templates/") && params.id) return "workspace-template-detail";
+      if (path.startsWith("/workspaces/templates")) return "workspace-templates";
+      return params.id ? "workspace-detail" : "workspaces";
+    }
     if (root === "agents") return params.id ? "agent-detail" : "agents";
     if (root === "graphs") return params.id ? "graph-detail" : "graphs";
     if (root === "ssp") return params.id ? "ssp-detail" : "semantic-search";
@@ -299,6 +305,10 @@ function App() {
       "session-detail": (e) => `/sessions/${e}`,
       workspaces: "/workspaces",
       "workspace-detail": (e) => `/workspaces/${e}`,
+      "workspace-providers": "/workspaces/providers",
+      "workspace-provider-detail": (e) => `/workspaces/providers/${e}`,
+      "workspace-templates": "/workspaces/templates",
+      "workspace-template-detail": (e) => `/workspaces/templates/${e}`,
       agents: "/agents",
       "agent-detail": (e) => `/agents/${e}`,
       graphs: "/graphs",
@@ -809,6 +819,58 @@ function App() {
         pushToast={pushToast}
       />
     );
+  } else if (page === "workspace-providers") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("workspaces")}>Workspaces</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Providers</span>
+          </div>
+          <h1 className="page-title">Workspace providers</h1>
+          <div className="page-sub tabular">Backend configs that templates resolve to</div>
+        </div>
+      </>
+    );
+    pageBody = <div className="panel"><div className="panel-body"><span className="muted">Coming soon (Task 2)…</span></div></div>;
+  } else if (page === "workspace-provider-detail" && params.id) {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("workspace-providers")}>Workspace providers</a><span className="sep">/</span><span className="mono" style={{ color: "var(--text)" }}>{params.id}</span>
+          </div>
+          <h1 className="page-title mono">{params.id}</h1>
+        </div>
+        <div className="page-actions"><Btn icon="chevron-left" kind="ghost" onClick={() => navigate("workspace-providers")}>Back</Btn></div>
+      </>
+    );
+    pageBody = <div className="panel"><div className="panel-body"><span className="muted">Coming soon (Task 2)…</span></div></div>;
+  } else if (page === "workspace-templates") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("workspaces")}>Workspaces</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Templates</span>
+          </div>
+          <h1 className="page-title">Workspace templates</h1>
+          <div className="page-sub tabular">Declarative recipes for materialising workspaces</div>
+        </div>
+      </>
+    );
+    pageBody = <div className="panel"><div className="panel-body"><span className="muted">Coming soon (Task 3)…</span></div></div>;
+  } else if (page === "workspace-template-detail" && params.id) {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("workspace-templates")}>Workspace templates</a><span className="sep">/</span><span className="mono" style={{ color: "var(--text)" }}>{params.id}</span>
+          </div>
+          <h1 className="page-title mono">{params.id}</h1>
+        </div>
+        <div className="page-actions"><Btn icon="chevron-left" kind="ghost" onClick={() => navigate("workspace-templates")}>Back</Btn></div>
+      </>
+    );
+    pageBody = <div className="panel"><div className="panel-body"><span className="muted">Coming soon (Task 3)…</span></div></div>;
   } else if (page === "health") {
     pageHeader = (
       <>
@@ -930,6 +992,8 @@ function App() {
         page={
           page === "session-detail" ? "sessions"
           : page === "workspace-detail" ? "workspaces"
+          : page === "workspace-provider-detail" ? "workspace-providers"
+          : page === "workspace-template-detail" ? "workspace-templates"
           : page === "agent-detail" ? "agents"
           : page === "graph-detail" ? "graphs"
           : page === "ssp-detail" ? "semantic-search"
