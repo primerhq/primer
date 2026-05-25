@@ -455,6 +455,10 @@ def _mount_routers(
     app.include_router(providers.llm_provider_router, prefix=prefix)
     app.include_router(providers.embedding_provider_router, prefix=prefix)
     app.include_router(providers.cross_encoder_provider_router, prefix=prefix)
+    # builtin_toolsets_router MUST be registered before toolset_router so
+    # GET /toolsets/builtin is matched by the literal route rather than
+    # being captured as toolset_id="builtin" by the CRUD GET-by-id.
+    app.include_router(providers.builtin_toolsets_router, prefix=prefix)
     app.include_router(providers.toolset_router, prefix=prefix)
     app.include_router(semantic_search_router, prefix=prefix)
     # Phase 2 — compute (Agent + Graph)

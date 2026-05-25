@@ -38,6 +38,7 @@ from matrix.api.deps import (
     get_embedding_provider_storage,
     get_llm_provider_storage,
     get_provider_registry,
+    get_storage_provider,
     get_toolset_storage,
 )
 from matrix.api.errors import common_responses
@@ -472,7 +473,99 @@ async def list_toolset_tools(
     return {"tools": tools}
 
 
+# ---------- Built-in toolsets registry --------------------------------------
+#
+# The five reserved built-in toolset ids live in
+# matrix/api/registries/provider_registry.py. Their operator-facing
+# metadata (tagline, icon hint, availability semantics) lives here so
+# the UI can render the built-in cards dynamically from one source of
+# truth instead of hard-coding the list.
+
+_BUILTIN_TOOLSETS: list[dict] = [
+    {
+        "id": "system",
+        "tagline": "Operator + diagnostic tools",
+        "icon": "settings",
+        "always_on": True,
+    },
+    {
+        "id": "workspaces",
+        "tagline": "File ops + exec inside the bound workspace",
+        "icon": "box",
+        "always_on": True,
+    },
+    {
+        "id": "search",
+        "tagline": (
+            "Semantic search over indexed entities — available once "
+            "Internal Collections is bootstrapped"
+        ),
+        "icon": "search",
+        "always_on": False,  # gated on IC subsystem
+    },
+    {
+        "id": "misc",
+        "tagline": "Datetime, sleep, UUID, hashing, arithmetic utilities",
+        "icon": "wrench",
+        "always_on": True,
+    },
+    {
+        "id": "web",
+        "tagline": "DuckDuckGo search + page-fetch primitives",
+        "icon": "external",
+        "always_on": True,
+    },
+]
+
+# A dedicated router registered BEFORE toolset_router in app.py so that
+# GET /toolsets/builtin is matched by this literal route rather than
+# being captured as toolset_id="builtin" by the CRUD GET-by-id.
+builtin_toolsets_router = APIRouter()
+
+
+@builtin_toolsets_router.get(
+    "/toolsets/builtin",
+    summary="List the five built-in toolsets and their availability",
+)
+async def list_builtin_toolsets(
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Operator-facing catalogue of the always-available built-ins.
+
+    The UI uses this in place of a hard-coded list so adding a new
+    built-in toolset to the runtime doesn't require a UI change.
+    ``available`` is True for always-on built-ins; for the IC-gated
+    ``search`` toolset, it's True iff an InternalCollectionsConfig
+    row exists in storage (mirrors the topbar IC-config probe).
+    """
+    from matrix.model.internal import InternalCollectionsConfig
+
+    # Probe IC config to decide search-toolset availability.
+    ic_storage = storage_provider.get_storage(InternalCollectionsConfig)
+    ic_active = False
+    try:
+        page = await ic_storage.find(
+            None, OffsetPage(offset=0, length=1),
+        )
+        ic_active = len(page.items) > 0
+    except Exception:
+        # Storage layer failure: treat as IC-off rather than 500.
+        ic_active = False
+
+    items = []
+    for spec in _BUILTIN_TOOLSETS:
+        available = spec["always_on"] or (
+            spec["id"] == "search" and ic_active
+        )
+        items.append({
+            **spec,
+            "available": available,
+        })
+    return {"items": items}
+
+
 __all__ = [
+    "builtin_toolsets_router",
     "cross_encoder_provider_router",
     "embedding_provider_router",
     "llm_provider_router",

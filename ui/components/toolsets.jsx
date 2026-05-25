@@ -13,7 +13,9 @@
 // with agents.jsx (AG_TABS), providers.jsx (PROVIDER_FIELDS), and
 // workspaces.jsx (WS_TERMINAL).
 
-const TS_BUILTIN_IDS = ["system", "workspaces", "search", "misc", "web"];
+// Kept as a hardcoded fallback for filtering user toolsets out of the user
+// list; the Built-in cards now fetch /v1/toolsets/builtin dynamically.
+const TS_BUILTIN_RESERVED_IDS = ["system", "workspaces", "search", "misc", "web"];
 
 const TS_TABS = [
   { id: "config", label: "Config", icon: "settings" },
@@ -75,7 +77,7 @@ function TS_UserToolsets({ pushToast }) {
   // is the union — filter by reserved ids + the leading-underscore
   // convention to be safe).
   const items = rawItems.filter(
-    (t) => !TS_BUILTIN_IDS.includes(t.id) && !(t.id || "").startsWith("_"),
+    (t) => !TS_BUILTIN_RESERVED_IDS.includes(t.id) && !(t.id || "").startsWith("_"),
   );
   const filtered = React.useMemo(() => {
     let arr = items;
@@ -836,39 +838,34 @@ function _tsPillCls(status) {
 
 function TS_BuiltinToolsets({ pushToast }) {
   const { useResource, apiFetch } = window.matrixApi;
-  // Probe IC config — search is available only when the subsystem is ON.
-  const ic = useResource(
-    "toolsets:ic-config",
-    async (signal) => {
-      try {
-        return await apiFetch("GET", "/internal_collections/config", null, { signal });
-      } catch (e) {
-        if (e && e.status === 404) return null;
-        throw e;
-      }
-    },
+  // Fetch the live built-in catalogue from the server. The server decides
+  // availability (e.g. search is gated on IC subsystem), so the UI never
+  // needs to probe a second endpoint.
+  const builtins = useResource(
+    "toolsets:builtin",
+    (signal) => apiFetch("GET", "/toolsets/builtin", null, { signal }),
     { pollMs: 30000 }
   );
-  const subsystemOn = ic.data != null;
+  const items = builtins.data?.items ?? [];
   return (
     <div className="col" style={{ gap: 14 }}>
       <Banner
         kind="info"
         title="Built-in toolsets are read-only"
-        detail="These are wired by the runtime — you can't create, edit, or delete them. search becomes available once Internal Collections is bootstrapped."
+        detail="These are wired by the runtime — you can't create, edit, or delete them. `search` becomes available once Internal Collections is bootstrapped."
       />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        <TS_BuiltinCard id="system" tagline="Operator + diagnostic tools (always on)" icon="settings" available />
-        <TS_BuiltinCard id="workspaces" tagline="File ops + exec inside the bound workspace (always on)" icon="box" available />
-        <TS_BuiltinCard
-          id="search"
-          tagline={subsystemOn
-            ? "Semantic search over indexed entities (subsystem ON)"
-            : "Semantic search — unavailable while Internal Collections subsystem is OFF"}
-          icon="search"
-          available={subsystemOn}
-        />
-        <TS_BuiltinCard id="web" tagline="DuckDuckGo search + page-fetch primitives (always on)" icon="external" available />
+        {items.length === 0 && builtins.loading ? (
+          <div className="muted text-sm">Loading…</div>
+        ) : items.map((it) => (
+          <TS_BuiltinCard
+            key={it.id}
+            id={it.id}
+            tagline={it.tagline}
+            icon={it.icon}
+            available={it.available}
+          />
+        ))}
       </div>
     </div>
   );
