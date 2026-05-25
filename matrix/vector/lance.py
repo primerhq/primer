@@ -294,9 +294,53 @@ class LanceVectorStoreProvider(VectorStoreProvider):
         )
 
     async def maintain_indexes(self) -> list[MaintenanceReport]:
-        # Filled in Task 6; the stub returns [] so consumers that
-        # invoke it (e.g. tests that don't pin this branch) don't crash.
-        return []
+        if self._db is None:
+            raise ConfigError(
+                f"{type(self).__name__}.maintain_indexes called before initialize()"
+            )
+
+        reports: list[MaintenanceReport] = []
+        catalogue = await self._read_catalogue()
+        for row in catalogue:
+            collection_id = row["collection_id"]
+            table_name = row["table_name"]
+            indexed = bool(row.get("indexed"))
+            started = datetime.now(timezone.utc)
+            t0 = time.monotonic()
+            detail: str | None = None
+            action: MaintenanceAction = "reindex" if indexed else "none"
+            n_live: int | None = None
+            try:
+                table = await self._db.open_table(table_name)
+                try:
+                    n_live = await table.count_rows()
+                except Exception:
+                    n_live = None
+                if indexed:
+                    # LanceDB's optimize() combines compaction + index
+                    # rewrite. Fast on small tables, idempotent.
+                    # On lancedb 0.30.2 AsyncTable.optimize() is a coroutine.
+                    try:
+                        await table.optimize()
+                    except Exception as opt_exc:  # noqa: BLE001 - best-effort
+                        detail = f"optimize failed: {opt_exc}"
+                        action = "none"
+            except Exception as exc:  # noqa: BLE001 - per-table best-effort
+                action = "none"
+                detail = f"maintain failed: {exc}"
+            duration = time.monotonic() - t0
+            reports.append(MaintenanceReport(
+                collection_id=collection_id,
+                table_name=table_name,
+                action=action,
+                n_live_tup=n_live,
+                n_dead_tup=None,
+                n_mod_since_analyze=None,
+                duration_seconds=duration,
+                started_at=started,
+                detail=detail,
+            ))
+        return reports
 
 
 class LanceVectorStore(VectorStore):
@@ -328,6 +372,53 @@ class LanceVectorStore(VectorStore):
             vector=list(row["vector"]),
             meta=json.loads(row["meta"]) if row.get("meta") else {},
         )
+
+    async def _build_index(
+        self,
+        *,
+        table: "lancedb.AsyncTable",
+        collection_id: str,
+        distance_metric: str,
+    ) -> None:
+        """Build the best available ANN index, falling back through
+        available types if a given type is rejected by this LanceDB build.
+
+        LanceDB 0.30.2 API: ``create_index(column, *, config=<IndexConfig>)``
+        where ``column`` is the vector column name and ``config`` is an
+        instance from ``lancedb.index`` (HnswSq, HnswPq, IvfPq, …).
+
+        ``IVF_HNSW_SQ`` from the plan corresponds to ``HnswSq`` here;
+        ``IVF_PQ`` corresponds to ``IvfPq``.
+        """
+        from lancedb.index import HnswSq, HnswPq, IvfPq  # local import — optional dep
+
+        # Map our distance vocabulary to what lancedb.index expects.
+        # lancedb accepts "l2", "cosine", "dot".
+        dist = distance_metric  # already in lancedb's vocabulary
+
+        index_configs = [
+            HnswSq(distance_type=dist, num_partitions=1),  # modern HNSW variant
+            HnswPq(distance_type=dist, num_partitions=1, num_sub_vectors=1),
+            IvfPq(distance_type=dist, num_partitions=1, num_sub_vectors=1),
+        ]
+        for cfg in index_configs:
+            try:
+                await table.create_index("vector", config=cfg)
+                break
+            except Exception as exc:
+                logger.debug(
+                    "LanceDB create_index(%s) on %s failed: %s",
+                    type(cfg).__name__, collection_id, exc,
+                )
+                continue
+        else:
+            # Every index type failed; log + leave indexed=false so we
+            # retry on the next put past the threshold.
+            logger.warning(
+                "LanceDB index build failed on %s; will retry", collection_id
+            )
+            return
+        await self._provider._catalogue_mark_indexed(collection_id)
 
     # All abstract methods filled in subsequent tasks. Provide stubs so
     # the file imports cleanly; tests for each method live in the same
@@ -413,7 +504,21 @@ class LanceVectorStore(VectorStore):
                 cause=exc,
             ) from exc
 
-        # Lazy ANN-index build is wired in Task 6.
+        # Lazy ANN-index build: build once when row-count crosses
+        # config.index_min_rows. Idempotent at the catalogue level via
+        # the `indexed` flag.
+        if not cat.get("indexed", False):
+            try:
+                row_count = await table.count_rows()
+            except Exception:
+                row_count = 0
+            threshold = int(self._provider.config.index_min_rows)
+            if row_count >= threshold:
+                await self._build_index(
+                    table=table,
+                    collection_id=record.collection_id,
+                    distance_metric=cat["distance"],
+                )
 
     async def get(
         self,

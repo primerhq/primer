@@ -277,3 +277,62 @@ async def test_unknown_collection_raises_bad_request(lance_provider):
         await store.search("missing-coll", [0.0, 0.0, 0.0], k=1)
     with pytest.raises(BadRequestError):
         await store.get("missing-coll", "d1")
+
+
+# ---------- lazy HNSW index ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_index_built_when_row_count_crosses_threshold(tmp_path):
+    # Construct the provider with a tiny threshold so the test is fast.
+    cfg = LanceConfig(path=tmp_path / "lance", index_min_rows=3)
+    p = LanceVectorStoreProvider(cfg)
+    await p.initialize()
+    try:
+        store = p.get_vector_store()
+        await store.create_collection("col-a", dimensions=3)
+        # Below threshold — index should NOT be built.
+        await store.put(_record(doc="d1", chunk="c1", vec=[0.1, 0.0, 0.0]))
+        await store.put(_record(doc="d2", chunk="c1", vec=[0.0, 0.1, 0.0]))
+        row = await p._catalogue_get("col-a")
+        assert row["indexed"] is False
+        # Crossing the threshold — index MUST be built.
+        await store.put(_record(doc="d3", chunk="c1", vec=[0.0, 0.0, 0.1]))
+        row = await p._catalogue_get("col-a")
+        assert row["indexed"] is True
+    finally:
+        await p.aclose()
+
+
+# ---------- maintain_indexes ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_maintain_indexes_returns_one_report_per_collection(lance_provider):
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    await store.create_collection("col-b", dimensions=3)
+    reports = await lance_provider.maintain_indexes()
+    cids = sorted(r.collection_id for r in reports)
+    assert cids == ["col-a", "col-b"]
+    for r in reports:
+        assert r.duration_seconds >= 0
+        assert r.started_at is not None
+
+
+@pytest.mark.asyncio
+async def test_maintain_indexes_reports_reindex_when_indexed(tmp_path):
+    cfg = LanceConfig(path=tmp_path / "lance", index_min_rows=2)
+    p = LanceVectorStoreProvider(cfg)
+    await p.initialize()
+    try:
+        store = p.get_vector_store()
+        await store.create_collection("col-a", dimensions=3)
+        await store.put(_record(doc="d1", chunk="c1", vec=[0.1, 0.0, 0.0]))
+        await store.put(_record(doc="d2", chunk="c1", vec=[0.0, 0.1, 0.0]))
+        # Threshold crossed → indexed=true.
+        reports = await p.maintain_indexes()
+        assert len(reports) == 1
+        assert reports[0].action == "reindex"
+    finally:
+        await p.aclose()
