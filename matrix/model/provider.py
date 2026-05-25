@@ -618,6 +618,7 @@ class VectorStoreProviderType(str, Enum):
 
     PGVECTOR = "pgvector"
     PGVECTORSCALE = "pgvectorscale"
+    LANCE = "lance"
 
 
 class PoolConfig(BaseModel):
@@ -893,6 +894,52 @@ class PgVectorScaleConfig(_PgVectorBaseConfig):
     )
 
 
+class LanceConfig(BaseModel):
+    """LanceDB embedded-mode SemanticSearchProvider configuration.
+
+    Persists every collection's vector table as a Lance dataset under
+    ``path``. The directory is created with mode 0o700 on first use.
+    Multiple LanceDB SSPs can coexist as long as they use different
+    paths. Single-process write-safe; multi-process matrix-api +
+    matrix-worker against the same path is out of scope (spec §9).
+    """
+
+    path: Path = Field(
+        ...,
+        description=(
+            "Filesystem directory holding the LanceDB datasets. Created "
+            "on initialise if missing. Must be writable by the matrix "
+            "process. Use an absolute path."
+        ),
+    )
+    distance: Literal["cosine", "l2", "dot"] = Field(
+        default="cosine",
+        description="Distance metric used by every collection on this SSP.",
+    )
+    hnsw_m: PositiveInt = Field(
+        default=16,
+        description=(
+            "HNSW graph degree. Mirrors PgVectorConfig.hnsw_m so the "
+            "create modal can share one knobs section across backends."
+        ),
+    )
+    hnsw_ef_construction: PositiveInt = Field(
+        default=64,
+        description="HNSW build-time accuracy. Mirrors PgVectorConfig.",
+    )
+    hnsw_ef_search: PositiveInt = Field(
+        default=40,
+        description="HNSW query-time search width. Mirrors PgVectorConfig.",
+    )
+    index_min_rows: PositiveInt = Field(
+        default=1000,
+        description=(
+            "Skip ANN-index construction until a collection has at least "
+            "this many rows. Below the threshold, search runs brute-force."
+        ),
+    )
+
+
 class StorageProviderConfig(BaseModel):
     """Top-level Storage provider configuration -- discriminated by ``provider``."""
 
@@ -931,24 +978,22 @@ class VectorStoreProviderConfig(BaseModel):
         ...,
         description="Which VectorStore backend to use.",
     )
-    config: PgVectorConfig | PgVectorScaleConfig = Field(
+    config: PgVectorConfig | PgVectorScaleConfig | LanceConfig = Field(
         ...,
         description="Backend-specific connection settings; must match ``provider``.",
     )
 
     @model_validator(mode="after")
     def _validate_config_matches(self) -> "VectorStoreProviderConfig":
-        if self.provider == VectorStoreProviderType.PGVECTOR and not isinstance(
-            self.config, PgVectorConfig
-        ):
+        expected = {
+            VectorStoreProviderType.PGVECTOR: PgVectorConfig,
+            VectorStoreProviderType.PGVECTORSCALE: PgVectorScaleConfig,
+            VectorStoreProviderType.LANCE: LanceConfig,
+        }[self.provider]
+        if not isinstance(self.config, expected):
             raise ValueError(
-                "provider='pgvector' requires a PgVectorConfig in 'config'"
-            )
-        if self.provider == VectorStoreProviderType.PGVECTORSCALE and not isinstance(
-            self.config, PgVectorScaleConfig
-        ):
-            raise ValueError(
-                "provider='pgvectorscale' requires a PgVectorScaleConfig in 'config'"
+                f"provider={self.provider.value!r} requires a "
+                f"{expected.__name__} in 'config'"
             )
         return self
 
@@ -967,6 +1012,7 @@ class SemanticSearchProviderType(str, Enum):
 
     PGVECTOR = "pgvector"
     PGVECTORSCALE = "pgvectorscale"
+    LANCE = "lance"
 
 
 class SemanticSearchProvider(Identifiable):
@@ -983,23 +1029,21 @@ class SemanticSearchProvider(Identifiable):
         ...,
         description="Which semantic-search backend to use.",
     )
-    config: PgVectorConfig | PgVectorScaleConfig = Field(
+    config: PgVectorConfig | PgVectorScaleConfig | LanceConfig = Field(
         ...,
         description="Backend-specific connection settings; must match ``provider``.",
     )
 
     @model_validator(mode="after")
     def _validate_config_matches(self) -> "SemanticSearchProvider":
-        if self.provider == SemanticSearchProviderType.PGVECTOR and not isinstance(
-            self.config, PgVectorConfig
-        ):
+        expected = {
+            SemanticSearchProviderType.PGVECTOR: PgVectorConfig,
+            SemanticSearchProviderType.PGVECTORSCALE: PgVectorScaleConfig,
+            SemanticSearchProviderType.LANCE: LanceConfig,
+        }[self.provider]
+        if not isinstance(self.config, expected):
             raise ValueError(
-                "provider='pgvector' requires a PgVectorConfig in 'config'"
-            )
-        if self.provider == SemanticSearchProviderType.PGVECTORSCALE and not isinstance(
-            self.config, PgVectorScaleConfig
-        ):
-            raise ValueError(
-                "provider='pgvectorscale' requires a PgVectorScaleConfig in 'config'"
+                f"provider={self.provider.value!r} requires a "
+                f"{expected.__name__} in 'config'"
             )
         return self

@@ -842,3 +842,108 @@ def test_semantic_search_provider_mismatched_config_rejected_pgvectorscale():
                 pool=PoolConfig(),
             ),
         )
+
+
+# ===========================================================================
+# LanceConfig + SemanticSearchProvider 'lance' backend
+# ===========================================================================
+
+
+class TestLanceConfig:
+    def test_construction_minimal(self, tmp_path):
+        from matrix.model.provider import LanceConfig
+
+        cfg = LanceConfig(path=tmp_path)
+        assert cfg.path == tmp_path
+        assert cfg.distance == "cosine"
+        assert cfg.hnsw_m == 16
+        assert cfg.hnsw_ef_construction == 64
+        assert cfg.hnsw_ef_search == 40
+        assert cfg.index_min_rows == 1000
+
+    def test_construction_with_overrides(self, tmp_path):
+        from matrix.model.provider import LanceConfig
+
+        cfg = LanceConfig(
+            path=tmp_path,
+            distance="l2",
+            hnsw_m=32,
+            hnsw_ef_construction=128,
+            hnsw_ef_search=80,
+            index_min_rows=5000,
+        )
+        assert cfg.distance == "l2"
+        assert cfg.hnsw_m == 32
+        assert cfg.hnsw_ef_construction == 128
+        assert cfg.hnsw_ef_search == 80
+        assert cfg.index_min_rows == 5000
+
+    def test_path_required(self):
+        from pydantic import ValidationError
+        from matrix.model.provider import LanceConfig
+
+        with pytest.raises(ValidationError):
+            LanceConfig()  # type: ignore[call-arg]
+
+    def test_distance_enum_rejects_unknown(self, tmp_path):
+        from pydantic import ValidationError
+        from matrix.model.provider import LanceConfig
+
+        with pytest.raises(ValidationError):
+            LanceConfig(path=tmp_path, distance="hamming")  # type: ignore[arg-type]
+
+
+class TestSemanticSearchProviderLanceBackend:
+    def test_lance_row_round_trip(self, tmp_path):
+        from matrix.model.provider import (
+            LanceConfig,
+            SemanticSearchProvider,
+            SemanticSearchProviderType,
+        )
+
+        row = SemanticSearchProvider(
+            id="ssp-lance-1",
+            provider=SemanticSearchProviderType.LANCE,
+            config=LanceConfig(path=tmp_path),
+        )
+        assert row.provider == SemanticSearchProviderType.LANCE
+        assert isinstance(row.config, LanceConfig)
+        # JSON round-trip survives the discriminator.
+        dumped = row.model_dump(mode="json")
+        round_trip = SemanticSearchProvider.model_validate(dumped)
+        assert round_trip == row
+
+    def test_lance_provider_with_pgvector_config_rejected(self, tmp_path):
+        from pydantic import ValidationError
+        from matrix.model.provider import (
+            PgVectorConfig,
+            SemanticSearchProvider,
+            SemanticSearchProviderType,
+        )
+
+        with pytest.raises(ValidationError) as ei:
+            SemanticSearchProvider(
+                id="bad",
+                provider=SemanticSearchProviderType.LANCE,
+                config=PgVectorConfig(
+                    hostname="x", port=5432, username="u",
+                    password="p", database="d",
+                ),
+            )
+        assert "LanceConfig" in str(ei.value)
+
+    def test_pgvector_provider_with_lance_config_rejected(self, tmp_path):
+        from pydantic import ValidationError
+        from matrix.model.provider import (
+            LanceConfig,
+            SemanticSearchProvider,
+            SemanticSearchProviderType,
+        )
+
+        with pytest.raises(ValidationError) as ei:
+            SemanticSearchProvider(
+                id="bad",
+                provider=SemanticSearchProviderType.PGVECTOR,
+                config=LanceConfig(path=tmp_path),
+            )
+        assert "PgVectorConfig" in str(ei.value)
