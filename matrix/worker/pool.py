@@ -1094,49 +1094,62 @@ class WorkerPool:
         tool_name = parked.yielded.tool_name
 
         # ----- Dispatch the resume hook -----------------------------
-        if tool_name == "_approval":
-            # The approval gate's resume needs a live ToolExecutionManager
-            # to re-dispatch the original call with bypass_approval=True
-            # on the approved path. Falls through to synthetic
-            # rejection on YieldTimeout / YieldCancelled / malformed.
-            tool_result_part = await _resume_tool_approval(
-                blob=blob,
-                payload=resume_payload.payload,
-                tool_manager=tool_manager,
-            )
-        else:
-            # Generic resume hook from the registry. Hook may be
-            # sync (current convention for sleep/ask_user/watch_files)
-            # or async — await if awaitable.
-            try:
+        # Resume-hook failures are caught and synthesised as
+        # ToolResultPart(error=True) so the agent's LLM sees the
+        # failure in history instead of the turn crashing fatally.
+        # Two classes of failure this catches:
+        #   * Approved-path bypass dispatch on a tool that no longer
+        #     exists (operator wrote a policy for a tool that's
+        #     since been removed, or never existed — there's no FK
+        #     from ToolApprovalPolicy.tool_name to a registered
+        #     tool). Without this catch, UnsupportedContentError
+        #     escapes _run_one_turn into the fatal handler.
+        #   * Resume-hook itself raises (malformed metadata, etc.).
+        try:
+            if tool_name == "_approval":
+                # The approval gate's resume needs a live
+                # ToolExecutionManager to re-dispatch the original
+                # call with bypass_approval=True on the approved
+                # path. Falls through to synthetic rejection on
+                # YieldTimeout / YieldCancelled / malformed.
+                tool_result_part = await _resume_tool_approval(
+                    blob=blob,
+                    payload=resume_payload.payload,
+                    tool_manager=tool_manager,
+                )
+            else:
+                # Generic resume hook from the registry. Hook may be
+                # sync (current convention for sleep/ask_user/
+                # watch_files) or async — await if awaitable.
                 hook = get_resume_hook(tool_name)
-            except Exception:  # ConfigError on unknown tool
-                logger.exception(
-                    "resume: no hook registered for tool %r on "
-                    "session %s — failing",
-                    tool_name, sid,
+                hook_result = hook(
+                    parked.yielded.resume_metadata,
+                    resume_payload.payload,
                 )
-                await self._scheduler.clear_park(sid)
-                await self._scheduler.complete_turn(
-                    self._worker_id, sid,
-                    expected_turn_no=lease.turn_no,
-                    new_status=SessionStatus.ENDED,
-                    ended_reason="failed",
-                    re_enqueue=False,
+                if asyncio.iscoroutine(hook_result):
+                    hook_result = await hook_result
+                # ToolCallResult -> ToolResultPart (line-for-line
+                # per matrix/model/chat.py:256's documented recipe).
+                tool_result_part = ToolResultPart(
+                    id=parked.tool_call_id or "unknown",
+                    output=hook_result.output,
+                    error=hook_result.is_error,
                 )
-                return
-            hook_result = hook(
-                parked.yielded.resume_metadata,
-                resume_payload.payload,
+        except Exception as exc:  # noqa: BLE001 — fail-closed synthesis
+            logger.exception(
+                "resume: hook for tool %r on session %s raised; "
+                "synthesising error tool_result so the agent sees "
+                "the failure in history",
+                tool_name, sid,
             )
-            if asyncio.iscoroutine(hook_result):
-                hook_result = await hook_result
-            # ToolCallResult -> ToolResultPart (line-for-line per
-            # matrix/model/chat.py:256's documented recipe).
             tool_result_part = ToolResultPart(
                 id=parked.tool_call_id or "unknown",
-                output=hook_result.output,
-                error=hook_result.is_error,
+                output=json.dumps({
+                    "rejected": True,
+                    "reason": f"resume failed: {type(exc).__name__}: {exc}",
+                    "tool_name": tool_name,
+                }),
+                error=True,
             )
 
         # ----- Persist the [assistant_tool_use, tool_result] pair ----
