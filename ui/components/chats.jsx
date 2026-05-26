@@ -771,9 +771,22 @@ function ChatDetail({ chatId, onBack, pushToast }) {
             )
           )}
 
-          {/* Thinking indicator — only when we're waiting for the
-              first token of a response we just kicked off. */}
-          {waitingForReply && <CT_ThinkingBubble />}
+          {/* Thinking indicator — local flag for the freshly-sent
+              turn, plus a reload-time fallback driven by the chat's
+              turn_status when the most recent persisted row is still
+              a user_message (worker is processing). */}
+          {(() => {
+            const lastRow = messages.length > 0 ? messages[messages.length - 1] : null;
+            const reloadThinking =
+              !waitingForReply
+              && chatRow
+              && (chatRow.turn_status === "claimable" || chatRow.turn_status === "running")
+              && lastRow
+              && lastRow.kind === "user_message";
+            return (waitingForReply || reloadThinking)
+              ? <CT_ThinkingBubble />
+              : null;
+          })()}
 
           {/* Inline approval card — sits ABOVE the composer when pending */}
           {pendingApproval && (
@@ -1162,7 +1175,7 @@ function Message({ m }) {
     );
   }
 
-  if (kind === "yielded" || kind === "resumed" || kind === "done") {
+  if (kind === "yielded" || kind === "resumed" || kind === "done" || kind === "cancelled") {
     return (
       <div style={{ marginLeft: 60, marginTop: 4, marginBottom: 4 }}>
         <span className="muted text-sm mono">· {kind}</span>
