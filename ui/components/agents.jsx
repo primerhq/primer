@@ -267,6 +267,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
   const [fieldErrors, setFieldErrors] = React.useState({});
   const [activeTab, setActiveTab] = React.useState("basic");
   const [toolFilter, setToolFilter] = React.useState("");
+  const [toolPage, setToolPage] = React.useState(1);
 
   React.useEffect(() => {
     if (!providerId && providers.data?.items?.length) {
@@ -307,6 +308,40 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
     () => toolsetEntries.reduce((acc, ts) => acc + ts.tools.length, 0),
     [toolsetEntries],
   );
+
+  // Built-in toolsets alone can ship 100+ tools (the `system` toolset
+  // currently exposes ~102), so the picker has to paginate or the
+  // modal becomes a 3000-px-tall scroll. The list is flattened across
+  // available toolsets so paging counts whole tools, not whole groups
+  // (toolsets that span pages get their header re-rendered at the top
+  // of each page so the operator never loses scope context). Unavailable
+  // toolsets are stripped here and rendered as a compact summary above
+  // the paginated list so they don't waste page slots.
+  const AGENT_TOOL_PAGE_SIZE = 25;
+  const flatTools = React.useMemo(() => {
+    const out = [];
+    for (const ts of filteredToolsetEntries) {
+      if (!ts.available) continue;
+      for (const tool of ts.tools) {
+        out.push({ ...tool, _toolset: ts });
+      }
+    }
+    return out;
+  }, [filteredToolsetEntries]);
+  const unavailableToolsets = React.useMemo(
+    () => filteredToolsetEntries.filter((ts) => !ts.available),
+    [filteredToolsetEntries],
+  );
+  const toolTotalPages = Math.max(1, Math.ceil(flatTools.length / AGENT_TOOL_PAGE_SIZE));
+  // Snap to first page whenever the filter narrows the result set,
+  // and clamp the current page if the page count shrinks below it.
+  React.useEffect(() => { setToolPage(1); }, [toolFilter]);
+  React.useEffect(() => {
+    if (toolPage > toolTotalPages) setToolPage(toolTotalPages);
+  }, [toolPage, toolTotalPages]);
+  const toolPageStart = (toolPage - 1) * AGENT_TOOL_PAGE_SIZE;
+  const toolPageEnd = Math.min(toolPageStart + AGENT_TOOL_PAGE_SIZE, flatTools.length);
+  const pageTools = flatTools.slice(toolPageStart, toolPageEnd);
 
   const toggleScopedId = (scopedId) => {
     setSelectedScopedIds((prev) => {
@@ -524,80 +559,145 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
               {toolFilter ? "No tools match the filter." : "No toolsets available."}
             </div>
           )}
-          <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
-            {filteredToolsetEntries.map((entry) => {
-              const allSelected = entry.tools.length > 0 && entry.tools.every((t) => selectedScopedIds.has(t.scoped_id));
-              const someSelected = entry.tools.some((t) => selectedScopedIds.has(t.scoped_id));
-              return (
-                <div key={entry.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                  <div
-                    style={{
-                      display: "flex", alignItems: "center", gap: 8,
-                      padding: "8px 10px", background: "var(--bg-0)",
-                      borderBottom: "1px solid var(--border)",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={allSelected}
-                      ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
-                      onChange={() => toggleToolsetGroup(entry, allSelected)}
-                      disabled={!entry.available || entry.tools.length === 0}
-                      data-testid={`agent-toolset-group-${entry.id}`}
-                    />
-                    <span className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{entry.id}</span>
-                    {entry.builtin && <span className="muted text-sm" style={{ fontSize: 10.5 }}>· built-in</span>}
-                    {entry.tagline && (
-                      <span className="muted text-sm" style={{ fontSize: 11, marginLeft: 4 }}>{entry.tagline}</span>
-                    )}
-                    {!entry.available && entry.unavailable_reason && (
-                      <span
-                        className="muted text-sm"
-                        style={{ marginLeft: "auto", color: "var(--amber)" }}
-                        title={entry.unavailable_reason}
-                      >unavailable</span>
-                    )}
-                    <span className="muted text-sm" style={{ marginLeft: entry.unavailable_reason ? 8 : "auto" }}>
-                      {entry.tools.length} tool{entry.tools.length === 1 ? "" : "s"}
-                    </span>
-                  </div>
-                  {entry.tools.map((t) => {
-                    const checked = selectedScopedIds.has(t.scoped_id);
-                    return (
-                      <label
-                        key={t.scoped_id}
+          {/* Unavailable toolsets stay visible outside the paginated
+              body so operators can see which providers exist but aren't
+              currently usable — they don't consume page slots. */}
+          {unavailableToolsets.length > 0 && (
+            <div style={{ marginBottom: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {unavailableToolsets.map((entry) => (
+                <span
+                  key={entry.id}
+                  className="muted text-sm"
+                  style={{
+                    fontSize: 11, padding: "2px 8px",
+                    border: "1px dashed var(--border)", borderRadius: 4,
+                    color: "var(--amber)", opacity: 0.85,
+                  }}
+                  title={entry.unavailable_reason || "unavailable"}
+                >
+                  <span className="mono">{entry.id}</span> · unavailable
+                </span>
+              ))}
+            </div>
+          )}
+          {flatTools.length > 0 && (
+            <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
+              {(() => {
+                // Render the paginated slice with a toolset header
+                // every time the parent toolset changes. The header
+                // tristate operates on the FULL toolset (across pages),
+                // not just the visible slice, so bulk select stays
+                // meaningful regardless of paging.
+                const rows = [];
+                let lastToolsetId = null;
+                for (const t of pageTools) {
+                  if (t._toolset.id !== lastToolsetId) {
+                    const entry = t._toolset;
+                    const allSelected = entry.tools.length > 0 && entry.tools.every((x) => selectedScopedIds.has(x.scoped_id));
+                    const someSelected = entry.tools.some((x) => selectedScopedIds.has(x.scoped_id));
+                    rows.push(
+                      <div
+                        key={`h-${entry.id}-p${toolPage}`}
                         style={{
-                          display: "flex", alignItems: "flex-start", gap: 8,
-                          padding: "6px 10px 6px 28px", cursor: "pointer",
-                          borderTop: "1px solid var(--bg-1)",
-                          background: checked ? "var(--bg-0)" : "transparent",
+                          display: "flex", alignItems: "center", gap: 8,
+                          padding: "8px 10px", background: "var(--bg-0)",
+                          borderTop: lastToolsetId === null ? "none" : "1px solid var(--border)",
+                          borderBottom: "1px solid var(--border)",
+                          position: "sticky", top: 0, zIndex: 1,
                         }}
-                        data-testid={`agent-tool-${t.scoped_id}`}
                       >
                         <input
                           type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleScopedId(t.scoped_id)}
-                          style={{ marginTop: 3 }}
+                          checked={allSelected}
+                          ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+                          onChange={() => toggleToolsetGroup(entry, allSelected)}
+                          disabled={entry.tools.length === 0}
+                          data-testid={`agent-toolset-group-${entry.id}`}
                         />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div className="mono" style={{ fontSize: 12 }}>{t.id}</div>
-                          {t.description && (
-                            <div className="muted text-sm" style={{ fontSize: 11, marginTop: 2, lineHeight: 1.4 }}>
-                              {t.description}
-                            </div>
-                          )}
-                        </div>
-                      </label>
+                        <span className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{entry.id}</span>
+                        {entry.builtin && <span className="muted text-sm" style={{ fontSize: 10.5 }}>· built-in</span>}
+                        {entry.tagline && (
+                          <span className="muted text-sm" style={{ fontSize: 11, marginLeft: 4 }}>{entry.tagline}</span>
+                        )}
+                        <span className="muted text-sm" style={{ marginLeft: "auto" }}>
+                          {entry.tools.length} tool{entry.tools.length === 1 ? "" : "s"}
+                        </span>
+                      </div>
                     );
-                  })}
-                </div>
-              );
-            })}
-          </div>
+                    lastToolsetId = entry.id;
+                  }
+                  const checked = selectedScopedIds.has(t.scoped_id);
+                  rows.push(
+                    <label
+                      key={t.scoped_id}
+                      style={{
+                        display: "flex", alignItems: "flex-start", gap: 8,
+                        padding: "6px 10px 6px 28px", cursor: "pointer",
+                        borderTop: "1px solid var(--bg-1)",
+                        background: checked ? "var(--bg-0)" : "transparent",
+                      }}
+                      data-testid={`agent-tool-${t.scoped_id}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleScopedId(t.scoped_id)}
+                        style={{ marginTop: 3 }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="mono" style={{ fontSize: 12 }}>{t.id}</div>
+                        {t.description && (
+                          <div className="muted text-sm" style={{ fontSize: 11, marginTop: 2, lineHeight: 1.4 }}>
+                            {t.description}
+                          </div>
+                        )}
+                      </div>
+                    </label>
+                  );
+                }
+                return rows;
+              })()}
+            </div>
+          )}
+          {flatTools.length > 0 && (
+            <div
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                marginTop: 8, fontSize: 11.5, color: "var(--text-3)",
+              }}
+            >
+              <span className="tabular">
+                Showing <strong style={{ color: "var(--text)" }}>{flatTools.length === 0 ? 0 : toolPageStart + 1}</strong>–
+                <strong style={{ color: "var(--text)" }}>{toolPageEnd}</strong> of{" "}
+                <strong style={{ color: "var(--text)" }}>{flatTools.length}</strong>
+              </span>
+              <div className="pager" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <Btn
+                  size="sm"
+                  kind="ghost"
+                  icon="chevron-left"
+                  disabled={toolPage === 1}
+                  onClick={() => setToolPage((p) => Math.max(1, p - 1))}
+                  data-testid="agent-tool-page-prev"
+                >Previous</Btn>
+                <span className="muted text-sm tabular" style={{ padding: "0 6px" }}>
+                  Page {toolPage} of {toolTotalPages}
+                </span>
+                <Btn
+                  size="sm"
+                  kind="ghost"
+                  iconRight="chevron-right"
+                  disabled={toolPage === toolTotalPages}
+                  onClick={() => setToolPage((p) => Math.min(toolTotalPages, p + 1))}
+                  data-testid="agent-tool-page-next"
+                >Next</Btn>
+              </div>
+            </div>
+          )}
           <div className="field-help" style={{ marginTop: 8 }}>
             Tools are referenced as <span className="mono">toolset_id__tool_name</span>. Selecting any tool
-            automatically attaches its parent toolset to the agent.
+            automatically attaches its parent toolset to the agent. Bulk-select via the toolset header
+            applies to ALL tools in that toolset, not just the visible page.
           </div>
         </div>
       )}
