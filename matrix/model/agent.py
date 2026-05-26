@@ -91,12 +91,25 @@ class Agent(Describeable):
     tools: list[str] = Field(
         default_factory=list,
         description=(
-            "First-class tools registered with this agent, by id. "
-            "Resolved against the application's toolsets at session "
-            "start. Workspace tools are NOT listed here -- those are "
-            "composed onto the agent automatically when it attaches "
-            "to a workspace (see "
-            ":class:`matrix.workspace.session.AgentSession`)."
+            "Toolset ids the agent has access to. Every tool listed "
+            "by each toolset's provider is exposed to the agent "
+            "unless ``tool_allowlist`` narrows the surface further. "
+            "Workspace tools are NOT listed here -- those are composed "
+            "onto the agent automatically when it attaches to a "
+            "workspace (see :class:`matrix.workspace.session.AgentSession`)."
+        ),
+    )
+    tool_allowlist: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional per-tool filter expressed as scoped tool ids "
+            "(``<toolset_id>__<tool_name>``). When set, only tools "
+            "whose scoped id appears in this list are exposed to the "
+            "LLM and accepted by the dispatcher; every other tool from "
+            "the registered toolsets is hidden. When ``None`` (default) "
+            "every tool from every toolset in :attr:`tools` is exposed "
+            "— the legacy behaviour. The operator console uses this to "
+            "let users pick individual tools instead of whole toolsets."
         ),
     )
     system_prompt: list[str] = Field(

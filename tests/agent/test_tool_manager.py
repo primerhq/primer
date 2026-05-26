@@ -151,6 +151,79 @@ class TestToolsetRouting:
 # ---- Workspace-tool routing -----------------------------------------------
 
 
+class TestToolAllowlist:
+    """``tool_allowlist`` narrows the agent's tool surface to a
+    hand-picked subset of scoped ids — covers the operator console's
+    per-tool agent picker (replaces whole-toolset attachment)."""
+
+    @pytest.mark.asyncio
+    async def test_list_tools_filters_to_allowlisted_scoped_ids(self) -> None:
+        a = _FakeToolsetProvider(
+            toolset_id="a",
+            tools=[
+                _tool("foo", toolset_id="a"),
+                _tool("bar", toolset_id="a"),
+                _tool("baz", toolset_id="a"),
+            ],
+        )
+        mgr = ToolExecutionManager(
+            toolset_providers={"a": a},  # type: ignore[arg-type]
+            tool_allowlist=["a__foo", "a__baz"],
+        )
+        tools = await mgr.list_tools()
+        assert sorted(t.id for t in tools) == ["a__baz", "a__foo"]
+
+    @pytest.mark.asyncio
+    async def test_execute_rejects_non_allowlisted_tool(self) -> None:
+        a = _FakeToolsetProvider(
+            toolset_id="a",
+            tools=[_tool("foo", toolset_id="a"), _tool("bar", toolset_id="a")],
+        )
+        mgr = ToolExecutionManager(
+            toolset_providers={"a": a},  # type: ignore[arg-type]
+            tool_allowlist=["a__foo"],
+        )
+        await mgr.list_tools()
+        # a__foo is allowed and routes correctly.
+        ok = await mgr.execute(ToolCallPart(id="c1", name="a__foo", arguments={}))
+        assert ok.error is False
+        assert a.calls == [("foo", {}, None)]
+        # a__bar is registered with the toolset but excluded by the
+        # allowlist — must be refused so the operator's narrowed
+        # surface actually load-bears.
+        with pytest.raises(UnsupportedContentError, match="tool_allowlist"):
+            await mgr.execute(ToolCallPart(id="c2", name="a__bar", arguments={}))
+
+    @pytest.mark.asyncio
+    async def test_empty_allowlist_treated_as_no_filter(self) -> None:
+        """Empty list must NOT lock the agent out — operators submitting
+        ``[]`` to mean 'no filter configured' shouldn't accidentally
+        block everything."""
+        a = _FakeToolsetProvider(
+            toolset_id="a",
+            tools=[_tool("foo", toolset_id="a"), _tool("bar", toolset_id="a")],
+        )
+        mgr = ToolExecutionManager(
+            toolset_providers={"a": a},  # type: ignore[arg-type]
+            tool_allowlist=[],
+        )
+        tools = await mgr.list_tools()
+        assert sorted(t.id for t in tools) == ["a__bar", "a__foo"]
+
+    @pytest.mark.asyncio
+    async def test_none_allowlist_keeps_legacy_behaviour(self) -> None:
+        a = _FakeToolsetProvider(
+            toolset_id="a",
+            tools=[_tool("foo", toolset_id="a"), _tool("bar", toolset_id="a")],
+        )
+        mgr = ToolExecutionManager(
+            toolset_providers={"a": a},  # type: ignore[arg-type]
+            tool_allowlist=None,
+        )
+        tools = await mgr.list_tools()
+        assert sorted(t.id for t in tools) == ["a__bar", "a__foo"]
+
+
 class _FakeWorkspaceTool:
     """Fake :class:`WorkspaceTool` implementing the structural protocol."""
 

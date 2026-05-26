@@ -728,6 +728,7 @@ async def _build_runner(
     tool_manager = ToolExecutionManager(
         toolset_providers=toolset_providers,
         provider_registry=provider_registry,
+        tool_allowlist=agent.tool_allowlist,
     )
 
     return ChatTurnRunner(

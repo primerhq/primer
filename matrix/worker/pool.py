@@ -469,12 +469,16 @@ class WorkerPool:
 
         # Build a workspace-aware ToolExecutionManager. The factory
         # composes the agent's toolsets with the session's workspace
-        # tools and binds them to this AgentSession.
+        # tools and binds them to this AgentSession. The optional
+        # ``tool_allowlist`` narrows what the LLM sees + can dispatch
+        # to a hand-picked subset of scoped tool ids; ``None`` keeps
+        # the legacy behaviour of exposing everything.
         tool_manager = ToolExecutionManager.for_workspace(
             toolset_providers=toolset_providers,
             session=agent_session,
             approval_resolver=self._approval_resolver,
             provider_registry=self._provider_registry,
+            tool_allowlist=agent.tool_allowlist,
         )
 
         executor = WorkspaceAgentExecutor(
@@ -588,11 +592,13 @@ class WorkerPool:
                     session=workspace_session,
                     approval_resolver=self._approval_resolver,
                     provider_registry=self._provider_registry,
+                    tool_allowlist=agent.tool_allowlist,
                 )
             return ToolExecutionManager(
                 toolset_providers=toolset_providers,
                 approval_resolver=self._approval_resolver,
                 provider_registry=self._provider_registry,
+                tool_allowlist=agent.tool_allowlist,
             )
 
         # ④ Optional handles wired in later phases.

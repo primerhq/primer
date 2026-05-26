@@ -97,12 +97,24 @@ class ToolExecutionManager:
         workspace_session: "AgentSession | None" = None,
         approval_resolver: ApprovalResolver | None = None,
         provider_registry: object | None = None,
+        tool_allowlist: list[str] | None = None,
     ) -> None:
         self._toolsets: dict[str, ToolsetProvider] = dict(toolset_providers or {})
         self._workspace_tools: dict[str, "WorkspaceTool"] = dict(workspace_tools or {})
         self._workspace_session = workspace_session
         self._approval_resolver = approval_resolver
         self._provider_registry = provider_registry
+        # Optional per-scoped-id filter. When set + non-empty, list_tools()
+        # returns only the listed scoped ids and execute() rejects calls
+        # for ids outside the list. ``None`` *or an empty list* keeps the
+        # legacy "expose everything the toolset providers list"
+        # behaviour — operators submitting ``[]`` to mean "no filter
+        # configured" shouldn't accidentally lock themselves out. Stored
+        # as a frozenset for O(1) membership tests on the hot dispatch
+        # path.
+        self._tool_allowlist: frozenset[str] | None = (
+            frozenset(tool_allowlist) if tool_allowlist else None
+        )
         # Built lazily on first list_tools / execute.
         # Scoped tool id (``toolset_id__bare_name``) -> (toolset_id, bare_name).
         # Tool ids surfaced to the LLM are scoped to avoid collisions across
@@ -142,11 +154,14 @@ class ToolExecutionManager:
         session: "AgentSession",
         approval_resolver: ApprovalResolver | None = None,
         provider_registry: object | None = None,
+        tool_allowlist: list[str] | None = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
         Pulls the workspace tool list off ``session.workspace_tools``
         and registers it; ``toolset_providers`` are passed through.
+        ``tool_allowlist`` (when supplied) restricts the exposed tools
+        to the given scoped ids — see :class:`Agent.tool_allowlist`.
         """
         ws_tools = {t.id: t for t in session.workspace_tools}
         return cls(
@@ -155,6 +170,7 @@ class ToolExecutionManager:
             workspace_session=session,
             approval_resolver=approval_resolver,
             provider_registry=provider_registry,
+            tool_allowlist=tool_allowlist,
         )
 
     async def list_tools(
@@ -183,10 +199,19 @@ class ToolExecutionManager:
                             "reserved as the scope separator"
                         )
                     scoped_id = f"{toolset_id}{_SCOPE_SEPARATOR}{t.id}"
+                    # Routing table is built unconditionally so an
+                    # allowlist hit still resolves; the visible
+                    # catalogue is filtered below.
+                    self._tool_to_toolset[scoped_id] = (toolset_id, t.id)
+                    if self._tool_allowlist is not None and scoped_id not in self._tool_allowlist:
+                        continue
                     scoped_tool = t.model_copy(update={"id": scoped_id})
                     catalogue.append(scoped_tool)
-                    self._tool_to_toolset[scoped_id] = (toolset_id, t.id)
             # Workspace tools (always under the WORKSPACE_TOOLSET_ID scope).
+            # Workspace tools are agent-implicit and bypass the
+            # allowlist — they're injected by the workspace binding,
+            # not picked from a registered toolset, so the operator
+            # never has to enumerate them in the agent definition.
             for ws_tool in self._workspace_tools.values():
                 if _SCOPE_SEPARATOR in ws_tool.id:
                     raise ConfigError(
@@ -240,6 +265,17 @@ class ToolExecutionManager:
                     "or workspace"
                 )
             toolset_id, bare_name = entry
+            # Enforce the per-tool allowlist: a model trying to invoke
+            # a known-but-filtered tool must be refused so the
+            # operator's narrowed surface is actually load-bearing.
+            if (
+                self._tool_allowlist is not None
+                and call.name not in self._tool_allowlist
+            ):
+                raise UnsupportedContentError(
+                    f"tool {call.name!r} is registered with the toolset "
+                    f"but not in the agent's tool_allowlist"
+                )
 
         # Approval gate — runs after routing resolution, before dispatch.
         if not bypass_approval and self._approval_resolver is not None:

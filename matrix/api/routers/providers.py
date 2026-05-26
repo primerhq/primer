@@ -564,6 +564,125 @@ async def list_builtin_toolsets(
     return {"items": items}
 
 
+@builtin_toolsets_router.get(
+    "/tools",
+    summary=(
+        "List every tool currently exposed by every registered "
+        "toolset (built-in + user-defined)."
+    ),
+)
+async def list_all_tools(
+    principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Fan out across every reachable toolset and return a single
+    flat catalogue keyed by toolset.
+
+    Powers the operator console's per-tool agent picker — without
+    this, the UI would have to issue one ``/toolsets/{id}/tools``
+    request per toolset to populate the search box.
+
+    Failure tolerance: a toolset that 401s, 5xxs, or just times out
+    is reported with ``available: false`` and the failure reason
+    instead of bringing down the whole catalogue. The UI shows the
+    rest of the picker so one broken MCP server doesn't block the
+    operator from configuring an agent.
+    """
+    from matrix.model.internal import InternalCollectionsConfig
+    from matrix.model.provider import Toolset
+
+    out: list[dict] = []
+
+    # 1. Built-in toolsets (system / workspaces / search / misc / web).
+    # ``search`` is gated by the InternalCollectionsConfig probe — same
+    # logic as list_builtin_toolsets() above.
+    ic_storage = storage_provider.get_storage(InternalCollectionsConfig)
+    ic_active = False
+    try:
+        page = await ic_storage.find(
+            None, OffsetPage(offset=0, length=1),
+        )
+        ic_active = len(page.items) > 0
+    except Exception:
+        ic_active = False
+
+    for spec in _BUILTIN_TOOLSETS:
+        tid = spec["id"]
+        available = spec["always_on"] or (tid == "search" and ic_active)
+        entry: dict = {
+            "id": tid,
+            "builtin": True,
+            "label": spec.get("label", tid),
+            "tagline": spec.get("tagline", ""),
+            "available": available,
+            "tools": [],
+        }
+        if not available:
+            entry["unavailable_reason"] = (
+                "internal collections not bootstrapped"
+                if tid == "search" else "subsystem disabled"
+            )
+            out.append(entry)
+            continue
+        try:
+            provider = await registry.get_toolset(tid)
+            async for tool in provider.list_tools(principal=principal):
+                entry["tools"].append({
+                    "id": tool.id,
+                    "scoped_id": f"{tid}__{tool.id}",
+                    "description": tool.description or "",
+                })
+        except Exception as exc:  # noqa: BLE001
+            entry["available"] = False
+            entry["unavailable_reason"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+        out.append(entry)
+
+    # 2. User-defined Toolset rows. Page through storage so the
+    # catalogue scales beyond the default 200-row cap.
+    ts_storage = storage_provider.get_storage(Toolset)
+    seen_user_ids: set[str] = set()
+    offset = 0
+    page_size = 200
+    while True:
+        page = await ts_storage.list(
+            OffsetPage(offset=offset, length=page_size),
+        )
+        for row in page.items:
+            if row.id in seen_user_ids:
+                continue
+            seen_user_ids.add(row.id)
+            entry = {
+                "id": row.id,
+                "builtin": False,
+                "label": row.id,
+                "tagline": row.description or "",
+                "available": True,
+                "tools": [],
+            }
+            try:
+                provider = await registry.get_toolset(row.id)
+                async for tool in provider.list_tools(principal=principal):
+                    entry["tools"].append({
+                        "id": tool.id,
+                        "scoped_id": f"{row.id}__{tool.id}",
+                        "description": tool.description or "",
+                    })
+            except Exception as exc:  # noqa: BLE001
+                entry["available"] = False
+                entry["unavailable_reason"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+            out.append(entry)
+        if len(page.items) < page_size:
+            break
+        offset += page_size
+
+    return {"items": out}
+
+
 __all__ = [
     "builtin_toolsets_router",
     "cross_encoder_provider_router",

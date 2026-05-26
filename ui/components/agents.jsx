@@ -244,39 +244,29 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
     (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
     { pollMs: null }
   );
-  const toolsets = useResource(
-    "agents:toolsets",
-    (signal) => apiFetch("GET", "/toolsets?limit=200", null, { signal }),
+  // /v1/tools returns the merged catalogue across user-defined + the
+  // five built-in toolsets, with each tool's scoped id (toolset__tool)
+  // already computed server-side. Failures per-toolset are surfaced
+  // via available=false on the toolset entry so the picker can render
+  // them dimmed instead of breaking entirely.
+  const toolsCatalogue = useResource(
+    "agents:tools-catalogue",
+    (signal) => apiFetch("GET", "/tools", null, { signal }),
     { pollMs: null }
   );
-  const builtins = useResource(
-    "agents:toolsets:builtin",
-    (signal) => apiFetch("GET", "/toolsets/builtin", null, { signal }),
-    { pollMs: null }
-  );
-
-  const allToolsets = React.useMemo(() => {
-    const userRows = (toolsets.data?.items ?? []).map((t) => ({
-      id: t.id, label: t.id, builtin: false, available: true, description: t.description || "",
-    }));
-    const builtinRows = (builtins.data?.items ?? []).map((b) => ({
-      id: b.id,
-      label: b.label || b.id,
-      builtin: true,
-      available: b.available !== false,
-      description: b.description || "",
-    }));
-    return [...builtinRows, ...userRows];
-  }, [toolsets.data, builtins.data]);
 
   const [id, setId] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [providerId, setProviderId] = React.useState("");
   const [modelName, setModelName] = React.useState("");
   const [systemPrompt, setSystemPrompt] = React.useState("");
-  const [selectedTools, setSelectedTools] = React.useState([]);
+  // selectedScopedIds is a Set so toggles are O(1); persisted as a
+  // sorted list at submit time for stable JSON.
+  const [selectedScopedIds, setSelectedScopedIds] = React.useState(() => new Set());
   const [temperature, setTemperature] = React.useState("");
   const [fieldErrors, setFieldErrors] = React.useState({});
+  const [activeTab, setActiveTab] = React.useState("basic");
+  const [toolFilter, setToolFilter] = React.useState("");
 
   React.useEffect(() => {
     if (!providerId && providers.data?.items?.length) {
@@ -294,9 +284,61 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelOptions]);
 
-  const toggleTool = (tid) => {
-    setSelectedTools((prev) => (prev.includes(tid) ? prev.filter((x) => x !== tid) : [...prev, tid]));
+  const toolsetEntries = toolsCatalogue.data?.items ?? [];
+
+  const filteredToolsetEntries = React.useMemo(() => {
+    const q = toolFilter.trim().toLowerCase();
+    if (!q) return toolsetEntries;
+    return toolsetEntries
+      .map((ts) => ({
+        ...ts,
+        tools: ts.tools.filter(
+          (t) =>
+            t.id.toLowerCase().includes(q) ||
+            t.scoped_id.toLowerCase().includes(q) ||
+            (t.description || "").toLowerCase().includes(q) ||
+            ts.id.toLowerCase().includes(q),
+        ),
+      }))
+      .filter((ts) => ts.tools.length > 0 || ts.id.toLowerCase().includes(q));
+  }, [toolsetEntries, toolFilter]);
+
+  const totalAvailable = React.useMemo(
+    () => toolsetEntries.reduce((acc, ts) => acc + ts.tools.length, 0),
+    [toolsetEntries],
+  );
+
+  const toggleScopedId = (scopedId) => {
+    setSelectedScopedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(scopedId)) next.delete(scopedId);
+      else next.add(scopedId);
+      return next;
+    });
   };
+
+  const toggleToolsetGroup = (entry, allSelected) => {
+    setSelectedScopedIds((prev) => {
+      const next = new Set(prev);
+      for (const t of entry.tools) {
+        if (allSelected) next.delete(t.scoped_id);
+        else next.add(t.scoped_id);
+      }
+      return next;
+    });
+  };
+
+  // Derive toolset ids from the selected scoped ids — the agent body's
+  // `tools` field needs them so the runtime knows which providers to
+  // resolve before the allowlist filter kicks in.
+  const derivedToolsetIds = React.useMemo(() => {
+    const out = new Set();
+    for (const sid of selectedScopedIds) {
+      const sep = sid.indexOf("__");
+      if (sep > 0) out.add(sid.slice(0, sep));
+    }
+    return [...out].sort();
+  }, [selectedScopedIds]);
 
   const create = useMutation(
     (body) => apiFetch("POST", "/agents", body),
@@ -322,18 +364,22 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
 
   const submit = async () => {
     setFieldErrors({});
+    const allowlist = [...selectedScopedIds].sort();
     const body = {
       ...(id ? { id } : {}),
       description: description || "(no description)",
       model: { provider_id: providerId, model_name: modelName },
-      tools: selectedTools,
+      tools: derivedToolsetIds,
       system_prompt: systemPrompt ? [systemPrompt] : [],
     };
+    if (allowlist.length > 0) body.tool_allowlist = allowlist;
     if (temperature !== "" && !Number.isNaN(+temperature)) {
       body.temperature = Number(temperature);
     }
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
+
+  const selectedCount = selectedScopedIds.size;
 
   return (
     <Modal
@@ -353,138 +399,243 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
         </>
       }
     >
-      <div className="field">
-        <label className="field-label" htmlFor="na-id">
-          ID <span className="hint">optional — backend assigns if blank</span>
-        </label>
-        <input
-          id="na-id"
-          className="input"
-          value={id}
-          onChange={(e) => setId(e.target.value)}
-          placeholder="auto-generated"
-          style={{ width: "100%" }}
-        />
+      <div className="tabs" style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--border)", marginBottom: 14 }}>
+        {[
+          { key: "basic", label: "Basic" },
+          { key: "tools", label: `Tools${selectedCount > 0 ? ` (${selectedCount})` : ""}` },
+          { key: "advanced", label: "Advanced" },
+        ].map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            data-testid={`agent-tab-${t.key}`}
+            onClick={() => setActiveTab(t.key)}
+            style={{
+              background: "none", border: "none",
+              borderBottom: activeTab === t.key ? "2px solid var(--accent)" : "2px solid transparent",
+              padding: "6px 12px", marginBottom: -1, cursor: "pointer",
+              color: activeTab === t.key ? "var(--text)" : "var(--text-2)",
+              fontSize: 12.5, fontWeight: activeTab === t.key ? 600 : 400,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
-      <div className="field">
-        <label className="field-label" htmlFor="na-description">Description</label>
-        <input
-          id="na-description"
-          className="input"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          style={{ width: "100%" }}
-        />
-        {fieldErrors["body.description"] && (
-          <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.description"]}</div>
-        )}
-      </div>
-      <div className="field">
-        <label className="field-label" htmlFor="na-llm-provider">LLM provider</label>
-        <select
-          id="na-llm-provider"
-          className="select"
-          value={providerId}
-          onChange={(e) => setProviderId(e.target.value)}
-          style={{ width: "100%" }}
-        >
-          <option value="">-- pick a provider --</option>
-          {(providers.data?.items ?? []).map((p) => (
-            <option key={p.id} value={p.id}>{p.id}</option>
-          ))}
-        </select>
-        {(providers.data?.items ?? []).length === 0 && !providers.loading && (
-          <div className="field-help" style={{ color: "var(--amber)" }}>
-            No LLM providers configured. Create one at <span className="mono">/providers/llm</span> first.
+
+      {activeTab === "basic" && (
+        <>
+          <div className="field">
+            <label className="field-label" htmlFor="na-id">
+              ID <span className="hint">optional — backend assigns if blank</span>
+            </label>
+            <input
+              id="na-id"
+              className="input"
+              value={id}
+              onChange={(e) => setId(e.target.value)}
+              placeholder="auto-generated"
+              style={{ width: "100%" }}
+            />
           </div>
-        )}
-        {fieldErrors["body.model.provider_id"] && (
-          <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.provider_id"]}</div>
-        )}
-      </div>
-      <div className="field">
-        <label className="field-label" htmlFor="na-model">Model</label>
-        <select
-          id="na-model"
-          className="select"
-          value={modelName}
-          onChange={(e) => setModelName(e.target.value)}
-          style={{ width: "100%" }}
-        >
-          <option value="">-- pick a model --</option>
-          {modelOptions.map((m) => (
-            <option key={m.name} value={m.name}>{m.name}</option>
-          ))}
-        </select>
-        <div className="field-help">Model list comes from the provider row, not a live introspection (T0025).</div>
-        {fieldErrors["body.model.model_name"] && (
-          <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.model_name"]}</div>
-        )}
-      </div>
-      <div className="field">
-        <label className="field-label">
-          Toolsets <span className="hint">optional · built-ins are always available</span>
-        </label>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {allToolsets.map((t) => {
-            const selected = selectedTools.includes(t.id);
-            const disabled = !t.available;
-            const title = t.description
-              ? `${t.description}${disabled ? " · unavailable" : ""}`
-              : (disabled ? "unavailable" : undefined);
-            return (
-              <span
-                key={t.id}
-                className={`chip ${selected ? "active" : ""}`}
-                onClick={() => { if (!disabled) toggleTool(t.id); }}
-                style={{
-                  cursor: disabled ? "not-allowed" : "pointer",
-                  opacity: disabled ? 0.5 : 1,
-                }}
-                title={title}
-              >
-                {t.label}
-                {t.builtin && (
-                  <span className="muted text-sm" style={{ marginLeft: 4 }}>· built-in</span>
-                )}
-              </span>
-            );
-          })}
-          {allToolsets.length === 0 && !toolsets.loading && !builtins.loading && (
-            <span className="muted text-sm">No toolsets available.</span>
+          <div className="field">
+            <label className="field-label" htmlFor="na-description">Description</label>
+            <input
+              id="na-description"
+              className="input"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              style={{ width: "100%" }}
+            />
+            {fieldErrors["body.description"] && (
+              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.description"]}</div>
+            )}
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="na-llm-provider">LLM provider</label>
+            <select
+              id="na-llm-provider"
+              className="select"
+              value={providerId}
+              onChange={(e) => setProviderId(e.target.value)}
+              style={{ width: "100%" }}
+            >
+              <option value="">-- pick a provider --</option>
+              {(providers.data?.items ?? []).map((p) => (
+                <option key={p.id} value={p.id}>{p.id}</option>
+              ))}
+            </select>
+            {(providers.data?.items ?? []).length === 0 && !providers.loading && (
+              <div className="field-help" style={{ color: "var(--amber)" }}>
+                No LLM providers configured. Create one at <span className="mono">/providers/llm</span> first.
+              </div>
+            )}
+            {fieldErrors["body.model.provider_id"] && (
+              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.provider_id"]}</div>
+            )}
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="na-model">Model</label>
+            <select
+              id="na-model"
+              className="select"
+              value={modelName}
+              onChange={(e) => setModelName(e.target.value)}
+              style={{ width: "100%" }}
+            >
+              <option value="">-- pick a model --</option>
+              {modelOptions.map((m) => (
+                <option key={m.name} value={m.name}>{m.name}</option>
+              ))}
+            </select>
+            <div className="field-help">Model list comes from the provider row, not a live introspection (T0025).</div>
+            {fieldErrors["body.model.model_name"] && (
+              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.model_name"]}</div>
+            )}
+          </div>
+        </>
+      )}
+
+      {activeTab === "tools" && (
+        <div>
+          <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+            <div className="input-icon" style={{ flex: 1 }}>
+              <Icon name="search" size={13} className="icon" />
+              <input
+                className="input"
+                placeholder="Filter by tool name, description, or toolset…"
+                value={toolFilter}
+                onChange={(e) => setToolFilter(e.target.value)}
+                data-testid="agent-tool-filter"
+                style={{ width: "100%" }}
+              />
+            </div>
+            <span className="muted text-sm" style={{ whiteSpace: "nowrap" }}>
+              {selectedCount} of {totalAvailable} selected
+            </span>
+          </div>
+          {toolsCatalogue.loading && toolsetEntries.length === 0 && (
+            <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>
+              Loading tool catalogue…
+            </div>
           )}
+          {!toolsCatalogue.loading && filteredToolsetEntries.length === 0 && (
+            <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>
+              {toolFilter ? "No tools match the filter." : "No toolsets available."}
+            </div>
+          )}
+          <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
+            {filteredToolsetEntries.map((entry) => {
+              const allSelected = entry.tools.length > 0 && entry.tools.every((t) => selectedScopedIds.has(t.scoped_id));
+              const someSelected = entry.tools.some((t) => selectedScopedIds.has(t.scoped_id));
+              return (
+                <div key={entry.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                  <div
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      padding: "8px 10px", background: "var(--bg-0)",
+                      borderBottom: "1px solid var(--border)",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+                      onChange={() => toggleToolsetGroup(entry, allSelected)}
+                      disabled={!entry.available || entry.tools.length === 0}
+                      data-testid={`agent-toolset-group-${entry.id}`}
+                    />
+                    <span className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{entry.id}</span>
+                    {entry.builtin && <span className="muted text-sm" style={{ fontSize: 10.5 }}>· built-in</span>}
+                    {entry.tagline && (
+                      <span className="muted text-sm" style={{ fontSize: 11, marginLeft: 4 }}>{entry.tagline}</span>
+                    )}
+                    {!entry.available && entry.unavailable_reason && (
+                      <span
+                        className="muted text-sm"
+                        style={{ marginLeft: "auto", color: "var(--amber)" }}
+                        title={entry.unavailable_reason}
+                      >unavailable</span>
+                    )}
+                    <span className="muted text-sm" style={{ marginLeft: entry.unavailable_reason ? 8 : "auto" }}>
+                      {entry.tools.length} tool{entry.tools.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  {entry.tools.map((t) => {
+                    const checked = selectedScopedIds.has(t.scoped_id);
+                    return (
+                      <label
+                        key={t.scoped_id}
+                        style={{
+                          display: "flex", alignItems: "flex-start", gap: 8,
+                          padding: "6px 10px 6px 28px", cursor: "pointer",
+                          borderTop: "1px solid var(--bg-1)",
+                          background: checked ? "var(--bg-0)" : "transparent",
+                        }}
+                        data-testid={`agent-tool-${t.scoped_id}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleScopedId(t.scoped_id)}
+                          style={{ marginTop: 3 }}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="mono" style={{ fontSize: 12 }}>{t.id}</div>
+                          {t.description && (
+                            <div className="muted text-sm" style={{ fontSize: 11, marginTop: 2, lineHeight: 1.4 }}>
+                              {t.description}
+                            </div>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+          <div className="field-help" style={{ marginTop: 8 }}>
+            Tools are referenced as <span className="mono">toolset_id__tool_name</span>. Selecting any tool
+            automatically attaches its parent toolset to the agent.
+          </div>
         </div>
-      </div>
-      <div className="field">
-        <label className="field-label" htmlFor="na-system-prompt">
-          System prompt <span className="hint">optional · stored as a single-segment list</span>
-        </label>
-        <textarea
-          id="na-system-prompt"
-          className="textarea"
-          value={systemPrompt}
-          onChange={(e) => setSystemPrompt(e.target.value)}
-          rows={4}
-        />
-      </div>
-      <div className="field">
-        <label className="field-label" htmlFor="na-temperature">
-          Temperature <span className="hint">optional · default is provider-decided</span>
-        </label>
-        <input
-          id="na-temperature"
-          className="input"
-          type="number"
-          step="0.05"
-          min="0"
-          value={temperature}
-          onChange={(e) => setTemperature(e.target.value)}
-          style={{ width: 100 }}
-        />
-        {fieldErrors["body.temperature"] && (
-          <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.temperature"]}</div>
-        )}
-      </div>
+      )}
+
+      {activeTab === "advanced" && (
+        <>
+          <div className="field">
+            <label className="field-label" htmlFor="na-system-prompt">
+              System prompt <span className="hint">optional · stored as a single-segment list</span>
+            </label>
+            <textarea
+              id="na-system-prompt"
+              className="textarea"
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              rows={4}
+            />
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="na-temperature">
+              Temperature <span className="hint">optional · default is provider-decided</span>
+            </label>
+            <input
+              id="na-temperature"
+              className="input"
+              type="number"
+              step="0.05"
+              min="0"
+              value={temperature}
+              onChange={(e) => setTemperature(e.target.value)}
+              style={{ width: 100 }}
+            />
+            {fieldErrors["body.temperature"] && (
+              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.temperature"]}</div>
+            )}
+          </div>
+        </>
+      )}
     </Modal>
   );
 }
