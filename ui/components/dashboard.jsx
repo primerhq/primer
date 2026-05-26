@@ -190,7 +190,11 @@ function Dashboard({ workerStats, subsystemOn, onNavigate, onNewSession }) {
             <QuickAction icon="zap" label="New session" onClick={onNewSession} />
             <QuickAction icon="collection" label="Collections" onClick={() => onNavigate("collections")} />
             <QuickAction icon="worker" label="Workers" onClick={() => onNavigate("workers")} />
-            <QuickAction icon="external" label="OpenAPI" />
+            <QuickAction
+              icon="external"
+              label="OpenAPI"
+              onClick={() => window.open("/v1/docs", "_blank", "noopener,noreferrer")}
+            />
           </div>
         </div>
       </div>

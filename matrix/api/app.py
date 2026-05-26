@@ -533,15 +533,17 @@ def create_app(config: AppConfig) -> FastAPI:
     # Disable Swagger / ReDoc UIs unless the operator opts back in via
     # the log_level=debug setting; the OpenAPI JSON stays under the
     # /v1/ prefix to match the rest of the versioned API surface.
-    debug_docs = config.log_level == "debug"
+    # Swagger + ReDoc are always mounted: the API itself is exposed
+    # regardless of log_level, so hiding the doc surface is security
+    # theater and breaks the console's "View OpenAPI" affordance.
     app = FastAPI(
         title="Matrix Microagents Framework API",
         version=APP_VERSION,
         lifespan=_make_lifespan(config),
         contact={"name": "matrix"},
         openapi_url=f"/{API_VERSION}/openapi.json",
-        docs_url=f"/{API_VERSION}/docs" if debug_docs else None,
-        redoc_url=f"/{API_VERSION}/redoc" if debug_docs else None,
+        docs_url=f"/{API_VERSION}/docs",
+        redoc_url=f"/{API_VERSION}/redoc",
     )
     _install_security_headers(app)
     _install_console_csp(app)

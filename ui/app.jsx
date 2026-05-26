@@ -915,7 +915,11 @@ function App() {
           <div className="page-sub">Operator overview · <span className="mono">matrix · localhost:8765</span></div>
         </div>
         <div className="page-actions">
-          <Btn icon="external" kind="ghost">View OpenAPI</Btn>
+          <Btn
+            icon="external"
+            kind="ghost"
+            onClick={() => window.open("/v1/docs", "_blank", "noopener,noreferrer")}
+          >View OpenAPI</Btn>
           <Btn icon="plus" kind="primary" onClick={() => setNewSessionOpen(true)}>New session</Btn>
         </div>
       </>

@@ -58,3 +58,20 @@ async def test_lifespan_zero_config_starts_and_stops(
             app.state.storage_provider, SqliteStorageProvider,
         )
     # After lifespan exit the provider is closed; nothing should leak.
+
+
+def test_docs_endpoints_always_mounted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Swagger + ReDoc + raw OpenAPI surfaces are always mounted
+    under /v1, regardless of log_level. The console's 'View OpenAPI'
+    button targets /v1/docs and the API itself is exposed at /v1, so
+    gating docs behind log_level was security theater and broke the
+    affordance."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = AppConfig(runtime_mode=RuntimeMode.API, log_level="info")
+    app = create_app(cfg)
+    routes = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/v1/docs" in routes
+    assert "/v1/redoc" in routes
+    assert "/v1/openapi.json" in routes
