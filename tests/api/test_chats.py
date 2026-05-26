@@ -86,6 +86,7 @@ def app(
     return create_test_app(
         storage_provider=fake_storage_provider,
         provider_registry=fake_provider_registry,
+        start_chat_worker=True,
     )
 
 

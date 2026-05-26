@@ -113,6 +113,7 @@ def app(fake_storage_provider, fake_provider_registry, fake_llm) -> FastAPI:
     return create_test_app(
         storage_provider=fake_storage_provider,
         provider_registry=fake_provider_registry,
+        start_chat_worker=True,
     )
 
 
@@ -183,9 +184,11 @@ class TestAutoRejectOnUserMessage:
             with SyncTestClient(app) as sclient:
                 with sclient.websocket_connect(f"/v1/chats/{chat_id}/ws") as ws:
                     ws.send_json({"kind": "user_message", "content": "hello"})
-                    # Consume: user_message echo + assistant_token + done
-                    for _ in range(3):
-                        ws.receive_json()
+                    # Use ping/pong to synchronize: ensures the user_message
+                    # frame was processed by _recv_loop (which fires the
+                    # auto-reject) before we close and check seen_publishes.
+                    ws.send_json({"kind": "ping"})
+                    ws.receive_json()  # pong
         finally:
             app.state.event_bus.publish = original_publish  # type: ignore[method-assign]
 
@@ -228,8 +231,11 @@ class TestAutoRejectOnUserMessage:
             with SyncTestClient(app) as sclient:
                 with sclient.websocket_connect(f"/v1/chats/{chat_id}/ws") as ws:
                     ws.send_json({"kind": "interrupt"})
-                    # interrupt path emits one error row
-                    ws.receive_json()
+                    # interrupt no longer emits a row itself; use ping/pong
+                    # as a synchronization barrier to ensure the interrupt
+                    # frame has been processed before we close.
+                    ws.send_json({"kind": "ping"})
+                    ws.receive_json()  # pong
         finally:
             app.state.event_bus.publish = original_publish  # type: ignore[method-assign]
 

@@ -199,6 +199,7 @@ class _FakeLLM:
 
     def __init__(self, reply_text: str = "ok") -> None:
         self._reply_text = reply_text
+        self._stream_factory = None  # optional: callable returning an async iterator
         self.calls: list[dict[str, Any]] = []
 
     async def list_models(self):
@@ -213,6 +214,10 @@ class _FakeLLM:
     async def _stream_impl(self) -> AsyncIterator[Any]:
         from matrix.model.chat import Done, TextDelta
 
+        if self._stream_factory is not None:
+            async for ev in self._stream_factory():
+                yield ev
+            return
         yield TextDelta(text=self._reply_text, index=0)
         yield Done(stop_reason="stop", raw_reason="stop")
 

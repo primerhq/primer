@@ -43,7 +43,6 @@ from pydantic import BaseModel, Field
 from matrix.api.deps import get_agent_storage, get_storage_provider
 from matrix.api.errors import common_responses
 from matrix.api.pagination import parse_page
-from matrix.chat.executor import ChatTurnRunner
 from matrix.model.agent import Agent
 from matrix.model.chats import Chat, ChatMessage
 from matrix.model.except_ import ConflictError, NotFoundError
@@ -333,32 +332,34 @@ async def chat_ws(
     chat_id: str,
     cursor: int = Query(0, ge=0),
 ) -> None:
-    """Bidirectional chat stream.
+    """Bidirectional chat stream — thin recv/send loops.
 
     Lifecycle:
 
     1. Accept the upgrade.
     2. Resolve the chat row. Reject (close 4404) if missing.
     3. Replay any chat_messages with ``seq > cursor`` in order.
-    4. Loop:
-       - read client message (user_message / interrupt / ping)
-       - run the chat turn for user_message
-       - stream resulting rows back
+    4. Subscribe to the per-chat tick router.
+    5. Run two concurrent loops:
+       - ``_recv_loop``: reads client frames, persists user_message rows,
+         flips turn_status='claimable', publishes 'chat-claimable' bus
+         events. Handles ping/interrupt/tool_approval_decide.
+       - ``_send_loop``: iterates the tick subscription; on each tick
+         reads new ChatMessage rows from storage and sends them as JSON.
+    6. On WS disconnect: closes the tick subscription; the worker keeps
+       running and will finish the in-flight turn.
+
+    The event_bus is required for this handler — if not available the
+    connection is closed with code 4500.
     """
-    # FastAPI's dependency system doesn't reach websocket routes the
-    # same way; pull the storage provider straight off app.state.
     sp = websocket.app.state.storage_provider
     chats_storage = sp.get_storage(Chat)
     messages_storage = sp.get_storage(ChatMessage)
     event_bus = getattr(websocket.app.state, "event_bus", None)
+    chat_tick_router = getattr(websocket.app.state, "chat_tick_router", None)
 
     chat = await chats_storage.get(chat_id)
     if chat is None:
-        # 4404 = application-defined "not found" close code per RFC 6455
-        # §7.4 (the 4000-4999 range is reserved for app use). MUST
-        # accept() first — close() before accept() makes Starlette
-        # reject the handshake with HTTP 403, which clients see as a
-        # generic handshake failure, not the documented close code.
         await websocket.accept()
         await websocket.close(code=4404, reason=f"chat {chat_id!r} not found")
         return
@@ -368,151 +369,266 @@ async def chat_ws(
         return
 
     await websocket.accept()
+
+    if event_bus is None:
+        await websocket.close(code=4500, reason="event_bus_not_available")
+        return
+
     try:
         last_seq = await _replay_since_cursor(
             websocket, chat_id, cursor, sp,
         )
-
-        # Resolve the agent + LLM + tool stack for the chat's pinned
-        # agent. Failures surface as a one-shot error frame followed
-        # by close(4500) — keeps the protocol unambiguous and avoids
-        # half-broken sockets that look connected but never produce
-        # assistant tokens.
-        try:
-            runner = await _build_runner(
-                websocket=websocket,
-                chat=chat,
-                chats_storage=chats_storage,
-                messages_storage=messages_storage,
-            )
-        except _ChatBuildError as exc:
-            await websocket.send_json(
-                {"kind": "error", "code": exc.code, "message": exc.message},
-            )
-            await websocket.close(code=4500, reason=exc.code)
-            return
-
-        while True:
-            try:
-                incoming = await websocket.receive_json()
-            except WebSocketDisconnect:
-                return
-            kind = incoming.get("kind")
-            if kind == "ping":
-                await websocket.send_json({"kind": "pong"})
-                continue
-            if kind == "interrupt":
-                if event_bus is not None:
-                    await _maybe_auto_reject_pending_approval(
-                        chat=chat,
-                        event_bus=event_bus,
-                        note="interrupted by operator",
-                    )
-                # M6 stub: emit an error marker. Real implementation
-                # would signal the in-flight turn to stop.
-                await _append_and_send(
-                    websocket,
-                    chat,
-                    chats_storage,
-                    messages_storage,
-                    kind="error",
-                    payload={"message": "interrupted by client"},
-                )
-                continue
-            if kind == "tool_approval_decide":
-                tcid = incoming.get("tool_call_id")
-                decision = incoming.get("decision")
-                reason = incoming.get("reason")
-                if decision not in ("approved", "rejected"):
-                    await websocket.send_json({
-                        "kind": "error",
-                        "code": "tool_approval_bad_decision",
-                        "message": f"decision must be approved/rejected; got {decision!r}",
-                    })
-                    continue
-                blob = chat.parked_state or {}
-                yielded = blob.get("yielded") or {}
-                expected = (yielded.get("resume_metadata") or {}).get(
-                    "original_call", {},
-                ).get("id")
-                if expected != tcid:
-                    await websocket.send_json({
-                        "kind": "error",
-                        "code": "tool_approval_mismatch",
-                        "message": "tool_call_id does not match the pending approval",
-                    })
-                    continue
-                event_key = yielded.get("event_key")
-                if not event_key:
-                    await websocket.send_json({
-                        "kind": "error",
-                        "code": "tool_approval_missing_event_key",
-                        "message": "park is missing event_key",
-                    })
-                    continue
-                if event_bus is None:
-                    await websocket.send_json({
-                        "kind": "error",
-                        "code": "tool_approval_no_event_bus",
-                        "message": "event bus not available",
-                    })
-                    continue
-                await event_bus.publish(
-                    event_key,
-                    {"decision": decision, "reason": reason},
-                )
-                continue
-            if kind != "user_message":
-                await websocket.send_json(
-                    {
-                        "kind": "error",
-                        "message": f"unknown client message kind: {kind!r}",
-                    }
-                )
-                continue
-            # Two payload shapes are accepted:
-            #   {"content": "<text>"}           — legacy text-only
-            #   {"parts": [{type, ...}, ...]}   — structured (multimodal)
-            # A frame with both is treated as parts; content is folded
-            # into the parts list as a leading TextPart.
-            try:
-                user_parts = _parse_user_message_parts(incoming)
-            except ValueError as exc:
-                await websocket.send_json(
-                    {"kind": "error", "message": str(exc)},
-                )
-                continue
-            if event_bus is not None:
-                await _maybe_auto_reject_pending_approval(
-                    chat=chat,
-                    event_bus=event_bus,
-                    note="superseded by new user input",
-                )
-            # Re-fetch the chat row so the runner sees the latest
-            # last_seq (another worker may have appended messages).
-            chat = await chats_storage.get(chat_id)
-            if chat is None or chat.status == "ended":
-                await websocket.close(
-                    code=4410, reason="chat ended mid-stream",
-                )
-                return
-            try:
-                async for row in runner.run_turn(chat, user_parts):
-                    await websocket.send_json(_message_to_wire(row))
-                    last_seq = row.seq
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("chat %s turn failed: %s", chat_id, exc)
-                # Persist an error row + propagate.
-                await _append_and_send(
-                    websocket,
-                    chat,
-                    chats_storage,
-                    messages_storage,
-                    kind="error",
-                    payload={"message": str(exc)},
-                )
     except WebSocketDisconnect:
         return
+
+    tick_sub = chat_tick_router.subscribe(chat_id)
+    try:
+        recv_task = asyncio.ensure_future(
+            _recv_loop(
+                websocket, chat_id, chats_storage, messages_storage, event_bus,
+            )
+        )
+        send_task = asyncio.ensure_future(
+            _send_loop(
+                websocket, chat_id, messages_storage, tick_sub, last_seq,
+            )
+        )
+        try:
+            done, pending = await asyncio.wait(
+                [recv_task, send_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, WebSocketDisconnect, Exception):
+                    pass
+            # Propagate exceptions from completed tasks (ignore
+            # WebSocketDisconnect which is the normal disconnect path).
+            for task in done:
+                exc = task.exception()
+                if exc is not None and not isinstance(exc, WebSocketDisconnect):
+                    logger.debug(
+                        "chat %s WS task raised: %s", chat_id, exc,
+                    )
+        except WebSocketDisconnect:
+            recv_task.cancel()
+            send_task.cancel()
+            for t in (recv_task, send_task):
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+    finally:
+        await tick_sub.aclose()
+
+
+async def _recv_loop(
+    websocket: WebSocket,
+    chat_id: str,
+    chats_storage,
+    messages_storage,
+    event_bus,
+) -> None:
+    """Read client frames and dispatch them.
+
+    - ``ping`` → immediate pong.
+    - ``interrupt`` → set cancel_requested_at + publish cancel event.
+    - ``tool_approval_decide`` → publish on the parked event_key.
+    - ``user_message`` → persist row, flip turn_status, publish claimable.
+    """
+    while True:
+        try:
+            incoming = await websocket.receive_json()
+        except WebSocketDisconnect:
+            return
+        kind = incoming.get("kind")
+        if kind == "ping":
+            await websocket.send_json({"kind": "pong"})
+            continue
+        if kind == "interrupt":
+            chat = await chats_storage.get(chat_id)
+            if chat is None or chat.status == "ended":
+                continue
+            # Signal the in-flight worker turn to stop.
+            chat.cancel_requested_at = datetime.now(timezone.utc)
+            await chats_storage.update(chat)
+            await event_bus.publish(f"chat:{chat_id}:cancel", {})
+            # Auto-reject any pending tool_approval park.
+            await _maybe_auto_reject_pending_approval(
+                chat=chat,
+                event_bus=event_bus,
+                note="interrupted by operator",
+            )
+            continue
+        if kind == "tool_approval_decide":
+            tcid = incoming.get("tool_call_id")
+            decision = incoming.get("decision")
+            reason = incoming.get("reason")
+            if decision not in ("approved", "rejected"):
+                await websocket.send_json({
+                    "kind": "error",
+                    "code": "tool_approval_bad_decision",
+                    "message": f"decision must be approved/rejected; got {decision!r}",
+                })
+                continue
+            # Re-fetch chat to get current parked_state.
+            chat = await chats_storage.get(chat_id)
+            if chat is None:
+                continue
+            blob = chat.parked_state or {}
+            yielded = blob.get("yielded") or {}
+            expected = (yielded.get("resume_metadata") or {}).get(
+                "original_call", {},
+            ).get("id")
+            if expected != tcid:
+                await websocket.send_json({
+                    "kind": "error",
+                    "code": "tool_approval_mismatch",
+                    "message": "tool_call_id does not match the pending approval",
+                })
+                continue
+            event_key = yielded.get("event_key")
+            if not event_key:
+                await websocket.send_json({
+                    "kind": "error",
+                    "code": "tool_approval_missing_event_key",
+                    "message": "park is missing event_key",
+                })
+                continue
+            await event_bus.publish(
+                event_key,
+                {"decision": decision, "reason": reason},
+            )
+            continue
+        if kind != "user_message":
+            await websocket.send_json(
+                {
+                    "kind": "error",
+                    "message": f"unknown client message kind: {kind!r}",
+                }
+            )
+            continue
+        # Two payload shapes are accepted:
+        #   {"content": "<text>"}           — legacy text-only
+        #   {"parts": [{type, ...}, ...]}   — structured (multimodal)
+        try:
+            user_parts = _parse_user_message_parts(incoming)
+        except ValueError as exc:
+            await websocket.send_json(
+                {"kind": "error", "message": str(exc)},
+            )
+            continue
+        # Re-fetch the chat row so we have the latest last_seq.
+        chat = await chats_storage.get(chat_id)
+        if chat is None or chat.status == "ended":
+            return
+        # Auto-reject pending tool_approval park before this new turn.
+        await _maybe_auto_reject_pending_approval(
+            chat=chat,
+            event_bus=event_bus,
+            note="superseded by new user input",
+        )
+        # Persist the user_message row + update chat.last_seq / title.
+        await _append_user_message_row(
+            chat, messages_storage, chats_storage, user_parts,
+        )
+        # Flip turn_status to claimable and wake workers.
+        latest = await chats_storage.get(chat_id)
+        if latest is not None and latest.status == "active":
+            latest.turn_status = "claimable"
+            await chats_storage.update(latest)
+            await event_bus.publish("chat-claimable", {"chat_id": chat_id})
+
+
+async def _send_loop(
+    websocket: WebSocket,
+    chat_id: str,
+    messages_storage,
+    tick_sub,
+    last_sent_seq: int,
+) -> None:
+    """Forward new ChatMessage rows to the WebSocket on each tick.
+
+    Iterates the tick subscription; on each tick reads storage for rows
+    with ``seq > last_sent_seq AND seq <= tick.seq`` and sends them in
+    ascending order. The subscription is an AsyncIterator that blocks
+    until the next tick arrives — this naturally back-pressures the WS.
+    """
+    from matrix.model.storage import OffsetPage
+
+    async for tick in tick_sub:
+        if tick.seq <= last_sent_seq:
+            continue
+        pred = Predicate(
+            left=Predicate(
+                left=FieldRef(name="chat_id"),
+                op=Op.EQ, right=Value(value=chat_id),
+            ),
+            op=Op.AND,
+            right=Predicate(
+                left=Predicate(
+                    left=FieldRef(name="seq"),
+                    op=Op.GT, right=Value(value=last_sent_seq),
+                ),
+                op=Op.AND,
+                right=Predicate(
+                    left=FieldRef(name="seq"),
+                    op=Op.LE, right=Value(value=tick.seq),
+                ),
+            ),
+        )
+        page = await messages_storage.find(
+            pred, OffsetPage(offset=0, length=200),
+            order_by=[OrderBy(field="seq", direction="asc")],
+        )
+        for row in page.items:
+            try:
+                await websocket.send_json(_message_to_wire(row))
+            except WebSocketDisconnect:
+                return
+            last_sent_seq = row.seq
+
+
+async def _append_user_message_row(
+    chat,
+    messages_storage,
+    chats_storage,
+    parts: list,
+) -> None:
+    """Persist a ``user_message`` ChatMessage row and update the chat row.
+
+    Sets ``chat.last_seq``, derives the title on the first turn, and
+    persists both. The title derivation mirrors the ChatTurnRunner path
+    so the chat list label is set even before the worker processes the
+    message.
+    """
+    from matrix.model.chat import TextPart
+
+    flat_text = "\n".join(
+        p.text for p in parts if isinstance(p, TextPart) and p.text
+    )
+    payload: dict[str, Any] = {
+        "parts": [p.model_dump(mode="json") for p in parts],
+    }
+    if flat_text:
+        payload["content"] = flat_text
+    next_seq = chat.last_seq + 1
+    row = ChatMessage(
+        id=ChatMessage.make_id(chat.id, next_seq),
+        chat_id=chat.id,
+        seq=next_seq,
+        kind="user_message",
+        payload=payload,
+        created_at=datetime.now(timezone.utc),
+    )
+    await messages_storage.create(row)
+    if chat.title is None:
+        from matrix.chat.executor import _derive_chat_title
+        chat.title = _derive_chat_title(parts)
+    chat.last_seq = next_seq
+    await chats_storage.update(chat)
 
 
 async def _maybe_auto_reject_pending_approval(
@@ -535,31 +651,6 @@ async def _maybe_auto_reject_pending_approval(
         event_key,
         {"decision": "rejected", "reason": note},
     )
-
-
-async def _append_and_send(
-    websocket: WebSocket,
-    chat: Chat,
-    chats_storage,
-    messages_storage,
-    *,
-    kind: str,
-    payload: dict[str, Any],
-) -> None:
-    """Helper: persist a row + flush it to the WS in one call."""
-    next_seq = chat.last_seq + 1
-    row = ChatMessage(
-        id=ChatMessage.make_id(chat.id, next_seq),
-        chat_id=chat.id,
-        seq=next_seq,
-        kind=kind,  # type: ignore[arg-type]
-        payload=payload,
-        created_at=datetime.now(timezone.utc),
-    )
-    await messages_storage.create(row)
-    chat.last_seq = next_seq
-    await chats_storage.update(chat)
-    await websocket.send_json(_message_to_wire(row))
 
 
 def _parse_user_message_parts(frame: dict[str, Any]) -> list:
@@ -637,118 +728,6 @@ def _parse_user_message_parts(frame: dict[str, Any]) -> list:
             "user_message must include 'content' or 'parts'"
         )
     return out
-
-
-class _ChatBuildError(Exception):
-    """Raised by :func:`_build_runner` when the chat can't be served.
-
-    Carries a structured ``code`` + ``message`` so the WS handler can
-    emit a typed error frame before closing.
-    """
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(f"{code}: {message}")
-        self.code = code
-        self.message = message
-
-
-async def _build_runner(
-    *,
-    websocket: WebSocket,
-    chat: Chat,
-    chats_storage,
-    messages_storage,
-) -> ChatTurnRunner:
-    """Resolve the agent + LLM + tool stack and build a turn runner.
-
-    Run once per WS connection (not per user_message) — the resolution
-    is moderately expensive (provider-registry lookups, toolset
-    enumeration, model lookup) and the resolved set is stable while
-    the chat is open.
-    """
-    from matrix.agent.tool_manager import ToolExecutionManager
-    from matrix.model.except_ import ConfigError
-    from matrix.model.provider import LLMProvider
-
-    app_state = websocket.app.state
-    sp = app_state.storage_provider
-    provider_registry = getattr(app_state, "provider_registry", None)
-    if provider_registry is None:
-        raise _ChatBuildError(
-            "provider_registry_missing",
-            "provider_registry not initialised on app.state",
-        )
-
-    agent_storage = sp.get_storage(Agent)
-    agent = await agent_storage.get(chat.agent_id)
-    if agent is None:
-        raise _ChatBuildError(
-            "agent_not_found",
-            f"chat's pinned agent {chat.agent_id!r} no longer exists",
-        )
-
-    try:
-        llm = await provider_registry.get_llm(agent.model.provider_id)
-    except (NotFoundError, ConfigError) as exc:
-        raise _ChatBuildError("llm_provider_unresolved", str(exc)) from exc
-
-    llm_provider_storage = sp.get_storage(LLMProvider)
-    provider_row = await llm_provider_storage.get(agent.model.provider_id)
-    if provider_row is None:
-        raise _ChatBuildError(
-            "llm_provider_missing",
-            f"LLMProvider {agent.model.provider_id!r} not found",
-        )
-    llm_model = next(
-        (m for m in provider_row.models if m.name == agent.model.model_name),
-        None,
-    )
-    if llm_model is None:
-        raise _ChatBuildError(
-            "llm_model_unresolved",
-            (
-                f"LLMProvider {agent.model.provider_id!r} does not list "
-                f"model {agent.model.model_name!r}; configured: "
-                f"{[m.name for m in provider_row.models]}"
-            ),
-        )
-
-    # agent.tools is a list of scoped tool ids (``toolset_id__tool_name``).
-    # Derive the unique set of toolset prefixes to resolve providers
-    # for; skip malformed entries silently so a stray bad id doesn't
-    # 5xx the whole WS upgrade.
-    toolset_ids: set[str] = set()
-    for sid in (agent.tools or []):
-        if "__" in sid:
-            prefix = sid.split("__", 1)[0]
-            if prefix:
-                toolset_ids.add(prefix)
-    toolset_providers: dict[str, Any] = {}
-    for toolset_id in toolset_ids:
-        try:
-            toolset_providers[toolset_id] = await provider_registry.get_toolset(
-                toolset_id,
-            )
-        except (NotFoundError, ConfigError) as exc:
-            raise _ChatBuildError(
-                "toolset_unresolved",
-                f"toolset {toolset_id!r}: {exc}",
-            ) from exc
-
-    tool_manager = ToolExecutionManager(
-        toolset_providers=toolset_providers,
-        provider_registry=provider_registry,
-        tools=agent.tools,
-    )
-
-    return ChatTurnRunner(
-        agent=agent,
-        llm=llm,
-        llm_model=llm_model,
-        tool_manager=tool_manager,
-        chat_storage=chats_storage,
-        message_storage=messages_storage,
-    )
 
 
 __all__ = [

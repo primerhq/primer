@@ -968,6 +968,32 @@ def create_test_app(
     app.state.channel_dispatcher = _test_channel_dispatcher
     _mount_routers(app)
     register_error_handlers(app)
+
+    # When start_chat_worker=True, attach a lifespan so SyncTestClient
+    # (which drives the ASGI lifespan) starts the forwarder + worker pool
+    # in the same event loop as the app. This ensures the WS tick
+    # subscription and the worker pool share the same asyncio event loop,
+    # preventing cross-loop asyncio.Queue issues.
+    if start_chat_worker:
+        @asynccontextmanager
+        async def _test_lifespan(_a: FastAPI) -> AsyncIterator[None]:
+            fwd_task = await _a.state.start_chat_tick_forwarder()
+            await _a.state.start_worker_pool()
+            try:
+                yield
+            finally:
+                try:
+                    await _a.state.stop_worker_pool()
+                except Exception:
+                    pass
+                fwd_task.cancel()
+                try:
+                    await fwd_task
+                except asyncio.CancelledError:
+                    pass
+
+        app.router.lifespan_context = _test_lifespan  # type: ignore[assignment]
+
     return app
 
 
