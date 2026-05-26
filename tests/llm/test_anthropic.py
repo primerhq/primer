@@ -60,10 +60,14 @@ class TestConstructor:
         llm = AnthropicLLM(provider)
         assert llm._client is None
 
-    def test_rejects_empty_api_key(self) -> None:
+    def test_accepts_empty_api_key(self) -> None:
+        """An empty api_key (or None) is allowed at construction so
+        operators can wire a proxy that injects auth elsewhere. The
+        real Anthropic API will return 401 at call time if the key is
+        actually needed — that's the natural surface for it."""
         provider = _make_provider(api_key="")
-        with pytest.raises(ConfigError, match="api_key is required"):
-            AnthropicLLM(provider)
+        llm = AnthropicLLM(provider)
+        assert llm._client is None
 
     def test_rejects_wrong_provider_type(self) -> None:
         provider = _make_provider()

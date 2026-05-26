@@ -101,15 +101,27 @@ class _HttpApiKeyConfig(BaseModel):
     Not intended to be used directly; subclass it for each concrete provider
     so that type checkers can keep the providers distinct even when their
     connection fields are identical.
+
+    ``api_key`` is optional at the schema level so operators can register
+    self-hosted endpoints (LM Studio, vLLM, llama.cpp server, a sidecar
+    proxy that injects auth) that don't require a bearer token. Adapters
+    that talk to providers which *do* require auth surface a 401 from
+    the upstream provider at call time, which is the natural place for
+    that error to manifest.
     """
 
     url: HttpUrl = Field(
         ...,
         description="Base URL of the provider's HTTP endpoint.",
     )
-    api_key: SecretStr = Field(
-        ...,
-        description="API key used to authenticate against the provider.",
+    api_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Optional API key forwarded as the Authorization bearer. "
+            "Leave unset for unauthenticated endpoints (LM Studio, "
+            "self-hosted vLLM, etc.); the upstream provider will return "
+            "401 at call time if it actually requires authentication."
+        ),
     )
 
 
@@ -134,11 +146,19 @@ class GoogleConfig(BaseModel):
     Vertex AI uses a different auth model (GCP application default
     credentials + project/location) and warrants its own provider type
     if needed.
+
+    ``api_key`` is optional at the schema level so operators can wire a
+    proxy that injects auth elsewhere; without one, calls to the real
+    Gemini API surface 401 at call time.
     """
 
-    api_key: SecretStr = Field(
-        ...,
-        description="Gemini API key from Google AI Studio.",
+    api_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Gemini API key from Google AI Studio. Optional — leave "
+            "unset only when the endpoint is fronted by something that "
+            "supplies auth."
+        ),
     )
 
 
@@ -147,10 +167,17 @@ class AnthropicConfig(BaseModel):
 
     Targets the Anthropic API — single api_key auth. AWS Bedrock and
     GCP Vertex variants warrant their own provider types if needed.
+
+    ``api_key`` is optional at the schema level so operators can wire a
+    proxy that injects auth elsewhere; without one, calls to the real
+    Anthropic API surface 401 at call time.
     """
-    api_key: SecretStr = Field(
-        ...,
-        description="Anthropic API key.",
+    api_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Anthropic API key. Optional — leave unset only when the "
+            "endpoint is fronted by something that supplies auth."
+        ),
     )
 
 

@@ -511,11 +511,12 @@ class TestGoogleConfig:
         cfg = GoogleConfig(api_key=SecretStr("api-key-test"))
         assert cfg.api_key.get_secret_value() == "api-key-test"
 
-    def test_rejects_missing_api_key(self) -> None:
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError):
-            GoogleConfig()  # type: ignore[call-arg]
+    def test_accepts_missing_api_key(self) -> None:
+        """api_key is optional so operators can register endpoints
+        fronted by an auth-injecting proxy. The real Gemini API will
+        surface 401 at call time if a key is actually required."""
+        cfg = GoogleConfig()
+        assert cfg.api_key is None
 
     def test_no_url_field(self) -> None:
         # Gemini API endpoint is fixed by the SDK; no URL field.
@@ -588,10 +589,12 @@ class TestAnthropicConfig:
         cfg = AnthropicConfig(api_key=SecretStr("sk-ant-test"))
         assert cfg.api_key.get_secret_value() == "sk-ant-test"
 
-    def test_rejects_missing_api_key(self) -> None:
-        from pydantic import ValidationError
-        with pytest.raises(ValidationError):
-            AnthropicConfig()  # type: ignore[call-arg]
+    def test_accepts_missing_api_key(self) -> None:
+        """api_key is optional so operators can register endpoints
+        fronted by an auth-injecting proxy. The real Anthropic API
+        will surface 401 at call time if a key is actually required."""
+        cfg = AnthropicConfig()
+        assert cfg.api_key is None
 
 
 class TestAnthropicConfigInUnion:

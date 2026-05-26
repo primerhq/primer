@@ -779,10 +779,16 @@ class OpenResponsesLLM(LLM):
         self._config: OpenResponsesConfig = provider.config
         self._policy = _POLICY_BY_FLAVOR[provider.config.flavor]
 
-        if (
-            self._policy.require_api_key
-            and not provider.config.api_key.get_secret_value()
-        ):
+        # The flavor policy decides whether a key is required up-front;
+        # the Pydantic config allows api_key=None so unauthenticated
+        # endpoints can be registered. For flavors that need a key
+        # (OPENAI, OTHER), we still fail fast at adapter construction
+        # rather than letting the upstream 401 surface later.
+        key_present = (
+            provider.config.api_key is not None
+            and bool(provider.config.api_key.get_secret_value())
+        )
+        if self._policy.require_api_key and not key_present:
             raise ConfigError(
                 f"api_key is required for flavor={provider.config.flavor.value}"
             )
@@ -806,9 +812,19 @@ class OpenResponsesLLM(LLM):
     def _get_client(self) -> AsyncOpenAI:
         """Construct the AsyncOpenAI client lazily on first use."""
         if self._client is None:
+            # AsyncOpenAI rejects api_key=None outright (it raises),
+            # so for unauthenticated endpoints we pass a sentinel
+            # empty-string placeholder. LM Studio / vLLM ignore the
+            # Authorization header content; real OpenAI returns 401
+            # which is the intended surface for misconfiguration.
+            key = (
+                self._config.api_key.get_secret_value()
+                if self._config.api_key is not None
+                else ""
+            ) or "no-key-required"
             self._client = AsyncOpenAI(
                 base_url=str(self._config.url),
-                api_key=self._config.api_key.get_secret_value(),
+                api_key=key,
             )
         return self._client
 

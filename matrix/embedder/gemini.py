@@ -167,8 +167,10 @@ class GeminiEmbedder(Embedder):
             raise ConfigError(
                 "GeminiEmbedder requires GoogleConfig in provider.config"
             )
-        if not provider.config.api_key.get_secret_value():
-            raise ConfigError("api_key is required for GeminiEmbedder")
+        # api_key is optional on the config so operators can register
+        # endpoints fronted by an auth-injecting proxy; the real
+        # Gemini API will surface 401 at call time if the key is
+        # actually required.
 
         self._provider = provider
         self._config: GoogleConfig = provider.config
@@ -189,9 +191,12 @@ class GeminiEmbedder(Embedder):
 
     def _get_client(self) -> genai.Client:
         if self._client is None:
-            self._client = genai.Client(
-                api_key=self._config.api_key.get_secret_value()
+            key = (
+                self._config.api_key.get_secret_value()
+                if self._config.api_key is not None
+                else ""
             )
+            self._client = genai.Client(api_key=key)
         return self._client
 
     async def embed(  # type: ignore[override]

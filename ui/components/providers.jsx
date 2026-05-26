@@ -51,7 +51,7 @@ const PROVIDER_KINDS_FIELDS = {
       label: "OpenAI / OpenAI-compatible (openresponses)",
       config: [
         { key: "url", label: "Base URL", type: "url", placeholder: "https://api.openai.com/v1", required: true },
-        { key: "api_key", label: "API key", type: "password", required: true },
+        { key: "api_key", label: "API key (optional)", type: "password", help: "Required for real OpenAI; leave blank for LM Studio / vLLM / unauthenticated proxies." },
         { key: "flavor", label: "Flavor", type: "enum", options: ["openai", "lmstudio", "other"], default: "other" },
       ],
       discoverable: true,
@@ -68,7 +68,7 @@ const PROVIDER_KINDS_FIELDS = {
     anthropic: {
       label: "Anthropic",
       config: [
-        { key: "api_key", label: "API key", type: "password", required: true },
+        { key: "api_key", label: "API key (optional)", type: "password", help: "Required for the real Anthropic API; leave blank only when an upstream proxy supplies auth." },
       ],
       discoverable: false,
       suggestedModels: [
@@ -84,7 +84,7 @@ const PROVIDER_KINDS_FIELDS = {
     gemini: {
       label: "Google Gemini",
       config: [
-        { key: "api_key", label: "API key", type: "password", required: true },
+        { key: "api_key", label: "API key (optional)", type: "password", help: "Required for the real Gemini API; leave blank only when an upstream proxy supplies auth." },
       ],
       discoverable: false,
       suggestedModels: [
@@ -120,7 +120,7 @@ const PROVIDER_KINDS_FIELDS = {
       label: "OpenAI / OpenAI-compatible",
       config: [
         { key: "url", label: "Base URL", type: "url", placeholder: "https://api.openai.com/v1", required: true },
-        { key: "api_key", label: "API key", type: "password", required: true },
+        { key: "api_key", label: "API key (optional)", type: "password", help: "Required for real OpenAI; leave blank for LM Studio / vLLM / unauthenticated proxies." },
         { key: "flavor", label: "Flavor", type: "enum", options: ["openai", "lmstudio", "other"], default: "other" },
       ],
       discoverable: true,
@@ -147,7 +147,7 @@ const PROVIDER_KINDS_FIELDS = {
     gemini: {
       label: "Google Gemini",
       config: [
-        { key: "api_key", label: "API key", type: "password", required: true },
+        { key: "api_key", label: "API key (optional)", type: "password", help: "Required for the real Gemini API; leave blank only when an upstream proxy supplies auth." },
       ],
       discoverable: false,
       suggestedModels: [

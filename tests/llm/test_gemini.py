@@ -54,10 +54,13 @@ class TestConstructor:
         llm = GeminiLLM(provider)
         assert llm._client is None  # lazy
 
-    def test_rejects_empty_api_key(self) -> None:
+    def test_accepts_empty_api_key(self) -> None:
+        """Mirror of AnthropicLLM: api_key is optional at construction
+        so unauthenticated proxies are wireable; real Gemini surfaces
+        401 at call time when a key is required."""
         provider = _make_provider(api_key="")
-        with pytest.raises(ConfigError, match="api_key is required"):
-            GeminiLLM(provider)
+        llm = GeminiLLM(provider)
+        assert llm._client is None
 
     def test_rejects_wrong_provider_type(self) -> None:
         provider = _make_provider()

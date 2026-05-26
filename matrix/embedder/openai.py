@@ -208,10 +208,11 @@ class OpenAIEmbedder(Embedder):
         self._config: OpenAIConfig = provider.config
         self._policy = _POLICY_BY_FLAVOR[provider.config.flavor]
 
-        if (
-            self._policy.require_api_key
-            and not provider.config.api_key.get_secret_value()
-        ):
+        key_present = (
+            provider.config.api_key is not None
+            and bool(provider.config.api_key.get_secret_value())
+        )
+        if self._policy.require_api_key and not key_present:
             raise ConfigError(
                 f"api_key is required for flavor={provider.config.flavor.value}"
             )
@@ -240,9 +241,17 @@ class OpenAIEmbedder(Embedder):
         is passed straight through.
         """
         if self._client is None:
+            # AsyncOpenAI rejects api_key=None outright; pass a sentinel
+            # placeholder so unauthenticated endpoints (LM Studio, vLLM)
+            # work without forcing a junk key on the operator.
+            key = (
+                self._config.api_key.get_secret_value()
+                if self._config.api_key is not None
+                else ""
+            ) or "no-key-required"
             self._client = AsyncOpenAI(
                 base_url=str(self._config.url),
-                api_key=self._config.api_key.get_secret_value(),
+                api_key=key,
             )
         return self._client
 
