@@ -226,7 +226,11 @@ class ChatTurnRunner:
         self._cancel_event = cancel_event
 
     async def run_turn(
-        self, chat: Chat, user_input: "str | list",
+        self,
+        chat: Chat,
+        user_input: "str | list",
+        *,
+        already_persisted_user_msg: "ChatMessage | None" = None,
     ) -> AsyncIterator[ChatMessage]:
         """Persist + stream rows for one chat turn.
 
@@ -234,6 +238,14 @@ class ChatTurnRunner:
         callers) or a pre-validated list of :class:`Part` objects (the
         WS handler hands these in directly so multimodal attachments
         survive the round-trip).
+
+        ``already_persisted_user_msg``: when the caller (e.g. the
+        worker-side dispatch) has already persisted the user_message row
+        to storage, pass it here. The runner will skip the persistence
+        step, yield the provided row as-is, and use it as the anchor for
+        ``last_seq`` so subsequent rows are appended after it. The
+        ``chat.last_seq`` field is NOT updated to match (the caller
+        should ensure it is already ≥ the row's seq before calling).
         """
         # Normalise to a list of Parts.
         if isinstance(user_input, str):
@@ -241,34 +253,47 @@ class ChatTurnRunner:
         else:
             parts = list(user_input)
 
-        # 1) Persist user_message + yield so the UI echoes it back.
-        # The payload mirrors both shapes so cursor-replay clients see
-        # the structured parts AND the flattened text (the latter is
-        # the field the existing UI bubble extractor reads).
-        flat_text = "\n".join(
-            p.text for p in parts if isinstance(p, TextPart) and p.text
-        )
-        payload: dict[str, Any] = {
-            "parts": [p.model_dump(mode="json") for p in parts],
-        }
-        if flat_text:
-            payload["content"] = flat_text
+        # 1) Persist user_message + yield so the UI echoes it back —
+        # OR re-use an already-persisted row passed by the caller.
+        if already_persisted_user_msg is not None:
+            user_msg = already_persisted_user_msg
+            # Align chat.last_seq so subsequent _append calls place rows
+            # immediately after this message.
+            if chat.last_seq < user_msg.seq:
+                chat.last_seq = user_msg.seq
+            # Stamp title from the pre-persisted message's parts/content
+            # if the chat doesn't have one yet. Mirrors the normal path.
+            if chat.title is None:
+                chat.title = _derive_chat_title(parts)
+            yield user_msg
+        else:
+            # The payload mirrors both shapes so cursor-replay clients see
+            # the structured parts AND the flattened text (the latter is
+            # the field the existing UI bubble extractor reads).
+            flat_text = "\n".join(
+                p.text for p in parts if isinstance(p, TextPart) and p.text
+            )
+            payload: dict[str, Any] = {
+                "parts": [p.model_dump(mode="json") for p in parts],
+            }
+            if flat_text:
+                payload["content"] = flat_text
 
-        # Stamp the chat title from the first user_message text the
-        # FIRST time we see one — preserves the originating intent for
-        # the chats-list view even as the conversation evolves. Never
-        # overwrite once set. ``_append`` below already persists the
-        # chat row (it bumps last_seq), so this rides on the same
-        # storage round-trip — no extra write.
-        if chat.title is None:
-            chat.title = _derive_chat_title(parts)
+            # Stamp the chat title from the first user_message text the
+            # FIRST time we see one — preserves the originating intent for
+            # the chats-list view even as the conversation evolves. Never
+            # overwrite once set. ``_append`` below already persists the
+            # chat row (it bumps last_seq), so this rides on the same
+            # storage round-trip — no extra write.
+            if chat.title is None:
+                chat.title = _derive_chat_title(parts)
 
-        user_msg = await self._append(
-            chat,
-            kind="user_message",
-            payload=payload,
-        )
-        yield user_msg
+            user_msg = await self._append(
+                chat,
+                kind="user_message",
+                payload=payload,
+            )
+            yield user_msg
 
         # 2) Build the prompt: system + coalesced history + new user msg.
         history = await self._load_history(chat.id)

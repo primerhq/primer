@@ -168,6 +168,27 @@ def fake_storage_provider() -> _FakeStorageProvider:
     return _FakeStorageProvider()
 
 
+@pytest.fixture
+def fake_provider_registry(
+    fake_storage_provider: _FakeStorageProvider,
+) -> Any:
+    """Minimal ProviderRegistry shim for tests outside tests/api/.
+
+    The llm_factory and other factories are stubs; tests that need a
+    real LLM should monkey-patch ``registry.get_llm`` directly (the
+    ``deps`` fixture in tests/chat/test_dispatch.py does this).
+    """
+    from matrix.api.registries import ProviderRegistry
+
+    return ProviderRegistry(
+        fake_storage_provider,  # type: ignore[arg-type]
+        llm_factory=lambda p: object(),  # type: ignore[arg-type]
+        embedder_factory=lambda p: object(),  # type: ignore[arg-type]
+        cross_encoder_factory=lambda p: object(),  # type: ignore[arg-type]
+        toolset_factory=lambda p: object(),  # type: ignore[arg-type]
+    )
+
+
 __all__ = [
     "_FakeStorageProvider",
     "_InMemoryStorage",
