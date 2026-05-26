@@ -17,9 +17,11 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from matrix.int.scheduler import (
+    _DEFAULT_HEARTBEAT_STALE_AFTER,
+    ChatLease,
     CompleteTurnResult,
     FailureRecord,
     Lease,
@@ -612,6 +614,120 @@ class PostgresScheduler(Scheduler):
                         "SELECT pg_notify('session_ready', $1)", sid,
                     )
                 return len(rows)
+
+    # ---- Chat-turn claiming (Task 2) ------------------------------------
+
+    def _chat_table(self) -> str:
+        """Schema-qualified name of the chat table."""
+        schema = self._storage.schema  # type: ignore[attr-defined]
+        return f'"{schema}"."chat"'
+
+    async def claim_chats(
+        self,
+        worker_id: str,
+        *,
+        max_count: int,
+        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
+    ) -> list[ChatLease]:
+        """Atomically claim up to ``max_count`` chat turns.
+
+        Uses ``FOR UPDATE SKIP LOCKED`` inside a transaction so
+        concurrent workers don't race on the same rows.
+
+        Eligibility predicate:
+        * status='active'
+        * parked_status IS DISTINCT FROM 'parked'
+        * claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after
+        * turn_status='claimable' OR parked_status='resumable'
+        """
+        table = self._chat_table()
+        sql = f"""
+            WITH claimed AS (
+                SELECT id
+                FROM {table}
+                WHERE data->>'status' = 'active'
+                  AND data->>'parked_status' IS DISTINCT FROM 'parked'
+                  AND (
+                    data->>'claimed_by' IS NULL
+                    OR (data->>'last_heartbeat_at')::timestamptz
+                         < now() - ($3 || ' seconds')::interval
+                  )
+                  AND (
+                    data->>'turn_status' = 'claimable'
+                    OR data->>'parked_status' = 'resumable'
+                  )
+                ORDER BY id
+                FOR UPDATE SKIP LOCKED
+                LIMIT $2
+            )
+            UPDATE {table} c
+            SET data = jsonb_set(
+                jsonb_set(
+                jsonb_set(
+                jsonb_set(
+                    data,
+                    '{{turn_status}}', to_jsonb('running'::text)),
+                '{{claimed_by}}', to_jsonb($1::text)),
+                '{{claimed_at}}', to_jsonb(now())),
+                '{{last_heartbeat_at}}', to_jsonb(now())
+            ),
+            updated_at = now()
+            FROM claimed
+            WHERE c.id = claimed.id
+            RETURNING c.id,
+                      (c.data->>'claimed_at')::timestamptz AS claimed_at
+        """
+        staleness_seconds = str(int(heartbeat_stale_after.total_seconds()))
+        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
+            async with conn.transaction():
+                rows = await conn.fetch(sql, worker_id, max_count, staleness_seconds)
+        return [
+            ChatLease(
+                chat_id=r["id"],
+                worker_id=worker_id,
+                claimed_at=r["claimed_at"],
+            )
+            for r in rows
+        ]
+
+    async def heartbeat_chat(self, chat_id: str, worker_id: str) -> bool:
+        """Bump last_heartbeat_at. Returns True if we still hold the claim."""
+        table = self._chat_table()
+        sql = f"""
+            UPDATE {table}
+            SET data = jsonb_set(data, '{{last_heartbeat_at}}', to_jsonb(now())),
+                updated_at = now()
+            WHERE id = $1
+              AND data->>'claimed_by' = $2
+            RETURNING id
+        """
+        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
+            row = await conn.fetchrow(sql, chat_id, worker_id)
+        return row is not None
+
+    async def release_chat(
+        self,
+        chat_id: str,
+        worker_id: str,
+        *,
+        next_turn_status: Literal["idle", "claimable"],
+    ) -> None:
+        """Release the claim. No-ops if we don't own it."""
+        table = self._chat_table()
+        sql = f"""
+            UPDATE {table}
+            SET data = (data
+                - 'claimed_by'
+                - 'claimed_at'
+                - 'last_heartbeat_at'
+                || jsonb_build_object('turn_status', $3::text)
+            ),
+            updated_at = now()
+            WHERE id = $1
+              AND data->>'claimed_by' = $2
+        """
+        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
+            await conn.execute(sql, chat_id, worker_id, next_turn_status)
 
     # ---- methods filled in by Task 11 ----------------------------------
 

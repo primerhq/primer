@@ -25,6 +25,8 @@ from pydantic import BaseModel, Field
 
 from matrix.model.session import SessionStatus
 
+_DEFAULT_HEARTBEAT_STALE_AFTER = timedelta(seconds=90)
+
 
 class Lease(BaseModel):
     """Snapshot of a successful claim.
@@ -39,6 +41,20 @@ class Lease(BaseModel):
     expires_at: datetime
     attempt_count: int = Field(..., ge=0)
     turn_no: int = Field(..., ge=0)
+
+
+class ChatLease(BaseModel):
+    """Snapshot of a successful chat-turn claim.
+
+    Lighter than :class:`Lease` — no fence token needed because chat
+    turns are append-only. The worker holds the claim as long as its
+    heartbeats remain fresh; :meth:`Scheduler.release_chat` drops it
+    when the turn completes.
+    """
+
+    chat_id: str = Field(..., min_length=1)
+    worker_id: str = Field(..., min_length=1)
+    claimed_at: datetime
 
 
 class WorkerInfo(BaseModel):
@@ -224,6 +240,56 @@ class Scheduler(ABC):
         delete can't surface as a 5xx through this path.
         """
 
+    # ---- Chat-turn claiming ----------------------------------------------
+
+    @abstractmethod
+    async def claim_chats(
+        self,
+        worker_id: str,
+        *,
+        max_count: int,
+        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
+    ) -> list["ChatLease"]:
+        """Atomically claim up to ``max_count`` chat turns ready to run.
+
+        A chat row is eligible when:
+
+        * ``status='active'``
+        * ``parked_status IS DISTINCT FROM 'parked'``
+        * ``claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after``
+        * ``turn_status='claimable' OR parked_status='resumable'``
+
+        On success sets ``turn_status='running'``, ``claimed_by=worker_id``,
+        ``claimed_at=now()``, ``last_heartbeat_at=now()``.
+
+        Postgres: ``FOR UPDATE SKIP LOCKED`` inside a transaction.
+        In-memory: iterate chats, apply predicate, mutate matching rows.
+        """
+
+    @abstractmethod
+    async def heartbeat_chat(self, chat_id: str, worker_id: str) -> bool:
+        """Bump ``last_heartbeat_at`` on the chat claim.
+
+        Returns ``True`` if the heartbeat was accepted (we still own
+        the claim), ``False`` if the claim was stolen by another worker.
+        """
+
+    @abstractmethod
+    async def release_chat(
+        self,
+        chat_id: str,
+        worker_id: str,
+        *,
+        next_turn_status: Literal["idle", "claimable"],
+    ) -> None:
+        """Release the chat claim and set the next turn status.
+
+        Sets ``turn_status=next_turn_status``, ``claimed_by=NULL``,
+        ``claimed_at=NULL``, ``last_heartbeat_at=NULL`` where
+        ``claimed_by=worker_id``. Silently no-ops if the caller no
+        longer holds the claim.
+        """
+
     # ---- Hints + cancel --------------------------------------------------
 
     @abstractmethod
@@ -250,6 +316,7 @@ class Scheduler(ABC):
 
 
 __all__ = [
+    "ChatLease",
     "CompleteTurnResult",
     "FailureRecord",
     "Lease",

@@ -15,16 +15,23 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from matrix.int.scheduler import (
+    _DEFAULT_HEARTBEAT_STALE_AFTER,
+    ChatLease,
     CompleteTurnResult,
     FailureRecord,
     Lease,
     Scheduler,
     WorkerInfo,
 )
+from matrix.model.chats import Chat
 from matrix.model.session import SessionStatus
+from matrix.model.storage import OffsetPage
+
+if TYPE_CHECKING:
+    from matrix.int.storage_provider import StorageProvider
 
 
 @dataclass
@@ -56,12 +63,17 @@ class _WorkerState:
 class InMemoryScheduler(Scheduler):
     """Single-process scheduler. NOT safe for multi-process deployment."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        storage_provider: "StorageProvider | None" = None,
+    ) -> None:
         self._lock = asyncio.Lock()
         self._sessions: dict[str, _SessionState] = {}
         self._leases: dict[str, _LeaseState] = {}
         self._workers: dict[str, _WorkerState] = {}
         self.lease_ttl_seconds: int = 30  # mutable; WorkerPool sets at start
+        self._storage = storage_provider
         # ---- metrics (spec §14) ----
         self._notify_received_total: int = 0
         self._lease_expirations_total: int = 0
@@ -350,6 +362,117 @@ class InMemoryScheduler(Scheduler):
                     self._notify_received_total += 1
                 flipped += 1
         return flipped
+
+    # ---- Chat-turn claiming ---------------------------------------------
+
+    async def claim_chats(
+        self,
+        worker_id: str,
+        *,
+        max_count: int,
+        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
+    ) -> list[ChatLease]:
+        """Iterate all Chat rows and claim eligible ones.
+
+        Eligibility predicate (mirrors the spec):
+        * status='active'
+        * parked_status IS DISTINCT FROM 'parked'
+        * claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after
+        * turn_status='claimable' OR parked_status='resumable'
+        """
+        async with self._lock:
+            if self._storage is None:
+                return []
+            chat_storage = self._storage.get_storage(Chat)
+            # Collect all Chat rows from storage. Use paginated reads to
+            # stay within the OffsetPage.length constraint (max 200 per page).
+            page_size = 200
+            all_chats: list[Chat] = []
+            offset = 0
+            while True:
+                resp = await chat_storage.list(OffsetPage(offset=offset, length=page_size))
+                all_chats.extend(resp.items)
+                if len(resp.items) < page_size:
+                    break
+                offset += page_size
+
+            now = datetime.now(timezone.utc)
+            staleness_cutoff = now - heartbeat_stale_after
+
+            claimed: list[ChatLease] = []
+            for chat in all_chats:
+                if len(claimed) >= max_count:
+                    break
+                # status must be 'active'
+                if chat.status != "active":
+                    continue
+                # parked_status must NOT be 'parked'
+                if chat.parked_status == "parked":
+                    continue
+                # claim must be available (not held, or stale)
+                if chat.claimed_by is not None:
+                    if chat.last_heartbeat_at is None or chat.last_heartbeat_at >= staleness_cutoff:
+                        continue
+                # must have work to do
+                if not (
+                    chat.turn_status == "claimable"
+                    or chat.parked_status == "resumable"
+                ):
+                    continue
+
+                # Claim it
+                now_claim = datetime.now(timezone.utc)
+                updated = chat.model_copy(update={
+                    "turn_status": "running",
+                    "claimed_by": worker_id,
+                    "claimed_at": now_claim,
+                    "last_heartbeat_at": now_claim,
+                })
+                await chat_storage.update(updated)
+                claimed.append(ChatLease(
+                    chat_id=chat.id,
+                    worker_id=worker_id,
+                    claimed_at=now_claim,
+                ))
+            return claimed
+
+    async def heartbeat_chat(self, chat_id: str, worker_id: str) -> bool:
+        """Bump last_heartbeat_at if we still own the claim."""
+        async with self._lock:
+            if self._storage is None:
+                return False
+            chat_storage = self._storage.get_storage(Chat)
+            chat = await chat_storage.get(chat_id)
+            if chat is None or chat.claimed_by != worker_id:
+                return False
+            updated = chat.model_copy(update={
+                "last_heartbeat_at": datetime.now(timezone.utc),
+            })
+            await chat_storage.update(updated)
+            return True
+
+    async def release_chat(
+        self,
+        chat_id: str,
+        worker_id: str,
+        *,
+        next_turn_status: Literal["idle", "claimable"],
+    ) -> None:
+        """Release the chat claim. No-ops if we don't own it."""
+        async with self._lock:
+            if self._storage is None:
+                return
+            chat_storage = self._storage.get_storage(Chat)
+            chat = await chat_storage.get(chat_id)
+            if chat is None or chat.claimed_by != worker_id:
+                return
+            updated = chat.model_copy(update={
+                "turn_status": next_turn_status,
+                "claimed_by": None,
+                "claimed_at": None,
+                "last_heartbeat_at": None,
+            })
+            await chat_storage.update(updated)
 
     # ---- Hints + cancel -------------------------------------------------
 
