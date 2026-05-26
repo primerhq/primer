@@ -304,6 +304,99 @@ class TestListMessages:
 
 
 @pytest.mark.asyncio
+class TestChatTitle:
+    """Chat.title is stamped from the first user_message so the chat
+    list shows a human-readable label instead of the opaque chat id."""
+
+    async def test_title_is_none_on_fresh_chat(self, client, seeded_agent):
+        r = await client.post("/v1/chats", json={"agent_id": "ag-chat"})
+        body = r.json()
+        assert body["title"] is None
+
+    async def test_first_user_message_stamps_title(
+        self, app, fake_llm, seeded_agent,
+    ):
+        from starlette.testclient import TestClient as SyncTestClient
+
+        with SyncTestClient(app) as sclient:
+            r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
+            cid = r.json()["id"]
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                ws.send_json({"kind": "user_message", "content": "Hello agent, can you help me?"})
+                for _ in range(3):  # user / assistant / done
+                    ws.receive_json()
+            # Fetch the chat row back through REST — title now stamped.
+            r2 = sclient.get(f"/v1/chats/{cid}")
+            assert r2.json()["title"] == "Hello agent, can you help me?"
+
+    async def test_title_truncates_long_text(
+        self, app, fake_llm, seeded_agent,
+    ):
+        from starlette.testclient import TestClient as SyncTestClient
+
+        long_text = (
+            "this is a really really long opening message that goes on "
+            "and on and on and far exceeds the 80-character title cap "
+            "matrix imposes on the chat list"
+        )
+        with SyncTestClient(app) as sclient:
+            r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
+            cid = r.json()["id"]
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                ws.send_json({"kind": "user_message", "content": long_text})
+                for _ in range(3):
+                    ws.receive_json()
+            title = sclient.get(f"/v1/chats/{cid}").json()["title"]
+        assert title.endswith("…")
+        assert len(title) <= 80
+        # The truncation should land on a word boundary, not mid-word,
+        # when one is available in the back third of the budget.
+        assert " " in title  # multi-word survived
+        assert not title.replace("…", "").endswith(" ")
+
+    async def test_title_not_overwritten_on_subsequent_turns(
+        self, app, fake_llm, seeded_agent,
+    ):
+        from starlette.testclient import TestClient as SyncTestClient
+
+        with SyncTestClient(app) as sclient:
+            r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
+            cid = r.json()["id"]
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                ws.send_json({"kind": "user_message", "content": "first message"})
+                for _ in range(3):
+                    ws.receive_json()
+                ws.send_json({"kind": "user_message", "content": "different topic now"})
+                for _ in range(3):
+                    ws.receive_json()
+            # Title still reflects the first message — operators don't
+            # want the list label drifting as the conversation evolves.
+            assert sclient.get(f"/v1/chats/{cid}").json()["title"] == "first message"
+
+    async def test_title_falls_back_for_attachment_only_message(
+        self, app, fake_llm, seeded_agent,
+    ):
+        """When the very first user_message carries only a file (no
+        text), the title is a generic placeholder so the chat list
+        still shows something readable."""
+        import base64
+        from starlette.testclient import TestClient as SyncTestClient
+
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
+
+        with SyncTestClient(app) as sclient:
+            r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
+            cid = r.json()["id"]
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                ws.send_json({
+                    "kind": "user_message",
+                    "parts": [{"type": "image", "data": png_b64, "mime_type": "image/png"}],
+                })
+                for _ in range(3):
+                    ws.receive_json()
+            assert sclient.get(f"/v1/chats/{cid}").json()["title"] == "[attachment]"
+
+
 class TestChatWebSocket:
     async def test_ws_send_user_message_streams_back_llm_reply(
         self, app, fake_llm, seeded_agent,

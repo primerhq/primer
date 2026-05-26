@@ -92,7 +92,8 @@ function ChatsPage({ onOpen, pushToast }) {
       const q = textQuery.toLowerCase();
       arr = arr.filter((c) =>
         (c.id || "").toLowerCase().includes(q) ||
-        (c.agent_id || "").toLowerCase().includes(q)
+        (c.agent_id || "").toLowerCase().includes(q) ||
+        (c.title || "").toLowerCase().includes(q)
       );
     }
     if (agentFilter) arr = arr.filter((c) => c.agent_id === agentFilter);
@@ -158,7 +159,7 @@ function ChatsPage({ onOpen, pushToast }) {
         <div className="tbl-wrap">
           <table className="tbl">
             <thead>
-              <tr><th>ID</th><th>Agent</th><th>Status</th><th style={{ textAlign: "right" }}>Messages</th><th>Created</th><th></th></tr>
+              <tr><th>Chat</th><th>Agent</th><th>Status</th><th style={{ textAlign: "right" }}>Messages</th><th>Created</th><th></th></tr>
             </thead>
             <tbody>
               {Array.from({ length: 6 }).map((_, i) => (
@@ -187,7 +188,7 @@ function ChatsPage({ onOpen, pushToast }) {
           <table className="tbl">
             <thead>
               <tr>
-                <th>ID</th>
+                <th>Chat</th>
                 <th>Agent</th>
                 <th>Status</th>
                 <th style={{ textAlign: "right" }}>Messages</th>
@@ -208,8 +209,26 @@ function ChatsPage({ onOpen, pushToast }) {
                 const createdSec = ageSec(c.created_at);
                 const status = c.status || "active";
                 return (
-                  <tr key={c.id} onClick={() => openRow(c.id)} style={{ cursor: "pointer" }}>
-                    <td className="mono">{c.id}</td>
+                  <tr key={c.id} onClick={() => openRow(c.id)} style={{ cursor: "pointer" }} title={c.id}>
+                    <td>
+                      <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                        <span
+                          style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            maxWidth: 360,
+                            color: c.title ? "var(--text)" : "var(--text-3)",
+                          }}
+                        >{c.title || c.id}</span>
+                        {c.title && (
+                          <span
+                            className="mono muted text-sm"
+                            style={{ fontSize: 10.5, marginTop: 1 }}
+                          >{c.id}</span>
+                        )}
+                      </div>
+                    </td>
                     <td className="mono">{c.agent_id}</td>
                     <td>
                       {status === "active" ? (
@@ -700,13 +719,21 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   const chatRow = chat.data;
   const chatStatus = chatRow?.status || "active";
   const chatAgent = chatRow?.agent_id || "—";
+  const chatTitle = chatRow?.title || null;
 
   return (
     <div className="col" style={{ gap: 14, height: "calc(100vh - 180px)", display: "flex", flexDirection: "column" }}>
       <div className="panel" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
         <div className="panel-h">
           <Icon name="send" size={13} style={{ color: "var(--accent)" }} />
-          <span className="mono">{cid}</span>
+          {chatTitle ? (
+            <>
+              <span title={cid} style={{ maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{chatTitle}</span>
+              <span className="sub mono" style={{ fontSize: 11 }}>· <span style={{ color: "var(--text-3)" }}>{cid}</span></span>
+            </>
+          ) : (
+            <span className="mono">{cid}</span>
+          )}
           <span className="sub">· agent <span className="mono">{chatAgent}</span></span>
           <div className="right">
             {wsBadge}

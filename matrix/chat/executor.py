@@ -93,6 +93,41 @@ _ATTACHMENT_REJECTION_MARKERS = (
 )
 
 
+# Chat list titles are rendered in a single table column; longer
+# than this looks broken in the UI. The hard cap matches
+# :attr:`Chat.title`'s ``max_length`` so the truncated title can't
+# overflow Pydantic validation on the next ``chat.update()`` call.
+_TITLE_MAX_CHARS = 80
+
+
+def _derive_chat_title(parts: list) -> str:
+    """Pick the first non-empty TextPart's text and trim it to a
+    chat-list-friendly length, collapsing whitespace runs.
+
+    Falls back to a generic ``"[attachment]"`` placeholder when the
+    turn carries only binary parts (image/document/audio/video) —
+    the operator can rename later (TODO: title-edit affordance) but
+    the list view stays readable in the meantime.
+    """
+    for part in parts:
+        text = getattr(part, "text", None)
+        if not isinstance(text, str):
+            continue
+        cleaned = " ".join(text.split())
+        if not cleaned:
+            continue
+        if len(cleaned) <= _TITLE_MAX_CHARS:
+            return cleaned
+        # Trim on a word boundary if one exists in the back third, so
+        # the title doesn't snap a word in half when it can be avoided.
+        truncated = cleaned[: _TITLE_MAX_CHARS - 1]
+        space = truncated.rfind(" ")
+        if space >= _TITLE_MAX_CHARS * 2 // 3:
+            truncated = truncated[:space]
+        return truncated + "…"
+    return "[attachment]"
+
+
 def _diagnose_unsupported_attachment(
     *,
     exc: Exception,
@@ -181,6 +216,16 @@ class ChatTurnRunner:
         }
         if flat_text:
             payload["content"] = flat_text
+
+        # Stamp the chat title from the first user_message text the
+        # FIRST time we see one — preserves the originating intent for
+        # the chats-list view even as the conversation evolves. Never
+        # overwrite once set. ``_append`` below already persists the
+        # chat row (it bumps last_seq), so this rides on the same
+        # storage round-trip — no extra write.
+        if chat.title is None:
+            chat.title = _derive_chat_title(parts)
+
         user_msg = await self._append(
             chat,
             kind="user_message",

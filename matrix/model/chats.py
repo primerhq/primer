@@ -75,6 +75,18 @@ class Chat(Identifiable):
     )
     created_at: datetime = Field(...)
     status: ChatStatus = Field(default="active")
+    title: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Human-friendly title derived from the first user_message "
+            "text. Stamped once by :class:`matrix.chat.executor.ChatTurnRunner` "
+            "on the first turn and never overwritten — the conversation "
+            "evolves but the originating intent stays in the list view. "
+            "``None`` on chats that haven't had a user turn yet; the UI "
+            "falls back to the chat id in that case."
+        ),
+    )
     last_seq: int = Field(
         default=0,
         description=(
