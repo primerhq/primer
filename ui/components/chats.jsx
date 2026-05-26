@@ -470,15 +470,30 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     let cancelled = false;
     initialLoadedRef.current = false;
     (async () => {
+      // The server's pagination layer caps ``limit`` at 200 (see
+      // matrix/api/pagination.py: ``Query(default=20, ge=1, le=200)``).
+      // A long chat can easily exceed that with assistant_token rows,
+      // so loop with after_seq cursoring until the page comes back
+      // short. Cancellable on unmount via the closure flag.
+      const PAGE = 200;
       try {
-        const data = await apiFetch(
-          "GET",
-          `/chats/${encodeURIComponent(cid)}/messages?after_seq=0&limit=500`,
-        );
-        if (cancelled) return;
-        const items = (data && data.items) || [];
-        setMessages(items);
-        if (items.length > 0) setLastSeq(items[items.length - 1].seq || 0);
+        let cursor = 0;
+        const all = [];
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const data = await apiFetch(
+            "GET",
+            `/chats/${encodeURIComponent(cid)}/messages?after_seq=${cursor}&limit=${PAGE}`,
+          );
+          if (cancelled) return;
+          const items = (data && data.items) || [];
+          if (items.length === 0) break;
+          all.push(...items);
+          cursor = items[items.length - 1].seq || cursor;
+          if (items.length < PAGE) break;
+        }
+        setMessages(all);
+        if (all.length > 0) setLastSeq(all[all.length - 1].seq || 0);
         initialLoadedRef.current = true;
       } catch (err) {
         if (cancelled) return;
