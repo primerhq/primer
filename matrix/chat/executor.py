@@ -128,43 +128,77 @@ def _derive_chat_title(parts: list) -> str:
     return "[attachment]"
 
 
+def _looks_like_attachment_rejection(exc: Exception) -> bool:
+    """Match the exception text against well-known multimodal rejection
+    markers. Used both to gate the friendly diagnosis and to decide
+    whether to sanitize the persisted history (callers can re-use the
+    same signal so the two stay in sync)."""
+    haystack = str(exc).lower()
+    return any(m in haystack for m in _ATTACHMENT_REJECTION_MARKERS)
+
+
 def _diagnose_unsupported_attachment(
     *,
     exc: Exception,
-    user_parts: list,
+    prompt_messages: list,
     model_name: str,
 ) -> str | None:
     """If the failure looks like 'model rejected our attachment', return
-    a friendlier explanation for the chat surface; otherwise return None
-    so the caller falls back to the raw exception message.
+    a friendlier explanation tailored to the rejected modality kind(s);
+    otherwise return None so the caller falls back to the raw exception
+    message.
 
-    The check has two halves:
-
-    * The user actually attached something — a turn with only text
-      can't have hit a multimodal rejection.
-    * The exception text contains one of the well-known rejection
-      markers above. We deliberately don't gate on the exception
-      class (``BadRequestError``) because some adapters wrap upstream
-      400s into their own types.
+    Scans every part across the prompt (system + history + new user
+    message), not just the current turn's parts. When the operator
+    sent a PDF on turn 1 and got rejected, the second turn that looks
+    text-only ALSO fails because history still carries the rejected
+    part — the diagnosis (and the sanitization that follows it) needs
+    to fire in both cases.
     """
-    nontext = [
-        p for p in user_parts
-        if type(p).__name__ != "TextPart"
-    ]
-    if not nontext:
+    if not _looks_like_attachment_rejection(exc):
         return None
-    haystack = str(exc).lower()
-    if not any(m in haystack for m in _ATTACHMENT_REJECTION_MARKERS):
+    nontext_kinds: set[str] = set()
+    for msg in prompt_messages:
+        for p in getattr(msg, "parts", []) or []:
+            if type(p).__name__ == "TextPart":
+                continue
+            nontext_kinds.add(
+                getattr(p, "type", type(p).__name__.lower()),
+            )
+    if not nontext_kinds:
         return None
-    kinds = sorted({getattr(p, "type", type(p).__name__.lower()) for p in nontext})
-    kinds_label = ", ".join(kinds) if kinds else "attachments"
+    kinds_label = ", ".join(sorted(nontext_kinds))
+
+    # Tailor the remediation hint to what actually got rejected. A
+    # vision model (Qwen-VL, Llama-Vision) accepts images but not
+    # PDFs — telling its operator to "use a multimodal model" is
+    # technically wrong since their model IS multimodal for images.
+    if nontext_kinds == {"document"}:
+        remediation = (
+            "PDFs and other documents require specific model support — "
+            "try gpt-4o family, gpt-4.1, Claude 3.5+, or Gemini 1.5+. "
+            "Most local + vision-only models accept images but not "
+            "documents. You can also extract the document's text and "
+            "paste it inline."
+        )
+    elif nontext_kinds == {"image"}:
+        remediation = (
+            "This model doesn't accept image input. Switch to a "
+            "vision-capable model (Qwen-VL, gpt-4o family, Claude 3.5+, "
+            "Gemini, Llama-Vision) or describe the image in text."
+        )
+    else:
+        remediation = (
+            "This model doesn't accept all the attached content types. "
+            "Try a more capable multimodal model (gpt-4o family, "
+            "Claude 3.5+, Gemini 1.5+) or remove the attachments."
+        )
+
     return (
-        f"The model {model_name!r} rejected the {kinds_label} on this "
-        "message. Most local model servers (LM Studio, vLLM, Ollama) "
-        "and text-only cloud models don't accept file attachments. "
-        "Switch the chat's agent to a multimodal-capable model "
-        "(gpt-4o family, gpt-4.1, Claude 3.5+, Gemini 1.5+) or remove "
-        "the attachment and paste the text inline."
+        f"The model {model_name!r} rejected the {kinds_label} attached "
+        f"to this conversation. {remediation} "
+        "The attachment has been removed from the chat history so you "
+        "can continue this conversation without resending it."
     )
 
 
@@ -290,9 +324,24 @@ class ChatTurnRunner:
                 )
                 friendly = _diagnose_unsupported_attachment(
                     exc=exc,
-                    user_parts=parts,
+                    prompt_messages=prompt,
                     model_name=self._model.name,
                 )
+                if friendly is not None:
+                    # Strip the rejected binary parts from every
+                    # persisted user_message row so the next turn
+                    # doesn't replay the same failure (the chat would
+                    # otherwise be permanently broken — every fresh
+                    # message re-loads the broken history and 400s
+                    # again with no clue why).
+                    try:
+                        await self._sanitize_unsupported_attachments(chat)
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "ChatTurnRunner: failed to sanitize history "
+                            "after attachment rejection for chat %s",
+                            chat.id,
+                        )
                 err = await self._append(
                     chat,
                     kind="error",
@@ -610,6 +659,62 @@ class ChatTurnRunner:
         chat.last_seq = next_seq
         await self._chats.update(chat)
         return row
+
+    async def _sanitize_unsupported_attachments(self, chat: Chat) -> int:
+        """Walk the persisted chat history and rewrite every
+        ``user_message`` row that still carries a non-text part.
+        Replaces the row's ``parts`` with a single TextPart whose
+        text is the original message text (if any) followed by a
+        marker noting the removal.
+
+        Returns the number of rows sanitized. Called from the
+        attachment-rejection error path so subsequent turns load a
+        clean history and don't replay the same upstream 400.
+
+        Per-row updates instead of a bulk operation because Storage
+        doesn't expose a bulk-update primitive — the in-memory rate
+        is fine for chat history sizes, and Postgres / sqlite both
+        round-trip a single row update in <1ms.
+        """
+        rows = await self._read_messages_full(chat.id)
+        sanitized = 0
+        for row in rows:
+            if row.kind != "user_message":
+                continue
+            payload = row.payload or {}
+            raw_parts = payload.get("parts")
+            if not isinstance(raw_parts, list) or not raw_parts:
+                continue
+            nontext = [
+                p for p in raw_parts
+                if isinstance(p, dict) and p.get("type") not in (None, "text")
+            ]
+            if not nontext:
+                continue
+            removed_kinds = sorted({
+                p.get("type") for p in nontext if isinstance(p, dict)
+            })
+            removed_label = ", ".join(k for k in removed_kinds if k)
+            # Keep the user's text content (if any) and append a
+            # human-readable marker so the LLM can still see roughly
+            # what was on the original turn.
+            original_text = payload.get("content") or ""
+            marker = (
+                f"[attachment removed: the previously attached "
+                f"{removed_label or 'file'} was dropped from history "
+                "because the configured model didn't accept it]"
+            )
+            new_text = (
+                f"{original_text}\n\n{marker}".strip()
+                if original_text else marker
+            )
+            new_payload = dict(payload)
+            new_payload["parts"] = [{"type": "text", "text": new_text}]
+            new_payload["content"] = new_text
+            row.payload = new_payload
+            await self._messages.update(row)
+            sanitized += 1
+        return sanitized
 
 
 __all__ = ["ChatTurnRunner"]

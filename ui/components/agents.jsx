@@ -260,6 +260,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
   const [providerId, setProviderId] = React.useState("");
   const [modelName, setModelName] = React.useState("");
   const [systemPrompt, setSystemPrompt] = React.useState("");
+  const [compactionPrompt, setCompactionPrompt] = React.useState("");
   // selectedScopedIds is a Set so toggles are O(1); persisted as a
   // sorted list at submit time for stable JSON.
   const [selectedScopedIds, setSelectedScopedIds] = React.useState(() => new Set());
@@ -406,6 +407,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
       model: { provider_id: providerId, model_name: modelName },
       tools: derivedToolsetIds,
       system_prompt: systemPrompt ? [systemPrompt] : [],
+      compaction_prompt: compactionPrompt ? [compactionPrompt] : [],
     };
     if (allowlist.length > 0) body.tool_allowlist = allowlist;
     if (temperature !== "" && !Number.isNaN(+temperature)) {
@@ -715,6 +717,23 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
               onChange={(e) => setSystemPrompt(e.target.value)}
               rows={4}
             />
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="na-compaction-prompt">
+              Compaction prompt <span className="hint">optional · used when the conversation outgrows the LLM context window</span>
+            </label>
+            <textarea
+              id="na-compaction-prompt"
+              className="textarea"
+              value={compactionPrompt}
+              onChange={(e) => setCompactionPrompt(e.target.value)}
+              rows={4}
+              placeholder="Instructions the runtime uses to summarise older turns when context is tight. Empty = use the framework default."
+            />
+            <div className="field-help">
+              Agent-specific because <em>what to keep</em> depends on the agent's purpose — a researcher may
+              want to preserve cited sources, a coder the current file under edit.
+            </div>
           </div>
           <div className="field">
             <label className="field-label" htmlFor="na-temperature">

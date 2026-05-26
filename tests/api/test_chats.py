@@ -604,10 +604,88 @@ class TestChatWebSocket:
         assert "image" in text
         assert "'m'" in text  # model name (the seeded agent's model)
         assert (
-            "multimodal" in text.lower()
+            "vision" in text.lower()
             or "attachments" in text.lower()
+            or "image" in text.lower()
         )
         assert "invalid_union" not in text
+
+        # Sanitization: the persisted user_message MUST have its
+        # ImagePart stripped so the next turn doesn't replay the same
+        # rejection. Storage now holds a text-only version with a
+        # marker explaining the removal.
+        msgs_storage = app.state.storage_provider.get_storage(ChatMessage)
+        user_row = await msgs_storage.get(ChatMessage.make_id(cid, 1))
+        assert user_row.kind == "user_message"
+        parts_after = user_row.payload.get("parts") or []
+        assert all(p.get("type") == "text" for p in parts_after), (
+            f"expected only text parts after sanitization, got: {parts_after!r}"
+        )
+        joined = " ".join(p.get("text", "") for p in parts_after)
+        assert "attachment removed" in joined
+        assert "what's in this?" in joined  # original text preserved
+
+    async def test_ws_subsequent_turn_after_rejection_is_resumable(
+        self, app, fake_llm, seeded_agent,
+    ):
+        """After the first attachment-rejection failure, a follow-up
+        text-only message must succeed because history was sanitized.
+        Reproduces the 'non-resumable chat' bug: before the fix, the
+        loaded history still carried the rejected ImagePart and the
+        second turn re-triggered ``invalid_union`` indefinitely."""
+        import base64
+        from starlette.testclient import TestClient as SyncTestClient
+
+        from matrix.model.except_ import BadRequestError
+
+        png_bytes = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m"
+            "NkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        )
+        png_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+        with SyncTestClient(app) as sclient:
+            r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
+            cid = r.json()["id"]
+
+            # Turn 1: attachment + LLM rejects.
+            fake_llm.raise_on_stream = BadRequestError(
+                "[400 invalid_union] Invalid type for 'input'."
+            )
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                ws.send_json({
+                    "kind": "user_message",
+                    "content": "describe this",
+                    "parts": [{"type": "image", "data": png_b64, "mime_type": "image/png"}],
+                })
+                ws.receive_json()  # user_message echo
+                err = ws.receive_json()  # friendly error
+                assert err["kind"] == "error"
+
+            # Turn 2: text-only follow-up. LLM is now NOT rejecting
+            # — if sanitization worked, the prompt rebuilt from
+            # storage has no image, and this turn produces tokens.
+            fake_llm.raise_on_stream = None
+            fake_llm._reply_text = "Sure, what would you like to know?"
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws?cursor=2") as ws:
+                ws.send_json({"kind": "user_message", "content": "still there?"})
+                got = [ws.receive_json() for _ in range(3)]
+            kinds = [g["kind"] for g in got]
+            assert kinds == ["user_message", "assistant_token", "done"], (
+                f"second turn should have completed cleanly; got {kinds!r}"
+            )
+            assert got[1]["delta"] == "Sure, what would you like to know?"
+
+        # The LLM call on turn 2 received a clean prompt — no ImagePart
+        # in any message. The most recent call's messages list reflects
+        # the full prompt the LLM saw.
+        last_call = fake_llm.calls[-1]
+        for msg in last_call["messages"]:
+            for p in msg.parts:
+                assert p.type == "text", (
+                    f"turn 2 prompt must be text-only after sanitization; "
+                    f"found part of type {p.type!r}"
+                )
 
     async def test_ws_text_only_failure_keeps_raw_error(
         self, app, fake_llm, seeded_agent,
