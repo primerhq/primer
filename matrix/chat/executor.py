@@ -73,6 +73,66 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_ROUND_TRIPS = 8
 
 
+# Substrings that indicate the upstream model/provider refused our
+# request because of a multimodal content part (image / document /
+# audio / video) rather than a generic protocol failure. LM Studio +
+# vLLM + many OpenAI-compatible local servers report this as a 400
+# with ``invalid_union`` on the ``input`` parameter; cloud providers
+# tend to use ``unsupported_content`` / ``unsupported_value``. Match
+# loosely — a friendly diagnosis is better than leaking raw provider
+# error strings to operators.
+_ATTACHMENT_REJECTION_MARKERS = (
+    "invalid_union",
+    "invalid type for 'input'",
+    "invalid type for input",
+    "unsupported_content",
+    "unsupported content type",
+    "image_url is not supported",
+    "input_file is not supported",
+    "input_image is not supported",
+)
+
+
+def _diagnose_unsupported_attachment(
+    *,
+    exc: Exception,
+    user_parts: list,
+    model_name: str,
+) -> str | None:
+    """If the failure looks like 'model rejected our attachment', return
+    a friendlier explanation for the chat surface; otherwise return None
+    so the caller falls back to the raw exception message.
+
+    The check has two halves:
+
+    * The user actually attached something — a turn with only text
+      can't have hit a multimodal rejection.
+    * The exception text contains one of the well-known rejection
+      markers above. We deliberately don't gate on the exception
+      class (``BadRequestError``) because some adapters wrap upstream
+      400s into their own types.
+    """
+    nontext = [
+        p for p in user_parts
+        if type(p).__name__ != "TextPart"
+    ]
+    if not nontext:
+        return None
+    haystack = str(exc).lower()
+    if not any(m in haystack for m in _ATTACHMENT_REJECTION_MARKERS):
+        return None
+    kinds = sorted({getattr(p, "type", type(p).__name__.lower()) for p in nontext})
+    kinds_label = ", ".join(kinds) if kinds else "attachments"
+    return (
+        f"The model {model_name!r} rejected the {kinds_label} on this "
+        "message. Most local model servers (LM Studio, vLLM, Ollama) "
+        "and text-only cloud models don't accept file attachments. "
+        "Switch the chat's agent to a multimodal-capable model "
+        "(gpt-4o family, gpt-4.1, Claude 3.5+, Gemini 1.5+) or remove "
+        "the attachment and paste the text inline."
+    )
+
+
 class ChatTurnRunner:
     """Drive one user_message → assistant_reply round-trip against an LLM."""
 
@@ -183,10 +243,15 @@ class ChatTurnRunner:
                     "ChatTurnRunner: LLM stream failed for chat %s: %s",
                     chat.id, exc,
                 )
+                friendly = _diagnose_unsupported_attachment(
+                    exc=exc,
+                    user_parts=parts,
+                    model_name=self._model.name,
+                )
                 err = await self._append(
                     chat,
                     kind="error",
-                    payload={"message": f"llm stream failed: {exc}"},
+                    payload={"message": friendly or f"llm stream failed: {exc}"},
                 )
                 yield err
                 return

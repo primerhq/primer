@@ -31,10 +31,15 @@ class _ChatTestFakeLLM:
     Replaces the M6 stub's hard-coded ``(stub) heard: <input>`` string
     with a single TextDelta + Done — the same three-frame shape the
     cursor-replay tests assume.
+
+    When ``raise_on_stream`` is set, the fake re-raises that exception
+    instead of yielding events — used to exercise the chat runner's
+    error-translation path for upstream provider failures.
     """
 
     def __init__(self, reply_text: str = "ok") -> None:
         self._reply_text = reply_text
+        self.raise_on_stream: BaseException | None = None
         self.calls: list[dict[str, Any]] = []
 
     async def list_models(self):
@@ -51,6 +56,8 @@ class _ChatTestFakeLLM:
         return self._stream_impl()
 
     async def _stream_impl(self) -> AsyncIterator[StreamEvent]:
+        if self.raise_on_stream is not None:
+            raise self.raise_on_stream
         yield TextDelta(text=self._reply_text, index=0)
         yield Done(stop_reason="stop", raw_reason="stop")
 
@@ -446,6 +453,91 @@ class TestChatWebSocket:
             "ImagePart.data must hold the decoded image bytes, not the "
             "base64 string of those bytes"
         )
+
+    async def test_ws_attachment_rejected_by_model_surfaces_friendly_error(
+        self, app, fake_llm, seeded_agent,
+    ):
+        """When the upstream model rejects an attachment (LM Studio,
+        text-only cloud model, etc.), the chat surface MUST translate
+        the cryptic '400 invalid_union' into an operator-friendly
+        message instead of leaking the raw provider error string.
+
+        Reproduces the bug seen with Gemma 4 in LM Studio: the model
+        returns ``Invalid type for 'input'`` because it can't accept
+        ``input_file`` content."""
+        import base64
+        from starlette.testclient import TestClient as SyncTestClient
+
+        from matrix.model.except_ import BadRequestError
+
+        # Make the fake LLM reject the call with the same shape
+        # OpenAI / LM Studio return when content includes a file/image
+        # part that the model can't handle.
+        fake_llm.raise_on_stream = BadRequestError(
+            "[400 invalid_union] Error code: 400 - "
+            "{'error': {'message': \"Invalid type for 'input'.\", "
+            "'type': 'invalid_request_error', 'param': 'input', "
+            "'code': 'invalid_union'}}"
+        )
+
+        png_bytes = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m"
+            "NkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        )
+        png_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+        with SyncTestClient(app) as sclient:
+            r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
+            cid = r.json()["id"]
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                ws.send_json({
+                    "kind": "user_message",
+                    "content": "what's in this?",
+                    "parts": [
+                        {"type": "image", "data": png_b64, "mime_type": "image/png"},
+                    ],
+                })
+                # Expect: user_message echo, then an error row with the
+                # friendly diagnosis.
+                user_msg = ws.receive_json()
+                err = ws.receive_json()
+
+        assert user_msg["kind"] == "user_message"
+        assert err["kind"] == "error"
+        text = err["message"]
+        # Friendly message must mention the rejected modality, the
+        # model name, and at least one actionable hint. Crucially it
+        # must NOT leak the raw 'invalid_union' string.
+        assert "image" in text
+        assert "'m'" in text  # model name (the seeded agent's model)
+        assert (
+            "multimodal" in text.lower()
+            or "attachments" in text.lower()
+        )
+        assert "invalid_union" not in text
+
+    async def test_ws_text_only_failure_keeps_raw_error(
+        self, app, fake_llm, seeded_agent,
+    ):
+        """A stream failure on a TEXT-only turn falls back to the raw
+        exception message — the diagnosis only kicks in when there's
+        actually an attachment that could explain the rejection."""
+        from starlette.testclient import TestClient as SyncTestClient
+
+        from matrix.model.except_ import BadRequestError
+
+        fake_llm.raise_on_stream = BadRequestError("upstream is down")
+
+        with SyncTestClient(app) as sclient:
+            r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
+            cid = r.json()["id"]
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                ws.send_json({"kind": "user_message", "content": "hello"})
+                _user_msg = ws.receive_json()
+                err = ws.receive_json()
+
+        assert err["kind"] == "error"
+        assert "upstream is down" in err["message"]
 
     async def test_ws_rejects_user_message_with_bad_part(
         self, app, seeded_agent,
