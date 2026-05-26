@@ -162,6 +162,44 @@ class TimeoutSweeper(_BackgroundTask):
             await self._bus.publish(event_key, payload=payload)
 
 
+class ChatSweeper(_BackgroundTask):
+    """Periodically reclaims chats whose worker died mid-turn.
+
+    Wraps :func:`matrix.chat.dispatch.sweep_chats` in the same
+    background-task harness used by TimeoutSweeper.
+    """
+
+    def __init__(
+        self,
+        *,
+        storage_provider,
+        scheduler,
+        event_bus,
+        poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
+    ) -> None:
+        super().__init__(name="chat-sweeper")
+        self._storage_provider = storage_provider
+        self._scheduler = scheduler
+        self._event_bus = event_bus
+        self._poll = poll_seconds
+
+    async def _run(self) -> None:
+        from matrix.chat.dispatch import sweep_chats
+        while not self._stopping:
+            try:
+                await sweep_chats(
+                    storage_provider=self._storage_provider,
+                    scheduler=self._scheduler,
+                    event_bus=self._event_bus,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("chat-sweeper: tick failed: %s", exc)
+            try:
+                await asyncio.sleep(self._poll)
+            except asyncio.CancelledError:
+                break
+
+
 # ===========================================================================
 # Scheduler-flavour lookup helpers
 # ===========================================================================
@@ -252,6 +290,7 @@ async def _find_expired_non_timer_keys(scheduler) -> list[str]:
 
 
 __all__ = [
+    "ChatSweeper",
     "DEFAULT_SWEEPER_POLL_SECONDS",
     "DEFAULT_TIMER_POLL_SECONDS",
     "TimeoutSweeper",

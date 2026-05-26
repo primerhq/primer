@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from matrix.chat.executor import ChatTurnRunner
@@ -318,6 +318,60 @@ async def _find_next_user_message(
     return None
 
 
+async def sweep_chats(
+    *,
+    storage_provider: StorageProvider,
+    scheduler: Scheduler,
+    event_bus: EventBus,
+    heartbeat_stale_after: timedelta = timedelta(seconds=90),
+) -> int:
+    """Reclaim chats whose worker died mid-turn.
+
+    For each chat with ``turn_status='running'`` and
+    ``last_heartbeat_at < now - heartbeat_stale_after``:
+      1. Persist a synthetic 'error' ChatMessage row marking the
+         in-flight user_message as terminated.
+      2. Clear claim columns; set ``turn_status='claimable'``.
+      3. Publish ``chat-claimable`` on the bus to wake workers.
+    Returns the number of chats reclaimed.
+    """
+    chats = storage_provider.get_storage(Chat)
+    msgs = storage_provider.get_storage(ChatMessage)
+    now = datetime.now(timezone.utc)
+    cutoff = now - heartbeat_stale_after
+
+    page = await chats.list(OffsetPage(offset=0, length=200))
+    reclaimed = 0
+    for chat in page.items:
+        if chat.turn_status != "running":
+            continue
+        if chat.last_heartbeat_at is None or chat.last_heartbeat_at >= cutoff:
+            continue
+        new_seq = chat.last_seq + 1
+        try:
+            await msgs.create(ChatMessage(
+                id=ChatMessage.make_id(chat.id, new_seq),
+                chat_id=chat.id, seq=new_seq, kind="error",
+                payload={"message": "turn interrupted — worker reclaim",
+                         "code": "worker_reclaim"},
+                created_at=now,
+            ))
+        except Exception:
+            logger.exception(
+                "sweeper failed to write error row for chat %s", chat.id,
+            )
+            continue
+        chat.last_seq = new_seq
+        chat.turn_status = "claimable"
+        chat.claimed_by = None
+        chat.claimed_at = None
+        chat.last_heartbeat_at = None
+        await chats.update(chat)
+        await event_bus.publish("chat-claimable", {"chat_id": chat.id})
+        reclaimed += 1
+    return reclaimed
+
+
 def _parts_from(user_message_row: ChatMessage) -> list:
     """Convert the persisted user_message payload back into Parts."""
     payload = user_message_row.payload or {}
@@ -338,4 +392,4 @@ def _parts_from(user_message_row: ChatMessage) -> list:
     return [TextPart(text=text)]
 
 
-__all__ = ["ChatDispatchDeps", "run_one_chat_turn"]
+__all__ = ["ChatDispatchDeps", "run_one_chat_turn", "sweep_chats"]
