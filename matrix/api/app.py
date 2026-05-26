@@ -358,6 +358,8 @@ def _make_lifespan(config: AppConfig):
                 router_registry=router_registry,
                 approval_resolver=approval_resolver,
                 channel_dispatcher=channel_dispatcher,
+                event_bus=event_bus,
+                chat_tick_router=chat_tick_router,
             )
             logger.info("lifespan: worker_pool.start() begin")
             await worker_pool.start()
@@ -790,6 +792,7 @@ def create_test_app(
     workspaces_toolset=None,
     misc_toolset=None,
     web_toolset=None,
+    start_chat_worker: bool = False,
 ) -> FastAPI:
     """Test factory: skips the lifespan; stashes pre-built dependencies.
 
@@ -850,9 +853,11 @@ def create_test_app(
     app.state.internal_collections = None
     app.state.search_toolset = None
     # Attach an in-memory scheduler so the /workers router has something
-    # to depend on. The test app does not run a real WorkerPool.
+    # to depend on. Pass storage_provider so claim_chats can read Chat
+    # rows when start_chat_worker=True.
     from matrix.scheduler.in_memory import InMemoryScheduler
-    app.state.scheduler = InMemoryScheduler()
+    _test_scheduler = InMemoryScheduler(storage_provider=storage_provider)
+    app.state.scheduler = _test_scheduler
     app.state.worker_pool = None
     # Attach an in-memory event bus so yielding-tool endpoints (ask_user,
     # tool_approval respond) can publish without raising ConfigError.
@@ -893,6 +898,44 @@ def create_test_app(
         return asyncio.create_task(_loop(), name="chat-tick-forwarder")
 
     app.state.start_chat_tick_forwarder = _start_chat_tick_forwarder
+
+    # Optional worker pool for integration tests that need the chat
+    # claim loop (start_chat_worker=True).
+    if start_chat_worker:
+        from matrix.model.scheduler import WorkerConfig as _WorkerConfig
+        from matrix.worker.pool import WorkerPool as _WorkerPool
+
+        _pool_config = _WorkerConfig(
+            concurrency=4,
+            claim_batch_size=2,
+            heartbeat_interval_seconds=5,
+            lease_ttl_seconds=15,
+            poll_interval_seconds=0.1,
+            drain_timeout_seconds=5,
+        )
+        _pool = _WorkerPool(
+            config=_pool_config,
+            scheduler=_test_scheduler,
+            storage=storage_provider,
+            workspace_registry=workspace_registry,
+            provider_registry=provider_registry,
+            event_bus=_test_event_bus,
+            chat_tick_router=_chat_tick_router,
+        )
+        app.state.worker_pool = _pool
+
+        async def _start_worker_pool() -> None:
+            await _pool.start()
+
+        async def _stop_worker_pool() -> None:
+            await _pool.drain_and_stop(timeout=2.0)
+
+        app.state.start_worker_pool = _start_worker_pool
+        app.state.stop_worker_pool = _stop_worker_pool
+    else:
+        app.state.start_worker_pool = None
+        app.state.stop_worker_pool = None
+
     # Channel subsystem — registry + dispatcher for test fixtures.
     from matrix.api.registries.channel_registry import ChannelRegistry as _CR
     from matrix.channel.dispatcher import ChannelDispatcher as _CD

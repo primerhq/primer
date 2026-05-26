@@ -45,9 +45,20 @@ async def app(
         provider_registry=fake_provider_registry,
     )
     forwarder = await _app.state.start_chat_tick_forwarder()
+
+    # Start the worker pool if the app was built with one.
+    if getattr(_app.state, "start_worker_pool", None) is not None:
+        await _app.state.start_worker_pool()
+
     try:
         yield _app
     finally:
+        # Stop the worker pool before cancelling the forwarder.
+        if getattr(_app.state, "stop_worker_pool", None) is not None:
+            try:
+                await _app.state.stop_worker_pool()
+            except Exception:
+                pass
         forwarder.cancel()
         try:
             await forwarder

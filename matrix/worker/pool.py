@@ -45,7 +45,9 @@ if TYPE_CHECKING:
     from matrix.agent.approval import ApprovalResolver
     from matrix.api.registries import ProviderRegistry, WorkspaceRegistry
     from matrix.graph.router import RouterRegistry
+    from matrix.int.event_bus import EventBus
     from matrix.int.storage_provider import StorageProvider
+    from matrix.chat.tick_router import ChatTickRouter
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,8 @@ class WorkerPool:
         router_registry: "RouterRegistry | None" = None,
         approval_resolver: "ApprovalResolver | None" = None,
         channel_dispatcher=None,
+        event_bus: "EventBus | None" = None,
+        chat_tick_router: "ChatTickRouter | None" = None,
     ) -> None:
         self.config = config
         self._scheduler = scheduler
@@ -92,6 +96,8 @@ class WorkerPool:
         self._router_registry = router_registry
         self._approval_resolver = approval_resolver
         self._channel_dispatcher = channel_dispatcher
+        self._event_bus = event_bus
+        self._chat_tick_router = chat_tick_router
 
         self._worker_id: str = ""
         self._tasks: list[asyncio.Task] = []
@@ -102,6 +108,11 @@ class WorkerPool:
         self._turn_tasks: set[asyncio.Task] = set()
         self._wake = asyncio.Event()
         self._stopping = asyncio.Event()
+        # ---- chat claim loop state ----
+        self._in_flight_chats: set[str] = set()
+        self._chat_turn_tasks: set[asyncio.Task] = set()
+        self._chat_claim_task: asyncio.Task | None = None
+        self._chat_bus_task: asyncio.Task | None = None
         # ---- metrics (spec §14) ----
         self._claims_total: int = 0
         self._claims_empty_total: int = 0
@@ -150,20 +161,67 @@ class WorkerPool:
                 name=f"scheduler-cancel-{self._worker_id}",
             ),
         ]
+        # Spawn the chat claim loop (sibling of _claim_loop).
+        self._chat_claim_task = asyncio.create_task(
+            self._claim_chat_loop(),
+            name=f"chat-claim-loop-{self._worker_id}",
+        )
+        # Subscribe to the event bus for chat-claimable events to wake
+        # the chat claim loop promptly (optional — only when bus is set).
+        if self._event_bus is not None:
+            self._chat_bus_task = asyncio.create_task(
+                self._chat_bus_loop(),
+                name=f"chat-bus-loop-{self._worker_id}",
+            )
 
-    async def drain_and_stop(self) -> None:
+    async def drain_and_stop(self, timeout: float | None = None) -> None:
         self._stopping.set()
+        # Wake any sleeping claim loops so they see the stopping flag.
+        self._wake.set()
         try:
             await self._scheduler.drain_worker(self._worker_id)
         except Exception:
             logger.exception("drain_worker failed for %s", self._worker_id)
-        deadline = asyncio.get_event_loop().time() + self.config.drain_timeout_seconds
+        drain_timeout = (
+            timeout
+            if timeout is not None
+            else float(self.config.drain_timeout_seconds)
+        )
+        deadline = asyncio.get_event_loop().time() + drain_timeout
         while self._active_scopes and asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.5)
         if self._active_scopes:
             for scope in list(self._active_scopes.values()):
                 scope.cancel("worker_drain_timeout")
             self._active_scopes.clear()
+        # Cancel the chat bus watcher first so it stops producing wake signals.
+        if self._chat_bus_task is not None:
+            self._chat_bus_task.cancel()
+            try:
+                await self._chat_bus_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._chat_bus_task = None
+        # Cancel the chat claim loop.
+        if self._chat_claim_task is not None:
+            self._chat_claim_task.cancel()
+            try:
+                await self._chat_claim_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._chat_claim_task = None
+        # Wait for in-flight chat turns (up to remaining drain time).
+        chat_deadline = asyncio.get_event_loop().time() + min(drain_timeout, 5.0)
+        while self._chat_turn_tasks and asyncio.get_event_loop().time() < chat_deadline:
+            await asyncio.sleep(0.1)
+        for task in list(self._chat_turn_tasks):
+            task.cancel()
+        for task in list(self._chat_turn_tasks):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._chat_turn_tasks.clear()
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -387,6 +445,111 @@ class WorkerPool:
             if False:
                 yield
         return _empty()
+
+    # ---- chat claim loop -------------------------------------------------
+
+    async def _chat_bus_loop(self) -> None:
+        """Subscribe to the event bus and wake the chat claim loop on
+        ``chat-claimable`` events. Mirrors the role _notify_loop plays
+        for session claims but driven from the event bus rather than
+        the scheduler's watch_ready generator.
+        """
+        assert self._event_bus is not None
+        sub = self._event_bus.subscribe()
+        try:
+            async for event in sub:
+                if event.event_key == "chat-claimable":
+                    self._wake.set()
+                if self._stopping.is_set():
+                    return
+        except asyncio.CancelledError:
+            return
+        finally:
+            await sub.aclose()
+
+    async def _claim_chat_loop(self) -> None:
+        """Sibling of _claim_loop, for chat turns. Wakes on
+        ``chat-claimable`` bus events (forwarded through _chat_bus_loop's
+        self._wake.set()); claims via Scheduler.claim_chats; spawns
+        a per-turn task per lease."""
+        try:
+            while not self._stopping.is_set():
+                free = self.config.concurrency - (
+                    len(self._in_flight) + len(self._in_flight_chats)
+                )
+                if free <= 0:
+                    self._wake.clear()
+                    try:
+                        await asyncio.wait_for(
+                            self._wake.wait(),
+                            timeout=self.config.poll_interval_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                try:
+                    leases = await self._scheduler.claim_chats(
+                        self._worker_id,
+                        max_count=min(self.config.claim_batch_size, free),
+                    )
+                except Exception:
+                    logger.exception("chat claim_loop iteration failed")
+                    await asyncio.sleep(self.config.poll_interval_seconds)
+                    continue
+                if not leases:
+                    self._wake.clear()
+                    try:
+                        await asyncio.wait_for(
+                            self._wake.wait(),
+                            timeout=self.config.poll_interval_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                for lease in leases:
+                    self._in_flight_chats.add(lease.chat_id)
+                    task = asyncio.create_task(
+                        self._run_one_chat_turn_task(lease),
+                        name=f"chat-turn-{lease.chat_id}",
+                    )
+                    self._chat_turn_tasks.add(task)
+                    task.add_done_callback(self._chat_turn_tasks.discard)
+        except asyncio.CancelledError:
+            return
+
+    async def _run_one_chat_turn_task(self, lease) -> None:
+        """Run one chat turn for the given ``ChatLease``.
+
+        Constructs :class:`~matrix.chat.dispatch.ChatDispatchDeps` on
+        demand (so the import is deferred) and delegates to
+        :func:`~matrix.chat.dispatch.run_one_chat_turn`.
+        """
+        from matrix.chat.dispatch import ChatDispatchDeps, run_one_chat_turn
+
+        assert self._event_bus is not None, (
+            "WorkerPool._run_one_chat_turn_task requires an event_bus"
+        )
+        assert self._chat_tick_router is not None, (
+            "WorkerPool._run_one_chat_turn_task requires a chat_tick_router"
+        )
+        deps = ChatDispatchDeps(
+            storage_provider=self._storage,
+            provider_registry=self._provider_registry,
+            scheduler=self._scheduler,
+            event_bus=self._event_bus,
+            chat_tick_router=self._chat_tick_router,
+        )
+        try:
+            await run_one_chat_turn(
+                deps,
+                chat_id=lease.chat_id,
+                worker_id=lease.worker_id,
+            )
+        except Exception:
+            logger.exception("chat turn for %s raised", lease.chat_id)
+        finally:
+            self._in_flight_chats.discard(lease.chat_id)
+            self._wake.set()
 
     # ---- per-turn execution -----------------------------------------------
 

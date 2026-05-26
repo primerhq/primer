@@ -7,6 +7,7 @@ use it without duplication.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any, Generic, TypeVar
 
 import pytest
@@ -189,7 +190,44 @@ def fake_provider_registry(
     )
 
 
+class _FakeLLM:
+    """Minimal fake LLM for worker/chat integration tests.
+
+    Yields a single TextDelta + Done so the chat runner completes
+    cleanly without a real Anthropic endpoint.
+    """
+
+    def __init__(self, reply_text: str = "ok") -> None:
+        self._reply_text = reply_text
+        self.calls: list[dict[str, Any]] = []
+
+    async def list_models(self):
+        return ["m"]
+
+    def stream(self, *, model: str, messages: Any, **kwargs: Any) -> Any:
+        from matrix.model.chat import Done, TextDelta
+
+        self.calls.append({"model": model, "messages": list(messages), **kwargs})
+        return self._stream_impl()
+
+    async def _stream_impl(self) -> AsyncIterator[Any]:
+        from matrix.model.chat import Done, TextDelta
+
+        yield TextDelta(text=self._reply_text, index=0)
+        yield Done(stop_reason="stop", raw_reason="stop")
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.fixture
+def fake_llm() -> _FakeLLM:
+    """Shared fake LLM visible to all test sub-packages."""
+    return _FakeLLM()
+
+
 __all__ = [
     "_FakeStorageProvider",
+    "_FakeLLM",
     "_InMemoryStorage",
 ]
