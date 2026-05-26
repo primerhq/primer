@@ -116,13 +116,18 @@ def _part_to_input_content(part: Part) -> dict[str, Any]:
     if isinstance(part, DocumentPart):
         out = {"type": "input_file"}
         if part.data is not None:
-            # ``file_data`` is the raw base64-encoded file contents per
-            # the OpenAI Responses schema — NOT a data URI. (image_url
-            # is different: it accepts a data URI or external URL, so
-            # the inline-image path below prefixes ``data:<mime>;base64,``.
-            # Mixing the two formats up confused this adapter previously
-            # and produced ``400 invalid_union`` from upstream.)
-            out["file_data"] = base64.b64encode(part.data).decode()
+            # OpenAI's Responses API accepts inline file bytes via
+            # ``file_data`` formatted as a data URI (e.g.
+            # ``data:application/pdf;base64,JVBER...``). The Stainless-
+            # generated SDK docstring labels this "base64-encoded data
+            # of the file" which sounds like raw base64, but in practice
+            # OpenAI's server rejects raw base64 with ``invalid_union``
+            # on the ``input`` parameter. Production OSS impls
+            # (home-assistant, agno, OpenBMB/ChatDev) all use the data
+            # URI format here — keep us aligned.
+            mime = part.mime_type or "application/pdf"
+            b64 = base64.b64encode(part.data).decode()
+            out["file_data"] = f"data:{mime};base64,{b64}"
             out["filename"] = part.filename or "file"
         elif part.url is not None:
             out["file_url"] = part.url

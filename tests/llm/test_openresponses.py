@@ -231,25 +231,35 @@ class TestPartToInputContent:
         }
 
     def test_document_part_data(self) -> None:
-        """``file_data`` carries the raw base64 of the file's bytes,
-        no ``data:<mime>;base64,`` prefix. The Responses schema
-        documents this field as 'base64-encoded data of the file' —
-        confusing it with the ``image_url`` data-URI convention
-        produces a 400 ``invalid_union`` from upstream."""
+        """``file_data`` is a data URI like
+        ``data:application/pdf;base64,JVBER...``. The Stainless SDK
+        type calls this 'base64-encoded data of the file' which
+        sounds raw, but the live Responses API rejects raw base64
+        with ``invalid_union`` on the input parameter — production
+        OSS implementations (home-assistant, agno, ChatDev) all use
+        the data URI shape."""
         part = DocumentPart(
             data=b"%PDF-1.4", mime_type="application/pdf", filename="report.pdf"
         )
         out = _part_to_input_content(part)
         assert out["type"] == "input_file"
-        assert out["file_data"] == base64.b64encode(b"%PDF-1.4").decode()
-        assert "data:" not in out["file_data"]
+        expected = "data:application/pdf;base64," + base64.b64encode(b"%PDF-1.4").decode()
+        assert out["file_data"] == expected
         assert out["filename"] == "report.pdf"
 
     def test_document_part_data_default_filename(self) -> None:
         part = DocumentPart(data=b"%PDF", mime_type="application/pdf")
         out = _part_to_input_content(part)
         assert out["filename"] == "file"
-        assert out["file_data"] == base64.b64encode(b"%PDF").decode()
+        assert out["file_data"].startswith("data:application/pdf;base64,")
+
+    def test_document_part_data_defaults_mime_when_missing(self) -> None:
+        """A DocumentPart created without a mime_type still produces a
+        valid data URI — the adapter falls back to application/pdf so
+        the file is at least classifiable upstream."""
+        part = DocumentPart(data=b"%PDF")
+        out = _part_to_input_content(part)
+        assert out["file_data"].startswith("data:application/pdf;base64,")
 
     def test_document_part_url(self) -> None:
         part = DocumentPart(url="https://example.com/doc.pdf", filename="doc.pdf")
