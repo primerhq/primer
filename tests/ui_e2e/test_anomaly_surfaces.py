@@ -414,8 +414,11 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
         })
         assert r.status_code == 201, f"seed bad toolset failed: {r.text}"
 
-        # Seed agent bound to both _misc (good) and the bad toolset.
-        # agent.tools = list of toolset ids per agents.jsx:622.
+        # Seed agent registered with one tool from the good (misc)
+        # toolset and one from the bad toolset. ``agent.tools`` holds
+        # scoped ids (``<toolset_id>__<tool_name>``); the detail
+        # Tools tab groups them by prefix and renders one panel per
+        # source toolset.
         r = c.post("/v1/agents", json={
             "id": agent_id,
             "description": "u0009 per-toolset isolation probe",
@@ -423,7 +426,7 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
                 "provider_id": provider_id,
                 "model_name": "fake-model",
             },
-            "tools": ["misc", bad_toolset_id],
+            "tools": ["misc__uuid_v4", f"{bad_toolset_id}__placeholder_tool"],
             "system_prompt": ["test"],
         })
         assert r.status_code == 201, f"seed agent failed: {r.text}"

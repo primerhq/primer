@@ -713,8 +713,18 @@ async def _build_runner(
             ),
         )
 
+    # agent.tools is a list of scoped tool ids (``toolset_id__tool_name``).
+    # Derive the unique set of toolset prefixes to resolve providers
+    # for; skip malformed entries silently so a stray bad id doesn't
+    # 5xx the whole WS upgrade.
+    toolset_ids: set[str] = set()
+    for sid in (agent.tools or []):
+        if "__" in sid:
+            prefix = sid.split("__", 1)[0]
+            if prefix:
+                toolset_ids.add(prefix)
     toolset_providers: dict[str, Any] = {}
-    for toolset_id in (agent.tools or []):
+    for toolset_id in toolset_ids:
         try:
             toolset_providers[toolset_id] = await provider_registry.get_toolset(
                 toolset_id,
@@ -728,7 +738,7 @@ async def _build_runner(
     tool_manager = ToolExecutionManager(
         toolset_providers=toolset_providers,
         provider_registry=provider_registry,
-        tool_allowlist=agent.tool_allowlist,
+        tools=agent.tools,
     )
 
     return ChatTurnRunner(

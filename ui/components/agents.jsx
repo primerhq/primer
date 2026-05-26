@@ -364,18 +364,6 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
     });
   };
 
-  // Derive toolset ids from the selected scoped ids — the agent body's
-  // `tools` field needs them so the runtime knows which providers to
-  // resolve before the allowlist filter kicks in.
-  const derivedToolsetIds = React.useMemo(() => {
-    const out = new Set();
-    for (const sid of selectedScopedIds) {
-      const sep = sid.indexOf("__");
-      if (sep > 0) out.add(sid.slice(0, sep));
-    }
-    return [...out].sort();
-  }, [selectedScopedIds]);
-
   const create = useMutation(
     (body) => apiFetch("POST", "/agents", body),
     {
@@ -400,16 +388,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
 
   const submit = async () => {
     setFieldErrors({});
-    const allowlist = [...selectedScopedIds].sort();
+    // Agent.tools is the list of scoped tool ids — no separate
+    // allowlist field; an empty list means no tools registered.
+    const tools = [...selectedScopedIds].sort();
     const body = {
       ...(id ? { id } : {}),
       description: description || "(no description)",
       model: { provider_id: providerId, model_name: modelName },
-      tools: derivedToolsetIds,
+      tools,
       system_prompt: systemPrompt ? [systemPrompt] : [],
       compaction_prompt: compactionPrompt ? [compactionPrompt] : [],
     };
-    if (allowlist.length > 0) body.tool_allowlist = allowlist;
     if (temperature !== "" && !Number.isNaN(+temperature)) {
       body.temperature = Number(temperature);
     }
@@ -697,9 +686,10 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
             </div>
           )}
           <div className="field-help" style={{ marginTop: 8 }}>
-            Tools are referenced as <span className="mono">toolset_id__tool_name</span>. Selecting any tool
-            automatically attaches its parent toolset to the agent. Bulk-select via the toolset header
-            applies to ALL tools in that toolset, not just the visible page.
+            Tools are referenced as <span className="mono">toolset_id__tool_name</span>. The agent has
+            access to <strong>only</strong> the tools picked here — never a whole toolset. Bulk-select via the
+            toolset header ticks every tool in that toolset (across pages); the toolset itself is not
+            implicitly registered.
           </div>
         </div>
       )}
@@ -1057,29 +1047,49 @@ function AG_ReferencesPanel({ agent }) {
             <span className="pill pill-ended"><span className="dot"></span>ok</span>
           ) : null}
         </div>
-        {(agent.tools || []).map((tsId) => (
-          <AG_ToolsetRefRow key={tsId} tsId={tsId} navigate={navigate} />
-        ))}
-        {(agent.tools || []).length === 0 && (
-          <div className="ref-row">
-            <Icon name="tools" size={13} className="ico" />
-            <span className="label">Toolsets</span>
-            <span className="val muted">none</span>
-          </div>
-        )}
+        {(() => {
+          // agent.tools is a flat list of scoped ids; group by toolset
+          // prefix so the overview shows one ref row per source toolset
+          // with the count of tools the agent registered from it.
+          const groups = new Map();
+          for (const sid of agent.tools || []) {
+            if (typeof sid !== "string" || !sid.includes("__")) continue;
+            const [prefix] = sid.split("__", 1);
+            groups.set(prefix, (groups.get(prefix) || 0) + 1);
+          }
+          if (groups.size === 0) {
+            return (
+              <div className="ref-row">
+                <Icon name="tools" size={13} className="ico" />
+                <span className="label">Tools</span>
+                <span className="val muted">none registered</span>
+              </div>
+            );
+          }
+          return [...groups.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([tsId, count]) => (
+              <AG_ToolsetRefRow
+                key={tsId}
+                tsId={tsId}
+                registeredCount={count}
+                navigate={navigate}
+              />
+            ));
+        })()}
       </div>
     </div>
   );
 }
 
-function AG_ToolsetRefRow({ tsId, navigate }) {
+function AG_ToolsetRefRow({ tsId, registeredCount, navigate }) {
   const { useResource, apiFetch } = window.matrixApi;
   const tools = useResource(
     `toolset-tools:${tsId}`,
     (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(tsId) + "/tools", null, { signal }),
     { pollMs: null, deps: [tsId] }
   );
-  const count = tools.data?.tools?.length;
+  const exposedCount = tools.data?.tools?.length;
   const t711 = tools.error?.status === 500;
   return (
     <div className="ref-row">
@@ -1090,9 +1100,12 @@ function AG_ToolsetRefRow({ tsId, navigate }) {
           onClick={() => !tsId.startsWith("_") && tsId !== "web" && navigate("/toolsets/" + tsId)}
           style={{ cursor: "pointer" }}
         >{tsId}</a>
-        {count != null && (
-          <span className="muted text-sm"> · {count} tool{count === 1 ? "" : "s"}</span>
-        )}
+        <span className="muted text-sm">
+          {" · "}{registeredCount} tool{registeredCount === 1 ? "" : "s"} registered
+          {exposedCount != null && exposedCount !== registeredCount && (
+            <> · {exposedCount} exposed by toolset</>
+          )}
+        </span>
       </span>
       {tools.loading ? (
         <span className="muted text-sm">…</span>
@@ -1112,32 +1125,62 @@ function AG_ToolsetRefRow({ tsId, navigate }) {
 // ============================================================================
 
 function AG_ToolsTab({ agent }) {
-  const toolsets = agent.tools || [];
-  if (toolsets.length === 0) {
+  const scopedIds = agent.tools || [];
+  // Group the agent's scoped tool ids by their toolset prefix so the
+  // page renders one panel per source toolset, each listing only the
+  // tools the agent actually registered (never the toolset's full
+  // catalogue).
+  const grouped = React.useMemo(() => {
+    const m = new Map();
+    for (const sid of scopedIds) {
+      if (typeof sid !== "string" || !sid.includes("__")) continue;
+      const [prefix, ...rest] = sid.split("__");
+      const bare = rest.join("__");
+      if (!m.has(prefix)) m.set(prefix, []);
+      m.get(prefix).push({ scoped_id: sid, bare });
+    }
+    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [scopedIds]);
+
+  if (scopedIds.length === 0) {
     return (
       <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>
-        No toolsets bound to this agent.
+        No tools registered with this agent.
       </div>
     );
   }
   return (
     <div style={{ padding: 14 }}>
       <div className="muted text-sm mb-3">
-        Flattened union of every tool exposed by this agent's {toolsets.length} bound
-        toolset{toolsets.length === 1 ? "" : "s"}. Each card lists the canonical
-        tool <span className="mono">id</span> (T0140/T0141 — not <span className="mono">name</span>).
+        {scopedIds.length} tool{scopedIds.length === 1 ? "" : "s"} registered, grouped by source
+        toolset. Each card lists the canonical tool <span className="mono">id</span> (T0140/T0141
+        — not <span className="mono">name</span>). The toolset itself is NOT implicitly attached;
+        only the tools listed below are exposed to the LLM.
       </div>
-      {toolsets.map((tsId) => <AG_ToolsetSection key={tsId} tsId={tsId} />)}
+      {grouped.map(([tsId, entries]) => (
+        <AG_ToolsetSection
+          key={tsId}
+          tsId={tsId}
+          registeredBareIds={entries.map((e) => e.bare)}
+        />
+      ))}
     </div>
   );
 }
 
-function AG_ToolsetSection({ tsId }) {
+function AG_ToolsetSection({ tsId, registeredBareIds }) {
   const { useResource, apiFetch } = window.matrixApi;
   const tools = useResource(
     `toolset-tools:${tsId}`,
     (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(tsId) + "/tools", null, { signal }),
     { pollMs: null, deps: [tsId] }
+  );
+  // Filter the toolset's full catalogue to just the bare tool ids the
+  // agent actually registered — the operator picks per-tool, so the
+  // detail view must match that scope, not surface the entire toolset.
+  const registeredSet = React.useMemo(
+    () => new Set(registeredBareIds || []),
+    [registeredBareIds],
   );
 
   // T0711 MCP-HTTP leak — for any toolset returning 500, surface the
@@ -1193,18 +1236,42 @@ function AG_ToolsetSection({ tsId }) {
       </div>
     );
   }
-  const items = tools.data?.tools || [];
+  const allItems = tools.data?.tools || [];
+  // Show only tools the agent actually registered. If the toolset
+  // metadata is reachable, intersect with registeredBareIds; if the
+  // toolset returned them in a different order than the agent's
+  // ``tools`` field, that's fine — we still want the agent's surface.
+  const items = registeredSet.size > 0
+    ? allItems.filter((t) => registeredSet.has(t.id))
+    : allItems;
+  // Detect bare ids the agent registered that the toolset no longer
+  // exposes (e.g. the MCP server dropped a tool between agent create
+  // and now). Surface them as stale rows so the operator can see what
+  // needs cleanup.
+  const reachableBareIds = new Set(allItems.map((t) => t.id));
+  const staleBareIds = [...registeredSet].filter((b) => !reachableBareIds.has(b));
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
       <div className="panel-h">
         <Icon name="tools" size={12} className="muted" />
         <span className="mono">{tsId}</span>
-        <span className="sub">· {items.length} tool{items.length === 1 ? "" : "s"}</span>
+        <span className="sub">· {items.length + staleBareIds.length} registered</span>
       </div>
       <div className="panel-body" style={{ padding: 0 }}>
-        {items.length === 0 ? (
+        {items.length === 0 && staleBareIds.length === 0 ? (
           <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>No tools.</div>
-        ) : items.map((tool, i) => <AG_ToolEntry key={tool.id || i} tool={tool} />)}
+        ) : (
+          <>
+            {items.map((tool, i) => <AG_ToolEntry key={tool.id || i} tool={tool} />)}
+            {staleBareIds.map((bare) => (
+              <div key={`stale-${bare}`} style={{ borderTop: "1px solid var(--border)", padding: "8px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+                <Icon name="alert" size={11} style={{ color: "var(--amber)" }} />
+                <span className="mono" style={{ flex: 1 }}>{bare}</span>
+                <span className="pill pill-paused"><span className="dot"></span>not currently exposed</span>
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </div>
   );

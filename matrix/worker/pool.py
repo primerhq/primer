@@ -50,6 +50,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Scoped tool ids are ``<toolset_id>__<tool_name>``; the worker only
+# needs to resolve each unique toolset prefix to get the providers it
+# has to load. Scoped ids without the separator are skipped silently —
+# they can't reference a real tool anyway, and the agent definition
+# is operator-owned so we don't want to 500 on a malformed entry.
+def _toolset_ids_from_scoped(scoped_tool_ids: list[str] | None) -> list[str]:
+    seen: dict[str, None] = {}  # dict preserves insertion order
+    for sid in scoped_tool_ids or []:
+        if "__" not in sid:
+            continue
+        prefix = sid.split("__", 1)[0]
+        if prefix:
+            seen.setdefault(prefix, None)
+    return list(seen)
+
+
 class WorkerPool:
     """Per-process worker pool: claims sessions and runs one turn each."""
 
@@ -449,11 +465,12 @@ class WorkerPool:
         # ``model.model_name`` is the provider-side identifier.
         llm_model = await self._resolve_llm_model(agent)
 
-        # Resolve every toolset the agent registered. Each id resolves
-        # through the provider registry which also covers the reserved
-        # ids (``_system``, ``_workspaces``, ``_search``).
+        # agent.tools holds scoped tool ids (toolset_id__tool_name).
+        # Derive the unique toolset prefixes so we only resolve the
+        # toolset providers the agent actually needs.
+        toolset_ids = _toolset_ids_from_scoped(agent.tools)
         toolset_providers: dict = {}
-        for toolset_id in (agent.tools or []):
+        for toolset_id in toolset_ids:
             provider = await self._provider_registry.get_toolset(toolset_id)
             toolset_providers[toolset_id] = provider
 
@@ -468,17 +485,17 @@ class WorkerPool:
             )
 
         # Build a workspace-aware ToolExecutionManager. The factory
-        # composes the agent's toolsets with the session's workspace
-        # tools and binds them to this AgentSession. The optional
-        # ``tool_allowlist`` narrows what the LLM sees + can dispatch
-        # to a hand-picked subset of scoped tool ids; ``None`` keeps
-        # the legacy behaviour of exposing everything.
+        # composes the agent's tool surface with the session's
+        # workspace tools and binds them to this AgentSession. The
+        # ``tools`` list is the agent's scoped-tool surface — the
+        # manager exposes exactly those tools to the LLM and rejects
+        # dispatch on anything else.
         tool_manager = ToolExecutionManager.for_workspace(
             toolset_providers=toolset_providers,
             session=agent_session,
             approval_resolver=self._approval_resolver,
             provider_registry=self._provider_registry,
-            tool_allowlist=agent.tool_allowlist,
+            tools=agent.tools,
         )
 
         executor = WorkspaceAgentExecutor(
@@ -580,8 +597,9 @@ class WorkerPool:
         workspace_session = await workspace.get_session(session.id)
 
         async def tool_manager_resolver(agent):
+            toolset_ids = _toolset_ids_from_scoped(agent.tools)
             toolset_providers: dict = {}
-            for toolset_id in (agent.tools or []):
+            for toolset_id in toolset_ids:
                 provider = await self._provider_registry.get_toolset(
                     toolset_id
                 )
@@ -592,13 +610,13 @@ class WorkerPool:
                     session=workspace_session,
                     approval_resolver=self._approval_resolver,
                     provider_registry=self._provider_registry,
-                    tool_allowlist=agent.tool_allowlist,
+                    tools=agent.tools,
                 )
             return ToolExecutionManager(
                 toolset_providers=toolset_providers,
                 approval_resolver=self._approval_resolver,
                 provider_registry=self._provider_registry,
-                tool_allowlist=agent.tool_allowlist,
+                tools=agent.tools,
             )
 
         # ④ Optional handles wired in later phases.

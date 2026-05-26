@@ -97,23 +97,25 @@ class ToolExecutionManager:
         workspace_session: "AgentSession | None" = None,
         approval_resolver: ApprovalResolver | None = None,
         provider_registry: object | None = None,
-        tool_allowlist: list[str] | None = None,
+        tools: list[str] | None = None,
     ) -> None:
         self._toolsets: dict[str, ToolsetProvider] = dict(toolset_providers or {})
         self._workspace_tools: dict[str, "WorkspaceTool"] = dict(workspace_tools or {})
         self._workspace_session = workspace_session
         self._approval_resolver = approval_resolver
         self._provider_registry = provider_registry
-        # Optional per-scoped-id filter. When set + non-empty, list_tools()
-        # returns only the listed scoped ids and execute() rejects calls
-        # for ids outside the list. ``None`` *or an empty list* keeps the
-        # legacy "expose everything the toolset providers list"
-        # behaviour — operators submitting ``[]`` to mean "no filter
-        # configured" shouldn't accidentally lock themselves out. Stored
-        # as a frozenset for O(1) membership tests on the hot dispatch
-        # path.
-        self._tool_allowlist: frozenset[str] | None = (
-            frozenset(tool_allowlist) if tool_allowlist else None
+        # The agent's scoped-tool surface. Filters list_tools() to just
+        # the listed ids and execute() rejects calls for anything else.
+        # ``None`` means "no filter" — useful for callers that aren't
+        # agent-driven (graph executors using a parent manager directly,
+        # tests that want to enumerate everything a toolset exposes).
+        # An *empty list* still means "no filter" so unconfigured manager
+        # paths don't accidentally lock themselves out; callers that
+        # want zero tools should construct the manager with an empty
+        # ``toolset_providers`` dict instead. Stored as a frozenset for
+        # O(1) membership tests on the hot dispatch path.
+        self._tools_allowlist: frozenset[str] | None = (
+            frozenset(tools) if tools else None
         )
         # Built lazily on first list_tools / execute.
         # Scoped tool id (``toolset_id__bare_name``) -> (toolset_id, bare_name).
@@ -154,14 +156,14 @@ class ToolExecutionManager:
         session: "AgentSession",
         approval_resolver: ApprovalResolver | None = None,
         provider_registry: object | None = None,
-        tool_allowlist: list[str] | None = None,
+        tools: list[str] | None = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
         Pulls the workspace tool list off ``session.workspace_tools``
         and registers it; ``toolset_providers`` are passed through.
-        ``tool_allowlist`` (when supplied) restricts the exposed tools
-        to the given scoped ids — see :class:`Agent.tool_allowlist`.
+        ``tools`` (when supplied) is the agent's scoped tool surface —
+        see :class:`matrix.model.agent.Agent.tools`.
         """
         ws_tools = {t.id: t for t in session.workspace_tools}
         return cls(
@@ -170,7 +172,7 @@ class ToolExecutionManager:
             workspace_session=session,
             approval_resolver=approval_resolver,
             provider_registry=provider_registry,
-            tool_allowlist=tool_allowlist,
+            tools=tools,
         )
 
     async def list_tools(
@@ -203,7 +205,7 @@ class ToolExecutionManager:
                     # allowlist hit still resolves; the visible
                     # catalogue is filtered below.
                     self._tool_to_toolset[scoped_id] = (toolset_id, t.id)
-                    if self._tool_allowlist is not None and scoped_id not in self._tool_allowlist:
+                    if self._tools_allowlist is not None and scoped_id not in self._tools_allowlist:
                         continue
                     scoped_tool = t.model_copy(update={"id": scoped_id})
                     catalogue.append(scoped_tool)
@@ -265,16 +267,18 @@ class ToolExecutionManager:
                     "or workspace"
                 )
             toolset_id, bare_name = entry
-            # Enforce the per-tool allowlist: a model trying to invoke
-            # a known-but-filtered tool must be refused so the
-            # operator's narrowed surface is actually load-bearing.
+            # Enforce the agent's scoped-tool surface: a model trying
+            # to invoke a tool the agent didn't register must be
+            # refused. The toolset provider knows about the tool (so
+            # it's in the routing table) but the agent's ``tools``
+            # list didn't include it.
             if (
-                self._tool_allowlist is not None
-                and call.name not in self._tool_allowlist
+                self._tools_allowlist is not None
+                and call.name not in self._tools_allowlist
             ):
                 raise UnsupportedContentError(
-                    f"tool {call.name!r} is registered with the toolset "
-                    f"but not in the agent's tool_allowlist"
+                    f"tool {call.name!r} is provided by the toolset "
+                    f"but is not in the agent's registered tool list"
                 )
 
         # Approval gate — runs after routing resolution, before dispatch.

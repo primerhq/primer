@@ -63,7 +63,7 @@ class TestAgent:
             description="A researcher agent",
             model=AgentModel(provider_id="openai-1", model_name="gpt-4o-mini"),
             temperature=0.7,
-            tools=["web_search", "calculator"],
+            tools=["web__search", "misc__calculate"],
             system_prompt=[
                 "You are a thorough researcher.",
                 "Always cite your sources.",
@@ -74,7 +74,7 @@ class TestAgent:
             ],
         )
         assert a.temperature == 0.7
-        assert a.tools == ["web_search", "calculator"]
+        assert a.tools == ["web__search", "misc__calculate"]
         assert len(a.system_prompt) == 2
         assert len(a.compaction_prompt) == 2
 
@@ -135,7 +135,7 @@ class TestAgent:
             description="A researcher agent",
             model=AgentModel(provider_id="openai-1", model_name="gpt-4o-mini"),
             temperature=0.5,
-            tools=["search"],
+            tools=["system__search"],
             system_prompt=["Be terse."],
             compaction_prompt=["Keep the user's stated goal verbatim."],
         )

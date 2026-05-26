@@ -91,25 +91,15 @@ class Agent(Describeable):
     tools: list[str] = Field(
         default_factory=list,
         description=(
-            "Toolset ids the agent has access to. Every tool listed "
-            "by each toolset's provider is exposed to the agent "
-            "unless ``tool_allowlist`` narrows the surface further. "
-            "Workspace tools are NOT listed here -- those are composed "
+            "Scoped tool ids the agent has access to, each of the form "
+            "``<toolset_id>__<tool_name>`` (e.g. ``system__list_files``). "
+            "Empty list means the agent has NO tools registered. The "
+            "runtime derives the set of toolset providers to resolve "
+            "from the unique prefixes of this list, and exposes exactly "
+            "the listed tools to the LLM — never a whole toolset. "
+            "Workspace tools are NOT listed here; they are composed "
             "onto the agent automatically when it attaches to a "
             "workspace (see :class:`matrix.workspace.session.AgentSession`)."
-        ),
-    )
-    tool_allowlist: list[str] | None = Field(
-        default=None,
-        description=(
-            "Optional per-tool filter expressed as scoped tool ids "
-            "(``<toolset_id>__<tool_name>``). When set, only tools "
-            "whose scoped id appears in this list are exposed to the "
-            "LLM and accepted by the dispatcher; every other tool from "
-            "the registered toolsets is hidden. When ``None`` (default) "
-            "every tool from every toolset in :attr:`tools` is exposed "
-            "— the legacy behaviour. The operator console uses this to "
-            "let users pick individual tools instead of whole toolsets."
         ),
     )
     system_prompt: list[str] = Field(
