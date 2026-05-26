@@ -231,18 +231,33 @@ class TestPartToInputContent:
         }
 
     def test_document_part_data(self) -> None:
+        """``file_data`` is a data URI matching the OpenAI Responses
+        contract (https://platform.openai.com/docs/guides/pdf-files).
+        Raw base64 without the prefix is rejected upstream as
+        ``invalid_union`` on the input field."""
         part = DocumentPart(
             data=b"%PDF-1.4", mime_type="application/pdf", filename="report.pdf"
         )
         out = _part_to_input_content(part)
         assert out["type"] == "input_file"
-        assert base64.b64decode(out["file_data"]) == b"%PDF-1.4"
+        assert out["file_data"].startswith("data:application/pdf;base64,")
+        b64 = out["file_data"].split(",", 1)[1]
+        assert base64.b64decode(b64) == b"%PDF-1.4"
         assert out["filename"] == "report.pdf"
 
     def test_document_part_data_default_filename(self) -> None:
         part = DocumentPart(data=b"%PDF", mime_type="application/pdf")
         out = _part_to_input_content(part)
         assert out["filename"] == "file"
+        assert out["file_data"].startswith("data:application/pdf;base64,")
+
+    def test_document_part_data_defaults_mime_when_missing(self) -> None:
+        """A DocumentPart created without a mime_type still produces a
+        valid data URI — the adapter falls back to application/pdf so
+        the file is at least classifiable upstream."""
+        part = DocumentPart(data=b"%PDF")
+        out = _part_to_input_content(part)
+        assert out["file_data"].startswith("data:application/pdf;base64,")
 
     def test_document_part_url(self) -> None:
         part = DocumentPart(url="https://example.com/doc.pdf", filename="doc.pdf")
