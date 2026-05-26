@@ -470,13 +470,16 @@ async def chat_ws(
                     }
                 )
                 continue
-            content = incoming.get("content", "")
-            if not isinstance(content, str) or not content.strip():
+            # Two payload shapes are accepted:
+            #   {"content": "<text>"}           — legacy text-only
+            #   {"parts": [{type, ...}, ...]}   — structured (multimodal)
+            # A frame with both is treated as parts; content is folded
+            # into the parts list as a leading TextPart.
+            try:
+                user_parts = _parse_user_message_parts(incoming)
+            except ValueError as exc:
                 await websocket.send_json(
-                    {
-                        "kind": "error",
-                        "message": "user_message.content must be a non-empty string",
-                    }
+                    {"kind": "error", "message": str(exc)},
                 )
                 continue
             if event_bus is not None:
@@ -494,7 +497,7 @@ async def chat_ws(
                 )
                 return
             try:
-                async for row in runner.run_turn(chat, content):
+                async for row in runner.run_turn(chat, user_parts):
                     await websocket.send_json(_message_to_wire(row))
                     last_seq = row.seq
             except Exception as exc:  # noqa: BLE001
@@ -557,6 +560,83 @@ async def _append_and_send(
     chat.last_seq = next_seq
     await chats_storage.update(chat)
     await websocket.send_json(_message_to_wire(row))
+
+
+def _parse_user_message_parts(frame: dict[str, Any]) -> list:
+    """Validate an incoming user_message frame; return the list of parts.
+
+    Accepts two shapes:
+
+    1. ``{"content": "<text>"}`` — legacy. Converted to one TextPart.
+    2. ``{"parts": [<Part>, ...]}`` — structured. Each entry must be a
+       discriminated Part dict (``{"type": "text"|"image"|"document"
+       |"audio"|"video", ...}``); parsing goes through Pydantic's
+       Part union so the same validation the LLM layer would apply
+       runs at the WS boundary.
+
+    Frames may legally include both — the content text is folded in
+    as a leading TextPart so a client can send "look at this:" with
+    an image attached in one frame.
+
+    Raises ``ValueError`` (caller turns it into an error frame) when
+    the frame contains neither a non-empty content string nor a
+    non-empty parts list, or any part fails schema validation.
+    """
+    from pydantic import TypeAdapter, ValidationError
+
+    from matrix.model.chat import Part, TextPart
+
+    content = frame.get("content")
+    raw_parts = frame.get("parts")
+
+    if not isinstance(content, str):
+        content = ""
+    text = content.strip()
+
+    if raw_parts is None and not text:
+        raise ValueError(
+            "user_message must include 'content' (non-empty string) "
+            "or 'parts' (non-empty list)"
+        )
+
+    out: list = []
+    if text:
+        out.append(TextPart(text=text))
+
+    if raw_parts is not None:
+        if not isinstance(raw_parts, list) or not raw_parts:
+            raise ValueError(
+                "user_message.parts must be a non-empty list when present"
+            )
+        adapter = TypeAdapter(Part)
+        for idx, entry in enumerate(raw_parts):
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"user_message.parts[{idx}] must be an object, "
+                    f"got {type(entry).__name__}"
+                )
+            kind_tag = entry.get("type")
+            if kind_tag in ("tool_call", "tool_result"):
+                # The Part union accepts these for assistant/tool
+                # history rebuilds, but a user_message frame must
+                # not carry them — they describe model behaviour,
+                # not human input.
+                raise ValueError(
+                    f"user_message.parts[{idx}] of type {kind_tag!r} "
+                    "is not allowed in a user_message frame"
+                )
+            try:
+                out.append(adapter.validate_python(entry))
+            except ValidationError as exc:
+                raise ValueError(
+                    f"user_message.parts[{idx}] failed validation: {exc}"
+                ) from exc
+
+    if not out:
+        raise ValueError(
+            "user_message must include 'content' or 'parts'"
+        )
+    return out
 
 
 class _ChatBuildError(Exception):

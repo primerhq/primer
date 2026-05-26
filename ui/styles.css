@@ -894,6 +894,20 @@ input, textarea, select { font: inherit; color: inherit; }
 .turn.ok .turn-dot { background: var(--green-dim); border-color: var(--green); color: var(--green); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Animated ellipsis used by the chat "Thinking…" placeholder. Each
+ * dot pulses with a staggered phase so the trio reads as a wave
+ * rather than three blinking lights. */
+.thinking-dots span {
+  animation: thinking-dot 1.2s infinite ease-in-out;
+  display: inline-block;
+}
+.thinking-dots span:nth-child(2) { animation-delay: 0.15s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes thinking-dot {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}
+
 .turn-body {
   padding: 4px 0 0 12px;
   font-size: 12.5px;

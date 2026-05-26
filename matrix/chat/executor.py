@@ -94,23 +94,43 @@ class ChatTurnRunner:
         self._messages = message_storage
 
     async def run_turn(
-        self, chat: Chat, user_text: str,
+        self, chat: Chat, user_input: "str | list",
     ) -> AsyncIterator[ChatMessage]:
-        """Persist + stream rows for one chat turn."""
+        """Persist + stream rows for one chat turn.
+
+        ``user_input`` accepts either a plain string (legacy text-only
+        callers) or a pre-validated list of :class:`Part` objects (the
+        WS handler hands these in directly so multimodal attachments
+        survive the round-trip).
+        """
+        # Normalise to a list of Parts.
+        if isinstance(user_input, str):
+            parts: list = [TextPart(text=user_input)]
+        else:
+            parts = list(user_input)
+
         # 1) Persist user_message + yield so the UI echoes it back.
+        # The payload mirrors both shapes so cursor-replay clients see
+        # the structured parts AND the flattened text (the latter is
+        # the field the existing UI bubble extractor reads).
+        flat_text = "\n".join(
+            p.text for p in parts if isinstance(p, TextPart) and p.text
+        )
+        payload: dict[str, Any] = {
+            "parts": [p.model_dump(mode="json") for p in parts],
+        }
+        if flat_text:
+            payload["content"] = flat_text
         user_msg = await self._append(
             chat,
             kind="user_message",
-            payload={"content": user_text},
+            payload=payload,
         )
         yield user_msg
 
         # 2) Build the prompt: system + coalesced history + new user msg.
         history = await self._load_history(chat.id)
-        new_user_msg = Message(
-            role="user",
-            parts=[TextPart(text=user_text)],
-        )
+        new_user_msg = Message(role="user", parts=parts)
         prompt = self._build_prompt(history, new_user_msg)
 
         # 3) Resolve the tool catalogue once. Empty when the agent has
@@ -359,11 +379,27 @@ class ChatTurnRunner:
             if kind == "user_message":
                 flush_assistant()
                 flush_tool_results()
-                text = payload.get("content") or ""
-                if text:
-                    out.append(
-                        Message(role="user", parts=[TextPart(text=text)]),
-                    )
+                # Prefer structured parts (new shape); fall back to
+                # bare ``content`` for rows persisted before the
+                # multimodal switchover.
+                raw_parts = payload.get("parts")
+                rebuilt: list[Any] = []
+                if isinstance(raw_parts, list) and raw_parts:
+                    from pydantic import TypeAdapter
+                    from matrix.model.chat import Part
+
+                    adapter = TypeAdapter(Part)
+                    for entry in raw_parts:
+                        try:
+                            rebuilt.append(adapter.validate_python(entry))
+                        except Exception:  # noqa: BLE001 — skip malformed
+                            continue
+                if not rebuilt:
+                    text = payload.get("content") or ""
+                    if text:
+                        rebuilt.append(TextPart(text=text))
+                if rebuilt:
+                    out.append(Message(role="user", parts=rebuilt))
                 continue
 
             if kind == "assistant_token":

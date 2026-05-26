@@ -423,8 +423,16 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   const [composer, setComposer] = React.useState("");
   const [pendingSendText, setPendingSendText] = React.useState(null);
   const [historyError, setHistoryError] = React.useState(null);
+  // Set true the moment the user sends a frame; cleared when any
+  // assistant_token / tool_call / done / error row arrives. Drives
+  // the "Thinking..." placeholder so the operator sees the system
+  // is responding before the first delta lands.
+  const [waitingForReply, setWaitingForReply] = React.useState(false);
+  // Pending file attachments. Each entry: {id, file, name, mime, kind, dataB64, preview}.
+  const [attachments, setAttachments] = React.useState([]);
   const wsRef = React.useRef(null);
   const scrollRef = React.useRef(null);
+  const fileInputRef = React.useRef(null);
 
   // Chat row (status, agent_id) — small one-shot fetch + light polling
   // so the header pill mirrors a server-driven "ended" state.
@@ -506,6 +514,13 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           return [...prev, msg];
         });
         setLastSeq((prev) => (msg.seq > prev ? msg.seq : prev));
+        // The agent is now producing output (or finished); drop the
+        // thinking placeholder. user_message echoes from a previous
+        // turn don't reach here because we only get rows after the
+        // server processes our outbound frame.
+        if (msg.kind !== "user_message") {
+          setWaitingForReply(false);
+        }
       }
     };
 
@@ -573,7 +588,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     }
   };
 
-  const sendMessage = (text) => {
+  const sendMessage = (text, atts) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== 1) {
       if (typeof pushToast === "function") {
@@ -581,25 +596,88 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       }
       return;
     }
-    ws.send(JSON.stringify({ kind: "user_message", content: text }));
+    const frame = { kind: "user_message" };
+    if (text) frame.content = text;
+    if (atts && atts.length > 0) {
+      frame.parts = atts.map((a) => ({
+        type: a.kind,           // "image" or "document"
+        data: a.dataB64,
+        mime_type: a.mime,
+        ...(a.kind === "document" && a.name ? { filename: a.name } : {}),
+      }));
+    }
+    ws.send(JSON.stringify(frame));
+    setWaitingForReply(true);
   };
 
   const onSubmitComposer = () => {
     const text = composer.trim();
-    if (!text) return;
+    if (!text && attachments.length === 0) return;
     if (hasPendingApproval) {
-      setPendingSendText(text);
+      setPendingSendText({ text, attachments });
       return;
     }
-    sendMessage(text);
+    sendMessage(text, attachments);
     setComposer("");
+    setAttachments([]);
   };
 
   const confirmSendOverApproval = () => {
     if (!pendingSendText) return;
-    sendMessage(pendingSendText);
+    sendMessage(pendingSendText.text, pendingSendText.attachments);
     setComposer("");
+    setAttachments([]);
     setPendingSendText(null);
+  };
+
+  // ---- File picking + base64 encoding ----------------------------------
+  // The chat protocol's user_message.parts list expects each binary part
+  // to carry `data` (base64), `mime_type`, and (for documents) a
+  // filename hint. Browsers read files as a Blob; FileReader gives us
+  // a data URL we can split into the b64 tail.
+  const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024; // 8 MiB — keeps the WS frame sane.
+  const handleFilesPicked = async (fileList) => {
+    if (!fileList || fileList.length === 0) return;
+    const next = [...attachments];
+    for (const file of Array.from(fileList)) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: "File too large",
+            detail: `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MiB; limit is 8 MiB.`,
+          });
+        }
+        continue;
+      }
+      const mime = file.type || "application/octet-stream";
+      const isImage = mime.startsWith("image/");
+      const dataB64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = String(reader.result || "");
+          const comma = result.indexOf(",");
+          resolve(comma >= 0 ? result.slice(comma + 1) : result);
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      next.push({
+        id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name,
+        mime,
+        kind: isImage ? "image" : "document",
+        dataB64,
+        preview: isImage ? `data:${mime};base64,${dataB64}` : null,
+        size: file.size,
+      });
+    }
+    setAttachments(next);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeAttachment = (id) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
   };
 
   const wsBadge = wsState === "open"
@@ -643,7 +721,17 @@ function ChatDetail({ chatId, onBack, pushToast }) {
               {wsState === "connecting" ? "Connecting…" : "No messages yet. Say hello to the agent."}
             </div>
           )}
-          {messages.map((m) => <Message key={`${m.seq}-${m.kind}`} m={m} />)}
+          {CT_coalesceMessages(messages).map((m) =>
+            m.kind === "assistant_message" ? (
+              <Message key={`am-${m.startSeq}-${m.endSeq}`} m={m} />
+            ) : (
+              <Message key={`${m.seq}-${m.kind}`} m={m} />
+            )
+          )}
+
+          {/* Thinking indicator — only when we're waiting for the
+              first token of a response we just kicked off. */}
+          {waitingForReply && <CT_ThinkingBubble />}
 
           {/* Inline approval card — sits ABOVE the composer when pending */}
           {pendingApproval && (
@@ -675,7 +763,66 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           </div>
         )}
 
-        <div style={{ borderTop: "1px solid var(--border)", padding: 14, display: "flex", gap: 8, alignItems: "flex-end" }}>
+        {/* Pending-attachments strip — visible only when the composer
+            has files queued. Each chip carries an image thumbnail or a
+            document icon + filename + size; clicking ×  drops it. */}
+        {attachments.length > 0 && (
+          <div
+            style={{
+              borderTop: "1px solid var(--border)",
+              padding: "10px 14px",
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 8,
+            }}
+          >
+            {attachments.map((a) => (
+              <CT_AttachmentChip
+                key={a.id}
+                attachment={a}
+                onRemove={() => removeAttachment(a.id)}
+              />
+            ))}
+          </div>
+        )}
+
+        <div
+          style={{
+            borderTop: "1px solid var(--border)",
+            padding: 14,
+            display: "flex",
+            gap: 8,
+            alignItems: "stretch",
+          }}
+        >
+          <button
+            type="button"
+            title="Attach files (images, PDFs)"
+            data-testid="chat-attach-btn"
+            onClick={() => fileInputRef.current && fileInputRef.current.click()}
+            disabled={chatStatus === "ended"}
+            style={{
+              background: "transparent",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: "0 10px",
+              color: "var(--text-2)",
+              cursor: chatStatus === "ended" ? "not-allowed" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              opacity: chatStatus === "ended" ? 0.5 : 1,
+            }}
+          >
+            <Icon name="paperclip" size={14} />
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,application/pdf"
+            style={{ display: "none" }}
+            onChange={(e) => handleFilesPicked(e.target.files)}
+          />
           <textarea
             className="textarea"
             value={composer}
@@ -689,11 +836,137 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           <Btn
             kind="primary"
             icon="send"
-            disabled={!composer.trim() || chatStatus === "ended" || wsState !== "open"}
+            disabled={(!composer.trim() && attachments.length === 0) || chatStatus === "ended" || wsState !== "open"}
             onClick={onSubmitComposer}
+            style={{ alignSelf: "stretch", paddingLeft: 16, paddingRight: 16 }}
           >Send</Btn>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Helpers: assistant-token coalescing + thinking indicator + attachment chip
+// ============================================================================
+
+// Walk `messages` in order and merge any run of consecutive
+// `assistant_token` rows into one synthetic "assistant_message"
+// entry whose `text` is the concatenation of the run's deltas. Any
+// other row passes through unchanged. Without this, every token from
+// the LLM renders as its own bubble — unreadable for any reply
+// longer than a word or two.
+function CT_coalesceMessages(messages) {
+  const out = [];
+  let buffer = null;
+  const flushBuffer = () => {
+    if (buffer) { out.push(buffer); buffer = null; }
+  };
+  for (const m of messages) {
+    if (m.kind === "assistant_token") {
+      const delta = typeof m.delta === "string" ? m.delta : "";
+      if (!buffer) {
+        buffer = {
+          kind: "assistant_message",
+          text: delta,
+          startSeq: m.seq,
+          endSeq: m.seq,
+        };
+      } else {
+        buffer.text += delta;
+        buffer.endSeq = m.seq;
+      }
+      continue;
+    }
+    flushBuffer();
+    out.push(m);
+  }
+  flushBuffer();
+  return out;
+}
+
+// Subtle "Thinking…" placeholder shown after the user sends a frame
+// but before the first assistant_token / tool_call / done row lands.
+// Same horizontal layout as a real agent bubble so it doesn't shift
+// when the first delta arrives.
+function CT_ThinkingBubble() {
+  return (
+    <div style={{ display: "flex", gap: 12, marginBottom: 14 }} aria-live="polite">
+      <div style={{
+        width: 48, flexShrink: 0,
+        fontFamily: "IBM Plex Mono, monospace",
+        fontSize: 10.5,
+        textTransform: "uppercase",
+        letterSpacing: "0.06em",
+        color: "var(--accent)",
+        fontWeight: 600,
+        paddingTop: 2,
+      }}>agent</div>
+      <div style={{
+        flex: 1,
+        fontSize: 13,
+        lineHeight: 1.55,
+        color: "var(--text-2)",
+        borderLeft: "2px solid var(--accent)",
+        paddingLeft: 12,
+        fontStyle: "italic",
+      }}>
+        Thinking
+        <span className="thinking-dots" style={{ marginLeft: 2 }}>
+          <span>.</span><span>.</span><span>.</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Chip rendered in the pending-attachments strip. Image kind shows a
+// 36px thumbnail; document kind shows a file icon + filename.
+function CT_AttachmentChip({ attachment, onRemove }) {
+  const sizeKb = attachment.size ? `${(attachment.size / 1024).toFixed(0)} KiB` : "";
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "4px 6px 4px 4px",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        background: "var(--bg-0)",
+      }}
+    >
+      {attachment.kind === "image" && attachment.preview ? (
+        <img
+          src={attachment.preview}
+          alt=""
+          style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4 }}
+        />
+      ) : (
+        <div
+          style={{
+            width: 36, height: 36, display: "grid", placeItems: "center",
+            background: "var(--bg-1)", borderRadius: 4, color: "var(--text-3)",
+          }}
+        >
+          <Icon name="file" size={16} />
+        </div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <span className="mono text-sm" style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{attachment.name}</span>
+        {sizeKb && <span className="muted text-sm" style={{ fontSize: 10.5 }}>{sizeKb}</span>}
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        title="Remove attachment"
+        style={{
+          background: "none", border: "none", cursor: "pointer",
+          color: "var(--text-3)", padding: 2,
+        }}
+      >
+        <Icon name="x" size={12} />
+      </button>
     </div>
   );
 }
@@ -855,8 +1128,40 @@ function Message({ m }) {
     );
   }
 
+  // Coalesced agent reply (the streaming tokens collapsed into one
+  // bubble by CT_coalesceMessages above).
+  if (kind === "assistant_message") {
+    return (
+      <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+        <div style={{
+          width: 48, flexShrink: 0,
+          fontFamily: "IBM Plex Mono, monospace",
+          fontSize: 10.5,
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+          color: "var(--accent)",
+          fontWeight: 600,
+          paddingTop: 2,
+        }}>agent</div>
+        <div style={{
+          flex: 1, fontSize: 13, lineHeight: 1.55, color: "var(--text)",
+          borderLeft: "2px solid var(--accent)", paddingLeft: 12,
+          whiteSpace: "pre-wrap",
+        }}>
+          {m.text}
+        </div>
+      </div>
+    );
+  }
+
   const role = CT_roleForKind(kind);
   const isUser = role === "user";
+  // Pull attachment parts (image/document) out of the user_message
+  // payload so they render under the text. Non-user messages don't
+  // currently carry attachments through this surface.
+  const attachmentParts = (isUser && Array.isArray(m.parts))
+    ? m.parts.filter((p) => p && (p.type === "image" || p.type === "document"))
+    : [];
   return (
     <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
       <div style={{
@@ -870,10 +1175,57 @@ function Message({ m }) {
         paddingTop: 2,
       }}>{isUser ? "user" : "agent"}</div>
       <div style={{ flex: 1, fontSize: 13, lineHeight: 1.55, color: "var(--text)", borderLeft: `2px solid ${isUser ? "var(--border)" : "var(--accent)"}`, paddingLeft: 12 }}>
-        {CT_textOf(m)}
+        {CT_textOf(m) && <div style={{ whiteSpace: "pre-wrap" }}>{CT_textOf(m)}</div>}
+        {attachmentParts.length > 0 && (
+          <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {attachmentParts.map((p, i) => <CT_AttachmentPart key={i} part={p} />)}
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+// Inline-render one attachment Part as it appears inside a user_message
+// bubble. Image parts show a small thumbnail; document parts show a
+// filename + mime badge. The persisted ChatMessage row keeps the full
+// base64 payload, so thumbnails work from cursor-replay without a
+// follow-up fetch.
+function CT_AttachmentPart({ part }) {
+  if (part.type === "image") {
+    const src = part.url
+      ? part.url
+      : (part.data ? `data:${part.mime_type || "image/png"};base64,${part.data}` : null);
+    if (!src) return null;
+    return (
+      <a href={src} target="_blank" rel="noreferrer" style={{ display: "inline-block" }}>
+        <img
+          src={src}
+          alt={part.filename || "image"}
+          style={{
+            maxHeight: 160, maxWidth: 240, borderRadius: 4,
+            border: "1px solid var(--border)", display: "block",
+          }}
+        />
+      </a>
+    );
+  }
+  if (part.type === "document") {
+    const filename = part.filename || "document";
+    const mime = part.mime_type || "application/octet-stream";
+    return (
+      <div style={{
+        display: "inline-flex", alignItems: "center", gap: 6,
+        padding: "4px 8px", border: "1px solid var(--border)",
+        borderRadius: 4, background: "var(--bg-0)",
+      }}>
+        <Icon name="file" size={12} className="muted" />
+        <span className="mono text-sm">{filename}</span>
+        <span className="muted text-sm" style={{ fontSize: 10.5 }}>{mime}</span>
+      </div>
+    );
+  }
+  return null;
 }
 
 window.ChatsPage = ChatsPage;
