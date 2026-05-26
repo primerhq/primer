@@ -28,6 +28,7 @@ runner.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -214,6 +215,7 @@ class ChatTurnRunner:
         tool_manager: "ToolExecutionManager",
         chat_storage: Storage[Chat],
         message_storage: Storage[ChatMessage],
+        cancel_event: asyncio.Event | None = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -221,6 +223,7 @@ class ChatTurnRunner:
         self._tools = tool_manager
         self._chats = chat_storage
         self._messages = message_storage
+        self._cancel_event = cancel_event
 
     async def run_turn(
         self, chat: Chat, user_input: "str | list",
@@ -311,6 +314,14 @@ class ChatTurnRunner:
                         assistant_text_parts=assistant_text_parts,
                     ):
                         yield row
+                    if self._cancel_event is not None and self._cancel_event.is_set():
+                        cancelled = await self._append(
+                            chat,
+                            kind="cancelled",
+                            payload={"reason": "operator_interrupt"},
+                        )
+                        yield cancelled
+                        return
                     if isinstance(event, Done):
                         terminal_done = event
                         break
