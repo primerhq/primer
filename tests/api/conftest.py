@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import httpx
 import pytest
+import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport
 
@@ -33,15 +35,24 @@ def fake_provider_registry(
     )
 
 
-@pytest.fixture
-def app(
+@pytest_asyncio.fixture
+async def app(
     fake_storage_provider: _FakeStorageProvider,
     fake_provider_registry: ProviderRegistry,
-) -> FastAPI:
-    return create_test_app(
+) -> AsyncIterator[FastAPI]:
+    _app = create_test_app(
         storage_provider=fake_storage_provider,  # type: ignore[arg-type]
         provider_registry=fake_provider_registry,
     )
+    forwarder = await _app.state.start_chat_tick_forwarder()
+    try:
+        yield _app
+    finally:
+        forwarder.cancel()
+        try:
+            await forwarder
+        except asyncio.CancelledError:
+            pass
 
 
 @pytest.fixture
