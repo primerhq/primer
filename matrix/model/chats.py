@@ -44,6 +44,7 @@ ChatMessageKind = Literal[
     "yielded",
     "resumed",
     "done",
+    "cancelled",
     "error",
 ]
 """The wire-level message kinds emitted by the chat executor.
@@ -95,6 +96,50 @@ class Chat(Identifiable):
             "WS reconnect; the WS endpoint emits messages with "
             "``seq > cursor`` in order. Bumped atomically by the "
             "message writer (see matrix.chat.executor)."
+        ),
+    )
+    turn_status: Literal["idle", "claimable", "running"] = Field(
+        default="idle",
+        description=(
+            "Lifecycle state of the FIFO queue + worker claim. "
+            "``idle`` means no pending work. ``claimable`` means a "
+            "user_message has landed (or a parked chat just became "
+            "resumable, or an operator interrupt is pending) and a "
+            "worker should pick the chat up. ``running`` means a "
+            "worker holds the claim and is actively processing. "
+            "Orthogonal to :attr:`parked_status` — a claimed chat "
+            "that parks on a yielding tool keeps ``turn_status`` "
+            "where it is while ``parked_status`` flips."
+        ),
+    )
+    claimed_by: str | None = Field(
+        default=None,
+        description=(
+            "Worker id holding the active claim. Cleared when the "
+            "worker releases the lease (turn completed, parked, or "
+            "swept due to stale heartbeat)."
+        ),
+    )
+    claimed_at: datetime | None = Field(
+        default=None,
+        description="UTC timestamp the current claim was acquired.",
+    )
+    last_heartbeat_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Most recent worker heartbeat. The sweeper reclaims "
+            "claims where this is older than the heartbeat staleness "
+            "threshold (90s)."
+        ),
+    )
+    cancel_requested_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Set by the API when an ``interrupt`` WS frame arrives. "
+            "The owning worker polls the field via heartbeat reads "
+            "AND subscribes to a ``chat:{id}:cancel`` bus event for "
+            "faster wake-up. Cleared by the worker after honouring "
+            "the cancellation."
         ),
     )
 

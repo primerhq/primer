@@ -12,6 +12,9 @@ union that interact with the new types.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from typing import get_args
+
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
@@ -46,6 +49,7 @@ from matrix.model.chat import (
     Usage,
     output_to_message,
 )
+from matrix.model.chats import Chat, ChatMessage, ChatMessageKind
 from matrix.model.common import Describeable, Identifiable
 
 
@@ -975,3 +979,56 @@ class TestToolCallResult:
         )
 
         assert r.extended == {"content": [{"type": "image", "data": "..."}]}
+
+
+# ============================================================================
+# Chat lifecycle fields + cancelled ChatMessageKind
+# ============================================================================
+
+
+class TestChatLifecycleFields:
+    def test_defaults(self) -> None:
+        chat = Chat(
+            id="c1",
+            agent_id="ag",
+            created_at=datetime.now(timezone.utc),
+        )
+        assert chat.turn_status == "idle"
+        assert chat.claimed_by is None
+        assert chat.claimed_at is None
+        assert chat.last_heartbeat_at is None
+        assert chat.cancel_requested_at is None
+
+    def test_round_trip_through_json_with_lifecycle_fields(self) -> None:
+        now = datetime.now(timezone.utc)
+        original = Chat(
+            id="c2",
+            agent_id="ag",
+            created_at=now,
+            turn_status="running",
+            claimed_by="worker-1",
+            claimed_at=now,
+            last_heartbeat_at=now,
+            cancel_requested_at=now,
+        )
+        parsed = Chat.model_validate_json(original.model_dump_json())
+        assert parsed == original
+
+
+class TestCancelledChatMessageKind:
+    def test_cancelled_round_trip(self) -> None:
+        row = ChatMessage(
+            id="c1:00000000000000000005",
+            chat_id="c1",
+            seq=5,
+            kind="cancelled",
+            payload={"reason": "operator interrupt"},
+            created_at=datetime.now(timezone.utc),
+        )
+        parsed = ChatMessage.model_validate_json(row.model_dump_json())
+        assert parsed.kind == "cancelled"
+        assert parsed.payload == {"reason": "operator interrupt"}
+
+    def test_kind_literal_includes_cancelled(self) -> None:
+        members = set(get_args(ChatMessageKind))
+        assert "cancelled" in members
