@@ -38,12 +38,67 @@ signal without information loss.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Iterable
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    model_validator,
+)
 
 from matrix.model.common import Describeable
+
+
+def _decode_b64_if_str(v: Any) -> Any:
+    """BeforeValidator for ``data: bytes`` fields on multimodal parts.
+
+    Pydantic's default ``bytes`` field treats a string input as UTF-8
+    text — so a JSON payload like ``{"data": "JVBER..."}`` (the shape
+    the chat WS frame uses) ends up with ``data`` set to the literal
+    bytes of the base64 string instead of the decoded file content.
+    The adapter then base64-encodes that string AGAIN, sending
+    double-encoded garbage to the LLM provider, which 400s with
+    ``invalid_union`` or similar.
+
+    This validator decodes a base64 string input back to raw bytes
+    before Pydantic's bytes validator runs. ``bytes`` inputs pass
+    through unchanged (existing tests construct parts with raw bytes
+    directly, e.g. ``DocumentPart(data=b'%PDF-1.4')``). Any input
+    that isn't a string or bytes is left alone so Pydantic's normal
+    type error surfaces.
+    """
+    if isinstance(v, str):
+        try:
+            return base64.b64decode(v, validate=True)
+        except (binascii.Error, ValueError):
+            # Not valid base64 — let Pydantic's default validator
+            # produce the canonical error rather than guessing.
+            return v
+    return v
+
+
+def _encode_b64_for_json(v: bytes | None) -> str | None:
+    """PlainSerializer for ``data: bytes`` fields in JSON output.
+
+    Pydantic's default JSON serializer for ``bytes`` tries to UTF-8
+    decode the value — which crashes with ``UnicodeDecodeError`` on
+    real binary content (a PDF, a PNG header, anything past plain
+    ASCII text). The chat runner persists Part rows via
+    ``model_dump(mode='json')``, so without this serializer any
+    non-text attachment makes the WS turn explode.
+
+    Pairs with :func:`_decode_b64_if_str` to give the field a clean
+    base64 round-trip through JSON storage + the WS wire frame.
+    """
+    if v is None:
+        return None
+    return base64.b64encode(v).decode("ascii")
 
 
 # ===========================================================================
@@ -97,7 +152,11 @@ class ImagePart(_BinarySourceMixin):
         default="image",
         description="Discriminator tag identifying this part as an image.",
     )
-    data: bytes | None = Field(
+    data: Annotated[
+        bytes | None,
+        BeforeValidator(_decode_b64_if_str),
+        PlainSerializer(_encode_b64_for_json, return_type=str, when_used="json"),
+    ] = Field(
         default=None,
         description="Raw image bytes. Pydantic accepts base64-encoded strings.",
     )
@@ -132,7 +191,11 @@ class DocumentPart(_BinarySourceMixin):
         default="document",
         description="Discriminator tag identifying this part as a document.",
     )
-    data: bytes | None = Field(
+    data: Annotated[
+        bytes | None,
+        BeforeValidator(_decode_b64_if_str),
+        PlainSerializer(_encode_b64_for_json, return_type=str, when_used="json"),
+    ] = Field(
         default=None,
         description="Raw document bytes. Pydantic accepts base64-encoded strings.",
     )
@@ -312,7 +375,11 @@ class AudioPart(_BinarySourceMixin):
         default="audio",
         description="Discriminator tag identifying this extended part as audio.",
     )
-    data: bytes | None = Field(
+    data: Annotated[
+        bytes | None,
+        BeforeValidator(_decode_b64_if_str),
+        PlainSerializer(_encode_b64_for_json, return_type=str, when_used="json"),
+    ] = Field(
         default=None,
         description="Raw audio bytes. Pydantic accepts base64-encoded strings.",
     )
@@ -347,7 +414,11 @@ class VideoPart(_BinarySourceMixin):
         default="video",
         description="Discriminator tag identifying this extended part as video.",
     )
-    data: bytes | None = Field(
+    data: Annotated[
+        bytes | None,
+        BeforeValidator(_decode_b64_if_str),
+        PlainSerializer(_encode_b64_for_json, return_type=str, when_used="json"),
+    ] = Field(
         default=None,
         description="Raw video bytes. Pydantic accepts base64-encoded strings.",
     )

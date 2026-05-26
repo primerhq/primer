@@ -435,6 +435,17 @@ class TestChatWebSocket:
         part_types = [p.type for p in last.parts]
         assert "text" in part_types
         assert "image" in part_types
+        # Regression: the binary part's ``data`` must round-trip back
+        # to the raw bytes, NOT the base64 string of the bytes. Pydantic
+        # doesn't auto-decode base64 strings into ``bytes`` fields by
+        # default — the chat Part models add a BeforeValidator for it.
+        # Without it the LLM adapter base64-encodes the already-encoded
+        # string and OpenAI 400s on ``invalid_union``.
+        image_part = next(p for p in last.parts if p.type == "image")
+        assert image_part.data == png_bytes, (
+            "ImagePart.data must hold the decoded image bytes, not the "
+            "base64 string of those bytes"
+        )
 
     async def test_ws_rejects_user_message_with_bad_part(
         self, app, seeded_agent,

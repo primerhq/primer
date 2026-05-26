@@ -116,17 +116,13 @@ def _part_to_input_content(part: Part) -> dict[str, Any]:
     if isinstance(part, DocumentPart):
         out = {"type": "input_file"}
         if part.data is not None:
-            # OpenAI Responses' input_file accepts inline bytes via
-            # ``file_data`` formatted as a data URI — same convention
-            # as ``image_url`` for input_image. Raw base64 without the
-            # ``data:<mime>;base64,`` prefix is rejected upstream as
-            # ``invalid_union`` on the whole input parameter, so we
-            # must include the prefix here. See
-            # https://platform.openai.com/docs/guides/pdf-files for
-            # the canonical example.
-            mime = part.mime_type or "application/pdf"
-            b64 = base64.b64encode(part.data).decode()
-            out["file_data"] = f"data:{mime};base64,{b64}"
+            # ``file_data`` is the raw base64-encoded file contents per
+            # the OpenAI Responses schema — NOT a data URI. (image_url
+            # is different: it accepts a data URI or external URL, so
+            # the inline-image path below prefixes ``data:<mime>;base64,``.
+            # Mixing the two formats up confused this adapter previously
+            # and produced ``400 invalid_union`` from upstream.)
+            out["file_data"] = base64.b64encode(part.data).decode()
             out["filename"] = part.filename or "file"
         elif part.url is not None:
             out["file_url"] = part.url
