@@ -1129,7 +1129,9 @@ function Message({ m }) {
   }
 
   // Coalesced agent reply (the streaming tokens collapsed into one
-  // bubble by CT_coalesceMessages above).
+  // bubble by CT_coalesceMessages above). Renders as markdown — LLMs
+  // routinely emit headings, lists, bold, and code blocks; raw text
+  // is borderline unreadable for any non-trivial response.
   if (kind === "assistant_message") {
     return (
       <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
@@ -1143,12 +1145,13 @@ function Message({ m }) {
           fontWeight: 600,
           paddingTop: 2,
         }}>agent</div>
-        <div style={{
+        <div className="md-body" style={{
           flex: 1, fontSize: 13, lineHeight: 1.55, color: "var(--text)",
           borderLeft: "2px solid var(--accent)", paddingLeft: 12,
-          whiteSpace: "pre-wrap",
         }}>
-          {m.text}
+          {typeof window.renderMarkdown === "function"
+            ? window.renderMarkdown(m.text)
+            : <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>}
         </div>
       </div>
     );
