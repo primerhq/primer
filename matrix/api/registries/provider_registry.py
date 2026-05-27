@@ -13,7 +13,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from matrix.int.coordinator import InvalidationBus, InvalidationSubscription
+from matrix.int.coordinator import InvalidationBus, InvalidationSubscription, RateLimiter
 from matrix.int.cross_encoder import CrossEncoder
 from matrix.int.embedder import Embedder
 from matrix.int.llm import LLM
@@ -37,25 +37,40 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _build_default_llm_factory(
+    *,
+    rate_limiter: "RateLimiter | None" = None,
+) -> Callable[[LLMProvider], LLM]:
+    """Build the default ``llm_factory`` closure.
+
+    ``rate_limiter`` is forwarded to :class:`~matrix.llm.anthropic.AnthropicLLM`
+    so it participates in the global concurrency limiter. ``None`` causes the
+    adapter to fall back to a local :class:`~matrix.coordinator.in_memory.InMemoryRateLimiter`.
+    """
+    def _factory(provider: LLMProvider) -> LLM:  # pragma: no cover
+        match provider.provider:
+            case LLMProviderType.OPENRESPONSES:
+                from matrix.llm.openresponses import OpenResponsesLLM
+                return OpenResponsesLLM(provider)
+            case LLMProviderType.ANTHROPIC:
+                from matrix.llm.anthropic import AnthropicLLM
+                return AnthropicLLM(provider, rate_limiter=rate_limiter)
+            case LLMProviderType.GEMINI:
+                from matrix.llm.gemini import GeminiLLM
+                return GeminiLLM(provider)
+            case LLMProviderType.OLLAMA:
+                from matrix.llm.ollama import OllamaLLM
+                return OllamaLLM(provider)
+            case _:
+                raise ConfigError(
+                    f"unknown LLM provider type {provider.provider!r}"
+                )
+    return _factory
+
+
 def _default_llm_factory(provider: LLMProvider) -> LLM:  # pragma: no cover
     """Dispatch on ``provider.provider`` to the right adapter constructor."""
-    match provider.provider:
-        case LLMProviderType.OPENRESPONSES:
-            from matrix.llm.openresponses import OpenResponsesLLM
-            return OpenResponsesLLM(provider)
-        case LLMProviderType.ANTHROPIC:
-            from matrix.llm.anthropic import AnthropicLLM
-            return AnthropicLLM(provider)
-        case LLMProviderType.GEMINI:
-            from matrix.llm.gemini import GeminiLLM
-            return GeminiLLM(provider)
-        case LLMProviderType.OLLAMA:
-            from matrix.llm.ollama import OllamaLLM
-            return OllamaLLM(provider)
-        case _:
-            raise ConfigError(
-                f"unknown LLM provider type {provider.provider!r}"
-            )
+    return _build_default_llm_factory()(provider)
 
 
 def _default_embedder_factory(  # pragma: no cover
@@ -184,9 +199,13 @@ class ProviderRegistry:
         misc_toolset_provider: ToolsetProvider | None = None,
         web_toolset_provider: ToolsetProvider | None = None,
         harness_toolset_provider: ToolsetProvider | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self._sp = storage_provider
-        self._llm_factory = llm_factory or _default_llm_factory
+        self._rate_limiter: RateLimiter | None = rate_limiter
+        self._llm_factory = llm_factory or _build_default_llm_factory(
+            rate_limiter=rate_limiter,
+        )
         self._embedder_factory = embedder_factory or _default_embedder_factory
         self._cross_encoder_factory = (
             cross_encoder_factory or _default_cross_encoder_factory
@@ -437,6 +456,12 @@ class ProviderRegistry:
             await self._invalidate_toolset_local(toolset_id)
 
     # ---- Bus wiring -------------------------------------------------------
+
+    async def bind_rate_limiter(self, rate_limiter: RateLimiter) -> None:
+        """Wire the registry's adapter construction to the rate limiter.
+        Idempotent."""
+        self._rate_limiter = rate_limiter
+        self._llm_factory = _build_default_llm_factory(rate_limiter=rate_limiter)
 
     async def bind_invalidation_bus(self, bus: InvalidationBus) -> None:
         """Wire the registry's cache eviction to the bus. Idempotent."""

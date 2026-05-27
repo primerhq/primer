@@ -252,6 +252,7 @@ def _make_lifespan(config: AppConfig):
             app.state.coordinator = coordinator
             logger.info("lifespan: coordinator constructed (in-memory backends)")
             await provider_registry.bind_invalidation_bus(coordinator.invalidation_bus)
+            await provider_registry.bind_rate_limiter(coordinator.rate_limiter)
             # Re-bind the channel inbox now that the event bus exists.
             # ChannelInbox was constructed earlier (lines 102-104) with
             # event_bus=None because the bus is built later in the

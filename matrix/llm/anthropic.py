@@ -55,6 +55,7 @@ from matrix.model.except_ import (
     ModelNotFoundError,
     UnsupportedContentError,
 )
+from matrix.int.coordinator import RateLimiter
 from matrix.model.provider import (
     AnthropicConfig,
     LLMProvider,
@@ -527,7 +528,12 @@ class AnthropicLLM(LLM):
 
     DEFAULT_MAX_TOKENS = _DEFAULT_MAX_TOKENS
 
-    def __init__(self, provider: LLMProvider) -> None:
+    def __init__(
+        self,
+        provider: LLMProvider,
+        *,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
         if provider.provider != LLMProviderType.ANTHROPIC:
             raise ConfigError(
                 f"AnthropicLLM requires provider type ANTHROPIC; "
@@ -545,7 +551,12 @@ class AnthropicLLM(LLM):
         self._provider = provider
         self._config: AnthropicConfig = provider.config
         self._client: AsyncAnthropic | None = None
-        self._semaphore = asyncio.Semaphore(provider.limits.max_concurrency)
+        if rate_limiter is None:
+            from matrix.coordinator.in_memory import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter()
+        self._rate_limiter = rate_limiter
+        self._rate_limit_key = f"llm:{provider.id}"
+        self._max_concurrency = provider.limits.max_concurrency
 
         logger.info(
             "Anthropic adapter initialized",
@@ -638,7 +649,9 @@ class AnthropicLLM(LLM):
             },
         )
 
-        async with self._semaphore:
+        async with await self._rate_limiter.acquire(
+            self._rate_limit_key, max_concurrency=self._max_concurrency,
+        ):
             client = self._get_client()
             try:
                 sdk_stream = await client.messages.create(stream=True, **request)
