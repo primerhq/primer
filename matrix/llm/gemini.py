@@ -65,6 +65,7 @@ from matrix.model.chat import (
     Usage,
     VideoPart,
 )
+from matrix.int.coordinator import RateLimiter
 from matrix.model.provider import (
     GoogleConfig,
     LLMProvider,
@@ -707,7 +708,12 @@ def _translate_chunk(
 class GeminiLLM(LLM):
     """Streaming LLM adapter for the Gemini API."""
 
-    def __init__(self, provider: LLMProvider) -> None:
+    def __init__(
+        self,
+        provider: LLMProvider,
+        *,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
         if provider.provider != LLMProviderType.GEMINI:
             raise ConfigError(
                 f"GeminiLLM requires provider type GEMINI; "
@@ -725,7 +731,12 @@ class GeminiLLM(LLM):
         self._provider = provider
         self._config: GoogleConfig = provider.config
         self._client: genai.Client | None = None
-        self._semaphore = asyncio.Semaphore(provider.limits.max_concurrency)
+        if rate_limiter is None:
+            from matrix.coordinator.in_memory import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter()
+        self._rate_limiter = rate_limiter
+        self._rate_limit_key = f"llm:{provider.id}"
+        self._max_concurrency = provider.limits.max_concurrency
 
         logger.info(
             "Gemini adapter initialized",
@@ -806,7 +817,9 @@ class GeminiLLM(LLM):
             },
         )
 
-        async with self._semaphore:
+        async with await self._rate_limiter.acquire(
+            self._rate_limit_key, max_concurrency=self._max_concurrency,
+        ):
             client = self._get_client()
             try:
                 sdk_stream = await client.aio.models.generate_content_stream(

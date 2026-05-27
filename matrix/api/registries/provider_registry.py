@@ -43,24 +43,24 @@ def _build_default_llm_factory(
 ) -> Callable[[LLMProvider], LLM]:
     """Build the default ``llm_factory`` closure.
 
-    ``rate_limiter`` is forwarded to :class:`~matrix.llm.anthropic.AnthropicLLM`
-    so it participates in the global concurrency limiter. ``None`` causes the
+    ``rate_limiter`` is forwarded to every LLM adapter so all providers
+    participate in the global concurrency limiter. ``None`` causes each
     adapter to fall back to a local :class:`~matrix.coordinator.in_memory.InMemoryRateLimiter`.
     """
     def _factory(provider: LLMProvider) -> LLM:  # pragma: no cover
         match provider.provider:
             case LLMProviderType.OPENRESPONSES:
                 from matrix.llm.openresponses import OpenResponsesLLM
-                return OpenResponsesLLM(provider)
+                return OpenResponsesLLM(provider, rate_limiter=rate_limiter)
             case LLMProviderType.ANTHROPIC:
                 from matrix.llm.anthropic import AnthropicLLM
                 return AnthropicLLM(provider, rate_limiter=rate_limiter)
             case LLMProviderType.GEMINI:
                 from matrix.llm.gemini import GeminiLLM
-                return GeminiLLM(provider)
+                return GeminiLLM(provider, rate_limiter=rate_limiter)
             case LLMProviderType.OLLAMA:
                 from matrix.llm.ollama import OllamaLLM
-                return OllamaLLM(provider)
+                return OllamaLLM(provider, rate_limiter=rate_limiter)
             case _:
                 raise ConfigError(
                     f"unknown LLM provider type {provider.provider!r}"

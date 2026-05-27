@@ -87,11 +87,12 @@ class TestConstructor:
         with pytest.raises(ConfigError, match="GoogleConfig"):
             GeminiLLM(provider)
 
-    def test_initialises_semaphore_to_max_concurrency(self) -> None:
+    def test_initialises_rate_limiter(self) -> None:
+        from matrix.coordinator.in_memory import InMemoryRateLimiter
         provider = _make_provider(max_concurrency=3)
         llm = GeminiLLM(provider)
-        assert isinstance(llm._semaphore, asyncio.Semaphore)
-        assert llm._semaphore._value == 3  # type: ignore[attr-defined]
+        assert isinstance(llm._rate_limiter, InMemoryRateLimiter)
+        assert llm._max_concurrency == 3
 
     def test_logs_init_with_structured_context(
         self, caplog: pytest.LogCaptureFixture

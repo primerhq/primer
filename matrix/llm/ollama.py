@@ -61,6 +61,7 @@ from matrix.model.except_ import (
     ServerError,
     UnsupportedContentError,
 )
+from matrix.int.coordinator import RateLimiter
 from matrix.model.provider import (
     LLMProvider,
     LLMProviderType,
@@ -393,7 +394,12 @@ def _translate_chunk(
 class OllamaLLM(LLM):
     """Streaming LLM adapter for the Ollama HTTP API."""
 
-    def __init__(self, provider: LLMProvider) -> None:
+    def __init__(
+        self,
+        provider: LLMProvider,
+        *,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
         if provider.provider != LLMProviderType.OLLAMA:
             raise ConfigError(
                 f"OllamaLLM requires provider type OLLAMA; "
@@ -407,7 +413,12 @@ class OllamaLLM(LLM):
         self._provider = provider
         self._config: OllamaConfig = provider.config
         self._client: ollama.AsyncClient | None = None
-        self._semaphore = asyncio.Semaphore(provider.limits.max_concurrency)
+        if rate_limiter is None:
+            from matrix.coordinator.in_memory import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter()
+        self._rate_limiter = rate_limiter
+        self._rate_limit_key = f"llm:{provider.id}"
+        self._max_concurrency = provider.limits.max_concurrency
 
         logger.info(
             "Ollama adapter initialized",
@@ -491,7 +502,9 @@ class OllamaLLM(LLM):
             },
         )
 
-        async with self._semaphore:
+        async with await self._rate_limiter.acquire(
+            self._rate_limit_key, max_concurrency=self._max_concurrency,
+        ):
             client = self._get_client()
             try:
                 sdk_stream = await client.chat(**request)

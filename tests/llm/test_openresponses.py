@@ -111,13 +111,12 @@ class TestConstructor:
         with pytest.raises(ConfigError, match="OPENRESPONSES"):
             OpenResponsesLLM(provider)
 
-    def test_initialises_semaphore_to_max_concurrency(self) -> None:
+    def test_initialises_rate_limiter(self) -> None:
+        from matrix.coordinator.in_memory import InMemoryRateLimiter
         provider = _make_provider(max_concurrency=3)
         llm = OpenResponsesLLM(provider)
-        # Semaphore exposes its current value via private attr; check by acquiring.
-        assert isinstance(llm._semaphore, asyncio.Semaphore)
-        # The Semaphore's internal value tracks remaining permits.
-        assert llm._semaphore._value == 3  # type: ignore[attr-defined]
+        assert isinstance(llm._rate_limiter, InMemoryRateLimiter)
+        assert llm._max_concurrency == 3
 
     def test_logs_init_with_structured_context(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="matrix.llm.openresponses")
