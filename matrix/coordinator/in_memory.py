@@ -16,6 +16,8 @@ from matrix.int.coordinator import (
     InvalidationBus,
     InvalidationSubscription,
     InvalidationTopic,
+    LeaderElector,
+    LeadershipLease,
     RateLimiter,
     RateLimiterLease,
 )
@@ -160,3 +162,33 @@ class InMemoryInvalidationBus(InvalidationBus):
             self._handlers[topic].remove(handler)
         except (ValueError, KeyError):
             pass
+
+
+# ---------------------------------------------------------------------------
+# LeaderElector
+# ---------------------------------------------------------------------------
+
+
+class _InMemoryLeadershipLease(LeadershipLease):
+    """Trivial lease: in-memory backend means single process == leader."""
+
+    def __init__(self, role: str) -> None:
+        super().__init__(role=role, owner_id="local", lost_event=asyncio.Event())
+        self._released = False
+
+    async def release(self) -> None:
+        self._released = True
+
+
+class InMemoryLeaderElector(LeaderElector):
+    """Single-process backend: every ``try_acquire`` succeeds.
+
+    The ``lost_event`` never fires because there's no other process to
+    steal the role. Background tasks supervised by this elector run
+    once and never need to relinquish leadership.
+    """
+
+    async def try_acquire(
+        self, role: str, *, lease_seconds: int = 30,
+    ) -> LeadershipLease | None:
+        return _InMemoryLeadershipLease(role)
