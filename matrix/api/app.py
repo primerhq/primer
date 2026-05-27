@@ -242,6 +242,15 @@ def _make_lifespan(config: AppConfig):
                 event_bus = InMemoryEventBus()
             logger.info("lifespan: event bus initialise")
             await event_bus.initialize()
+            from matrix.coordinator.factory import CoordinatorFactory as _CoordinatorFactory
+            _owner_id = f"api-{_uuid.uuid4().hex[:12]}"
+            coordinator = _CoordinatorFactory.create(
+                storage_provider=storage_provider,
+                event_bus=event_bus,
+                owner_id=_owner_id,
+            )
+            app.state.coordinator = coordinator
+            logger.info("lifespan: coordinator constructed (in-memory backends)")
             # Re-bind the channel inbox now that the event bus exists.
             # ChannelInbox was constructed earlier (lines 102-104) with
             # event_bus=None because the bus is built later in the
