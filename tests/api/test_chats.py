@@ -790,3 +790,145 @@ def test_chat_message_id_format():
     # Zero-pad keeps lexicographic order in sync with numeric order
     # — important for cursor pagination by id.
     assert a < b
+
+
+# ===========================================================================
+# ClaimEngine integration — upsert on user_message, delete_lease on end/delete
+# ===========================================================================
+
+
+class _FakeClaimEngine:
+    """Minimal spy that records upsert / delete_lease calls."""
+
+    def __init__(self) -> None:
+        self.upserted: list[tuple] = []   # (kind, entity_id, kwargs)
+        self.deleted: list[tuple] = []     # (kind, entity_id)
+
+    async def upsert(self, kind, entity_id, *, priority=100, next_attempt_at=None):
+        self.upserted.append((kind, entity_id, {"priority": priority}))
+
+    async def delete_lease(self, kind, entity_id):
+        self.deleted.append((kind, entity_id))
+
+
+@pytest.fixture
+def app_with_engine(
+    fake_storage_provider,
+    fake_provider_registry,
+    fake_llm,
+):
+    """app fixture that also wires a fake ClaimEngine on app.state."""
+    async def _get_llm(_pid: str) -> _ChatTestFakeLLM:
+        return fake_llm
+
+    fake_provider_registry.get_llm = _get_llm  # type: ignore[assignment]
+    _app = create_test_app(
+        storage_provider=fake_storage_provider,
+        provider_registry=fake_provider_registry,
+        start_chat_worker=True,
+    )
+    _engine = _FakeClaimEngine()
+    _app.state.claim_engine = _engine
+    return _app, _engine
+
+
+@pytest.mark.asyncio
+async def test_claim_engine_upsert_called_on_user_message(
+    app_with_engine, seeded_agent,
+):
+    """When a user_message is sent via WS, engine.upsert(CHAT, chat_id) fires.
+
+    ``seeded_agent`` seeds the shared ``fake_storage_provider`` (which
+    ``app_with_engine`` also uses) so both fixtures share the same LLMProvider
+    and Agent rows.
+    """
+    from matrix.int.claim import ClaimKind
+    from starlette.testclient import TestClient as SyncTestClient
+
+    _app, engine = app_with_engine
+
+    with SyncTestClient(_app) as sclient:
+        # Use the agent seeded by the seeded_agent fixture (id="ag-chat").
+        r = sclient.post("/v1/chats", json={"agent_id": seeded_agent.id})
+        assert r.status_code == 201, r.text
+        cid = r.json()["id"]
+        with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+            ws.send_json({"kind": "user_message", "content": "hello engine"})
+            for _ in range(3):
+                ws.receive_json()
+
+    # engine.upsert must have been called with kind=CHAT, chat_id, priority=10
+    chat_upserts = [u for u in engine.upserted if u[0] == ClaimKind.CHAT and u[1] == cid]
+    assert chat_upserts, f"Expected engine.upsert(CHAT, {cid!r}) but got: {engine.upserted!r}"
+    assert chat_upserts[0][2]["priority"] == 10
+
+
+@pytest.mark.asyncio
+async def test_claim_engine_delete_lease_on_soft_end(
+    app_with_engine, seeded_agent,
+):
+    """DELETE /chats/{id} (soft-end) calls engine.delete_lease(CHAT, chat_id)."""
+    from matrix.int.claim import ClaimKind
+
+    _app, engine = app_with_engine
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        r = await c.post("/v1/chats", json={"agent_id": seeded_agent.id})
+        assert r.status_code == 201
+        cid = r.json()["id"]
+
+        resp = await c.delete(f"/v1/chats/{cid}")
+        assert resp.status_code == 200
+
+    assert (ClaimKind.CHAT, cid) in engine.deleted, (
+        f"Expected engine.delete_lease(CHAT, {cid!r}) but got: {engine.deleted!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_claim_engine_delete_lease_on_force_delete(
+    app_with_engine, seeded_agent,
+):
+    """DELETE /chats/{id}?force=true calls engine.delete_lease(CHAT, chat_id)."""
+    from matrix.int.claim import ClaimKind
+
+    _app, engine = app_with_engine
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        r = await c.post("/v1/chats", json={"agent_id": seeded_agent.id})
+        assert r.status_code == 201
+        cid = r.json()["id"]
+
+        resp = await c.delete(f"/v1/chats/{cid}?force=true")
+        assert resp.status_code == 200
+
+    assert (ClaimKind.CHAT, cid) in engine.deleted, (
+        f"Expected engine.delete_lease(CHAT, {cid!r}) after force-delete "
+        f"but got: {engine.deleted!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_claim_engine_none_is_noop(
+    fake_storage_provider,
+    fake_provider_registry,
+    seeded_agent,
+):
+    """When claim_engine is not on app.state, all router paths still work."""
+    _app = create_test_app(
+        storage_provider=fake_storage_provider,
+        provider_registry=fake_provider_registry,
+    )
+    # Deliberately do NOT set _app.state.claim_engine
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        r = await c.post("/v1/chats", json={"agent_id": seeded_agent.id})
+        assert r.status_code == 201
+        cid = r.json()["id"]
+        # soft-end — should not raise even without engine
+        resp = await c.delete(f"/v1/chats/{cid}")
+        assert resp.status_code == 200

@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from matrix.harness.hashes import hash_overrides
 from matrix.model.harness import Harness, HarnessOperation, HarnessStatus
@@ -319,3 +320,146 @@ async def test_sync_rejects_wrong_status(client, app, fake_storage_provider):
 
     r = await client.post("/v1/harnesses/hns_syncwrong/sync")
     assert r.status_code == 409
+
+
+# ===========================================================================
+# ClaimEngine integration
+# ===========================================================================
+
+
+class _FakeClaimEngine:
+    """Minimal spy for upsert / delete_lease calls."""
+
+    def __init__(self) -> None:
+        self.upserted: list[tuple] = []
+        self.deleted: list[tuple] = []
+
+    async def upsert(self, kind, entity_id, *, priority=100, next_attempt_at=None):
+        self.upserted.append((kind, entity_id, {"priority": priority}))
+
+    async def delete_lease(self, kind, entity_id):
+        self.deleted.append((kind, entity_id))
+
+
+@pytest.fixture
+def app_with_engine(fake_storage_provider, fake_provider_registry):
+    from matrix.api.app import create_test_app
+    _app = create_test_app(
+        storage_provider=fake_storage_provider,
+        provider_registry=fake_provider_registry,
+    )
+    _engine = _FakeClaimEngine()
+    _app.state.claim_engine = _engine
+    return _app, _engine
+
+
+@pytest.mark.asyncio
+async def test_claim_engine_upsert_on_fetch(app_with_engine, fake_storage_provider):
+    """POST /{id}/fetch calls engine.upsert(HARNESS, hid, priority=10)."""
+    from matrix.int.claim import ClaimKind
+
+    _app, engine = app_with_engine
+    harness = _make_harness(id="hns_fetch_eng", slug="fetch-eng")
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        r = await c.post("/v1/harnesses/hns_fetch_eng/fetch")
+        assert r.status_code == 202
+
+    matched = [u for u in engine.upserted if u[0] == ClaimKind.HARNESS and u[1] == "hns_fetch_eng"]
+    assert matched, f"Expected engine.upsert(HARNESS, 'hns_fetch_eng') but got: {engine.upserted!r}"
+    assert matched[0][2]["priority"] == 10
+
+
+@pytest.mark.asyncio
+async def test_claim_engine_upsert_on_delete_uninstall(app_with_engine, fake_storage_provider):
+    """DELETE /{id} (enqueues UNINSTALL) calls engine.upsert(HARNESS, hid, priority=10)."""
+    from matrix.int.claim import ClaimKind
+
+    _app, engine = app_with_engine
+    harness = _make_harness(id="hns_del_eng", slug="del-eng", status=HarnessStatus.INSTALLED)
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        r = await c.delete("/v1/harnesses/hns_del_eng")
+        assert r.status_code == 202
+
+    matched = [u for u in engine.upserted if u[0] == ClaimKind.HARNESS and u[1] == "hns_del_eng"]
+    assert matched, f"Expected engine.upsert(HARNESS, 'hns_del_eng') but got: {engine.upserted!r}"
+    assert matched[0][2]["priority"] == 10
+
+
+@pytest.mark.asyncio
+async def test_claim_engine_upsert_on_sync(app_with_engine, fake_storage_provider):
+    """POST /{id}/sync calls engine.upsert(HARNESS, hid, priority=10)."""
+    from matrix.int.claim import ClaimKind
+
+    _app, engine = app_with_engine
+    harness = _make_harness(
+        id="hns_sync_eng",
+        slug="sync-eng",
+        status=HarnessStatus.INSTALLED,
+        available_bundle_hash="abc",
+    )
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        r = await c.post("/v1/harnesses/hns_sync_eng/sync")
+        assert r.status_code == 202
+
+    matched = [u for u in engine.upserted if u[0] == ClaimKind.HARNESS and u[1] == "hns_sync_eng"]
+    assert matched, f"Expected engine.upsert(HARNESS, 'hns_sync_eng') but got: {engine.upserted!r}"
+    assert matched[0][2]["priority"] == 10
+
+
+@pytest.mark.asyncio
+async def test_claim_engine_upsert_on_install(app_with_engine, fake_storage_provider):
+    """POST /{id}/install calls engine.upsert(HARNESS, hid, priority=10)."""
+    from matrix.int.claim import ClaimKind
+
+    _app, engine = app_with_engine
+    schema = {"type": "object", "properties": {}, "additionalProperties": True}
+    harness = _make_harness(
+        id="hns_inst_eng",
+        slug="inst-eng",
+        status=HarnessStatus.READY,
+        overrides_schema=schema,
+    )
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        r = await c.post("/v1/harnesses/hns_inst_eng/install")
+        assert r.status_code == 202
+
+    matched = [u for u in engine.upserted if u[0] == ClaimKind.HARNESS and u[1] == "hns_inst_eng"]
+    assert matched, f"Expected engine.upsert(HARNESS, 'hns_inst_eng') but got: {engine.upserted!r}"
+    assert matched[0][2]["priority"] == 10
+
+
+@pytest.mark.asyncio
+async def test_claim_engine_none_is_noop_for_harness(fake_storage_provider, fake_provider_registry):
+    """When claim_engine is absent from app.state, harness ops still work."""
+    from matrix.api.app import create_test_app
+
+    _app = create_test_app(
+        storage_provider=fake_storage_provider,
+        provider_registry=fake_provider_registry,
+    )
+    # no engine set
+
+    harness = _make_harness(id="hns_noop", slug="noop-hns")
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        r = await c.post("/v1/harnesses/hns_noop/fetch")
+        assert r.status_code == 202

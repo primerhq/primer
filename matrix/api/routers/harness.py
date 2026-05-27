@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from matrix.api.deps import get_event_bus, get_storage_provider
+from matrix.api.deps import get_claim_engine, get_event_bus, get_storage_provider
 from matrix.api.errors import common_responses
 from matrix.api.pagination import parse_page
 from matrix.harness.hashes import hash_overrides
@@ -244,6 +244,7 @@ async def delete_harness(
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
+    engine=Depends(get_claim_engine),
 ):
     storage = _get_harness_storage(sp)
     harness = await storage.get(harness_id)
@@ -259,6 +260,10 @@ async def delete_harness(
     harness.pending_operation = HarnessOperation.UNINSTALL
     updated = await storage.update(harness)
     await event_bus.publish("harness-claimable", {"harness_id": harness_id})
+    # Also notify the ClaimEngine (forward-compat; no-op when not wired).
+    if engine is not None:
+        from matrix.int.claim import ClaimKind
+        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=10)
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),
@@ -337,6 +342,7 @@ async def fetch_harness(
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
+    engine=Depends(get_claim_engine),
 ):
     storage = _get_harness_storage(sp)
     harness = await storage.get(harness_id)
@@ -352,6 +358,10 @@ async def fetch_harness(
     harness.pending_operation = HarnessOperation.FETCH
     updated = await storage.update(harness)
     await event_bus.publish("harness-claimable", {"harness_id": harness_id})
+    # Also notify the ClaimEngine (forward-compat; no-op when not wired).
+    if engine is not None:
+        from matrix.int.claim import ClaimKind
+        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=10)
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),
@@ -372,6 +382,7 @@ async def install_harness(
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
+    engine=Depends(get_claim_engine),
 ):
     storage = _get_harness_storage(sp)
     harness = await storage.get(harness_id)
@@ -422,6 +433,10 @@ async def install_harness(
     harness.pending_operation = HarnessOperation.INSTALL
     updated = await storage.update(harness)
     await event_bus.publish("harness-claimable", {"harness_id": harness_id})
+    # Also notify the ClaimEngine (forward-compat; no-op when not wired).
+    if engine is not None:
+        from matrix.int.claim import ClaimKind
+        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=10)
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),
@@ -442,6 +457,7 @@ async def sync_harness(
     harness_id: str = Path(...),
     sp=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
+    engine=Depends(get_claim_engine),
 ):
     storage = _get_harness_storage(sp)
     harness = await storage.get(harness_id)
@@ -473,6 +489,10 @@ async def sync_harness(
     harness.pending_operation = HarnessOperation.SYNC
     updated = await storage.update(harness)
     await event_bus.publish("harness-claimable", {"harness_id": harness_id})
+    # Also notify the ClaimEngine (forward-compat; no-op when not wired).
+    if engine is not None:
+        from matrix.int.claim import ClaimKind
+        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=10)
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),

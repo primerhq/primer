@@ -45,6 +45,7 @@ from matrix.model.workspace import (
 
 
 if TYPE_CHECKING:
+    from matrix.int.claim import ClaimEngine
     from matrix.int.event_bus import EventBus
     from matrix.int.scheduler import Scheduler
     from matrix.int.storage import Storage
@@ -318,6 +319,16 @@ def get_channel_inbox(request: Request):
     return i
 
 
+def get_claim_engine(request: Request) -> "ClaimEngine | None":
+    """Return the live :class:`ClaimEngine` stored on ``app.state``.
+
+    Returns ``None`` when the engine hasn't been wired yet (Tasks 1-16
+    run without it; Task 17 lights it up in the lifespan). Callers MUST
+    treat ``None`` as a no-op — do not call engine methods on ``None``.
+    """
+    return getattr(request.app.state, "claim_engine", None)
+
+
 def get_principal(
     x_matrix_principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
 ) -> str | None:
@@ -333,6 +344,7 @@ __all__ = [
     "get_channel_inbox",
     "get_channel_registry",
     "get_chat_storage",
+    "get_claim_engine",
     "get_collection_storage",
     "get_cross_encoder_provider_storage",
     "get_document_storage",

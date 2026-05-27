@@ -548,3 +548,211 @@ async def test_top_level_list_sessions_filtered_by_agent_id(
             await storage.delete("ag-other")
         except Exception:
             pass
+
+
+# ===========================================================================
+# ClaimEngine integration
+# ===========================================================================
+
+
+class _FakeClaimEngine:
+    """Minimal spy for upsert / delete_lease calls."""
+
+    def __init__(self) -> None:
+        self.upserted: list[tuple] = []
+        self.deleted: list[tuple] = []
+
+    async def upsert(self, kind, entity_id, *, priority=100, next_attempt_at=None):
+        self.upserted.append((kind, entity_id))
+
+    async def delete_lease(self, kind, entity_id):
+        self.deleted.append((kind, entity_id))
+
+
+@pytest.fixture
+def app_with_engine(fake_storage_provider, fake_provider_registry):
+    workspace_registry = WorkspaceRegistry(
+        fake_storage_provider,  # type: ignore[arg-type]
+        factory=_FakeBackendForSessions,
+    )
+    _app = create_test_app(
+        storage_provider=fake_storage_provider,  # type: ignore[arg-type]
+        provider_registry=fake_provider_registry,
+        workspace_registry=workspace_registry,
+    )
+    _engine = _FakeClaimEngine()
+    _app.state.claim_engine = _engine
+    return _app, _engine
+
+
+async def test_claim_engine_upsert_on_create(
+    app_with_engine, seeded_workspace, seeded_agent,
+):
+    """create_session calls engine.upsert(SESSION, sid) after persisting."""
+    from matrix.int.claim import ClaimKind
+
+    _app, engine = app_with_engine
+    # seeded_workspace/seeded_agent fixtures are bound to the `app` fixture;
+    # reuse their workspace_id but insert the agent into *this* app's storage.
+    from matrix.model.agent import Agent, AgentModel
+    agent_storage = _app.state.storage_provider.get_storage(Agent)
+    try:
+        await agent_storage.create(Agent(
+            id="ag-eng",
+            description="d",
+            model=AgentModel(provider_id="x", model_name="m"),
+            tools=[],
+            system_prompt=[],
+        ))
+    except Exception:
+        pass
+    from matrix.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
+    from datetime import datetime, timezone
+    sp = _app.state.storage_provider
+    try:
+        await sp.get_storage(WorkspaceProvider).create(
+            WorkspaceProvider(
+                id="p-eng",
+                provider=WorkspaceProviderType.LOCAL,
+                config=LocalWorkspaceConfig(path="/tmp/matrix-eng"),
+            )
+        )
+        await sp.get_storage(Workspace).create(Workspace(
+            id="ws-eng",
+            template_id="t-1",
+            provider_id="p-eng",
+            created_at=datetime.now(timezone.utc),
+        ))
+    except Exception:
+        pass
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        resp = await c.post(
+            "/v1/workspaces/ws-eng/sessions",
+            json={"binding": {"kind": "agent", "agent_id": "ag-eng"}},
+        )
+        assert resp.status_code == 201, resp.text
+        sid = resp.json()["id"]
+
+    from matrix.int.claim import ClaimKind
+    assert (ClaimKind.SESSION, sid) in engine.upserted, (
+        f"Expected engine.upsert(SESSION, {sid!r}) but got: {engine.upserted!r}"
+    )
+
+
+async def test_claim_engine_delete_lease_on_cancel(
+    app_with_engine, seeded_workspace, seeded_agent,
+):
+    """cancel_session (when session ends immediately) calls engine.delete_lease."""
+    from matrix.int.claim import ClaimKind
+    from matrix.model.agent import Agent, AgentModel
+    from matrix.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
+    from datetime import datetime, timezone
+
+    _app, engine = app_with_engine
+    sp = _app.state.storage_provider
+    try:
+        await sp.get_storage(WorkspaceProvider).create(
+            WorkspaceProvider(
+                id="p-can",
+                provider=WorkspaceProviderType.LOCAL,
+                config=LocalWorkspaceConfig(path="/tmp/matrix-can"),
+            )
+        )
+        await sp.get_storage(Workspace).create(Workspace(
+            id="ws-can",
+            template_id="t-1",
+            provider_id="p-can",
+            created_at=datetime.now(timezone.utc),
+        ))
+    except Exception:
+        pass
+    agent_storage = sp.get_storage(Agent)
+    try:
+        await agent_storage.create(Agent(
+            id="ag-can",
+            description="c",
+            model=AgentModel(provider_id="x", model_name="m"),
+            tools=[],
+            system_prompt=[],
+        ))
+    except Exception:
+        pass
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        r = await c.post(
+            "/v1/workspaces/ws-can/sessions",
+            json={"binding": {"kind": "agent", "agent_id": "ag-can"}},
+        )
+        assert r.status_code == 201, r.text
+        sid = r.json()["id"]
+
+        resp = await c.post(f"/v1/workspaces/ws-can/sessions/{sid}/cancel")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "ended"
+
+    assert (ClaimKind.SESSION, sid) in engine.deleted, (
+        f"Expected engine.delete_lease(SESSION, {sid!r}) but got: {engine.deleted!r}"
+    )
+
+
+async def test_claim_engine_upsert_on_resume(
+    app_with_engine,
+):
+    """resume_session calls engine.upsert(SESSION, sid) when transitioning to RUNNING."""
+    from matrix.int.claim import ClaimKind
+    from matrix.model.agent import Agent, AgentModel
+    from matrix.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
+    from datetime import datetime, timezone
+
+    _app, engine = app_with_engine
+    sp = _app.state.storage_provider
+    try:
+        await sp.get_storage(WorkspaceProvider).create(
+            WorkspaceProvider(
+                id="p-res",
+                provider=WorkspaceProviderType.LOCAL,
+                config=LocalWorkspaceConfig(path="/tmp/matrix-res"),
+            )
+        )
+        await sp.get_storage(Workspace).create(Workspace(
+            id="ws-res",
+            template_id="t-1",
+            provider_id="p-res",
+            created_at=datetime.now(timezone.utc),
+        ))
+    except Exception:
+        pass
+    agent_storage = sp.get_storage(Agent)
+    try:
+        await agent_storage.create(Agent(
+            id="ag-res",
+            description="r",
+            model=AgentModel(provider_id="x", model_name="m"),
+            tools=[],
+            system_prompt=[],
+        ))
+    except Exception:
+        pass
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app), base_url="http://t",
+    ) as c:
+        r = await c.post(
+            "/v1/workspaces/ws-res/sessions",
+            json={"binding": {"kind": "agent", "agent_id": "ag-res"}},
+        )
+        assert r.status_code == 201, r.text
+        sid = r.json()["id"]
+        engine.upserted.clear()  # reset after create
+
+        resp = await c.post(f"/v1/workspaces/ws-res/sessions/{sid}/resume")
+        assert resp.status_code == 200, resp.text
+
+    assert (ClaimKind.SESSION, sid) in engine.upserted, (
+        f"Expected engine.upsert(SESSION, {sid!r}) on resume but got: {engine.upserted!r}"
+    )

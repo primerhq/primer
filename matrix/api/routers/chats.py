@@ -40,7 +40,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from matrix.api.deps import get_agent_storage, get_storage_provider
+from matrix.api.deps import get_agent_storage, get_claim_engine, get_storage_provider
 from matrix.api.errors import common_responses
 from matrix.api.pagination import parse_page
 from matrix.model.agent import Agent
@@ -166,7 +166,10 @@ async def end_chat(
         ),
     ),
     sp=Depends(get_storage_provider),
+    engine=Depends(get_claim_engine),
 ):
+    from matrix.int.claim import ClaimKind
+
     chat_storage = sp.get_storage(Chat)
     chat = await chat_storage.get(chat_id)
     if chat is None:
@@ -201,12 +204,17 @@ async def end_chat(
             await chat_storage.delete(chat_id)
         except NotFoundError:
             pass
+        if engine is not None:
+            await engine.delete_lease(ClaimKind.CHAT, chat_id)
         return {"id": chat_id, "deleted": True}
 
     if chat.status == "ended":
         raise ConflictError(f"Chat {chat_id!r} is already ended")
     chat.status = "ended"
-    return await chat_storage.update(chat)
+    result = await chat_storage.update(chat)
+    if engine is not None:
+        await engine.delete_lease(ClaimKind.CHAT, chat_id)
+    return result
 
 
 @chats_router.get(
@@ -357,6 +365,7 @@ async def chat_ws(
     messages_storage = sp.get_storage(ChatMessage)
     event_bus = getattr(websocket.app.state, "event_bus", None)
     chat_tick_router = getattr(websocket.app.state, "chat_tick_router", None)
+    claim_engine = getattr(websocket.app.state, "claim_engine", None)
 
     chat = await chats_storage.get(chat_id)
     if chat is None:
@@ -386,6 +395,7 @@ async def chat_ws(
         recv_task = asyncio.ensure_future(
             _recv_loop(
                 websocket, chat_id, chats_storage, messages_storage, event_bus,
+                claim_engine=claim_engine,
             )
         )
         send_task = asyncio.ensure_future(
@@ -430,6 +440,8 @@ async def _recv_loop(
     chats_storage,
     messages_storage,
     event_bus,
+    *,
+    claim_engine=None,
 ) -> None:
     """Read client frames and dispatch them.
 
@@ -540,6 +552,10 @@ async def _recv_loop(
             latest.turn_status = "claimable"
             await chats_storage.update(latest)
             await event_bus.publish("chat-claimable", {"chat_id": chat_id})
+            # Also notify the ClaimEngine (forward-compat; no-op when not wired).
+            if claim_engine is not None:
+                from matrix.int.claim import ClaimKind
+                await claim_engine.upsert(ClaimKind.CHAT, chat_id, priority=10)
 
 
 async def _send_loop(

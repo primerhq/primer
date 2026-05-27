@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from matrix.api.deps import (
     get_agent_storage,
+    get_claim_engine,
     get_graph_storage,
     get_scheduler,
     get_session_storage,
@@ -91,6 +92,7 @@ async def create_session(
     graphs=Depends(get_graph_storage),
     scheduler=Depends(get_scheduler),
     workspace_registry=Depends(get_workspace_registry),
+    engine=Depends(get_claim_engine),
 ) -> Session:
     """Create a session bound to an agent or graph on this workspace.
 
@@ -187,6 +189,11 @@ async def create_session(
         await sessions.update(session)
         await scheduler.enqueue(sid)
 
+    # Register with the ClaimEngine (forward-compat; no-op when not wired).
+    if engine is not None:
+        from matrix.int.claim import ClaimKind
+        await engine.upsert(ClaimKind.SESSION, sid)
+
     return session
 
 
@@ -209,6 +216,7 @@ async def resume_session(
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
     scheduler=Depends(get_scheduler),
+    engine=Depends(get_claim_engine),
 ) -> Session:
     """Idempotent start-or-resume.
 
@@ -235,6 +243,10 @@ async def resume_session(
         s.pause_requested = False
         await sessions.update(s)
         await scheduler.enqueue(session_id)
+        # Notify the ClaimEngine (forward-compat; no-op when not wired).
+        if engine is not None:
+            from matrix.int.claim import ClaimKind
+            await engine.upsert(ClaimKind.SESSION, session_id)
         return s
     raise ConflictError(
         f"Session {session_id!r} cannot resume from status {s.status.value}"
@@ -288,6 +300,7 @@ async def cancel_session(
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
     scheduler=Depends(get_scheduler),
+    engine=Depends(get_claim_engine),
 ) -> Session:
     """Hard cancel.
 
@@ -314,6 +327,10 @@ async def cancel_session(
         s.ended_reason = "cancelled"
         s.ended_at = datetime.now(timezone.utc)
         await sessions.update(s)
+        # Drop the lease — session is gone, no point claiming it.
+        if engine is not None:
+            from matrix.int.claim import ClaimKind
+            await engine.delete_lease(ClaimKind.SESSION, session_id)
         return s
     s.cancel_requested = True
     await sessions.update(s)
