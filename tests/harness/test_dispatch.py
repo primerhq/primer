@@ -17,8 +17,6 @@ from matrix.bus.in_memory import InMemoryEventBus
 from matrix.harness.dispatch import HarnessDispatchDeps, run_one_harness_operation, sweep_harnesses
 from matrix.model.agent import Agent
 from matrix.model.harness import Harness, HarnessOperation, HarnessRendering, HarnessStatus
-from matrix.scheduler.in_memory import InMemoryScheduler
-
 
 # ---------------------------------------------------------------------------
 # Local bare-repo fixture seeded with harness files
@@ -90,15 +88,13 @@ def bare_repo(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _make_deps(fake_storage_provider) -> tuple[HarnessDispatchDeps, InMemoryScheduler]:
-    scheduler = InMemoryScheduler(storage_provider=fake_storage_provider)
+def _make_deps(fake_storage_provider) -> HarnessDispatchDeps:
     bus = InMemoryEventBus()
     deps = HarnessDispatchDeps(
         storage_provider=fake_storage_provider,
-        scheduler=scheduler,
         event_bus=bus,
     )
-    return deps, scheduler
+    return deps
 
 
 def _make_harness(
@@ -136,7 +132,7 @@ def _make_harness(
 
 @pytest.mark.asyncio
 async def test_fetch_happy_path(fake_storage_provider, bare_repo):
-    deps, scheduler = _make_deps(fake_storage_provider)
+    deps = _make_deps(fake_storage_provider)
     harness_storage = fake_storage_provider.get_storage(Harness)
 
     harness = _make_harness("h1", git_url=bare_repo, slug="acme", status=HarnessStatus.DRAFT)
@@ -164,7 +160,7 @@ async def test_fetch_happy_path(fake_storage_provider, bare_repo):
 
 @pytest.mark.asyncio
 async def test_fetch_bad_ref(fake_storage_provider, bare_repo):
-    deps, scheduler = _make_deps(fake_storage_provider)
+    deps = _make_deps(fake_storage_provider)
     harness_storage = fake_storage_provider.get_storage(Harness)
 
     harness = _make_harness(
@@ -194,7 +190,7 @@ async def test_fetch_bad_ref(fake_storage_provider, bare_repo):
 
 @pytest.mark.asyncio
 async def test_install_happy_path(fake_storage_provider, bare_repo):
-    deps, scheduler = _make_deps(fake_storage_provider)
+    deps = _make_deps(fake_storage_provider)
     harness_storage = fake_storage_provider.get_storage(Harness)
 
     # Step 1: fetch so we have available_commit and schema
@@ -248,7 +244,7 @@ async def test_install_happy_path(fake_storage_provider, bare_repo):
 
 @pytest.mark.asyncio
 async def test_install_invalid_overrides(fake_storage_provider, bare_repo):
-    deps, scheduler = _make_deps(fake_storage_provider)
+    deps = _make_deps(fake_storage_provider)
     harness_storage = fake_storage_provider.get_storage(Harness)
 
     # Fetch first (with valid overrides)
@@ -285,7 +281,7 @@ async def test_install_invalid_overrides(fake_storage_provider, bare_repo):
 
 @pytest.mark.asyncio
 async def test_sync_noop_fast_path(fake_storage_provider, bare_repo):
-    deps, scheduler = _make_deps(fake_storage_provider)
+    deps = _make_deps(fake_storage_provider)
     harness_storage = fake_storage_provider.get_storage(Harness)
 
     # Fetch + install
@@ -356,7 +352,7 @@ async def test_sync_noop_fast_path(fake_storage_provider, bare_repo):
 
 @pytest.mark.asyncio
 async def test_uninstall_cleans_up(fake_storage_provider, bare_repo):
-    deps, scheduler = _make_deps(fake_storage_provider)
+    deps = _make_deps(fake_storage_provider)
     harness_storage = fake_storage_provider.get_storage(Harness)
 
     # Fetch + install first
@@ -413,7 +409,7 @@ async def test_uninstall_cleans_up(fake_storage_provider, bare_repo):
 
 @pytest.mark.asyncio
 async def test_sweep_reclaims_stale_heartbeat(fake_storage_provider):
-    deps, scheduler = _make_deps(fake_storage_provider)
+    deps = _make_deps(fake_storage_provider)
     harness_storage = fake_storage_provider.get_storage(Harness)
 
     stale_time = datetime.now(timezone.utc) - timedelta(seconds=200)
@@ -454,7 +450,7 @@ async def test_sweep_reclaims_stale_heartbeat(fake_storage_provider):
 
 @pytest.mark.asyncio
 async def test_sweep_skips_fresh_heartbeat(fake_storage_provider):
-    deps, scheduler = _make_deps(fake_storage_provider)
+    deps = _make_deps(fake_storage_provider)
     harness_storage = fake_storage_provider.get_storage(Harness)
 
     fresh_time = datetime.now(timezone.utc)

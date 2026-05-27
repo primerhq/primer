@@ -11,6 +11,8 @@ import pytest
 import pytest_asyncio
 
 from matrix.bus.in_memory import InMemoryEventBus
+from matrix.claim.factory import ClaimEngineFactory
+from matrix.int.claim import ClaimKind
 from matrix.model.harness import Harness, HarnessOperation, HarnessStatus
 from matrix.model.scheduler import WorkerConfig
 from matrix.scheduler.in_memory import InMemoryScheduler
@@ -56,6 +58,10 @@ async def test_claim_loop_picks_up_pending_harness(
         created_at=now,
     ))
 
+    engine = ClaimEngineFactory.create(
+        storage_provider=fake_storage_provider,
+        event_bus=bus,
+    )
     pool = WorkerPool(
         config=WorkerConfig(
             concurrency=4,
@@ -71,11 +77,12 @@ async def test_claim_loop_picks_up_pending_harness(
         provider_registry=fake_provider_registry,
         event_bus=bus,
         chat_tick_router=None,
+        engine=engine,
     )
     try:
         await pool.start()
-        # Wake the claim loop
-        await bus.publish("harness-claimable", {"harness_id": "h1"})
+        # Seed the engine so the claim loop picks up the harness.
+        await engine.upsert(ClaimKind.HARNESS, "h1", priority=100)
         # Poll storage for the harness reaching READY (fetch done)
         row = None
         for _ in range(50):

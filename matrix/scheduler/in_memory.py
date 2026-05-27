@@ -12,25 +12,19 @@ this single-process impl is self-contained).
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from matrix.int.scheduler import (
-    _DEFAULT_HEARTBEAT_STALE_AFTER,
-    ChatLease,
     CompleteTurnResult,
     FailureRecord,
-    HarnessLease,
     Lease,
     Scheduler,
     WorkerInfo,
 )
-from matrix.model.chats import Chat
-from matrix.model.harness import Harness, HarnessStatus
 from matrix.model.session import SessionStatus
-from matrix.model.storage import OffsetPage
 
 if TYPE_CHECKING:
     from matrix.int.storage_provider import StorageProvider
@@ -161,65 +155,6 @@ class InMemoryScheduler(Scheduler):
             for w in self._workers.values():
                 w.ready_queue.put_nowait(session_id)
                 self._notify_received_total += 1
-
-    # ---- Claim + lease --------------------------------------------------
-
-    async def claim(
-        self, worker_id: str, *, max_count: int = 1,
-    ) -> list[Lease]:
-        async with self._lock:
-            now = datetime.now(timezone.utc)
-            picked: list[Lease] = []
-            for sid, lease in self._leases.items():
-                if len(picked) >= max_count:
-                    break
-                if not lease.runnable:
-                    continue
-                if lease.next_attempt_at > now:
-                    continue
-                if lease.worker_id is not None and (
-                    lease.expires_at is not None and lease.expires_at > now
-                ):
-                    continue
-                # Lease was held by another worker but expired — count
-                # as an expiration event before we steal it.
-                if (
-                    lease.worker_id is not None
-                    and lease.expires_at is not None
-                    and lease.expires_at < now
-                ):
-                    self._lease_expirations_total += 1
-                session = self._sessions.get(sid)
-                if session is None:
-                    continue
-                lease.worker_id = worker_id
-                lease.expires_at = now + timedelta(
-                    seconds=self.lease_ttl_seconds
-                )
-                picked.append(Lease(
-                    session_id=sid,
-                    worker_id=worker_id,
-                    expires_at=lease.expires_at,
-                    attempt_count=session.attempt_count,
-                    turn_no=session.turn_no,
-                ))
-            return picked
-
-    async def heartbeat_leases(
-        self, worker_id: str, session_ids: Sequence[str],
-    ) -> list[str]:
-        async with self._lock:
-            now = datetime.now(timezone.utc)
-            still_owned: list[str] = []
-            for sid in session_ids:
-                lease = self._leases.get(sid)
-                if lease is None or lease.worker_id != worker_id:
-                    continue
-                lease.expires_at = now + timedelta(
-                    seconds=self.lease_ttl_seconds
-                )
-                still_owned.append(sid)
-            return still_owned
 
     # ---- Atomic turn completion -----------------------------------------
 
@@ -364,219 +299,6 @@ class InMemoryScheduler(Scheduler):
                     self._notify_received_total += 1
                 flipped += 1
         return flipped
-
-    # ---- Chat-turn claiming ---------------------------------------------
-
-    async def claim_chats(
-        self,
-        worker_id: str,
-        *,
-        max_count: int,
-        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
-    ) -> list[ChatLease]:
-        """Iterate all Chat rows and claim eligible ones.
-
-        Eligibility predicate (mirrors the spec):
-        * status='active'
-        * parked_status IS DISTINCT FROM 'parked'
-        * claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after
-        * turn_status='claimable' OR parked_status='resumable'
-        """
-        async with self._lock:
-            if self._storage is None:
-                return []
-            chat_storage = self._storage.get_storage(Chat)
-            # Collect all Chat rows from storage. Use paginated reads to
-            # stay within the OffsetPage.length constraint (max 200 per page).
-            page_size = 200
-            all_chats: list[Chat] = []
-            offset = 0
-            while True:
-                resp = await chat_storage.list(OffsetPage(offset=offset, length=page_size))
-                all_chats.extend(resp.items)
-                if len(resp.items) < page_size:
-                    break
-                offset += page_size
-
-            now = datetime.now(timezone.utc)
-            staleness_cutoff = now - heartbeat_stale_after
-
-            claimed: list[ChatLease] = []
-            for chat in all_chats:
-                if len(claimed) >= max_count:
-                    break
-                # status must be 'active'
-                if chat.status != "active":
-                    continue
-                # parked_status must NOT be 'parked'
-                if chat.parked_status == "parked":
-                    continue
-                # claim must be available (not held, or stale)
-                if chat.claimed_by is not None:
-                    if chat.last_heartbeat_at is None or chat.last_heartbeat_at >= staleness_cutoff:
-                        continue
-                # must have work to do
-                if not (
-                    chat.turn_status == "claimable"
-                    or chat.parked_status == "resumable"
-                ):
-                    continue
-
-                # Claim it
-                now_claim = datetime.now(timezone.utc)
-                updated = chat.model_copy(update={
-                    "turn_status": "running",
-                    "claimed_by": worker_id,
-                    "claimed_at": now_claim,
-                    "last_heartbeat_at": now_claim,
-                })
-                await chat_storage.update(updated)
-                claimed.append(ChatLease(
-                    chat_id=chat.id,
-                    worker_id=worker_id,
-                    claimed_at=now_claim,
-                ))
-            return claimed
-
-    async def heartbeat_chat(self, chat_id: str, worker_id: str) -> bool:
-        """Bump last_heartbeat_at if we still own the claim."""
-        async with self._lock:
-            if self._storage is None:
-                return False
-            chat_storage = self._storage.get_storage(Chat)
-            chat = await chat_storage.get(chat_id)
-            if chat is None or chat.claimed_by != worker_id:
-                return False
-            updated = chat.model_copy(update={
-                "last_heartbeat_at": datetime.now(timezone.utc),
-            })
-            await chat_storage.update(updated)
-            return True
-
-    async def release_chat(
-        self,
-        chat_id: str,
-        worker_id: str,
-        *,
-        next_turn_status: Literal["idle", "claimable"],
-    ) -> None:
-        """Release the chat claim. No-ops if we don't own it."""
-        async with self._lock:
-            if self._storage is None:
-                return
-            chat_storage = self._storage.get_storage(Chat)
-            chat = await chat_storage.get(chat_id)
-            if chat is None or chat.claimed_by != worker_id:
-                return
-            updated = chat.model_copy(update={
-                "turn_status": next_turn_status,
-                "claimed_by": None,
-                "claimed_at": None,
-                "last_heartbeat_at": None,
-            })
-            await chat_storage.update(updated)
-
-    # ---- Harness-operation claiming -------------------------------------
-
-    async def claim_harnesses(
-        self,
-        worker_id: str,
-        *,
-        max_count: int,
-        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
-    ) -> list[HarnessLease]:
-        """Iterate all Harness rows and claim eligible ones.
-
-        Eligibility predicate (mirrors the spec):
-        * pending_operation IS NOT NULL
-        * claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after
-        """
-        async with self._lock:
-            if self._storage is None:
-                return []
-            harness_storage = self._storage.get_storage(Harness)
-            # Collect all Harness rows from storage using paginated reads.
-            page_size = 200
-            all_harnesses: list[Harness] = []
-            offset = 0
-            while True:
-                resp = await harness_storage.list(OffsetPage(offset=offset, length=page_size))
-                all_harnesses.extend(resp.items)
-                if len(resp.items) < page_size:
-                    break
-                offset += page_size
-
-            now = datetime.now(timezone.utc)
-            staleness_cutoff = now - heartbeat_stale_after
-
-            claimed: list[HarnessLease] = []
-            for harness in all_harnesses:
-                if len(claimed) >= max_count:
-                    break
-                # must have a pending operation
-                if harness.pending_operation is None:
-                    continue
-                # claim must be available (not held, or stale)
-                if harness.claimed_by is not None:
-                    if harness.last_heartbeat_at is None or harness.last_heartbeat_at >= staleness_cutoff:
-                        continue
-
-                # Claim it
-                now_claim = datetime.now(timezone.utc)
-                updated = harness.model_copy(update={
-                    "claimed_by": worker_id,
-                    "claimed_at": now_claim,
-                    "last_heartbeat_at": now_claim,
-                })
-                await harness_storage.update(updated)
-                claimed.append(HarnessLease(
-                    harness_id=harness.id,
-                    worker_id=worker_id,
-                    operation=harness.pending_operation,
-                    claimed_at=now_claim,
-                ))
-            return claimed
-
-    async def heartbeat_harness(self, harness_id: str, worker_id: str) -> bool:
-        """Bump last_heartbeat_at if we still own the claim."""
-        async with self._lock:
-            if self._storage is None:
-                return False
-            harness_storage = self._storage.get_storage(Harness)
-            harness = await harness_storage.get(harness_id)
-            if harness is None or harness.claimed_by != worker_id:
-                return False
-            updated = harness.model_copy(update={
-                "last_heartbeat_at": datetime.now(timezone.utc),
-            })
-            await harness_storage.update(updated)
-            return True
-
-    async def release_harness(
-        self,
-        harness_id: str,
-        worker_id: str,
-        *,
-        next_status: HarnessStatus,
-        last_operation_error: str | None = None,
-    ) -> None:
-        """Release the harness claim. No-ops if we don't own it."""
-        async with self._lock:
-            if self._storage is None:
-                return
-            harness_storage = self._storage.get_storage(Harness)
-            harness = await harness_storage.get(harness_id)
-            if harness is None or harness.claimed_by != worker_id:
-                return
-            updated = harness.model_copy(update={
-                "status": next_status,
-                "pending_operation": None,
-                "claimed_by": None,
-                "claimed_at": None,
-                "last_heartbeat_at": None,
-                "last_operation_error": last_operation_error,
-            })
-            await harness_storage.update(updated)
 
     # ---- Hints + cancel -------------------------------------------------
 

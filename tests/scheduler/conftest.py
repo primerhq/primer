@@ -62,9 +62,9 @@ async def pg_storage_or_none():
     is set, otherwise ``None``.
 
     Mirrors the table-cleanup pattern from ``test_postgres.py``: drops
-    ``session_leases`` and ``workers`` (and ``sessions``, since the
-    correctness suite seeds synthetic rows there too) on entry and
-    exit so each test starts and ends clean.
+    ``workers`` (and ``sessions``, since the correctness suite seeds
+    synthetic rows there too) on entry and exit so each test starts
+    and ends clean.
     """
     dsn = os.environ.get(_DSN_ENV)
     if not dsn:
@@ -75,14 +75,12 @@ async def pg_storage_or_none():
     sp = PostgresStorageProvider(cfg)
     await sp.initialize()
     async with sp.pool.acquire() as conn:
-        await conn.execute("DROP TABLE IF EXISTS session_leases")
         await conn.execute("DROP TABLE IF EXISTS workers")
         await conn.execute("DROP TABLE IF EXISTS sessions")
     try:
         yield sp
     finally:
         async with sp.pool.acquire() as conn:
-            await conn.execute("DROP TABLE IF EXISTS session_leases")
             await conn.execute("DROP TABLE IF EXISTS workers")
             await conn.execute("DROP TABLE IF EXISTS sessions")
         await sp.aclose()

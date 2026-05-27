@@ -930,8 +930,7 @@ def create_test_app(
     app.state.internal_collections = None
     app.state.search_toolset = None
     # Attach an in-memory scheduler so the /workers router has something
-    # to depend on. Pass storage_provider so claim_chats can read Chat
-    # rows when start_chat_worker=True.
+    # to depend on.
     from matrix.scheduler.in_memory import InMemoryScheduler
     _test_scheduler = InMemoryScheduler(storage_provider=storage_provider)
     app.state.scheduler = _test_scheduler
@@ -990,6 +989,11 @@ def create_test_app(
             poll_interval_seconds=0.1,
             drain_timeout_seconds=5,
         )
+        from matrix.claim.factory import ClaimEngineFactory as _CEF
+        _claim_engine = _CEF.create(
+            storage_provider=storage_provider,
+            event_bus=_test_event_bus,
+        )
         _pool = _WorkerPool(
             config=_pool_config,
             scheduler=_test_scheduler,
@@ -998,8 +1002,10 @@ def create_test_app(
             provider_registry=provider_registry,
             event_bus=_test_event_bus,
             chat_tick_router=_chat_tick_router,
+            engine=_claim_engine,
         )
         app.state.worker_pool = _pool
+        app.state.claim_engine = _claim_engine
 
         async def _start_worker_pool() -> None:
             await _pool.start()

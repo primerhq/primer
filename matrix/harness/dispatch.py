@@ -34,7 +34,6 @@ from matrix.harness.service import (
 )
 from matrix.harness.template import HarnessTemplateError, RenderedFile, render_bundle
 from matrix.int.event_bus import EventBus
-from matrix.int.scheduler import Scheduler
 from matrix.int.storage_provider import StorageProvider
 from matrix.model.harness import Harness, HarnessOperation, HarnessRendering, HarnessStatus
 from matrix.model.storage import OffsetPage
@@ -74,7 +73,6 @@ class HarnessDispatchDeps:
     """Bundle of runtime dependencies the worker injects per task."""
 
     storage_provider: StorageProvider
-    scheduler: Scheduler
     event_bus: EventBus
     provider_registry: Any | None = None  # may be None in pure-storage tests
 
@@ -110,8 +108,8 @@ async def run_one_harness_operation(
         logger.warning(
             "harness %s has no pending_operation — releasing", harness_id
         )
-        await deps.scheduler.release_harness(
-            harness_id, worker_id,
+        await _release_harness(
+            harness_storage, harness_id, worker_id,
             next_status=harness.status,
         )
         return
@@ -165,7 +163,8 @@ async def run_one_harness_operation(
             )
 
         if not lease_lost.is_set():
-            await deps.scheduler.release_harness(
+            await _release_harness(
+                harness_storage,
                 harness_id,
                 worker_id,
                 next_status=next_status,
@@ -235,6 +234,52 @@ async def sweep_harnesses(
 
 
 # ---------------------------------------------------------------------------
+# Claim release / heartbeat helpers (direct storage operations)
+# ---------------------------------------------------------------------------
+
+
+async def _release_harness(
+    harness_storage,
+    harness_id: str,
+    worker_id: str,
+    *,
+    next_status: HarnessStatus,
+    last_operation_error: str | None = None,
+) -> None:
+    """Release the harness claim by updating storage directly.
+
+    Sets ``status=next_status``, clears ``pending_operation``,
+    ``claimed_by``, ``claimed_at``, ``last_heartbeat_at`` where
+    ``claimed_by=worker_id``. Silently no-ops if we don't own the claim.
+    """
+    harness = await harness_storage.get(harness_id)
+    if harness is None or harness.claimed_by != worker_id:
+        return
+    updated = harness.model_copy(update={
+        "status": next_status,
+        "pending_operation": None,
+        "claimed_by": None,
+        "claimed_at": None,
+        "last_heartbeat_at": None,
+        "last_operation_error": last_operation_error,
+        "last_operation_at": datetime.now(timezone.utc),
+    })
+    await harness_storage.update(updated)
+
+
+async def _heartbeat_harness(harness_storage, harness_id: str, worker_id: str) -> bool:
+    """Bump ``last_heartbeat_at``. Returns True if we still hold the claim."""
+    harness = await harness_storage.get(harness_id)
+    if harness is None or harness.claimed_by != worker_id:
+        return False
+    updated = harness.model_copy(update={
+        "last_heartbeat_at": datetime.now(timezone.utc),
+    })
+    await harness_storage.update(updated)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Heartbeat loop
 # ---------------------------------------------------------------------------
 
@@ -245,10 +290,11 @@ async def _heartbeat_loop(
     worker_id: str,
     lease_lost: asyncio.Event,
 ) -> None:
+    harness_storage = deps.storage_provider.get_storage(Harness)
     try:
         while True:
             await asyncio.sleep(HARNESS_HEARTBEAT_INTERVAL_SECONDS)
-            ok = await deps.scheduler.heartbeat_harness(harness_id, worker_id)
+            ok = await _heartbeat_harness(harness_storage, harness_id, worker_id)
             if not ok:
                 lease_lost.set()
                 return

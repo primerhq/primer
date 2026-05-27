@@ -40,11 +40,6 @@ class SchedulerFactory:
         if config.provider == SchedulerProviderType.IN_MEMORY:
             from matrix.scheduler.in_memory import InMemoryScheduler
 
-            # InMemoryScheduler's claim_chats / claim_harnesses read
-            # row state from storage — without a storage_provider both
-            # short-circuit to [] and chats/harnesses never get claimed.
-            # Sessions track lease state in-process so the storage
-            # provider is "extra" for them but harmless.
             return InMemoryScheduler(storage_provider=storage_provider)
         if config.provider == SchedulerProviderType.POSTGRES:
             if storage_provider is None:

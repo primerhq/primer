@@ -29,7 +29,6 @@ from matrix.model.storage import (
     FieldRef, Op, OffsetPage, OrderBy, Predicate, Value,
 )
 from matrix.model.yield_ import YieldToWorker
-from matrix.int.scheduler import Scheduler
 
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,6 @@ class ChatDispatchDeps:
     """Bundle of runtime dependencies the worker injects per task."""
     storage_provider: StorageProvider
     provider_registry: Any  # ProviderRegistry — avoid import cycle
-    scheduler: Scheduler
     event_bus: EventBus
     chat_tick_router: ChatTickRouter
 
@@ -105,9 +103,7 @@ async def run_one_chat_turn(
                 cancel_event.set()
             next_um = await _find_next_user_message(deps, chat_id)
             if next_um is None:
-                await deps.scheduler.release_chat(
-                    chat_id, worker_id, next_turn_status="idle",
-                )
+                await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="idle")
                 final = await chat_storage.get(chat_id)
                 if final is not None and final.cancel_requested_at is not None:
                     final.cancel_requested_at = None
@@ -134,17 +130,13 @@ async def run_one_chat_turn(
                         refreshed.cancel_requested_at = None
                         await chat_storage.update(refreshed)
             except YieldToWorker:
-                await deps.scheduler.release_chat(
-                    chat_id, worker_id, next_turn_status="claimable",
-                )
+                await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="claimable")
                 return
             except Exception:
                 logger.exception(
                     "chat %s turn raised; releasing claim", chat_id,
                 )
-                await deps.scheduler.release_chat(
-                    chat_id, worker_id, next_turn_status="claimable",
-                )
+                await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="claimable")
                 return
     finally:
         heartbeat_task.cancel()
@@ -234,9 +226,7 @@ async def _persist_build_error(
     ))
     chat.last_seq = next_seq
     await chats.update(chat)
-    await deps.scheduler.release_chat(
-        chat.id, worker_id, next_turn_status="idle",
-    )
+    await _release_chat(chats, chat.id, worker_id, next_turn_status="idle")
     await deps.event_bus.publish(
         f"chat:{chat.id}:tick", {"seq": next_seq},
     )
@@ -248,15 +238,53 @@ async def _heartbeat_loop(
     worker_id: str,
     lease_lost: asyncio.Event,
 ) -> None:
+    chat_storage = deps.storage_provider.get_storage(Chat)
     try:
         while True:
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
-            ok = await deps.scheduler.heartbeat_chat(chat_id, worker_id)
+            ok = await _heartbeat_chat(chat_storage, chat_id, worker_id)
             if not ok:
                 lease_lost.set()
                 return
     except asyncio.CancelledError:
         return
+
+
+async def _release_chat(
+    chat_storage,
+    chat_id: str,
+    worker_id: str,
+    *,
+    next_turn_status: str,
+) -> None:
+    """Release the chat claim by updating storage directly.
+
+    Sets ``turn_status=next_turn_status`` and clears ``claimed_by``,
+    ``claimed_at``, ``last_heartbeat_at`` where ``claimed_by=worker_id``.
+    Silently no-ops if the caller no longer holds the claim.
+    """
+    chat = await chat_storage.get(chat_id)
+    if chat is None or chat.claimed_by != worker_id:
+        return
+    updated = chat.model_copy(update={
+        "turn_status": next_turn_status,
+        "claimed_by": None,
+        "claimed_at": None,
+        "last_heartbeat_at": None,
+    })
+    await chat_storage.update(updated)
+
+
+async def _heartbeat_chat(chat_storage, chat_id: str, worker_id: str) -> bool:
+    """Bump ``last_heartbeat_at``. Returns True if we still hold the claim."""
+    chat = await chat_storage.get(chat_id)
+    if chat is None or chat.claimed_by != worker_id:
+        return False
+    updated = chat.model_copy(update={
+        "last_heartbeat_at": datetime.now(timezone.utc),
+    })
+    await chat_storage.update(updated)
+    return True
 
 
 async def _cancel_watcher(

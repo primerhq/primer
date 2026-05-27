@@ -55,7 +55,9 @@ async def test_worker_pool_claims_and_processes_chat(
     ))
     chat.last_seq = 1
     await chats.update(chat)
-    await app.state.event_bus.publish("chat-claimable", {"chat_id": "c1"})
+    # Upsert the chat into the engine claim queue (new engine-based claim path).
+    from matrix.int.claim import ClaimKind
+    await app.state.worker_pool._engine.upsert(ClaimKind.CHAT, "c1", priority=100)
 
     # Wait up to ~2.5s for the chat to drain (turn_status→idle).
     for _ in range(50):

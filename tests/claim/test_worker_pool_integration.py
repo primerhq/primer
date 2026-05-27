@@ -53,48 +53,22 @@ class _NullScheduler(Scheduler):
     async def enqueue(self, session_id, *, ready_at=None):
         pass
 
-    async def claim(self, worker_id, *, max_count):
-        return []
-
-    async def heartbeat_leases(self, worker_id, session_ids):
-        return []
-
     async def complete_turn(self, worker_id, session_id, **kwargs):
         from matrix.int.scheduler import CompleteTurnResult
-        return CompleteTurnResult.OK
+        return CompleteTurnResult.SUCCESS
 
     async def park_turn(
         self, worker_id, session_id, *, expected_turn_no,
         parked_event_key, parked_until, parked_at, parked_state,
     ):
         from matrix.int.scheduler import CompleteTurnResult
-        return CompleteTurnResult.OK
+        return CompleteTurnResult.SUCCESS
 
     async def clear_park(self, session_id):
         pass
 
     async def mark_resumable(self, event_key, *, resume_event_payload):
         return 0
-
-    async def claim_chats(self, worker_id, *, max_count, **kwargs):
-        return []
-
-    async def heartbeat_chat(self, chat_id, worker_id):
-        return False
-
-    async def release_chat(self, chat_id, worker_id, *, next_turn_status):
-        pass
-
-    async def claim_harnesses(self, worker_id, *, max_count, **kwargs):
-        return []
-
-    async def heartbeat_harness(self, harness_id, worker_id):
-        return False
-
-    async def release_harness(
-        self, harness_id, worker_id, *, next_status, last_operation_error=None,
-    ):
-        pass
 
     async def list_workers(self):
         return []

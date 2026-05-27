@@ -1,13 +1,14 @@
 """Distributed session scheduler — ABC + supporting value types.
 
 The :class:`Scheduler` coordinates which worker process runs which
-session. The contract is intentionally narrow: enqueue, claim, lease
-heartbeat, atomic turn completion, plus a best-effort wake-up channel.
+session. The contract is intentionally narrow: enqueue, session-lease
+lifecycle (complete_turn / park_turn / clear_park / mark_resumable),
+and signalling. Claim / heartbeat / release for sessions, chats, and
+harnesses have been replaced by the polymorphic :class:`ClaimEngine`.
 
 Two impls ship: :class:`matrix.scheduler.PostgresScheduler` for
-production (lease columns + ``SELECT … FOR UPDATE SKIP LOCKED`` +
-``LISTEN/NOTIFY``); :class:`matrix.scheduler.InMemoryScheduler` for
-tests and single-process dev.
+production; :class:`matrix.scheduler.InMemoryScheduler` for tests and
+single-process dev.
 
 See ``docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md``
 for the full design.
@@ -16,21 +17,18 @@ for the full design.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from matrix.model.harness import HarnessOperation, HarnessStatus
 from matrix.model.session import SessionStatus
-
-_DEFAULT_HEARTBEAT_STALE_AFTER = timedelta(seconds=90)
 
 
 class Lease(BaseModel):
-    """Snapshot of a successful claim.
+    """Snapshot of a successful session claim.
 
     The worker uses ``turn_no`` as the fence token: the eventual
     ``complete_turn`` call passes ``expected_turn_no=lease.turn_no``,
@@ -42,35 +40,6 @@ class Lease(BaseModel):
     expires_at: datetime
     attempt_count: int = Field(..., ge=0)
     turn_no: int = Field(..., ge=0)
-
-
-class ChatLease(BaseModel):
-    """Snapshot of a successful chat-turn claim.
-
-    Lighter than :class:`Lease` — no fence token needed because chat
-    turns are append-only. The worker holds the claim as long as its
-    heartbeats remain fresh; :meth:`Scheduler.release_chat` drops it
-    when the turn completes.
-    """
-
-    chat_id: str = Field(..., min_length=1)
-    worker_id: str = Field(..., min_length=1)
-    claimed_at: datetime
-
-
-class HarnessLease(BaseModel):
-    """Snapshot of a successful harness-operation claim.
-
-    Mirrors :class:`ChatLease` for harness operations. The worker holds
-    the claim as long as its heartbeats remain fresh;
-    :meth:`Scheduler.release_harness` drops it when the operation
-    completes.
-    """
-
-    harness_id: str = Field(..., min_length=1)
-    worker_id: str = Field(..., min_length=1)
-    operation: HarnessOperation
-    claimed_at: datetime
 
 
 class WorkerInfo(BaseModel):
@@ -149,24 +118,6 @@ class Scheduler(ABC):
         ready_at: datetime | None = None,
     ) -> None:
         """Mark a session runnable and best-effort wake any idle worker."""
-
-    # ---- Claim + lease ---------------------------------------------------
-
-    @abstractmethod
-    async def claim(
-        self,
-        worker_id: str,
-        *,
-        max_count: int = 1,
-    ) -> list[Lease]: ...
-
-    @abstractmethod
-    async def heartbeat_leases(
-        self,
-        worker_id: str,
-        session_ids: Sequence[str],
-    ) -> list[str]:
-        """Extend lease TTLs. Returns the subset still owned by us."""
 
     # ---- Atomic turn completion ------------------------------------------
 
@@ -256,105 +207,6 @@ class Scheduler(ABC):
         delete can't surface as a 5xx through this path.
         """
 
-    # ---- Chat-turn claiming ----------------------------------------------
-
-    @abstractmethod
-    async def claim_chats(
-        self,
-        worker_id: str,
-        *,
-        max_count: int,
-        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
-    ) -> list["ChatLease"]:
-        """Atomically claim up to ``max_count`` chat turns ready to run.
-
-        A chat row is eligible when:
-
-        * ``status='active'``
-        * ``parked_status IS DISTINCT FROM 'parked'``
-        * ``claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after``
-        * ``turn_status='claimable' OR parked_status='resumable'``
-
-        On success sets ``turn_status='running'``, ``claimed_by=worker_id``,
-        ``claimed_at=now()``, ``last_heartbeat_at=now()``.
-
-        Postgres: ``FOR UPDATE SKIP LOCKED`` inside a transaction.
-        In-memory: iterate chats, apply predicate, mutate matching rows.
-        """
-
-    @abstractmethod
-    async def heartbeat_chat(self, chat_id: str, worker_id: str) -> bool:
-        """Bump ``last_heartbeat_at`` on the chat claim.
-
-        Returns ``True`` if the heartbeat was accepted (we still own
-        the claim), ``False`` if the claim was stolen by another worker.
-        """
-
-    @abstractmethod
-    async def release_chat(
-        self,
-        chat_id: str,
-        worker_id: str,
-        *,
-        next_turn_status: Literal["idle", "claimable"],
-    ) -> None:
-        """Release the chat claim and set the next turn status.
-
-        Sets ``turn_status=next_turn_status``, ``claimed_by=NULL``,
-        ``claimed_at=NULL``, ``last_heartbeat_at=NULL`` where
-        ``claimed_by=worker_id``. Silently no-ops if the caller no
-        longer holds the claim.
-        """
-
-    # ---- Harness-operation claiming --------------------------------------
-
-    @abstractmethod
-    async def claim_harnesses(
-        self,
-        worker_id: str,
-        *,
-        max_count: int,
-        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
-    ) -> list["HarnessLease"]:
-        """Atomically claim up to ``max_count`` harness operations ready to run.
-
-        A harness row is eligible when:
-
-        * ``pending_operation IS NOT NULL``
-        * ``claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after``
-
-        On success sets ``claimed_by=worker_id``, ``claimed_at=now()``,
-        ``last_heartbeat_at=now()``.
-
-        Postgres: ``FOR UPDATE SKIP LOCKED`` inside a transaction.
-        In-memory: iterate harnesses, apply predicate, mutate matching rows.
-        """
-
-    @abstractmethod
-    async def heartbeat_harness(self, harness_id: str, worker_id: str) -> bool:
-        """Bump ``last_heartbeat_at`` on the harness claim.
-
-        Returns ``True`` if the heartbeat was accepted (we still own
-        the claim), ``False`` if the claim was stolen by another worker.
-        """
-
-    @abstractmethod
-    async def release_harness(
-        self,
-        harness_id: str,
-        worker_id: str,
-        *,
-        next_status: HarnessStatus,
-        last_operation_error: str | None = None,
-    ) -> None:
-        """Release the harness claim and set the next status.
-
-        Sets ``status=next_status``, ``pending_operation=NULL``,
-        ``claimed_by=NULL``, ``claimed_at=NULL``, ``last_heartbeat_at=NULL``,
-        optionally ``last_operation_error`` where ``claimed_by=worker_id``.
-        Silently no-ops if the caller no longer holds the claim.
-        """
-
     # ---- Hints + cancel --------------------------------------------------
 
     @abstractmethod
@@ -381,10 +233,8 @@ class Scheduler(ABC):
 
 
 __all__ = [
-    "ChatLease",
     "CompleteTurnResult",
     "FailureRecord",
-    "HarnessLease",
     "Lease",
     "Scheduler",
     "WorkerInfo",

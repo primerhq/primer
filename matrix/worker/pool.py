@@ -1,10 +1,8 @@
 """Background worker pool — claims sessions, chats and harnesses and runs one turn each.
 
-Claim loop architecture (post Task 13):
-* When a ``ClaimEngine`` is injected, a single ``_engine_claim_loop`` and
-  ``_engine_bus_loop`` replace the three separate scheduler-driven loops.
-* When no engine is injected (legacy / tests that use the scheduler directly),
-  the three original scheduler-driven loops are used instead.
+Claim loop architecture:
+* A single ``_engine_claim_loop`` and ``_engine_bus_loop`` handle all claim
+  kinds (session, chat, harness) via the injected ``ClaimEngine``.
 
 One unified ``_in_flight: set[tuple[ClaimKind, str]]`` tracks all in-flight
 items regardless of kind.  Capacity: ``free = max_concurrency - len(_in_flight)``.
@@ -22,7 +20,7 @@ import socket
 import time
 import uuid
 from collections.abc import Callable, Coroutine
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from matrix.int.claim import ClaimKind
@@ -90,7 +88,7 @@ class WorkerPool:
         channel_dispatcher=None,
         event_bus: "EventBus | None" = None,
         chat_tick_router: "ChatTickRouter | None" = None,
-        engine: "ClaimEngine | None" = None,
+        engine: "ClaimEngine",
     ) -> None:
         self.config = config
         self._scheduler = scheduler
@@ -112,9 +110,7 @@ class WorkerPool:
         self._active_scopes: dict[str, _CancelScope] = {}
 
         # Unified in-flight tracking — one set for all claim kinds.
-        # When the engine path is active: (ClaimKind, entity_id) tuples.
-        # When the legacy scheduler path is active: (ClaimKind.SESSION, sid)
-        # tuples (populated by _run_one_turn).
+        # (ClaimKind, entity_id) tuples for all kinds.
         self._in_flight: set[tuple[ClaimKind, str]] = set()
 
         # Strong references to in-flight per-turn tasks so the GC does not
@@ -123,13 +119,7 @@ class WorkerPool:
         self._wake = asyncio.Event()
         self._stopping = asyncio.Event()
 
-        # ---- legacy scheduler-driven loop tasks (used when engine=None) ----
-        self._chat_claim_task: asyncio.Task | None = None
-        self._chat_bus_task: asyncio.Task | None = None
-        self._harness_claim_task: asyncio.Task | None = None
-        self._harness_bus_task: asyncio.Task | None = None
-
-        # ---- engine-driven loop tasks (used when engine is set) ----
+        # ---- engine-driven loop tasks ----
         self._engine_claim_task: asyncio.Task | None = None
         self._engine_bus_task: asyncio.Task | None = None
 
@@ -171,74 +161,28 @@ class WorkerPool:
             ClaimKind.HARNESS: self._run_engine_harness,
         }
 
-        if self._engine is not None:
-            # Engine path: one claim loop + one bus loop replace all three
-            # scheduler-driven loops.  Heartbeat + cancel loops still run
-            # (heartbeat keeps the worker row alive; cancel handles mid-turn
-            # session cancellations).  _notify_loop is NOT started here —
-            # the engine bus loop provides the equivalent wakeup signal.
-            self._tasks = [
-                asyncio.create_task(
-                    self._heartbeat_loop(),
-                    name=f"scheduler-heartbeat-{self._worker_id}",
-                ),
-                asyncio.create_task(
-                    self._cancel_loop(),
-                    name=f"scheduler-cancel-{self._worker_id}",
-                ),
-            ]
-            self._engine_claim_task = asyncio.create_task(
-                self._engine_claim_loop(),
-                name=f"engine-claim-{self._worker_id}",
-            )
-            self._engine_bus_task = asyncio.create_task(
-                self._engine_bus_loop(),
-                name=f"engine-bus-{self._worker_id}",
-            )
-        else:
-            # Legacy scheduler path: heartbeat + three separate claim loops.
-            self._tasks = [
-                asyncio.create_task(
-                    self._heartbeat_loop(),
-                    name=f"scheduler-heartbeat-{self._worker_id}",
-                ),
-                asyncio.create_task(
-                    self._claim_loop(),
-                    name=f"scheduler-claim-{self._worker_id}",
-                ),
-                asyncio.create_task(
-                    self._notify_loop(),
-                    name=f"scheduler-notify-{self._worker_id}",
-                ),
-                asyncio.create_task(
-                    self._cancel_loop(),
-                    name=f"scheduler-cancel-{self._worker_id}",
-                ),
-            ]
-            # Spawn the chat claim loop (sibling of _claim_loop).
-            self._chat_claim_task = asyncio.create_task(
-                self._claim_chat_loop(),
-                name=f"chat-claim-loop-{self._worker_id}",
-            )
-            # Subscribe to the event bus for chat-claimable events to wake
-            # the chat claim loop promptly (optional — only when bus is set).
-            if self._event_bus is not None:
-                self._chat_bus_task = asyncio.create_task(
-                    self._chat_bus_loop(),
-                    name=f"chat-bus-loop-{self._worker_id}",
-                )
-            # Spawn the harness claim loop (always — even when event_bus is None).
-            self._harness_claim_task = asyncio.create_task(
-                self._claim_harness_loop(),
-                name=f"harness-claim-loop-{self._worker_id}",
-            )
-            # Subscribe to the event bus for harness-claimable events to wake
-            # the harness claim loop promptly (optional — only when bus is set).
-            if self._event_bus is not None:
-                self._harness_bus_task = asyncio.create_task(
-                    self._harness_bus_loop(),
-                    name=f"harness-bus-loop-{self._worker_id}",
-                )
+        # Engine path: one claim loop + one bus loop.
+        # Heartbeat + cancel loops keep the worker row alive and handle
+        # mid-turn session cancellations.  _notify_loop is NOT needed —
+        # the engine bus loop provides the equivalent wakeup signal.
+        self._tasks = [
+            asyncio.create_task(
+                self._heartbeat_loop(),
+                name=f"scheduler-heartbeat-{self._worker_id}",
+            ),
+            asyncio.create_task(
+                self._cancel_loop(),
+                name=f"scheduler-cancel-{self._worker_id}",
+            ),
+        ]
+        self._engine_claim_task = asyncio.create_task(
+            self._engine_claim_loop(),
+            name=f"engine-claim-{self._worker_id}",
+        )
+        self._engine_bus_task = asyncio.create_task(
+            self._engine_bus_loop(),
+            name=f"engine-bus-{self._worker_id}",
+        )
 
     async def drain_and_stop(self, timeout: float | None = None) -> None:
         self._stopping.set()
@@ -277,40 +221,6 @@ class WorkerPool:
                 pass
             self._engine_claim_task = None
 
-        # --- Stop legacy scheduler-driven tasks (if running) ----
-        # Cancel the harness bus watcher first so it stops producing wake signals.
-        if self._harness_bus_task is not None:
-            self._harness_bus_task.cancel()
-            try:
-                await self._harness_bus_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._harness_bus_task = None
-        # Cancel the harness claim loop.
-        if self._harness_claim_task is not None:
-            self._harness_claim_task.cancel()
-            try:
-                await self._harness_claim_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._harness_claim_task = None
-        # Cancel the chat bus watcher first so it stops producing wake signals.
-        if self._chat_bus_task is not None:
-            self._chat_bus_task.cancel()
-            try:
-                await self._chat_bus_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._chat_bus_task = None
-        # Cancel the chat claim loop.
-        if self._chat_claim_task is not None:
-            self._chat_claim_task.cancel()
-            try:
-                await self._chat_claim_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._chat_claim_task = None
-
         # Wait for all in-flight turn tasks to complete.
         all_tasks_deadline = asyncio.get_event_loop().time() + min(drain_timeout, 5.0)
         while self._turn_tasks and asyncio.get_event_loop().time() < all_tasks_deadline:
@@ -343,18 +253,19 @@ class WorkerPool:
         """Test helper: claim and execute exactly one turn for ``session_id``.
 
         Bypasses the claim loop's polling so tests get a deterministic step
-        function. Assumes ``session_id`` has been enqueued and is ready to
-        claim. Raises if no lease is returned (the session wasn't actually
-        runnable).
+        function. Uses the engine to claim the session. Assumes ``session_id``
+        has been upserted into the engine and is ready to claim. Raises if no
+        lease is returned (the session wasn't actually runnable).
         """
-        leases = await self._scheduler.claim(self._worker_id, max_count=1)
-        matching = [l for l in leases if l.session_id == session_id]
+        from matrix.int.claim import ClaimKind as _CK, Lease as _ClaimLease
+        engine_leases = await self._engine.claim_due(self._worker_id, max_count=1)
+        matching = [l for l in engine_leases if l.entity_id == session_id]
         if not matching:
             raise RuntimeError(
                 f"no runnable lease for session {session_id!r}; "
-                "did you call scheduler.enqueue first?"
+                "did you call engine.upsert first?"
             )
-        await self._run_one_turn(matching[0])
+        await self._run_engine_session(matching[0])
 
     # ---- Metrics ---------------------------------------------------------
 
@@ -389,33 +300,17 @@ class WorkerPool:
                     return
                 try:
                     await self._scheduler.heartbeat_worker(self._worker_id)
-                    if self._engine is not None:
-                        # Engine path: heartbeat all in-flight leases via engine.
-                        if self._in_flight:
-                            confirmed = await self._engine.heartbeat(
-                                self._worker_id, list(self._in_flight),
-                            )
-                            confirmed_set = set(confirmed)
-                            lost = self._in_flight - confirmed_set
-                            for kind_id in lost:
-                                kind, entity_id = kind_id
-                                if kind == ClaimKind.SESSION:
-                                    scope = self._active_scopes.get(entity_id)
-                                    if scope is not None:
-                                        scope.cancel("preempted")
-                    else:
-                        # Legacy path: heartbeat session leases via scheduler.
-                        session_ids = {
-                            eid for k, eid in self._in_flight
-                            if k == ClaimKind.SESSION
-                        }
-                        if session_ids:
-                            owned = await self._scheduler.heartbeat_leases(
-                                self._worker_id, list(session_ids),
-                            )
-                            lost = session_ids - set(owned)
-                            for sid in lost:
-                                scope = self._active_scopes.get(sid)
+                    # Engine path: heartbeat all in-flight leases via engine.
+                    if self._in_flight:
+                        confirmed = await self._engine.heartbeat(
+                            self._worker_id, list(self._in_flight),
+                        )
+                        confirmed_set = set(confirmed)
+                        lost = self._in_flight - confirmed_set
+                        for kind_id in lost:
+                            kind, entity_id = kind_id
+                            if kind == ClaimKind.SESSION:
+                                scope = self._active_scopes.get(entity_id)
                                 if scope is not None:
                                     scope.cancel("preempted")
                 except Exception:
@@ -570,12 +465,13 @@ class WorkerPool:
     async def _run_engine_chat(self, engine_lease: ClaimLease) -> None:
         """Handle a CHAT claim from the engine.
 
-        Bridges to run_one_chat_turn via ChatDispatchDeps.  The chat
-        dispatch function handles its own release via scheduler.release_chat
-        during the transition period; the engine's claim is kept alive via
-        pool heartbeats.
+        Bridges to run_one_chat_turn via ChatDispatchDeps.
+        Atomically stamps claimed_by + turn_status='running' on the chat row
+        before dispatching, then releases the engine lease on completion.
         """
         from matrix.chat.dispatch import ChatDispatchDeps, run_one_chat_turn
+        from matrix.int.claim import ReleaseOutcome
+        from matrix.model.chats import Chat
 
         assert self._event_bus is not None, (
             "WorkerPool._run_engine_chat requires an event_bus"
@@ -583,149 +479,99 @@ class WorkerPool:
         assert self._chat_tick_router is not None, (
             "WorkerPool._run_engine_chat requires a chat_tick_router"
         )
+
+        # Stamp claim on the chat row so run_one_chat_turn's guard passes.
+        chat_storage = self._storage.get_storage(Chat)
+        chat = await chat_storage.get(engine_lease.entity_id)
+        if chat is None or chat.turn_status not in ("claimable", "resumable"):
+            await self._engine.release(
+                engine_lease,
+                outcome=ReleaseOutcome(success=False, drop_lease=True),
+            )
+            return
+        now = datetime.now(timezone.utc)
+        await chat_storage.update(chat.model_copy(update={
+            "turn_status": "running",
+            "claimed_by": self._worker_id,
+            "claimed_at": now,
+            "last_heartbeat_at": now,
+        }))
+
         deps = ChatDispatchDeps(
             storage_provider=self._storage,
             provider_registry=self._provider_registry,
-            scheduler=self._scheduler,
             event_bus=self._event_bus,
             chat_tick_router=self._chat_tick_router,
         )
+        success = False
         try:
             await run_one_chat_turn(
                 deps,
                 chat_id=engine_lease.entity_id,
                 worker_id=self._worker_id,
             )
+            success = True
         except Exception:
             logger.exception(
                 "engine chat turn for %s raised",
                 engine_lease.entity_id,
+            )
+        finally:
+            await self._engine.release(
+                engine_lease,
+                outcome=ReleaseOutcome(success=success, drop_lease=True),
             )
 
     async def _run_engine_harness(self, engine_lease: ClaimLease) -> None:
         """Handle a HARNESS claim from the engine.
 
         Bridges to run_one_harness_operation via HarnessDispatchDeps.
+        Stamps claimed_by on the harness row so heartbeat checks pass during
+        long operations.
         """
         from matrix.harness.dispatch import HarnessDispatchDeps, run_one_harness_operation
+        from matrix.int.claim import ReleaseOutcome
+        from matrix.model.harness import Harness
+
+        # Stamp claim on the harness row so heartbeat checks work correctly.
+        harness_storage = self._storage.get_storage(Harness)
+        harness = await harness_storage.get(engine_lease.entity_id)
+        if harness is None or harness.pending_operation is None:
+            await self._engine.release(
+                engine_lease,
+                outcome=ReleaseOutcome(success=False, drop_lease=True),
+            )
+            return
+        now = datetime.now(timezone.utc)
+        await harness_storage.update(harness.model_copy(update={
+            "claimed_by": self._worker_id,
+            "claimed_at": now,
+            "last_heartbeat_at": now,
+        }))
 
         deps = HarnessDispatchDeps(
             storage_provider=self._storage,
-            scheduler=self._scheduler,
             event_bus=self._event_bus,
             provider_registry=self._provider_registry,
         )
+        success = False
         try:
             await run_one_harness_operation(
                 deps,
                 harness_id=engine_lease.entity_id,
                 worker_id=self._worker_id,
             )
+            success = True
         except Exception:
             logger.exception(
                 "engine harness operation for %s raised",
                 engine_lease.entity_id,
             )
-
-    # ---- legacy scheduler-driven loops (used when engine=None) -----------
-
-    async def _claim_loop(self) -> None:
-        """Claim runnable sessions and dispatch them to _run_one_turn tasks.
-
-        Each iteration:
-        - if free capacity: claim up to (capacity - in_flight) sessions
-        - for each lease, spawn a per-turn task (don't block the claim loop)
-        - if claim returns empty: wait for the wake event with a poll
-          timeout; the wake event fires on notify or on per-turn completion
-        """
-        try:
-            while not self._stopping.is_set():
-                free = self.config.concurrency - len(self._in_flight)
-                if free <= 0:
-                    self._wake.clear()
-                    try:
-                        await asyncio.wait_for(
-                            self._wake.wait(),
-                            timeout=self.config.poll_interval_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        pass
-                    continue
-                try:
-                    leases = await self._scheduler.claim(
-                        self._worker_id,
-                        max_count=min(self.config.claim_batch_size, free),
-                    )
-                except Exception:
-                    logger.exception("claim_loop iteration failed")
-                    await asyncio.sleep(self.config.poll_interval_seconds)
-                    continue
-                if not leases:
-                    self._claims_empty_total += 1
-                    self._wake.clear()
-                    try:
-                        await asyncio.wait_for(
-                            self._wake.wait(),
-                            timeout=self.config.poll_interval_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        pass
-                    continue
-                self._claims_total += len(leases)
-                # Reserve in_flight slots for the about-to-dispatch leases
-                # BEFORE the next claim_loop iteration runs. Without this,
-                # asyncio.create_task() returns immediately but the task
-                # body's `_in_flight.add(sid)` happens later, so a fast
-                # next iteration sees stale free-capacity and over-claims.
-                # The duplicate `_in_flight.add` inside _run_one_turn is
-                # idempotent on a set, so this is safe.
-                for lease in leases:
-                    self._in_flight.add((ClaimKind.SESSION, lease.session_id))
-                for lease in leases:
-                    # Fire-and-forget: _run_one_turn manages its own
-                    # in_flight bookkeeping via the finally block. The
-                    # task is retained in self._turn_tasks so the GC
-                    # cannot silently drop it before it gets scheduled.
-                    task = asyncio.create_task(
-                        self._run_one_turn(lease),
-                        name=f"turn-{lease.session_id}",
-                    )
-                    self._turn_tasks.add(task)
-                    task.add_done_callback(self._turn_tasks.discard)
-        except asyncio.CancelledError:
-            return
-
-    async def _notify_loop(self) -> None:
-        """Drain ready notifications from the scheduler. Each one wakes the
-        claim loop so it can attempt a fresh claim sooner than the poll.
-
-        Wraps the inner ``async for`` in a restart loop: if the scheduler's
-        watch generator raises an unexpected exception, log it and back off
-        rather than killing the loop for the lifetime of the process.
-        """
-        backoff = 1.0
-        while not self._stopping.is_set():
-            try:
-                async for _sid in self._scheduler.watch_ready(self._worker_id):
-                    self._wake.set()
-                    if self._stopping.is_set():
-                        return
-            except asyncio.CancelledError:
-                return
-            except Exception:
-                logger.exception(
-                    "notify_loop watch_ready raised; restarting in %.1fs",
-                    backoff,
-                )
-                try:
-                    await asyncio.sleep(backoff)
-                except asyncio.CancelledError:
-                    return
-                backoff = min(backoff * 2, 30.0)
-            else:
-                # Generator exited cleanly (scheduler shutdown). Restart
-                # only if we ourselves are not stopping.
-                backoff = 1.0
+        finally:
+            await self._engine.release(
+                engine_lease,
+                outcome=ReleaseOutcome(success=success, drop_lease=True),
+            )
 
     async def _cancel_loop(self) -> None:
         """Drain cancel notifications. When a sid arrives that this worker
@@ -779,227 +625,6 @@ class WorkerPool:
             if False:
                 yield
         return _empty()
-
-    # ---- chat claim loop (legacy, used when engine=None) -----------------
-
-    async def _chat_bus_loop(self) -> None:
-        """Subscribe to the event bus and wake the chat claim loop on
-        ``chat-claimable`` events. Mirrors the role _notify_loop plays
-        for session claims but driven from the event bus rather than
-        the scheduler's watch_ready generator.
-        """
-        assert self._event_bus is not None
-        sub = self._event_bus.subscribe()
-        try:
-            async for event in sub:
-                if event.event_key == "chat-claimable":
-                    self._wake.set()
-                if self._stopping.is_set():
-                    return
-        except asyncio.CancelledError:
-            return
-        finally:
-            await sub.aclose()
-
-    async def _claim_chat_loop(self) -> None:
-        """Sibling of _claim_loop, for chat turns. Wakes on
-        ``chat-claimable`` bus events (forwarded through _chat_bus_loop's
-        self._wake.set()); claims via Scheduler.claim_chats; spawns
-        a per-turn task per lease."""
-        try:
-            while not self._stopping.is_set():
-                free = self.config.concurrency - len(self._in_flight)
-                if free <= 0:
-                    self._wake.clear()
-                    try:
-                        await asyncio.wait_for(
-                            self._wake.wait(),
-                            timeout=self.config.poll_interval_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        pass
-                    continue
-                try:
-                    leases = await self._scheduler.claim_chats(
-                        self._worker_id,
-                        max_count=min(self.config.claim_batch_size, free),
-                    )
-                except Exception:
-                    logger.exception("chat claim_loop iteration failed")
-                    await asyncio.sleep(self.config.poll_interval_seconds)
-                    continue
-                if not leases:
-                    self._wake.clear()
-                    try:
-                        await asyncio.wait_for(
-                            self._wake.wait(),
-                            timeout=self.config.poll_interval_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        pass
-                    continue
-                for lease in leases:
-                    self._in_flight.add((ClaimKind.CHAT, lease.chat_id))
-                    task = asyncio.create_task(
-                        self._run_one_chat_turn_task(lease),
-                        name=f"chat-turn-{lease.chat_id}",
-                    )
-                    self._turn_tasks.add(task)
-                    task.add_done_callback(self._turn_tasks.discard)
-        except asyncio.CancelledError:
-            return
-
-    # ---- harness claim loop (legacy, used when engine=None) --------------
-
-    async def _harness_bus_loop(self) -> None:
-        """Subscribe to the event bus and wake the harness claim loop on
-        ``harness-claimable`` events. Mirrors ``_chat_bus_loop``.
-        """
-        assert self._event_bus is not None
-        sub = self._event_bus.subscribe()
-        try:
-            async for event in sub:
-                if event.event_key == "harness-claimable":
-                    self._wake.set()
-                if self._stopping.is_set():
-                    return
-        except asyncio.CancelledError:
-            return
-        finally:
-            await sub.aclose()
-
-    async def _claim_harness_loop(self) -> None:
-        """Sibling of _claim_chat_loop, for harness operations.
-
-        Wakes on ``harness-claimable`` bus events (forwarded through
-        _harness_bus_loop's self._wake.set()); claims via
-        Scheduler.claim_harnesses; spawns a per-operation task per lease.
-        Harnesses share worker capacity with sessions + chats.
-        """
-        try:
-            while not self._stopping.is_set():
-                free = self.config.concurrency - len(self._in_flight)
-                if free <= 0:
-                    self._wake.clear()
-                    try:
-                        await asyncio.wait_for(
-                            self._wake.wait(),
-                            timeout=self.config.poll_interval_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        pass
-                    continue
-                try:
-                    leases = await self._scheduler.claim_harnesses(
-                        self._worker_id,
-                        max_count=min(self.config.claim_batch_size, free),
-                    )
-                except Exception:
-                    logger.exception("harness claim_loop iteration failed")
-                    await asyncio.sleep(self.config.poll_interval_seconds)
-                    continue
-                if not leases:
-                    self._wake.clear()
-                    try:
-                        await asyncio.wait_for(
-                            self._wake.wait(),
-                            timeout=self.config.poll_interval_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        pass
-                    continue
-                for lease in leases:
-                    self._in_flight.add((ClaimKind.HARNESS, lease.harness_id))
-                    task = asyncio.create_task(
-                        self._run_one_harness_operation_task(lease),
-                        name=f"harness-op-{lease.harness_id}",
-                    )
-                    self._turn_tasks.add(task)
-                    task.add_done_callback(self._turn_tasks.discard)
-        except asyncio.CancelledError:
-            return
-
-    async def _run_one_harness_operation_task(self, lease) -> None:
-        """Run one harness operation for the given ``HarnessLease``.
-
-        Constructs :class:`~matrix.harness.dispatch.HarnessDispatchDeps` on
-        demand and delegates to
-        :func:`~matrix.harness.dispatch.run_one_harness_operation`.
-        """
-        from matrix.harness.dispatch import HarnessDispatchDeps, run_one_harness_operation
-
-        deps = HarnessDispatchDeps(
-            storage_provider=self._storage,
-            scheduler=self._scheduler,
-            event_bus=self._event_bus,
-            provider_registry=self._provider_registry,
-        )
-        try:
-            await run_one_harness_operation(
-                deps,
-                harness_id=lease.harness_id,
-                worker_id=self._worker_id,
-            )
-        except Exception as exc:
-            logger.exception("harness operation failed for %s", lease.harness_id)
-            # Defence in depth: dispatch is supposed to always release
-            # the claim, but if anything escapes (e.g., storage failure
-            # before the dispatch's own try-block runs), release here
-            # so the row isn't stuck claimed until the sweeper's window.
-            try:
-                from matrix.model.harness import HarnessStatus
-                import json as _json
-                await self._scheduler.release_harness(
-                    lease.harness_id,
-                    self._worker_id,
-                    next_status=HarnessStatus.ERROR,
-                    last_operation_error=_json.dumps({
-                        "code": "pool_unhandled",
-                        "message": str(exc),
-                    }),
-                )
-            except Exception:
-                logger.exception(
-                    "pool: also failed to release harness %s after error",
-                    lease.harness_id,
-                )
-        finally:
-            self._in_flight.discard((ClaimKind.HARNESS, lease.harness_id))
-            self._wake.set()
-
-    async def _run_one_chat_turn_task(self, lease) -> None:
-        """Run one chat turn for the given ``ChatLease``.
-
-        Constructs :class:`~matrix.chat.dispatch.ChatDispatchDeps` on
-        demand (so the import is deferred) and delegates to
-        :func:`~matrix.chat.dispatch.run_one_chat_turn`.
-        """
-        from matrix.chat.dispatch import ChatDispatchDeps, run_one_chat_turn
-
-        assert self._event_bus is not None, (
-            "WorkerPool._run_one_chat_turn_task requires an event_bus"
-        )
-        assert self._chat_tick_router is not None, (
-            "WorkerPool._run_one_chat_turn_task requires a chat_tick_router"
-        )
-        deps = ChatDispatchDeps(
-            storage_provider=self._storage,
-            provider_registry=self._provider_registry,
-            scheduler=self._scheduler,
-            event_bus=self._event_bus,
-            chat_tick_router=self._chat_tick_router,
-        )
-        try:
-            await run_one_chat_turn(
-                deps,
-                chat_id=lease.chat_id,
-                worker_id=lease.worker_id,
-            )
-        except Exception:
-            logger.exception("chat turn for %s raised", lease.chat_id)
-        finally:
-            self._in_flight.discard((ClaimKind.CHAT, lease.chat_id))
-            self._wake.set()
 
     # ---- per-turn execution -----------------------------------------------
 

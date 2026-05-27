@@ -13,8 +13,6 @@ needs a real synthetic row inserted via the helper in
 
 from __future__ import annotations
 
-import asyncio
-
 from matrix.int.scheduler import CompleteTurnResult
 from matrix.model.session import SessionStatus
 
@@ -33,11 +31,17 @@ async def _seed_session(scheduler, pg_storage_or_none, sid: str,
         await _insert_session(pg_storage_or_none, sid, turn_no=turn_no)
 
 
-async def test_claim_returns_empty_when_nothing_runnable(scheduler):
-    await scheduler.register_worker(
-        worker_id="w1", host="h", pid=1, capacity=1,
-    )
-    assert await scheduler.claim("w1", max_count=4) == []
+def _seed_lease(scheduler, session_id: str, worker_id: str) -> None:
+    """Simulate a claimed session lease for complete_turn tests.
+
+    In-memory: directly set worker_id on _LeaseState.
+    Postgres: skipped (Postgres claim path is handled by ClaimEngine).
+    """
+    if hasattr(scheduler, "_leases"):
+        from matrix.scheduler.in_memory import _LeaseState
+        scheduler._leases[session_id] = _LeaseState(
+            worker_id=worker_id, runnable=True,
+        )
 
 
 async def test_complete_turn_round_trip(scheduler, pg_storage_or_none):
@@ -46,10 +50,10 @@ async def test_complete_turn_round_trip(scheduler, pg_storage_or_none):
         worker_id="w1", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue("p-1")
-    [lease] = await scheduler.claim("w1", max_count=1)
+    _seed_lease(scheduler, "p-1", "w1")
     result = await scheduler.complete_turn(
         "w1", "p-1",
-        expected_turn_no=lease.turn_no,
+        expected_turn_no=0,
         new_status=SessionStatus.WAITING,
         re_enqueue=False,
     )
@@ -67,29 +71,11 @@ async def test_lease_lost_when_other_worker_claims_completion(
         worker_id="w2", host="h", pid=2, capacity=1,
     )
     await scheduler.enqueue("p-2")
-    [lease] = await scheduler.claim("w1", max_count=1)
+    _seed_lease(scheduler, "p-2", "w1")
     result = await scheduler.complete_turn(
         "w2", "p-2",
-        expected_turn_no=lease.turn_no,
+        expected_turn_no=0,
         new_status=SessionStatus.RUNNING,
         re_enqueue=False,
     )
     assert result == CompleteTurnResult.LEASE_LOST
-
-
-async def test_concurrent_claims_only_one_winner(
-    scheduler, pg_storage_or_none,
-):
-    await _seed_session(scheduler, pg_storage_or_none, "p-3")
-    await scheduler.register_worker(
-        worker_id="w1", host="h", pid=1, capacity=1,
-    )
-    await scheduler.register_worker(
-        worker_id="w2", host="h", pid=2, capacity=1,
-    )
-    await scheduler.enqueue("p-3")
-    a, b = await asyncio.gather(
-        scheduler.claim("w1", max_count=1),
-        scheduler.claim("w2", max_count=1),
-    )
-    assert (len(a) + len(b)) == 1

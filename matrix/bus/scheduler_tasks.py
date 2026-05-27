@@ -309,7 +309,6 @@ class HarnessSweeper(_BackgroundTask):
         from matrix.harness.dispatch import HarnessDispatchDeps, sweep_harnesses
         deps = HarnessDispatchDeps(
             storage_provider=self._storage_provider,
-            scheduler=self._scheduler,
             event_bus=self._event_bus,
             provider_registry=self._provider_registry,
         )

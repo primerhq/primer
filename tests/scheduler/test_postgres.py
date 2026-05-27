@@ -7,9 +7,9 @@ defines the fixture inline rather than relying on shared infra.
 
 The DSN must be parseable by asyncpg and may include an optional
 ``?schema=<name>`` query parameter (default: ``public``). The test
-uses unique table names (``session_leases``, ``workers``) so it
-won't collide with application tables in the same schema, but
-operators are still encouraged to point at a throwaway DB.
+uses a unique table name (``workers``) so it won't collide with
+application tables in the same schema, but operators are still
+encouraged to point at a throwaway DB.
 """
 
 from __future__ import annotations
@@ -72,13 +72,11 @@ async def storage_provider():
     await sp.initialize()
     # Drop scheduler tables so each test starts clean.
     async with sp.pool.acquire() as conn:
-        await conn.execute("DROP TABLE IF EXISTS session_leases")
         await conn.execute("DROP TABLE IF EXISTS workers")
     try:
         yield sp
     finally:
         async with sp.pool.acquire() as conn:
-            await conn.execute("DROP TABLE IF EXISTS session_leases")
             await conn.execute("DROP TABLE IF EXISTS workers")
         await sp.aclose()
 
@@ -94,14 +92,13 @@ async def sched(storage_provider):
     await s.aclose()
 
 
-async def test_initialize_creates_tables(sched, storage_provider):
+async def test_initialize_creates_workers_table(sched, storage_provider):
     async with storage_provider.pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT table_name FROM information_schema.tables "
-            "WHERE table_name IN ('session_leases','workers')"
+            "WHERE table_name = 'workers'"
         )
     names = {r["table_name"] for r in rows}
-    assert "session_leases" in names
     assert "workers" in names
 
 
@@ -192,52 +189,13 @@ async def _insert_session(storage_provider, sid: str, *,
         )
 
 
-async def test_enqueue_then_claim_returns_lease(sched, storage_provider):
-    await _insert_session(storage_provider, "s-claim-1")
-    await sched.register_worker(
-        worker_id="w1", host="h", pid=1, capacity=4,
-    )
-    await sched.enqueue("s-claim-1")
-    leases = await sched.claim("w1", max_count=1)
-    assert len(leases) == 1
-    assert leases[0].session_id == "s-claim-1"
-    assert leases[0].turn_no == 0
-
-
-async def test_skip_locked_one_winner(sched, storage_provider):
-    await _insert_session(storage_provider, "s-race-1")
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.register_worker(worker_id="w2", host="h", pid=2, capacity=4)
-    await sched.enqueue("s-race-1")
-    a, b = await asyncio.gather(
-        sched.claim("w1", max_count=1),
-        sched.claim("w2", max_count=1),
-    )
-    assert (len(a) + len(b)) == 1
-
-
-async def test_heartbeat_leases_extends_owned_only(sched, storage_provider):
-    await _insert_session(storage_provider, "s-hb-1")
-    await _insert_session(storage_provider, "s-hb-2")
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.register_worker(worker_id="w2", host="h", pid=2, capacity=4)
-    await sched.enqueue("s-hb-1")
-    await sched.enqueue("s-hb-2")
-    [_l1] = await sched.claim("w1", max_count=1)
-    [_l2] = await sched.claim("w2", max_count=1)
-    owned = await sched.heartbeat_leases("w1", ["s-hb-1", "s-hb-2"])
-    assert "s-hb-1" in owned
-    assert "s-hb-2" not in owned
-
-
 async def test_complete_turn_success(sched, storage_provider):
+    """complete_turn advances turn_no and returns SUCCESS."""
     await _insert_session(storage_provider, "s-ct-1")
     await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.enqueue("s-ct-1")
-    [lease] = await sched.claim("w1", max_count=1)
     result = await sched.complete_turn(
         "w1", "s-ct-1",
-        expected_turn_no=lease.turn_no,
+        expected_turn_no=0,
         new_status=SessionStatus.RUNNING,
         re_enqueue=True,
     )
@@ -247,8 +205,6 @@ async def test_complete_turn_success(sched, storage_provider):
 async def test_complete_turn_conflict_on_wrong_fence(sched, storage_provider):
     await _insert_session(storage_provider, "s-fence-1", turn_no=5)
     await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.enqueue("s-fence-1")
-    [_lease] = await sched.claim("w1", max_count=1)
     result = await sched.complete_turn(
         "w1", "s-fence-1",
         expected_turn_no=99,
@@ -258,29 +214,12 @@ async def test_complete_turn_conflict_on_wrong_fence(sched, storage_provider):
     assert result == CompleteTurnResult.TURN_CONFLICT
 
 
-async def test_complete_turn_lease_lost_when_other_holder(sched, storage_provider):
-    await _insert_session(storage_provider, "s-lost-1")
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.register_worker(worker_id="w2", host="h", pid=2, capacity=4)
-    await sched.enqueue("s-lost-1")
-    [lease] = await sched.claim("w1", max_count=1)
-    result = await sched.complete_turn(
-        "w2", "s-lost-1",
-        expected_turn_no=lease.turn_no,
-        new_status=SessionStatus.RUNNING,
-        re_enqueue=False,
-    )
-    assert result == CompleteTurnResult.LEASE_LOST
-
-
 async def test_failure_record_writes_columns(sched, storage_provider):
     await _insert_session(storage_provider, "s-fr-1")
     await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.enqueue("s-fr-1")
-    [lease] = await sched.claim("w1", max_count=1)
     await sched.complete_turn(
         "w1", "s-fr-1",
-        expected_turn_no=lease.turn_no,
+        expected_turn_no=0,
         new_status=SessionStatus.RUNNING,
         re_enqueue=True,
         record_failure=FailureRecord(error_text="boom", attempt_count=2),
@@ -294,7 +233,8 @@ async def test_failure_record_writes_columns(sched, storage_provider):
     assert data["last_error"] == "boom"
 
 
-async def test_watch_ready_yields_on_enqueue(sched, storage_provider):
+async def test_enqueue_sends_notify(sched, storage_provider):
+    """enqueue() sends pg_notify; watch_ready picks it up."""
     await _insert_session(storage_provider, "s-watch-1")
     await sched.register_worker(
         worker_id="w1", host="h", pid=1, capacity=4,
@@ -328,20 +268,3 @@ async def test_signal_cancel_yields_to_watcher(sched):
     await sched.signal_cancel("s-cancel-1")
     sid = await asyncio.wait_for(task, timeout=2.0)
     assert sid == "s-cancel-1"
-
-
-async def test_initialize_adds_fk_when_sessions_table_exists(sched, storage_provider):
-    """After initialize(), if sessions table exists, the FK from
-    session_leases -> sessions should be in place."""
-    # Force-create sessions via Storage[Session]._ensure_table.
-    from matrix.model.session import Session
-    sp_storage = storage_provider.get_storage(Session)
-    await sp_storage._ensure_table()  # noqa: SLF001
-    # Re-run initialize to trigger the FK addition path.
-    await sched.initialize()
-    async with storage_provider.pool.acquire() as conn:
-        exists = await conn.fetchval(
-            "SELECT EXISTS (SELECT 1 FROM pg_constraint "
-            "WHERE conname = 'session_leases_session_id_fkey')"
-        )
-    assert exists is True

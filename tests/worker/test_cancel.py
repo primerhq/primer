@@ -13,8 +13,21 @@ from matrix.model.session import (
     Session,
     SessionStatus,
 )
-from matrix.scheduler.in_memory import InMemoryScheduler
+from matrix.claim.in_memory import InMemoryClaimEngine
+from matrix.int.scheduler import Lease as SchedLease
+from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
 from matrix.worker.pool import WorkerPool
+
+
+def _make_lease(session_id: str, worker_id: str, turn_no: int = 0) -> SchedLease:
+    from datetime import datetime, timezone
+    return SchedLease(
+        session_id=session_id,
+        worker_id=worker_id,
+        expires_at=datetime.now(timezone.utc),
+        attempt_count=0,
+        turn_no=turn_no,
+    )
 
 
 async def _async_return(v):
@@ -53,13 +66,15 @@ async def test_cancel_during_turn_transitions_to_ended_when_cancel_requested(
         scheduler=scheduler, storage=None,         # type: ignore[arg-type]
         workspace_registry=None,                   # type: ignore[arg-type]
         provider_registry=None,                    # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={}),
     )
     pool._worker_id = "wrk-test"
     await scheduler.register_worker(
         worker_id="wrk-test", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    [lease] = await scheduler.claim("wrk-test", max_count=1)
+    scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
+    lease = _make_lease(sid, "wrk-test")
 
     fake_session = Session(
         id=sid, workspace_id="ws-1",
@@ -95,13 +110,15 @@ async def test_mid_turn_cancellation_via_scope(scheduler, monkeypatch):
         scheduler=scheduler, storage=None,         # type: ignore[arg-type]
         workspace_registry=None,                   # type: ignore[arg-type]
         provider_registry=None,                    # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={}),
     )
     pool._worker_id = "wrk-test"
     await scheduler.register_worker(
         worker_id="wrk-test", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    [lease] = await scheduler.claim("wrk-test", max_count=1)
+    scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
+    lease = _make_lease(sid, "wrk-test")
 
     # Note: cancel_requested STARTS False; we'll flip it after the
     # executor has been entered, then trigger the scope cancel.
@@ -152,13 +169,15 @@ async def test_mid_turn_pause_via_scope(scheduler, monkeypatch):
         scheduler=scheduler, storage=None,         # type: ignore[arg-type]
         workspace_registry=None,                   # type: ignore[arg-type]
         provider_registry=None,                    # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={}),
     )
     pool._worker_id = "wrk-test"
     await scheduler.register_worker(
         worker_id="wrk-test", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    [lease] = await scheduler.claim("wrk-test", max_count=1)
+    scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
+    lease = _make_lease(sid, "wrk-test")
 
     fake_session = Session(
         id=sid, workspace_id="ws-1",

@@ -24,8 +24,6 @@ from matrix.model.provider import (
 from matrix.model.storage import (
     FieldRef, Op, OffsetPage, OrderBy, Predicate, Value,
 )
-from matrix.scheduler.in_memory import InMemoryScheduler
-
 
 class _FakeLLM:
     def __init__(self, tokens=("Hi", " there", "!")):
@@ -87,11 +85,9 @@ async def deps(fake_storage_provider, fake_provider_registry):
             await sub.aclose()
 
     fwd = asyncio.create_task(_forward_ticks())
-    scheduler = InMemoryScheduler(storage_provider=fake_storage_provider)
     deps_obj = ChatDispatchDeps(
         storage_provider=fake_storage_provider,
         provider_registry=fake_provider_registry,
-        scheduler=scheduler,
         event_bus=bus,
         chat_tick_router=router,
         fake_llm=fake_llm,
@@ -290,11 +286,9 @@ class TestCancelLifecycle:
         fake_provider_registry.get_llm = _get_llm  # type: ignore[assignment]
 
         router = ChatTickRouter()
-        scheduler = InMemoryScheduler(storage_provider=fake_storage_provider)
         deps_obj = ChatDispatchDeps(
             storage_provider=fake_storage_provider,
             provider_registry=fake_provider_registry,
-            scheduler=scheduler,
             event_bus=bus,
             chat_tick_router=router,
             fake_llm=cancel_llm,

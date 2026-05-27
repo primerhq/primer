@@ -797,18 +797,21 @@ def test_chat_message_id_format():
 # ===========================================================================
 
 
-class _FakeClaimEngine:
-    """Minimal spy that records upsert / delete_lease calls."""
+class _SpyClaimEngine:
+    """Spy wrapper around a real ClaimEngine — records calls and delegates."""
 
-    def __init__(self) -> None:
+    def __init__(self, real_engine) -> None:
+        self._real = real_engine
         self.upserted: list[tuple] = []   # (kind, entity_id, kwargs)
         self.deleted: list[tuple] = []     # (kind, entity_id)
 
     async def upsert(self, kind, entity_id, *, priority=100, next_attempt_at=None):
         self.upserted.append((kind, entity_id, {"priority": priority}))
+        await self._real.upsert(kind, entity_id, priority=priority, next_attempt_at=next_attempt_at)
 
     async def delete_lease(self, kind, entity_id):
         self.deleted.append((kind, entity_id))
+        await self._real.delete_lease(kind, entity_id)
 
 
 @pytest.fixture
@@ -817,7 +820,11 @@ def app_with_engine(
     fake_provider_registry,
     fake_llm,
 ):
-    """app fixture that also wires a fake ClaimEngine on app.state."""
+    """app fixture that also wires a spy ClaimEngine on app.state.
+
+    The spy wraps the real engine so worker-pool processing still works,
+    while call recording is available for assertions.
+    """
     async def _get_llm(_pid: str) -> _ChatTestFakeLLM:
         return fake_llm
 
@@ -827,9 +834,10 @@ def app_with_engine(
         provider_registry=fake_provider_registry,
         start_chat_worker=True,
     )
-    _engine = _FakeClaimEngine()
-    _app.state.claim_engine = _engine
-    return _app, _engine
+    # Wrap the real engine so calls are recorded but also delegated.
+    _spy = _SpyClaimEngine(_app.state.claim_engine)
+    _app.state.claim_engine = _spy
+    return _app, _spy
 
 
 @pytest.mark.asyncio

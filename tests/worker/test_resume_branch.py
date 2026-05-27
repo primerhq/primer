@@ -35,8 +35,20 @@ from matrix.model.chat import Message, ToolCallPart, ToolResultPart
 from matrix.model.scheduler import WorkerConfig
 from matrix.model.session import AgentSessionBinding, Session, SessionStatus
 from matrix.model.yield_ import Yielded
-from matrix.scheduler.in_memory import InMemoryScheduler
+from matrix.claim.in_memory import InMemoryClaimEngine
+from matrix.int.scheduler import Lease as SchedLease
+from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
 from matrix.worker.pool import WorkerPool
+
+
+def _make_sched_lease(session_id: str, worker_id: str, turn_no: int = 0) -> SchedLease:
+    return SchedLease(
+        session_id=session_id,
+        worker_id=worker_id,
+        expires_at=datetime.now(timezone.utc),
+        attempt_count=0,
+        turn_no=turn_no,
+    )
 from matrix.worker.yield_runtime import ParkedState
 
 # Import the misc toolset for its resume-hook side-effects
@@ -86,6 +98,7 @@ def _build_pool(scheduler) -> WorkerPool:
         storage=None,                   # type: ignore[arg-type]
         workspace_registry=None,        # type: ignore[arg-type]
         provider_registry=None,         # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={}),
     )
 
 
@@ -195,7 +208,8 @@ async def test_resume_branch_drives_sleep_hook_end_to_end(
         worker_id="wrk-resume", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    [lease] = await scheduler.claim("wrk-resume", max_count=1)
+    scheduler._leases[sid] = _LeaseState(worker_id="wrk-resume", runnable=True)
+    lease = _make_sched_lease(sid, "wrk-resume")
 
     fake_executor = _RecordingExecutor()
     monkeypatch.setattr(
@@ -322,7 +336,8 @@ async def test_resume_branch_special_cases_approval_with_bypass(
         worker_id="wrk-approve", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    [lease] = await scheduler.claim("wrk-approve", max_count=1)
+    scheduler._leases[sid] = _LeaseState(worker_id="wrk-approve", runnable=True)
+    lease = _make_sched_lease(sid, "wrk-approve")
 
     tool_manager = _RecordingToolManager()
     fake_executor = _RecordingExecutor(tool_manager=tool_manager)
@@ -413,7 +428,8 @@ async def test_resume_branch_approval_rejected_synthesises_error(
         worker_id="wrk-reject", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    [lease] = await scheduler.claim("wrk-reject", max_count=1)
+    scheduler._leases[sid] = _LeaseState(worker_id="wrk-reject", runnable=True)
+    lease = _make_sched_lease(sid, "wrk-reject")
 
     tool_manager = _RecordingToolManager()
     fake_executor = _RecordingExecutor(tool_manager=tool_manager)
@@ -489,7 +505,8 @@ async def test_resume_branch_does_not_fire_when_cancel_requested(
         worker_id="wrk-cancel", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    [lease] = await scheduler.claim("wrk-cancel", max_count=1)
+    scheduler._leases[sid] = _LeaseState(worker_id="wrk-cancel", runnable=True)
+    lease = _make_sched_lease(sid, "wrk-cancel")
 
     fake_executor = _RecordingExecutor()
     monkeypatch.setattr(

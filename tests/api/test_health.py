@@ -53,6 +53,7 @@ async def test_health_surfaces_worker_pool_metrics_when_attached(
 ) -> None:
     """When app.state.worker_pool is set, /v1/health surfaces its
     in_flight + capacity from the metrics snapshot."""
+    from matrix.claim.in_memory import InMemoryClaimEngine
     from matrix.model.scheduler import WorkerConfig
     from matrix.worker.pool import WorkerPool
 
@@ -62,6 +63,7 @@ async def test_health_surfaces_worker_pool_metrics_when_attached(
         storage=None,                  # type: ignore[arg-type]
         workspace_registry=None,       # type: ignore[arg-type]
         provider_registry=None,        # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={}),
     )
     app.state.worker_pool = pool
     try:

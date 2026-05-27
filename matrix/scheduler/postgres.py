@@ -1,35 +1,26 @@
 """Postgres-backed :class:`Scheduler`.
 
-Lease columns + ``SELECT ... FOR UPDATE SKIP LOCKED`` for claim;
 ``LISTEN/NOTIFY session_ready`` and ``LISTEN/NOTIFY session_cancel``
 for low-latency signalling. Reuses the
 :class:`PostgresStorageProvider`'s connection pool for everything
 except the dedicated LISTEN connections.
-
-The class is stubbed in this task -- tasks 9, 10, 11 fill in the
-worker-membership, claim/complete_turn, and LISTEN/NOTIFY surfaces
-respectively.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from matrix.int.scheduler import (
-    _DEFAULT_HEARTBEAT_STALE_AFTER,
-    ChatLease,
     CompleteTurnResult,
     FailureRecord,
-    HarnessLease,
     Lease,
     Scheduler,
     WorkerInfo,
 )
-from matrix.model.harness import HarnessStatus
 from matrix.model.except_ import ProviderError
 from matrix.model.scheduler import PostgresSchedulerConfig
 from matrix.model.session import SessionStatus
@@ -42,23 +33,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-_DDL_LEASES = """
-CREATE TABLE IF NOT EXISTS session_leases (
-    session_id        TEXT PRIMARY KEY,
-    worker_id         TEXT,
-    leased_at         TIMESTAMPTZ,
-    expires_at        TIMESTAMPTZ,
-    next_attempt_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    runnable          BOOLEAN NOT NULL DEFAULT FALSE
-)
-"""
-
-_DDL_LEASES_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_session_leases_claimable
-    ON session_leases (next_attempt_at)
-    WHERE runnable = TRUE
-"""
-
 _DDL_WORKERS = """
 CREATE TABLE IF NOT EXISTS workers (
     id              TEXT PRIMARY KEY,
@@ -70,10 +44,6 @@ CREATE TABLE IF NOT EXISTS workers (
     status          TEXT NOT NULL CHECK (status IN ('active','draining','dead'))
 )
 """
-
-
-class _LeaseLostMarker(Exception):
-    """Internal: forces transaction rollback when lease was lost mid-CAS."""
 
 
 class PostgresScheduler(Scheduler):
@@ -105,60 +75,14 @@ class PostgresScheduler(Scheduler):
         try:
             async with self._storage.pool.acquire() as conn:
                 async with conn.transaction():
-                    await conn.execute(_DDL_LEASES)
-                    await conn.execute(_DDL_LEASES_INDEX)
                     await conn.execute(_DDL_WORKERS)
-                    # Boot-time recovery sweeps (spec section 10):
-                    # 1) Mark dead any worker rows that haven't heartbeat
-                    #    in 5 minutes -- leases they hold expire naturally,
-                    #    but operators want the row marked dead.
+                    # Boot-time recovery: mark dead any worker rows that
+                    # haven't heartbeat in 5 minutes.
                     await conn.execute(
                         "UPDATE workers SET status = 'dead' "
                         "WHERE status != 'dead' "
                         "AND last_heartbeat < now() - interval '5 minutes'"
                     )
-                    # 2) Re-enqueue any session whose status is RUNNING /
-                    #    CREATED but whose lease row is missing or not
-                    #    runnable. Skipped if `sessions` table doesn't
-                    #    exist yet -- Storage[Session] creates it lazily.
-                    table_exists = await conn.fetchval(
-                        "SELECT to_regclass('sessions') IS NOT NULL"
-                    )
-                    if table_exists:
-                        await conn.execute(
-                            "INSERT INTO session_leases (session_id, runnable) "
-                            "SELECT id, TRUE FROM sessions "
-                            "WHERE data->>'status' IN ('created','running') "
-                            "ON CONFLICT (session_id) DO UPDATE "
-                            "SET runnable = TRUE"
-                        )
-                        # If the sessions table now exists, ensure the FK from
-                        # session_leases.session_id -> sessions.id is in place
-                        # with ON DELETE CASCADE. Idempotent: skip if the
-                        # constraint already exists. Cleanup orphan lease rows
-                        # first so the constraint add can't be rejected by FK
-                        # violations.
-                        constraint_exists = await conn.fetchval(
-                            """
-                            SELECT EXISTS (
-                                SELECT 1 FROM pg_constraint
-                                WHERE conname = 'session_leases_session_id_fkey'
-                            )
-                            """
-                        )
-                        if not constraint_exists:
-                            await conn.execute(
-                                "DELETE FROM session_leases l "
-                                "WHERE NOT EXISTS ("
-                                "  SELECT 1 FROM sessions s WHERE s.id = l.session_id"
-                                ")"
-                            )
-                            await conn.execute(
-                                "ALTER TABLE session_leases "
-                                "ADD CONSTRAINT session_leases_session_id_fkey "
-                                "FOREIGN KEY (session_id) REFERENCES sessions(id) "
-                                "ON DELETE CASCADE"
-                            )
         except Exception as exc:
             raise ProviderError(
                 f"failed to create scheduler tables: {exc}", cause=exc,
@@ -236,87 +160,9 @@ class PostgresScheduler(Scheduler):
         self, session_id: str, *, ready_at: datetime | None = None,
     ) -> None:
         async with self._storage.pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    """
-                    INSERT INTO session_leases
-                        (session_id, runnable, next_attempt_at)
-                    VALUES ($1, TRUE, COALESCE($2, now()))
-                    ON CONFLICT (session_id) DO UPDATE SET
-                        runnable = TRUE,
-                        next_attempt_at = COALESCE($2, EXCLUDED.next_attempt_at)
-                    """,
-                    session_id, ready_at,
-                )
-                await conn.execute(
-                    "SELECT pg_notify('session_ready', $1)", session_id,
-                )
-
-    async def claim(
-        self, worker_id: str, *, max_count: int = 1,
-    ) -> list[Lease]:
-        # Yielding-tools (§7.1): parked rows are invisible to
-        # claimers — only resumable rows (event fired OR
-        # timeout/cancel synthesised one) re-enter the claim pool.
-        # A non-parked row matches both branches of the OR.
-        sql = """
-            WITH claimed AS (
-              SELECT l.session_id,
-                     (data->>'turn_no')::int AS turn_no,
-                     COALESCE((data->>'attempt_count')::int, 0) AS attempt_count
-              FROM session_leases l
-              JOIN sessions s ON s.id = l.session_id
-              WHERE l.runnable = TRUE
-                AND (l.worker_id IS NULL OR l.expires_at < now())
-                AND l.next_attempt_at <= now()
-                AND (s.data->>'parked_status' IS NULL
-                     OR s.data->>'parked_status' = 'resumable')
-              ORDER BY
-                CASE WHEN s.data->>'last_worker_id' = $1 THEN 0 ELSE 1 END,
-                l.next_attempt_at
-              FOR UPDATE OF l SKIP LOCKED
-              LIMIT $2
+            await conn.execute(
+                "SELECT pg_notify('session_ready', $1)", session_id,
             )
-            UPDATE session_leases l
-            SET worker_id = $1,
-                leased_at = now(),
-                expires_at = now() + ($3 || ' seconds')::interval
-            FROM claimed
-            WHERE l.session_id = claimed.session_id
-            RETURNING l.session_id, l.expires_at,
-                      claimed.turn_no, claimed.attempt_count
-        """
-        async with self._storage.pool.acquire() as conn:
-            rows = await conn.fetch(
-                sql, worker_id, max_count, str(self._lease_ttl_seconds),
-            )
-        return [
-            Lease(
-                session_id=r["session_id"],
-                worker_id=worker_id,
-                expires_at=r["expires_at"],
-                attempt_count=r["attempt_count"],
-                turn_no=r["turn_no"],
-            )
-            for r in rows
-        ]
-
-    async def heartbeat_leases(
-        self, worker_id: str, session_ids: Sequence[str],
-    ) -> list[str]:
-        if not session_ids:
-            return []
-        sql = """
-            UPDATE session_leases
-            SET expires_at = now() + ($1 || ' seconds')::interval
-            WHERE worker_id = $2 AND session_id = ANY($3::text[])
-            RETURNING session_id
-        """
-        async with self._storage.pool.acquire() as conn:
-            rows = await conn.fetch(
-                sql, str(self._lease_ttl_seconds), worker_id, list(session_ids),
-            )
-        return [r["session_id"] for r in rows]
 
     async def complete_turn(
         self,
@@ -330,18 +176,15 @@ class PostgresScheduler(Scheduler):
         backoff: timedelta | None = None,
         record_failure: FailureRecord | None = None,
     ) -> CompleteTurnResult:
-        try:
-            return await self._complete_turn_inner(
-                worker_id, session_id,
-                expected_turn_no=expected_turn_no,
-                new_status=new_status,
-                ended_reason=ended_reason,
-                re_enqueue=re_enqueue,
-                backoff=backoff,
-                record_failure=record_failure,
-            )
-        except _LeaseLostMarker:
-            return CompleteTurnResult.LEASE_LOST
+        return await self._complete_turn_inner(
+            worker_id, session_id,
+            expected_turn_no=expected_turn_no,
+            new_status=new_status,
+            ended_reason=ended_reason,
+            re_enqueue=re_enqueue,
+            backoff=backoff,
+            record_failure=record_failure,
+        )
 
     async def _complete_turn_inner(
         self, worker_id, session_id, *,
@@ -391,16 +234,6 @@ class PostgresScheduler(Scheduler):
             RETURNING id
         """
 
-        update_lease_sql = """
-            UPDATE session_leases
-            SET worker_id = NULL,
-                expires_at = NULL,
-                runnable = $1,
-                next_attempt_at = now() + ($2 || ' seconds')::interval
-            WHERE session_id = $3 AND worker_id = $4
-            RETURNING session_id
-        """
-
         async with self._storage.pool.acquire() as conn:
             async with conn.transaction():
                 updated = await conn.fetchrow(
@@ -416,14 +249,6 @@ class PostgresScheduler(Scheduler):
                 )
                 if updated is None:
                     return CompleteTurnResult.TURN_CONFLICT
-
-                lease_row = await conn.fetchrow(
-                    update_lease_sql,
-                    re_enqueue, str(backoff_seconds),
-                    session_id, worker_id,
-                )
-                if lease_row is None:
-                    raise _LeaseLostMarker()
 
                 if re_enqueue:
                     await conn.execute(
@@ -446,31 +271,22 @@ class PostgresScheduler(Scheduler):
     ) -> CompleteTurnResult:
         """Park the in-flight turn (yielding-tools §7.2).
 
-        Atomic write that does TWO things:
+        Atomic write: stamps parked_status='parked', parked_event_key,
+        parked_until, parked_at, parked_state into sessions.data
+        via jsonb_set (does NOT touch turn_no, status, ended_at
+        etc. — the turn is suspended, not completed).
 
-        * stamps parked_status='parked', parked_event_key,
-          parked_until, parked_at, parked_state into sessions.data
-          via jsonb_set (does NOT touch turn_no, status, ended_at
-          etc. — the turn is suspended, not completed).
-        * releases our session_leases row (worker_id=NULL,
-          runnable=FALSE so subsequent claims have to be re-armed
-          by mark_resumable's NOTIFY).
-
-        Both updates run inside one transaction. Returns SUCCESS,
-        TURN_CONFLICT (turn_no advanced under us), or LEASE_LOST
-        (we lost the lease before parking).
+        Returns SUCCESS, TURN_CONFLICT (turn_no advanced under us),
+        or LEASE_LOST (we lost the lease before parking).
         """
-        try:
-            return await self._park_turn_inner(
-                worker_id, session_id,
-                expected_turn_no=expected_turn_no,
-                parked_event_key=parked_event_key,
-                parked_until=parked_until,
-                parked_at=parked_at,
-                parked_state=parked_state,
-            )
-        except _LeaseLostMarker:
-            return CompleteTurnResult.LEASE_LOST
+        return await self._park_turn_inner(
+            worker_id, session_id,
+            expected_turn_no=expected_turn_no,
+            parked_event_key=parked_event_key,
+            parked_until=parked_until,
+            parked_at=parked_at,
+            parked_state=parked_state,
+        )
 
     async def _park_turn_inner(
         self, worker_id, session_id, *,
@@ -502,19 +318,6 @@ class PostgresScheduler(Scheduler):
             RETURNING id
         """
 
-        # Park releases the lease: worker_id NULL, NOT runnable
-        # until mark_resumable re-arms (which the event-bus
-        # listener / timeout sweeper does via NOTIFY).
-        update_lease_sql = """
-            UPDATE session_leases
-            SET worker_id = NULL,
-                expires_at = NULL,
-                runnable = FALSE,
-                next_attempt_at = now()
-            WHERE session_id = $1 AND worker_id = $2
-            RETURNING session_id
-        """
-
         async with self._storage.pool.acquire() as conn:
             async with conn.transaction():
                 updated = await conn.fetchrow(
@@ -525,11 +328,6 @@ class PostgresScheduler(Scheduler):
                 )
                 if updated is None:
                     return CompleteTurnResult.TURN_CONFLICT
-                lease_row = await conn.fetchrow(
-                    update_lease_sql, session_id, worker_id,
-                )
-                if lease_row is None:
-                    raise _LeaseLostMarker()
                 return CompleteTurnResult.SUCCESS
 
     async def clear_park(self, session_id: str) -> None:
@@ -596,12 +394,6 @@ class PostgresScheduler(Scheduler):
               AND data->>'parked_event_key' = $1
             RETURNING id
         """
-        update_lease_sql = """
-            UPDATE session_leases
-            SET runnable = TRUE,
-                next_attempt_at = now()
-            WHERE session_id = ANY($1::text[])
-        """
         async with self._storage.pool.acquire() as conn:
             async with conn.transaction():
                 rows = await conn.fetch(
@@ -610,251 +402,13 @@ class PostgresScheduler(Scheduler):
                 if not rows:
                     return 0
                 session_ids = [r["id"] for r in rows]
-                await conn.execute(update_lease_sql, session_ids)
                 for sid in session_ids:
                     await conn.execute(
                         "SELECT pg_notify('session_ready', $1)", sid,
                     )
                 return len(rows)
 
-    # ---- Chat-turn claiming (Task 2) ------------------------------------
-
-    def _chat_table(self) -> str:
-        """Schema-qualified name of the chat table."""
-        schema = self._storage.schema  # type: ignore[attr-defined]
-        return f'"{schema}"."chat"'
-
-    async def claim_chats(
-        self,
-        worker_id: str,
-        *,
-        max_count: int,
-        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
-    ) -> list[ChatLease]:
-        """Atomically claim up to ``max_count`` chat turns.
-
-        Uses ``FOR UPDATE SKIP LOCKED`` inside a transaction so
-        concurrent workers don't race on the same rows.
-
-        Eligibility predicate:
-        * status='active'
-        * parked_status IS DISTINCT FROM 'parked'
-        * claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after
-        * turn_status='claimable' OR parked_status='resumable'
-        """
-        table = self._chat_table()
-        sql = f"""
-            WITH claimed AS (
-                SELECT id
-                FROM {table}
-                WHERE data->>'status' = 'active'
-                  AND data->>'parked_status' IS DISTINCT FROM 'parked'
-                  AND (
-                    data->>'claimed_by' IS NULL
-                    OR (data->>'last_heartbeat_at')::timestamptz
-                         < now() - ($3 || ' seconds')::interval
-                  )
-                  AND (
-                    data->>'turn_status' = 'claimable'
-                    OR data->>'parked_status' = 'resumable'
-                  )
-                ORDER BY id
-                FOR UPDATE SKIP LOCKED
-                LIMIT $2
-            )
-            UPDATE {table} c
-            SET data = jsonb_set(
-                jsonb_set(
-                jsonb_set(
-                jsonb_set(
-                    data,
-                    '{{turn_status}}', to_jsonb('running'::text)),
-                '{{claimed_by}}', to_jsonb($1::text)),
-                '{{claimed_at}}', to_jsonb(now())),
-                '{{last_heartbeat_at}}', to_jsonb(now())
-            ),
-            updated_at = now()
-            FROM claimed
-            WHERE c.id = claimed.id
-            RETURNING c.id,
-                      (c.data->>'claimed_at')::timestamptz AS claimed_at
-        """
-        staleness_seconds = str(int(heartbeat_stale_after.total_seconds()))
-        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
-            async with conn.transaction():
-                rows = await conn.fetch(sql, worker_id, max_count, staleness_seconds)
-        return [
-            ChatLease(
-                chat_id=r["id"],
-                worker_id=worker_id,
-                claimed_at=r["claimed_at"],
-            )
-            for r in rows
-        ]
-
-    async def heartbeat_chat(self, chat_id: str, worker_id: str) -> bool:
-        """Bump last_heartbeat_at. Returns True if we still hold the claim."""
-        table = self._chat_table()
-        sql = f"""
-            UPDATE {table}
-            SET data = jsonb_set(data, '{{last_heartbeat_at}}', to_jsonb(now())),
-                updated_at = now()
-            WHERE id = $1
-              AND data->>'claimed_by' = $2
-            RETURNING id
-        """
-        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
-            row = await conn.fetchrow(sql, chat_id, worker_id)
-        return row is not None
-
-    async def release_chat(
-        self,
-        chat_id: str,
-        worker_id: str,
-        *,
-        next_turn_status: Literal["idle", "claimable"],
-    ) -> None:
-        """Release the claim. No-ops if we don't own it."""
-        table = self._chat_table()
-        sql = f"""
-            UPDATE {table}
-            SET data = (data
-                - 'claimed_by'
-                - 'claimed_at'
-                - 'last_heartbeat_at'
-                || jsonb_build_object('turn_status', $3::text)
-            ),
-            updated_at = now()
-            WHERE id = $1
-              AND data->>'claimed_by' = $2
-        """
-        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
-            await conn.execute(sql, chat_id, worker_id, next_turn_status)
-
-    # ---- Harness-operation claiming (Task 5) ----------------------------
-
-    def _harness_table(self) -> str:
-        """Schema-qualified name of the harness table."""
-        schema = self._storage.schema  # type: ignore[attr-defined]
-        return f'"{schema}"."harness"'
-
-    async def claim_harnesses(
-        self,
-        worker_id: str,
-        *,
-        max_count: int,
-        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
-    ) -> list[HarnessLease]:
-        """Atomically claim up to ``max_count`` harness operations.
-
-        Uses ``FOR UPDATE SKIP LOCKED`` inside a transaction so
-        concurrent workers don't race on the same rows.
-
-        Eligibility predicate:
-        * pending_operation IS NOT NULL
-        * claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after
-        """
-        table = self._harness_table()
-        sql = f"""
-            WITH claimed AS (
-                SELECT id
-                FROM {table}
-                WHERE data->>'pending_operation' IS NOT NULL
-                  AND (
-                    data->>'claimed_by' IS NULL
-                    OR (data->>'last_heartbeat_at')::timestamptz
-                         < now() - ($3 || ' seconds')::interval
-                  )
-                ORDER BY id
-                FOR UPDATE SKIP LOCKED
-                LIMIT $2
-            )
-            UPDATE {table} h
-            SET data = jsonb_set(
-                jsonb_set(
-                jsonb_set(
-                    data,
-                    '{{claimed_by}}', to_jsonb($1::text)),
-                '{{claimed_at}}', to_jsonb(now())),
-                '{{last_heartbeat_at}}', to_jsonb(now())
-            ),
-            updated_at = now()
-            FROM claimed
-            WHERE h.id = claimed.id
-            RETURNING h.id,
-                      h.data->>'pending_operation' AS pending_operation,
-                      (h.data->>'claimed_at')::timestamptz AS claimed_at
-        """
-        staleness_seconds = str(int(heartbeat_stale_after.total_seconds()))
-        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
-            async with conn.transaction():
-                rows = await conn.fetch(sql, worker_id, max_count, staleness_seconds)
-        return [
-            HarnessLease(
-                harness_id=r["id"],
-                worker_id=worker_id,
-                operation=r["pending_operation"],
-                claimed_at=r["claimed_at"],
-            )
-            for r in rows
-        ]
-
-    async def heartbeat_harness(self, harness_id: str, worker_id: str) -> bool:
-        """Bump last_heartbeat_at. Returns True if we still hold the claim."""
-        table = self._harness_table()
-        sql = f"""
-            UPDATE {table}
-            SET data = jsonb_set(data, '{{last_heartbeat_at}}', to_jsonb(now())),
-                updated_at = now()
-            WHERE id = $1
-              AND data->>'claimed_by' = $2
-            RETURNING id
-        """
-        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
-            row = await conn.fetchrow(sql, harness_id, worker_id)
-        return row is not None
-
-    async def release_harness(
-        self,
-        harness_id: str,
-        worker_id: str,
-        *,
-        next_status: HarnessStatus,
-        last_operation_error: str | None = None,
-    ) -> None:
-        """Release the harness claim. No-ops if we don't own it."""
-        table = self._harness_table()
-        sql = f"""
-            UPDATE {table}
-            SET data = (
-                jsonb_set(
-                  jsonb_set(
-                    jsonb_set(
-                      (data
-                        - 'claimed_by'
-                        - 'claimed_at'
-                        - 'last_heartbeat_at'
-                        - 'pending_operation'
-                      ),
-                      '{{status}}', to_jsonb($3::text)
-                    ),
-                    '{{last_operation_error}}',
-                    CASE WHEN $4::text IS NULL THEN 'null'::jsonb
-                         ELSE to_jsonb($4::text) END
-                  ),
-                  '{{last_operation_at}}', to_jsonb(now())
-                )
-            ),
-            updated_at = now()
-            WHERE id = $1
-              AND data->>'claimed_by' = $2
-        """
-        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
-            await conn.execute(
-                sql, harness_id, worker_id, next_status.value, last_operation_error,
-            )
-
-    # ---- methods filled in by Task 11 ----------------------------------
+    # ---- LISTEN/NOTIFY (Task 11) ----------------------------------------
 
     async def _open_listen_connection(
         self, channel: str,
@@ -981,8 +535,7 @@ class PostgresScheduler(Scheduler):
 
     async def metrics_db_snapshot(self) -> dict[str, Any]:
         """Async companion to :meth:`metrics_snapshot` for DB-side
-        aggregates. See spec §14. Two queries: one for sessions by
-        status, one for runnable queue depth."""
+        aggregates. See spec §14. Sessions by status."""
         async with self._storage.pool.acquire() as conn:
             sessions_table_exists = await conn.fetchval(
                 "SELECT to_regclass('sessions') IS NOT NULL"
@@ -995,13 +548,6 @@ class PostgresScheduler(Scheduler):
                 )
                 for r in rows:
                     sessions_by_status[r["status"] or "unknown"] = r["n"]
-            runnable_depth = await conn.fetchval(
-                "SELECT count(*) FROM session_leases "
-                "WHERE runnable = TRUE "
-                "AND (worker_id IS NULL OR expires_at < now()) "
-                "AND next_attempt_at <= now()"
-            ) or 0
         return {
             "matrix_sessions_active": sessions_by_status,
-            "matrix_sessions_runnable_queue_depth": runnable_depth,
         }
