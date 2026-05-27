@@ -44,6 +44,7 @@ import matrix.channel.slack.factory  # noqa: F401
 import matrix.channel.telegram.factory  # noqa: F401
 import matrix.channel.discord.factory  # noqa: F401
 from matrix.model.scheduler import RuntimeMode, SchedulerProviderType
+from matrix.toolset.harness import build_harness_toolset_provider
 from matrix.toolset.misc import build_misc_toolset
 from matrix.toolset.search import build_search_toolset
 from matrix.toolset.system import build_system_toolset
@@ -324,6 +325,17 @@ def _make_lifespan(config: AppConfig):
             mcp_task_bridge.start()
             logger.info("lifespan: mcp task bridge started")
         app.state.event_bus = event_bus
+
+        # Build the always-on ``harness`` toolset. Needs event_bus so it
+        # is constructed after the bus is wired (event_bus may be None
+        # when running in API-only mode without a scheduler — the toolset
+        # tolerates that: enqueue handlers skip publish when bus is None).
+        harness_toolset = build_harness_toolset_provider(
+            storage_provider=storage_provider,
+            event_bus=event_bus,
+        )
+        provider_registry._harness_toolset_provider = harness_toolset  # noqa: SLF001
+        app.state.harness_toolset = harness_toolset
 
         # Process-local router for chat tick events. One bus subscription
         # per process feeds it; WS handlers subscribe per-chat.

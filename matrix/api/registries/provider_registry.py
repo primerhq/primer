@@ -95,6 +95,7 @@ _WORKSPACES_TOOLSET_ID = "workspaces"
 _MISC_TOOLSET_ID = "misc"
 # `web` has always been prefix-less; unchanged.
 _WEB_TOOLSET_ID = "web"
+_HARNESS_TOOLSET_ID = "harness"
 
 # Backward-compat: the four `_*` ids shipped before the underscore-
 # prefix convention was retired. Agents persisted before the rename
@@ -169,6 +170,7 @@ class ProviderRegistry:
         workspaces_toolset_provider: ToolsetProvider | None = None,
         misc_toolset_provider: ToolsetProvider | None = None,
         web_toolset_provider: ToolsetProvider | None = None,
+        harness_toolset_provider: ToolsetProvider | None = None,
     ) -> None:
         self._sp = storage_provider
         self._llm_factory = llm_factory or _default_llm_factory
@@ -199,6 +201,10 @@ class ProviderRegistry:
         # immutable web toolset built at app startup.
         # DuckDuckGo search + http-request primitives.
         self._web_toolset_provider = web_toolset_provider
+        # Reserved id ``harness`` resolves to the harness management
+        # toolset built at app startup. Agents can manage harnesses
+        # (register, fetch, install, sync, uninstall) via this toolset.
+        self._harness_toolset_provider = harness_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -289,6 +295,13 @@ class ProviderRegistry:
             and toolset_id == _WEB_TOOLSET_ID
         ):
             return self._web_toolset_provider
+        # Reserved id `harness` resolves to the harness management
+        # toolset built at app startup.
+        if (
+            self._harness_toolset_provider is not None
+            and toolset_id == _HARNESS_TOOLSET_ID
+        ):
+            return self._harness_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -334,6 +347,7 @@ class ProviderRegistry:
             _WORKSPACES_TOOLSET_ID,
             _MISC_TOOLSET_ID,
             _WEB_TOOLSET_ID,
+            _HARNESS_TOOLSET_ID,
         ):
             return
         async with self._lock:
