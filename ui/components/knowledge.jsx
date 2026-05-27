@@ -249,24 +249,49 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onN
 
 // Shared row renderer used by both modals — search hits and indexed
 // entries are the same shape after normalisation (document_id, chunk_id,
-// text, meta, optional score).
+// text, meta, optional score). Long ids / JSON-stringified meta would
+// otherwise break out of the modal; wordBreak: break-word + min-width:0
+// forces wrapping inside a flex/grid parent.
 function KN_EntryRow({ entry, index }) {
   return (
-    <div style={{ borderTop: "1px solid var(--border)", padding: "8px 0" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+    <div style={{
+      borderTop: "1px solid var(--border)",
+      padding: "8px 0",
+      minWidth: 0,
+      maxWidth: "100%",
+      overflowWrap: "anywhere",
+      wordBreak: "break-word",
+    }}>
+      <div style={{
+        display: "flex",
+        alignItems: "baseline",
+        gap: 8,
+        fontSize: 11,
+        flexWrap: "wrap",
+        minWidth: 0,
+      }}>
         <span className="mono num tabular muted">#{index + 1}</span>
-        <span className="mono">{entry.document_id}</span>
+        <span className="mono" style={{ overflowWrap: "anywhere", minWidth: 0 }}>{entry.document_id}</span>
         <span className="muted">·</span>
-        <span className="mono muted">{entry.chunk_id}</span>
+        <span className="mono muted" style={{ overflowWrap: "anywhere", minWidth: 0 }}>{entry.chunk_id}</span>
         {entry.score != null && (
           <span className="muted" style={{ marginLeft: "auto" }}>score {Number(entry.score).toFixed(4)}</span>
         )}
       </div>
-      <div className="text-sm mt-1" style={{ whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
+      <div className="text-sm mt-1" style={{
+        whiteSpace: "pre-wrap",
+        lineHeight: 1.45,
+        overflowWrap: "anywhere",
+        wordBreak: "break-word",
+      }}>
         {entry.text}
       </div>
       {entry.meta && Object.keys(entry.meta).length > 0 && (
-        <div className="muted text-sm mt-1 mono" style={{ fontSize: 10.5 }}>
+        <div className="muted text-sm mt-1 mono" style={{
+          fontSize: 10.5,
+          overflowWrap: "anywhere",
+          wordBreak: "break-all",
+        }}>
           {Object.entries(entry.meta).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" · ")}
         </div>
       )}
@@ -280,16 +305,17 @@ function KN_EntryRow({ entry, index }) {
 // (works for both user-owned and system collections).
 function KN_CollectionListModal({ collection, pushToast, onClose }) {
   const { useResource, apiFetch } = window.matrixApi;
-  const PAGE_LIMIT = 500;
+  const PAGE_SIZE = 25;
+  const [offset, setOffset] = React.useState(0);
   const indexed = useResource(
-    `collection-indexed-list:${collection.id}`,
+    `collection-indexed-list:${collection.id}:${offset}`,
     (signal) => apiFetch(
       "GET",
-      `/collections/${encodeURIComponent(collection.id)}/indexed_documents?limit=${PAGE_LIMIT}`,
+      `/collections/${encodeURIComponent(collection.id)}/indexed_documents?limit=${PAGE_SIZE}&offset=${offset}`,
       null,
       { signal },
     ),
-    { pollMs: null, deps: [collection.id] },
+    { pollMs: null, deps: [collection.id, offset] },
   );
   const items = (indexed.data?.items || []).map((r) => ({
     document_id: r.document_id,
@@ -298,8 +324,15 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
     meta: r.meta,
     score: null,
   }));
-  const total = indexed.data?.total ?? items.length;
-  const truncated = !!indexed.data?.truncated;
+  const total = indexed.data?.total ?? null;
+  const showingFrom = total != null && total > 0 ? offset + 1 : 0;
+  const showingTo = total != null
+    ? Math.min(offset + PAGE_SIZE, total)
+    : offset + items.length;
+  const hasPrev = offset > 0;
+  const hasNext = total != null
+    ? (offset + PAGE_SIZE) < total
+    : items.length >= PAGE_SIZE;
 
   return (
     <Modal
@@ -311,12 +344,35 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
         </span>
       }
       onClose={onClose}
-      footer={<Btn kind="ghost" onClick={onClose}>Close</Btn>}
+      footer={
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
+          <span className="muted text-sm tabular">
+            {total == null
+              ? (indexed.loading ? "Loading…" : "—")
+              : total === 0
+                ? "0 entries"
+                : `${showingFrom}-${showingTo} of ${total}`}
+          </span>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+            <Btn size="sm" kind="ghost" icon="chevron-left"
+              disabled={!hasPrev || indexed.loading}
+              onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}>Prev</Btn>
+            <Btn size="sm" kind="ghost"
+              disabled={!hasNext || indexed.loading}
+              onClick={() => setOffset((o) => o + PAGE_SIZE)}>Next <Icon name="chevron-right" size={12} /></Btn>
+            <Btn kind="ghost" onClick={onClose}>Close</Btn>
+          </div>
+        </div>
+      }
     >
-      <div style={{ minWidth: 640 }}>
-        <div className="muted text-sm mb-3">
-          <span className="mono">GET /v1/collections/{collection.id}/indexed_documents</span> · {total} entr{total === 1 ? "y" : "ies"}
-          {truncated && <span style={{ color: "var(--amber)" }}> · truncated at {PAGE_LIMIT}</span>}
+      <div style={{
+        width: "min(80vw, 880px)",
+        maxWidth: "100%",
+        minWidth: 0,
+        overflowX: "hidden",
+      }}>
+        <div className="muted text-sm mb-3" style={{ overflowWrap: "anywhere" }}>
+          <span className="mono">GET /v1/collections/{collection.id}/indexed_documents</span>
         </div>
         {indexed.loading && items.length === 0 && (
           <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
@@ -326,12 +382,14 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
         )}
         {!indexed.loading && items.length === 0 && !indexed.error && (
           <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
-            No entries indexed yet.
+            {offset === 0 ? "No entries indexed yet." : "No more entries."}
           </div>
         )}
         {items.length > 0 && (
-          <div style={{ maxHeight: 480, overflow: "auto" }}>
-            {items.map((entry, i) => <KN_EntryRow key={i} entry={entry} index={i} />)}
+          <div style={{ maxHeight: 480, overflow: "auto", overflowX: "hidden" }}>
+            {items.map((entry, i) => (
+              <KN_EntryRow key={offset + i} entry={entry} index={offset + i} />
+            ))}
           </div>
         )}
       </div>
@@ -395,8 +453,13 @@ function KN_CollectionSearchModal({ collection, pushToast, onClose }) {
       onClose={onClose}
       footer={<Btn kind="ghost" onClick={onClose}>Close</Btn>}
     >
-      <div style={{ minWidth: 640 }}>
-        <div className="muted text-sm mb-3">
+      <div style={{
+        width: "min(80vw, 880px)",
+        maxWidth: "100%",
+        minWidth: 0,
+        overflowX: "hidden",
+      }}>
+        <div className="muted text-sm mb-3" style={{ overflowWrap: "anywhere" }}>
           <span className="mono">POST /v1/collections/{collection.id}/search</span>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
@@ -603,20 +666,37 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
     (c) => c.id === collectionFilter,
   );
   const isSystemFilter = !!selectedCollection?.system;
+
+  // Pagination — keep prev/next driven by offset. Reset when the
+  // collection filter changes so we don't end up past-the-end after a
+  // switch from a large collection to a small one.
+  const PAGE_SIZE = 50;
+  const [offset, setOffset] = React.useState(0);
+  React.useEffect(() => { setOffset(0); }, [collectionFilter, isSystemFilter]);
+
   const list = useResource(
-    `documents:list:${collectionFilter}:${isSystemFilter ? "vec" : "store"}`,
+    `documents:list:${collectionFilter}:${isSystemFilter ? "vec" : "store"}:${offset}`,
     (signal) => apiFetch(
       "GET",
       collectionFilter
         ? (isSystemFilter
-            ? `/collections/${encodeURIComponent(collectionFilter)}/indexed_documents?limit=200`
-            : `/collections/${encodeURIComponent(collectionFilter)}/documents?limit=200`)
-        : "/documents?limit=200",
+            ? `/collections/${encodeURIComponent(collectionFilter)}/indexed_documents?limit=${PAGE_SIZE}&offset=${offset}`
+            : `/collections/${encodeURIComponent(collectionFilter)}/documents?limit=${PAGE_SIZE}&offset=${offset}`)
+        : `/documents?limit=${PAGE_SIZE}&offset=${offset}`,
       null,
       { signal },
     ),
-    { pollMs: null, deps: [collectionFilter, isSystemFilter] },
+    { pollMs: null, deps: [collectionFilter, isSystemFilter, offset] },
   );
+  const total = list.data?.total ?? null;
+  const showingFrom = total != null && total > 0 ? offset + 1 : 0;
+  const showingTo = total != null
+    ? Math.min(offset + PAGE_SIZE, total)
+    : offset + (list.data?.items?.length ?? 0);
+  const hasPrev = offset > 0;
+  const hasNext = total != null
+    ? (offset + PAGE_SIZE) < total
+    : (list.data?.items?.length ?? 0) >= PAGE_SIZE;
 
   const [textFilter, setTextFilter] = React.useState("");
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -745,6 +825,37 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
             })}
           </tbody>
         </table>
+      </div>
+
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "10px 4px",
+        fontSize: 12,
+      }}>
+        <span className="muted tabular">
+          {total == null
+            ? (list.loading ? "Loading…" : "—")
+            : total === 0
+              ? "0 documents"
+              : `${showingFrom}-${showingTo} of ${total}`}
+        </span>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="chevron-left"
+            disabled={!hasPrev || list.loading}
+            onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+          >Prev</Btn>
+          <Btn
+            size="sm"
+            kind="ghost"
+            disabled={!hasNext || list.loading}
+            onClick={() => setOffset((o) => o + PAGE_SIZE)}
+          >Next <Icon name="chevron-right" size={12} /></Btn>
+        </div>
       </div>
 
       {createOpen && (
