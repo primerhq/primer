@@ -411,9 +411,14 @@ def _make_lifespan(config: AppConfig):
                 provider_registry=provider_registry,
                 semantic_search_registry=semantic_search_registry,
                 toolset_providers={
+                    # Every built-in (reserved-id) toolset must be listed
+                    # here or its tools never get embedded and the
+                    # _internal_tools semantic search misses them.
                     "system": system_toolset,
                     "workspaces": ws_toolset,
                     "misc": misc_toolset,
+                    "web": web_toolset,
+                    "harness": harness_toolset,
                 },
             )
             search_toolset = build_search_toolset(ic_subsystem)

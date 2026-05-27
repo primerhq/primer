@@ -184,25 +184,38 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onN
     ),
     { pollMs: null, deps: [c.id] },
   );
+  // System (internal) collections store their content directly in the
+  // vector index — there are no Document rows backing them. The docs
+  // count + Documents page reflect storage rows only, so they'd both be
+  // misleadingly empty. Suppress the count and the "View documents"
+  // button for system collections; point users at the Search panel.
+  const isSystem = !!c.system;
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="panel">
         <div className="panel-h">
           <Icon name="collection" size={13} className="muted" />
           <span className="mono">{c.id}</span>
-          {c.system && <span className="pill" style={{ marginLeft: 8 }}><span className="dot"></span>system</span>}
+          {isSystem && <span className="pill" style={{ marginLeft: 8 }}><span className="dot"></span>system</span>}
         </div>
         <div className="panel-body">
           <div className="kv" style={{ gridTemplateColumns: "120px 1fr" }}>
             <dt>description</dt><dd>{c.description || <span className="muted">—</span>}</dd>
             <dt>embedding</dt><dd className="mono">{c.embedder?.provider_id || "—"}</dd>
             <dt>model</dt><dd className="mono">{c.embedder?.model || "—"}</dd>
-            <dt>docs</dt><dd className="mono num tabular">{docs.data?.total ?? "—"}</dd>
+            <dt>docs</dt>
+            <dd className="mono num tabular">
+              {isSystem
+                ? <span className="muted">vector-only · search below</span>
+                : (docs.data?.total ?? "—")}
+            </dd>
           </div>
           <div className="mt-3" style={{ display: "flex", gap: 6 }}>
-            <Btn size="sm" kind="primary" icon="doc" onClick={onOpenDocs}>View documents</Btn>
+            {!isSystem && (
+              <Btn size="sm" kind="primary" icon="doc" onClick={onOpenDocs}>View documents</Btn>
+            )}
             {typeof onSearchCollection === "function" && (
-              <Btn size="sm" kind="ghost" icon="search" onClick={() => onSearchCollection(c.id)}>Search</Btn>
+              <Btn size="sm" kind={isSystem ? "primary" : "ghost"} icon="search" onClick={() => onSearchCollection(c.id)}>Search</Btn>
             )}
           </div>
         </div>
