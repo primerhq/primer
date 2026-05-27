@@ -296,7 +296,12 @@ class ChatTurnRunner:
             yield user_msg
 
         # 2) Build the prompt: system + coalesced history + new user msg.
-        history = await self._load_history(chat.id)
+        # When the dispatch flow pre-persists the user_message AND has
+        # queued additional user_messages behind it, the rows table holds
+        # future-turn input we must NOT leak into this turn's history.
+        history = await self._load_history(
+            chat.id, current_user_msg_seq=user_msg.seq,
+        )
         new_user_msg = Message(role="user", parts=parts)
         prompt = self._build_prompt(history, new_user_msg)
 
@@ -523,7 +528,12 @@ class ChatTurnRunner:
     # History loading + prompt building
     # ------------------------------------------------------------------
 
-    async def _load_history(self, chat_id: str) -> list[Message]:
+    async def _load_history(
+        self,
+        chat_id: str,
+        *,
+        current_user_msg_seq: int | None = None,
+    ) -> list[Message]:
         """Read every prior :class:`ChatMessage` for the chat (in seq order).
 
         Coalesces consecutive ``assistant_token`` rows into a single
@@ -532,14 +542,19 @@ class ChatTurnRunner:
         a ``tool``-role message. Other kinds (done/yielded/resumed/
         error) are skipped — they're protocol markers, not history.
 
-        The just-persisted ``user_message`` row for the current turn
-        is excluded from history because the caller passes it back as
-        a separate ``new_messages`` argument to :meth:`_build_prompt`.
+        The current turn's user_message is excluded from history because
+        the caller passes it back as a separate ``new_messages`` argument
+        to :meth:`_build_prompt`. When ``current_user_msg_seq`` is given
+        every row at or after that seq is dropped — this is how the
+        FIFO-queued worker flow protects this turn from queued future-turn
+        user_messages that are already persisted but not yet processed.
         """
         rows = await self._read_messages_full(chat_id)
-        # Exclude the trailing user_message row (the current turn's
-        # input — added back as new_messages in _build_prompt).
-        if rows and rows[-1].kind == "user_message":
+        if current_user_msg_seq is not None:
+            rows = [r for r in rows if r.seq < current_user_msg_seq]
+        elif rows and rows[-1].kind == "user_message":
+            # Inline-runner legacy path: drop the just-persisted trailing
+            # user_message that the caller will re-emit via _build_prompt.
             rows = rows[:-1]
 
         out: list[Message] = []
@@ -681,7 +696,12 @@ class ChatTurnRunner:
         kind: str,
         payload: dict[str, Any],
     ) -> ChatMessage:
-        """Persist one chat_message row + bump the chat's last_seq."""
+        """Persist one chat_message row + bump the chat's last_seq.
+
+        Refreshes a small set of WS-mutated fields from storage before
+        writing the chat row back so concurrent operator state (an
+        ``interrupt`` setting ``cancel_requested_at``) survives.
+        """
         next_seq = chat.last_seq + 1
         row = ChatMessage(
             id=ChatMessage.make_id(chat.id, next_seq),
@@ -693,6 +713,9 @@ class ChatTurnRunner:
         )
         await self._messages.create(row)
         chat.last_seq = next_seq
+        latest = await self._chats.get(chat.id)
+        if latest is not None:
+            chat.cancel_requested_at = latest.cancel_requested_at
         await self._chats.update(chat)
         return row
 

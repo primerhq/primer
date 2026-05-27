@@ -124,6 +124,15 @@ async def run_one_chat_turn(
                     )
                     if lease_lost.is_set():
                         return
+                # Cancellation is per-turn (mirrors ChatGPT/Claude.ai):
+                # if this turn was cancelled, clear the flag + event so
+                # queued user_messages are NOT auto-cancelled.
+                if cancel_event.is_set():
+                    cancel_event.clear()
+                    refreshed = await chat_storage.get(chat_id)
+                    if refreshed is not None and refreshed.cancel_requested_at is not None:
+                        refreshed.cancel_requested_at = None
+                        await chat_storage.update(refreshed)
             except YieldToWorker:
                 await deps.scheduler.release_chat(
                     chat_id, worker_id, next_turn_status="claimable",
