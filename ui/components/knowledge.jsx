@@ -174,7 +174,14 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
 
 function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onNavigate }) {
   const { useResource, apiFetch } = window.matrixApi;
-  const docs = useResource(
+  const isSystem = !!c.system;
+  const [listOpen, setListOpen] = React.useState(false);
+  const [searchOpen, setSearchOpen] = React.useState(false);
+
+  // For the docs count: system collections live in the vector store
+  // only — Document storage rows are always empty, so probing them
+  // would always render 0. Probe the vector-store enumeration instead.
+  const storageDocs = useResource(
     `collection-docs-count:${c.id}`,
     (signal) => apiFetch(
       "GET",
@@ -182,15 +189,24 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onN
       null,
       { signal },
     ),
-    { pollMs: null, deps: [c.id] },
+    { pollMs: null, deps: [c.id, isSystem] },
   );
-  // System (internal) collections store their content directly in the
-  // vector index — there are no Document rows backing them. The docs
-  // count + Documents page reflect storage rows only, so they'd both be
-  // misleadingly empty. Suppress the count and the "View documents"
-  // button for system collections; the inline search panel below
-  // exposes both query and a "Browse all" mode against the vector store.
-  const isSystem = !!c.system;
+  const vectorDocs = useResource(
+    `collection-indexed-count:${c.id}`,
+    (signal) => isSystem
+      ? apiFetch(
+          "GET",
+          `/collections/${encodeURIComponent(c.id)}/indexed_documents?limit=1`,
+          null,
+          { signal },
+        )
+      : Promise.resolve(null),
+    { pollMs: null, deps: [c.id, isSystem] },
+  );
+  const docCount = isSystem
+    ? (vectorDocs.data?.total ?? "—")
+    : (storageDocs.data?.total ?? "—");
+
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="panel">
@@ -204,33 +220,135 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onN
             <dt>description</dt><dd>{c.description || <span className="muted">—</span>}</dd>
             <dt>embedding</dt><dd className="mono">{c.embedder?.provider_id || "—"}</dd>
             <dt>model</dt><dd className="mono">{c.embedder?.model || "—"}</dd>
-            <dt>docs</dt>
-            <dd className="mono num tabular">
-              {isSystem
-                ? <span className="muted">vector-only · search below</span>
-                : (docs.data?.total ?? "—")}
-            </dd>
+            <dt>docs</dt><dd className="mono num tabular">{docCount}</dd>
           </div>
-          {!isSystem && (
-            <div className="mt-3" style={{ display: "flex", gap: 6 }}>
-              <Btn size="sm" kind="primary" icon="doc" onClick={onOpenDocs}>View documents</Btn>
-            </div>
-          )}
+          <div className="mt-3" style={{ display: "flex", gap: 6 }}>
+            <Btn size="sm" kind="primary" icon="doc" onClick={() => setListOpen(true)}>List documents</Btn>
+            <Btn size="sm" kind="ghost" icon="search" onClick={() => setSearchOpen(true)}>Search</Btn>
+          </div>
         </div>
       </div>
-      <KN_CollectionSearchPanel collection={c} pushToast={pushToast} />
+
+      {listOpen && (
+        <KN_CollectionListModal
+          collection={c}
+          pushToast={pushToast}
+          onClose={() => setListOpen(false)}
+        />
+      )}
+      {searchOpen && (
+        <KN_CollectionSearchModal
+          collection={c}
+          pushToast={pushToast}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
     </div>
   );
 }
 
-function KN_CollectionSearchPanel({ collection, pushToast }) {
+// Shared row renderer used by both modals — search hits and indexed
+// entries are the same shape after normalisation (document_id, chunk_id,
+// text, meta, optional score).
+function KN_EntryRow({ entry, index }) {
+  return (
+    <div style={{ borderTop: "1px solid var(--border)", padding: "8px 0" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+        <span className="mono num tabular muted">#{index + 1}</span>
+        <span className="mono">{entry.document_id}</span>
+        <span className="muted">·</span>
+        <span className="mono muted">{entry.chunk_id}</span>
+        {entry.score != null && (
+          <span className="muted" style={{ marginLeft: "auto" }}>score {Number(entry.score).toFixed(4)}</span>
+        )}
+      </div>
+      <div className="text-sm mt-1" style={{ whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
+        {entry.text}
+      </div>
+      {entry.meta && Object.keys(entry.meta).length > 0 && (
+        <div className="muted text-sm mt-1 mono" style={{ fontSize: 10.5 }}>
+          {Object.entries(entry.meta).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" · ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// Modal: list every indexed entry for a collection. Pulls from
+// /collections/{id}/indexed_documents which walks the vector store
+// (works for both user-owned and system collections).
+function KN_CollectionListModal({ collection, pushToast, onClose }) {
+  const { useResource, apiFetch } = window.matrixApi;
+  const PAGE_LIMIT = 500;
+  const indexed = useResource(
+    `collection-indexed-list:${collection.id}`,
+    (signal) => apiFetch(
+      "GET",
+      `/collections/${encodeURIComponent(collection.id)}/indexed_documents?limit=${PAGE_LIMIT}`,
+      null,
+      { signal },
+    ),
+    { pollMs: null, deps: [collection.id] },
+  );
+  const items = (indexed.data?.items || []).map((r) => ({
+    document_id: r.document_id,
+    chunk_id: r.chunk_id,
+    text: r.text,
+    meta: r.meta,
+    score: null,
+  }));
+  const total = indexed.data?.total ?? items.length;
+  const truncated = !!indexed.data?.truncated;
+
+  return (
+    <Modal
+      title={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Icon name="doc" size={13} className="muted" />
+          <span>Documents in <span className="mono">{collection.id}</span></span>
+          {collection.system && <span className="pill" style={{ marginLeft: 4 }}><span className="dot"></span>system</span>}
+        </span>
+      }
+      onClose={onClose}
+      footer={<Btn kind="ghost" onClick={onClose}>Close</Btn>}
+    >
+      <div style={{ minWidth: 640 }}>
+        <div className="muted text-sm mb-3">
+          <span className="mono">GET /v1/collections/{collection.id}/indexed_documents</span> · {total} entr{total === 1 ? "y" : "ies"}
+          {truncated && <span style={{ color: "var(--amber)" }}> · truncated at {PAGE_LIMIT}</span>}
+        </div>
+        {indexed.loading && items.length === 0 && (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
+        )}
+        {indexed.error && (
+          <Banner kind="error" title={indexed.error.title || "Failed to load entries"} detail={indexed.error.detail || indexed.error.message} />
+        )}
+        {!indexed.loading && items.length === 0 && !indexed.error && (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+            No entries indexed yet.
+          </div>
+        )}
+        {items.length > 0 && (
+          <div style={{ maxHeight: 480, overflow: "auto" }}>
+            {items.map((entry, i) => <KN_EntryRow key={i} entry={entry} index={i} />)}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+
+// Modal: search the collection. Search box at the top; results
+// underneath (still inside the modal, but separated from the inline
+// detail view so the chrome stays clean).
+function KN_CollectionSearchModal({ collection, pushToast, onClose }) {
   const { useMutation, apiFetch } = window.matrixApi;
   const [query, setQuery] = React.useState("");
   const [topK, setTopK] = React.useState(10);
   const [hits, setHits] = React.useState(null);
   const [latencyMs, setLatencyMs] = React.useState(null);
-  const [browseTruncated, setBrowseTruncated] = React.useState(false);
-  const [mode, setMode] = React.useState("search"); // "search" | "browse"
 
   const search = useMutation(
     async (body) => {
@@ -245,9 +363,7 @@ function KN_CollectionSearchPanel({ collection, pushToast }) {
     {
       onSuccess: ({ result, wallMs }) => {
         setHits(result.hits || []);
-        setBrowseTruncated(false);
         setLatencyMs(wallMs);
-        setMode("search");
       },
       onError: (err) => {
         setHits(null);
@@ -262,56 +378,27 @@ function KN_CollectionSearchPanel({ collection, pushToast }) {
     },
   );
 
-  const browse = useMutation(
-    async () => {
-      const t0 = performance.now();
-      const result = await apiFetch(
-        "GET",
-        `/collections/${encodeURIComponent(collection.id)}/indexed_documents?limit=200`,
-      );
-      return { result, wallMs: Math.round(performance.now() - t0) };
-    },
-    {
-      onSuccess: ({ result, wallMs }) => {
-        // Normalise to the same hit shape the search path uses so the
-        // renderer below doesn't need a second code path.
-        const items = (result.items || []).map((r) => ({
-          document_id: r.document_id,
-          chunk_id: r.chunk_id,
-          text: r.text,
-          meta: r.meta,
-          score: null,
-        }));
-        setHits(items);
-        setBrowseTruncated(!!result.truncated);
-        setLatencyMs(wallMs);
-        setMode("browse");
-      },
-      onError: (err) => {
-        if (typeof pushToast !== "function") return;
-        pushToast({
-          kind: "error",
-          title: err?.title || "Browse failed",
-          detail: err?.detail || err?.message,
-          requestId: err?.requestId,
-        });
-      },
-    },
-  );
-
   const run = () => {
     if (!query.trim()) return;
     search.mutate({ query, top_k: topK });
   };
 
   return (
-    <div className="panel">
-      <div className="panel-h">
-        <Icon name="search" size={13} className="muted" />
-        <span>Search this collection</span>
-        <span className="sub muted">· <span className="mono">POST /v1/collections/{collection.id}/search</span></span>
-      </div>
-      <div className="panel-body">
+    <Modal
+      title={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Icon name="search" size={13} className="muted" />
+          <span>Search <span className="mono">{collection.id}</span></span>
+          {collection.system && <span className="pill" style={{ marginLeft: 4 }}><span className="dot"></span>system</span>}
+        </span>
+      }
+      onClose={onClose}
+      footer={<Btn kind="ghost" onClick={onClose}>Close</Btn>}
+    >
+      <div style={{ minWidth: 640 }}>
+        <div className="muted text-sm mb-3">
+          <span className="mono">POST /v1/collections/{collection.id}/search</span>
+        </div>
         <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
           <textarea
             className="textarea"
@@ -321,19 +408,18 @@ function KN_CollectionSearchPanel({ collection, pushToast }) {
             style={{ flex: 1, fontFamily: "inherit", fontSize: 13 }}
             placeholder="Natural-language query… (Enter to run · Shift+Enter for newline)"
             onKeyDown={(e) => {
-              // Enter submits; Shift+Enter inserts newline. Ctrl/Cmd+Enter
-              // also submits for parity with the previous build.
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 run();
               }
             }}
+            autoFocus
           />
-          <Btn kind="primary" icon="search" disabled={!query.trim() || search.loading || browse.loading} onClick={run}>
+          <Btn kind="primary" icon="search" disabled={!query.trim() || search.loading} onClick={run}>
             {search.loading ? "Searching…" : "Search"}
           </Btn>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 10, fontSize: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 10, fontSize: 12 }}>
           <label className="muted" htmlFor={`kn-topk-${collection.id}`}>top_k</label>
           <input
             id={`kn-topk-${collection.id}`}
@@ -345,55 +431,21 @@ function KN_CollectionSearchPanel({ collection, pushToast }) {
             onChange={(e) => setTopK(Number(e.target.value) || 1)}
             style={{ width: 70 }}
           />
-          <Btn
-            size="sm"
-            kind="ghost"
-            icon="doc"
-            disabled={search.loading || browse.loading}
-            onClick={() => browse.mutate()}
-            title="List every entry the vector store has for this collection — useful for system collections that have no Document rows."
-          >
-            {browse.loading ? "Loading…" : "Browse all entries"}
-          </Btn>
           {latencyMs != null && (
-            <span className="muted tabular">· {latencyMs} ms · {hits?.length ?? 0} {mode === "browse" ? "entries" : (hits?.length === 1 ? "hit" : "hits")}{browseTruncated ? " (truncated)" : ""}</span>
+            <span className="muted tabular">· {latencyMs} ms · {hits?.length ?? 0} hit{hits?.length === 1 ? "" : "s"}</span>
           )}
         </div>
 
         {hits != null && hits.length === 0 && (
-          <div className="muted text-sm mt-3">
-            {mode === "browse"
-              ? "No indexed entries. Bootstrap Internal Collections (for system collections) or ingest documents."
-              : "No matches. Either the collection is empty, or the query doesn't match any indexed chunk well enough."}
-          </div>
+          <div className="muted text-sm mt-3">No matches.</div>
         )}
         {hits != null && hits.length > 0 && (
-          <div className="mt-3" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {hits.map((h, i) => (
-              <div key={i} style={{ borderTop: "1px solid var(--border)", padding: "8px 0" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
-                  <span className="mono num tabular muted">#{i + 1}</span>
-                  <span className="mono">{h.document_id}</span>
-                  <span className="muted">·</span>
-                  <span className="mono muted">{h.chunk_id}</span>
-                  {h.score != null && (
-                    <span className="muted" style={{ marginLeft: "auto" }}>score {Number(h.score).toFixed(4)}</span>
-                  )}
-                </div>
-                <div className="text-sm mt-1" style={{ whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
-                  {h.text}
-                </div>
-                {h.meta && Object.keys(h.meta).length > 0 && (
-                  <div className="muted text-sm mt-1 mono" style={{ fontSize: 10.5 }}>
-                    {Object.entries(h.meta).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" · ")}
-                  </div>
-                )}
-              </div>
-            ))}
+          <div className="mt-3" style={{ maxHeight: 440, overflow: "auto" }}>
+            {hits.map((h, i) => <KN_EntryRow key={i} entry={h} index={i} />)}
           </div>
         )}
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -536,28 +588,55 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
     ? filterCollection
     : (query.collection || "");
 
-  const list = useResource(
-    `documents:list:${collectionFilter}`,
-    (signal) => apiFetch(
-      "GET",
-      collectionFilter
-        ? `/collections/${encodeURIComponent(collectionFilter)}/documents?limit=200`
-        : "/documents?limit=200",
-      null,
-      { signal },
-    ),
-    { pollMs: null, deps: [collectionFilter] },
-  );
   const collections = useResource(
     "collections:list",
     (signal) => apiFetch("GET", "/collections?limit=200", null, { signal }),
     { pollMs: null },
   );
 
+  // System (internal) collections don't have Document storage rows;
+  // their content lives in the vector store. Route the per-collection
+  // listing through /indexed_documents instead for those — the
+  // global "all collections" view stays on /documents (storage rows
+  // across the entire deployment).
+  const selectedCollection = (collections.data?.items ?? []).find(
+    (c) => c.id === collectionFilter,
+  );
+  const isSystemFilter = !!selectedCollection?.system;
+  const list = useResource(
+    `documents:list:${collectionFilter}:${isSystemFilter ? "vec" : "store"}`,
+    (signal) => apiFetch(
+      "GET",
+      collectionFilter
+        ? (isSystemFilter
+            ? `/collections/${encodeURIComponent(collectionFilter)}/indexed_documents?limit=200`
+            : `/collections/${encodeURIComponent(collectionFilter)}/documents?limit=200`)
+        : "/documents?limit=200",
+      null,
+      { signal },
+    ),
+    { pollMs: null, deps: [collectionFilter, isSystemFilter] },
+  );
+
   const [textFilter, setTextFilter] = React.useState("");
   const [createOpen, setCreateOpen] = React.useState(false);
 
-  const items = list.data?.items ?? [];
+  // Normalise to a single row shape. /documents returns Document
+  // storage rows {id, collection_id, name, meta}; /indexed_documents
+  // returns vector entries {document_id, chunk_id, text, meta}. Map
+  // the vector shape onto the table's columns so the rest of the
+  // page doesn't need to branch.
+  const rawItems = list.data?.items ?? [];
+  const items = isSystemFilter
+    ? rawItems.map((r) => ({
+        id: r.document_id,
+        collection_id: collectionFilter,
+        name: (r.text || "").slice(0, 80),
+        meta: r.meta || {},
+        _indexed: true,
+        _chunk_id: r.chunk_id,
+      }))
+    : rawItems;
   const filtered = items.filter(
     (d) => !textFilter
       || (d.id || "").toLowerCase().includes(textFilter.toLowerCase())
