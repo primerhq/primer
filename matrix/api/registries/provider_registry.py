@@ -13,6 +13,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from matrix.int.coordinator import InvalidationBus, InvalidationSubscription
 from matrix.int.cross_encoder import CrossEncoder
 from matrix.int.embedder import Embedder
 from matrix.int.llm import LLM
@@ -223,6 +224,8 @@ class ProviderRegistry:
         self._cross_encoder_cache: dict[str, CrossEncoder] = {}
         self._toolset_cache: dict[str, ToolsetProvider] = {}
         self._lock = asyncio.Lock()
+        self._invalidation_bus: InvalidationBus | None = None
+        self._invalidation_subs: list[InvalidationSubscription] = []
 
     # ---- Lookups ----------------------------------------------------------
 
@@ -327,27 +330,48 @@ class ProviderRegistry:
             self._toolset_cache[toolset_id] = adapter
             return adapter
 
-    # ---- Invalidation -----------------------------------------------------
+    # ---- Invalidation (private local helpers) ----------------------------
 
-    async def invalidate_llm(self, provider_id: str) -> None:
+    async def _invalidate_llm_local(self, provider_id: str) -> None:
         async with self._lock:
             adapter = self._llm_cache.pop(provider_id, None)
         if adapter is not None:
-            await adapter.aclose()
+            try:
+                await adapter.aclose()
+            except Exception as exc:  # noqa: BLE001 -- best-effort
+                logger.warning(
+                    "ProviderRegistry: aclose failed on LLM %r: %s",
+                    provider_id,
+                    exc,
+                )
 
-    async def invalidate_embedder(self, provider_id: str) -> None:
+    async def _invalidate_embedder_local(self, provider_id: str) -> None:
         async with self._lock:
             adapter = self._embedder_cache.pop(provider_id, None)
         if adapter is not None:
-            await adapter.aclose()
+            try:
+                await adapter.aclose()
+            except Exception as exc:  # noqa: BLE001 -- best-effort
+                logger.warning(
+                    "ProviderRegistry: aclose failed on Embedder %r: %s",
+                    provider_id,
+                    exc,
+                )
 
-    async def invalidate_cross_encoder(self, provider_id: str) -> None:
+    async def _invalidate_cross_encoder_local(self, provider_id: str) -> None:
         async with self._lock:
             adapter = self._cross_encoder_cache.pop(provider_id, None)
         if adapter is not None:
-            await adapter.aclose()
+            try:
+                await adapter.aclose()
+            except Exception as exc:  # noqa: BLE001 -- best-effort
+                logger.warning(
+                    "ProviderRegistry: aclose failed on CrossEncoder %r: %s",
+                    provider_id,
+                    exc,
+                )
 
-    async def invalidate_toolset(self, toolset_id: str) -> None:
+    async def _invalidate_toolset_local(self, toolset_id: str) -> None:
         # Transparently resolve old `_*` ids to new prefix-less ids.
         toolset_id = _TOOLSET_ID_ALIASES.get(toolset_id, toolset_id)
         # The reserved internal toolsets are immutable; invalidation
@@ -365,12 +389,98 @@ class ProviderRegistry:
         async with self._lock:
             adapter = self._toolset_cache.pop(toolset_id, None)
         if adapter is not None:
-            await adapter.aclose()
+            try:
+                await adapter.aclose()
+            except Exception as exc:  # noqa: BLE001 -- best-effort
+                logger.warning(
+                    "ProviderRegistry: aclose failed on Toolset %r: %s",
+                    toolset_id,
+                    exc,
+                )
+
+    # ---- Invalidation (public — routes through bus when bound) -----------
+
+    async def invalidate_llm(self, provider_id: str) -> None:
+        if self._invalidation_bus is not None:
+            from matrix.int.coordinator import InvalidationTopic
+            await self._invalidation_bus.publish(
+                InvalidationTopic.LLM_PROVIDER, provider_id,
+            )
+        else:
+            await self._invalidate_llm_local(provider_id)
+
+    async def invalidate_embedder(self, provider_id: str) -> None:
+        if self._invalidation_bus is not None:
+            from matrix.int.coordinator import InvalidationTopic
+            await self._invalidation_bus.publish(
+                InvalidationTopic.EMBEDDING_PROVIDER, provider_id,
+            )
+        else:
+            await self._invalidate_embedder_local(provider_id)
+
+    async def invalidate_cross_encoder(self, provider_id: str) -> None:
+        if self._invalidation_bus is not None:
+            from matrix.int.coordinator import InvalidationTopic
+            await self._invalidation_bus.publish(
+                InvalidationTopic.CROSS_ENCODER_PROVIDER, provider_id,
+            )
+        else:
+            await self._invalidate_cross_encoder_local(provider_id)
+
+    async def invalidate_toolset(self, toolset_id: str) -> None:
+        if self._invalidation_bus is not None:
+            from matrix.int.coordinator import InvalidationTopic
+            await self._invalidation_bus.publish(
+                InvalidationTopic.TOOLSET, toolset_id,
+            )
+        else:
+            await self._invalidate_toolset_local(toolset_id)
+
+    # ---- Bus wiring -------------------------------------------------------
+
+    async def bind_invalidation_bus(self, bus: InvalidationBus) -> None:
+        """Wire the registry's cache eviction to the bus. Idempotent."""
+        if self._invalidation_bus is not None:
+            return
+        from matrix.int.coordinator import InvalidationTopic
+
+        self._invalidation_bus = bus
+
+        async def _llm(key: str) -> None:
+            await self._invalidate_llm_local(key)
+
+        async def _embed(key: str) -> None:
+            await self._invalidate_embedder_local(key)
+
+        async def _cross(key: str) -> None:
+            await self._invalidate_cross_encoder_local(key)
+
+        async def _tool(key: str) -> None:
+            await self._invalidate_toolset_local(key)
+
+        self._invalidation_subs.append(
+            await bus.subscribe(InvalidationTopic.LLM_PROVIDER, _llm)
+        )
+        self._invalidation_subs.append(
+            await bus.subscribe(InvalidationTopic.EMBEDDING_PROVIDER, _embed)
+        )
+        self._invalidation_subs.append(
+            await bus.subscribe(InvalidationTopic.CROSS_ENCODER_PROVIDER, _cross)
+        )
+        self._invalidation_subs.append(
+            await bus.subscribe(InvalidationTopic.TOOLSET, _tool)
+        )
 
     # ---- Lifecycle --------------------------------------------------------
 
     async def aclose(self) -> None:
         """Close every cached adapter and clear all caches."""
+        for sub in self._invalidation_subs:
+            try:
+                await sub.aclose()
+            except Exception:  # noqa: BLE001 -- best-effort
+                pass
+        self._invalidation_subs.clear()
         async with self._lock:
             adapters: list[Any] = (
                 list(self._llm_cache.values())
