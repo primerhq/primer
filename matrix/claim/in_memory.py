@@ -49,7 +49,30 @@ class InMemoryClaimEngine(ClaimEngine):
         self._leases.pop((kind, entity_id), None)
 
     # Remaining ABC methods raise NotImplementedError; filled in next tasks.
-    async def claim_due(self, worker_id, *, max_count): raise NotImplementedError
+    LEASE_TTL = timedelta(seconds=60)
+
+    async def claim_due(self, worker_id: str, *, max_count: int) -> list[Lease]:
+        now = datetime.now(UTC)
+        eligible = [
+            row for row in self._leases.values()
+            if (row.claimed_by is None
+                or (row.expires_at is not None and row.expires_at < now))
+            and row.next_attempt_at <= now
+        ]
+        eligible.sort(key=lambda r: (r.priority_score, r.next_attempt_at))
+        chosen = eligible[:max_count]
+        out: list[Lease] = []
+        for row in chosen:
+            row.claimed_by = worker_id
+            row.claimed_at = now
+            row.last_heartbeat_at = now
+            row.expires_at = now + self.LEASE_TTL
+            out.append(Lease(
+                kind=row.kind, entity_id=row.entity_id, claimed_by=worker_id,
+                claimed_at=now, expires_at=row.expires_at,
+                attempt_count=row.attempt_count, last_error=row.last_error,
+            ))
+        return out
     async def heartbeat(self, worker_id, kind_ids): raise NotImplementedError
     async def release(self, lease, *, outcome): raise NotImplementedError
     async def mark_resumable(self, kind, entity_id, *, priority=50): raise NotImplementedError
