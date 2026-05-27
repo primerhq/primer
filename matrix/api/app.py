@@ -268,11 +268,11 @@ def _make_lifespan(config: AppConfig):
             timer_scheduler = TimerScheduler(
                 bus=event_bus, scheduler=scheduler,
             )
-            timer_scheduler.start()
+            timer_scheduler.start(coordinator.leader_elector)
             timeout_sweeper = TimeoutSweeper(
                 bus=event_bus, scheduler=scheduler,
             )
-            timeout_sweeper.start()
+            timeout_sweeper.start(coordinator.leader_elector)
 
             from matrix.bus.scheduler_tasks import ChatSweeper, HarnessSweeper
             chat_sweeper = ChatSweeper(
@@ -280,7 +280,7 @@ def _make_lifespan(config: AppConfig):
                 scheduler=scheduler,
                 event_bus=event_bus,
             )
-            chat_sweeper.start()
+            chat_sweeper.start(coordinator.leader_elector)
 
             harness_sweeper = HarnessSweeper(
                 storage_provider=storage_provider,
@@ -288,7 +288,7 @@ def _make_lifespan(config: AppConfig):
                 event_bus=event_bus,
                 provider_registry=provider_registry,
             )
-            harness_sweeper.start()
+            harness_sweeper.start(coordinator.leader_elector)
 
             # watch_files watcher manager — resolves workspace_id →
             # StatProbe via the workspace registry.
@@ -320,7 +320,7 @@ def _make_lifespan(config: AppConfig):
                 scheduler=scheduler,
                 workspace_root_resolver=_resolve_probe,
             )
-            watcher_manager.start()
+            watcher_manager.start(coordinator.leader_elector)
             logger.info("lifespan: watcher manager started")
 
             # MCP task bridge — polls parked mcp_task:* sessions
@@ -333,7 +333,7 @@ def _make_lifespan(config: AppConfig):
                 scheduler=scheduler,
                 provider_registry=provider_registry,
             )
-            mcp_task_bridge.start()
+            mcp_task_bridge.start(coordinator.leader_elector)
             logger.info("lifespan: mcp task bridge started")
         app.state.event_bus = event_bus
 

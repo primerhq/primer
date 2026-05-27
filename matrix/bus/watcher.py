@@ -50,6 +50,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from matrix.bus.scheduler_tasks import _BackgroundTask
+from matrix.int.coordinator import ROLE_WATCHER_MANAGER
 from matrix.int.event_bus import EventBus
 
 if TYPE_CHECKING:
@@ -443,7 +445,7 @@ WorkspaceProbeResolver = Callable[[str], Awaitable["StatProbe | None"]]
 WorkspaceRootResolver = WorkspaceProbeResolver
 
 
-class WatcherManager:
+class WatcherManager(_BackgroundTask):
     """Lifecycle owner for :class:`WorkspaceFilesWatcher` instances.
 
     On each scan:
@@ -459,6 +461,8 @@ class WatcherManager:
     claims and resumes the turn.
     """
 
+    role = ROLE_WATCHER_MANAGER
+
     def __init__(
         self,
         *,
@@ -468,33 +472,17 @@ class WatcherManager:
         scan_interval_seconds: float = DEFAULT_SCAN_INTERVAL_SECONDS,
         poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
     ) -> None:
+        super().__init__(name="yield-watcher-manager")
         self._bus = bus
         self._scheduler = scheduler
         self._resolve = workspace_root_resolver
         self._scan = scan_interval_seconds
         self._poll = poll_interval_seconds
-        self._task: asyncio.Task | None = None
-        self._stopping = False
         # event_key → live watcher
         self._watchers: dict[str, WorkspaceFilesWatcher] = {}
 
-    def start(self) -> None:
-        if self._task is not None:
-            return
-        self._task = asyncio.create_task(
-            self._run(), name="yield-watcher-manager",
-        )
-
     async def stop(self) -> None:
-        self._stopping = True
-        task = self._task
-        if task is not None:
-            self._task = None
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+        await super().stop()
         for w in list(self._watchers.values()):
             try:
                 await w.stop()

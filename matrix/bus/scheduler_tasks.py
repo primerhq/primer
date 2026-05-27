@@ -30,6 +30,12 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from matrix.int.coordinator import (
+    ROLE_CHAT_SWEEPER,
+    ROLE_HARNESS_SWEEPER,
+    ROLE_TIMEOUT_SWEEPER,
+    ROLE_TIMER_SCHEDULER,
+)
 from matrix.int.event_bus import EventBus
 from matrix.worker.yield_runtime import make_timeout_payload
 
@@ -141,6 +147,8 @@ class TimerScheduler(_BackgroundTask):
     mark_resumable is idempotent.
     """
 
+    role = ROLE_TIMER_SCHEDULER
+
     def __init__(
         self,
         *,
@@ -182,6 +190,8 @@ class TimeoutSweeper(_BackgroundTask):
     resume hook.
     """
 
+    role = ROLE_TIMEOUT_SWEEPER
+
     def __init__(
         self,
         *,
@@ -222,6 +232,8 @@ class ChatSweeper(_BackgroundTask):
     background-task harness used by TimeoutSweeper.
     """
 
+    role = ROLE_CHAT_SWEEPER
+
     def __init__(
         self,
         *,
@@ -255,6 +267,8 @@ class ChatSweeper(_BackgroundTask):
 
 class HarnessSweeper(_BackgroundTask):
     """Periodically reclaims harnesses whose worker died mid-operation."""
+
+    role = ROLE_HARNESS_SWEEPER
 
     def __init__(
         self,

@@ -31,6 +31,8 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from matrix.bus.scheduler_tasks import _BackgroundTask
+from matrix.int.coordinator import ROLE_MCP_BRIDGE
 from matrix.int.event_bus import EventBus
 from matrix.toolset.mcp import McpToolsetProvider
 
@@ -46,7 +48,7 @@ DEFAULT_POLL_SECONDS = 5.0
 TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
 
 
-class McpTaskBridge:
+class McpTaskBridge(_BackgroundTask):
     """Periodically polls parked MCP-task sessions and publishes results.
 
     One instance per app suffices. The bridge is provider-registry-
@@ -54,6 +56,8 @@ class McpTaskBridge:
     ``mcp_task:{toolset_id}:{task_id}`` carries the toolset id in the
     middle segment.
     """
+
+    role = ROLE_MCP_BRIDGE
 
     def __init__(
         self,
@@ -63,31 +67,11 @@ class McpTaskBridge:
         provider_registry,
         poll_seconds: float = DEFAULT_POLL_SECONDS,
     ) -> None:
+        super().__init__(name="yield-mcp-task-bridge")
         self._bus = bus
         self._scheduler = scheduler
         self._registry = provider_registry
         self._poll = poll_seconds
-        self._task: asyncio.Task | None = None
-        self._stopping = False
-
-    def start(self) -> None:
-        if self._task is not None:
-            return
-        self._task = asyncio.create_task(
-            self._run(), name="yield-mcp-task-bridge",
-        )
-
-    async def stop(self) -> None:
-        self._stopping = True
-        task = self._task
-        if task is None:
-            return
-        self._task = None
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
 
     async def _run(self) -> None:
         while not self._stopping:
