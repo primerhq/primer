@@ -34,6 +34,7 @@ from matrix.int.event_bus import EventBus
 from matrix.worker.yield_runtime import make_timeout_payload
 
 if TYPE_CHECKING:
+    from matrix.int.coordinator import LeaderElector
     from matrix.scheduler.in_memory import InMemoryScheduler
     from matrix.scheduler.postgres import PostgresScheduler
 
@@ -49,17 +50,69 @@ DEFAULT_SWEEPER_POLL_SECONDS = 30.0
 
 
 class _BackgroundTask:
-    """Tiny base class — owns the asyncio task lifecycle."""
+    """Base for background loops. Subclasses set ``role`` and override
+    ``_run()`` which runs only while the supervisor holds leadership
+    (when an elector is provided).
+    """
+
+    role: str = ""  # subclass MUST override when using the elector path
 
     def __init__(self, *, name: str) -> None:
         self._name = name
         self._task: asyncio.Task | None = None
         self._stopping = False
 
-    def start(self) -> None:
+    def start(self, elector: "LeaderElector | None" = None) -> None:
+        """Start the supervisor loop.
+
+        With an elector, work runs only while leadership for ``self.role``
+        is held; on loss-of-leadership the work loop is cancelled and the
+        supervisor immediately tries to re-acquire.
+
+        Without an elector (legacy callers), the work loop runs
+        unconditionally. This path is to be removed once all subclasses
+        thread an elector through.
+        """
         if self._task is not None:
             return
-        self._task = asyncio.create_task(self._run(), name=self._name)
+        if elector is None:
+            self._task = asyncio.create_task(self._run(), name=self._name)
+            return
+        self._task = asyncio.create_task(
+            self._supervisor_loop(elector), name=f"supervisor-{self._name}",
+        )
+
+    async def _supervisor_loop(self, elector: "LeaderElector") -> None:
+        """Race the work loop against lease loss; retry on every
+        leadership transition until ``stop()`` is called."""
+        retry_seconds = 15.0
+        while not self._stopping:
+            lease = await elector.try_acquire(self.role)
+            if lease is None:
+                try:
+                    await asyncio.sleep(retry_seconds)
+                except asyncio.CancelledError:
+                    return
+                continue
+            try:
+                work = asyncio.create_task(self._run(), name=self._name)
+                lost = asyncio.create_task(
+                    lease.lost_event.wait(), name=f"{self._name}-lost",
+                )
+                done, pending = await asyncio.wait(
+                    {work, lost}, return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in pending:
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
+            finally:
+                try:
+                    await lease.release()
+                except Exception:  # noqa: BLE001
+                    pass
 
     async def stop(self) -> None:
         self._stopping = True
