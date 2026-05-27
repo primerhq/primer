@@ -10,11 +10,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from matrix.int.coordinator import RateLimiter, RateLimiterLease
+from matrix.int.coordinator import (
+    InvalidationBus,
+    InvalidationSubscription,
+    InvalidationTopic,
+    RateLimiter,
+    RateLimiterLease,
+)
 
 if TYPE_CHECKING:
+    from matrix.int.event_bus import EventBus
     from matrix.int.storage_provider import StorageProvider
 
 
@@ -162,3 +170,86 @@ class PostgresRateLimiter(RateLimiter):
         return _PostgresRateLimiterLease(
             storage=self._storage, lease_id=lease_id, key=key, owner_id=self._owner_id,
         )
+
+
+# ---------------------------------------------------------------------------
+# InvalidationBus
+# ---------------------------------------------------------------------------
+
+
+class _PostgresInvalidationSubscription(InvalidationSubscription):
+    def __init__(
+        self,
+        bus: "EventBus",
+        topic: "InvalidationTopic",
+        handler: Callable[[str], Awaitable[None]],
+    ) -> None:
+        self._bus = bus
+        self._topic = topic
+        self._handler = handler
+        self._sub = bus.subscribe()
+        self._task: asyncio.Task = asyncio.create_task(
+            self._run(),
+            name=f"invalidation-sub-{topic.value}",
+        )
+        self._closed = False
+
+    async def _run(self) -> None:
+        prefix = f"invalidate:{self._topic.value}:"
+        try:
+            async for event in self._sub:
+                if not event.event_key.startswith(prefix):
+                    continue
+                key = event.event_key[len(prefix):]
+                try:
+                    await self._handler(key)
+                except Exception:
+                    logger.exception(
+                        "invalidation handler raised; continuing",
+                    )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception(
+                "invalidation subscription loop failed for topic %s",
+                self._topic.value,
+            )
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._task.cancel()
+        try:
+            await self._task
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            await self._sub.aclose()
+        except Exception:
+            pass
+
+
+class PostgresInvalidationBus(InvalidationBus):
+    """Thin wrapper on the EventBus with topic-key conventions.
+
+    Bus type is irrelevant — wherever the EventBus impl ships events
+    cross-process (Postgres LISTEN/NOTIFY in production, in-memory queue
+    in tests) the invalidation broadcast inherits that delivery
+    guarantee.
+    """
+
+    def __init__(self, event_bus: "EventBus") -> None:
+        self._bus = event_bus
+
+    async def publish(self, topic: "InvalidationTopic", key: str) -> None:
+        await self._bus.publish(
+            f"invalidate:{topic.value}:{key}", payload={},
+        )
+
+    async def subscribe(
+        self,
+        topic: "InvalidationTopic",
+        handler: Callable[[str], Awaitable[None]],
+    ) -> _PostgresInvalidationSubscription:
+        return _PostgresInvalidationSubscription(self._bus, topic, handler)
