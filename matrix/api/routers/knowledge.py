@@ -215,6 +215,52 @@ async def search_collection(
     }
 
 
+@collection_router.get(
+    "/collections/{collection_id}/indexed_documents",
+    summary="List entries indexed in a collection's vector store",
+    responses=common_responses(404, 500, 502, 503),
+)
+async def list_indexed_documents(
+    collection_id: str = Path(..., description="Collection id"),
+    limit: int = Query(default=100, ge=1, le=500),
+    collections=Depends(get_collection_storage),
+    ssr: SemanticSearchRegistry = Depends(get_semantic_search_registry),
+) -> dict:
+    """Enumerate everything the vector store has for this collection.
+
+    Internal (``system=True``) collections store their content directly
+    in the vector index — no ``Document`` rows back them — so the regular
+    ``GET /collections/{id}/documents`` endpoint always returns empty
+    for them. This endpoint surfaces the actual indexed entries by
+    calling the vector store's ``search_by_meta({})`` primitive (which
+    matches every record).
+
+    Works for user-owned collections too; just returns whatever has been
+    ingested into the vector store regardless of whether Document rows
+    also exist in storage.
+
+    Capped at 500 entries — pagination on the vector store interface is
+    a TODO; for now the cap is the safety valve. Internal collections
+    are typically a few hundred entries which fits comfortably.
+    """
+    coll = await collections.get(collection_id)
+    if coll is None:
+        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+
+    store = await ssr.get_store(coll.search_provider_id)
+    records = await store.search_by_meta(collection_id, meta={})
+    items = [
+        {
+            "document_id": r.document_id,
+            "chunk_id": r.chunk_id,
+            "text": r.text,
+            "meta": r.meta,
+        }
+        for r in records[:limit]
+    ]
+    return {"items": items, "total": len(records), "truncated": len(records) > limit}
+
+
 # ---- Document router -------------------------------------------------------
 
 document_router = make_crud_router(

@@ -188,7 +188,8 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onN
   // vector index — there are no Document rows backing them. The docs
   // count + Documents page reflect storage rows only, so they'd both be
   // misleadingly empty. Suppress the count and the "View documents"
-  // button for system collections; point users at the Search panel.
+  // button for system collections; the inline search panel below
+  // exposes both query and a "Browse all" mode against the vector store.
   const isSystem = !!c.system;
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -210,14 +211,11 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onN
                 : (docs.data?.total ?? "—")}
             </dd>
           </div>
-          <div className="mt-3" style={{ display: "flex", gap: 6 }}>
-            {!isSystem && (
+          {!isSystem && (
+            <div className="mt-3" style={{ display: "flex", gap: 6 }}>
               <Btn size="sm" kind="primary" icon="doc" onClick={onOpenDocs}>View documents</Btn>
-            )}
-            {typeof onSearchCollection === "function" && (
-              <Btn size="sm" kind={isSystem ? "primary" : "ghost"} icon="search" onClick={() => onSearchCollection(c.id)}>Search</Btn>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
       <KN_CollectionSearchPanel collection={c} pushToast={pushToast} />
@@ -231,6 +229,8 @@ function KN_CollectionSearchPanel({ collection, pushToast }) {
   const [topK, setTopK] = React.useState(10);
   const [hits, setHits] = React.useState(null);
   const [latencyMs, setLatencyMs] = React.useState(null);
+  const [browseTruncated, setBrowseTruncated] = React.useState(false);
+  const [mode, setMode] = React.useState("search"); // "search" | "browse"
 
   const search = useMutation(
     async (body) => {
@@ -245,7 +245,9 @@ function KN_CollectionSearchPanel({ collection, pushToast }) {
     {
       onSuccess: ({ result, wallMs }) => {
         setHits(result.hits || []);
+        setBrowseTruncated(false);
         setLatencyMs(wallMs);
+        setMode("search");
       },
       onError: (err) => {
         setHits(null);
@@ -256,6 +258,43 @@ function KN_CollectionSearchPanel({ collection, pushToast }) {
         } else {
           pushToast({ kind: "error", title: err?.title || "Search failed", detail: err?.detail || err?.message, requestId: err?.requestId });
         }
+      },
+    },
+  );
+
+  const browse = useMutation(
+    async () => {
+      const t0 = performance.now();
+      const result = await apiFetch(
+        "GET",
+        `/collections/${encodeURIComponent(collection.id)}/indexed_documents?limit=200`,
+      );
+      return { result, wallMs: Math.round(performance.now() - t0) };
+    },
+    {
+      onSuccess: ({ result, wallMs }) => {
+        // Normalise to the same hit shape the search path uses so the
+        // renderer below doesn't need a second code path.
+        const items = (result.items || []).map((r) => ({
+          document_id: r.document_id,
+          chunk_id: r.chunk_id,
+          text: r.text,
+          meta: r.meta,
+          score: null,
+        }));
+        setHits(items);
+        setBrowseTruncated(!!result.truncated);
+        setLatencyMs(wallMs);
+        setMode("browse");
+      },
+      onError: (err) => {
+        if (typeof pushToast !== "function") return;
+        pushToast({
+          kind: "error",
+          title: err?.title || "Browse failed",
+          detail: err?.detail || err?.message,
+          requestId: err?.requestId,
+        });
       },
     },
   );
@@ -290,11 +329,11 @@ function KN_CollectionSearchPanel({ collection, pushToast }) {
               }
             }}
           />
-          <Btn kind="primary" icon="search" disabled={!query.trim() || search.loading} onClick={run}>
+          <Btn kind="primary" icon="search" disabled={!query.trim() || search.loading || browse.loading} onClick={run}>
             {search.loading ? "Searching…" : "Search"}
           </Btn>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 10, fontSize: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 10, fontSize: 12, flexWrap: "wrap" }}>
           <label className="muted" htmlFor={`kn-topk-${collection.id}`}>top_k</label>
           <input
             id={`kn-topk-${collection.id}`}
@@ -306,14 +345,26 @@ function KN_CollectionSearchPanel({ collection, pushToast }) {
             onChange={(e) => setTopK(Number(e.target.value) || 1)}
             style={{ width: 70 }}
           />
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="doc"
+            disabled={search.loading || browse.loading}
+            onClick={() => browse.mutate()}
+            title="List every entry the vector store has for this collection — useful for system collections that have no Document rows."
+          >
+            {browse.loading ? "Loading…" : "Browse all entries"}
+          </Btn>
           {latencyMs != null && (
-            <span className="muted tabular">· {latencyMs} ms · {hits?.length ?? 0} hit{hits?.length === 1 ? "" : "s"}</span>
+            <span className="muted tabular">· {latencyMs} ms · {hits?.length ?? 0} {mode === "browse" ? "entries" : (hits?.length === 1 ? "hit" : "hits")}{browseTruncated ? " (truncated)" : ""}</span>
           )}
         </div>
 
         {hits != null && hits.length === 0 && (
           <div className="muted text-sm mt-3">
-            No matches. Either the collection is empty, or the query doesn't match any indexed chunk well enough.
+            {mode === "browse"
+              ? "No indexed entries. Bootstrap Internal Collections (for system collections) or ingest documents."
+              : "No matches. Either the collection is empty, or the query doesn't match any indexed chunk well enough."}
           </div>
         )}
         {hits != null && hits.length > 0 && (
