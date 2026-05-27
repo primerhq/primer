@@ -53,6 +53,8 @@
     { pattern: "/channels/associations",           page: "ChannelAssociationsPage" },
     { pattern: "/chats",                           page: "ChatsListPage" },
     { pattern: "/chats/:id",                       page: "ChatDetailPage" },
+    { pattern: "/harnesses",                       page: "HarnessesPage" },
+    { pattern: "/harnesses/:id",                   page: "HarnessesPage" },
   ];
 
   function splitSegments(path) {

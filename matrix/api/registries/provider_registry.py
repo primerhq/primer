@@ -97,6 +97,18 @@ _MISC_TOOLSET_ID = "misc"
 _WEB_TOOLSET_ID = "web"
 _HARNESS_TOOLSET_ID = "harness"
 
+# Public: ids that are always resolvable by the live registry (built-in
+# providers), so external reference-integrity checks can skip the
+# Toolset storage lookup for them.
+RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
+    _SYSTEM_TOOLSET_ID,
+    _SEARCH_TOOLSET_ID,
+    _WORKSPACES_TOOLSET_ID,
+    _MISC_TOOLSET_ID,
+    _WEB_TOOLSET_ID,
+    _HARNESS_TOOLSET_ID,
+})
+
 # Backward-compat: the four `_*` ids shipped before the underscore-
 # prefix convention was retired. Agents persisted before the rename
 # may still reference them, so the registry maps the old ids to the

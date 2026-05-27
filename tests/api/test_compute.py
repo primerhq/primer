@@ -84,6 +84,39 @@ class TestAgentStatus:
         resp = await client.get("/v1/agents/missing/status")
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_status_ignores_builtin_toolsets(
+        self, client, fake_storage_provider,
+    ) -> None:
+        """Built-in toolsets (web/search/system/workspaces/misc/harness)
+        have no Toolset storage row — the live registry resolves them
+        directly. The status check must NOT flag them as missing."""
+        from matrix.model.provider import (
+            AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
+        )
+        await fake_storage_provider.get_storage(LLMProvider).create(
+            LLMProvider(
+                id="anthropic-1",
+                provider=LLMProviderType.ANTHROPIC,
+                models=[LLMModel(name="claude-sonnet-4-6", context_length=200_000)],
+                config=AnthropicConfig(api_key=SecretStr("x")),
+                limits=Limits(max_concurrency=4),
+            )
+        )
+        body = _agent(tools=[
+            "web__http-request",
+            "web__web-search",
+            "search__semantic_search",
+            "system__list_files",
+            "workspaces__create_workspace",
+            "misc__sleep",
+            "harness__list",
+        ]).model_dump(mode="json")
+        await client.post("/v1/agents", json=body)
+        resp = await client.get("/v1/agents/agt-1/status")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "issues": []}
+
 
 class TestGraphCRUD:
     """Graph routes are smoke-tested only because constructing a valid

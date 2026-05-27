@@ -28,6 +28,7 @@ from matrix.api.deps import (
     get_toolset_storage,
 )
 from matrix.api.errors import common_responses
+from matrix.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from matrix.api.routers._cdc_hooks import make_cdc_hooks
 from matrix.api.routers._crud import make_crud_router
 from matrix.api.routers._managed import (
@@ -105,6 +106,11 @@ async def agent_status(
         if toolset_id in seen_toolset_ids:
             continue
         seen_toolset_ids.add(toolset_id)
+        # Built-in toolsets (web / search / system / workspaces / misc /
+        # harness) are always resolvable by the live registry — they
+        # don't have a Toolset storage row. Skip those.
+        if toolset_id in RESERVED_TOOLSET_IDS:
+            continue
         if await toolsets.get(toolset_id) is None:
             missing_toolset_ids.add(toolset_id)
     for ts_id in sorted(missing_toolset_ids):
