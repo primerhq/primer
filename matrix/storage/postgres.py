@@ -166,6 +166,11 @@ class PostgresStorageProvider(StorageProvider):
         """Schema-qualified table name for coordinator leadership leases."""
         return f'"{self._schema}"."leader_lease"'
 
+    @property
+    def leases_table(self) -> str:
+        """Schema-qualified table name for claim-engine leases."""
+        return f'"{self._schema}"."leases"'
+
     async def initialize(self) -> None:
         if self._pool is not None:
             return
@@ -221,6 +226,26 @@ class PostgresStorageProvider(StorageProvider):
                 f'  claimed_at TIMESTAMPTZ NOT NULL,'
                 f'  expires_at TIMESTAMPTZ NOT NULL'
                 f')'
+            )
+            await conn.execute(
+                f'CREATE TABLE IF NOT EXISTS "{self._schema}"."leases" ('
+                f'  kind              TEXT NOT NULL,'
+                f'  entity_id         TEXT NOT NULL,'
+                f'  claimed_by        TEXT,'
+                f'  claimed_at        TIMESTAMPTZ,'
+                f'  last_heartbeat_at TIMESTAMPTZ,'
+                f'  expires_at        TIMESTAMPTZ,'
+                f'  next_attempt_at   TIMESTAMPTZ NOT NULL DEFAULT now(),'
+                f'  priority_score    INTEGER NOT NULL DEFAULT 100,'
+                f'  attempt_count     INTEGER NOT NULL DEFAULT 0,'
+                f'  last_error        TEXT,'
+                f'  PRIMARY KEY (kind, entity_id)'
+                f')'
+            )
+            await conn.execute(
+                f'CREATE INDEX IF NOT EXISTS leases_claim_order '
+                f'ON "{self._schema}"."leases" (priority_score, next_attempt_at) '
+                f'WHERE claimed_by IS NULL'
             )
         logger.info(
             "PostgresStorageProvider initialised (schema=%r, host=%s:%d)",

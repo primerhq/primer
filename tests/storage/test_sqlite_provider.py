@@ -98,3 +98,18 @@ async def test_get_storage_before_initialize_raises(tmp_path: Path):
     # handle is returned but using it before initialize must fail loudly.
     with pytest.raises(ConfigError):
         await handle.get("anything")
+
+
+@pytest.mark.asyncio
+async def test_sqlite_provider_creates_leases_table(tmp_path: Path):
+    """initialize() must create the leases table for use by the claim engine."""
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "data.sqlite"))
+    await provider.initialize()
+    try:
+        cur = await provider.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='leases'"
+        )
+        row = await cur.fetchone()
+        assert row is not None, "leases table should exist after initialize()"
+    finally:
+        await provider.aclose()

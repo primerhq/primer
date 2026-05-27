@@ -114,6 +114,26 @@ class SqliteStorageProvider(StorageProvider):
                 f"PRAGMA busy_timeout = {self._config.busy_timeout_ms}"
             )
             await self._conn.execute("PRAGMA foreign_keys = ON")
+            await self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS leases ("
+                "  kind              TEXT NOT NULL,"
+                "  entity_id         TEXT NOT NULL,"
+                "  claimed_by        TEXT,"
+                "  claimed_at        TEXT,"
+                "  last_heartbeat_at TEXT,"
+                "  expires_at        TEXT,"
+                "  next_attempt_at   TEXT NOT NULL DEFAULT (datetime('now')),"
+                "  priority_score    INTEGER NOT NULL DEFAULT 100,"
+                "  attempt_count     INTEGER NOT NULL DEFAULT 0,"
+                "  last_error        TEXT,"
+                "  PRIMARY KEY (kind, entity_id)"
+                ")"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS leases_claim_order "
+                "ON leases (priority_score, next_attempt_at) "
+                "WHERE claimed_by IS NULL"
+            )
             await self._conn.commit()
         except Exception as exc:
             # Roll back partial open on failure.
