@@ -44,8 +44,17 @@ def _inject_token(url: str, token: str | None) -> str:
 _TOKEN_PATTERN = re.compile(r"oauth2:[^@\s]+@")
 
 
-def _redact(text: str) -> str:
-    return _TOKEN_PATTERN.sub("oauth2:***@", text)
+def _redact(text: str, token: str | None = None) -> str:
+    """Strip our injected ``oauth2:<token>@`` prefix; if ``token`` is known,
+    also strip its bare appearance anywhere in the string (defence against
+    git versions or credential-helpers that echo the secret elsewhere).
+    """
+    out = _TOKEN_PATTERN.sub("oauth2:***@", text)
+    if token:
+        # Replace the literal token; do not regex-escape with re.escape
+        # since `out` is plain text not a pattern.
+        out = out.replace(token, "***")
+    return out
 
 
 def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -80,7 +89,7 @@ def ls_remote(url: str, *, token: str | None, ref: str) -> str:
     if proc.returncode != 0:
         raise HarnessGitError(
             "git_clone_failed" if "Authentication" in (proc.stderr or "") else "ref_not_found",
-            _redact((proc.stderr or "").strip() or "ls-remote failed"),
+            _redact((proc.stderr or "").strip() or "ls-remote failed", token),
         )
     lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
     if not lines:
@@ -113,7 +122,7 @@ def clone_at_ref(
         if proc.returncode != 0:
             raise HarnessGitError(
                 "git_clone_failed",
-                _redact((proc.stderr or "git init failed").strip()),
+                _redact((proc.stderr or "git init failed").strip(), token),
             )
         proc = _run(
             ["git", "fetch", "--depth=1", effective, ref],
@@ -123,14 +132,14 @@ def clone_at_ref(
             shutil.rmtree(dest, ignore_errors=True)
             raise HarnessGitError(
                 "git_clone_failed",
-                _redact((proc.stderr or "git fetch failed").strip()),
+                _redact((proc.stderr or "git fetch failed").strip(), token),
             )
         proc = _run(["git", "checkout", "-q", "FETCH_HEAD"], cwd=dest)
         if proc.returncode != 0:
             shutil.rmtree(dest, ignore_errors=True)
             raise HarnessGitError(
                 "git_clone_failed",
-                _redact((proc.stderr or "git checkout failed").strip()),
+                _redact((proc.stderr or "git checkout failed").strip(), token),
             )
         return
     # Symbolic ref path.
@@ -146,7 +155,7 @@ def clone_at_ref(
             code = "git_ref_not_found"
         else:
             code = "git_clone_failed"
-        raise HarnessGitError(code, _redact(stderr.strip() or "git clone failed"))
+        raise HarnessGitError(code, _redact(stderr.strip() or "git clone failed", token))
 
 
 __all__ = ["HarnessGitError", "clone_at_ref", "ls_remote"]

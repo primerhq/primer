@@ -88,3 +88,21 @@ def test_clone_unreachable_url_fails_safely(tmp_path):
         )
     # Error message must not contain the token
     assert "should-not-leak" not in str(ei.value)
+
+
+def test_redact_strips_bare_token_when_provided():
+    """Even if git emits the token outside the oauth2:...@ prefix
+    (e.g., from a credential-helper log), passing the known token
+    strips it from the message."""
+    msg = "git complained: ghp_LIVE_TOKEN_xyz is invalid"
+    out = _redact(msg, "ghp_LIVE_TOKEN_xyz")
+    assert "ghp_LIVE_TOKEN_xyz" not in out
+    assert "***" in out
+
+
+def test_redact_without_token_uses_pattern_only():
+    """_redact called without a token still strips the injected prefix."""
+    msg = "fatal: oauth2:secretval@host/p"
+    out = _redact(msg)
+    assert "secretval" not in out
+    assert "oauth2:***@" in out

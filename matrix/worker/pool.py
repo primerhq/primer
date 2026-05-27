@@ -657,8 +657,29 @@ class WorkerPool:
                 harness_id=lease.harness_id,
                 worker_id=self._worker_id,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("harness operation failed for %s", lease.harness_id)
+            # Defence in depth: dispatch is supposed to always release
+            # the claim, but if anything escapes (e.g., storage failure
+            # before the dispatch's own try-block runs), release here
+            # so the row isn't stuck claimed until the sweeper's window.
+            try:
+                from matrix.model.harness import HarnessStatus
+                import json as _json
+                await self._scheduler.release_harness(
+                    lease.harness_id,
+                    self._worker_id,
+                    next_status=HarnessStatus.ERROR,
+                    last_operation_error=_json.dumps({
+                        "code": "pool_unhandled",
+                        "message": str(exc),
+                    }),
+                )
+            except Exception:
+                logger.exception(
+                    "pool: also failed to release harness %s after error",
+                    lease.harness_id,
+                )
         finally:
             self._in_flight_harnesses.discard(lease.harness_id)
             self._wake.set()

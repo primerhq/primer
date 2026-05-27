@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,7 @@ from jinja2.exceptions import (
 
 
 _KINDS = ("agent", "graph", "collection", "document", "toolset")
+_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 
 
 class HarnessTemplateError(Exception):
@@ -45,13 +46,19 @@ class RenderedFile:
 
 
 def _env() -> SandboxedEnvironment:
+    import base64
+    import json as _json
+
     env = SandboxedEnvironment(
         undefined=StrictUndefined,
         autoescape=False,
         trim_blocks=False,
         lstrip_blocks=False,
     )
-    env.filters["tojson"] = lambda obj: yaml.safe_dump(obj, default_flow_style=False)
+    env.filters["tojson"] = lambda obj: _json.dumps(obj)
+    env.filters["b64encode"] = lambda s: base64.b64encode(
+        s.encode("utf-8") if isinstance(s, str) else s,
+    ).decode("ascii")
     return env
 
 
@@ -140,6 +147,12 @@ def render_bundle(
             raise HarnessTemplateError(
                 "template_yaml_invalid",
                 f"{rel}: missing or invalid 'name'",
+                template=rel,
+            )
+        if not _NAME_RE.match(name):
+            raise HarnessTemplateError(
+                "template_yaml_invalid",
+                f"{rel}: 'name' must match [a-z][a-z0-9-]{{0,62}} (got {name!r})",
                 template=rel,
             )
         if not isinstance(spec, dict):

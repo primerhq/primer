@@ -890,3 +890,100 @@ async def test_apply_sync_replaces_rendering_snapshot(fake_storage_provider):
     assert rendering.overrides_hash == "new-oh"
     assert rendering.schema_hash == "sh1"
     assert len(rendering.entries) == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression: harness_id in rendered payload MUST NOT override dispatch value
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_install_payload_cannot_override_harness_id(fake_storage_provider):
+    """If a template's rendered payload accidentally carries a harness_id,
+    the dispatch's own value MUST win — otherwise the harness-managed lock
+    is bypassable by smuggling a different harness_id through a template."""
+    harness = _make_harness("acme")
+
+    poisoned = RenderedEntry(
+        kind="agent", template_name="asst",
+        resolved_id="acme__asst",
+        template_source_hash="h", rendered_hash="r",
+        rendered_payload={
+            "harness_id": "attacker-controlled-value",
+            "description": "assistant",
+            "model": {"provider_id": "p", "model_name": "m"},
+        },
+    )
+
+    error = await apply_install(
+        storage_provider=fake_storage_provider,
+        harness=harness,
+        entries=[poisoned],
+        rendered_files_by_name={},
+        bundle_hash="bh", overrides_hash="oh", schema_hash=None,
+    )
+    assert error is None
+
+    from matrix.model.agent import Agent
+    stored = await fake_storage_provider.get_storage(Agent).get("acme__asst")
+    assert stored.harness_id == harness.id, (
+        "Dispatch's harness_id must win over template payload"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regression: apply_sync per-entity failure should be reported via return
+# (the dispatch is then responsible for NOT stamping bundle_hash). Here we
+# pin the contract that apply_sync surfaces partial failures.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_sync_surfaces_partial_apply_errors(fake_storage_provider):
+    """When a create inside apply_sync raises, apply_sync returns a
+    partial_apply_failure error JSON (so dispatch can avoid stamping
+    bundle_hash) — but the snapshot is still written with the new
+    entries (so the next sync diffs against the right baseline)."""
+    harness = _make_harness("acme")
+
+    # Pre-seed an old rendering so we hit the non-fast-path branch.
+    old_rendering = HarnessRendering(
+        id=harness.id, harness_id=harness.id,
+        bundle_hash="old-bh", overrides_hash="old-oh", schema_hash=None,
+        entries=[], rendered_at=datetime.now(timezone.utc),
+    )
+    await fake_storage_provider.get_storage(HarnessRendering).create(old_rendering)
+
+    entry = RenderedEntry(
+        kind="agent", template_name="asst", resolved_id="acme__asst",
+        template_source_hash="h", rendered_hash="r",
+        rendered_payload={
+            "description": "assistant",
+            "model": {"provider_id": "p", "model_name": "m"},
+        },
+    )
+
+    # Wrap the Agent storage to raise on create, simulating a per-entity
+    # apply failure (e.g. unique-id conflict with a hand-created entity).
+    from matrix.model.agent import Agent
+    agent_storage = fake_storage_provider.get_storage(Agent)
+    orig_create = agent_storage.create
+
+    async def boom(_obj):
+        raise RuntimeError("simulated id conflict")
+
+    agent_storage.create = boom  # type: ignore[assignment]
+    try:
+        error = await apply_sync(
+            storage_provider=fake_storage_provider,
+            harness=harness,
+            new_entries=[entry],
+            rendered_files_by_name={},
+            bundle_hash="new-bh", overrides_hash="new-oh", schema_hash=None,
+        )
+    finally:
+        agent_storage.create = orig_create  # type: ignore[assignment]
+    assert error is not None
+    import json as _json
+    parsed = _json.loads(error)
+    assert parsed["code"] == "partial_apply_failure"

@@ -400,21 +400,24 @@ async def install_harness(
             },
         )
 
-    # Validate current overrides against the schema
-    if harness.overrides:
-        try:
-            import jsonschema
-            jsonschema.validate(instance=harness.overrides, schema=harness.overrides_schema)
-        except Exception as exc:
-            errors = []
-            if hasattr(exc, "message"):
-                errors.append(str(exc.message))
-            else:
-                errors.append(str(exc))
-            return JSONResponse(
-                status_code=422,
-                content={"code": "overrides_invalid", "errors": errors},
-            )
+    # Always validate the current overrides against the schema — even if
+    # overrides is an empty dict, the schema may declare required fields
+    # so empty input is invalid input, not a no-op skip.
+    try:
+        import jsonschema
+        jsonschema.validate(
+            instance=harness.overrides, schema=harness.overrides_schema,
+        )
+    except Exception as exc:
+        errors = []
+        if hasattr(exc, "message"):
+            errors.append(str(exc.message))
+        else:
+            errors.append(str(exc))
+        return JSONResponse(
+            status_code=422,
+            content={"code": "overrides_invalid", "errors": errors},
+        )
 
     harness.pending_operation = HarnessOperation.INSTALL
     updated = await storage.update(harness)

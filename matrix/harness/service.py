@@ -297,10 +297,13 @@ def _entity_from_entry(
 ) -> Any:
     """Reconstruct the entity model from a RenderedEntry with harness_id stamped."""
     model_cls = _kind_models()[entry.kind]
+    # harness_id MUST be last so a template accidentally (or maliciously)
+    # carrying a harness_id field in the rendered payload can never override
+    # the dispatch's own value.
     data = {
         "id": entry.resolved_id,
-        "harness_id": harness_id,
         **entry.rendered_payload,
+        "harness_id": harness_id,
     }
     return model_cls.model_validate(data)
 

@@ -483,22 +483,25 @@ def _make_install_handler(storage_provider: "StorageProvider", event_bus: Any) -
                 error_type="overrides-schema-missing",
             )
 
-        # Validate current overrides against the schema
-        if harness.overrides:
-            try:
-                import jsonschema
+        # Always validate the current overrides against the schema — even
+        # for empty {} (the schema may declare required fields, in which
+        # case empty input is invalid input, not a no-op).
+        try:
+            import jsonschema
 
-                jsonschema.validate(instance=harness.overrides, schema=harness.overrides_schema)
-            except Exception as exc:
-                errors = []
-                if hasattr(exc, "message"):
-                    errors.append(str(exc.message))
-                else:
-                    errors.append(str(exc))
-                return _err(
-                    "Current overrides are invalid: " + "; ".join(errors),
-                    error_type="overrides-invalid",
-                )
+            jsonschema.validate(
+                instance=harness.overrides, schema=harness.overrides_schema,
+            )
+        except Exception as exc:
+            errors = []
+            if hasattr(exc, "message"):
+                errors.append(str(exc.message))
+            else:
+                errors.append(str(exc))
+            return _err(
+                "Current overrides are invalid: " + "; ".join(errors),
+                error_type="overrides-invalid",
+            )
 
         harness.pending_operation = HarnessOperation.INSTALL
         updated = await storage.update(harness)

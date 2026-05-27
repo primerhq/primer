@@ -23,7 +23,7 @@ from typing import Any
 import jsonschema
 import jsonschema.exceptions
 
-from matrix.harness.git import HarnessGitError, clone_at_ref, ls_remote
+from matrix.harness.git import HarnessGitError, _redact, clone_at_ref, ls_remote
 from matrix.harness.hashes import hash_bundle, hash_overrides, hash_schema
 from matrix.harness.service import (
     BuildErrors,
@@ -61,6 +61,12 @@ HARNESS_HEARTBEAT_INTERVAL_SECONDS = 10.0
 # harness.yaml validation constants
 _EXPECTED_API_VERSION = "matrix/v1"
 _EXPECTED_KIND = "Harness"
+
+
+def _safe_error_message(exc: Exception, token: str | None) -> str:
+    """Defence in depth: any third-party exception text routed into
+    ``last_operation_error`` is passed through the token redactor."""
+    return _redact(str(exc), token)
 
 
 @dataclass
@@ -121,27 +127,41 @@ async def run_one_harness_operation(
         if lease_lost.is_set():
             return
 
-        if operation == HarnessOperation.FETCH:
-            next_status, error_json = await _do_fetch(deps, harness)
-        elif operation == HarnessOperation.INSTALL:
-            next_status, error_json = await _do_install(deps, harness)
-        elif operation == HarnessOperation.SYNC:
-            next_status, error_json = await _do_sync(deps, harness)
-        elif operation == HarnessOperation.UNINSTALL:
-            await _do_uninstall(deps, harness)
-            # Row is gone — skip release, just publish done.
-            await deps.event_bus.publish(
-                f"harness:{harness_id}:done", {"harness_id": harness_id},
-            )
-            return
-        else:
-            logger.error(
-                "harness %s unknown operation %r — releasing as error",
+        try:
+            if operation == HarnessOperation.FETCH:
+                next_status, error_json = await _do_fetch(deps, harness)
+            elif operation == HarnessOperation.INSTALL:
+                next_status, error_json = await _do_install(deps, harness)
+            elif operation == HarnessOperation.SYNC:
+                next_status, error_json = await _do_sync(deps, harness)
+            elif operation == HarnessOperation.UNINSTALL:
+                await _do_uninstall(deps, harness)
+                # Row is gone — skip release, just publish done.
+                await deps.event_bus.publish(
+                    f"harness:{harness_id}:done", {"harness_id": harness_id},
+                )
+                return
+            else:
+                logger.error(
+                    "harness %s unknown operation %r — releasing as error",
+                    harness_id, operation,
+                )
+                next_status = HarnessStatus.ERROR
+                error_json = json.dumps(
+                    {"code": "unknown_operation", "message": str(operation)}
+                )
+        except Exception as exc:
+            # Defence in depth: each `_do_*` is supposed to catch its own
+            # exceptions and return (ERROR, error_json). If one slips
+            # through, we'd leak the claim to the sweeper's 90s window.
+            # Catch here so release_harness always runs.
+            logger.exception(
+                "harness %s operation %r raised uncaught — releasing as ERROR",
                 harness_id, operation,
             )
             next_status = HarnessStatus.ERROR
             error_json = json.dumps(
-                {"code": "unknown_operation", "message": str(operation)}
+                {"code": "dispatch_unhandled", "message": str(exc)}
             )
 
         if not lease_lost.is_set():
@@ -264,7 +284,7 @@ async def _do_fetch(
         )
     except Exception as exc:
         return HarnessStatus.ERROR, json.dumps(
-            {"code": "git_clone_failed", "message": str(exc)}
+            {"code": "git_clone_failed", "message": _safe_error_message(exc, token)}
         )
 
     try:
@@ -286,7 +306,7 @@ async def _do_fetch(
                 )
             except Exception as exc:
                 return HarnessStatus.ERROR, json.dumps(
-                    {"code": "git_clone_failed", "message": str(exc)}
+                    {"code": "git_clone_failed", "message": _safe_error_message(exc, token)}
                 )
 
             # Resolve base path
@@ -306,7 +326,7 @@ async def _do_fetch(
                 harness_meta = yaml.safe_load(harness_yaml_path.read_text())
             except Exception as exc:
                 return HarnessStatus.ERROR, json.dumps(
-                    {"code": "harness_yaml_invalid", "message": str(exc)}
+                    {"code": "harness_yaml_invalid", "message": _safe_error_message(exc, token)}
                 )
             if not isinstance(harness_meta, dict):
                 return HarnessStatus.ERROR, json.dumps(
@@ -399,7 +419,7 @@ async def _do_fetch(
     except Exception as exc:
         logger.exception("_do_fetch unhandled error for harness %s", harness.id)
         return HarnessStatus.ERROR, json.dumps(
-            {"code": "fetch_failed", "message": str(exc)}
+            {"code": "fetch_failed", "message": _safe_error_message(exc, token)}
         )
 
 
@@ -530,7 +550,7 @@ async def _do_install(
     except Exception as exc:
         logger.exception("_do_install unhandled error for harness %s", harness.id)
         return HarnessStatus.ERROR, json.dumps(
-            {"code": "install_failed", "message": str(exc)}
+            {"code": "install_failed", "message": _safe_error_message(exc, token)}
         )
 
 
@@ -643,18 +663,25 @@ async def _do_sync(
                 schema_hash=harness.schema_hash,
             )
 
-            # Update harness row
+            # Only stamp bundle_hash / resolved_commit when the apply
+            # was clean. On partial failure we keep the old bundle_hash
+            # so the next sync's fast-path does NOT skip — it'll re-run
+            # the diff against the actual deployed state.
             harness_storage = deps.storage_provider.get_storage(Harness)
             refreshed = await harness_storage.get(harness.id)
             if refreshed is not None:
-                updated = refreshed.model_copy(update={
-                    "bundle_hash": current_bundle_hash,
-                    "resolved_commit": harness.available_commit,
-                    "commits_ahead": False,
-                    "overrides_dirty": False,
-                    "schema_missing_input": False,
+                update_fields: dict[str, Any] = {
                     "overrides_hash": overrides_hash,
-                })
+                }
+                if error is None:
+                    update_fields.update({
+                        "bundle_hash": current_bundle_hash,
+                        "resolved_commit": harness.available_commit,
+                        "commits_ahead": False,
+                        "overrides_dirty": False,
+                        "schema_missing_input": False,
+                    })
+                updated = refreshed.model_copy(update=update_fields)
                 await harness_storage.update(updated)
 
             if error is not None:
@@ -665,7 +692,7 @@ async def _do_sync(
     except Exception as exc:
         logger.exception("_do_sync unhandled error for harness %s", harness.id)
         return HarnessStatus.ERROR, json.dumps(
-            {"code": "sync_failed", "message": str(exc)}
+            {"code": "sync_failed", "message": _safe_error_message(exc, token)}
         )
 
 
