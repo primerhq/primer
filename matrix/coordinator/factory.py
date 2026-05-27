@@ -1,8 +1,7 @@
 """Factory that builds a :class:`Coordinator` matching the bus type.
 
 In-memory bus → in-memory coordinator (single mode).
-Postgres bus → falls through to in-memory for now; Postgres backends
-land in Task 15 of the migration plan.
+Postgres bus → Postgres coordinator (distributed mode).
 
 Selection mirrors the existing scheduler/bus factory pattern so a single
 runtime-mode choice configures the whole stack consistently.
@@ -41,11 +40,13 @@ class CoordinatorFactory:
                 invalidation_bus=InMemoryInvalidationBus(),
                 leader_elector=InMemoryLeaderElector(),
             )
-        # Postgres backends are added in Task 15; until then the factory
-        # falls through to in-memory even for the Postgres bus, with a
-        # warning the lifespan logs at the call site.
+        from matrix.coordinator.postgres import (
+            PostgresInvalidationBus,
+            PostgresLeaderElector,
+            PostgresRateLimiter,
+        )
         return Coordinator(
-            rate_limiter=InMemoryRateLimiter(),
-            invalidation_bus=InMemoryInvalidationBus(),
-            leader_elector=InMemoryLeaderElector(),
+            rate_limiter=PostgresRateLimiter(storage_provider, owner_id),
+            invalidation_bus=PostgresInvalidationBus(event_bus),
+            leader_elector=PostgresLeaderElector(storage_provider, owner_id),
         )

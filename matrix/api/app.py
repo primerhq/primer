@@ -218,6 +218,7 @@ def _make_lifespan(config: AppConfig):
         harness_sweeper = None
         watcher_manager = None
         mcp_task_bridge = None
+        app.state.coordinator_sweeper = None
         if scheduler is not None:
             from matrix.bus.in_memory import InMemoryEventBus
             from matrix.bus.listener import YieldEventListener
@@ -250,7 +251,7 @@ def _make_lifespan(config: AppConfig):
                 owner_id=_owner_id,
             )
             app.state.coordinator = coordinator
-            logger.info("lifespan: coordinator constructed (in-memory backends)")
+            logger.info("lifespan: coordinator constructed")
             await provider_registry.bind_invalidation_bus(coordinator.invalidation_bus)
             await provider_registry.bind_rate_limiter(coordinator.rate_limiter)
             # Re-bind the channel inbox now that the event bus exists.
@@ -335,6 +336,12 @@ def _make_lifespan(config: AppConfig):
             )
             mcp_task_bridge.start(coordinator.leader_elector)
             logger.info("lifespan: mcp task bridge started")
+
+            from matrix.coordinator.sweeper import CoordinatorSweeper
+
+            coordinator_sweeper = CoordinatorSweeper(storage_provider=storage_provider)
+            coordinator_sweeper.start(coordinator.leader_elector)
+            app.state.coordinator_sweeper = coordinator_sweeper
         app.state.event_bus = event_bus
 
         # Build the always-on ``harness`` toolset. Needs event_bus so it
@@ -457,6 +464,11 @@ def _make_lifespan(config: AppConfig):
                     logger.exception("worker_pool.drain_and_stop failed")
             # Stop yield background tasks BEFORE the scheduler / bus
             # close so an in-flight tick doesn't race a closing bus.
+            if getattr(app.state, "coordinator_sweeper", None) is not None:
+                try:
+                    await app.state.coordinator_sweeper.stop()
+                except Exception:
+                    logger.exception("coordinator_sweeper stop failed")
             for task, name in (
                 (mcp_task_bridge, "mcp_task_bridge"),
                 (watcher_manager, "watcher_manager"),
