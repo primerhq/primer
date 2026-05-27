@@ -1,15 +1,43 @@
+from __future__ import annotations
+
+from datetime import datetime, UTC
+
 from matrix.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
+from matrix.int.storage import Storage
+from matrix.model.harness import HarnessStatus
 
 
 class HarnessClaimAdapter(ClaimAdapter):
     kind = ClaimKind.HARNESS
     entity_table = "harnesses"
 
-    def __init__(self, *, harness_storage) -> None:
+    def __init__(self, *, harness_storage: Storage | None) -> None:
         self._storage = harness_storage
 
     def eligibility_sql(self) -> str:
         return "e.data->>'pending_operation' IS NOT NULL"
 
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
-        await self._storage.on_release(entity_id, outcome=outcome)
+        if self._storage is None:
+            raise RuntimeError(
+                "harness_storage is None — cannot run on_release without a storage backend"
+            )
+        harness = await self._storage.get(entity_id)
+        if harness is None:
+            return
+
+        now = datetime.now(UTC)
+        if outcome.success:
+            new_status = HarnessStatus.READY
+            last_error = None
+        else:
+            new_status = HarnessStatus.ERROR
+            last_error = outcome.last_error
+
+        updated = harness.model_copy(update={
+            "pending_operation": None,
+            "status": new_status,
+            "last_operation_at": now,
+            "last_operation_error": last_error,
+        })
+        await self._storage.update(updated)

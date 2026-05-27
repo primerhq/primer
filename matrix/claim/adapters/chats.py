@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 from matrix.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
+from matrix.int.storage import Storage
 
 
 class ChatClaimAdapter(ClaimAdapter):
     kind = ClaimKind.CHAT
     entity_table = "chats"
 
-    def __init__(self, *, chat_storage) -> None:
+    def __init__(self, *, chat_storage: Storage | None) -> None:
         self._storage = chat_storage
 
     def eligibility_sql(self) -> str:
@@ -16,6 +19,15 @@ class ChatClaimAdapter(ClaimAdapter):
         )
 
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
-        # Set turn_status to 'idle' (success) or 'claimable' (more user input pending)
-        next_status = "idle" if outcome.success and outcome.drop_lease else "claimable"
-        await self._storage.set_turn_status(entity_id, next_status)
+        if self._storage is None:
+            raise RuntimeError(
+                "chat_storage is None — cannot run on_release without a storage backend"
+            )
+        chat = await self._storage.get(entity_id)
+        if chat is None:
+            return
+
+        # 'idle' when the lease is fully done; 'claimable' if more work pending.
+        next_status = "idle" if (outcome.success and outcome.drop_lease) else "claimable"
+        updated = chat.model_copy(update={"turn_status": next_status})
+        await self._storage.update(updated)
