@@ -96,11 +96,12 @@ class TestConstructor:
         with pytest.raises(ConfigError, match="GoogleConfig"):
             GeminiEmbedder(provider)
 
-    def test_initialises_semaphore(self) -> None:
+    def test_initialises_rate_limiter_and_max_concurrency(self) -> None:
         provider = _make_provider(max_concurrency=3)
         embedder = GeminiEmbedder(provider)
-        assert isinstance(embedder._semaphore, asyncio.Semaphore)
-        assert embedder._semaphore._value == 3  # type: ignore[attr-defined]
+        assert embedder._rate_limiter is not None
+        assert embedder._max_concurrency == 3
+        assert embedder._rate_limit_key == "embedder:gemini-emb-default"
 
     def test_logs_init(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="matrix.embedder.gemini")

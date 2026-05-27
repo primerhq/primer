@@ -14,7 +14,6 @@ details.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -23,6 +22,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from matrix.common.openai_errors import classify_openai_exception
+from matrix.int.coordinator import RateLimiter
 from matrix.int.embedder import Embedder
 from matrix.model.chat import (
     AudioPart,
@@ -193,7 +193,12 @@ def _translate_response(resp: Any) -> EmbedResponse:
 class OpenAIEmbedder(Embedder):
     """Embedding adapter for the OpenAI Embeddings API."""
 
-    def __init__(self, provider: EmbeddingProvider) -> None:
+    def __init__(
+        self,
+        provider: EmbeddingProvider,
+        *,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
         if provider.provider != EmbeddingProviderType.OPENAI:
             raise ConfigError(
                 f"OpenAIEmbedder requires provider type OPENAI; "
@@ -218,7 +223,12 @@ class OpenAIEmbedder(Embedder):
             )
 
         self._client: AsyncOpenAI | None = None
-        self._semaphore = asyncio.Semaphore(provider.limits.max_concurrency)
+        if rate_limiter is None:
+            from matrix.coordinator.in_memory import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter()
+        self._rate_limiter = rate_limiter
+        self._rate_limit_key = f"embedder:{provider.id}"
+        self._max_concurrency = provider.limits.max_concurrency
 
         logger.info(
             "OpenAI embedder initialized",
@@ -289,7 +299,9 @@ class OpenAIEmbedder(Embedder):
             },
         )
 
-        async with self._semaphore:
+        async with await self._rate_limiter.acquire(
+            self._rate_limit_key, max_concurrency=self._max_concurrency,
+        ):
             client = self._get_client()
             try:
                 resp = await client.embeddings.create(**request)

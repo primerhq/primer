@@ -73,36 +73,68 @@ def _default_llm_factory(provider: LLMProvider) -> LLM:  # pragma: no cover
     return _build_default_llm_factory()(provider)
 
 
+def _build_default_embedder_factory(
+    *,
+    rate_limiter: "RateLimiter | None" = None,
+) -> Callable[[EmbeddingProvider], Embedder]:
+    """Build the default ``embedder_factory`` closure.
+
+    ``rate_limiter`` is forwarded to every embedder adapter so all
+    providers participate in the global concurrency limiter. ``None``
+    causes each adapter to fall back to a local
+    :class:`~matrix.coordinator.in_memory.InMemoryRateLimiter`.
+    """
+    def _factory(provider: EmbeddingProvider) -> Embedder:  # pragma: no cover
+        match provider.provider:
+            case EmbeddingProviderType.HUGGINGFACE:
+                from matrix.embedder.huggingface import HuggingFaceEmbedder
+                return HuggingFaceEmbedder(provider, rate_limiter=rate_limiter)
+            case EmbeddingProviderType.OPENAI:
+                from matrix.embedder.openai import OpenAIEmbedder
+                return OpenAIEmbedder(provider, rate_limiter=rate_limiter)
+            case EmbeddingProviderType.GEMINI:
+                from matrix.embedder.gemini import GeminiEmbedder
+                return GeminiEmbedder(provider, rate_limiter=rate_limiter)
+            case _:
+                raise ConfigError(
+                    f"unknown embedding provider type {provider.provider!r}"
+                )
+    return _factory
+
+
 def _default_embedder_factory(  # pragma: no cover
     provider: EmbeddingProvider,
 ) -> Embedder:
-    match provider.provider:
-        case EmbeddingProviderType.HUGGINGFACE:
-            from matrix.embedder.huggingface import HuggingFaceEmbedder
-            return HuggingFaceEmbedder(provider)
-        case EmbeddingProviderType.OPENAI:
-            from matrix.embedder.openai import OpenAIEmbedder
-            return OpenAIEmbedder(provider)
-        case EmbeddingProviderType.GEMINI:
-            from matrix.embedder.gemini import GeminiEmbedder
-            return GeminiEmbedder(provider)
-        case _:
-            raise ConfigError(
-                f"unknown embedding provider type {provider.provider!r}"
-            )
+    return _build_default_embedder_factory()(provider)
+
+
+def _build_default_cross_encoder_factory(
+    *,
+    rate_limiter: "RateLimiter | None" = None,
+) -> Callable[[CrossEncoderProvider], CrossEncoder]:
+    """Build the default ``cross_encoder_factory`` closure.
+
+    ``rate_limiter`` is forwarded to every cross-encoder adapter so all
+    providers participate in the global concurrency limiter. ``None``
+    causes each adapter to fall back to a local
+    :class:`~matrix.coordinator.in_memory.InMemoryRateLimiter`.
+    """
+    def _factory(provider: CrossEncoderProvider) -> CrossEncoder:  # pragma: no cover
+        match provider.provider:
+            case CrossEncoderProviderType.HUGGINGFACE:
+                from matrix.cross_encoder.huggingface import HuggingFaceCrossEncoder
+                return HuggingFaceCrossEncoder(provider, rate_limiter=rate_limiter)
+            case _:
+                raise ConfigError(
+                    f"unknown cross-encoder provider type {provider.provider!r}"
+                )
+    return _factory
 
 
 def _default_cross_encoder_factory(  # pragma: no cover
     provider: CrossEncoderProvider,
 ) -> CrossEncoder:
-    match provider.provider:
-        case CrossEncoderProviderType.HUGGINGFACE:
-            from matrix.cross_encoder.huggingface import HuggingFaceCrossEncoder
-            return HuggingFaceCrossEncoder(provider)
-        case _:
-            raise ConfigError(
-                f"unknown cross-encoder provider type {provider.provider!r}"
-            )
+    return _build_default_cross_encoder_factory()(provider)
 
 
 _SYSTEM_TOOLSET_ID = "system"
@@ -206,9 +238,13 @@ class ProviderRegistry:
         self._llm_factory = llm_factory or _build_default_llm_factory(
             rate_limiter=rate_limiter,
         )
-        self._embedder_factory = embedder_factory or _default_embedder_factory
+        self._embedder_factory = embedder_factory or _build_default_embedder_factory(
+            rate_limiter=rate_limiter,
+        )
         self._cross_encoder_factory = (
-            cross_encoder_factory or _default_cross_encoder_factory
+            cross_encoder_factory or _build_default_cross_encoder_factory(
+                rate_limiter=rate_limiter,
+            )
         )
         self._toolset_factory = toolset_factory or _default_toolset_factory
         # Reserved id ``system`` resolves to this immutable provider
@@ -462,6 +498,8 @@ class ProviderRegistry:
         Idempotent."""
         self._rate_limiter = rate_limiter
         self._llm_factory = _build_default_llm_factory(rate_limiter=rate_limiter)
+        self._embedder_factory = _build_default_embedder_factory(rate_limiter=rate_limiter)
+        self._cross_encoder_factory = _build_default_cross_encoder_factory(rate_limiter=rate_limiter)
 
     async def bind_invalidation_bus(self, bus: InvalidationBus) -> None:
         """Wire the registry's cache eviction to the bus. Idempotent."""

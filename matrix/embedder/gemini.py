@@ -9,7 +9,6 @@ matrix.common.google_errors.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Iterable
 from typing import Any
@@ -18,6 +17,7 @@ from google import genai
 from google.genai import types as gtypes
 
 from matrix.common.google_errors import classify_google_exception
+from matrix.int.coordinator import RateLimiter
 from matrix.int.embedder import Embedder
 from matrix.model.chat import (
     AudioPart,
@@ -157,7 +157,12 @@ def _translate_response(model: str, resp: Any) -> EmbedResponse:
 class GeminiEmbedder(Embedder):
     """Embedding adapter for the Gemini API embed_content endpoint."""
 
-    def __init__(self, provider: EmbeddingProvider) -> None:
+    def __init__(
+        self,
+        provider: EmbeddingProvider,
+        *,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
         if provider.provider != EmbeddingProviderType.GEMINI:
             raise ConfigError(
                 f"GeminiEmbedder requires provider type GEMINI; "
@@ -175,7 +180,12 @@ class GeminiEmbedder(Embedder):
         self._provider = provider
         self._config: GoogleConfig = provider.config
         self._client: genai.Client | None = None
-        self._semaphore = asyncio.Semaphore(provider.limits.max_concurrency)
+        if rate_limiter is None:
+            from matrix.coordinator.in_memory import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter()
+        self._rate_limiter = rate_limiter
+        self._rate_limit_key = f"embedder:{provider.id}"
+        self._max_concurrency = provider.limits.max_concurrency
 
         logger.info(
             "Gemini embedder initialized",
@@ -228,7 +238,9 @@ class GeminiEmbedder(Embedder):
             },
         )
 
-        async with self._semaphore:
+        async with await self._rate_limiter.acquire(
+            self._rate_limit_key, max_concurrency=self._max_concurrency,
+        ):
             client = self._get_client()
             try:
                 resp = await client.aio.models.embed_content(

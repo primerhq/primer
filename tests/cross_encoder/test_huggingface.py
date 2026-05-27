@@ -54,11 +54,12 @@ class TestConstructor:
         with pytest.raises(ConfigError, match="HUGGINGFACE"):
             HuggingFaceCrossEncoder(provider)
 
-    def test_initialises_semaphore_to_max_concurrency(self) -> None:
+    def test_initialises_rate_limiter_and_max_concurrency(self) -> None:
         provider = _make_provider(max_concurrency=3)
         adapter = HuggingFaceCrossEncoder(provider)
-        assert isinstance(adapter._semaphore, asyncio.Semaphore)
-        assert adapter._semaphore._value == 3  # type: ignore[attr-defined]
+        assert adapter._rate_limiter is not None
+        assert adapter._max_concurrency == 3
+        assert adapter._rate_limit_key == "cross_encoder:hf-ce"
 
     def test_logs_init_with_structured_context(
         self, caplog: pytest.LogCaptureFixture

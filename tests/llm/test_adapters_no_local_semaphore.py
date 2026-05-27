@@ -1,5 +1,5 @@
-"""Pin that no LLM adapter retains a local asyncio.Semaphore — all
-concurrency is mediated through RateLimiter."""
+"""Pin that no LLM/embedder/cross-encoder adapter retains a local
+asyncio.Semaphore — all concurrency is mediated through RateLimiter."""
 
 from __future__ import annotations
 
@@ -9,13 +9,20 @@ import inspect
 import pytest
 
 
-@pytest.mark.parametrize("module_path", [
+_ADAPTER_MODULES = [
     "matrix.llm.anthropic",
     "matrix.llm.openresponses",
     "matrix.llm.gemini",
     "matrix.llm.ollama",
-])
-def test_llm_adapter_no_local_semaphore(module_path):
+    "matrix.embedder.openai",
+    "matrix.embedder.gemini",
+    "matrix.embedder.huggingface",
+    "matrix.cross_encoder.huggingface",
+]
+
+
+@pytest.mark.parametrize("module_path", _ADAPTER_MODULES)
+def test_adapter_no_local_semaphore(module_path):
     module = importlib.import_module(module_path)
     source = inspect.getsource(module)
     assert "asyncio.Semaphore(" not in source, (
@@ -23,15 +30,16 @@ def test_llm_adapter_no_local_semaphore(module_path):
     )
 
 
-@pytest.mark.parametrize("module_path,class_name", [
+_KWARG_TARGETS = [
     ("matrix.llm.openresponses", "OpenResponsesLLM"),
     ("matrix.llm.gemini", "GeminiLLM"),
     ("matrix.llm.ollama", "OllamaLLM"),
-])
+]
+
+
+@pytest.mark.parametrize("module_path,class_name", _KWARG_TARGETS)
 def test_llm_adapter_accepts_rate_limiter_kwarg(module_path, class_name):
     module = importlib.import_module(module_path)
     cls = getattr(module, class_name)
     sig = inspect.signature(cls.__init__)
-    assert "rate_limiter" in sig.parameters, (
-        f"{class_name}.__init__ must accept rate_limiter kwarg."
-    )
+    assert "rate_limiter" in sig.parameters

@@ -19,6 +19,7 @@ from typing import Any
 
 from sentence_transformers import SentenceTransformer
 
+from matrix.int.coordinator import RateLimiter
 from matrix.int.embedder import Embedder
 from matrix.model.chat import (
     AudioPart,
@@ -163,7 +164,12 @@ def _classify_hf_exception(exc: Exception) -> MatrixError:
 class HuggingFaceEmbedder(Embedder):
     """Local embedding adapter via sentence-transformers."""
 
-    def __init__(self, provider: EmbeddingProvider) -> None:
+    def __init__(
+        self,
+        provider: EmbeddingProvider,
+        *,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
         if provider.provider != EmbeddingProviderType.HUGGINGFACE:
             raise ConfigError(
                 f"HuggingFaceEmbedder requires provider type HUGGINGFACE; "
@@ -176,7 +182,12 @@ class HuggingFaceEmbedder(Embedder):
         self._provider = provider
         self._config: HuggingFaceConfig = provider.config
         self._models: dict[str, SentenceTransformer] = {}
-        self._semaphore = asyncio.Semaphore(provider.limits.max_concurrency)
+        if rate_limiter is None:
+            from matrix.coordinator.in_memory import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter()
+        self._rate_limiter = rate_limiter
+        self._rate_limit_key = f"embedder:{provider.id}"
+        self._max_concurrency = provider.limits.max_concurrency
 
         logger.info(
             "HuggingFace embedder initialized",
@@ -237,7 +248,9 @@ class HuggingFaceEmbedder(Embedder):
             },
         )
 
-        async with self._semaphore:
+        async with await self._rate_limiter.acquire(
+            self._rate_limit_key, max_concurrency=self._max_concurrency,
+        ):
             st_model = await self._get_model(model)
             try:
                 arrays = await asyncio.to_thread(

@@ -19,6 +19,7 @@ from collections.abc import Iterable
 
 from sentence_transformers import CrossEncoder as STCrossEncoder
 
+from matrix.int.coordinator import RateLimiter
 from matrix.int.cross_encoder import CrossEncoder
 from matrix.model.except_ import (
     AuthenticationError,
@@ -93,7 +94,12 @@ def _predict_sync(
 class HuggingFaceCrossEncoder(CrossEncoder):
     """Local cross-encoder adapter via sentence-transformers."""
 
-    def __init__(self, provider: CrossEncoderProvider) -> None:
+    def __init__(
+        self,
+        provider: CrossEncoderProvider,
+        *,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
         if provider.provider != CrossEncoderProviderType.HUGGINGFACE:
             raise ConfigError(
                 "HuggingFaceCrossEncoder requires provider type "
@@ -107,7 +113,12 @@ class HuggingFaceCrossEncoder(CrossEncoder):
         self._provider = provider
         self._config: HuggingFaceCrossEncoderConfig = provider.config
         self._models: dict[str, STCrossEncoder] = {}
-        self._semaphore = asyncio.Semaphore(provider.limits.max_concurrency)
+        if rate_limiter is None:
+            from matrix.coordinator.in_memory import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter()
+        self._rate_limiter = rate_limiter
+        self._rate_limit_key = f"cross_encoder:{provider.id}"
+        self._max_concurrency = provider.limits.max_concurrency
         # Resolve max_pair_length per-model from the provider's catalogue
         # so we can pass it to predict if the user set it.
         self._max_pair_length: dict[str, int | None] = {
@@ -171,7 +182,9 @@ class HuggingFaceCrossEncoder(CrossEncoder):
         encoder = await self._get_model(model)
         pairs = [(query, doc) for doc in documents]
 
-        async with self._semaphore:
+        async with await self._rate_limiter.acquire(
+            self._rate_limit_key, max_concurrency=self._max_concurrency,
+        ):
             try:
                 scores = await asyncio.to_thread(
                     _predict_sync, encoder, pairs, batch_size

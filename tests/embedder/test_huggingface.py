@@ -67,11 +67,12 @@ class TestConstructor:
         with pytest.raises(ConfigError, match="HuggingFaceConfig"):
             HuggingFaceEmbedder(provider)
 
-    def test_initialises_semaphore_to_max_concurrency(self) -> None:
+    def test_initialises_rate_limiter_and_max_concurrency(self) -> None:
         provider = _make_provider(max_concurrency=3)
         embedder = HuggingFaceEmbedder(provider)
-        assert isinstance(embedder._semaphore, asyncio.Semaphore)
-        assert embedder._semaphore._value == 3  # type: ignore[attr-defined]
+        assert embedder._rate_limiter is not None
+        assert embedder._max_concurrency == 3
+        assert embedder._rate_limit_key == "embedder:hf-default"
 
     def test_logs_init_with_structured_context(
         self, caplog: pytest.LogCaptureFixture
