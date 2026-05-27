@@ -488,7 +488,15 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           if (cancelled) return;
           const items = (data && data.items) || [];
           if (items.length === 0) break;
-          all.push(...items);
+          // REST returns ChatMessage rows with the kind-specific fields
+          // nested under `payload`. WS frames spread payload into the
+          // top-level (see chats router _message_to_wire). The renderers
+          // read top-level fields (delta, name, arguments, result, …),
+          // so we flatten on load to keep both sources homogeneous.
+          for (const row of items) {
+            const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+            all.push({ ...payload, ...row });
+          }
           cursor = items[items.length - 1].seq || cursor;
           if (items.length < PAGE) break;
         }
