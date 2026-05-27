@@ -557,6 +557,12 @@ class ChatTurnRunner:
             # user_message that the caller will re-emit via _build_prompt.
             rows = rows[:-1]
 
+        # Rows that previously triggered a model-side rejection (e.g. a
+        # tool_call/tool_result the active model can't render) are
+        # flagged ``_history_excluded`` by _sanitize_unsupported_attachments
+        # so subsequent turns don't replay the same upstream 400.
+        rows = [r for r in rows if not (r.payload or {}).get("_history_excluded")]
+
         out: list[Message] = []
         current_assistant_text: list[str] = []
         current_assistant_tools: list[ToolCallPart] = []
@@ -738,9 +744,26 @@ class ChatTurnRunner:
         rows = await self._read_messages_full(chat.id)
         sanitized = 0
         for row in rows:
+            payload = row.payload or {}
+
+            # tool_call / tool_result: the model that rejected the turn
+            # likely doesn't support tool use at all (e.g. text-only
+            # gemma rejecting a prior web__http-request from a model
+            # swap). Flag the row as history-excluded so subsequent
+            # turns rebuild a clean prompt. The row stays in storage so
+            # the UI/replay can still render it as historical context.
+            if row.kind in ("tool_call", "tool_result"):
+                if payload.get("_history_excluded"):
+                    continue
+                new_payload = dict(payload)
+                new_payload["_history_excluded"] = True
+                row.payload = new_payload
+                await self._messages.update(row)
+                sanitized += 1
+                continue
+
             if row.kind != "user_message":
                 continue
-            payload = row.payload or {}
             raw_parts = payload.get("parts")
             if not isinstance(raw_parts, list) or not raw_parts:
                 continue

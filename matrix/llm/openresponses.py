@@ -88,15 +88,21 @@ _OPENAI_AUDIO_FORMATS: dict[str, str] = {
 }
 
 
-def _part_to_input_content(part: Part) -> dict[str, Any]:
+def _part_to_input_content(part: Part, *, role: str = "user") -> dict[str, Any]:
     """Translate one universal :class:`Part` into one OpenAI input
     content dict.
 
     Pure function, no I/O. Raises :class:`UnsupportedContentError` for
     parts the OpenAI Responses API does not accept.
+
+    ``role`` controls the text content discriminator: assistant messages
+    in the Responses API expect ``output_text`` while user/system use
+    ``input_text``. Passing the role lets us replay assistant turns
+    from history without the server returning ``invalid_union``.
     """
     if isinstance(part, TextPart):
-        return {"type": "input_text", "text": part.text}
+        text_type = "output_text" if role == "assistant" else "input_text"
+        return {"type": text_type, "text": part.text}
 
     if isinstance(part, ImagePart):
         out: dict[str, Any] = {"type": "input_image"}
@@ -223,7 +229,9 @@ def _messages_to_input_items(messages: list[Message]) -> list[dict[str, Any]]:
             else:
                 if current is None:
                     current = {"role": msg.role, "content": []}
-                current["content"].append(_part_to_input_content(part))
+                current["content"].append(
+                    _part_to_input_content(part, role=msg.role),
+                )
         if current is not None and current["content"]:
             items.append(current)
 
