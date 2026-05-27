@@ -45,6 +45,11 @@ from matrix.api.errors import common_responses
 from matrix.model.except_ import BadRequestError, ConflictError
 from matrix.api.registries import ProviderRegistry
 from matrix.api.routers._crud import make_crud_router
+from matrix.api.routers._managed import (
+    on_pre_update_reject_if_managed,
+    reject_if_body_sets_harness_id,
+    reject_if_managed,
+)
 from matrix.model.provider import (
     CrossEncoderProvider,
     EmbeddingProvider,
@@ -400,6 +405,9 @@ toolset_router = make_crud_router(
     tag="toolsets",
     on_update=_invalidate_toolset,
     on_delete=_toolset_on_delete,
+    on_pre_create=reject_if_body_sets_harness_id,
+    on_pre_update=on_pre_update_reject_if_managed,
+    on_pre_delete=reject_if_managed,
 )
 
 

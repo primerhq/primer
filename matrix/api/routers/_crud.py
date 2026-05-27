@@ -61,6 +61,12 @@ _OnPreUpdateHook = (
     Callable[[Any, Any, Request], Awaitable[None]] | None
 )
 
+# Pre-delete hook signature: ``(existing, request) -> None``.
+# Called BEFORE storage.delete with the stored row that is about to be
+# removed. Raise HTTPException to abort the delete (e.g. harness-managed
+# entity guard).
+_OnPreDeleteHook = Callable[[Any, Request], Awaitable[None]] | None
+
 
 def make_crud_router(
     *,
@@ -73,6 +79,7 @@ def make_crud_router(
     on_delete: _OnMutateHook = None,
     on_pre_create: _OnPreWriteHook = None,
     on_pre_update: _OnPreUpdateHook = None,
+    on_pre_delete: _OnPreDeleteHook = None,
     extra_get_responses: dict[int, dict[str, Any]] | None = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
@@ -102,6 +109,11 @@ def make_crud_router(
         invoked BEFORE ``storage.update()`` with both the new entity body
         and the prior stored row. Raise :class:`HTTPException` to abort
         the update (e.g. immutability checks).
+    on_pre_delete
+        Async callable ``async def(existing, request: Request) -> None``
+        invoked BEFORE ``storage.delete()`` with the stored row that is
+        about to be removed. Raise :class:`HTTPException` to abort the
+        delete (e.g. harness-managed entity guard).
     extra_get_responses
         Extra response codes documented for the GET-by-id route (in
         addition to the standard 404).
@@ -210,6 +222,8 @@ def make_crud_router(
             raise NotFoundError(
                 f"{model_cls.__name__} {entity_id!r} does not exist"
             )
+        if on_pre_delete is not None:
+            await on_pre_delete(existing, request)
         if on_delete is not None:
             await on_delete(entity_id, request)
         await storage.delete(entity_id)
