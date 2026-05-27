@@ -27,6 +27,7 @@ class InMemoryClaimEngine(ClaimEngine):
         self._adapters = adapters
         self._leases: dict[tuple[ClaimKind, str], _LeaseRow] = {}
         self._wake = asyncio.Event()
+        self._notify_queue: asyncio.Queue[tuple[ClaimKind, str]] = asyncio.Queue()
 
     async def upsert(
         self, kind: ClaimKind, entity_id: str, *, priority: int = 100,
@@ -43,6 +44,7 @@ class InMemoryClaimEngine(ClaimEngine):
                 kind=kind, entity_id=entity_id, priority_score=priority,
                 next_attempt_at=next_attempt_at or datetime.now(UTC),
             )
+            self._notify_queue.put_nowait((kind, entity_id))
         self._wake.set()
 
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
@@ -117,7 +119,16 @@ class InMemoryClaimEngine(ClaimEngine):
         self._wake.set()
 
     async def mark_resumable(self, kind: ClaimKind, entity_id: str, *, priority: int = 50) -> None:
-        raise NotImplementedError
+        row = self._leases.get((kind, entity_id))
+        if row is None:
+            await self.upsert(kind, entity_id, priority=priority)
+            return
+        row.priority_score = priority
+        row.next_attempt_at = datetime.now(UTC)
+        self._wake.set()
+        self._notify_queue.put_nowait((kind, entity_id))
 
     async def watch_ready(self) -> AsyncIterator[tuple[ClaimKind, str]]:
-        raise NotImplementedError
+        while True:
+            item = await self._notify_queue.get()
+            yield item

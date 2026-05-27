@@ -126,3 +126,23 @@ async def test_release_bumps_attempt_count_on_failure():
     assert row.attempt_count == 1
     assert row.last_error == "boom"
     assert row.next_attempt_at > datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_mark_resumable_lowers_priority_and_wakes():
+    engine = InMemoryClaimEngine(adapters={})
+    await engine.upsert(ClaimKind.SESSION, "s1", priority=100)
+    await engine.mark_resumable(ClaimKind.SESSION, "s1", priority=50)
+    row = engine._leases[(ClaimKind.SESSION, "s1")]
+    assert row.priority_score == 50
+
+
+@pytest.mark.asyncio
+async def test_watch_ready_yields_on_upsert():
+    engine = InMemoryClaimEngine(adapters={})
+    gen = engine.watch_ready()
+    task = asyncio.create_task(anext(gen))
+    await asyncio.sleep(0.01)
+    await engine.upsert(ClaimKind.CHAT, "c1")
+    result = await asyncio.wait_for(task, timeout=1.0)
+    assert result == (ClaimKind.CHAT, "c1")
