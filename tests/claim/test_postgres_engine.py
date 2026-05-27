@@ -1,4 +1,5 @@
-"""Tests for PostgresClaimEngine — upsert + delete_lease + claim_due.
+"""Tests for PostgresClaimEngine — upsert + delete_lease + claim_due +
+heartbeat + release + mark_resumable + watch_ready.
 
 Live Postgres tests require MATRIX_TEST_POSTGRES_URL and are skipped otherwise.
 Pure SQL-builder unit tests (``test_build_claim_query_*``) run without any
@@ -310,3 +311,366 @@ def test_build_claim_query_schema_qualifies_entity_tables():
     sql = build_claim_query(adapters, '"myschema"."leases"', schema="myschema")
 
     assert '"myschema"."chats"' in sql
+
+
+# ---------------------------------------------------------------------------
+# Tests — heartbeat
+# ---------------------------------------------------------------------------
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_heartbeat_refreshes_expiry(pg_engine, pg_storage):
+    """heartbeat extends expires_at and confirms the (kind, entity_id) pair."""
+    from datetime import UTC, timedelta
+
+    # Use the no-join adapter trick so no entity row is needed.
+    from matrix.int.claim import ClaimAdapter
+
+    class _NoJoinAdapter(ClaimAdapter):
+        kind = ClaimKind.CHAT
+        entity_table = "chats"
+
+        def eligibility_sql(self) -> str:
+            return "l.kind IS NOT NULL"
+
+        async def on_release(self, conn, entity_id, *, outcome): ...
+
+    adapters = {ClaimKind.CHAT: _NoJoinAdapter()}
+    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+
+    await engine.upsert(ClaimKind.CHAT, "hb-1")
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+
+    # Record the expires_at BEFORE heartbeat.
+    async with pg_storage.pool.acquire() as conn:
+        before_row = await conn.fetchrow(
+            f"SELECT expires_at FROM {pg_storage.leases_table} "
+            f"WHERE kind = 'chat' AND entity_id = 'hb-1'"
+        )
+    import asyncio
+    await asyncio.sleep(0.05)
+
+    confirmed = await engine.heartbeat("worker-A", [(ClaimKind.CHAT, "hb-1")])
+    assert confirmed == [(ClaimKind.CHAT, "hb-1")]
+
+    async with pg_storage.pool.acquire() as conn:
+        after_row = await conn.fetchrow(
+            f"SELECT expires_at FROM {pg_storage.leases_table} "
+            f"WHERE kind = 'chat' AND entity_id = 'hb-1'"
+        )
+    assert after_row["expires_at"] >= before_row["expires_at"]
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_heartbeat_rejects_non_owner(pg_engine, pg_storage):
+    """heartbeat with the wrong worker_id returns an empty list."""
+    from matrix.int.claim import ClaimAdapter
+
+    class _NoJoinAdapter(ClaimAdapter):
+        kind = ClaimKind.SESSION
+        entity_table = "sessions"
+
+        def eligibility_sql(self) -> str:
+            return "l.kind IS NOT NULL"
+
+        async def on_release(self, conn, entity_id, *, outcome): ...
+
+    adapters = {ClaimKind.SESSION: _NoJoinAdapter()}
+    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+
+    await engine.upsert(ClaimKind.SESSION, "hb-wrong")
+    await engine.claim_due("worker-A", max_count=1)
+
+    confirmed = await engine.heartbeat("worker-B", [(ClaimKind.SESSION, "hb-wrong")])
+    assert confirmed == []
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_heartbeat_empty_list(pg_engine):
+    """heartbeat with no pairs is a fast path — returns empty list."""
+    result = await pg_engine.heartbeat("worker-A", [])
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tests — release
+# ---------------------------------------------------------------------------
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_release_drop_lease_deletes_row(pg_storage):
+    """release with drop_lease=True removes the lease row."""
+    from matrix.int.claim import ClaimAdapter
+
+    class _NoJoinAdapter(ClaimAdapter):
+        kind = ClaimKind.CHAT
+        entity_table = "chats"
+
+        def eligibility_sql(self) -> str:
+            return "l.kind IS NOT NULL"
+
+        async def on_release(self, conn, entity_id, *, outcome): ...
+
+    adapters = {ClaimKind.CHAT: _NoJoinAdapter()}
+    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+
+    await engine.upsert(ClaimKind.CHAT, "rel-drop")
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+    await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
+
+    async with pg_storage.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"SELECT 1 FROM {pg_storage.leases_table} "
+            f"WHERE kind = 'chat' AND entity_id = 'rel-drop'"
+        )
+    assert row is None
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_release_without_drop_clears_claim_fields(pg_storage):
+    """release without drop_lease clears claimed_by and makes row reclaimable."""
+    from matrix.int.claim import ClaimAdapter
+
+    class _NoJoinAdapter(ClaimAdapter):
+        kind = ClaimKind.CHAT
+        entity_table = "chats"
+
+        def eligibility_sql(self) -> str:
+            return "l.kind IS NOT NULL"
+
+        async def on_release(self, conn, entity_id, *, outcome): ...
+
+    adapters = {ClaimKind.CHAT: _NoJoinAdapter()}
+    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+
+    await engine.upsert(ClaimKind.CHAT, "rel-clear")
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+    await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=False))
+
+    async with pg_storage.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"SELECT claimed_by, attempt_count FROM {pg_storage.leases_table} "
+            f"WHERE kind = 'chat' AND entity_id = 'rel-clear'"
+        )
+    assert row is not None
+    assert row["claimed_by"] is None
+    assert row["attempt_count"] == 0
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_release_failure_bumps_attempt_count(pg_storage):
+    """release with success=False increments attempt_count and stores last_error."""
+    from datetime import timedelta
+    from matrix.int.claim import ClaimAdapter
+
+    class _NoJoinAdapter(ClaimAdapter):
+        kind = ClaimKind.CHAT
+        entity_table = "chats"
+
+        def eligibility_sql(self) -> str:
+            return "l.kind IS NOT NULL"
+
+        async def on_release(self, conn, entity_id, *, outcome): ...
+
+    adapters = {ClaimKind.CHAT: _NoJoinAdapter()}
+    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+
+    await engine.upsert(ClaimKind.CHAT, "rel-fail")
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+    await engine.release(
+        lease,
+        outcome=ReleaseOutcome(
+            success=False,
+            last_error="something went wrong",
+            requeue_after=timedelta(seconds=30),
+        ),
+    )
+
+    async with pg_storage.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"SELECT attempt_count, last_error, next_attempt_at FROM {pg_storage.leases_table} "
+            f"WHERE kind = 'chat' AND entity_id = 'rel-fail'"
+        )
+    from datetime import datetime, UTC
+    assert row is not None
+    assert row["attempt_count"] == 1
+    assert row["last_error"] == "something went wrong"
+    # next_attempt_at should be in the future (requeue_after=30s).
+    assert row["next_attempt_at"].replace(tzinfo=UTC) > datetime.now(UTC)
+
+
+# ---------------------------------------------------------------------------
+# Tests — on_release transaction integration (chat adapter)
+# ---------------------------------------------------------------------------
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_release_on_release_runs_in_transaction(pg_storage):
+    """release calls adapter.on_release inside the same transaction.
+
+    Scenario: create a Chat entity with turn_status='claimable', upsert +
+    claim its lease, release with drop_lease=True, then verify the lease
+    row is gone AND the chat's turn_status became 'idle'.
+    """
+    from datetime import datetime, UTC
+    from matrix.model.chats import Chat
+    from matrix.storage.postgres import PostgresStorage
+
+    # Prepare a real chat storage backed by the test provider.
+    from matrix.int.storage import Storage
+    chat_storage: Storage[Chat] = pg_storage.get_storage(Chat)
+
+    # Create a chat row with turn_status='claimable'.
+    chat = Chat(
+        id="txn-chat-1",
+        agent_id="agent-x",
+        created_at=datetime.now(UTC),
+        status="active",
+        turn_status="claimable",
+    )
+    await chat_storage.create(chat)
+
+    try:
+        # Wire up the real ChatClaimAdapter with actual storage.
+        adapter = ChatClaimAdapter(chat_storage=chat_storage)
+
+        class _EligibleAdapter(type(adapter)):
+            """Override eligibility so no extra entity state is required."""
+            def eligibility_sql(self) -> str:
+                return "l.kind IS NOT NULL"
+
+        real_adapter = _EligibleAdapter(chat_storage=chat_storage)
+        adapters = {ClaimKind.CHAT: real_adapter}
+        engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+
+        await engine.upsert(ClaimKind.CHAT, chat.id)
+        [lease] = await engine.claim_due("worker-txn", max_count=1)
+
+        # Release with drop_lease=True + success=True -> on_release should set turn_status='idle'.
+        await engine.release(
+            lease,
+            outcome=ReleaseOutcome(success=True, drop_lease=True),
+        )
+
+        # Verify lease row is gone.
+        async with pg_storage.pool.acquire() as conn:
+            lease_row = await conn.fetchrow(
+                f"SELECT 1 FROM {pg_storage.leases_table} "
+                f"WHERE kind = 'chat' AND entity_id = $1",
+                chat.id,
+            )
+        assert lease_row is None, "Lease row should have been deleted"
+
+        # Verify chat.turn_status is now 'idle'.
+        updated_chat = await chat_storage.get(chat.id)
+        assert updated_chat is not None
+        assert updated_chat.turn_status == "idle", (
+            f"Expected turn_status='idle', got {updated_chat.turn_status!r}"
+        )
+
+    finally:
+        # Clean up the chat entity row.
+        try:
+            await chat_storage.delete(chat.id)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Tests — mark_resumable
+# ---------------------------------------------------------------------------
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_mark_resumable_inserts_with_priority(pg_engine, pg_storage):
+    """mark_resumable inserts a new row with the given priority."""
+    await pg_engine.mark_resumable(ClaimKind.CHAT, "mr-new", priority=30)
+
+    async with pg_storage.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"SELECT priority_score, claimed_by FROM {pg_storage.leases_table} "
+            f"WHERE kind = 'chat' AND entity_id = 'mr-new'"
+        )
+    assert row is not None
+    assert row["priority_score"] == 30
+    assert row["claimed_by"] is None
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_mark_resumable_updates_existing_priority(pg_engine, pg_storage):
+    """mark_resumable lowers priority and resets next_attempt_at on conflict."""
+    from datetime import datetime, UTC, timedelta
+
+    future = datetime.now(UTC) + timedelta(hours=1)
+    await pg_engine.upsert(ClaimKind.CHAT, "mr-exist", priority=100, next_attempt_at=future)
+
+    # mark_resumable should bump it to priority=25 and reset next_attempt_at to now.
+    await pg_engine.mark_resumable(ClaimKind.CHAT, "mr-exist", priority=25)
+
+    async with pg_storage.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"SELECT priority_score, next_attempt_at FROM {pg_storage.leases_table} "
+            f"WHERE kind = 'chat' AND entity_id = 'mr-exist'"
+        )
+    assert row is not None
+    assert row["priority_score"] == 25
+    # next_attempt_at should now be close to now(), not the future value.
+    stored = row["next_attempt_at"].replace(tzinfo=UTC)
+    assert stored < datetime.now(UTC) + timedelta(seconds=5)
+
+
+# ---------------------------------------------------------------------------
+# Tests — watch_ready
+# ---------------------------------------------------------------------------
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_watch_ready_yields_on_upsert(pg_engine):
+    """watch_ready yields (ClaimKind, entity_id) tuples when pg_notify fires."""
+    import asyncio
+
+    gen = pg_engine.watch_ready()
+
+    async def consume_one():
+        return await gen.__anext__()
+
+    task = asyncio.create_task(consume_one())
+    await asyncio.sleep(0.05)  # Let the listener subscribe.
+
+    await pg_engine.upsert(ClaimKind.SESSION, "wr-1")
+    result = await asyncio.wait_for(task, timeout=5.0)
+    assert result == (ClaimKind.SESSION, "wr-1")
+
+    # Cleanup: close the generator.
+    await gen.aclose()
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_watch_ready_yields_on_mark_resumable(pg_engine):
+    """watch_ready also fires when mark_resumable notifies claim_ready."""
+    import asyncio
+
+    gen = pg_engine.watch_ready()
+
+    async def consume_one():
+        return await gen.__anext__()
+
+    task = asyncio.create_task(consume_one())
+    await asyncio.sleep(0.05)
+
+    await pg_engine.mark_resumable(ClaimKind.CHAT, "wr-mr-1", priority=40)
+    result = await asyncio.wait_for(task, timeout=5.0)
+    assert result == (ClaimKind.CHAT, "wr-mr-1")
+
+    await gen.aclose()
