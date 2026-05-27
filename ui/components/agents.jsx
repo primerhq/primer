@@ -863,7 +863,7 @@ function AgentDetail({ agentId, pushToast }) {
           ))}
         </div>
         <div className="panel-body" style={{ padding: 0 }}>
-          {tab === "config" && <AG_ConfigTab agent={a} />}
+          {tab === "config" && <AG_ConfigTab agent={a} pushToast={pushToast} />}
           {tab === "tools" && <AG_ToolsTab agent={a} />}
           {tab === "sessions" && <AG_SessionsTab agentId={id} />}
           {tab === "metadata" && <AG_MetadataTab agent={a} />}
@@ -993,16 +993,116 @@ function AG_StatusPanel({ id, status }) {
 // Config tab — read-only JSON + References cross-check
 // ============================================================================
 
-function AG_ConfigTab({ agent }) {
+function AG_ConfigTab({ agent, pushToast }) {
+  const { useMutation, apiFetch } = window.matrixApi;
   const hl = window.matrixVendor?.highlightJson;
-  const pretty = JSON.stringify(agent, null, 2);
+  const isManaged = !!agent.harness_id;
+
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState("");
+  const [jsonError, setJsonError] = React.useState(null);
+
+  const pretty = React.useMemo(() => JSON.stringify(agent, null, 2), [agent]);
+
+  const startEdit = () => {
+    setDraft(pretty);
+    setJsonError(null);
+    setEditing(true);
+  };
+  const cancelEdit = () => {
+    setEditing(false);
+    setJsonError(null);
+  };
+
+  const saveMut = useMutation(
+    (body) => apiFetch("PUT", "/agents/" + encodeURIComponent(agent.id), body),
+    {
+      invalidates: ["agent-detail:" + agent.id, "agent-status:" + agent.id, "agents:list"],
+      onSuccess: () => {
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "info", title: "Agent updated", detail: agent.id });
+        }
+        setEditing(false);
+      },
+      onError: (err) => {
+        if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err.title || "Save failed",
+            detail: err.detail || err.message,
+            requestId: err.requestId,
+          });
+        }
+      },
+    },
+  );
+
+  const onSave = async () => {
+    setJsonError(null);
+    let parsed;
+    try {
+      parsed = JSON.parse(draft);
+    } catch (e) {
+      setJsonError(e.message || "Invalid JSON");
+      return;
+    }
+    if (parsed && typeof parsed === "object" && parsed.id !== agent.id) {
+      setJsonError(`id must remain "${agent.id}"`);
+      return;
+    }
+    try { await saveMut.mutate(parsed); } catch (_e) { /* toast via onError */ }
+  };
+
   return (
     <div style={{ padding: 14 }}>
-      <div className="muted text-sm mb-3">
-        Read-only render. PUT-replace edit deferred; use DELETE + POST for
-        now. References panel below cross-checks the bound provider + toolsets.
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 10 }}>
+        <div className="muted text-sm">
+          {isManaged ? (
+            <>This agent is managed by harness <span className="mono">{agent.harness_id}</span>. Direct edits are blocked — update the harness instead.</>
+          ) : editing ? (
+            <>Edit the JSON below. <span className="mono">id</span> may not change. References resolve after save.</>
+          ) : (
+            <>PUT-replace edit. The body is the full Agent JSON; <span className="mono">id</span> must match the row. References panel below cross-checks the bound provider + toolsets.</>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          {!editing && !isManaged && (
+            <Btn size="sm" icon="edit" kind="secondary" onClick={startEdit}>Edit</Btn>
+          )}
+          {editing && (
+            <>
+              <Btn size="sm" kind="ghost" onClick={cancelEdit} disabled={saveMut.loading}>Cancel</Btn>
+              <Btn size="sm" icon="check" kind="primary" onClick={onSave} disabled={saveMut.loading}>
+                {saveMut.loading ? "Saving…" : "Save"}
+              </Btn>
+            </>
+          )}
+        </div>
       </div>
-      {hl
+      {jsonError && (
+        <Banner kind="error" title="Couldn't parse JSON" detail={jsonError} />
+      )}
+      {editing ? (
+        <textarea
+          className="code-block"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          spellCheck={false}
+          style={{
+            width: "100%",
+            minHeight: 360,
+            fontFamily: "IBM Plex Mono, monospace",
+            fontSize: 12,
+            lineHeight: 1.5,
+            padding: 12,
+            background: "var(--bg-0)",
+            color: "var(--text)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            resize: "vertical",
+          }}
+        />
+      ) : hl
         ? <div className="code-block" dangerouslySetInnerHTML={{ __html: hl(pretty) }} />
         : <pre className="code-block">{pretty}</pre>}
       <AG_ReferencesPanel agent={agent} />

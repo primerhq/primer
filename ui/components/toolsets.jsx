@@ -552,7 +552,7 @@ function ToolsetDetail({ toolsetId, pushToast }) {
           ))}
         </div>
         <div className="panel-body" style={{ padding: 0 }}>
-          {tab === "config" && <TS_ConfigTab ts={ts} />}
+          {tab === "config" && <TS_ConfigTab ts={ts} pushToast={pushToast} />}
           {tab === "tools" && <TS_ToolsTab id={id} ts={ts} onInvalidate={() => invalidate.mutate()} />}
           {tab === "sessions" && <TS_SessionsTab id={id} />}
         </div>
@@ -616,18 +616,99 @@ function TS_DetailActions({ onInvalidate, onDelete, onBack }) {
 // Config tab — read-only JSON dump
 // ============================================================================
 
-function TS_ConfigTab({ ts }) {
+function TS_ConfigTab({ ts, pushToast }) {
+  const { useMutation, apiFetch } = window.matrixApi;
   const hl = window.matrixVendor?.highlightJson;
-  const pretty = JSON.stringify(ts, null, 2);
   const transport = _tsTransport(ts);
+  const isManaged = !!ts?.harness_id;
+  const pretty = React.useMemo(() => JSON.stringify(ts, null, 2), [ts]);
+
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState("");
+  const [jsonError, setJsonError] = React.useState(null);
+  const startEdit = () => { setDraft(pretty); setJsonError(null); setEditing(true); };
+  const cancelEdit = () => { setEditing(false); setJsonError(null); };
+
+  const saveMut = useMutation(
+    (body) => apiFetch("PUT", "/toolsets/" + encodeURIComponent(ts.id), body),
+    {
+      invalidates: ["toolset-detail:" + ts?.id, "toolsets:list"],
+      onSuccess: () => {
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "info", title: "Toolset updated", detail: ts.id });
+        }
+        setEditing(false);
+      },
+      onError: (err) => {
+        if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err.title || "Save failed",
+            detail: err.detail || err.message,
+            requestId: err.requestId,
+          });
+        }
+      },
+    },
+  );
+
+  const onSave = async () => {
+    setJsonError(null);
+    let parsed;
+    try { parsed = JSON.parse(draft); }
+    catch (e) { setJsonError(e.message || "Invalid JSON"); return; }
+    if (parsed && typeof parsed === "object" && parsed.id !== ts.id) {
+      setJsonError(`id must remain "${ts.id}"`); return;
+    }
+    try { await saveMut.mutate(parsed); } catch (_e) { /* toast via onError */ }
+  };
+
   return (
     <div style={{ padding: 14 }}>
-      <div className="muted text-sm mb-3">
-        Read-only render. Edit via DELETE + POST; in-place PUT is not yet exposed.
-        Provider <span className="mono">{ts?.provider || "—"}</span>
-        {transport && <> · transport <span className="mono">{transport}</span></>}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 10 }}>
+        <div className="muted text-sm">
+          {isManaged ? (
+            <>Managed by harness <span className="mono">{ts.harness_id}</span>. Update the harness instead.</>
+          ) : editing ? (
+            <>Edit the JSON below. <span className="mono">id</span> may not change.</>
+          ) : (
+            <>
+              PUT-replace edit. Provider <span className="mono">{ts?.provider || "—"}</span>
+              {transport && <> · transport <span className="mono">{transport}</span></>}
+            </>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          {!editing && !isManaged && (
+            <Btn size="sm" icon="edit" kind="secondary" onClick={startEdit}>Edit</Btn>
+          )}
+          {editing && (
+            <>
+              <Btn size="sm" kind="ghost" onClick={cancelEdit} disabled={saveMut.loading}>Cancel</Btn>
+              <Btn size="sm" icon="check" kind="primary" onClick={onSave} disabled={saveMut.loading}>
+                {saveMut.loading ? "Saving…" : "Save"}
+              </Btn>
+            </>
+          )}
+        </div>
       </div>
-      {hl
+      {jsonError && <Banner kind="error" title="Couldn't parse JSON" detail={jsonError} />}
+      {editing ? (
+        <textarea
+          className="code-block"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          spellCheck={false}
+          style={{
+            width: "100%", minHeight: 360,
+            fontFamily: "IBM Plex Mono, monospace",
+            fontSize: 12, lineHeight: 1.5, padding: 12,
+            background: "var(--bg-0)", color: "var(--text)",
+            border: "1px solid var(--border)", borderRadius: 6,
+            resize: "vertical",
+          }}
+        />
+      ) : hl
         ? <div className="code-block" dangerouslySetInnerHTML={{ __html: hl(pretty) }} />
         : <pre className="code-block">{pretty}</pre>}
     </div>

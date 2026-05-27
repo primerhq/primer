@@ -578,10 +578,26 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     };
   }, [cid]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-scroll to bottom on append.
+  // Auto-scroll to bottom whenever the message list grows or the
+  // thinking placeholder appears. We "stick to bottom" only when the
+  // user is already near the bottom — preserves manual scrollback.
+  // Schedule via rAF so the new row is laid out before we measure
+  // scrollHeight (the effect fires post-commit but pre-paint).
+  const stickToBottomRef = React.useRef(true);
+  const onScroll = React.useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distance < 80;
+  }, []);
   React.useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages]);
+    if (!scrollRef.current || !stickToBottomRef.current) return;
+    const el = scrollRef.current;
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [messages, waitingForReply]);
 
   // Pending tool approval (polled REST; 404 = none).
   const approval = useResource(
@@ -757,7 +773,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
             </span>
           </div>
         </div>
-        <div ref={scrollRef} style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0 }}>
+        <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0 }}>
           {messages.length === 0 && !historyError && (
             <div className="muted text-sm" style={{ textAlign: "center", padding: 24 }}>
               {wsState === "connecting" ? "Connecting…" : "No messages yet. Say hello to the agent."}
@@ -1125,6 +1141,91 @@ function CT_InlineApproval({ data, onApprove, onReject, busy }) {
 }
 
 // ============================================================================
+// CT_ExpandableToolRow — collapsed-by-default tool_call / tool_result row
+// ============================================================================
+//
+// Tool outputs (HTTP bodies, file contents, large JSON) easily exceed the
+// chat width and pollute the visible flow. We render a one-line summary by
+// default with a chevron toggle. When expanded, the full payload appears
+// in a monospace block with internal scroll capped to a sensible height
+// so the chat keeps its rhythm.
+//
+// PREVIEW_CHARS chosen so the inline summary fits one line in a typical
+// chat column without the truncation creating visual confusion.
+
+const _TOOL_PREVIEW_CHARS = 80;
+
+function CT_ExpandableToolRow({
+  icon, iconColor, borderColor,
+  name, separator, previewText, fullText, endBadge,
+}) {
+  const [open, setOpen] = React.useState(false);
+  const preview = (previewText || "").replace(/\s+/g, " ");
+  const truncated = preview.length > _TOOL_PREVIEW_CHARS;
+  const previewShown = truncated
+    ? preview.slice(0, _TOOL_PREVIEW_CHARS) + "…"
+    : preview;
+  const hasExpand = (fullText || "").length > _TOOL_PREVIEW_CHARS;
+  const toggle = () => { if (hasExpand) setOpen((o) => !o); };
+  return (
+    <div style={{ marginLeft: 60, marginTop: 2, marginBottom: 6 }}>
+      <div
+        className="tool-call"
+        style={{
+          borderLeft: `2px solid ${borderColor}`,
+          cursor: hasExpand ? "pointer" : "default",
+          userSelect: "none",
+        }}
+        onClick={toggle}
+        role={hasExpand ? "button" : undefined}
+        tabIndex={hasExpand ? 0 : undefined}
+        onKeyDown={(e) => {
+          if (!hasExpand) return;
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+        }}
+      >
+        {hasExpand && (
+          <Icon
+            name={open ? "chevron-down" : "chevron-right"}
+            size={10}
+            style={{ color: "var(--text-3)" }}
+          />
+        )}
+        <Icon name={icon} size={10} style={{ color: iconColor }} />
+        <span className="name">{name}</span>
+        <span className="arrow">{separator}</span>
+        <span className="muted" style={{
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          flex: 1,
+          minWidth: 0,
+        }}>{previewShown}</span>
+        {endBadge && <span style={{ marginLeft: "auto" }}>{endBadge}</span>}
+      </div>
+      {open && (
+        <pre style={{
+          marginTop: 6,
+          padding: "10px 12px",
+          background: "var(--bg-0)",
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          fontSize: 11.5,
+          lineHeight: 1.5,
+          fontFamily: "IBM Plex Mono, monospace",
+          color: "var(--text-2)",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-all",
+          maxHeight: 360,
+          overflow: "auto",
+        }}>{fullText}</pre>
+      )}
+    </div>
+  );
+}
+
+
+// ============================================================================
 // Message — one row in the conversation
 // ============================================================================
 
@@ -1134,33 +1235,43 @@ function Message({ m }) {
   if (kind === "tool_call") {
     const name = m.name || m.tool_name || "tool";
     const args = m.args || m.arguments || {};
-    const argsStr = (() => { try { return JSON.stringify(args).slice(0, 80); } catch { return ""; } })();
+    const argsFull = (() => { try { return JSON.stringify(args, null, 2); } catch { return ""; } })();
+    const argsPreview = (() => { try { return JSON.stringify(args); } catch { return ""; } })();
     return (
-      <div style={{ marginLeft: 60, marginTop: 6, marginBottom: 6 }}>
-        <div className="tool-call">
-          <Icon name="play" size={10} style={{ color: m.pending_approval ? "var(--amber)" : "var(--text-3)" }} />
-          <span className="name">{name}</span>
-          <span className="arrow">(</span>
-          <span className="muted">{argsStr}</span>
-          <span className="arrow">)</span>
-          {m.pending_approval && <span className="pill pill-paused" style={{ marginLeft: "auto" }}><span className="dot"></span>awaiting approval</span>}
-        </div>
-      </div>
+      <CT_ExpandableToolRow
+        icon="play"
+        iconColor={m.pending_approval ? "var(--amber)" : "var(--text-3)"}
+        borderColor="var(--border)"
+        name={name}
+        separator="("
+        previewText={argsPreview}
+        fullText={argsFull}
+        endBadge={m.pending_approval ? (
+          <span className="pill pill-paused"><span className="dot"></span>awaiting approval</span>
+        ) : null}
+      />
     );
   }
 
   if (kind === "tool_result") {
     const name = m.name || m.tool_name || "tool";
-    const result = typeof m.result === "string" ? m.result : (m.result != null ? JSON.stringify(m.result).slice(0, 80) : "");
+    const isError = !!m.error;
+    const fullStr = typeof m.result === "string"
+      ? m.result
+      : (m.result != null ? JSON.stringify(m.result, null, 2) : "");
+    const previewStr = typeof m.result === "string"
+      ? m.result
+      : (m.result != null ? JSON.stringify(m.result) : "");
     return (
-      <div style={{ marginLeft: 60, marginTop: 2, marginBottom: 6 }}>
-        <div className="tool-call" style={{ borderLeft: "2px solid var(--green)" }}>
-          <Icon name="check" size={10} style={{ color: "var(--green)" }} />
-          <span className="name">{name}</span>
-          <span className="arrow">→</span>
-          <span className="muted">{result}</span>
-        </div>
-      </div>
+      <CT_ExpandableToolRow
+        icon={isError ? "x-circle" : "check"}
+        iconColor={isError ? "var(--red)" : "var(--green)"}
+        borderColor={isError ? "var(--red)" : "var(--green)"}
+        name={name}
+        separator="→"
+        previewText={previewStr}
+        fullText={fullStr}
+      />
     );
   }
 

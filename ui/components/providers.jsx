@@ -662,7 +662,7 @@ function ProviderDetail({ kindProp, id, pushToast }) {
           actions={<Btn size="sm" icon="chevron-left" onClick={goToList}>Back to list</Btn>}
         />
       ) : (
-        <ProviderDetailBody p={detail.data} models={models} k={k} />
+        <ProviderDetailBody p={detail.data} models={models} k={k} pushToast={pushToast} />
       )}
 
       {confirmDelete && (
@@ -722,9 +722,76 @@ function ProviderDetailHeader({ label, segment, id, onBack, onInvalidate, onDele
   );
 }
 
-function ProviderDetailBody({ p, models, k }) {
+function ProviderDetailBody({ p, models, k, pushToast }) {
+  const { useMutation, apiFetch } = window.matrixApi;
   const color = VENDOR_COLORS[p.provider] || "var(--text-3)";
   const modelList = models.data?.models ?? (p.models || []);
+
+  const redactedPretty = React.useMemo(
+    () => JSON.stringify(_redactSecrets(p), null, 2),
+    [p],
+  );
+  const rawPretty = React.useMemo(
+    () => JSON.stringify(p, null, 2),
+    [p],
+  );
+
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState("");
+  const [jsonError, setJsonError] = React.useState(null);
+  const startEdit = () => {
+    // GET responses redact SecretStr fields to "**********". We hand
+    // that body to the editor as-is; the user MUST replace any
+    // "**********" with the real secret on save, otherwise the
+    // backend persists the literal stars.
+    setDraft(rawPretty);
+    setJsonError(null);
+    setEditing(true);
+  };
+  const cancelEdit = () => { setEditing(false); setJsonError(null); };
+
+  const _hasUnsetSecret = (s) => /"\*{6,}"/.test(s);
+
+  const saveMut = useMutation(
+    (body) => apiFetch("PUT", "/" + k.plural + "/" + encodeURIComponent(p.id), body),
+    {
+      invalidates: [k.plural + "-detail:" + p.id, k.plural + ":list"],
+      onSuccess: () => {
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "info", title: "Provider updated", detail: p.id });
+        }
+        setEditing(false);
+      },
+      onError: (err) => {
+        if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err.title || "Save failed",
+            detail: err.detail || err.message,
+            requestId: err.requestId,
+          });
+        }
+      },
+    },
+  );
+
+  const onSave = async () => {
+    setJsonError(null);
+    if (_hasUnsetSecret(draft)) {
+      setJsonError(
+        'Refusing to save: at least one field still contains the redaction placeholder "**********". ' +
+        "Replace every such value with the real secret (or revert via Cancel).",
+      );
+      return;
+    }
+    let parsed;
+    try { parsed = JSON.parse(draft); }
+    catch (e) { setJsonError(e.message || "Invalid JSON"); return; }
+    if (parsed && typeof parsed === "object" && parsed.id !== p.id) {
+      setJsonError(`id must remain "${p.id}"`); return;
+    }
+    try { await saveMut.mutate(parsed); } catch (_e) { /* toast via onError */ }
+  };
 
   return (
     <>
@@ -733,14 +800,48 @@ function ProviderDetailBody({ p, models, k }) {
           <span className="dot" style={{ background: color, display: "inline-block", width: 8, height: 8, borderRadius: "50%" }}></span>
           <span className="mono">{p.id}</span>
           <span className="sub mono">· {p.provider}</span>
+          <div className="right" style={{ display: "flex", gap: 6 }}>
+            {!editing && (
+              <Btn size="sm" icon="edit" kind="secondary" onClick={startEdit}>Edit</Btn>
+            )}
+            {editing && (
+              <>
+                <Btn size="sm" kind="ghost" onClick={cancelEdit} disabled={saveMut.loading}>Cancel</Btn>
+                <Btn size="sm" icon="check" kind="primary" onClick={onSave} disabled={saveMut.loading}>
+                  {saveMut.loading ? "Saving…" : "Save"}
+                </Btn>
+              </>
+            )}
+          </div>
         </div>
         <div className="panel-body">
           <div className="muted text-sm mb-3">
-            Read-only render of the provider row. Edit via DELETE + POST; in-place PUT not exposed.
+            {editing
+              ? <>Edit the JSON below. <span className="mono">id</span> may not change. <strong>Secret fields show <span className="mono">"**********"</span></strong> — you MUST replace each with the real value before Save (or Cancel to leave the row untouched).</>
+              : <>PUT-replace edit. Secret fields are redacted as <span className="mono">"**********"</span>; click Edit to replace them.</>
+            }
           </div>
-          <pre className="code-block mono" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>
-            {JSON.stringify(_redactSecrets(p), null, 2)}
-          </pre>
+          {jsonError && <Banner kind="error" title="Couldn't parse JSON" detail={jsonError} />}
+          {editing ? (
+            <textarea
+              className="code-block mono"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              spellCheck={false}
+              style={{
+                width: "100%", minHeight: 360,
+                fontFamily: "IBM Plex Mono, monospace",
+                fontSize: 12, lineHeight: 1.5, padding: 12,
+                background: "var(--bg-0)", color: "var(--text)",
+                border: "1px solid var(--border)", borderRadius: 6,
+                resize: "vertical",
+              }}
+            />
+          ) : (
+            <pre className="code-block mono" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>
+              {redactedPretty}
+            </pre>
+          )}
         </div>
       </div>
 
