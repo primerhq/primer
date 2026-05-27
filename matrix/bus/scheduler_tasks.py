@@ -200,6 +200,44 @@ class ChatSweeper(_BackgroundTask):
                 break
 
 
+class HarnessSweeper(_BackgroundTask):
+    """Periodically reclaims harnesses whose worker died mid-operation."""
+
+    def __init__(
+        self,
+        *,
+        storage_provider,
+        scheduler,
+        event_bus,
+        provider_registry=None,
+        poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
+    ) -> None:
+        super().__init__(name="harness-sweeper")
+        self._storage_provider = storage_provider
+        self._scheduler = scheduler
+        self._event_bus = event_bus
+        self._provider_registry = provider_registry
+        self._poll = poll_seconds
+
+    async def _run(self) -> None:
+        from matrix.harness.dispatch import HarnessDispatchDeps, sweep_harnesses
+        deps = HarnessDispatchDeps(
+            storage_provider=self._storage_provider,
+            scheduler=self._scheduler,
+            event_bus=self._event_bus,
+            provider_registry=self._provider_registry,
+        )
+        while not self._stopping:
+            try:
+                await sweep_harnesses(deps)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("harness-sweeper: tick failed: %s", exc)
+            try:
+                await asyncio.sleep(self._poll)
+            except asyncio.CancelledError:
+                break
+
+
 # ===========================================================================
 # Scheduler-flavour lookup helpers
 # ===========================================================================
@@ -293,6 +331,7 @@ __all__ = [
     "ChatSweeper",
     "DEFAULT_SWEEPER_POLL_SECONDS",
     "DEFAULT_TIMER_POLL_SECONDS",
+    "HarnessSweeper",
     "TimeoutSweeper",
     "TimerScheduler",
 ]

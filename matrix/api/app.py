@@ -214,6 +214,7 @@ def _make_lifespan(config: AppConfig):
         timer_scheduler = None
         timeout_sweeper = None
         chat_sweeper = None
+        harness_sweeper = None
         watcher_manager = None
         mcp_task_bridge = None
         if scheduler is not None:
@@ -261,13 +262,21 @@ def _make_lifespan(config: AppConfig):
             )
             timeout_sweeper.start()
 
-            from matrix.bus.scheduler_tasks import ChatSweeper
+            from matrix.bus.scheduler_tasks import ChatSweeper, HarnessSweeper
             chat_sweeper = ChatSweeper(
                 storage_provider=storage_provider,
                 scheduler=scheduler,
                 event_bus=event_bus,
             )
             chat_sweeper.start()
+
+            harness_sweeper = HarnessSweeper(
+                storage_provider=storage_provider,
+                scheduler=scheduler,
+                event_bus=event_bus,
+                provider_registry=provider_registry,
+            )
+            harness_sweeper.start()
 
             # watch_files watcher manager — resolves workspace_id →
             # StatProbe via the workspace registry.
@@ -423,6 +432,7 @@ def _make_lifespan(config: AppConfig):
             for task, name in (
                 (mcp_task_bridge, "mcp_task_bridge"),
                 (watcher_manager, "watcher_manager"),
+                (harness_sweeper, "harness_sweeper"),
                 (chat_sweeper, "chat_sweeper"),
                 (timeout_sweeper, "timeout_sweeper"),
                 (timer_scheduler, "timer_scheduler"),

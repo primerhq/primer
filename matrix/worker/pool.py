@@ -113,6 +113,11 @@ class WorkerPool:
         self._chat_turn_tasks: set[asyncio.Task] = set()
         self._chat_claim_task: asyncio.Task | None = None
         self._chat_bus_task: asyncio.Task | None = None
+        # ---- harness claim loop state ----
+        self._in_flight_harnesses: set[str] = set()
+        self._harness_turn_tasks: set[asyncio.Task] = set()
+        self._harness_claim_task: asyncio.Task | None = None
+        self._harness_bus_task: asyncio.Task | None = None
         # ---- metrics (spec §14) ----
         self._claims_total: int = 0
         self._claims_empty_total: int = 0
@@ -173,6 +178,18 @@ class WorkerPool:
                 self._chat_bus_loop(),
                 name=f"chat-bus-loop-{self._worker_id}",
             )
+        # Spawn the harness claim loop (always — even when event_bus is None).
+        self._harness_claim_task = asyncio.create_task(
+            self._claim_harness_loop(),
+            name=f"harness-claim-loop-{self._worker_id}",
+        )
+        # Subscribe to the event bus for harness-claimable events to wake
+        # the harness claim loop promptly (optional — only when bus is set).
+        if self._event_bus is not None:
+            self._harness_bus_task = asyncio.create_task(
+                self._harness_bus_loop(),
+                name=f"harness-bus-loop-{self._worker_id}",
+            )
 
     async def drain_and_stop(self, timeout: float | None = None) -> None:
         self._stopping.set()
@@ -194,6 +211,34 @@ class WorkerPool:
             for scope in list(self._active_scopes.values()):
                 scope.cancel("worker_drain_timeout")
             self._active_scopes.clear()
+        # Cancel the harness bus watcher first so it stops producing wake signals.
+        if self._harness_bus_task is not None:
+            self._harness_bus_task.cancel()
+            try:
+                await self._harness_bus_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._harness_bus_task = None
+        # Cancel the harness claim loop.
+        if self._harness_claim_task is not None:
+            self._harness_claim_task.cancel()
+            try:
+                await self._harness_claim_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._harness_claim_task = None
+        # Wait for in-flight harness operations (up to remaining drain time).
+        harness_deadline = asyncio.get_event_loop().time() + min(drain_timeout, 5.0)
+        while self._harness_turn_tasks and asyncio.get_event_loop().time() < harness_deadline:
+            await asyncio.sleep(0.1)
+        for task in list(self._harness_turn_tasks):
+            task.cancel()
+        for task in list(self._harness_turn_tasks):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._harness_turn_tasks.clear()
         # Cancel the chat bus watcher first so it stops producing wake signals.
         if self._chat_bus_task is not None:
             self._chat_bus_task.cancel()
@@ -516,6 +561,107 @@ class WorkerPool:
                     task.add_done_callback(self._chat_turn_tasks.discard)
         except asyncio.CancelledError:
             return
+
+    # ---- harness claim loop ----------------------------------------------
+
+    async def _harness_bus_loop(self) -> None:
+        """Subscribe to the event bus and wake the harness claim loop on
+        ``harness-claimable`` events. Mirrors ``_chat_bus_loop``.
+        """
+        assert self._event_bus is not None
+        sub = self._event_bus.subscribe()
+        try:
+            async for event in sub:
+                if event.event_key == "harness-claimable":
+                    self._wake.set()
+                if self._stopping.is_set():
+                    return
+        except asyncio.CancelledError:
+            return
+        finally:
+            await sub.aclose()
+
+    async def _claim_harness_loop(self) -> None:
+        """Sibling of _claim_chat_loop, for harness operations.
+
+        Wakes on ``harness-claimable`` bus events (forwarded through
+        _harness_bus_loop's self._wake.set()); claims via
+        Scheduler.claim_harnesses; spawns a per-operation task per lease.
+        Harnesses share worker capacity with sessions + chats.
+        """
+        try:
+            while not self._stopping.is_set():
+                free = self.config.concurrency - (
+                    len(self._in_flight)
+                    + len(self._in_flight_chats)
+                    + len(self._in_flight_harnesses)
+                )
+                if free <= 0:
+                    self._wake.clear()
+                    try:
+                        await asyncio.wait_for(
+                            self._wake.wait(),
+                            timeout=self.config.poll_interval_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                try:
+                    leases = await self._scheduler.claim_harnesses(
+                        self._worker_id,
+                        max_count=min(self.config.claim_batch_size, free),
+                    )
+                except Exception:
+                    logger.exception("harness claim_loop iteration failed")
+                    await asyncio.sleep(self.config.poll_interval_seconds)
+                    continue
+                if not leases:
+                    self._wake.clear()
+                    try:
+                        await asyncio.wait_for(
+                            self._wake.wait(),
+                            timeout=self.config.poll_interval_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                for lease in leases:
+                    self._in_flight_harnesses.add(lease.harness_id)
+                    task = asyncio.create_task(
+                        self._run_one_harness_operation_task(lease),
+                        name=f"harness-op-{lease.harness_id}",
+                    )
+                    self._harness_turn_tasks.add(task)
+                    task.add_done_callback(self._harness_turn_tasks.discard)
+        except asyncio.CancelledError:
+            return
+
+    async def _run_one_harness_operation_task(self, lease) -> None:
+        """Run one harness operation for the given ``HarnessLease``.
+
+        Constructs :class:`~matrix.harness.dispatch.HarnessDispatchDeps` on
+        demand and delegates to
+        :func:`~matrix.harness.dispatch.run_one_harness_operation`.
+        """
+        from matrix.harness.dispatch import HarnessDispatchDeps, run_one_harness_operation
+
+        deps = HarnessDispatchDeps(
+            storage_provider=self._storage,
+            scheduler=self._scheduler,
+            event_bus=self._event_bus,
+            provider_registry=self._provider_registry,
+        )
+        try:
+            await run_one_harness_operation(
+                deps,
+                harness_id=lease.harness_id,
+                worker_id=self._worker_id,
+            )
+        except Exception:
+            logger.exception("harness operation failed for %s", lease.harness_id)
+        finally:
+            self._in_flight_harnesses.discard(lease.harness_id)
+            self._wake.set()
 
     async def _run_one_chat_turn_task(self, lease) -> None:
         """Run one chat turn for the given ``ChatLease``.
