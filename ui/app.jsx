@@ -1,4 +1,4 @@
-/* global React, ReactDOM, Sidebar, Topbar, SessionsList, SessionDetail, Icon, Btn, StatusPill, CommandPalette, Banner, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, Sparkline */
+/* global React, ReactDOM, Sidebar, Topbar, SessionsList, SessionDetail, Icon, Btn, StatusPill, CommandPalette, Banner, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, Sparkline, HarnessesPage */
 
 const ACCENT_OPTIONS = {
   "Matrix green": { h: 145, c: 0.18, l: 0.85 },
@@ -83,6 +83,7 @@ function App() {
       if (path.startsWith("/subsystems/internal-collections")) return "internal-collections";
       return "internal-collections";
     }
+    if (root === "harnesses") return "harnesses";
     return root;
   })();
 
@@ -334,6 +335,8 @@ function App() {
       "channel-provider-detail": (e) => `/channels/providers/${e}`,
       chats: "/chats",
       "chat-detail": (e) => `/chats/${e}`,
+      harnesses: "/harnesses",
+      "harness-detail": (e) => `/harnesses/${e}`,
     };
     const route = ROUTES[target];
     const url = typeof route === "function" ? route(extra) : (route || "/");
@@ -932,6 +935,20 @@ function App() {
         onNewSession={() => setNewSessionOpen(true)}
       />
     );
+  } else if (page === "harnesses") {
+    const harnessId = params.id || null;
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("dashboard")}>Distributions</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Harnesses</span>
+          </div>
+          <h1 className="page-title">Harnesses</h1>
+          <div className="page-sub">Test harness definitions · Task 14 will fill this in</div>
+        </div>
+      </>
+    );
+    pageBody = <HarnessesPage harnessId={harnessId} />;
   } else if (page === "sessions") {
     pageHeader = (
       <>

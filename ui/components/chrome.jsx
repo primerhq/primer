@@ -56,6 +56,10 @@ const NAV = [
     ],
   },
   {
+    group: "Distributions",
+    items: [{ id: "harnesses", label: "Harnesses", icon: "box" }],
+  },
+  {
     group: "Subsystems",
     items: [
       { id: "internal-collections", label: "Internal Collections", icon: "subsystem", subsystem: true },
