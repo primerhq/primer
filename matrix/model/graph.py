@@ -383,6 +383,14 @@ class Graph(Describeable):
             "Recommended for any graph that contains a cycle."
         ),
     )
+    harness_id: str | None = Field(
+        default=None,
+        description=(
+            "When set, this row is managed by the named harness. "
+            "Mutation through the public CRUD endpoints returns 409 — "
+            "use the harness's sync/uninstall flow instead."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_topology(self) -> "Graph":

@@ -128,6 +128,14 @@ class Agent(Describeable):
             "the runtime falls back to its default compaction prompt."
         ),
     )
+    harness_id: str | None = Field(
+        default=None,
+        description=(
+            "When set, this row is managed by the named harness. "
+            "Mutation through the public CRUD endpoints returns 409 — "
+            "use the harness's sync/uninstall flow instead."
+        ),
+    )
 
 
 __all__ = [

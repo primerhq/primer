@@ -612,6 +612,14 @@ class Toolset(Identifiable):
         default=None,
         description="Provider-specific config. Required for 'mcp', must be omitted for 'internal'.",
     )
+    harness_id: str | None = Field(
+        default=None,
+        description=(
+            "When set, this row is managed by the named harness. "
+            "Mutation through the public CRUD endpoints returns 409 — "
+            "use the harness's sync/uninstall flow instead."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_config_matches_provider(self) -> "Toolset":

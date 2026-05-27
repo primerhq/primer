@@ -100,6 +100,14 @@ class Collection(Describeable):
             "deserialise as user collections."
         ),
     )
+    harness_id: str | None = Field(
+        default=None,
+        description=(
+            "When set, this row is managed by the named harness. "
+            "Mutation through the public CRUD endpoints returns 409 — "
+            "use the harness's sync/uninstall flow instead."
+        ),
+    )
 
 
 class Document(Identifiable):
@@ -132,5 +140,13 @@ class Document(Identifiable):
         description=(
             "Free-form metadata. Useful for filtering search results, "
             "tagging, audit trails, etc. Schema is application-defined."
+        ),
+    )
+    harness_id: str | None = Field(
+        default=None,
+        description=(
+            "When set, this row is managed by the named harness. "
+            "Mutation through the public CRUD endpoints returns 409 — "
+            "use the harness's sync/uninstall flow instead."
         ),
     )
