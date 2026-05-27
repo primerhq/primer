@@ -1,6 +1,7 @@
+import asyncio
 import pytest
 from datetime import datetime, UTC, timedelta
-from matrix.int.claim import ClaimKind
+from matrix.int.claim import ClaimKind, ReleaseOutcome
 from matrix.claim.in_memory import InMemoryClaimEngine
 
 
@@ -70,3 +71,58 @@ async def test_claim_due_reclaims_expired_leases():
     reclaimed = await engine.claim_due("worker-B", max_count=1)
     assert len(reclaimed) == 1
     assert reclaimed[0].claimed_by == "worker-B"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_refreshes_expiry():
+    engine = InMemoryClaimEngine(adapters={})
+    await engine.upsert(ClaimKind.CHAT, "c1")
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+    orig_expires = engine._leases[(ClaimKind.CHAT, "c1")].expires_at
+    await asyncio.sleep(0.01)
+    confirmed = await engine.heartbeat("worker-A", [(ClaimKind.CHAT, "c1")])
+    assert confirmed == [(ClaimKind.CHAT, "c1")]
+    assert engine._leases[(ClaimKind.CHAT, "c1")].expires_at > orig_expires
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_rejects_non_owner():
+    engine = InMemoryClaimEngine(adapters={})
+    await engine.upsert(ClaimKind.CHAT, "c1")
+    await engine.claim_due("worker-A", max_count=1)
+    confirmed = await engine.heartbeat("worker-B", [(ClaimKind.CHAT, "c1")])
+    assert confirmed == []
+
+
+@pytest.mark.asyncio
+async def test_release_with_drop_lease_removes_row():
+    engine = InMemoryClaimEngine(adapters={})
+    await engine.upsert(ClaimKind.CHAT, "c1")
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+    await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=True))
+    assert (ClaimKind.CHAT, "c1") not in engine._leases
+
+
+@pytest.mark.asyncio
+async def test_release_without_drop_makes_lease_reclaimable():
+    engine = InMemoryClaimEngine(adapters={})
+    await engine.upsert(ClaimKind.CHAT, "c1")
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+    await engine.release(lease, outcome=ReleaseOutcome(success=True, drop_lease=False))
+    [again] = await engine.claim_due("worker-B", max_count=1)
+    assert again.entity_id == "c1"
+    assert again.claimed_by == "worker-B"
+
+
+@pytest.mark.asyncio
+async def test_release_bumps_attempt_count_on_failure():
+    engine = InMemoryClaimEngine(adapters={})
+    await engine.upsert(ClaimKind.CHAT, "c1")
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+    await engine.release(lease, outcome=ReleaseOutcome(
+        success=False, last_error="boom", requeue_after=timedelta(seconds=10),
+    ))
+    row = engine._leases[(ClaimKind.CHAT, "c1")]
+    assert row.attempt_count == 1
+    assert row.last_error == "boom"
+    assert row.next_attempt_at > datetime.now(UTC)
