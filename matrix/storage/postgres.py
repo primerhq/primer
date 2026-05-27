@@ -186,6 +186,19 @@ class PostgresStorageProvider(StorageProvider):
             await conn.execute(
                 f'CREATE SCHEMA IF NOT EXISTS "{self._schema}"'
             )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS rate_limit_lease (
+                    lease_id   TEXT PRIMARY KEY,
+                    key        TEXT NOT NULL,
+                    owner_id   TEXT NOT NULL,
+                    claimed_at TIMESTAMPTZ NOT NULL,
+                    expires_at TIMESTAMPTZ NOT NULL
+                );
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS rate_limit_lease_key_active
+                  ON rate_limit_lease (key, expires_at);
+            """)
         logger.info(
             "PostgresStorageProvider initialised (schema=%r, host=%s:%d)",
             self._schema,
