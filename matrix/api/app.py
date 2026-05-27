@@ -211,6 +211,7 @@ def _make_lifespan(config: AppConfig):
         # timer scheduler republishes due timer:* parks; the sweeper
         # catches expired non-timer parks. All bound to the same bus.
         event_bus = None
+        claim_engine = None
         yield_listener = None
         timer_scheduler = None
         timeout_sweeper = None
@@ -252,6 +253,12 @@ def _make_lifespan(config: AppConfig):
             )
             app.state.coordinator = coordinator
             logger.info("lifespan: coordinator constructed")
+            from matrix.claim.factory import ClaimEngineFactory as _ClaimEngineFactory
+            claim_engine = _ClaimEngineFactory.create(
+                storage_provider=storage_provider,
+                event_bus=event_bus,
+            )
+            logger.info("lifespan: claim engine constructed (%s)", type(claim_engine).__name__)
             await provider_registry.bind_invalidation_bus(coordinator.invalidation_bus)
             await provider_registry.bind_rate_limiter(coordinator.rate_limiter)
             # Re-bind the channel inbox now that the event bus exists.
@@ -348,6 +355,7 @@ def _make_lifespan(config: AppConfig):
                 coordinator_sweeper.start(coordinator.leader_elector)
                 app.state.coordinator_sweeper = coordinator_sweeper
         app.state.event_bus = event_bus
+        app.state.claim_engine = claim_engine
 
         # Build the always-on ``harness`` toolset. Needs event_bus so it
         # is constructed after the bus is wired (event_bus may be None
@@ -413,6 +421,7 @@ def _make_lifespan(config: AppConfig):
                 channel_dispatcher=channel_dispatcher,
                 event_bus=event_bus,
                 chat_tick_router=chat_tick_router,
+                engine=claim_engine,
             )
             logger.info("lifespan: worker_pool.start() begin")
             await worker_pool.start()

@@ -60,6 +60,33 @@ async def test_lifespan_zero_config_starts_and_stops(
     # After lifespan exit the provider is closed; nothing should leak.
 
 
+@pytest.mark.asyncio
+async def test_lifespan_with_in_memory_scheduler_sets_claim_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lifespan with in-memory scheduler constructs an InMemoryClaimEngine
+    and stores it on app.state.claim_engine."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from matrix.model.scheduler import (
+        InMemorySchedulerConfig,
+        SchedulerProviderConfig,
+        SchedulerProviderType,
+    )
+    cfg = AppConfig(
+        runtime_mode=RuntimeMode.API,
+        scheduler=SchedulerProviderConfig(
+            provider=SchedulerProviderType.IN_MEMORY,
+            config=InMemorySchedulerConfig(),
+        ),
+    )
+    app = FastAPI(lifespan=_make_lifespan(cfg))
+    async with app.router.lifespan_context(app):
+        from matrix.claim.in_memory import InMemoryClaimEngine
+        assert isinstance(app.state.claim_engine, InMemoryClaimEngine), (
+            f"expected InMemoryClaimEngine, got {type(app.state.claim_engine)}"
+        )
+
+
 def test_docs_endpoints_always_mounted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
