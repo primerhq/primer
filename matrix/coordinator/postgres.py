@@ -39,17 +39,25 @@ class _PostgresRateLimiterLease(RateLimiterLease):
         self, *, storage, lease_id: str, key: str, owner_id: str,
     ) -> None:
         self._storage = storage
+        self._table = storage.rate_limit_lease_table
         self._lease_id = lease_id
         self._key = key
         self._owner_id = owner_id
         self._released = False
         self._lost = asyncio.Event()
-        self._heartbeat_task: asyncio.Task | None = asyncio.create_task(
-            self._heartbeat_loop(),
-            name=f"rl-hb-{lease_id}",
-        )
+        # Heartbeat is started lazily on __aenter__ so a lease constructed
+        # but never entered (e.g. cancelled between _try_insert returning
+        # and the caller's async-with) doesn't leak a daemon heartbeat task
+        # that keeps the row alive forever. The row's own 60s TTL still
+        # protects against full leak via the sweeper.
+        self._heartbeat_task: asyncio.Task | None = None
 
     async def __aenter__(self) -> "_PostgresRateLimiterLease":
+        if self._heartbeat_task is None and not self._released:
+            self._heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(),
+                name=f"rl-hb-{self._lease_id}",
+            )
         return self
 
     async def __aexit__(self, *exc) -> None:
@@ -58,12 +66,10 @@ class _PostgresRateLimiterLease(RateLimiterLease):
     async def heartbeat(self) -> bool:
         async with self._storage.pool.acquire() as conn:
             row = await conn.fetchval(
-                """
-                UPDATE rate_limit_lease
-                   SET expires_at = now() + ($1 || ' seconds')::interval
-                 WHERE lease_id = $2 AND owner_id = $3
-                RETURNING lease_id
-                """,
+                f"UPDATE {self._table} "
+                f"   SET expires_at = now() + ($1 || ' seconds')::interval "
+                f" WHERE lease_id = $2 AND owner_id = $3 "
+                f"RETURNING lease_id",
                 str(_LEASE_TTL_SECONDS), self._lease_id, self._owner_id,
             )
         return row is not None
@@ -100,7 +106,7 @@ class _PostgresRateLimiterLease(RateLimiterLease):
         try:
             async with self._storage.pool.acquire() as conn:
                 await conn.execute(
-                    "DELETE FROM rate_limit_lease WHERE lease_id = $1",
+                    f"DELETE FROM {self._table} WHERE lease_id = $1",
                     self._lease_id,
                 )
                 # NOTIFY is best-effort; if it fails we still released the
@@ -125,6 +131,7 @@ class PostgresRateLimiter(RateLimiter):
     def __init__(self, storage_provider: "StorageProvider", owner_id: str) -> None:
         self._storage = storage_provider
         self._owner_id = owner_id
+        self._table = storage_provider.rate_limit_lease_table
 
     async def acquire(
         self, key: str, *, max_concurrency: int,
@@ -156,11 +163,11 @@ class PostgresRateLimiter(RateLimiter):
         lease_id = uuid.uuid4().hex
         async with self._storage.pool.acquire() as conn:
             row = await conn.fetchval(
-                """
-                INSERT INTO rate_limit_lease (lease_id, key, owner_id, claimed_at, expires_at)
+                f"""
+                INSERT INTO {self._table} (lease_id, key, owner_id, claimed_at, expires_at)
                 SELECT $1, $2, $3, now(), now() + ($4 || ' seconds')::interval
                  WHERE (
-                    SELECT COUNT(*) FROM rate_limit_lease
+                    SELECT COUNT(*) FROM {self._table}
                      WHERE key = $2 AND expires_at > now()
                  ) < $5
                 RETURNING lease_id
@@ -278,6 +285,7 @@ class _PostgresLeadershipLease(LeadershipLease):
             role=role, owner_id=owner_id, lost_event=asyncio.Event(),
         )
         self._storage = storage
+        self._table = storage.leader_lease_table
         self._lease_seconds = lease_seconds
         self._released = False
         self._heartbeat_task: asyncio.Task = asyncio.create_task(
@@ -292,8 +300,8 @@ class _PostgresLeadershipLease(LeadershipLease):
                     return
                 async with self._storage.pool.acquire() as conn:
                     row = await conn.fetchval(
-                        """
-                        UPDATE leader_lease
+                        f"""
+                        UPDATE {self._table}
                            SET expires_at = now() + ($1 || ' seconds')::interval
                          WHERE role = $2 AND owner_id = $3
                         RETURNING role
@@ -323,7 +331,7 @@ class _PostgresLeadershipLease(LeadershipLease):
         try:
             async with self._storage.pool.acquire() as conn:
                 await conn.execute(
-                    "DELETE FROM leader_lease WHERE role = $1 AND owner_id = $2",
+                    f"DELETE FROM {self._table} WHERE role = $1 AND owner_id = $2",
                     self.role, self.owner_id,
                 )
                 try:
@@ -343,20 +351,21 @@ class PostgresLeaderElector(LeaderElector):
     def __init__(self, storage_provider: "StorageProvider", owner_id: str) -> None:
         self._storage = storage_provider
         self._owner_id = owner_id
+        self._table = storage_provider.leader_lease_table
 
     async def try_acquire(
         self, role: str, *, lease_seconds: int = 30,
     ) -> "LeadershipLease | None":
         async with self._storage.pool.acquire() as conn:
             row = await conn.fetchval(
-                """
-                INSERT INTO leader_lease (role, owner_id, claimed_at, expires_at)
+                f"""
+                INSERT INTO {self._table} AS ll (role, owner_id, claimed_at, expires_at)
                 VALUES ($1, $2, now(), now() + ($3 || ' seconds')::interval)
                 ON CONFLICT (role) DO UPDATE
                   SET owner_id   = EXCLUDED.owner_id,
                       claimed_at = EXCLUDED.claimed_at,
                       expires_at = EXCLUDED.expires_at
-                  WHERE leader_lease.expires_at < now()
+                  WHERE ll.expires_at < now()
                 RETURNING owner_id
                 """,
                 role, self._owner_id, str(lease_seconds),

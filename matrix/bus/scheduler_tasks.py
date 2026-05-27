@@ -93,28 +93,47 @@ class _BackgroundTask:
         leadership transition until ``stop()`` is called."""
         retry_seconds = 15.0
         while not self._stopping:
-            lease = await elector.try_acquire(self.role)
+            try:
+                lease = await elector.try_acquire(self.role)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                # Postgres unreachable, transient failure, etc. Don't
+                # exit the supervisor — back off and retry so the
+                # task self-heals once the elector recovers.
+                logger.exception(
+                    "elector try_acquire raised for role %s; retrying",
+                    self.role,
+                )
+                try:
+                    await asyncio.sleep(retry_seconds)
+                except asyncio.CancelledError:
+                    return
+                continue
             if lease is None:
                 try:
                     await asyncio.sleep(retry_seconds)
                 except asyncio.CancelledError:
                     return
                 continue
+            work: asyncio.Task | None = None
+            lost: asyncio.Task | None = None
             try:
                 work = asyncio.create_task(self._run(), name=self._name)
                 lost = asyncio.create_task(
                     lease.lost_event.wait(), name=f"{self._name}-lost",
                 )
-                done, pending = await asyncio.wait(
+                await asyncio.wait(
                     {work, lost}, return_when=asyncio.FIRST_COMPLETED,
                 )
-                for t in pending:
-                    t.cancel()
-                    try:
-                        await t
-                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                        pass
             finally:
+                for t in (work, lost):
+                    if t is not None and not t.done():
+                        t.cancel()
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                            pass
                 try:
                     await lease.release()
                 except Exception:  # noqa: BLE001

@@ -27,9 +27,11 @@ async def sweep_expired_leases(storage_provider: "StorageProvider") -> int:
     """Delete every lease whose ``expires_at < now()``. Returns the
     number of rows removed (sum across both lease tables)."""
     deleted = 0
+    rl_table = storage_provider.rate_limit_lease_table
+    ll_table = storage_provider.leader_lease_table
     async with storage_provider.pool.acquire() as conn:
         r1 = await conn.execute(
-            "DELETE FROM rate_limit_lease WHERE expires_at < now()",
+            f"DELETE FROM {rl_table} WHERE expires_at < now()",
         )
         # asyncpg returns "DELETE <n>" as a string
         try:
@@ -37,7 +39,7 @@ async def sweep_expired_leases(storage_provider: "StorageProvider") -> int:
         except (IndexError, ValueError):
             pass
         r2 = await conn.execute(
-            "DELETE FROM leader_lease WHERE expires_at < now()",
+            f"DELETE FROM {ll_table} WHERE expires_at < now()",
         )
         try:
             deleted += int(r2.split()[1])

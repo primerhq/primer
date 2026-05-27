@@ -156,6 +156,16 @@ class PostgresStorageProvider(StorageProvider):
         """Sanitised schema name where tables are created."""
         return self._schema
 
+    @property
+    def rate_limit_lease_table(self) -> str:
+        """Schema-qualified table name for coordinator rate-limiter leases."""
+        return f'"{self._schema}"."rate_limit_lease"'
+
+    @property
+    def leader_lease_table(self) -> str:
+        """Schema-qualified table name for coordinator leadership leases."""
+        return f'"{self._schema}"."leader_lease"'
+
     async def initialize(self) -> None:
         if self._pool is not None:
             return
@@ -186,27 +196,32 @@ class PostgresStorageProvider(StorageProvider):
             await conn.execute(
                 f'CREATE SCHEMA IF NOT EXISTS "{self._schema}"'
             )
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS rate_limit_lease (
-                    lease_id   TEXT PRIMARY KEY,
-                    key        TEXT NOT NULL,
-                    owner_id   TEXT NOT NULL,
-                    claimed_at TIMESTAMPTZ NOT NULL,
-                    expires_at TIMESTAMPTZ NOT NULL
-                );
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS rate_limit_lease_key_active
-                  ON rate_limit_lease (key, expires_at);
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS leader_lease (
-                    role        TEXT PRIMARY KEY,
-                    owner_id    TEXT NOT NULL,
-                    claimed_at  TIMESTAMPTZ NOT NULL,
-                    expires_at  TIMESTAMPTZ NOT NULL
-                );
-            """)
+            # Coordinator lease tables live in the same schema as the
+            # rest of matrix so two deployments sharing a Postgres
+            # cluster with distinct db_schema settings keep their
+            # leases isolated. Coordinator backends read these names
+            # off the provider via .rate_limit_lease_table / .leader_lease_table.
+            await conn.execute(
+                f'CREATE TABLE IF NOT EXISTS "{self._schema}"."rate_limit_lease" ('
+                f'  lease_id   TEXT PRIMARY KEY,'
+                f'  key        TEXT NOT NULL,'
+                f'  owner_id   TEXT NOT NULL,'
+                f'  claimed_at TIMESTAMPTZ NOT NULL,'
+                f'  expires_at TIMESTAMPTZ NOT NULL'
+                f')'
+            )
+            await conn.execute(
+                f'CREATE INDEX IF NOT EXISTS rate_limit_lease_key_active '
+                f'ON "{self._schema}"."rate_limit_lease" (key, expires_at)'
+            )
+            await conn.execute(
+                f'CREATE TABLE IF NOT EXISTS "{self._schema}"."leader_lease" ('
+                f'  role       TEXT PRIMARY KEY,'
+                f'  owner_id   TEXT NOT NULL,'
+                f'  claimed_at TIMESTAMPTZ NOT NULL,'
+                f'  expires_at TIMESTAMPTZ NOT NULL'
+                f')'
+            )
         logger.info(
             "PostgresStorageProvider initialised (schema=%r, host=%s:%d)",
             self._schema,

@@ -337,11 +337,16 @@ def _make_lifespan(config: AppConfig):
             mcp_task_bridge.start(coordinator.leader_elector)
             logger.info("lifespan: mcp task bridge started")
 
-            from matrix.coordinator.sweeper import CoordinatorSweeper
+            # CoordinatorSweeper only runs against a Postgres-backed
+            # storage provider — it issues SQL DELETEs through the
+            # asyncpg pool. With InMemoryEventBus the storage is
+            # SQLite (no .pool) so the sweep would crash every 30s.
+            if isinstance(event_bus, PostgresEventBus):
+                from matrix.coordinator.sweeper import CoordinatorSweeper
 
-            coordinator_sweeper = CoordinatorSweeper(storage_provider=storage_provider)
-            coordinator_sweeper.start(coordinator.leader_elector)
-            app.state.coordinator_sweeper = coordinator_sweeper
+                coordinator_sweeper = CoordinatorSweeper(storage_provider=storage_provider)
+                coordinator_sweeper.start(coordinator.leader_elector)
+                app.state.coordinator_sweeper = coordinator_sweeper
         app.state.event_bus = event_bus
 
         # Build the always-on ``harness`` toolset. Needs event_bus so it
