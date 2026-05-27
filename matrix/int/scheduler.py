@@ -23,6 +23,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from matrix.model.harness import HarnessOperation, HarnessStatus
 from matrix.model.session import SessionStatus
 
 _DEFAULT_HEARTBEAT_STALE_AFTER = timedelta(seconds=90)
@@ -54,6 +55,21 @@ class ChatLease(BaseModel):
 
     chat_id: str = Field(..., min_length=1)
     worker_id: str = Field(..., min_length=1)
+    claimed_at: datetime
+
+
+class HarnessLease(BaseModel):
+    """Snapshot of a successful harness-operation claim.
+
+    Mirrors :class:`ChatLease` for harness operations. The worker holds
+    the claim as long as its heartbeats remain fresh;
+    :meth:`Scheduler.release_harness` drops it when the operation
+    completes.
+    """
+
+    harness_id: str = Field(..., min_length=1)
+    worker_id: str = Field(..., min_length=1)
+    operation: HarnessOperation
     claimed_at: datetime
 
 
@@ -290,6 +306,55 @@ class Scheduler(ABC):
         longer holds the claim.
         """
 
+    # ---- Harness-operation claiming --------------------------------------
+
+    @abstractmethod
+    async def claim_harnesses(
+        self,
+        worker_id: str,
+        *,
+        max_count: int,
+        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
+    ) -> list["HarnessLease"]:
+        """Atomically claim up to ``max_count`` harness operations ready to run.
+
+        A harness row is eligible when:
+
+        * ``pending_operation IS NOT NULL``
+        * ``claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after``
+
+        On success sets ``claimed_by=worker_id``, ``claimed_at=now()``,
+        ``last_heartbeat_at=now()``.
+
+        Postgres: ``FOR UPDATE SKIP LOCKED`` inside a transaction.
+        In-memory: iterate harnesses, apply predicate, mutate matching rows.
+        """
+
+    @abstractmethod
+    async def heartbeat_harness(self, harness_id: str, worker_id: str) -> bool:
+        """Bump ``last_heartbeat_at`` on the harness claim.
+
+        Returns ``True`` if the heartbeat was accepted (we still own
+        the claim), ``False`` if the claim was stolen by another worker.
+        """
+
+    @abstractmethod
+    async def release_harness(
+        self,
+        harness_id: str,
+        worker_id: str,
+        *,
+        next_status: HarnessStatus,
+        last_operation_error: str | None = None,
+    ) -> None:
+        """Release the harness claim and set the next status.
+
+        Sets ``status=next_status``, ``pending_operation=NULL``,
+        ``claimed_by=NULL``, ``claimed_at=NULL``, ``last_heartbeat_at=NULL``,
+        optionally ``last_operation_error`` where ``claimed_by=worker_id``.
+        Silently no-ops if the caller no longer holds the claim.
+        """
+
     # ---- Hints + cancel --------------------------------------------------
 
     @abstractmethod
@@ -319,6 +384,7 @@ __all__ = [
     "ChatLease",
     "CompleteTurnResult",
     "FailureRecord",
+    "HarnessLease",
     "Lease",
     "Scheduler",
     "WorkerInfo",

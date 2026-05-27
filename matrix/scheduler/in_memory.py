@@ -22,11 +22,13 @@ from matrix.int.scheduler import (
     ChatLease,
     CompleteTurnResult,
     FailureRecord,
+    HarnessLease,
     Lease,
     Scheduler,
     WorkerInfo,
 )
 from matrix.model.chats import Chat
+from matrix.model.harness import Harness, HarnessStatus
 from matrix.model.session import SessionStatus
 from matrix.model.storage import OffsetPage
 
@@ -473,6 +475,108 @@ class InMemoryScheduler(Scheduler):
                 "last_heartbeat_at": None,
             })
             await chat_storage.update(updated)
+
+    # ---- Harness-operation claiming -------------------------------------
+
+    async def claim_harnesses(
+        self,
+        worker_id: str,
+        *,
+        max_count: int,
+        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
+    ) -> list[HarnessLease]:
+        """Iterate all Harness rows and claim eligible ones.
+
+        Eligibility predicate (mirrors the spec):
+        * pending_operation IS NOT NULL
+        * claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after
+        """
+        async with self._lock:
+            if self._storage is None:
+                return []
+            harness_storage = self._storage.get_storage(Harness)
+            # Collect all Harness rows from storage using paginated reads.
+            page_size = 200
+            all_harnesses: list[Harness] = []
+            offset = 0
+            while True:
+                resp = await harness_storage.list(OffsetPage(offset=offset, length=page_size))
+                all_harnesses.extend(resp.items)
+                if len(resp.items) < page_size:
+                    break
+                offset += page_size
+
+            now = datetime.now(timezone.utc)
+            staleness_cutoff = now - heartbeat_stale_after
+
+            claimed: list[HarnessLease] = []
+            for harness in all_harnesses:
+                if len(claimed) >= max_count:
+                    break
+                # must have a pending operation
+                if harness.pending_operation is None:
+                    continue
+                # claim must be available (not held, or stale)
+                if harness.claimed_by is not None:
+                    if harness.last_heartbeat_at is None or harness.last_heartbeat_at >= staleness_cutoff:
+                        continue
+
+                # Claim it
+                now_claim = datetime.now(timezone.utc)
+                updated = harness.model_copy(update={
+                    "claimed_by": worker_id,
+                    "claimed_at": now_claim,
+                    "last_heartbeat_at": now_claim,
+                })
+                await harness_storage.update(updated)
+                claimed.append(HarnessLease(
+                    harness_id=harness.id,
+                    worker_id=worker_id,
+                    operation=harness.pending_operation,
+                    claimed_at=now_claim,
+                ))
+            return claimed
+
+    async def heartbeat_harness(self, harness_id: str, worker_id: str) -> bool:
+        """Bump last_heartbeat_at if we still own the claim."""
+        async with self._lock:
+            if self._storage is None:
+                return False
+            harness_storage = self._storage.get_storage(Harness)
+            harness = await harness_storage.get(harness_id)
+            if harness is None or harness.claimed_by != worker_id:
+                return False
+            updated = harness.model_copy(update={
+                "last_heartbeat_at": datetime.now(timezone.utc),
+            })
+            await harness_storage.update(updated)
+            return True
+
+    async def release_harness(
+        self,
+        harness_id: str,
+        worker_id: str,
+        *,
+        next_status: HarnessStatus,
+        last_operation_error: str | None = None,
+    ) -> None:
+        """Release the harness claim. No-ops if we don't own it."""
+        async with self._lock:
+            if self._storage is None:
+                return
+            harness_storage = self._storage.get_storage(Harness)
+            harness = await harness_storage.get(harness_id)
+            if harness is None or harness.claimed_by != worker_id:
+                return
+            updated = harness.model_copy(update={
+                "status": next_status,
+                "pending_operation": None,
+                "claimed_by": None,
+                "claimed_at": None,
+                "last_heartbeat_at": None,
+                "last_operation_error": last_operation_error,
+            })
+            await harness_storage.update(updated)
 
     # ---- Hints + cancel -------------------------------------------------
 

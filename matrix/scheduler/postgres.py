@@ -24,10 +24,12 @@ from matrix.int.scheduler import (
     ChatLease,
     CompleteTurnResult,
     FailureRecord,
+    HarnessLease,
     Lease,
     Scheduler,
     WorkerInfo,
 )
+from matrix.model.harness import HarnessStatus
 from matrix.model.except_ import ProviderError
 from matrix.model.scheduler import PostgresSchedulerConfig
 from matrix.model.session import SessionStatus
@@ -728,6 +730,129 @@ class PostgresScheduler(Scheduler):
         """
         async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
             await conn.execute(sql, chat_id, worker_id, next_turn_status)
+
+    # ---- Harness-operation claiming (Task 5) ----------------------------
+
+    def _harness_table(self) -> str:
+        """Schema-qualified name of the harness table."""
+        schema = self._storage.schema  # type: ignore[attr-defined]
+        return f'"{schema}"."harness"'
+
+    async def claim_harnesses(
+        self,
+        worker_id: str,
+        *,
+        max_count: int,
+        heartbeat_stale_after: timedelta = _DEFAULT_HEARTBEAT_STALE_AFTER,
+    ) -> list[HarnessLease]:
+        """Atomically claim up to ``max_count`` harness operations.
+
+        Uses ``FOR UPDATE SKIP LOCKED`` inside a transaction so
+        concurrent workers don't race on the same rows.
+
+        Eligibility predicate:
+        * pending_operation IS NOT NULL
+        * claimed_by IS NULL OR last_heartbeat_at < now() - heartbeat_stale_after
+        """
+        table = self._harness_table()
+        sql = f"""
+            WITH claimed AS (
+                SELECT id
+                FROM {table}
+                WHERE data->>'pending_operation' IS NOT NULL
+                  AND (
+                    data->>'claimed_by' IS NULL
+                    OR (data->>'last_heartbeat_at')::timestamptz
+                         < now() - ($3 || ' seconds')::interval
+                  )
+                ORDER BY id
+                FOR UPDATE SKIP LOCKED
+                LIMIT $2
+            )
+            UPDATE {table} h
+            SET data = jsonb_set(
+                jsonb_set(
+                jsonb_set(
+                    data,
+                    '{{claimed_by}}', to_jsonb($1::text)),
+                '{{claimed_at}}', to_jsonb(now())),
+                '{{last_heartbeat_at}}', to_jsonb(now())
+            ),
+            updated_at = now()
+            FROM claimed
+            WHERE h.id = claimed.id
+            RETURNING h.id,
+                      h.data->>'pending_operation' AS pending_operation,
+                      (h.data->>'claimed_at')::timestamptz AS claimed_at
+        """
+        staleness_seconds = str(int(heartbeat_stale_after.total_seconds()))
+        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
+            async with conn.transaction():
+                rows = await conn.fetch(sql, worker_id, max_count, staleness_seconds)
+        return [
+            HarnessLease(
+                harness_id=r["id"],
+                worker_id=worker_id,
+                operation=r["pending_operation"],
+                claimed_at=r["claimed_at"],
+            )
+            for r in rows
+        ]
+
+    async def heartbeat_harness(self, harness_id: str, worker_id: str) -> bool:
+        """Bump last_heartbeat_at. Returns True if we still hold the claim."""
+        table = self._harness_table()
+        sql = f"""
+            UPDATE {table}
+            SET data = jsonb_set(data, '{{last_heartbeat_at}}', to_jsonb(now())),
+                updated_at = now()
+            WHERE id = $1
+              AND data->>'claimed_by' = $2
+            RETURNING id
+        """
+        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
+            row = await conn.fetchrow(sql, harness_id, worker_id)
+        return row is not None
+
+    async def release_harness(
+        self,
+        harness_id: str,
+        worker_id: str,
+        *,
+        next_status: HarnessStatus,
+        last_operation_error: str | None = None,
+    ) -> None:
+        """Release the harness claim. No-ops if we don't own it."""
+        table = self._harness_table()
+        sql = f"""
+            UPDATE {table}
+            SET data = (
+                jsonb_set(
+                  jsonb_set(
+                    jsonb_set(
+                      (data
+                        - 'claimed_by'
+                        - 'claimed_at'
+                        - 'last_heartbeat_at'
+                        - 'pending_operation'
+                      ),
+                      '{{status}}', to_jsonb($3::text)
+                    ),
+                    '{{last_operation_error}}',
+                    CASE WHEN $4::text IS NULL THEN 'null'::jsonb
+                         ELSE to_jsonb($4::text) END
+                  ),
+                  '{{last_operation_at}}', to_jsonb(now())
+                )
+            ),
+            updated_at = now()
+            WHERE id = $1
+              AND data->>'claimed_by' = $2
+        """
+        async with self._storage.pool.acquire() as conn:  # type: ignore[attr-defined]
+            await conn.execute(
+                sql, harness_id, worker_id, next_status.value, last_operation_error,
+            )
 
     # ---- methods filled in by Task 11 ----------------------------------
 
