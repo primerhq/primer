@@ -48,12 +48,14 @@ async def postgres_storage_provider():
     cfg = _parse_url(url)
     sp = PostgresStorageProvider(cfg)
     await sp.initialize()
-    # Start each test with an empty lease table.
+    # Start each test with empty lease tables.
     async with sp.pool.acquire() as conn:
         await conn.execute("DELETE FROM rate_limit_lease")
+        await conn.execute("DELETE FROM leader_lease")
     try:
         yield sp
     finally:
         async with sp.pool.acquire() as conn:
             await conn.execute("DELETE FROM rate_limit_lease")
+            await conn.execute("DELETE FROM leader_lease")
         await sp.aclose()

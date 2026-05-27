@@ -199,6 +199,14 @@ class PostgresStorageProvider(StorageProvider):
                 CREATE INDEX IF NOT EXISTS rate_limit_lease_key_active
                   ON rate_limit_lease (key, expires_at);
             """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS leader_lease (
+                    role        TEXT PRIMARY KEY,
+                    owner_id    TEXT NOT NULL,
+                    claimed_at  TIMESTAMPTZ NOT NULL,
+                    expires_at  TIMESTAMPTZ NOT NULL
+                );
+            """)
         logger.info(
             "PostgresStorageProvider initialised (schema=%r, host=%s:%d)",
             self._schema,

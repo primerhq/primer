@@ -17,6 +17,8 @@ from matrix.int.coordinator import (
     InvalidationBus,
     InvalidationSubscription,
     InvalidationTopic,
+    LeaderElector,
+    LeadershipLease,
     RateLimiter,
     RateLimiterLease,
 )
@@ -253,3 +255,115 @@ class PostgresInvalidationBus(InvalidationBus):
         handler: Callable[[str], Awaitable[None]],
     ) -> _PostgresInvalidationSubscription:
         return _PostgresInvalidationSubscription(self._bus, topic, handler)
+
+
+# ---------------------------------------------------------------------------
+# LeaderElector
+# ---------------------------------------------------------------------------
+
+
+_LEADER_HEARTBEAT_INTERVAL_SECONDS = 10
+
+
+class _PostgresLeadershipLease(LeadershipLease):
+    def __init__(
+        self,
+        *,
+        storage,
+        role: str,
+        owner_id: str,
+        lease_seconds: int,
+    ) -> None:
+        super().__init__(
+            role=role, owner_id=owner_id, lost_event=asyncio.Event(),
+        )
+        self._storage = storage
+        self._lease_seconds = lease_seconds
+        self._released = False
+        self._heartbeat_task: asyncio.Task = asyncio.create_task(
+            self._heartbeat_loop(), name=f"leader-hb-{role}",
+        )
+
+    async def _heartbeat_loop(self) -> None:
+        try:
+            while not self._released:
+                await asyncio.sleep(_LEADER_HEARTBEAT_INTERVAL_SECONDS)
+                if self._released:
+                    return
+                async with self._storage.pool.acquire() as conn:
+                    row = await conn.fetchval(
+                        """
+                        UPDATE leader_lease
+                           SET expires_at = now() + ($1 || ' seconds')::interval
+                         WHERE role = $2 AND owner_id = $3
+                        RETURNING role
+                        """,
+                        str(self._lease_seconds), self.role, self.owner_id,
+                    )
+                if row is None:
+                    self.lost_event.set()
+                    return
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception(
+                "leader heartbeat failed for role %s", self.role,
+            )
+            self.lost_event.set()
+
+    async def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._heartbeat_task.cancel()
+        try:
+            await self._heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            async with self._storage.pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM leader_lease WHERE role = $1 AND owner_id = $2",
+                    self.role, self.owner_id,
+                )
+                try:
+                    await conn.execute(
+                        "SELECT pg_notify('leader_released', $1)",
+                        self.role,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            logger.exception(
+                "leader lease %s/%s release failed", self.role, self.owner_id,
+            )
+
+
+class PostgresLeaderElector(LeaderElector):
+    def __init__(self, storage_provider: "StorageProvider", owner_id: str) -> None:
+        self._storage = storage_provider
+        self._owner_id = owner_id
+
+    async def try_acquire(
+        self, role: str, *, lease_seconds: int = 30,
+    ) -> "LeadershipLease | None":
+        async with self._storage.pool.acquire() as conn:
+            row = await conn.fetchval(
+                """
+                INSERT INTO leader_lease (role, owner_id, claimed_at, expires_at)
+                VALUES ($1, $2, now(), now() + ($3 || ' seconds')::interval)
+                ON CONFLICT (role) DO UPDATE
+                  SET owner_id   = EXCLUDED.owner_id,
+                      claimed_at = EXCLUDED.claimed_at,
+                      expires_at = EXCLUDED.expires_at
+                  WHERE leader_lease.expires_at < now()
+                RETURNING owner_id
+                """,
+                role, self._owner_id, str(lease_seconds),
+            )
+        if row != self._owner_id:
+            return None
+        return _PostgresLeadershipLease(
+            storage=self._storage, role=role, owner_id=self._owner_id,
+            lease_seconds=lease_seconds,
+        )
