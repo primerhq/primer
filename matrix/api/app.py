@@ -594,6 +594,9 @@ def _mount_routers(
     app.include_router(make_channel_provider_router(), prefix=prefix)
     app.include_router(make_channel_router(), prefix=prefix)
     app.include_router(make_workspace_channel_association_router(), prefix=prefix)
+    # Harness REST router (Task 10).
+    from matrix.api.routers.harness import harness_router
+    app.include_router(harness_router)
 
 
 def create_app(config: AppConfig) -> FastAPI:

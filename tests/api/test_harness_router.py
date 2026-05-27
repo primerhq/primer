@@ -1,0 +1,321 @@
+"""Tests for the harness REST router (Task 10).
+
+Covers the 7 scenarios specified in the plan:
+1. POST creates a DRAFT row; token round-trips redacted via GET.
+2. POST rejects duplicate slug with 409.
+3. POST/{id}/fetch flips pending_operation=fetch; second call returns 409.
+4. PUT/{id}/overrides validates against cached schema; 422 on invalid; 200 + recomputed hash on valid.
+5. POST/{id}/install rejects with 422 when no schema cached.
+6. POST/{id}/install rejects with 409 if pending_operation already set.
+7. DELETE flips pending_operation=uninstall and returns 202.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from matrix.harness.hashes import hash_overrides
+from matrix.model.harness import Harness, HarnessOperation, HarnessStatus
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_harness(**kwargs) -> Harness:
+    defaults = dict(
+        id="hns_test000001",
+        slug="my-test-harness",
+        name="My Test Harness",
+        git_url="https://github.com/example/repo",
+        status=HarnessStatus.DRAFT,
+        created_at=datetime.now(timezone.utc),
+    )
+    defaults.update(kwargs)
+    return Harness(**defaults)
+
+
+# ---------------------------------------------------------------------------
+# Scenario 1: POST creates DRAFT row; token redacted in GET
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_harness_returns_draft(client):
+    resp = await client.post(
+        "/v1/harnesses",
+        json={
+            "name": "My Harness",
+            "slug": "my-harness",
+            "git_url": "https://github.com/example/repo",
+            "git_token": "super-secret-token",
+        },
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["status"] == "draft"
+    assert body["slug"] == "my-harness"
+    assert body["name"] == "My Harness"
+    assert body["id"].startswith("hns_")
+    # Token must be redacted
+    assert body["git_token"] == "**********"
+
+    harness_id = body["id"]
+
+    # GET also returns redacted token
+    get_resp = await client.get(f"/v1/harnesses/{harness_id}")
+    assert get_resp.status_code == 200
+    get_body = get_resp.json()
+    assert get_body["git_token"] == "**********"
+
+
+# ---------------------------------------------------------------------------
+# Scenario 2: POST rejects duplicate slug with 409
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_harness_duplicate_slug(client):
+    payload = {
+        "name": "First",
+        "slug": "unique-slug",
+        "git_url": "https://github.com/example/repo",
+    }
+    r1 = await client.post("/v1/harnesses", json=payload)
+    assert r1.status_code == 201
+
+    r2 = await client.post("/v1/harnesses", json={"name": "Second", "slug": "unique-slug", "git_url": "https://github.com/example/repo2"})
+    assert r2.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Scenario 3: POST/{id}/fetch flips pending_operation; second call 409
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_flips_pending_operation_and_conflicts_on_second(client, app):
+    # Create harness
+    r = await client.post(
+        "/v1/harnesses",
+        json={"name": "H", "slug": "fetch-test", "git_url": "https://github.com/x/y"},
+    )
+    assert r.status_code == 201
+    hid = r.json()["id"]
+
+    # First fetch: 202
+    r2 = await client.post(f"/v1/harnesses/{hid}/fetch")
+    assert r2.status_code == 202
+    assert r2.json()["pending_operation"] == "fetch"
+
+    # Second fetch: 409 (pending_op already set)
+    r3 = await client.post(f"/v1/harnesses/{hid}/fetch")
+    assert r3.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Scenario 4: PUT/{id}/overrides validates against schema; 422 invalid; 200 valid
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_put_overrides_validates_schema(client, app, fake_storage_provider):
+    # Pre-insert a harness with an overrides_schema directly into storage
+    schema = {
+        "type": "object",
+        "properties": {"model": {"type": "string"}},
+        "required": ["model"],
+        "additionalProperties": False,
+    }
+    harness = _make_harness(
+        id="hns_overridetest",
+        slug="override-test",
+        overrides_schema=schema,
+        status=HarnessStatus.READY,
+    )
+    storage = fake_storage_provider.get_storage(Harness)
+    await storage.create(harness)
+
+    # Invalid overrides (missing required "model")
+    bad_resp = await client.put(
+        "/v1/harnesses/hns_overridetest/overrides",
+        json={"bad_field": "value"},
+    )
+    assert bad_resp.status_code == 422
+    bad_body = bad_resp.json()
+    assert bad_body.get("code") == "overrides_invalid" or (
+        "code" in str(bad_body) or "overrides_invalid" in str(bad_body)
+    )
+
+    # Valid overrides
+    good_resp = await client.put(
+        "/v1/harnesses/hns_overridetest/overrides",
+        json={"model": "gpt-4"},
+    )
+    assert good_resp.status_code == 200
+    good_body = good_resp.json()
+    assert good_body["overrides"] == {"model": "gpt-4"}
+    # overrides_hash should be populated and match
+    expected_hash = hash_overrides({"model": "gpt-4"})
+    assert good_body["overrides_hash"] == expected_hash
+
+
+# ---------------------------------------------------------------------------
+# Scenario 5: POST/{id}/install rejects with 422 when no schema cached
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_install_rejects_no_schema(client, app, fake_storage_provider):
+    # Harness with READY status but no overrides_schema
+    harness = _make_harness(
+        id="hns_noschema",
+        slug="no-schema",
+        status=HarnessStatus.READY,
+        overrides_schema=None,
+    )
+    storage = fake_storage_provider.get_storage(Harness)
+    await storage.create(harness)
+
+    r = await client.post("/v1/harnesses/hns_noschema/install")
+    assert r.status_code == 422
+    body = r.json()
+    assert "overrides_schema_missing" in str(body)
+
+
+# ---------------------------------------------------------------------------
+# Scenario 6: POST/{id}/install rejects with 409 if pending_operation set
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_install_rejects_pending_op(client, app, fake_storage_provider):
+    # Harness with READY status, a schema, and pending_operation already set
+    schema = {"type": "object", "properties": {}, "additionalProperties": True}
+    harness = _make_harness(
+        id="hns_pendingop",
+        slug="pending-op",
+        status=HarnessStatus.READY,
+        overrides_schema=schema,
+        pending_operation=HarnessOperation.FETCH,
+    )
+    storage = fake_storage_provider.get_storage(Harness)
+    await storage.create(harness)
+
+    r = await client.post("/v1/harnesses/hns_pendingop/install")
+    assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Scenario 7: DELETE flips pending_operation=uninstall; 202
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_enqueues_uninstall(client, app, fake_storage_provider):
+    harness = _make_harness(
+        id="hns_todelete",
+        slug="to-delete",
+        status=HarnessStatus.INSTALLED,
+    )
+    storage = fake_storage_provider.get_storage(Harness)
+    await storage.create(harness)
+
+    r = await client.delete("/v1/harnesses/hns_todelete")
+    assert r.status_code == 202
+    body = r.json()
+    assert body["pending_operation"] == "uninstall"
+
+
+# ---------------------------------------------------------------------------
+# Extra: GET list returns empty list initially
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_harnesses_empty(client):
+    r = await client.get("/v1/harnesses")
+    assert r.status_code == 200
+    body = r.json()
+    assert "items" in body
+    assert body["items"] == []
+
+
+# ---------------------------------------------------------------------------
+# Extra: GET 404 on missing harness
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_harness_not_found(client):
+    r = await client.get("/v1/harnesses/hns_doesnotexist")
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Extra: PUT updates name/description; marks overrides_dirty on ref change
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_put_harness_marks_overrides_dirty_on_ref_change(client, app, fake_storage_provider):
+    harness = _make_harness(
+        id="hns_refdirty",
+        slug="ref-dirty",
+        ref="main",
+        status=HarnessStatus.READY,
+    )
+    storage = fake_storage_provider.get_storage(Harness)
+    await storage.create(harness)
+
+    # Change ref → should mark overrides_dirty=True
+    r = await client.put("/v1/harnesses/hns_refdirty", json={"ref": "v2"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["overrides_dirty"] is True
+    assert body["ref"] == "v2"
+
+
+# ---------------------------------------------------------------------------
+# Extra: overrides_schema_missing returns well-formed code
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_put_overrides_no_schema_returns_422(client, app, fake_storage_provider):
+    harness = _make_harness(
+        id="hns_noschema2",
+        slug="no-schema-2",
+        status=HarnessStatus.READY,
+        overrides_schema=None,
+    )
+    storage = fake_storage_provider.get_storage(Harness)
+    await storage.create(harness)
+
+    r = await client.put("/v1/harnesses/hns_noschema2/overrides", json={"x": 1})
+    assert r.status_code == 422
+    body = r.json()
+    assert "overrides_schema_missing" in str(body)
+
+
+# ---------------------------------------------------------------------------
+# Extra: sync rejects when status not INSTALLED/OUTDATED
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_rejects_wrong_status(client, app, fake_storage_provider):
+    harness = _make_harness(
+        id="hns_syncwrong",
+        slug="sync-wrong",
+        status=HarnessStatus.DRAFT,
+        available_bundle_hash="abc123",
+    )
+    storage = fake_storage_provider.get_storage(Harness)
+    await storage.create(harness)
+
+    r = await client.post("/v1/harnesses/hns_syncwrong/sync")
+    assert r.status_code == 409
