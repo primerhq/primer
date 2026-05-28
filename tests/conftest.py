@@ -167,10 +167,16 @@ class _FakeStorageProvider:
 
     async def get_system_state(self) -> Any:
         from primer.model.system_state import SystemState
-        return SystemState(bootstrap_completed_at=self._bootstrap_completed_at)
+        return SystemState(
+            bootstrap_completed_at=self._bootstrap_completed_at,
+            session_secret=getattr(self, "_session_secret", None),
+        )
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         self._bootstrap_completed_at = ts
+
+    async def set_session_secret(self, secret: str) -> None:
+        self._session_secret = secret
 
 
 @pytest.fixture

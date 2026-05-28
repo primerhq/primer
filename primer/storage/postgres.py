@@ -259,8 +259,15 @@ class PostgresStorageProvider(StorageProvider):
                 f'  id                     TEXT PRIMARY KEY DEFAULT \'singleton\','
                 f'  bootstrap_completed_at TIMESTAMPTZ,'
                 f'  schema_version         INTEGER NOT NULL DEFAULT 1,'
-                f'  last_migration_at      TIMESTAMPTZ'
+                f'  last_migration_at      TIMESTAMPTZ,'
+                f'  session_secret         TEXT'
                 f')'
+            )
+            # Schema-evolution: add session_secret column on pre-existing
+            # tables. Idempotent: only adds when missing.
+            await conn.execute(
+                f'ALTER TABLE "{self._schema}"."system_state" '
+                f'ADD COLUMN IF NOT EXISTS session_secret TEXT'
             )
             await conn.execute(
                 f'INSERT INTO "{self._schema}"."system_state" (id) '
@@ -295,7 +302,8 @@ class PostgresStorageProvider(StorageProvider):
     async def get_system_state(self) -> SystemState:
         """Return the singleton ``system_state`` row."""
         sql = (
-            f'SELECT id, bootstrap_completed_at, schema_version, last_migration_at '
+            f'SELECT id, bootstrap_completed_at, schema_version, '
+            f'       last_migration_at, session_secret '
             f'FROM {self.system_state_table} WHERE id = $1'
         )
         async with self.pool.acquire() as conn:
@@ -308,6 +316,7 @@ class PostgresStorageProvider(StorageProvider):
             bootstrap_completed_at=row["bootstrap_completed_at"],
             schema_version=row["schema_version"],
             last_migration_at=row["last_migration_at"],
+            session_secret=row["session_secret"],
         )
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
@@ -318,6 +327,15 @@ class PostgresStorageProvider(StorageProvider):
         )
         async with self.pool.acquire() as conn:
             await conn.execute(sql, ts, "singleton")
+
+    async def set_session_secret(self, secret: str) -> None:
+        """Persist the cookie-signing HMAC secret on the singleton row."""
+        sql = (
+            f'UPDATE {self.system_state_table} '
+            f'SET session_secret = $1 WHERE id = $2'
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute(sql, secret, "singleton")
 
 
 # ===========================================================================

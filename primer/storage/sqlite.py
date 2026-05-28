@@ -141,9 +141,19 @@ class SqliteStorageProvider(StorageProvider):
                 "  id                     TEXT PRIMARY KEY DEFAULT 'singleton',"
                 "  bootstrap_completed_at TEXT,"
                 "  schema_version         INTEGER NOT NULL DEFAULT 1,"
-                "  last_migration_at      TEXT"
+                "  last_migration_at      TEXT,"
+                "  session_secret         TEXT"
                 ")"
             )
+            # Schema-evolution shim: for installs created before
+            # session_secret existed, add the column if missing. ALTER TABLE
+            # ADD COLUMN is idempotent across SQLite versions via a guard.
+            cur = await self._conn.execute("PRAGMA table_info(system_state)")
+            cols = {row[1] for row in await cur.fetchall()}
+            if "session_secret" not in cols:
+                await self._conn.execute(
+                    "ALTER TABLE system_state ADD COLUMN session_secret TEXT"
+                )
             await self._conn.execute(
                 "INSERT INTO system_state (id) VALUES ('singleton') "
                 "ON CONFLICT DO NOTHING"
@@ -187,14 +197,15 @@ class SqliteStorageProvider(StorageProvider):
     async def get_system_state(self) -> SystemState:
         """Return the singleton ``system_state`` row."""
         sql = (
-            "SELECT id, bootstrap_completed_at, schema_version, last_migration_at "
+            "SELECT id, bootstrap_completed_at, schema_version, "
+            "       last_migration_at, session_secret "
             "FROM system_state WHERE id = ?"
         )
         cur = await self.connection.execute(sql, ("singleton",))
         row = await cur.fetchone()
         if row is None:
             return SystemState()
-        id_, bca_text, schema_version, lma_text = row
+        id_, bca_text, schema_version, lma_text, session_secret = row
 
         def _parse_ts(s: str | None) -> datetime | None:
             if s is None:
@@ -210,6 +221,7 @@ class SqliteStorageProvider(StorageProvider):
             bootstrap_completed_at=_parse_ts(bca_text),
             schema_version=schema_version,
             last_migration_at=_parse_ts(lma_text),
+            session_secret=session_secret,
         )
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
@@ -220,6 +232,18 @@ class SqliteStorageProvider(StorageProvider):
             "UPDATE system_state SET bootstrap_completed_at = ? WHERE id = ?"
         )
         await self.connection.execute(sql, (ts_str, "singleton"))
+        await self.connection.commit()
+
+    async def set_session_secret(self, secret: str) -> None:
+        """Persist the cookie-signing HMAC secret on the singleton row.
+
+        Called by the auth layer the first time it needs a secret and
+        ``PRIMER_SESSION_SECRET`` env var is not set.
+        """
+        await self.connection.execute(
+            "UPDATE system_state SET session_secret = ? WHERE id = ?",
+            (secret, "singleton"),
+        )
         await self.connection.commit()
 
 
