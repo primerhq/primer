@@ -62,6 +62,12 @@ logger = logging.getLogger(__name__)
 def _make_lifespan(config: AppConfig):
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # --- Observability wiring ----------------------------------------
+        # Set up OTEL tracing + auto-instrumentation as early as possible
+        # in the lifespan so any span-emitting code below is covered.
+        from matrix.observability import tracing as _tracing
+        _tracing.setup(config.observability)
+
         # When scheduler is unset, default to an in-memory scheduler
         # so the zero-config path boots. Operators running worker mode
         # in production should explicitly set a Postgres scheduler.
@@ -807,9 +813,33 @@ def create_app(config: AppConfig) -> FastAPI:
     _install_request_id(app)
     _mount_routers(app, runtime_mode=config.runtime_mode)
     _mount_console(app)
+    _mount_metrics(app, config)
     _install_root_redirect(app)
     register_error_handlers(app)
     return app
+
+
+def _mount_metrics(app: FastAPI, config: AppConfig) -> None:
+    """Mount the Prometheus ``/metrics`` endpoint when metrics are enabled.
+
+    The endpoint is mounted via :func:`prometheus_client.make_asgi_app`
+    which returns a bare ASGI application wrapping the Matrix-specific
+    :data:`matrix.observability.metrics.registry`.  Mounting happens
+    *before* error handlers so the mount does not go through FastAPI's
+    exception machinery.
+
+    When ``config.observability.metrics_enabled`` is *False* or
+    ``config.observability.enabled`` is *False* the mount is skipped
+    entirely and ``GET /metrics`` returns a 404.
+    """
+    if not config.observability.enabled or not config.observability.metrics_enabled:
+        return
+
+    from prometheus_client import make_asgi_app as _make_metrics_asgi
+    from matrix.observability.metrics import registry as _metrics_registry
+
+    metrics_app = _make_metrics_asgi(registry=_metrics_registry)
+    app.mount("/metrics", metrics_app)
 
 
 def _install_root_redirect(app: FastAPI) -> None:
