@@ -525,10 +525,10 @@ class PostgresScheduler(Scheduler):
         served by :meth:`metrics_db_snapshot`, which is async because
         those values require a live SQL round-trip."""
         return {
-            "matrix_scheduler_notify_received_total": (
+            "primer_scheduler_notify_received_total": (
                 self._notify_received_total
             ),
-            "matrix_scheduler_listen_reconnects_total": (
+            "primer_scheduler_listen_reconnects_total": (
                 self._listen_reconnects_total
             ),
         }

@@ -21,7 +21,7 @@ function _sdToastErr(pushToast, fallbackTitle) {
 }
 
 function SessionDetail({ sid: sidProp, pushToast, onBack }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { params, navigate } = useRouter();
   const sid = sidProp || params.id;
 
@@ -925,7 +925,7 @@ window.SessionLiveStream = SessionLiveStream;
 // endpoints; 422/500 are surfaced INLINE via data-testid="ask-user-error"
 // (U0051/U0060), success surfaces as a toast (U0049/U0050).
 function AskUserPanel({ sid, sessionStatus, pushToast }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const isTerminal = SESSION_TERMINAL.has(sessionStatus);
 
   const pending = useResource(
@@ -1176,7 +1176,7 @@ function SleepPanel({ sid, wid, session, pushToast }) {
 
 // Shared cancel-yield button (WatchFiles + Sleep panels).
 function CancelYieldBtn({ sid, wid, tcid, pushToast }) {
-  const { useMutation, apiFetch } = window.matrixApi;
+  const { useMutation, apiFetch } = window.primerApi;
   const cancel = useMutation(
     () => apiFetch(
       "POST",
@@ -1205,7 +1205,7 @@ function CancelYieldBtn({ sid, wid, tcid, pushToast }) {
 // from approvals.jsx. The banner owns the respond mutation; this wrapper
 // owns the poll so session-detail can keep wiring concerns local.
 function ApprovalBannerPanel({ sid, sessionStatus, pushToast }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const isTerminal = SESSION_TERMINAL.has(sessionStatus);
   const pending = useResource(
     `tool-approval:session:${sid}`,

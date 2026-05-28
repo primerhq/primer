@@ -162,7 +162,7 @@ const __TWEAKS_STYLE = `
 // local copy that silently shadowed the foundation export because this file
 // loads after foundation/tweaks.js in index.html; that's been removed so the
 // foundation binding survives. Consumers reach it via the existing
-// window.useTweaks global (or window.matrixApi.useTweaks).
+// window.useTweaks global (or window.primerApi.useTweaks).
 
 // ── TweaksPanel ─────────────────────────────────────────────────────────────
 // Floating shell. Registers the protocol listener BEFORE announcing

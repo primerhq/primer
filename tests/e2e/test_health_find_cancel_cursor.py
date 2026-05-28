@@ -256,7 +256,7 @@ async def test_t0823_chats_list_offset_pagination_envelope(
 
     (Cursor pagination over the GET endpoint requires a real cursor
     seed — first call MUST be offset mode per parse_page in
-    matrix/api/pagination.py. Pure-cursor flow would need either
+    primer/api/pagination.py. Pure-cursor flow would need either
     the /find body endpoint or an empty-cursor convention which
     the Postgres backend doesn't currently accept. Out of scope.)
     """

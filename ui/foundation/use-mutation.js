@@ -1,9 +1,9 @@
-// matrix UI — useMutation hook (POST/PUT/DELETE wrapper with optimistic
+// primer UI — useMutation hook (POST/PUT/DELETE wrapper with optimistic
 // updates, cache invalidation, and 7807 error fallback).
 // Loaded via <script type="text/babel"> in ui/index.html. Depends on
-// React (global) and the internal `window.matrixApi._resource` cache
+// React (global) and the internal `window.primerApi._resource` cache
 // helpers exposed by use-resource.js. Optionally calls
-// `window.matrixApi.toastPush` (provided by toast.js when present).
+// `window.primerApi.toastPush` (provided by toast.js when present).
 
 (function () {
   const { useState, useRef, useCallback } = window.React;
@@ -22,7 +22,7 @@
 
     const mutate = useCallback(async (body) => {
       const opts = optsRef.current || {};
-      const ns = window.matrixApi || {};
+      const ns = window.primerApi || {};
       const resourceApi = ns._resource || null;
       const invalidates = Array.isArray(opts.invalidates) ? opts.invalidates : [];
       const optimistic =
@@ -90,6 +90,6 @@
     };
   }
 
-  const ns = (window.matrixApi = window.matrixApi || {});
+  const ns = (window.primerApi = window.primerApi || {});
   ns.useMutation = useMutation;
 })();

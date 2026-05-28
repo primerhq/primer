@@ -7,7 +7,7 @@
 // ============================================================================
 
 function HF_ProviderPicker({ endpoint, value, onChange, label }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const key = "hf-provider-picker:" + endpoint;
   const res = useResource(
     key,
@@ -38,7 +38,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
   if (!schema) return null;
   const path = _path || "";
   const type = schema.type;
-  const widget = schema["x-matrix-widget"];
+  const widget = schema["x-primer-widget"];
 
   // Custom widgets take priority
   if (widget === "llm-provider-picker") {

@@ -101,7 +101,7 @@ async def stripe_webhook(req: Request) -> dict:
 `,
   "/README.md": `# Webhook service
 
-Ingests Stripe webhook events and dispatches them to the Matrix queue.
+Ingests Stripe webhook events and dispatches them to the Primer queue.
 
 ## Quickstart
 
@@ -504,10 +504,10 @@ function buildSessions(now) {
 }
 
 const WORKERS = [
-  { id: "wrk-3a8e", host: "matrix-w1.local", pid: 28401, status: "active", capacity: 4, in_flight: 2, started_at: 8400, heartbeat: 1.2 },
-  { id: "wrk-9d2f", host: "matrix-w2.local", pid: 28402, status: "active", capacity: 4, in_flight: 1, started_at: 8400, heartbeat: 0.8 },
-  { id: "wrk-7c1b", host: "matrix-w3.local", pid: 28403, status: "active", capacity: 4, in_flight: 1, started_at: 8400, heartbeat: 2.1 },
-  { id: "wrk-1e5d", host: "matrix-w4.local", pid: 28404, status: "draining", capacity: 4, in_flight: 0, started_at: 8400, heartbeat: 1.5 },
+  { id: "wrk-3a8e", host: "primer-w1.local", pid: 28401, status: "active", capacity: 4, in_flight: 2, started_at: 8400, heartbeat: 1.2 },
+  { id: "wrk-9d2f", host: "primer-w2.local", pid: 28402, status: "active", capacity: 4, in_flight: 1, started_at: 8400, heartbeat: 0.8 },
+  { id: "wrk-7c1b", host: "primer-w3.local", pid: 28403, status: "active", capacity: 4, in_flight: 1, started_at: 8400, heartbeat: 2.1 },
+  { id: "wrk-1e5d", host: "primer-w4.local", pid: 28404, status: "draining", capacity: 4, in_flight: 0, started_at: 8400, heartbeat: 1.5 },
 ];
 
 // Semantic Search Providers
@@ -515,7 +515,7 @@ const SSP_PROVIDERS = [
   {
     id: "pgvector-prod",
     provider: "pgvector",
-    config: { hostname: "pg-prod.internal", port: 5432, database: "matrix", username: "matrix_rw", schema: "public", hnsw_m: 16, hnsw_ef_construction: 64 },
+    config: { hostname: "pg-prod.internal", port: 5432, database: "primer", username: "primer_rw", schema: "public", hnsw_m: 16, hnsw_ef_construction: 64 },
     last_invalidated_ago: 14 * 60,
     status: "ok",
     created_at_ago: 3600 * 24 * 12,
@@ -523,7 +523,7 @@ const SSP_PROVIDERS = [
   {
     id: "pgvectorscale-archive",
     provider: "pgvectorscale",
-    config: { hostname: "ts-archive.internal", port: 5432, database: "archive", username: "matrix_ro", schema: "public", hnsw_m: 24, hnsw_ef_construction: 80, enable_diskann: true, num_neighbors: 50, search_list_size: 100 },
+    config: { hostname: "ts-archive.internal", port: 5432, database: "archive", username: "primer_ro", schema: "public", hnsw_m: 24, hnsw_ef_construction: 80, enable_diskann: true, num_neighbors: 50, search_list_size: 100 },
     last_invalidated_ago: 3600 * 6,
     status: "ok",
     created_at_ago: 3600 * 24 * 38,
@@ -531,7 +531,7 @@ const SSP_PROVIDERS = [
   {
     id: "pgvector-staging",
     provider: "pgvector",
-    config: { hostname: "pg-staging.internal", port: 5432, database: "matrix", username: "matrix_rw", schema: "matrix_test", hnsw_m: 8, hnsw_ef_construction: 32 },
+    config: { hostname: "pg-staging.internal", port: 5432, database: "primer", username: "primer_rw", schema: "primer_test", hnsw_m: 8, hnsw_ef_construction: 32 },
     last_invalidated_ago: 90,
     status: "amber",
     created_at_ago: 3600 * 4,

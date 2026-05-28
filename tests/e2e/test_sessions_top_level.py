@@ -4261,7 +4261,7 @@ async def test_t0631_cancel_created_with_metadata_round_trips(
 
         # Nested GET: shape is {info: {...session_info...}, status}
         # where info is the SessionInfo projection (which does NOT
-        # carry the metadata field per matrix/model/session.py).
+        # carry the metadata field per primer/model/session.py).
         # Pin: nested response is structurally clean; top-level is
         # the authoritative source for metadata (asserted above).
         nested = await client.get(

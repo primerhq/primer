@@ -261,8 +261,8 @@ class TestWorkspaceTemplateOverrides:
 
 class TestLocalWorkspaceConfig:
     def test_construction(self) -> None:
-        cfg = LocalWorkspaceConfig(path="/var/lib/matrix/workspaces")
-        assert cfg.path == "/var/lib/matrix/workspaces"
+        cfg = LocalWorkspaceConfig(path="/var/lib/primer/workspaces")
+        assert cfg.path == "/var/lib/primer/workspaces"
 
     def test_empty_path_rejected(self) -> None:
         with pytest.raises(ValidationError):

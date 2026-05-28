@@ -1,7 +1,7 @@
 /* global React, Icon, StatusPill, Btn, Sparkline, relativeTime, Banner */
 
 function Dashboard({ workerStats, subsystemOn, onNavigate, onNewSession }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
 
   // Tile counts — lightweight polls (every 5s).
   const sessionsResource = useResource(

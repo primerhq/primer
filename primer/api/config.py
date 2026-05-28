@@ -41,7 +41,7 @@ class ObservabilityConfig(BaseModel):
     trace_llm_io: bool = False
     otlp_endpoint: str | None = None
     otlp_headers: dict[str, str] = Field(default_factory=dict)
-    service_name: str = "matrix"
+    service_name: str = "primer"
     service_namespace: str = "default"
 
 

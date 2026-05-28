@@ -10326,7 +10326,7 @@ async def test_t0730_workspaces_cursor_walk_visits_each_exactly_once(
     surface can't express cursor=None — parse_page's `cursor`
     Query is Optional[str]; omitting it falls through to offset,
     and empty-string is rejected as malformed at the storage
-    layer). Documented in matrix/api/pagination.py:18.
+    layer). Documented in primer/api/pagination.py:18.
 
     Seed N=5 workspaces, walk with length=2 via /find, assert
     each appears exactly once.

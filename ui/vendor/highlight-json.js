@@ -40,6 +40,6 @@
     );
   }
 
-  window.matrixVendor = window.matrixVendor || {};
-  window.matrixVendor.highlightJson = highlightJson;
+  window.primerVendor = window.primerVendor || {};
+  window.primerVendor.highlightJson = highlightJson;
 })();

@@ -168,7 +168,7 @@ async def seeded_workspace_id(app, workspace_registry):
             WorkspaceProvider(
                 id="p-ws",
                 provider=WorkspaceProviderType.LOCAL,
-                config=LocalWorkspaceConfig(path="/tmp/matrix-ws-ws-test"),
+                config=LocalWorkspaceConfig(path="/tmp/primer-ws-ws-test"),
             )
         )
     except Exception:

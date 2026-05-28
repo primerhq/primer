@@ -32,7 +32,7 @@ const AP_PARKED_PREDICATE = {
 };
 
 function ApprovalsPage({ pushToast, onNavigate }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const [tab, setTab] = React.useState("pending");
   const [showNew, setShowNew] = React.useState(false);
 
@@ -192,7 +192,7 @@ function AP_PendingPanel({ sessions, chats, loading, error, onNavigate, pushToas
 }
 
 function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
-  const { useResource, useMutation, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, apiFetch } = window.primerApi;
   const [rejecting, setRejecting] = React.useState(false);
   const [reason, setReason] = React.useState("");
 
@@ -345,7 +345,7 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
 // =============================================================
 
 function AP_PoliciesTable({ policies, loading, error, pushToast }) {
-  const { useMutation, apiFetch } = window.matrixApi;
+  const { useMutation, apiFetch } = window.primerApi;
   const [confirmDelete, setConfirmDelete] = React.useState(null);
 
   const updatePolicy = useMutation(
@@ -481,7 +481,7 @@ function AP_PoliciesTable({ policies, loading, error, pushToast }) {
 // =============================================================
 
 function AP_NewPolicyModal({ onClose, pushToast }) {
-  const { useResource, useMutation, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, apiFetch } = window.primerApi;
   const [type, setType] = React.useState("required");
   const [id, setId] = React.useState("");
   const [toolsetId, setToolsetId] = React.useState("workspaces");
@@ -766,7 +766,7 @@ function AP_NewPolicyModal({ onClose, pushToast }) {
 // =============================================================
 
 function ApprovalBanner({ data, scope, id, pushToast }) {
-  const { useMutation, apiFetch } = window.matrixApi;
+  const { useMutation, apiFetch } = window.primerApi;
   const [rejecting, setRejecting] = React.useState(false);
   const [reason, setReason] = React.useState("");
 

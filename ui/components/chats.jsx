@@ -38,7 +38,7 @@ function CT_textOf(m) {
 // ============================================================================
 
 function ChatsPage({ onOpen, pushToast }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [showNew, setShowNew] = React.useState(false);
   const [textQuery, setTextQuery] = React.useState("");
@@ -313,7 +313,7 @@ function ChatsPage({ onOpen, pushToast }) {
 // ============================================================================
 
 function CT_NewChatModal({ onClose, pushToast }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const agents = useResource(
@@ -433,7 +433,7 @@ function CT_NewChatModal({ onClose, pushToast }) {
 // ============================================================================
 
 function ChatDetail({ chatId, onBack, pushToast }) {
-  const { useResource, useMutation, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, apiFetch } = window.primerApi;
   const cid = chatId;
 
   const [messages, setMessages] = React.useState([]);
@@ -471,7 +471,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     initialLoadedRef.current = false;
     (async () => {
       // The server's pagination layer caps ``limit`` at 200 (see
-      // matrix/api/pagination.py: ``Query(default=20, ge=1, le=200)``).
+      // primer/api/pagination.py: ``Query(default=20, ge=1, le=200)``).
       // A long chat can easily exceed that with assistant_token rows,
       // so loop with after_seq cursoring until the page comes back
       // short. Cancellable on unmount via the closure flag.

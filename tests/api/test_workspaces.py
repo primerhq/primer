@@ -312,7 +312,7 @@ def _provider() -> WorkspaceProvider:
     return WorkspaceProvider(
         id="local-1",
         provider=WorkspaceProviderType.LOCAL,
-        config=LocalWorkspaceConfig(path="/tmp/matrix-ws-tests"),
+        config=LocalWorkspaceConfig(path="/tmp/primer-ws-tests"),
     )
 
 
@@ -366,7 +366,7 @@ class TestWorkspaceProviderRouter:
             "config": {
                 "kind": "container",
                 "runtime": {"kind": "docker"},
-                "name_prefix": "matrix-ws-",
+                "name_prefix": "primer-ws-",
                 "pull_policy": "if_missing",
             },
         }
@@ -377,7 +377,7 @@ class TestWorkspaceProviderRouter:
         got = get.json()
         assert got["provider"] == "container"
         assert got["config"]["runtime"]["kind"] == "docker"
-        assert got["config"]["name_prefix"] == "matrix-ws-"
+        assert got["config"]["name_prefix"] == "primer-ws-"
         delete = await client.delete("/v1/workspace_providers/docker-1")
         assert delete.status_code == 204
 
@@ -390,7 +390,7 @@ class TestWorkspaceProviderRouter:
                 "kind": "kubernetes",
                 "in_cluster": False,
                 "namespace": "matrix",
-                "name_prefix": "matrix-ws-",
+                "name_prefix": "primer-ws-",
                 "default_pvc_size": "20Gi",
                 "image_pull_secrets": [],
                 "pull_policy": "IfNotPresent",
@@ -450,7 +450,7 @@ class TestWorkspaceTemplateRouter:
             "config": {
                 "kind": "container",
                 "runtime": {"kind": "docker"},
-                "name_prefix": "matrix-ws-",
+                "name_prefix": "primer-ws-",
                 "pull_policy": "if_missing",
             },
         })
@@ -484,7 +484,7 @@ class TestWorkspaceTemplateRouter:
                 "kind": "kubernetes",
                 "in_cluster": False,
                 "namespace": "default",
-                "name_prefix": "matrix-ws-",
+                "name_prefix": "primer-ws-",
                 "default_pvc_size": "10Gi",
                 "image_pull_secrets": [],
                 "pull_policy": "IfNotPresent",

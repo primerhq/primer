@@ -34,7 +34,7 @@ class TestObservabilityConfigDefaults:
 
     def test_service_name_default(self) -> None:
         cfg = ObservabilityConfig()
-        assert cfg.service_name == "matrix"
+        assert cfg.service_name == "primer"
 
     def test_service_namespace_default(self) -> None:
         cfg = ObservabilityConfig()

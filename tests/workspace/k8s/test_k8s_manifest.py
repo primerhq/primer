@@ -60,7 +60,7 @@ def test_deep_merge_overlay_only_adds_key() -> None:
 
 
 def test_pvc_name_format() -> None:
-    assert _pvc_name_for("matrix-ws-abc") == "ws-matrix-ws-abc-0"
+    assert _pvc_name_for("primer-ws-abc") == "ws-primer-ws-abc-0"
 
 
 # ---- _build_statefulset_manifest -----------------------------------------
@@ -76,7 +76,7 @@ def _template(image: str = "python:3.13", **kwargs) -> WorkspaceTemplate:
 def test_manifest_has_one_replica_and_pvc_template() -> None:
     cfg = KubernetesWorkspaceConfig(namespace="matrix")
     m = _build_statefulset_manifest(
-        sts_name="matrix-ws-abc",
+        sts_name="primer-ws-abc",
         namespace="matrix",
         workspace_id="abc",
         template=_template(),
@@ -91,7 +91,7 @@ def test_manifest_has_one_replica_and_pvc_template() -> None:
 def test_manifest_carries_image() -> None:
     cfg = KubernetesWorkspaceConfig()
     m = _build_statefulset_manifest(
-        sts_name="matrix-ws-abc",
+        sts_name="primer-ws-abc",
         namespace="default",
         workspace_id="abc",
         template=_template(image="alpine:latest"),
@@ -107,7 +107,7 @@ def test_container_overrides_deep_merge() -> None:
         container_overrides={"image": "override:tag", "newField": "x"},
     )
     m = _build_statefulset_manifest(
-        sts_name="matrix-ws-abc",
+        sts_name="primer-ws-abc",
         namespace="default",
         workspace_id="abc",
         template=template,
@@ -124,7 +124,7 @@ def test_pod_overrides_deep_merge() -> None:
         pod_overrides={"hostNetwork": True, "dnsPolicy": "ClusterFirst"},
     )
     m = _build_statefulset_manifest(
-        sts_name="matrix-ws-abc",
+        sts_name="primer-ws-abc",
         namespace="default",
         workspace_id="abc",
         template=template,
@@ -138,7 +138,7 @@ def test_pod_overrides_deep_merge() -> None:
 def test_provider_storage_class_lands_on_pvc() -> None:
     cfg = KubernetesWorkspaceConfig(storage_class="fast-ssd")
     m = _build_statefulset_manifest(
-        sts_name="matrix-ws-abc",
+        sts_name="primer-ws-abc",
         namespace="default",
         workspace_id="abc",
         template=_template(),
@@ -154,7 +154,7 @@ def test_workspace_label_present() -> None:
         annotations={"owner": "matrix"},
     )
     m = _build_statefulset_manifest(
-        sts_name="matrix-ws-abc",
+        sts_name="primer-ws-abc",
         namespace="default",
         workspace_id="abc",
         template=_template(),

@@ -673,17 +673,17 @@ async def test_metrics_snapshot_includes_in_flight_and_capacity(scheduler, engin
     )
     snap = pool.metrics_snapshot()
     # Required keys per spec §14 (worker side).
-    assert "matrix_worker_id" in snap
-    assert "matrix_worker_in_flight" in snap
-    assert "matrix_worker_capacity" in snap
-    assert "matrix_worker_claims_total" in snap
+    assert "primer_worker_id" in snap
+    assert "primer_worker_in_flight" in snap
+    assert "primer_worker_capacity" in snap
+    assert "primer_worker_claims_total" in snap
     assert "matrix_session_turns_total" in snap
     assert "matrix_session_turn_duration_seconds" in snap
     # Capacity tracks the configured concurrency.
-    assert snap["matrix_worker_capacity"] == 3
+    assert snap["primer_worker_capacity"] == 3
     # Nothing has run yet — in_flight is 0, counters 0, dicts empty.
-    assert snap["matrix_worker_in_flight"] == 0
-    assert snap["matrix_worker_claims_total"] == 0
+    assert snap["primer_worker_in_flight"] == 0
+    assert snap["primer_worker_claims_total"] == 0
     assert snap["matrix_session_turns_total"] == {}
     assert snap["matrix_session_turn_duration_seconds"]["count"] == 0
 
@@ -741,7 +741,7 @@ async def test_metrics_records_turn_outcome_after_run_one_turn(
     assert snap["matrix_session_turn_duration_seconds"]["count"] == 1
     assert snap["matrix_session_turn_duration_seconds"]["sum"] >= 0.0
     # In-flight cleared in the finally block.
-    assert snap["matrix_worker_in_flight"] == 0
+    assert snap["primer_worker_in_flight"] == 0
 
 
 async def test_turn_driver_drains_async_generator():

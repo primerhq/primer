@@ -854,10 +854,10 @@ def create_app(config: AppConfig) -> FastAPI:
     # regardless of log_level, so hiding the doc surface is security
     # theater and breaks the console's "View OpenAPI" affordance.
     app = FastAPI(
-        title="Matrix Microagents Framework API",
+        title="Primer Microagents Framework API",
         version=APP_VERSION,
         lifespan=_make_lifespan(config),
-        contact={"name": "matrix"},
+        contact={"name": "primer"},
         openapi_url=f"/{API_VERSION}/openapi.json",
         docs_url=f"/{API_VERSION}/docs",
         redoc_url=f"/{API_VERSION}/redoc",
@@ -1096,9 +1096,9 @@ def create_test_app(
     a stub.
     """
     app = FastAPI(
-        title="Matrix Microagents Framework API (test)",
+        title="Primer Microagents Framework API (test)",
         version=APP_VERSION,
-        contact={"name": "matrix"},
+        contact={"name": "primer"},
     )
     _install_request_id(app)
     if workspace_registry is None:

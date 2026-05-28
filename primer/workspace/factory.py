@@ -11,7 +11,7 @@ Usage::
     config = WorkspaceProvider(
         id="local-1",
         provider=WorkspaceProviderType.LOCAL,
-        config=LocalWorkspaceConfig(path="/var/lib/matrix/workspaces"),
+        config=LocalWorkspaceConfig(path="/var/lib/primer/workspaces"),
     )
     backend = WorkspaceBackendFactory.create(config)
     await backend.initialize()

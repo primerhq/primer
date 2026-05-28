@@ -627,7 +627,7 @@ class ContainerWorkspaceConfig(BaseModel):
         ),
     )
     name_prefix: str = Field(
-        default="matrix-ws-",
+        default="primer-ws-",
         description="Container/volume name prefix.",
     )
     volume_driver: str | None = Field(
@@ -661,7 +661,7 @@ class KubernetesWorkspaceConfig(BaseModel):
         description="Kubernetes namespace for all resources.",
     )
     name_prefix: str = Field(
-        default="matrix-ws-",
+        default="primer-ws-",
         description="StatefulSet/PVC name prefix.",
     )
     storage_class: str | None = Field(

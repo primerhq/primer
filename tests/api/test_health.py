@@ -30,7 +30,7 @@ async def test_health_surfaces_scheduler_alive(client, app) -> None:
     metrics = body["scheduler"]["metrics"]
     assert "matrix_sessions_active" in metrics
     assert "matrix_sessions_runnable_queue_depth" in metrics
-    assert "matrix_scheduler_notify_received_total" in metrics
+    assert "primer_scheduler_notify_received_total" in metrics
 
 
 @pytest.mark.asyncio
@@ -72,7 +72,7 @@ async def test_health_surfaces_worker_pool_metrics_when_attached(
         assert body["worker_pool"]["in_flight"] == 0
         assert body["worker_pool"]["capacity"] == 5
         metrics = body["worker_pool"]["metrics"]
-        assert metrics["matrix_worker_capacity"] == 5
+        assert metrics["primer_worker_capacity"] == 5
         assert "matrix_session_turns_total" in metrics
         assert "matrix_session_turn_duration_seconds" in metrics
     finally:

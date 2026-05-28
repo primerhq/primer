@@ -142,12 +142,12 @@ async def test_metrics_snapshot_returns_expected_keys(sched):
     assert "matrix_sessions_active" in snap
     assert "matrix_sessions_runnable_queue_depth" in snap
     assert "matrix_lease_expirations_total" in snap
-    assert "matrix_scheduler_notify_received_total" in snap
+    assert "primer_scheduler_notify_received_total" in snap
     # Sessions-by-status reflects what was registered.
     assert snap["matrix_sessions_active"]["running"] == 1
     assert snap["matrix_sessions_active"]["waiting"] == 1
     # One enqueue with one registered worker => one notify.
-    assert snap["matrix_scheduler_notify_received_total"] == 1
+    assert snap["primer_scheduler_notify_received_total"] == 1
     # s1 is runnable + unclaimed.
     assert snap["matrix_sessions_runnable_queue_depth"] == 1
     # No expirations yet.

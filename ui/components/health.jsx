@@ -1,7 +1,7 @@
 /* global React, Icon, Btn, Sparkline */
 
 function HealthPage({ sessions }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const health = useResource(
     "health:root",
     (signal) => apiFetch("GET", "/health", null, { signal }),
@@ -31,21 +31,21 @@ function HealthPage({ sessions }) {
   const fmt = (v) => (v == null || v === "" ? "—" : v);
   const schedulerMetrics = [
     { k: "alive", v: sched.alive === true ? "true" : "false", emphasis: sched.alive ? "green" : "red" },
-    { k: "claims_total", v: fmt(schedMetrics["matrix_scheduler_claims_total"]) },
-    { k: "claim_latency_p50_ms", v: fmt(schedMetrics["matrix_scheduler_claim_latency_p50_ms"]) },
-    { k: "claim_latency_p99_ms", v: fmt(schedMetrics["matrix_scheduler_claim_latency_p99_ms"]) },
-    { k: "missed_heartbeats_total", v: fmt(schedMetrics["matrix_scheduler_missed_heartbeats_total"]) },
-    { k: "scheduler_loops_total", v: fmt(schedMetrics["matrix_scheduler_loops_total"]) },
+    { k: "claims_total", v: fmt(schedMetrics["primer_scheduler_claims_total"]) },
+    { k: "claim_latency_p50_ms", v: fmt(schedMetrics["primer_scheduler_claim_latency_p50_ms"]) },
+    { k: "claim_latency_p99_ms", v: fmt(schedMetrics["primer_scheduler_claim_latency_p99_ms"]) },
+    { k: "missed_heartbeats_total", v: fmt(schedMetrics["primer_scheduler_missed_heartbeats_total"]) },
+    { k: "scheduler_loops_total", v: fmt(schedMetrics["primer_scheduler_loops_total"]) },
   ];
 
   const poolMetrics = [
     { k: "in_flight", v: inFlight, emphasis: capacity > 0 && inFlight / capacity > 0.8 ? "amber" : null },
     { k: "capacity_total", v: capacity || "—" },
-    { k: "sessions_completed_total", v: fmt(poolMetricsRaw["matrix_worker_sessions_completed_total"]) },
-    { k: "sessions_failed_total", v: fmt(poolMetricsRaw["matrix_worker_sessions_failed_total"]) },
-    { k: "turns_executed_total", v: fmt(poolMetricsRaw["matrix_worker_turns_executed_total"]) },
-    { k: "turn_duration_p50_s", v: fmt(poolMetricsRaw["matrix_worker_turn_duration_p50_s"]) },
-    { k: "turn_duration_p99_s", v: fmt(poolMetricsRaw["matrix_worker_turn_duration_p99_s"]) },
+    { k: "sessions_completed_total", v: fmt(poolMetricsRaw["primer_worker_sessions_completed_total"]) },
+    { k: "sessions_failed_total", v: fmt(poolMetricsRaw["primer_worker_sessions_failed_total"]) },
+    { k: "turns_executed_total", v: fmt(poolMetricsRaw["primer_worker_turns_executed_total"]) },
+    { k: "turn_duration_p50_s", v: fmt(poolMetricsRaw["primer_worker_turn_duration_p50_s"]) },
+    { k: "turn_duration_p99_s", v: fmt(poolMetricsRaw["primer_worker_turn_duration_p99_s"]) },
   ];
 
   return (

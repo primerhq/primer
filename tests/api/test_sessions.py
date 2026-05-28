@@ -150,7 +150,7 @@ async def seeded_workspace(app):
         WorkspaceProvider(
             id="p-1",
             provider=WorkspaceProviderType.LOCAL,
-            config=LocalWorkspaceConfig(path="/tmp/matrix-ws-tests"),
+            config=LocalWorkspaceConfig(path="/tmp/primer-ws-tests"),
         )
     )
 

@@ -81,7 +81,7 @@ class McpToolsetProvider(ToolsetProvider):
         config: McpConfig,
         *,
         oauth: MatrixOAuthHandler | None = None,
-        client_name: str = "matrix",
+        client_name: str = "primer",
         client_version: str = "0.0.1",
         allowed_stdio_commands: frozenset[str] | None = None,
     ) -> None:

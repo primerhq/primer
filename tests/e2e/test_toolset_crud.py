@@ -131,7 +131,7 @@ async def test_t0451_toolset_mcp_http_url_variations_round_trip(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0451 — McpHttpConfig.url is a free-form `str` (min_length=1)
-    per matrix/model/provider.py:511. Pin that several legitimate
+    per primer/model/provider.py:511. Pin that several legitimate
     URL shapes round-trip byte-identically through CRUD: trailing
     slash, query string, port-only host, fragment, and a path with
     embedded spaces (URL-encoded). All accepted at create; GET

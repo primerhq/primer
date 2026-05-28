@@ -38,7 +38,7 @@ const HR_MANAGED_ENDPOINTS = [
 // ============================================================================
 
 function HarnessesPage({ harnessId }) {
-  const { useRouter } = window.matrixApi;
+  const { useRouter } = window.primerApi;
   const { params } = useRouter();
   const id = harnessId || params.id;
   if (id) return <HarnessDetail id={id} />;
@@ -96,7 +96,7 @@ function HR_OutdatedChips({ harness }) {
 // ============================================================================
 
 function HarnessList() {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [registerOpen, setRegisterOpen] = React.useState(false);
 
@@ -216,7 +216,7 @@ function HarnessList() {
 // ============================================================================
 
 function HarnessDetail({ id }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const [confirmUninstall, setConfirmUninstall] = React.useState(false);
@@ -421,7 +421,7 @@ function HarnessDetail({ id }) {
 // ============================================================================
 
 function HR_ManagedObjects({ harnessId, slug }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
 
   const results = HR_MANAGED_ENDPOINTS.map(({ label, path }) => {
     // Rules of Hooks require a fixed number of hooks per render, so we
@@ -481,7 +481,7 @@ function HR_ManagedObjects({ harnessId, slug }) {
 // ============================================================================
 
 function HarnessRegisterDialog({ onClose, onCreated }) {
-  const { apiFetch } = window.matrixApi;
+  const { apiFetch } = window.primerApi;
 
   const [step, setStep] = React.useState(1);
 

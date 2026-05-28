@@ -67,7 +67,7 @@ class TestResolve:
             metadata=_META_WITH_DCR,
             static=static,
             redirect_uri="https://app.example/cb",
-            client_name="matrix",
+            client_name="primer",
             cache=cache,
             http=http_client,
         )
@@ -89,7 +89,7 @@ class TestResolve:
             metadata=_META_WITH_DCR,
             static=None,
             redirect_uri="https://app.example/cb",
-            client_name="matrix",
+            client_name="primer",
             cache=cache,
             http=http_client,
         )
@@ -112,7 +112,7 @@ class TestResolve:
             metadata=_META_WITH_DCR,
             static=None,
             redirect_uri="https://app.example/cb",
-            client_name="matrix",
+            client_name="primer",
             cache=cache,
             http=http_client,
         )
@@ -120,7 +120,7 @@ class TestResolve:
             metadata=_META_WITH_DCR,
             static=None,
             redirect_uri="https://app.example/cb",
-            client_name="matrix",
+            client_name="primer",
             cache=cache,
             http=http_client,
         )
@@ -145,7 +145,7 @@ class TestResolve:
             metadata=_META_WITH_DCR,
             static=None,
             redirect_uri="https://app.example/cb",
-            client_name="matrix",
+            client_name="primer",
             cache=cache,
             http=http_client,
         )
@@ -162,7 +162,7 @@ class TestResolve:
                 metadata=_META_NO_DCR,
                 static=None,
                 redirect_uri="https://app.example/cb",
-                client_name="matrix",
+                client_name="primer",
                 cache=cache,
                 http=http_client,
             )
@@ -182,7 +182,7 @@ class TestResolve:
                 metadata=_META_WITH_DCR,
                 static=None,
                 redirect_uri="https://app.example/cb",
-                client_name="matrix",
+                client_name="primer",
                 cache=cache,
                 http=http_client,
             )

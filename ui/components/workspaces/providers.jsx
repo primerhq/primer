@@ -31,7 +31,7 @@ function _wpSummary(p) {
 }
 
 function WorkspaceProvidersPage({ pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [createOpen, setCreateOpen] = React.useState(false);
 
@@ -111,7 +111,7 @@ function WorkspaceProvidersPage({ pushToast }) {
 }
 
 function WorkspaceProviderCreateModal({ onClose, pushToast }) {
-  const { useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const [form, setForm] = React.useState({
@@ -123,14 +123,14 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
     runtime_api_version: "",
     runtime_namespace: "default",
     default_image: "",
-    name_prefix_container: "matrix-ws-",
+    name_prefix_container: "primer-ws-",
     volume_driver: "",
     pull_policy_container: "if_missing",
     in_cluster: false,
     kubeconfig_path: "",
     context: "",
     namespace: "default",
-    name_prefix_k8s: "matrix-ws-",
+    name_prefix_k8s: "primer-ws-",
     storage_class: "",
     default_pvc_size: "10Gi",
     service_account: "",
@@ -199,7 +199,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
       config = {
         kind: "container",
         runtime: rt,
-        name_prefix: form.name_prefix_container || "matrix-ws-",
+        name_prefix: form.name_prefix_container || "primer-ws-",
         pull_policy: form.pull_policy_container || "if_missing",
       };
       if (form.default_image) config.default_image = form.default_image;
@@ -209,7 +209,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
         kind: "kubernetes",
         in_cluster: !!form.in_cluster,
         namespace: form.namespace || "default",
-        name_prefix: form.name_prefix_k8s || "matrix-ws-",
+        name_prefix: form.name_prefix_k8s || "primer-ws-",
         default_pvc_size: form.default_pvc_size || "10Gi",
         image_pull_secrets: form.image_pull_secrets || [],
         pull_policy: form.pull_policy_k8s || "IfNotPresent",
@@ -262,7 +262,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
       {isLocal && (<>
         <WS_Section label="Filesystem" />
         <WS_FieldRow label="path" hint="absolute directory" err={fieldErrors.path}>
-          <input className="input mono" value={form.path} onChange={(e) => update("path", e.target.value)} placeholder="/var/lib/matrix/workspaces" style={{ width: "100%" }} data-testid="ws-provider-path" />
+          <input className="input mono" value={form.path} onChange={(e) => update("path", e.target.value)} placeholder="/var/lib/primer/workspaces" style={{ width: "100%" }} data-testid="ws-provider-path" />
         </WS_FieldRow>
       </>)}
 
@@ -314,7 +314,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
 
       {isK8s && (<>
         <WS_Section label="Cluster" />
-        <WS_FieldRow label="in_cluster" hint="check when running matrix inside the target cluster">
+        <WS_FieldRow label="in_cluster" hint="check when running primer inside the target cluster">
           <input type="checkbox" checked={!!form.in_cluster} onChange={(e) => update("in_cluster", e.target.checked)} />
         </WS_FieldRow>
         {!form.in_cluster && (<>
@@ -363,7 +363,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
             <window.WorkspacePairListEditor value={form.annotations} onChange={(v) => update("annotations", v)} keyPlaceholder="prometheus.io/scrape" valuePlaceholder="true" />
           </WS_FieldRow>
           <WS_FieldRow label="labels" hint="key/value pairs">
-            <window.WorkspacePairListEditor value={form.labels} onChange={(v) => update("labels", v)} keyPlaceholder="app.kubernetes.io/name" valuePlaceholder="matrix" />
+            <window.WorkspacePairListEditor value={form.labels} onChange={(v) => update("labels", v)} keyPlaceholder="app.kubernetes.io/name" valuePlaceholder="primer" />
           </WS_FieldRow>
           <WS_FieldRow label="node_selector" hint="key/value pairs">
             <window.WorkspacePairListEditor value={form.node_selector} onChange={(v) => update("node_selector", v)} keyPlaceholder="disktype" valuePlaceholder="ssd" />
@@ -384,7 +384,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
 }
 
 function WorkspaceProviderDetail({ providerId, pushToast }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [tab, setTab] = React.useState("overview");
   const [showDelete, setShowDelete] = React.useState(false);

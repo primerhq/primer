@@ -1,4 +1,4 @@
-# matrix · brand kit
+# primer · brand kit
 
 Five-poly rotated-quad mark. One SVG, two colors max. Designed to be legible at 12 px.
 
@@ -10,8 +10,8 @@ Five-poly rotated-quad mark. One SVG, two colors max. Designed to be legible at 
 | `logo-light.svg` | Dark ink on light backgrounds, all colors baked |
 | `logo-dark.svg` | Light ink on dark backgrounds, all colors baked |
 | `logo-mono.svg` | Single-color (no accent), uses `currentColor` |
-| `wordmark-light.svg` | Mark + "matrix" wordmark for light bg |
-| `wordmark-dark.svg` | Mark + "matrix" wordmark for dark bg |
+| `wordmark-light.svg` | Mark + "primer" wordmark for light bg |
+| `wordmark-dark.svg` | Mark + "primer" wordmark for dark bg |
 | `favicon-{16,32,48,64,128,256,512}.png` | Light-mode PNG raster, transparent bg |
 | `social-{256,512}.png` | Dark-bg square for OG / app icons |
 
@@ -21,14 +21,14 @@ Five-poly rotated-quad mark. One SVG, two colors max. Designed to be legible at 
 |---|---|---|
 | Ink | `#0d100f` | Default foreground |
 | Paper | `#f7f6f3` | Default background |
-| Accent | `#61d46a` | Matrix green — equivalent to `oklch(0.78 0.18 145)` |
+| Accent | `#61d46a` | Primer green — equivalent to `oklch(0.78 0.18 145)` |
 
 ## Usage
 
 ### Web / HTML
 
 ```html
-<img src="brand/logo.svg" alt="matrix" width="24" height="24" />
+<img src="brand/logo.svg" alt="primer" width="24" height="24" />
 ```
 
 For dynamic theming, inline the file's contents and control color via CSS:
@@ -36,7 +36,7 @@ For dynamic theming, inline the file's contents and control color via CSS:
 ```html
 <span style="color: #0d100f; display: inline-flex; align-items: center; gap: 8px;">
   <!-- paste contents of logo.svg here -->
-  <strong>matrix</strong>
+  <strong>primer</strong>
 </span>
 ```
 
@@ -51,8 +51,8 @@ For dynamic theming, inline the file's contents and control color via CSS:
 ### In a GitHub README (auto-switches light/dark)
 
 ```md
-![matrix](brand/wordmark-light.svg#gh-light-mode-only)
-![matrix](brand/wordmark-dark.svg#gh-dark-mode-only)
+![primer](brand/wordmark-light.svg#gh-light-mode-only)
+![primer](brand/wordmark-dark.svg#gh-dark-mode-only)
 ```
 
 ### Minimum sizes

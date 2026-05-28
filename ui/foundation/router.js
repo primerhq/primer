@@ -1,7 +1,7 @@
-// matrix UI — useRouter hook (hash router, ~50 LoC of routing logic).
+// primer UI — useRouter hook (hash router, ~50 LoC of routing logic).
 // Loaded via <script type="text/babel"> in ui/index.html. Depends on
 // React (global). Routes table is mutable: other sub-projects may push
-// additional entries via window.matrixApi.routes.
+// additional entries via window.primerApi.routes.
 
 (function () {
   const { useState, useEffect, useCallback } = window.React;
@@ -147,7 +147,7 @@
     };
   }
 
-  const ns = (window.matrixApi = window.matrixApi || {});
+  const ns = (window.primerApi = window.primerApi || {});
   ns.useRouter = useRouter;
   ns.routes = routes;
   // Helpers exposed for app.jsx (page resolution) and tests.

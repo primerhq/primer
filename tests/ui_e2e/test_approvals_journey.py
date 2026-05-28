@@ -149,7 +149,7 @@ def _cleanup(base_url: str, ids: dict[str, str]) -> None:
 
 # ---------------------------------------------------------------------------
 # Park injection — same _approval-shape blob the tool_approval router
-# reads (matches matrix/api/routers/tool_approval.py:_approval_blob_or_404).
+# reads (matches primer/api/routers/tool_approval.py:_approval_blob_or_404).
 # ---------------------------------------------------------------------------
 
 

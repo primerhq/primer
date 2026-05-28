@@ -1,7 +1,7 @@
 /* global React, Icon, Btn, Modal, relativeTime, fmtDate */
 
 function WorkersPage({ sessions, pushToast }) {
-  const { useResource, useMutation, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, apiFetch } = window.primerApi;
   const [drainTarget, setDrainTarget] = React.useState(null);
   const [, tick] = React.useState(0);
   // Tick heartbeats live

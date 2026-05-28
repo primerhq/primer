@@ -17,7 +17,7 @@
 //   * GraphsPage receives `onOpen(gid)`; GraphDetail receives
 //     `graphId` + `pushToast` directly. Internal sub-navigations
 //     (subgraph double-click, list row, breadcrumb-back) go through
-//     window.matrixApi.useRouter().navigate(path) which uses bare
+//     window.primerApi.useRouter().navigate(path) which uses bare
 //     URL paths (the app.jsx wrapper navigate(page, extra) is a
 //     different API — paths are the canonical one).
 
@@ -26,7 +26,7 @@
 // ============================================================================
 
 function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
-  const { apiFetch, useResource, useMutation } = window.matrixApi;
+  const { apiFetch, useResource, useMutation } = window.primerApi;
   const agents = useResource(
     "new-graph:agents",
     (s) => apiFetch("GET", "/agents?limit=200", null, { signal: s }),
@@ -180,7 +180,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
 // ============================================================================
 
 function GraphsPage({ onOpen, pushToast }) {
-  const { apiFetch, useResource } = window.matrixApi;
+  const { apiFetch, useResource } = window.primerApi;
   const list = useResource(
     "graphs:list",
     (s) => apiFetch("GET", "/graphs?limit=200", null, { signal: s }),
@@ -330,7 +330,7 @@ function GraphsPage({ onOpen, pushToast }) {
 // ============================================================================
 
 function GraphDetail({ graphId, pushToast }) {
-  const { apiFetch, useResource, useMutation, useRouter } = window.matrixApi;
+  const { apiFetch, useResource, useMutation, useRouter } = window.primerApi;
   const { navigate } = useRouter();
   const id = graphId;
 
@@ -494,7 +494,7 @@ function GR_GraphStatusPanel({ id, status, onRefresh, onDelete }) {
 // ============================================================================
 
 function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
-  const { apiFetch, useMutation, useRouter } = window.matrixApi;
+  const { apiFetch, useMutation, useRouter } = window.primerApi;
   const { navigate } = useRouter();
 
   // Augment server payload with UI-only x/y coordinates (server
@@ -506,8 +506,8 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
       nodes: (loaded.nodes || []).map((n) => ({ ...n })),
       edges: (loaded.edges || []).map((e) => ({ ...e })),
     };
-    if (window.matrixVendor && window.matrixVendor.autoLayout) {
-      return window.matrixVendor.autoLayout(base);
+    if (window.primerVendor && window.primerVendor.autoLayout) {
+      return window.primerVendor.autoLayout(base);
     }
     return base;
   }, [loaded]);
@@ -582,8 +582,8 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   };
 
   const onAutoLayout = () => {
-    if (!window.matrixVendor || !window.matrixVendor.autoLayout) return;
-    setDraft((d) => window.matrixVendor.autoLayout(d));
+    if (!window.primerVendor || !window.primerVendor.autoLayout) return;
+    setDraft((d) => window.primerVendor.autoLayout(d));
   };
 
   const onAddNode = (kind) => {

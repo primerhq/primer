@@ -1,4 +1,4 @@
-// matrix UI — useTweaks hook (module-level shared state).
+// primer UI — useTweaks hook (module-level shared state).
 //
 // State lives at module scope so every consumer (App, TweaksPanel,
 // Topbar, future pages) reads the same values and a setTweak from
@@ -10,20 +10,20 @@
 // Persistence: we still postMessage('__edit_mode_set_keys', edits) to
 // window.parent so a hosting editor frame (the mockup's original
 // design target) can rewrite the EDITMODE block on disk. In the
-// matrix console there is no parent frame, so the message is a no-op;
+// primer console there is no parent frame, so the message is a no-op;
 // in-page state is the actual store.
 
 (function () {
   const DEFAULT_DEFAULTS = {
     theme: "dark",
-    accent: "Matrix green",
+    accent: "Primer green",
     density: "default",
     demoState: "happy",
     subsystemOn: false,
     icState: "configured",
     // Added Milestone 2 — drives the topbar brand. Operator can
     // change it via the tweaks panel; persisted only client-side.
-    instanceLabel: "matrix · localhost:8765",
+    instanceLabel: "primer · localhost:8765",
   };
 
   const state = {
@@ -66,7 +66,7 @@
     return [snap, setTweak];
   }
 
-  const ns = (window.matrixApi = window.matrixApi || {});
+  const ns = (window.primerApi = window.primerApi || {});
   ns.useTweaks = useTweaks;
   ns._tweaks = { state, setTweak };  // test seam
   // Bridge so legacy global references (app.jsx /* global useTweaks */ and

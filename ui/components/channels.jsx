@@ -5,7 +5,7 @@
 // `PROVIDER_FIELDS` const which collided with providers.jsx during the
 // Task 3 wiring — see plan §"Task 3").
 
-const { apiFetch, useResource, useMutation, useRouter } = window.matrixApi;
+const { apiFetch, useResource, useMutation, useRouter } = window.primerApi;
 
 const CH_LIST_PROVIDERS = "channels:providers";
 const CH_LIST_CHANNELS = "channels:channels";

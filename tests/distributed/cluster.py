@@ -117,7 +117,7 @@ class TestCluster:
         A ``postgresql://user:pass@host:port/db`` connection string.
         Typically obtained from ``testcontainers.PostgresContainer``.
     api_count:
-        Number of API-only processes to launch (``matrix api --no-worker``).
+        Number of API-only processes to launch (``primer api --no-worker``).
     worker_count:
         Number of worker-only processes to launch (``matrix worker``).
     start_port:

@@ -280,11 +280,11 @@ class WorkerPool:
         Histograms beyond ``count`` + ``sum`` are deferred (a real
         Prometheus exporter can fold these into proper buckets later)."""
         return {
-            "matrix_worker_id": self._worker_id,
-            "matrix_worker_in_flight": len(self._in_flight),
-            "matrix_worker_capacity": self.config.concurrency,
-            "matrix_worker_claims_total": self._claims_total,
-            "matrix_worker_claims_empty_total": self._claims_empty_total,
+            "primer_worker_id": self._worker_id,
+            "primer_worker_in_flight": len(self._in_flight),
+            "primer_worker_capacity": self.config.concurrency,
+            "primer_worker_claims_total": self._claims_total,
+            "primer_worker_claims_empty_total": self._claims_empty_total,
             "matrix_session_turns_total": dict(self._turns_total_by_result),
             "matrix_session_turn_duration_seconds": {
                 "count": self._turn_duration_count,
@@ -1410,7 +1410,7 @@ class WorkerPool:
                 if asyncio.iscoroutine(hook_result):
                     hook_result = await hook_result
                 # ToolCallResult -> ToolResultPart (line-for-line
-                # per matrix/model/chat.py:256's documented recipe).
+                # per primer/model/chat.py:256's documented recipe).
                 tool_result_part = ToolResultPart(
                     id=parked.tool_call_id or "unknown",
                     output=hook_result.output,

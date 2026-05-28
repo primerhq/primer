@@ -1,7 +1,7 @@
 /* global React, ReactDOM, Sidebar, Topbar, SessionsList, SessionDetail, Icon, Btn, StatusPill, CommandPalette, Banner, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, Sparkline, HarnessesPage */
 
 const ACCENT_OPTIONS = {
-  "Matrix green": { h: 145, c: 0.18, l: 0.85 },
+  "Primer green": { h: 145, c: 0.18, l: 0.85 },
   "Cobalt": { h: 240, c: 0.18, l: 0.72 },
   "Violet": { h: 290, c: 0.18, l: 0.74 },
   "Amber": { h: 65, c: 0.18, l: 0.82 },
@@ -9,7 +9,7 @@ const ACCENT_OPTIONS = {
 
 const DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "dark",
-  "accent": "Matrix green",
+  "accent": "Primer green",
   "density": "default",
   "demoState": "happy",
   "subsystemOn": false,
@@ -23,7 +23,7 @@ function App() {
   // Apply theme + accent + density to root
   React.useEffect(() => {
     document.documentElement.setAttribute("data-theme", tweaks.theme);
-    const acc = ACCENT_OPTIONS[tweaks.accent] || ACCENT_OPTIONS["Matrix green"];
+    const acc = ACCENT_OPTIONS[tweaks.accent] || ACCENT_OPTIONS["Primer green"];
     document.documentElement.style.setProperty("--accent-h", String(acc.h));
     document.documentElement.style.setProperty("--accent-c", String(acc.c));
     document.documentElement.style.setProperty("--accent-l", String(tweaks.theme === "light" ? 0.55 : acc.l));
@@ -35,7 +35,7 @@ function App() {
   // local React.useState. `page` and `currentXId` are derived from the URL
   // so deep links + back/forward work natively. The `navigate(target, extra)`
   // helper below converts Designer's page-name API into hash URLs.
-  const { path, params, query } = window.matrixApi.useRouter();
+  const { path, params, query } = window.primerApi.useRouter();
   const page = (() => {
     const m = path.match(/^\/([^/?]*)/);
     const root = m ? m[1] : "";
@@ -103,12 +103,12 @@ function App() {
   };
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(() => {
-    try { return localStorage.getItem("matrix.sidebar.iconsOnly") === "1"; } catch { return false; }
+    try { return localStorage.getItem("primer.sidebar.iconsOnly") === "1"; } catch { return false; }
   });
   const toggleSidebar = () => {
     setSidebarCollapsed((c) => {
       const next = !c;
-      try { localStorage.setItem("matrix.sidebar.iconsOnly", next ? "1" : "0"); } catch {}
+      try { localStorage.setItem("primer.sidebar.iconsOnly", next ? "1" : "0"); } catch {}
       return next;
     });
   };
@@ -133,14 +133,14 @@ function App() {
   // Dashboard tiles, and the Health page all depend on /v1/workers
   // and /v1/health. We poll both at the top so all consumers stay in
   // sync without duplicating fetches.
-  const realWorkers = window.matrixApi.useResource(
+  const realWorkers = window.primerApi.useResource(
     "topbar:workers",
-    (signal) => window.matrixApi.apiFetch("GET", "/workers", null, { signal }),
+    (signal) => window.primerApi.apiFetch("GET", "/workers", null, { signal }),
     { pollMs: 5000 }
   );
-  const realHealth = window.matrixApi.useResource(
+  const realHealth = window.primerApi.useResource(
     "topbar:health",
-    (signal) => window.matrixApi.apiFetch("GET", "/health", null, { signal }),
+    (signal) => window.primerApi.apiFetch("GET", "/health", null, { signal }),
     { pollMs: 5000 }
   );
   // Sidebar workspaces count — Workspaces is one of the few nav items
@@ -149,9 +149,9 @@ function App() {
   // refresh). Task 15 owns the broader sidebar wiring; this entry is
   // here so the workspaces list+detail page can ride on the same
   // resource as the sidebar without a second roundtrip.
-  const realWorkspaces = window.matrixApi.useResource(
+  const realWorkspaces = window.primerApi.useResource(
     "topbar:workspaces",
-    (signal) => window.matrixApi.apiFetch("GET", "/workspaces?limit=200", null, { signal }),
+    (signal) => window.primerApi.apiFetch("GET", "/workspaces?limit=200", null, { signal }),
     { pollMs: 5000 }
   );
 
@@ -160,19 +160,19 @@ function App() {
   // these so the nav badges reflect global counts instead of the mock
   // sessions-array length. U0002 pins Sessions; chats/channels have no
   // dedicated test yet (manual smoke).
-  const sessionsCount = window.matrixApi.useResource(
+  const sessionsCount = window.primerApi.useResource(
     "sidebar:sessions",
-    (signal) => window.matrixApi.apiFetch("GET", "/sessions?limit=1", null, { signal }),
+    (signal) => window.primerApi.apiFetch("GET", "/sessions?limit=1", null, { signal }),
     { pollMs: 5000 }
   );
-  const chatsCount = window.matrixApi.useResource(
+  const chatsCount = window.primerApi.useResource(
     "sidebar:chats",
-    (signal) => window.matrixApi.apiFetch("GET", "/chats?limit=1", null, { signal }),
+    (signal) => window.primerApi.apiFetch("GET", "/chats?limit=1", null, { signal }),
     { pollMs: 5000 }
   );
-  const channelsCount = window.matrixApi.useResource(
+  const channelsCount = window.primerApi.useResource(
     "sidebar:channels",
-    (signal) => window.matrixApi.apiFetch("GET", "/channels?limit=1", null, { signal }),
+    (signal) => window.primerApi.apiFetch("GET", "/channels?limit=1", null, { signal }),
     { pollMs: 5000 }
   );
   // Approvals_pending — client-side aggregation: parked sessions
@@ -180,9 +180,9 @@ function App() {
   // parked chats (no /chats/find route; GET + client filter, matching
   // the ApprovalsPage approach in approvals.jsx). The predicate uses
   // ``kind`` discriminators per the Task 12 wiring.
-  const parkedSessionsCount = window.matrixApi.useResource(
+  const parkedSessionsCount = window.primerApi.useResource(
     "sidebar:parked-sessions",
-    (signal) => window.matrixApi.apiFetch(
+    (signal) => window.primerApi.apiFetch(
       "POST",
       "/sessions/find",
       {
@@ -198,9 +198,9 @@ function App() {
     ),
     { pollMs: 5000 }
   );
-  const parkedChatsList = window.matrixApi.useResource(
+  const parkedChatsList = window.primerApi.useResource(
     "sidebar:parked-chats",
-    (signal) => window.matrixApi.apiFetch("GET", "/chats?limit=200", null, { signal }),
+    (signal) => window.primerApi.apiFetch("GET", "/chats?limit=200", null, { signal }),
     { pollMs: 5000 }
   );
 
@@ -208,9 +208,9 @@ function App() {
   // (Dashboard, knowledge pages) read this. Source: live GET /v1/ssp.
   // Sidebar badges hide when the value is undefined (chrome.jsx:98) so
   // the badge only appears once the first response lands.
-  const realSsps = window.matrixApi.useResource(
+  const realSsps = window.primerApi.useResource(
     "sidebar:ssps",
-    (signal) => window.matrixApi.apiFetch("GET", "/ssp?limit=200", null, { signal }),
+    (signal) => window.primerApi.apiFetch("GET", "/ssp?limit=200", null, { signal }),
     { pollMs: 5000 }
   );
   const ssps = React.useMemo(
@@ -246,7 +246,7 @@ function App() {
   // worker tile, and the workers-page subhead. Reads only the real
   // /v1/workers + /v1/health endpoints; no mock fallback or demoState
   // override (those leaked fake numbers when the app was started
-  // without an in-process worker pool, e.g. `matrix api --no-worker`).
+  // without an in-process worker pool, e.g. `primer api --no-worker`).
   const workerStats = React.useMemo(() => {
     const realItems = Array.isArray(realWorkers.data?.items)
       ? realWorkers.data.items
@@ -778,7 +778,7 @@ function App() {
       <>
         <div>
           <div className="crumb">
-            <a onClick={() => navigate("dashboard")}>matrix</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Workspaces</span>
+            <a onClick={() => navigate("dashboard")}>primer</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Workspaces</span>
           </div>
           <h1 className="page-title">Workspaces</h1>
           <div className="page-sub tabular">
@@ -915,7 +915,7 @@ function App() {
             <span style={{ color: "var(--text)" }}>Dashboard</span>
           </div>
           <h1 className="page-title">Dashboard</h1>
-          <div className="page-sub">Operator overview · <span className="mono">matrix · localhost:8765</span></div>
+          <div className="page-sub">Operator overview · <span className="mono">primer · localhost:8765</span></div>
         </div>
         <div className="page-actions">
           <Btn
@@ -983,7 +983,7 @@ function App() {
       <>
         <div>
           <div className="crumb">
-            <a onClick={() => navigate("dashboard")}>matrix</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>{prettyPage(page)}</span>
+            <a onClick={() => navigate("dashboard")}>primer</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>{prettyPage(page)}</span>
           </div>
           <h1 className="page-title">{prettyPage(page)}</h1>
           <div className="page-sub">This page is out of scope for the current mockup. Sessions and Predicate Builder are the focus.</div>
@@ -1171,7 +1171,7 @@ function App() {
 // Subscribes to the same `session-detail:${sid}` cache key as SessionDetail
 // so it reflects the polled status without a duplicate network call.
 function SessionStatusCaption({ sid }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const detail = useResource(
     `session-detail:${sid}`,
     (signal) => apiFetch("GET", `/sessions/${encodeURIComponent(sid)}`, null, { signal }),

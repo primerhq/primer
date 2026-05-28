@@ -1,6 +1,6 @@
-// matrix UI — useResource hook (polling, dedupe, abort, stale-while-error).
+// primer UI — useResource hook (polling, dedupe, abort, stale-while-error).
 // Loaded via <script type="text/babel"> in ui/index.html. Depends on
-// React (global) and may use window.matrixApi.apiFetch indirectly via
+// React (global) and may use window.primerApi.apiFetch indirectly via
 // the caller's `fetcher` argument.
 
 (function () {
@@ -154,7 +154,7 @@
         // entry immediately.
         const fn = pauseWhileRef.current;
         if (typeof fn === "function" && fn()) return true;
-        if (window.matrixApi && window.matrixApi.idle === true) return true;
+        if (window.primerApi && window.primerApi.idle === true) return true;
         return false;
       };
 
@@ -231,7 +231,7 @@
     }
   }
 
-  const ns = (window.matrixApi = window.matrixApi || {});
+  const ns = (window.primerApi = window.primerApi || {});
   ns.useResource = useResource;
   ns._resource = { findKeys, peekData, replaceData, refetchKey };
   ns._refetchAll = refetchAll;

@@ -1,6 +1,6 @@
 /* global React, Icon, Btn, Modal, Banner */
 
-const { apiFetch, useResource, useMutation, useRouter } = window.matrixApi;
+const { apiFetch, useResource, useMutation, useRouter } = window.primerApi;
 
 const VENDOR_COLORS = {
   openai: "var(--green)",
@@ -27,7 +27,7 @@ const KINDS = {
 
 // ============================================================================
 // PROVIDER_KINDS_FIELDS — single source of truth mirroring the backend's provider
-// enums + per-provider Config models in matrix/model/provider.py. Keep these
+// enums + per-provider Config models in primer/model/provider.py. Keep these
 // in sync when the backend grows a new provider type.
 //
 // Each kind (llm / embedding / rerank) maps provider-type-string ->
@@ -723,7 +723,7 @@ function ProviderDetailHeader({ label, segment, id, onBack, onInvalidate, onDele
 }
 
 function ProviderDetailBody({ p, models, k, pushToast }) {
-  const { useMutation, apiFetch } = window.matrixApi;
+  const { useMutation, apiFetch } = window.primerApi;
   const color = VENDOR_COLORS[p.provider] || "var(--text-3)";
   const modelList = models.data?.models ?? (p.models || []);
 

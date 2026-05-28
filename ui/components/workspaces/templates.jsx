@@ -15,7 +15,7 @@ function _wtToastErr(pushToast, fallback) {
 }
 
 function WorkspaceTemplatesPage({ pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [createOpen, setCreateOpen] = React.useState(false);
 
@@ -166,7 +166,7 @@ function _fromTemplate(t, providers) {
 }
 
 function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const providers = useResource(
@@ -440,7 +440,7 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
 }
 
 function WorkspaceTemplateDetail({ templateId, pushToast }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [tab, setTab] = React.useState("overview");
   const [editOpen, setEditOpen] = React.useState(false);

@@ -2,7 +2,7 @@
 
 // Knowledge: Collections + Documents + SearchBench wired to the real API.
 // The Designer's mock-data scaffold was replaced in Phase 2 — every fetch
-// goes through window.matrixApi.{apiFetch, useResource, useMutation,
+// goes through window.primerApi.{apiFetch, useResource, useMutation,
 // useRouter}. Cache-key convention follows other components:
 //
 //   collections:list                — GET /collections?limit=200
@@ -32,7 +32,7 @@ function _knToastErr(pushToast, fallbackTitle) {
 
 // 404 → null suppression for IC config (mirrors toolsets.jsx).
 async function _knFetchIcConfig(signal) {
-  const { apiFetch } = window.matrixApi;
+  const { apiFetch } = window.primerApi;
   try {
     return await apiFetch("GET", "/internal_collections/config", null, { signal });
   } catch (err) {
@@ -46,7 +46,7 @@ async function _knFetchIcConfig(signal) {
 // ============================================================================
 
 function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const list = useResource(
@@ -173,7 +173,7 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
 }
 
 function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onNavigate }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const isSystem = !!c.system;
   const [listOpen, setListOpen] = React.useState(false);
   const [searchOpen, setSearchOpen] = React.useState(false);
@@ -304,7 +304,7 @@ function KN_EntryRow({ entry, index }) {
 // /collections/{id}/indexed_documents which walks the vector store
 // (works for both user-owned and system collections).
 function KN_CollectionListModal({ collection, pushToast, onClose }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const PAGE_SIZE = 25;
   const [offset, setOffset] = React.useState(0);
   const indexed = useResource(
@@ -402,7 +402,7 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
 // underneath (still inside the modal, but separated from the inline
 // detail view so the chrome stays clean).
 function KN_CollectionSearchModal({ collection, pushToast, onClose }) {
-  const { useMutation, apiFetch } = window.matrixApi;
+  const { useMutation, apiFetch } = window.primerApi;
   const [query, setQuery] = React.useState("");
   const [topK, setTopK] = React.useState(10);
   const [hits, setHits] = React.useState(null);
@@ -513,7 +513,7 @@ function KN_CollectionSearchModal({ collection, pushToast, onClose }) {
 }
 
 function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate }) {
-  const { useMutation, apiFetch } = window.matrixApi;
+  const { useMutation, apiFetch } = window.primerApi;
   const [id, setId] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [providerId, setProviderId] = React.useState("");
@@ -643,7 +643,7 @@ function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate })
 // ============================================================================
 
 function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { query, navigate } = useRouter();
   // Prefer the explicit prop (app.jsx passes docsFilterCollection) and fall
   // back to the router query for deep-link cases.
@@ -878,7 +878,7 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
 }
 
 function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClose, onCreate }) {
-  const { useMutation, apiFetch } = window.matrixApi;
+  const { useMutation, apiFetch } = window.primerApi;
   const [collectionId, setCollectionId] = React.useState(defaultCollection || "");
   const [name, setName] = React.useState("");
   const [text, setText] = React.useState("");
@@ -1007,13 +1007,13 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
 // the live API state when no prop is provided.
 
 function SearchBench({ subsystemOn: subsystemOnProp, collectionId }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
-  // Source the toast push from the matrixApi namespace (toast.js publishes
-  // window.matrixApi.toastPush) so this works whether or not app.jsx forwards
+  // Source the toast push from the primerApi namespace (toast.js publishes
+  // window.primerApi.toastPush) so this works whether or not app.jsx forwards
   // a pushToast prop into SearchBench.
-  const pushToast = window.matrixApi?.toastPush || (() => {});
+  const pushToast = window.primerApi?.toastPush || (() => {});
 
   const ic = useResource("knowledge:ic-config", _knFetchIcConfig, { pollMs: 30000 });
   // subsystemOn: prefer the live IC probe when it has resolved; fall back to

@@ -109,7 +109,7 @@
   }
 
   if (typeof window !== "undefined") {
-    window.matrixVendor = window.matrixVendor || {};
-    window.matrixVendor.autoLayout = autoLayout;
+    window.primerVendor = window.primerVendor || {};
+    window.primerVendor.autoLayout = autoLayout;
   }
 })();

@@ -77,12 +77,12 @@ const NAV = [
 
 function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapsed, onCollapseToggle }) {
   const [collapsed, setCollapsed] = React.useState(() => {
-    try { return JSON.parse(localStorage.getItem("matrix.sidebar.collapsed") || "{}"); } catch { return {}; }
+    try { return JSON.parse(localStorage.getItem("primer.sidebar.collapsed") || "{}"); } catch { return {}; }
   });
   const toggle = (g) => {
     const next = { ...collapsed, [g]: !collapsed[g] };
     setCollapsed(next);
-    try { localStorage.setItem("matrix.sidebar.collapsed", JSON.stringify(next)); } catch {}
+    try { localStorage.setItem("primer.sidebar.collapsed", JSON.stringify(next)); } catch {}
   };
   return (
     <aside className={`sidebar ${navCollapsed ? "is-collapsed" : ""}`}>
@@ -134,13 +134,13 @@ function Topbar({ workerStats, onNavigate, onOpenPalette }) {
   // (the "bootstrap required" state). Hidden when IC is OFF or fully active.
   // Polls GET /v1/internal_collections/config (404 → OFF, 200 with
   // activated_at null → configured, 200 with activated_at set → active).
-  const { useResource } = window.matrixApi || {};
+  const { useResource } = window.primerApi || {};
   const icProbe = useResource
     ? useResource(
         "chrome:ic-config",
         async (signal) => {
           try {
-            return await window.matrixApi.apiFetch("GET", "/internal_collections/config", null, { signal });
+            return await window.primerApi.apiFetch("GET", "/internal_collections/config", null, { signal });
           } catch (e) {
             if (e && e.status === 404) return null;
             throw e;
@@ -154,7 +154,7 @@ function Topbar({ workerStats, onNavigate, onOpenPalette }) {
   return (
     <header className="topbar">
       <div className="topbar-brand">
-        <div className="logo" aria-label="matrix">
+        <div className="logo" aria-label="primer">
           <svg viewBox="0 0 24 24" width="22" height="22" role="img">
             <polygon points="12,3 21,12 12,21 3,12" fill="currentColor" fillOpacity="0.18"/>
             <polygon points="12,3 16.5,7.5 12,12 7.5,7.5" fill="currentColor"/>
@@ -164,7 +164,7 @@ function Topbar({ workerStats, onNavigate, onOpenPalette }) {
           </svg>
         </div>
         <div>
-          <div className="name">matrix</div>
+          <div className="name">primer</div>
         </div>
         <div className="instance">· localhost:8765</div>
       </div>

@@ -30,7 +30,7 @@ const IC_CACHE_SSP = "ic:ssp";
 
 // 404 → null suppression for the IC config probe.
 async function _icFetchConfig(signal) {
-  const { apiFetch } = window.matrixApi;
+  const { apiFetch } = window.primerApi;
   try {
     return await apiFetch("GET", "/internal_collections/config", null, { signal });
   } catch (err) {
@@ -56,7 +56,7 @@ function _icToastErr(pushToast, fallbackTitle) {
 // ============================================================================
 
 function InternalCollectionsPage(props) {
-  const { useResource, useToast } = window.matrixApi;
+  const { useResource, useToast } = window.primerApi;
   const toast = useToast ? useToast() : null;
   // Prefer the prop forwarded from app.jsx; fall back to the foundation
   // useToast hook so the component still works standalone.
@@ -140,7 +140,7 @@ function InactiveCard({ onRefresh, pushToast }) {
 // ============================================================================
 
 function ConfiguredCard({ config, onRefresh, pushToast }) {
-  const { apiFetch, useMutation } = window.matrixApi;
+  const { apiFetch, useMutation } = window.primerApi;
   const [bootstrapResult, setBootstrapResult] = React.useState(null);
   const [updateOpen, setUpdateOpen] = React.useState(false);
 
@@ -200,7 +200,7 @@ function ConfiguredCard({ config, onRefresh, pushToast }) {
 // ============================================================================
 
 function ActiveCard({ config, onRefresh, pushToast }) {
-  const { apiFetch, useMutation, useRouter } = window.matrixApi;
+  const { apiFetch, useMutation, useRouter } = window.primerApi;
   const { navigate } = useRouter();
   const [bootstrapResult, setBootstrapResult] = React.useState(null);
   const [updateOpen, setUpdateOpen] = React.useState(false);
@@ -289,7 +289,7 @@ function ActiveCard({ config, onRefresh, pushToast }) {
 // ============================================================================
 
 function DeactivateButton({ onRefresh, pushToast }) {
-  const { apiFetch, useMutation } = window.matrixApi;
+  const { apiFetch, useMutation } = window.primerApi;
   const [open, setOpen] = React.useState(false);
   const deactivate = useMutation(
     () => apiFetch("DELETE", "/internal_collections/config"),
@@ -336,7 +336,7 @@ function DeactivateButton({ onRefresh, pushToast }) {
 // ============================================================================
 
 function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
-  const { apiFetch, useResource, useMutation } = window.matrixApi;
+  const { apiFetch, useResource, useMutation } = window.primerApi;
   const embedProviders = useResource(
     IC_CACHE_EMBED,
     (signal) => apiFetch("GET", "/embedding_providers?limit=200", null, { signal }),
@@ -543,7 +543,7 @@ function ConfigKV({ config }) {
 }
 
 function BootstrapResultPanel({ result }) {
-  const highlight = window.matrixVendor?.highlightJson;
+  const highlight = window.primerVendor?.highlightJson;
   const text = JSON.stringify(result, null, 2);
   return (
     <div className="mt-3 panel" style={{ background: "var(--bg-2)" }}>

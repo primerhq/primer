@@ -12,7 +12,7 @@ Layout
   present, otherwise runs with built-in defaults (embedded SQLite at
   ``~/.primer/db/data.sqlite``).
 * ``matrix api --config path/to/config.yaml`` — explicit config.
-* ``matrix api --no-worker`` — serve the API only; the worker pool is
+* ``primer api --no-worker`` — serve the API only; the worker pool is
   expected to run in a separate ``matrix worker`` process.
 * ``matrix worker`` — run the worker pool. A minimal HTTP surface
   (``/v1/health`` and ``/v1/workers``) is still served for
@@ -55,7 +55,7 @@ from primer.model.scheduler import RuntimeMode
 
 app = typer.Typer(
     add_completion=False,
-    help="Matrix microagents framework — API + worker entrypoints.",
+    help="Primer microagents framework — API + worker entrypoints.",
 )
 
 

@@ -2,7 +2,7 @@
 
 // Toolsets page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
-// window.matrixApi.{apiFetch, useResource, useMutation}. Cache-key convention
+// window.primerApi.{apiFetch, useResource, useMutation}. Cache-key convention
 // follows other components: "toolsets:list", "toolset-detail:${tid}",
 // "toolset-tools:${tid}" (also used by agents.jsx for the same per-toolset
 // /tools fetch — single canonical key keeps invalidation in sync across
@@ -58,7 +58,7 @@ function ToolsetsPage({ kind, pushToast }) {
 // ============================================================================
 
 function TS_UserToolsets({ pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const list = useResource(
@@ -203,7 +203,7 @@ function _tsTarget(t) {
 // ============================================================================
 
 function TS_NewToolsetModal({ onClose, onCreate, pushToast }) {
-  const { useMutation, apiFetch } = window.matrixApi;
+  const { useMutation, apiFetch } = window.primerApi;
   const [id, setId] = React.useState("");
   const [provider, setProvider] = React.useState("mcp");
   const [transport, setTransport] = React.useState("stdio");
@@ -434,7 +434,7 @@ function TS_KvEditor({ label, hint, pairs, onChange, keyPlaceholder, valuePlaceh
 // ============================================================================
 
 function ToolsetDetail({ toolsetId, pushToast }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { params, query, navigate } = useRouter();
   const id = toolsetId || params.id;
   const tab = TS_TABS.some((t) => t.id === query.tab) ? query.tab : "config";
@@ -617,8 +617,8 @@ function TS_DetailActions({ onInvalidate, onDelete, onBack }) {
 // ============================================================================
 
 function TS_ConfigTab({ ts, pushToast }) {
-  const { useMutation, apiFetch } = window.matrixApi;
-  const hl = window.matrixVendor?.highlightJson;
+  const { useMutation, apiFetch } = window.primerApi;
+  const hl = window.primerVendor?.highlightJson;
   const transport = _tsTransport(ts);
   const isManaged = !!ts?.harness_id;
   const pretty = React.useMemo(() => JSON.stringify(ts, null, 2), [ts]);
@@ -720,7 +720,7 @@ function TS_ConfigTab({ ts, pushToast }) {
 // ============================================================================
 
 function TS_ToolsTab({ id, ts, onInvalidate }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const tools = useResource(
     "toolset-tools:" + id,
     (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(id) + "/tools", null, { signal }),
@@ -835,7 +835,7 @@ function TS_ToolsTab({ id, ts, onInvalidate }) {
 // ============================================================================
 
 function TS_SessionsTab({ id }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const sessions = useResource(
     "toolset-sessions:" + id,
@@ -918,7 +918,7 @@ function _tsPillCls(status) {
 // ============================================================================
 
 function TS_BuiltinToolsets({ pushToast }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   // Fetch the live built-in catalogue from the server. The server decides
   // availability (e.g. search is gated on IC subsystem), so the UI never
   // needs to probe a second endpoint.
@@ -953,7 +953,7 @@ function TS_BuiltinToolsets({ pushToast }) {
 }
 
 function TS_BuiltinCard({ id, tagline, icon, available }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const [open, setOpen] = React.useState(false);
   const tools = useResource(
     "toolset-tools:" + id,

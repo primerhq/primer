@@ -97,7 +97,7 @@ function PredicateBuilder({ pushToast }) {
   const [limit, setLimit] = React.useState(50);
   const [wireOpen, setWireOpen] = React.useState(true);
   const [savedPredicates, setSavedPredicates] = React.useState(() => {
-    try { return JSON.parse(localStorage.getItem("matrix.predicates.saved") || "[]"); } catch { return []; }
+    try { return JSON.parse(localStorage.getItem("primer.predicates.saved") || "[]"); } catch { return []; }
   });
   const [resultCount, setResultCount] = React.useState(247);
   const [latency, setLatency] = React.useState(38);
@@ -144,7 +144,7 @@ function PredicateBuilder({ pushToast }) {
     if (!name) return;
     const next = [...savedPredicates, { name, entity, tree, at: Date.now() }];
     setSavedPredicates(next);
-    try { localStorage.setItem("matrix.predicates.saved", JSON.stringify(next)); } catch {}
+    try { localStorage.setItem("primer.predicates.saved", JSON.stringify(next)); } catch {}
     pushToast({ kind: "success", title: "Saved", detail: `"${name}" saved to local storage` });
   };
 

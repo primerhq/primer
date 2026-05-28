@@ -1,19 +1,19 @@
-// matrix UI — idle-mode polling pause.
+// primer UI — idle-mode polling pause.
 //
-// Sets window.matrixApi.idle = true after 5 minutes of no user input
+// Sets window.primerApi.idle = true after 5 minutes of no user input
 // while the page is visible. useResource's pauseWhile() consults this
 // flag; when true, scheduled polls are skipped (in-flight fetches
 // continue to resolve normally).
 //
 // On the first user input after idle, the flag clears and every
-// active resource refetches immediately via window.matrixApi._refetchAll
+// active resource refetches immediately via window.primerApi._refetchAll
 // so the operator sees current state without manually reloading.
 //
 // Loaded after the other foundation modules in ui/index.html so
 // _refetchAll exists by the time we wire the input listeners.
 
 (function () {
-  const ns = (window.matrixApi = window.matrixApi || {});
+  const ns = (window.primerApi = window.primerApi || {});
   ns.idle = false;
 
   const IDLE_AFTER_MS = 5 * 60 * 1000;   // 5 minutes

@@ -39,6 +39,6 @@
     return { path: path, area: area, width: width, height: height };
   }
 
-  window.matrixVendor = window.matrixVendor || {};
-  window.matrixVendor.buildSparkline = buildSparkline;
+  window.primerVendor = window.primerVendor || {};
+  window.primerVendor.buildSparkline = buildSparkline;
 })();

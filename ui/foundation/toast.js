@@ -1,4 +1,4 @@
-// matrix UI — useToast hook (toast queue, FIFO, max 5 visible).
+// primer UI — useToast hook (toast queue, FIFO, max 5 visible).
 // Loaded via <script type="text/babel"> in ui/index.html. Depends on
 // React (global). Also exposes module-level push/dismiss so non-React
 // code (e.g. useMutation's onError fallback) can enqueue toasts without
@@ -93,7 +93,7 @@
     return { toasts, push, dismiss };
   }
 
-  const ns = (window.matrixApi = window.matrixApi || {});
+  const ns = (window.primerApi = window.primerApi || {});
   ns.useToast = useToast;
   // Non-hook entry points for code that lives outside the React tree.
   ns.toastPush = push;

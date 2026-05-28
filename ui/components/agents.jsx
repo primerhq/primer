@@ -2,7 +2,7 @@
 
 // Agents page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
-// window.matrixApi.{apiFetch, useResource, useMutation}. Cache-key convention
+// window.primerApi.{apiFetch, useResource, useMutation}. Cache-key convention
 // follows other components: "agents:list", "agent-detail:${aid}",
 // "agent-status:${aid}", "agent-sessions:${aid}", "toolset-tools:${tid}".
 //
@@ -46,7 +46,7 @@ function _agToastErr(pushToast, fallbackTitle) {
 // ============================================================================
 
 function AgentsPage({ onOpen, pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -238,7 +238,7 @@ function AgentsPage({ onOpen, pushToast }) {
 // ============================================================================
 
 function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
-  const { useResource, useMutation, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, apiFetch } = window.primerApi;
   const providers = useResource(
     "agents:llm-providers",
     (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
@@ -754,7 +754,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
 // ============================================================================
 
 function AgentDetail({ agentId, pushToast }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { params, query, navigate } = useRouter();
   const id = agentId || params.id;
   const tab = AG_TABS.some((t) => t.id === query.tab) ? query.tab : "config";
@@ -994,8 +994,8 @@ function AG_StatusPanel({ id, status }) {
 // ============================================================================
 
 function AG_ConfigTab({ agent, pushToast }) {
-  const { useMutation, apiFetch } = window.matrixApi;
-  const hl = window.matrixVendor?.highlightJson;
+  const { useMutation, apiFetch } = window.primerApi;
+  const hl = window.primerVendor?.highlightJson;
   const isManaged = !!agent.harness_id;
 
   const [editing, setEditing] = React.useState(false);
@@ -1111,7 +1111,7 @@ function AG_ConfigTab({ agent, pushToast }) {
 }
 
 function AG_ReferencesPanel({ agent }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const providerId = agent.model?.provider_id;
   const provider = useResource(
@@ -1183,7 +1183,7 @@ function AG_ReferencesPanel({ agent }) {
 }
 
 function AG_ToolsetRefRow({ tsId, registeredCount, navigate }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const tools = useResource(
     `toolset-tools:${tsId}`,
     (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(tsId) + "/tools", null, { signal }),
@@ -1269,7 +1269,7 @@ function AG_ToolsTab({ agent }) {
 }
 
 function AG_ToolsetSection({ tsId, registeredBareIds }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const tools = useResource(
     `toolset-tools:${tsId}`,
     (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(tsId) + "/tools", null, { signal }),
@@ -1379,7 +1379,7 @@ function AG_ToolsetSection({ tsId, registeredBareIds }) {
 
 function AG_ToolEntry({ tool }) {
   const [open, setOpen] = React.useState(false);
-  const hl = window.matrixVendor?.highlightJson;
+  const hl = window.primerVendor?.highlightJson;
   return (
     <div style={{ borderBottom: "1px solid var(--border)" }}>
       <div
@@ -1416,7 +1416,7 @@ function AG_ToolEntry({ tool }) {
 // ============================================================================
 
 function AG_SessionsTab({ agentId }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const sessions = useResource(
     `agent-sessions:${agentId}`,
@@ -1509,7 +1509,7 @@ function AG_MetadataTab({ agent }) {
 // workspace options populated from /workspaces?limit=200.
 
 function AG_NewSessionModal({ onClose, defaultAgentId, pushToast }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const workspaces = useResource(

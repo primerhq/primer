@@ -337,7 +337,7 @@ class InMemoryScheduler(Scheduler):
             "matrix_sessions_active": sessions_by_status,
             "matrix_sessions_runnable_queue_depth": runnable,
             "matrix_lease_expirations_total": self._lease_expirations_total,
-            "matrix_scheduler_notify_received_total": (
+            "primer_scheduler_notify_received_total": (
                 self._notify_received_total
             ),
         }

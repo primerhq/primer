@@ -2,7 +2,7 @@
 
 // Workspaces page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
-// window.matrixApi.{apiFetch, useResource, useMutation}. Cache-key convention
+// window.primerApi.{apiFetch, useResource, useMutation}. Cache-key convention
 // follows other components: "workspaces:list", "workspace-detail:${wid}",
 // "workspace-files:${wid}:${path}", "workspace-sessions:${wid}",
 // "workspace-log:${wid}:${limit}", "workspace-channels:${wid}".
@@ -36,7 +36,7 @@ function _wsToastErr(pushToast, fallbackTitle) {
 // ============================================================================
 
 function WorkspacesPage({ onOpen, pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -189,7 +189,7 @@ function WorkspacesPage({ onOpen, pushToast }) {
 }
 
 function WS_NewWorkspaceModal({ onClose, pushToast }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const templates = useResource(
@@ -295,7 +295,7 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
 const WS_TABS = ["files", "sessions", "log", "channels", "config", "destroy"];
 
 function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { params, query, navigate } = useRouter();
   const wid = workspaceId || params.id;
 
@@ -378,7 +378,7 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
 // ============================================================================
 
 function WS_FilesTab({ wid, pushToast }) {
-  const { useResource, useMutation, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, apiFetch } = window.primerApi;
   const [openDirs, setOpenDirs] = React.useState(() => new Set([""]));
   const [selected, setSelected] = React.useState(null);
   const [editing, setEditing] = React.useState(false);
@@ -395,7 +395,7 @@ function WS_FilesTab({ wid, pushToast }) {
   const tree = useResource(
     `workspace-files:${wid}:`,
     // API requires a non-empty path; "." is the documented root sentinel
-    // (matches matrix/api/routers/workspaces.py:375 default).
+    // (matches primer/api/routers/workspaces.py:375 default).
     (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(wid)}/files?path=.`, null, { signal }),
     { pollMs: 10000, deps: [wid] }
   );
@@ -542,7 +542,7 @@ function WS_FilesTab({ wid, pushToast }) {
 function WS_DirNode({ wid, path, depth, openDirs, toggleDir, selected, selectFile, rootEntries }) {
   // The root node receives its entries pre-fetched (so the tree is one round-
   // trip when closed). Sub-directories lazy-fetch when they're opened.
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const isRoot = depth === 0;
   const open = openDirs.has(path);
 
@@ -702,7 +702,7 @@ function WS_CodeHighlight({ code, lang }) {
 // ============================================================================
 
 function WS_SessionsTab({ wid, onOpen }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const list = useResource(
@@ -755,7 +755,7 @@ function WS_SessionsTab({ wid, onOpen }) {
             </thead>
             <tbody>
               {items.map((s) => {
-                // SessionInfo fields (per matrix/model/session.py:188):
+                // SessionInfo fields (per primer/model/session.py:188):
                 // session_id, agent_id, status, started_at, last_activity_at
                 const sid = s.session_id;
                 const started = s.started_at ? _wsAgeSec(s.started_at) : null;
@@ -783,7 +783,7 @@ function WS_SessionsTab({ wid, onOpen }) {
 // ============================================================================
 
 function WS_LogTab({ wid }) {
-  const { useResource, apiFetch } = window.matrixApi;
+  const { useResource, apiFetch } = window.primerApi;
   const [limit, setLimit] = React.useState(50);
 
   const log = useResource(
@@ -852,7 +852,7 @@ function WS_LogTab({ wid }) {
 // ============================================================================
 
 function WS_ChannelsTab({ wid, pushToast }) {
-  const { useResource, useMutation, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, apiFetch } = window.primerApi;
   const [showLink, setShowLink] = React.useState(false);
 
   // GET on the flat endpoint and filter client-side — the scoped GET path is
@@ -938,7 +938,7 @@ function WS_ChannelsTab({ wid, pushToast }) {
 }
 
 function WS_LinkChannelModal({ wid, channels, onClose, pushToast }) {
-  const { useMutation, apiFetch } = window.matrixApi;
+  const { useMutation, apiFetch } = window.primerApi;
   const [channelId, setChannelId] = React.useState(channels[0]?.id || "");
   const [enabled, setEnabled] = React.useState(true);
   const [forwardAsk, setForwardAsk] = React.useState(true);
@@ -1076,7 +1076,7 @@ function WS_ConfigTab({ wid, ws }) {
 // ============================================================================
 
 function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
-  const { useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [showConfirm, setShowConfirm] = React.useState(false);
   const [cascadeError, setCascadeError] = React.useState(null);

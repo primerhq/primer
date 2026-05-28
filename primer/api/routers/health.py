@@ -109,8 +109,8 @@ async def health(request: Request) -> HealthStatus:
             pool_metrics = worker_pool.metrics_snapshot()
         except Exception:
             pool_metrics = {}
-        pool_in_flight = pool_metrics.get("matrix_worker_in_flight")
-        pool_capacity = pool_metrics.get("matrix_worker_capacity")
+        pool_in_flight = pool_metrics.get("primer_worker_in_flight")
+        pool_capacity = pool_metrics.get("primer_worker_capacity")
 
     return HealthStatus(
         version=APP_VERSION,

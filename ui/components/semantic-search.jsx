@@ -43,7 +43,7 @@ function _sspAgeSec(iso) {
 // ----------------------------------------------------------------------
 
 function SSPListPage({ onOpen, pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -221,7 +221,7 @@ function BackendBadge({ kind }) {
 // ----------------------------------------------------------------------
 
 function SSPCreateModal({ onClose, pushToast }) {
-  const { useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const [form, setForm] = React.useState({
@@ -230,7 +230,7 @@ function SSPCreateModal({ onClose, pushToast }) {
     provider: "pgvector",
     hostname: "",
     port: 5432,
-    database: "matrix",
+    database: "primer",
     username: "",
     password: "",
     db_schema: "public",
@@ -379,7 +379,7 @@ function SSPCreateModal({ onClose, pushToast }) {
               </FieldRow>
             </div>
             <FieldRow label="username" err={fieldErrors.username}>
-              <input className="input mono" value={form.username} onChange={(e) => update("username", e.target.value)} placeholder="matrix_rw" style={{ width: "100%" }} />
+              <input className="input mono" value={form.username} onChange={(e) => update("username", e.target.value)} placeholder="primer_rw" style={{ width: "100%" }} />
             </FieldRow>
             <FieldRow label="password" hint="SecretStr · stored encrypted" err={fieldErrors.password}>
               <input className="input mono" type="password" value={form.password} onChange={(e) => update("password", e.target.value)} placeholder="•••••••••" style={{ width: "100%" }} />
@@ -478,7 +478,7 @@ function Section({ label, sub }) {
 // ----------------------------------------------------------------------
 
 function SSPDetail({ sspId, pushToast }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   const [tab, setTab] = React.useState("overview");

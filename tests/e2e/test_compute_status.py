@@ -2962,7 +2962,7 @@ async def test_t0524_graph_node_jinja_syntax_error_in_template_accepted(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0524 — `_AgentNodeRef.input_template` is a free-form `str`
-    per matrix/model/graph.py:169-177. The topology validator does
+    per primer/model/graph.py:169-177. The topology validator does
     NOT compile the Jinja2 template; runtime evaluation happens
     inside the (currently NotImplemented) graph executor.
 

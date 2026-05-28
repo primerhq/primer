@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>matrix foundation hook tests</title>
+<title>primer foundation hook tests</title>
 <style>
   body { font-family: ui-monospace, monospace; padding: 16px; background: #0a0a0a; color: #e5e5e5; }
   h1 { margin: 0 0 8px; font-size: 16px; }
@@ -17,7 +17,7 @@
 </style>
 </head>
 <body>
-<h1>matrix foundation hook tests</h1>
+<h1>primer foundation hook tests</h1>
 <div id="summary" class="summary">running…</div>
 <table>
   <thead><tr><th style="width:160px">Name</th><th style="width:80px">Result</th><th>Details</th></tr></thead>
@@ -40,14 +40,14 @@
 <!--
   Tests run inline below. The <script type="text/babel"> tag is
   processed by Babel-standalone after all preceding babel-typed
-  scripts have been processed (document order), so window.matrixApi
+  scripts have been processed (document order), so window.primerApi
   is fully populated when this runs.
 -->
 <script type="text/babel">
 (async function () {
-  const { apiFetch, ApiError, useResource, useMutation, useRouter, useToast, _toast } = window.matrixApi;
-  const _resource = window.matrixApi._resource;
-  const _router = window.matrixApi._router;
+  const { apiFetch, ApiError, useResource, useMutation, useRouter, useToast, _toast } = window.primerApi;
+  const _resource = window.primerApi._resource;
+  const _router = window.primerApi._router;
 
   // ---- Test harness ------------------------------------------------------
   const results = [];
@@ -451,7 +451,7 @@
   summary.style.color = ok ? "#86efac" : "#fca5a5";
 
   // Expose for headless drivers that want to scrape the result.
-  window.__matrixFoundationTests = { results, passed, failed, skipped, total, ok };
+  window.__primerFoundationTests = { results, passed, failed, skipped, total, ok };
 })();
 </script>
 </body>

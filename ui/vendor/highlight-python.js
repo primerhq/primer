@@ -41,6 +41,6 @@
     });
   }
 
-  window.matrixVendor = window.matrixVendor || {};
-  window.matrixVendor.highlightPython = highlightPython;
+  window.primerVendor = window.primerVendor || {};
+  window.primerVendor.highlightPython = highlightPython;
 })();

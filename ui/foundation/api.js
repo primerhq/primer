@@ -1,6 +1,6 @@
-// matrix UI — API client (apiFetch + ApiError).
+// primer UI — API client (apiFetch + ApiError).
 // Loaded via <script type="text/babel"> in ui/index.html. No imports.
-// Contributes to the shared window.matrixApi namespace.
+// Contributes to the shared window.primerApi namespace.
 
 (function () {
   const T0103A_DETAIL = /pg_type_typname_nsp_index|relation .* does not exist/i;
@@ -111,7 +111,7 @@
     return result.data;
   }
 
-  const ns = (window.matrixApi = window.matrixApi || {});
+  const ns = (window.primerApi = window.primerApi || {});
   ns.apiFetch = apiFetch;
   ns.ApiError = ApiError;
 })();

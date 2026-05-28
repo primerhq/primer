@@ -19,7 +19,7 @@ function _slAgeSec(iso) {
 }
 
 function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) {
-  const { useResource, useRouter, apiFetch } = window.matrixApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
   // Local filter state. Seed status filter from filterPreset prop (set by

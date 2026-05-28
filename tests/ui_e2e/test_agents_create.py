@@ -187,7 +187,7 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
       * No error toast appears (toast is reserved for non-422)
 
     Trigger: Agent.temperature is ``Field(default=None, ge=0.0)``
-    (per matrix/model/agent.py:79); -0.5 violates ``ge=0.0`` and is
+    (per primer/model/agent.py:79); -0.5 violates ``ge=0.0`` and is
     reliably rejected with 422 carrying ``body.temperature`` in the
     field-errors loc. This trigger is more robust than id-format
     games because Identifiable's validator is intentionally lenient
