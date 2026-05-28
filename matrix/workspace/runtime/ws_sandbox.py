@@ -7,21 +7,36 @@ used as-is.
 
 ``stop()`` and ``remove()`` are container-orchestration operations that
 belong to the backend adapter (Docker / Podman / Containerd), not the
-runtime protocol.  Both raise :class:`NotImplementedError` by default and
-are expected to be overridden by thin subclasses created by each adapter.
+runtime protocol.  If a :class:`ContainerHandle` is provided at
+construction time, ``stop()`` and ``remove()`` delegate to it; otherwise
+they raise :class:`NotImplementedError`.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from matrix.int.sandbox import ExecResult, FileStat, Sandbox, SandboxInspectInfo
 from matrix.workspace.runtime.runtime_client import RuntimeClient
 
 if TYPE_CHECKING:
     pass
+
+
+@runtime_checkable
+class ContainerHandle(Protocol):
+    """Minimal protocol for container lifecycle operations.
+
+    Backend adapters (Docker / Podman / Containerd) wrap their native
+    container handle in an object implementing this protocol and pass it
+    to :class:`WSSandbox` so that ``stop()`` and ``remove()`` work
+    without any subclassing.
+    """
+
+    async def stop(self) -> None: ...
+    async def remove(self) -> None: ...
 
 
 class WSSandbox(Sandbox):
@@ -46,10 +61,12 @@ class WSSandbox(Sandbox):
         runtime_client: RuntimeClient,
         container_id: str,
         workspace_root: str = "/workspace",
+        container_handle: ContainerHandle | None = None,
     ) -> None:
         self._client = runtime_client
         self._container_id = container_id
         self._workspace_root = workspace_root.rstrip("/")
+        self._container_handle = container_handle
 
     # ------------------------------------------------------------------
     # Sandbox.id
@@ -173,24 +190,29 @@ class WSSandbox(Sandbox):
     async def stop(self) -> None:
         """Stop the container.
 
-        This is a container-orchestration operation, not a runtime-protocol
-        operation.  The default implementation raises :class:`NotImplementedError`;
-        backend adapters (Docker / Podman / Containerd) create thin subclasses
-        that override this method.
+        Delegates to the :class:`ContainerHandle` supplied at construction
+        time if one was provided.  Otherwise raises :class:`NotImplementedError`;
+        backend adapters that do not supply a handle must subclass and override.
         """
-        raise NotImplementedError(
-            "WSSandbox.stop() must be overridden by the backend adapter."
-        )
+        if self._container_handle is not None:
+            await self._container_handle.stop()
+        else:
+            raise NotImplementedError(
+                "WSSandbox.stop() requires a ContainerHandle or a subclass override."
+            )
 
     async def remove(self) -> None:
         """Remove the container and its volumes.
 
-        Same constraint as :meth:`stop` — must be overridden by the
-        backend adapter.
+        Delegates to the :class:`ContainerHandle` supplied at construction
+        time if one was provided.  Otherwise raises :class:`NotImplementedError`.
         """
-        raise NotImplementedError(
-            "WSSandbox.remove() must be overridden by the backend adapter."
-        )
+        if self._container_handle is not None:
+            await self._container_handle.remove()
+        else:
+            raise NotImplementedError(
+                "WSSandbox.remove() requires a ContainerHandle or a subclass override."
+            )
 
     # ------------------------------------------------------------------
     # Path resolution
@@ -207,4 +229,4 @@ class WSSandbox(Sandbox):
         return f"{self._workspace_root}/{path}"
 
 
-__all__ = ["WSSandbox"]
+__all__ = ["ContainerHandle", "WSSandbox"]
