@@ -122,12 +122,12 @@ async def test_unknown_op_returns_eunsupported(server: ServerFixture) -> None:
         )
         _ = await ws.receive_json()  # consume hello response
 
-        # Now send a real (but currently unimplemented) op
+        # Send an op that is not yet implemented (archive, exec, etc.)
         await ws.send_json(
             {
                 "req_id": 1,
-                "op": "read_file",
-                "args": {"path": "/tmp/x"},
+                "op": "archive",
+                "args": {"paths": []},
             }
         )
         resp = await ws.receive_json()

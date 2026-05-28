@@ -21,6 +21,7 @@ import tempfile
 from aiohttp import web
 from aiohttp import WSMsgType
 
+from matrix_runtime.ops import HANDLERS, OpError
 from matrix_runtime.protocol import ErrorCode, OpName, Response, serialize
 
 log = logging.getLogger(__name__)
@@ -135,6 +136,8 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     await ws.send_str(serialize(hello_resp))
 
     # --- Post-handshake message loop -----------------------------------------
+    workspace_root: str = request.app[_KEY_WORKSPACE_ROOT]
+
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
             try:
@@ -143,13 +146,38 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                 continue  # ignore malformed frames
 
             frame_req_id = frame.get("req_id", 0)
-            # Future tasks implement real ops; for now return EUNSUPPORTED.
-            err_resp = Response(
-                req_id=frame_req_id,
-                ok=False,
-                error={"code": ErrorCode.EUNSUPPORTED, "message": "Not implemented yet"},
-            )
-            await ws.send_str(serialize(err_resp))
+            op_name: str = frame.get("op", "")
+            args: dict = frame.get("args") or {}
+
+            handler = HANDLERS.get(op_name)
+            if handler is None:
+                err_resp = Response(
+                    req_id=frame_req_id,
+                    ok=False,
+                    error={"code": ErrorCode.EUNSUPPORTED, "message": f"Op not implemented: {op_name!r}"},
+                )
+                await ws.send_str(serialize(err_resp))
+                continue
+
+            try:
+                result = await handler(args, workspace_root)  # type: ignore[operator]
+                ok_resp = Response(req_id=frame_req_id, ok=True, result=result)
+                await ws.send_str(serialize(ok_resp))
+            except OpError as exc:
+                err_resp = Response(
+                    req_id=frame_req_id,
+                    ok=False,
+                    error={"code": exc.code, "message": exc.message},
+                )
+                await ws.send_str(serialize(err_resp))
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Unexpected error handling op %r", op_name)
+                err_resp = Response(
+                    req_id=frame_req_id,
+                    ok=False,
+                    error={"code": ErrorCode.EINTERNAL, "message": str(exc)},
+                )
+                await ws.send_str(serialize(err_resp))
         elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
             break
 

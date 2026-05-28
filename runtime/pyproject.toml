@@ -21,6 +21,7 @@ packages = ["matrix_runtime"]
 
 [dependency-groups]
 dev = [
+    "matrix",
     "pytest>=9.0",
     "pytest-asyncio>=0.24",
 ]
@@ -28,3 +29,6 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.uv.sources]
+matrix = { path = "../" }
