@@ -45,6 +45,27 @@ class ObservabilityConfig(BaseModel):
     service_namespace: str = "default"
 
 
+class AuthConfig(BaseModel):
+    """Cookie-based session authentication.
+
+    ``session_secret`` priority:
+    1. PRIMER_SESSION_SECRET env var (set this field via AppConfig
+       env-loading); operator owns rotation.
+    2. system_state.session_secret column (auto-generated on first
+       need by the auth layer).
+
+    ``cookie_secure`` defaults to False so dev installs work over http.
+    Production deployments behind TLS should set it True to make the
+    browser refuse to send the cookie over a non-https connection."""
+
+    enabled: bool = True
+    session_secret: str | None = None
+    session_ttl_days: int = 7
+    cookie_name: str = "primer_session"
+    cookie_secure: bool = False
+    cookie_samesite: str = "lax"
+
+
 class AppConfig(BaseSettings):
     """Lightweight app-level configuration."""
 
@@ -127,6 +148,17 @@ class AppConfig(BaseSettings):
         description=(
             "OTEL tracing + Prometheus metrics configuration. "
             "Set enabled=False to disable all observability overhead."
+        ),
+    )
+
+    # --- Auth ------------------------------------------------------------
+    auth: AuthConfig = Field(
+        default_factory=AuthConfig,
+        description=(
+            "Cookie-based session auth. Single-user in v1; the first "
+            "POST /v1/auth/register creates the operator account. "
+            "Subsequent boots require login. Set auth.enabled=False to "
+            "disable the middleware entirely (development only)."
         ),
     )
 
