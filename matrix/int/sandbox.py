@@ -98,10 +98,6 @@ class Sandbox(ABC):
         :meth:`read_file` + :meth:`write_file`.  This is correct but
         race-prone under concurrent writers.  Override with a proper
         atomic-append in runtimes where performance matters.
-
-        .. TODO(Cluster-5): Replace with a persistent WS runtime that
-           exposes a native ``append_line`` op — eliminating the
-           read-modify-write overhead for container/k8s backends.
         """
         existing: bytes
         try:
@@ -109,6 +105,30 @@ class Sandbox(ABC):
         except (FileNotFoundError, OSError):
             existing = b""
         await self.write_file(path, existing + content)
+
+    async def append_line(self, path: str, line: bytes) -> int:
+        """Atomically append a single line to the file at ``path``.
+
+        Returns the byte offset at which *line* was written (i.e. the
+        file length before the append).
+
+        This is the preferred append primitive for Cluster-4 session
+        streaming.  It MUST NOT interleave partial writes from concurrent
+        callers.  Backends that expose a native atomic-append op (e.g.
+        the WS runtime's ``append_line`` op) MUST override this method.
+
+        The default implementation delegates to :meth:`append_file`, which
+        performs a read-modify-write — correct but not race-safe under
+        concurrent writers.  A newline byte is appended after *line* to
+        keep line-oriented consumers happy.
+        """
+        try:
+            existing = await self.read_file(path)
+        except (FileNotFoundError, OSError):
+            existing = b""
+        offset = len(existing)
+        await self.write_file(path, existing + line + b"\n")
+        return offset
 
     @abstractmethod
     async def list_dir(self, path: str) -> list[FileStat]: ...
