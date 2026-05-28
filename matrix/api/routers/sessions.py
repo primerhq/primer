@@ -5,16 +5,25 @@ endpoint; Task 20 appends ``resume`` / ``pause`` / ``cancel`` plus the
 top-level ``GET`` / ``find`` routes onto :data:`top_session_router`.
 Both routers are mounted from ``matrix/api/app.py`` up-front so later
 additions don't require a follow-up edit to ``app.py``.
+
+Task 10 adds the WS endpoint at
+``WS /v1/workspaces/{wid}/sessions/{sid}/ws?cursor=N``.
+The session WS mirrors the chat WS: cursor replay of ``messages.jsonl``
+followed by live tick subscriptions.  The source of truth is the
+per-session ``messages.jsonl`` file in the workspace (unlike chat, which
+stores messages in the database).
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from matrix.api.deps import (
@@ -478,6 +487,325 @@ async def get_session_by_id(
     return s
 
 
+# ===========================================================================
+# WebSocket: live session stream + interrupt / tool_approval / ping
+# ===========================================================================
+
+
+async def _session_replay_since_cursor(
+    ws: WebSocket,
+    workspace,
+    session_id: str,
+    cursor: int,
+) -> int:
+    """Replay all ``messages.jsonl`` records with ``seq > cursor``.
+
+    Reads the session's ``messages.jsonl`` via the workspace's
+    ``read_file`` method, line-iterates, and sends each record whose
+    ``seq > cursor`` to the WebSocket as JSON.
+
+    Returns the highest seq sent (or ``cursor`` if nothing was sent),
+    so the caller knows where live streaming should resume from.
+
+    The ``messages.jsonl`` file may not exist yet (new session) — treat
+    a missing file as an empty history and return ``cursor``.
+    """
+    from matrix.model.except_ import NotFoundError as _NotFoundError
+
+    state_path = getattr(getattr(workspace, "_template", None), "state_path", ".state")
+    jsonl_path = f"{state_path}/sessions/{session_id}/messages.jsonl"
+
+    try:
+        raw = await workspace.read_file(jsonl_path)
+    except (_NotFoundError, Exception) as exc:
+        # Missing file or any read error → treat as empty history.
+        if not isinstance(exc, _NotFoundError):
+            logger.debug(
+                "session %s: read_file(%s) raised %r; treating as empty",
+                session_id, jsonl_path, exc,
+            )
+        return cursor
+
+    last_emitted = cursor
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        seq = record.get("seq")
+        if not isinstance(seq, int) or seq <= cursor:
+            continue
+        try:
+            await ws.send_json(record)
+            last_emitted = seq
+        except WebSocketDisconnect:
+            return last_emitted
+    return last_emitted
+
+
+@nested_session_router.websocket(
+    "/workspaces/{workspace_id}/sessions/{session_id}/ws",
+)
+async def session_ws(
+    websocket: WebSocket,
+    workspace_id: str,
+    session_id: str,
+    cursor: int = Query(0, ge=0),
+) -> None:
+    """Bidirectional session stream — cursor replay + live tick subscription.
+
+    Lifecycle:
+
+    1. Resolve the WorkspaceSession row. Reject (4404) if not found or
+       if the row belongs to a different workspace.
+    2. Reject (4410) if the session is already ENDED.
+    3. Accept the WebSocket upgrade.
+    4. Replay ``messages.jsonl`` records with ``seq > cursor`` in order.
+    5. Subscribe to ``app.state.session_tick_router`` for the session
+       (Task 12 wires this; for now falls back gracefully if absent).
+    6. Run two concurrent loops:
+       - ``_session_recv_loop``: reads client frames.  Handles
+         ``interrupt`` (sets ``cancel_requested_at`` + publishes cancel
+         event), ``tool_approval_decide`` (mirrors chat), ``ping``
+         (→ pong).
+       - ``_session_send_loop``: on each tick reads new ``messages.jsonl``
+         lines since ``last_sent_seq`` and sends them.
+    7. On disconnect: closes the tick subscription.
+    """
+    sp = websocket.app.state.storage_provider
+    sessions_storage = sp.get_storage(WorkspaceSession)
+    event_bus = getattr(websocket.app.state, "event_bus", None)
+    session_tick_router = getattr(websocket.app.state, "session_tick_router", None)
+
+    # 1. Resolve session row.
+    session = await sessions_storage.get(session_id)
+    if session is None or session.workspace_id != workspace_id:
+        await websocket.accept()
+        await websocket.close(
+            code=4404,
+            reason=f"session {session_id!r} not found on workspace {workspace_id!r}",
+        )
+        return
+
+    # 2. Reject ended sessions.
+    if session.status == SessionStatus.ENDED:
+        await websocket.accept()
+        await websocket.close(code=4410, reason="session ended")
+        return
+
+    # 3. Accept upgrade.
+    await websocket.accept()
+
+    if event_bus is None:
+        await websocket.close(code=4500, reason="event_bus_not_available")
+        return
+
+    # 4. Replay history since cursor.
+    workspace_registry = getattr(websocket.app.state, "workspace_registry", None)
+    workspace = None
+    if workspace_registry is not None:
+        try:
+            workspace = await workspace_registry.get_workspace(workspace_id)
+        except Exception as exc:
+            logger.warning(
+                "session_ws: could not resolve workspace %s: %r",
+                workspace_id, exc,
+            )
+
+    if workspace is not None:
+        try:
+            last_seq = await _session_replay_since_cursor(
+                websocket, workspace, session_id, cursor,
+            )
+        except WebSocketDisconnect:
+            return
+    else:
+        last_seq = cursor
+
+    # 5. Subscribe to tick router (may be None until Task 12).
+    if session_tick_router is not None:
+        tick_sub = session_tick_router.subscribe(session_id)
+    else:
+        # Construct a local one as a temporary measure so the endpoint is
+        # functional; Task 12 wires the real one on app.state.
+        from matrix.session.tick_router import SessionTickRouter as _STR
+        _local_router = _STR()
+        tick_sub = _local_router.subscribe(session_id)
+
+    try:
+        recv_task = asyncio.ensure_future(
+            _session_recv_loop(
+                websocket, session_id, sessions_storage, event_bus,
+            )
+        )
+        send_task = asyncio.ensure_future(
+            _session_send_loop(
+                websocket, session_id, workspace, tick_sub, last_seq,
+            )
+        )
+        try:
+            done, pending = await asyncio.wait(
+                [recv_task, send_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, WebSocketDisconnect, Exception):
+                    pass
+            for task in done:
+                exc = task.exception()
+                if exc is not None and not isinstance(exc, WebSocketDisconnect):
+                    logger.debug(
+                        "session %s WS task raised: %s", session_id, exc,
+                    )
+        except WebSocketDisconnect:
+            recv_task.cancel()
+            send_task.cancel()
+            for t in (recv_task, send_task):
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+    finally:
+        await tick_sub.aclose()
+
+
+async def _session_recv_loop(
+    websocket: WebSocket,
+    session_id: str,
+    sessions_storage,
+    event_bus,
+) -> None:
+    """Read client frames and dispatch them.
+
+    - ``ping`` → immediate pong.
+    - ``interrupt`` → set ``cancel_requested_at`` + publish cancel event.
+    - ``tool_approval_decide`` → publish on the parked event_key.
+    """
+    while True:
+        try:
+            incoming = await websocket.receive_json()
+        except WebSocketDisconnect:
+            return
+        kind = incoming.get("kind")
+        if kind == "ping":
+            await websocket.send_json({"kind": "pong"})
+            continue
+        if kind == "interrupt":
+            session = await sessions_storage.get(session_id)
+            if session is None or session.status == SessionStatus.ENDED:
+                continue
+            session.cancel_requested_at = datetime.now(timezone.utc)
+            await sessions_storage.update(session)
+            await event_bus.publish(f"session:{session_id}:cancel", {})
+            continue
+        if kind == "tool_approval_decide":
+            tcid = incoming.get("tool_call_id")
+            decision = incoming.get("decision")
+            reason = incoming.get("reason")
+            if decision not in ("approved", "rejected"):
+                await websocket.send_json({
+                    "kind": "error",
+                    "code": "tool_approval_bad_decision",
+                    "message": (
+                        f"decision must be approved/rejected; got {decision!r}"
+                    ),
+                })
+                continue
+            session = await sessions_storage.get(session_id)
+            if session is None:
+                continue
+            blob = session.parked_state or {}
+            yielded = blob.get("yielded") or {}
+            expected = (yielded.get("resume_metadata") or {}).get(
+                "original_call", {},
+            ).get("id")
+            if expected != tcid:
+                await websocket.send_json({
+                    "kind": "error",
+                    "code": "tool_approval_mismatch",
+                    "message": "tool_call_id does not match the pending approval",
+                })
+                continue
+            event_key = yielded.get("event_key")
+            if not event_key:
+                await websocket.send_json({
+                    "kind": "error",
+                    "code": "tool_approval_missing_event_key",
+                    "message": "park is missing event_key",
+                })
+                continue
+            await event_bus.publish(
+                event_key,
+                {"decision": decision, "reason": reason},
+            )
+            continue
+        await websocket.send_json({
+            "kind": "error",
+            "message": f"unknown client message kind: {kind!r}",
+        })
+
+
+async def _session_send_loop(
+    websocket: WebSocket,
+    session_id: str,
+    workspace,
+    tick_sub,
+    last_sent_seq: int,
+) -> None:
+    """Forward new session message records on each tick.
+
+    On each tick, reads ``messages.jsonl`` lines whose ``seq`` is between
+    ``last_sent_seq + 1`` and ``tick.seq`` (inclusive) and sends them.
+
+    When ``workspace`` is None (workspace not resolvable) the send loop
+    simply drains ticks without emitting anything — the connection
+    remains open for the recv loop (e.g. interrupt frames) but no
+    historical replay or live stream is possible.
+    """
+    from matrix.model.except_ import NotFoundError as _NotFoundError
+
+    async for tick in tick_sub:
+        if tick.seq <= last_sent_seq:
+            continue
+        if workspace is None:
+            last_sent_seq = tick.seq
+            continue
+        state_path = getattr(
+            getattr(workspace, "_template", None), "state_path", ".state"
+        )
+        jsonl_path = (
+            f"{state_path}/sessions/{session_id}/messages.jsonl"
+        )
+        try:
+            raw = await workspace.read_file(jsonl_path)
+        except (_NotFoundError, Exception):
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            seq = record.get("seq")
+            if not isinstance(seq, int):
+                continue
+            if seq <= last_sent_seq or seq > tick.seq:
+                continue
+            try:
+                await websocket.send_json(record)
+            except WebSocketDisconnect:
+                return
+            last_sent_seq = seq
+
+
 __all__ = [
     "SessionCreateBody",
     "cancel_session",
@@ -488,5 +816,6 @@ __all__ = [
     "nested_session_router",
     "pause_session",
     "resume_session",
+    "session_ws",
     "top_session_router",
 ]
