@@ -47,6 +47,8 @@ from typing import Any
 
 from matrix.int.claim import ClaimAdapter, ClaimEngine, ClaimKind, Lease, ReleaseOutcome
 from matrix.claim.sql import build_claim_query
+from matrix.observability import tracing as _tracing
+import matrix.observability.metrics as _metrics
 
 
 class PostgresClaimEngine(ClaimEngine):
@@ -141,25 +143,37 @@ class PostgresClaimEngine(ClaimEngine):
         Uses the pre-compiled UNION ALL CTE query that joins each
         adapter's entity table for eligibility filtering.
         """
-        async with self._storage.pool.acquire() as conn:
-            rows = await conn.fetch(
-                self._claim_query,
-                max_count,
-                worker_id,
-                "60",  # TTL in seconds (string cast to interval)
-            )
-        return [
-            Lease(
-                kind=ClaimKind(r["kind"]),
-                entity_id=r["entity_id"],
-                claimed_by=worker_id,
-                claimed_at=r["claimed_at"],
-                expires_at=r["expires_at"],
-                attempt_count=r["attempt_count"],
-                last_error=r["last_error"],
-            )
-            for r in rows
-        ]
+        _tracer = _tracing.get_tracer("matrix.claim")
+        with _tracer.start_as_current_span("claim.due") as _span:
+            async with self._storage.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    self._claim_query,
+                    max_count,
+                    worker_id,
+                    "60",  # TTL in seconds (string cast to interval)
+                )
+            leases = [
+                Lease(
+                    kind=ClaimKind(r["kind"]),
+                    entity_id=r["entity_id"],
+                    claimed_by=worker_id,
+                    claimed_at=r["claimed_at"],
+                    expires_at=r["expires_at"],
+                    attempt_count=r["attempt_count"],
+                    last_error=r["last_error"],
+                )
+                for r in rows
+            ]
+            _span.set_attribute("claim.count", len(leases))
+            for lease in leases:
+                # claimed_at is the moment of claiming; we don't have
+                # next_attempt_at in the returned Lease, so we observe 0
+                # as the latency placeholder for Postgres-claimed leases.
+                _metrics.claim_enqueue_latency_seconds.labels(
+                    lease.kind.value
+                ).observe(0.0)
+                _span.add_event("claim_assigned", {"kind": lease.kind.value})
+            return leases
 
     # ------------------------------------------------------------------
     # heartbeat

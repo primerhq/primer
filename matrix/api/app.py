@@ -416,6 +416,46 @@ def _make_lifespan(config: AppConfig):
         app.state.event_bus = event_bus
         app.state.claim_engine = claim_engine
 
+        # --- Observability: claim queue-depth sampler ----------------------
+        # Runs every 10s when the claim engine is Postgres-backed and
+        # metrics are enabled.  In-memory engine doesn't need it (the
+        # metric would always be 0 outside tests).
+        _claim_depth_task: asyncio.Task | None = None
+        if (
+            config.observability.enabled
+            and config.observability.metrics_enabled
+            and claim_engine is not None
+        ):
+            from matrix.claim.postgres import PostgresClaimEngine as _PGClaimEngine
+            if isinstance(claim_engine, _PGClaimEngine):
+                async def _sample_claim_queue_depth() -> None:
+                    import matrix.observability.metrics as _m
+                    _table = claim_engine._table  # noqa: SLF001
+                    _pool = claim_engine._storage.pool  # noqa: SLF001
+                    while True:
+                        try:
+                            await asyncio.sleep(10)
+                            async with _pool.acquire() as _conn:
+                                _rows = await _conn.fetch(
+                                    f"SELECT kind, COUNT(*) AS cnt"
+                                    f" FROM {_table}"
+                                    f" WHERE claimed_by IS NULL"
+                                    f" GROUP BY kind"
+                                )
+                            for _row in _rows:
+                                _m.claim_queue_depth.labels(_row["kind"]).set(
+                                    _row["cnt"]
+                                )
+                        except asyncio.CancelledError:
+                            break
+                        except Exception:
+                            logger.debug(
+                                "claim queue-depth sample failed", exc_info=True
+                            )
+
+                _claim_depth_task = asyncio.ensure_future(_sample_claim_queue_depth())
+                logger.info("lifespan: claim queue-depth sampler started")
+
         # Build the always-on ``harness`` toolset. Needs event_bus so it
         # is constructed after the bus is wired (event_bus may be None
         # when running in API-only mode without a scheduler — the toolset
@@ -629,6 +669,15 @@ def _make_lifespan(config: AppConfig):
                         pass
                 except Exception:
                     logger.exception("session_tick_task teardown failed")
+            if _claim_depth_task is not None:
+                try:
+                    _claim_depth_task.cancel()
+                    try:
+                        await _claim_depth_task
+                    except asyncio.CancelledError:
+                        pass
+                except Exception:
+                    logger.exception("claim_depth_task teardown failed")
             if event_bus is not None:
                 try:
                     await event_bus.aclose()
