@@ -1262,4 +1262,8 @@ function NewSessionModal({ onClose, onCreate }) {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <window.AuthGate>
+    <App />
+  </window.AuthGate>
+);

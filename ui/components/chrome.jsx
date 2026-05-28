@@ -191,9 +191,83 @@ function Topbar({ workerStats, onNavigate, onOpenPalette }) {
             <Icon name="bell" size={14} />
           </button>
         )}
-        <div className="user-avatar mono" title="No auth (roadmap)">OP</div>
+        <UserMenu />
       </div>
     </header>
+  );
+}
+
+
+function UserMenu() {
+  // Pulls /v1/auth/status to surface the logged-in username + offer a
+  // logout button. The signed session cookie carries the identity; the
+  // backend re-fetches the user row on every request.
+  const [open, setOpen] = React.useState(false);
+  const [status, setStatus] = React.useState(null);
+
+  const refresh = React.useCallback(async () => {
+    try {
+      const r = await window.primerApi.apiFetch("GET", "/auth/status", null, {});
+      setStatus(r);
+    } catch {
+      setStatus({ authenticated: false, username: null });
+    }
+  }, []);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  const initials = (u) =>
+    u ? u.split(/[^a-z0-9]+/i).filter(Boolean).slice(0, 2).map(s => s[0].toUpperCase()).join("") || u[0].toUpperCase() : "?";
+
+  const onLogout = async () => {
+    try {
+      await window.primerApi.apiFetch("POST", "/auth/logout", null, {});
+    } catch {}
+    // Reload — root redirects to /login because the session cookie
+    // is cleared and auth/status will report authenticated=false.
+    window.location.reload();
+  };
+
+  if (!status || !status.authenticated) {
+    return <div className="user-avatar mono" title="not authenticated">?</div>;
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <div
+        className="user-avatar mono"
+        title={status.username}
+        onClick={() => setOpen(o => !o)}
+        style={{ cursor: "pointer" }}
+      >
+        {initials(status.username)}
+      </div>
+      {open && (
+        <div
+          style={{
+            position: "absolute", right: 0, top: "calc(100% + 6px)",
+            background: "var(--surface)", border: "1px solid var(--border)",
+            borderRadius: 6, padding: 8, minWidth: 160, zIndex: 100,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+          }}
+        >
+          <div style={{ fontSize: 12, color: "var(--text-2)", padding: "4px 6px" }}>
+            Signed in as
+          </div>
+          <div className="mono" style={{ padding: "0 6px 6px", fontWeight: 600 }}>
+            {status.username}
+          </div>
+          <div style={{ borderTop: "1px solid var(--border)", margin: "4px -8px" }} />
+          <button
+            className="btn btn-sm"
+            style={{ width: "100%", justifyContent: "flex-start" }}
+            onClick={onLogout}
+          >
+            Log out
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
