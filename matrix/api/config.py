@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -30,6 +30,19 @@ from matrix.model.scheduler import (
     SchedulerProviderConfig,
     WorkerConfig,
 )
+
+
+class ObservabilityConfig(BaseModel):
+    """Configuration for OTEL tracing + Prometheus metrics."""
+
+    enabled: bool = True
+    traces_enabled: bool = True
+    metrics_enabled: bool = True
+    trace_llm_io: bool = False
+    otlp_endpoint: str | None = None
+    otlp_headers: dict[str, str] = Field(default_factory=dict)
+    service_name: str = "matrix"
+    service_namespace: str = "default"
 
 
 class AppConfig(BaseSettings):
@@ -108,6 +121,15 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    # --- Observability ---------------------------------------------------
+    observability: ObservabilityConfig = Field(
+        default_factory=ObservabilityConfig,
+        description=(
+            "OTEL tracing + Prometheus metrics configuration. "
+            "Set enabled=False to disable all observability overhead."
+        ),
+    )
+
     # --- Misc ------------------------------------------------------------
     log_level: Literal["debug", "info", "warning", "error"] = Field(
         default="info",
@@ -151,4 +173,4 @@ class AppConfig(BaseSettings):
         return tuple(sources)
 
 
-__all__ = ["AppConfig"]
+__all__ = ["AppConfig", "ObservabilityConfig"]
