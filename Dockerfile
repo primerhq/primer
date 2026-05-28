@@ -1,7 +1,7 @@
-# Image for the matrix API server (+ embedded worker).
+# Image for the primer API server (+ embedded worker).
 #
-# Built by `podman compose build matrix` (or `--build` on `up`). Used
-# by the `matrix` service in docker-compose.yml. The companion
+# Built by `podman compose build primer` (or `--build` on `up`). Used
+# by the `primer` service in docker-compose.yml. The companion
 # .dockerignore keeps the build context small.
 #
 # Layer strategy:
@@ -11,8 +11,8 @@
 #   4. project source                    — changes on every code edit
 #   5. uv sync (installs project itself) — fast
 #
-# The matrix package is installed editable (uv's default for `uv sync`)
-# because `matrix/api/app.py` resolves the UI directory via
+# The primer package is installed editable (uv's default for `uv sync`)
+# because `primer/api/app.py` resolves the UI directory via
 # `Path(__file__).parent.parent.parent / "ui"`. With an editable
 # install that resolves to /app/ui (correct); a non-editable install
 # would resolve to a site-packages path that has no `ui/` subtree.
@@ -29,7 +29,7 @@ ENV PYTHONUNBUFFERED=1 \
 # System deps:
 # - curl              the HEALTHCHECK and for installing uv
 # - ca-certificates   HTTPS during uv install + runtime fetches
-# - git               required by matrix/workspace/local/state.py:LocalStateRepo
+# - git               required by primer/workspace/local/state.py:LocalStateRepo
 #                     which uses `git init` / `git commit` for the
 #                     workspace's .state/ versioned-state repo. Workspace
 #                     creation (POST /v1/workspaces) and all graph-bound
@@ -39,7 +39,7 @@ ENV PYTHONUNBUFFERED=1 \
 #                     Without it, `import regopy` raises OSError from
 #                     ctypes.LoadLibrary and every policy-type create
 #                     leaks as 500 instead of the intended 422. Surfaced
-#                     by U0114 (UI loop) on the matrix-app image.
+#                     by U0114 (UI loop) on the primer-app image.
 # Most python deps (asyncpg, grpcio, pgvector, torch, transformers)
 # ship manylinux wheels for cp313, so no build toolchain is needed.
 # Add `build-essential` here if a future dep requires compilation.
@@ -60,13 +60,13 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-install-project --no-dev
 
 # ----- Layer 4: project source -----
-COPY matrix ./matrix
+COPY primer ./primer
 COPY ui ./ui
-COPY docker/matrix/entrypoint.sh /usr/local/bin/matrix-entrypoint.sh
-RUN chmod +x /usr/local/bin/matrix-entrypoint.sh
+COPY docker/primer/entrypoint.sh /usr/local/bin/primer-entrypoint.sh
+RUN chmod +x /usr/local/bin/primer-entrypoint.sh
 
 # ----- Layer 5: install the project itself -----
-# Editable install (uv default) so /app/matrix is the live tree —
+# Editable install (uv default) so /app/primer is the live tree —
 # necessary for the console mount's `_UI_DIR` path math.
 RUN uv sync --frozen --no-dev
 
@@ -77,12 +77,12 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 \
     CMD curl -fsS http://127.0.0.1:8765/v1/health || exit 1
 
 # Entrypoint renders /app/config.yaml from PRIMER_* env vars, then
-# exec's CMD. The matrix CLI requires --config; the rendered file is
+# exec's CMD. The primer CLI requires --config; the rendered file is
 # always used.
-ENTRYPOINT ["/usr/local/bin/matrix-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/primer-entrypoint.sh"]
 
 # Default command. Override at `podman run` time or via compose
-# `command:` if you want a non-worker process (e.g. `matrix api
-# --no-worker` for an API-only node, or `matrix worker` alone). Default
+# `command:` if you want a non-worker process (e.g. `primer api
+# --no-worker` for an API-only node, or `primer worker` alone). Default
 # is api+worker (single-process).
-CMD ["matrix", "api", "--config", "/app/config.yaml"]
+CMD ["primer", "api", "--config", "/app/config.yaml"]

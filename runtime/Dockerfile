@@ -1,14 +1,14 @@
 # Workspace runtime base image.
 #
 # Build:
-#   docker build -t matrix/workspace-runtime:1.0 runtime/
+#   docker build -t primer/workspace-runtime:1.0 runtime/
 #
 # Run (minimal):
 #   docker run --rm -e PRIMER_RUNTIME_TOKEN=<secret> \
-#              -p 5959:5959 matrix/workspace-runtime:1.0
+#              -p 5959:5959 primer/workspace-runtime:1.0
 #
 # Workspace templates extend this image with:
-#   FROM matrix/workspace-runtime:1.0
+#   FROM primer/workspace-runtime:1.0
 #   RUN ...operator-specific deps...
 # They must NOT override ENTRYPOINT; run custom init via init_commands after
 # .runtime.ready appears.
@@ -20,8 +20,8 @@
 
 FROM python:3.13-slim
 
-LABEL runtime.matrix.protocol="1"
-LABEL runtime.matrix.version="1.0.0"
+LABEL runtime.primer.protocol="1"
+LABEL runtime.primer.version="1.0.0"
 
 # Install runtime in its own directory so workspace files are not mixed in.
 WORKDIR /opt/matrix-runtime

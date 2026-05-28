@@ -1,7 +1,7 @@
-# Local development stack for matrix.
+# Local development stack for primer.
 #
-# Spins up Postgres + pgvector, plus the matrix app itself (built from
-# ./Dockerfile). Postgres data lives in the `matrix-pgdata` named
+# Spins up Postgres + pgvector, plus the primer app itself (built from
+# ./Dockerfile). Postgres data lives in the `primer-pgdata` named
 # volume (inside the podman-machine VM, not on the Windows host) — a
 # host bind-mount was tried but the postgres user can't chmod a
 # Windows-mounted directory through podman.
@@ -11,26 +11,26 @@
 # you have Docker. The team uses Podman on Windows.
 #
 # Usage (Podman):
-#   podman compose up -d              # start everything (builds matrix on first run)
-#   podman compose up -d --build      # rebuild the matrix image and start
-#   podman compose logs -f matrix     # tail app logs
+#   podman compose up -d              # start everything (builds primer on first run)
+#   podman compose up -d --build      # rebuild the primer image and start
+#   podman compose logs -f primer     # tail app logs
 #   podman compose logs -f postgres   # tail database logs
 #   podman compose down               # stop + remove containers; keeps volume
-#   podman compose down -v            # also wipes the matrix-pgdata volume
+#   podman compose down -v            # also wipes the primer-pgdata volume
 #
 # AppConfig is driven entirely by environment variables here (the
-# matrix service reads PRIMER_* env, no config.yaml needed). To
+# primer service reads PRIMER_* env, no config.yaml needed). To
 # override defaults, create a .env file next to this compose file.
 
 services:
   postgres:
     image: pgvector/pgvector:pg17
-    container_name: matrix-postgres
+    container_name: primer-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${PRIMER_DB_USER:-matrix}
-      POSTGRES_PASSWORD: ${PRIMER_DB_PASSWORD:-matrix}
-      POSTGRES_DB: ${PRIMER_DB_DATABASE:-matrix}
+      POSTGRES_USER: ${PRIMER_DB_USER:-primer}
+      POSTGRES_PASSWORD: ${PRIMER_DB_PASSWORD:-primer}
+      POSTGRES_DB: ${PRIMER_DB_DATABASE:-primer}
     ports:
       - "${PRIMER_DB_PORT:-5432}:5432"
     volumes:
@@ -41,21 +41,21 @@ services:
       # (Windows filesystems don't map POSIX permissions to container
       # UIDs). Data still persists across container restarts; just not
       # browsable from Windows Explorer.
-      - matrix-pgdata:/var/lib/postgresql/data
+      - primer-pgdata:/var/lib/postgresql/data
       # Idempotent CREATE EXTENSION runs on first boot — needed by the
       # vector store registry and the internal collections subsystem.
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PRIMER_DB_USER:-matrix} -d ${PRIMER_DB_DATABASE:-matrix}"]
+      test: ["CMD-SHELL", "pg_isready -U ${PRIMER_DB_USER:-primer} -d ${PRIMER_DB_DATABASE:-primer}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  matrix:
+  primer:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: matrix-app
+    container_name: primer-app
     restart: unless-stopped
     depends_on:
       postgres:
@@ -70,9 +70,9 @@ services:
       PRIMER_DB__PROVIDER: postgres
       PRIMER_DB__CONFIG__HOSTNAME: postgres
       PRIMER_DB__CONFIG__PORT: 5432
-      PRIMER_DB__CONFIG__DATABASE: ${PRIMER_DB_DATABASE:-matrix}
-      PRIMER_DB__CONFIG__USERNAME: ${PRIMER_DB_USER:-matrix}
-      PRIMER_DB__CONFIG__PASSWORD: ${PRIMER_DB_PASSWORD:-matrix}
+      PRIMER_DB__CONFIG__DATABASE: ${PRIMER_DB_DATABASE:-primer}
+      PRIMER_DB__CONFIG__USERNAME: ${PRIMER_DB_USER:-primer}
+      PRIMER_DB__CONFIG__PASSWORD: ${PRIMER_DB_PASSWORD:-primer}
       # Scheduler: in-process Postgres (default for production).
       PRIMER_SCHEDULER__PROVIDER: postgres
       # Bind to all interfaces inside the container so the host port
@@ -96,5 +96,5 @@ services:
       - ./brand:/app/ui/brand:ro
 
 volumes:
-  matrix-pgdata:
-    name: matrix-pgdata
+  primer-pgdata:
+    name: primer-pgdata

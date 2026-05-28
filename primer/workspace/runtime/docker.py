@@ -1,7 +1,7 @@
 """DockerRuntimeAdapter -- talks to the Docker Engine API via aiodocker.
 
 ``create_sandbox`` and ``get_sandbox`` now provision the workspace runtime
-image (``matrix/workspace-runtime:1.0``) and return a :class:`WSSandbox`
+image (``primer/workspace-runtime:1.0``) and return a :class:`WSSandbox`
 backed by a :class:`RuntimeClient`.  The old ``DockerSandbox`` class has
 been removed.
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 _LABEL_KEY = "primer.workspace.id"
-_RUNTIME_IMAGE = "matrix/workspace-runtime:1.0"
+_RUNTIME_IMAGE = "primer/workspace-runtime:1.0"
 _RUNTIME_PORT = 5959
 _READY_POLL_INTERVAL_S = 0.1
 _READY_TIMEOUT_S = 30.0

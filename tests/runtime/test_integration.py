@@ -3,8 +3,8 @@
 Requirements
 ------------
 - Docker daemon reachable
-- ``matrix/workspace-runtime:1.0`` image built locally
-  (``docker build -t matrix/workspace-runtime:1.0 runtime/``)
+- ``primer/workspace-runtime:1.0`` image built locally
+  (``docker build -t primer/workspace-runtime:1.0 runtime/``)
 
 Skip gracefully when either precondition is absent (``pytest.mark.docker``
 marker is collected but tests skip at runtime via ``pytestmark``).
@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 # Docker / image availability guards
 # ---------------------------------------------------------------------------
 
-_RUNTIME_IMAGE = "matrix/workspace-runtime:1.0"
+_RUNTIME_IMAGE = "primer/workspace-runtime:1.0"
 _RUNTIME_PORT = 5959
 _READY_POLL_S = 0.1
 _READY_TIMEOUT_S = 60.0
@@ -79,8 +79,8 @@ except Exception:
 pytestmark = pytest.mark.skipif(
     not _DOCKER_OK or not _IMAGE_OK,
     reason=(
-        "Docker not available or matrix/workspace-runtime:1.0 not built. "
-        "Run `docker build -t matrix/workspace-runtime:1.0 runtime/` first."
+        "Docker not available or primer/workspace-runtime:1.0 not built. "
+        "Run `docker build -t primer/workspace-runtime:1.0 runtime/` first."
     ),
 )
 
