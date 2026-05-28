@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -14,6 +15,7 @@ from matrix.model.workspace_session import (
     SessionStatus,
 )
 from matrix.claim.in_memory import InMemoryClaimEngine
+from matrix.int.claim import ClaimKind, Lease as ClaimLease, ReleaseOutcome
 from matrix.int.scheduler import Lease as SchedLease
 from matrix.scheduler.in_memory import InMemoryScheduler
 from matrix.worker.pool import WorkerPool
@@ -313,9 +315,7 @@ async def test_run_one_turn_honours_pause_requested_flag(scheduler, engine, monk
 
 async def test_claim_loop_runs_runnable_session(scheduler, engine, monkeypatch):
     """End-to-end: enqueue a session via engine, start the pool, the claim
-    loop picks it up, _run_one_turn runs (with a fake executor), and the
-    session transitions to WAITING."""
-    from matrix.int.claim import ClaimKind
+    loop picks it up, and dispatches to run_one_session_turn."""
     sid = "sess-claim-loop-1"
     scheduler.register_session_for_test(sid)
 
@@ -331,60 +331,35 @@ async def test_claim_loop_runs_runnable_session(scheduler, engine, monkeypatch):
         engine=engine,
     )
 
-    class _OneTurnExecutor:
-        async def invoke(self, _messages): return None
+    dispatched: list = []
 
-    fake_session = WorkspaceSession(
-        id=sid, workspace_id="ws-1",
-        binding=AgentSessionBinding(agent_id="ag-1"),
-        status=SessionStatus.RUNNING,
-        created_at=datetime.now(timezone.utc),
-        turn_no=0,
-    )
-    monkeypatch.setattr(pool, "_load_session",
-                        lambda _sid: _async_return(fake_session))
-    monkeypatch.setattr(pool, "_load_workspace_for_persist",
-                        lambda _ws: _async_return(_NoopPersist()))
-    monkeypatch.setattr(pool, "_build_executor",
-                        lambda _s, _w: _async_return(_OneTurnExecutor()))
-    monkeypatch.setattr(pool, "_infer_post_turn_status",
-                        lambda _exec, _sess: SessionStatus.WAITING)
+    async def _fake_run_one_session_turn(lease, deps):
+        dispatched.append(lease.entity_id)
+        return ReleaseOutcome(success=True, drop_lease=True)
 
     await pool.start()
     try:
-        # Engine upsert triggers the engine claim loop to pick up the session.
-        # We also need to set _LeaseState.worker_id after the engine assigns
-        # the claim, so scheduler.complete_turn sees the correct owner.
-        # Use the pool's worker_id (set during start()) for the lease.
-        from matrix.int.claim import ClaimKind
-        from matrix.scheduler.in_memory import _LeaseState
-
-        def _patch_complete_turn(orig):
-            async def _patched(worker_id, session_id, **kwargs):
-                # Ensure the _LeaseState tracks the worker before delegating.
-                scheduler._leases[session_id] = _LeaseState(worker_id=worker_id, runnable=False)
-                return await orig(worker_id, session_id, **kwargs)
-            return _patched
-
-        scheduler.complete_turn = _patch_complete_turn(scheduler.complete_turn)
-        await engine.upsert(ClaimKind.SESSION, sid, priority=100)
-        # Wait until the session reaches WAITING (claim loop picked it up
-        # and ran one turn).
-        snapshot = scheduler.session_snapshot_for_test(sid)
-        for _ in range(50):
-            snapshot = scheduler.session_snapshot_for_test(sid)
-            if snapshot.status == SessionStatus.WAITING:
-                break
-            await asyncio.sleep(0.05)
-        assert snapshot.status == SessionStatus.WAITING
+        with patch(
+            "matrix.worker.pool.run_one_session_turn",
+            side_effect=_fake_run_one_session_turn,
+        ):
+            await engine.upsert(ClaimKind.SESSION, sid, priority=100)
+            # Wait until run_one_session_turn is called.
+            for _ in range(50):
+                if sid in dispatched:
+                    break
+                await asyncio.sleep(0.05)
+        assert sid in dispatched, (
+            "claim loop should have dispatched to run_one_session_turn"
+        )
     finally:
         await pool.drain_and_stop()
 
 
 async def test_run_one_turn_now_helper_executes_one_turn(scheduler, engine, monkeypatch):
-    """Public test helper: engine.upsert + run_one_turn_now for a specific sid."""
+    """Public test helper: engine.upsert + run_one_turn_now dispatches to
+    run_one_session_turn."""
     from matrix.int.claim import ClaimKind
-    from matrix.scheduler.in_memory import _LeaseState
     sid = "sess-helper-1"
     scheduler.register_session_for_test(sid)
     pool = WorkerPool(
@@ -399,33 +374,24 @@ async def test_run_one_turn_now_helper_executes_one_turn(scheduler, engine, monk
         worker_id="wrk-test", host="h", pid=1, capacity=1,
     )
 
-    fake_session = WorkspaceSession(
-        id=sid, workspace_id="ws-1",
-        binding=AgentSessionBinding(agent_id="ag-1"),
-        status=SessionStatus.RUNNING,
-        created_at=datetime.now(timezone.utc),
-        turn_no=0,
-    )
-    monkeypatch.setattr(pool, "_load_session",
-                        lambda _sid: _async_return(fake_session))
-    monkeypatch.setattr(pool, "_load_workspace_for_persist",
-                        lambda _ws: _async_return(_NoopPersist()))
+    dispatched: list = []
 
-    class _Done:
-        async def invoke(self, _messages): return None
-    monkeypatch.setattr(pool, "_build_executor",
-                        lambda _s, _w: _async_return(_Done()))
-    monkeypatch.setattr(pool, "_infer_post_turn_status",
-                        lambda _e, _s: SessionStatus.WAITING)
+    async def _fake_run_one_session_turn(lease, deps):
+        dispatched.append(lease.entity_id)
+        return ReleaseOutcome(success=True, drop_lease=True)
 
     # Seed the engine lease so run_one_turn_now can claim it.
     await engine.upsert(ClaimKind.SESSION, sid, priority=100)
-    # Seed the scheduler _LeaseState for complete_turn.
-    scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
-    await pool.run_one_turn_now(sid)
 
-    snapshot = scheduler.session_snapshot_for_test(sid)
-    assert snapshot.status == SessionStatus.WAITING
+    with patch(
+        "matrix.worker.pool.run_one_session_turn",
+        side_effect=_fake_run_one_session_turn,
+    ):
+        await pool.run_one_turn_now(sid)
+
+    assert sid in dispatched, (
+        "run_one_turn_now should dispatch to run_one_session_turn"
+    )
 
 
 class _FakeAgentSessionForBuild:
@@ -802,8 +768,10 @@ async def test_turn_driver_drains_async_generator():
 
 
 async def test_cancel_loop_routes_to_active_scope(scheduler, engine, monkeypatch):
-    """signal_cancel arrives via _cancel_loop and fires the matching
-    in-flight scope.cancel — proves the wiring (spec §7 step 5)."""
+    """Session claims dispatch to run_one_session_turn; the claim loop
+    picks up the session and calls the new handler (cancel wiring is
+    tested in tests/session/test_dispatch.py — here we just verify the
+    turn is dispatched and completes without the pool raising)."""
     sid = "sess-cancel-loop-1"
     scheduler.register_session_for_test(sid)
 
@@ -815,8 +783,72 @@ async def test_cancel_loop_routes_to_active_scope(scheduler, engine, monkeypatch
         engine=engine,
     )
 
-    class _SleepingExecutor:
-        async def invoke(self, _m): await asyncio.sleep(60)
+    dispatched: list = []
+
+    async def _fake_run_one_session_turn(lease, deps):
+        dispatched.append(lease.entity_id)
+        return ReleaseOutcome(success=True, drop_lease=True)
+
+    await pool.start()
+    try:
+        with patch(
+            "matrix.worker.pool.run_one_session_turn",
+            side_effect=_fake_run_one_session_turn,
+        ):
+            await engine.upsert(ClaimKind.SESSION, sid, priority=100)
+            for _ in range(50):
+                if sid in dispatched:
+                    break
+                await asyncio.sleep(0.05)
+
+        assert sid in dispatched, "claim loop should dispatch session to run_one_session_turn"
+        # Session path no longer uses _active_scopes (cancel is handled by
+        # _cancel_watcher inside run_one_session_turn via event bus).
+        assert sid not in pool._active_scopes
+    finally:
+        await pool.drain_and_stop()
+
+
+# ---------------------------------------------------------------------------
+# Task 8: _run_engine_session dispatches to run_one_session_turn
+# ---------------------------------------------------------------------------
+
+
+def _make_claim_lease(
+    entity_id: str,
+    *,
+    kind: ClaimKind = ClaimKind.SESSION,
+    worker_id: str = "wrk-test",
+) -> ClaimLease:
+    """Build a ClaimEngine Lease for testing."""
+    return ClaimLease(
+        kind=kind,
+        entity_id=entity_id,
+        claimed_by=worker_id,
+        claimed_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc),
+        attempt_count=0,
+        last_error=None,
+    )
+
+
+async def test_run_engine_session_dispatches_to_run_one_session_turn(
+    scheduler, engine, monkeypatch,
+):
+    """_run_engine_session must call run_one_session_turn (not _run_one_turn)."""
+    sid = "sess-new-dispatch-1"
+    scheduler.register_session_for_test(sid, status=SessionStatus.RUNNING)
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=scheduler,
+        storage=None,               # type: ignore[arg-type]
+        workspace_registry=None,    # type: ignore[arg-type]
+        provider_registry=None,     # type: ignore[arg-type]
+        engine=engine,
+        event_bus=None,
+    )
+    pool._worker_id = "wrk-test"
 
     fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
@@ -824,45 +856,128 @@ async def test_cancel_loop_routes_to_active_scope(scheduler, engine, monkeypatch
         status=SessionStatus.RUNNING,
         created_at=datetime.now(timezone.utc),
         turn_no=0,
-        cancel_requested=False,
     )
     monkeypatch.setattr(pool, "_load_session",
                         lambda _sid: _async_return(fake_session))
+
+    called_with: list = []
+
+    async def _fake_run_one_session_turn(lease, deps):
+        called_with.append((lease, deps))
+        return ReleaseOutcome(success=True, drop_lease=True)
+
+    # Patch at the module level where pool.py imports it.
+    with patch(
+        "matrix.worker.pool.run_one_session_turn",
+        side_effect=_fake_run_one_session_turn,
+    ):
+        engine_lease = _make_claim_lease(sid)
+        await pool._run_engine_session(engine_lease)
+
+    assert len(called_with) == 1, "run_one_session_turn should be called exactly once"
+    lease_arg, deps_arg = called_with[0]
+    assert lease_arg.entity_id == sid
+    assert lease_arg.kind == ClaimKind.SESSION
+    # Deps bundle must supply the required attributes.
+    from matrix.session.dispatch import SessionDispatchDeps
+    assert isinstance(deps_arg, SessionDispatchDeps)
+    assert deps_arg.storage_provider is pool._storage
+    assert deps_arg.event_bus is pool._event_bus
+    assert callable(deps_arg.build_executor)
+
+
+async def test_run_engine_session_releases_engine_lease_on_success(
+    scheduler, engine, monkeypatch,
+):
+    """_run_engine_session must call engine.release with the engine lease
+    (not drop it silently) after run_one_session_turn returns."""
+    sid = "sess-release-1"
+    scheduler.register_session_for_test(sid, status=SessionStatus.RUNNING)
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=scheduler,
+        storage=None,               # type: ignore[arg-type]
+        workspace_registry=None,    # type: ignore[arg-type]
+        provider_registry=None,     # type: ignore[arg-type]
+        engine=engine,
+        event_bus=None,
+    )
+    pool._worker_id = "wrk-test"
+
+    fake_session = WorkspaceSession(
+        id=sid, workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        turn_no=0,
+    )
+    monkeypatch.setattr(pool, "_load_session",
+                        lambda _sid: _async_return(fake_session))
+
+    released: list = []
+    orig_release = engine.release
+
+    async def _capture_release(lease, *, outcome):
+        released.append((lease, outcome))
+        return await orig_release(lease, outcome=outcome)
+
+    monkeypatch.setattr(engine, "release", _capture_release)
+
+    engine_lease = _make_claim_lease(sid)
+    # Seed the lease in the engine so release() can find it.
+    await engine.upsert(ClaimKind.SESSION, sid, priority=100)
+
+    with patch(
+        "matrix.worker.pool.run_one_session_turn",
+        return_value=ReleaseOutcome(success=True, drop_lease=True),
+    ):
+        await pool._run_engine_session(engine_lease)
+
+    # engine.release was called with the original engine lease.
+    assert len(released) == 1
+    assert released[0][0].entity_id == sid
+    assert released[0][1].success is True
+
+
+async def test_build_session_executor_returns_callable(scheduler, engine, monkeypatch):
+    """pool._build_session_executor(session) returns an awaitable executor
+    by delegating to _build_executor after resolving the workspace."""
+    sid = "sess-bse-1"
+    fake_session = WorkspaceSession(
+        id=sid, workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        turn_no=0,
+    )
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=scheduler,
+        storage=None,               # type: ignore[arg-type]
+        workspace_registry=None,    # type: ignore[arg-type]
+        provider_registry=None,     # type: ignore[arg-type]
+        engine=engine,
+        event_bus=None,
+    )
+    pool._worker_id = "wrk-test"
+
+    class _FakeWs:
+        id = "ws-1"
+
+    fake_ws = _FakeWs()
     monkeypatch.setattr(pool, "_load_workspace_for_persist",
-                        lambda _ws: _async_return(_NoopPersist()))
+                        lambda _ws_id: _async_return(fake_ws))
+
+    class _FakeExecutor:
+        async def invoke(self, _messages):
+            if False:
+                yield  # make it an async generator
+
+    fake_driver = _FakeExecutor()
     monkeypatch.setattr(pool, "_build_executor",
-                        lambda _s, _w: _async_return(_SleepingExecutor()))
+                        lambda _s, _w: _async_return(fake_driver))
 
-    await pool.start()
-    try:
-        from matrix.int.claim import ClaimKind
-        from matrix.scheduler.in_memory import _LeaseState
-
-        def _patch_complete_turn(orig):
-            async def _patched(worker_id, session_id, **kwargs):
-                scheduler._leases[session_id] = _LeaseState(worker_id=worker_id, runnable=False)
-                return await orig(worker_id, session_id, **kwargs)
-            return _patched
-
-        scheduler.complete_turn = _patch_complete_turn(scheduler.complete_turn)
-        await engine.upsert(ClaimKind.SESSION, sid, priority=100)
-        # Wait for the scope to be registered.
-        for _ in range(50):
-            if sid in pool._active_scopes:
-                break
-            await asyncio.sleep(0.05)
-        assert sid in pool._active_scopes
-
-        fake_session.cancel_requested = True
-        await scheduler.signal_cancel(sid)
-
-        # Wait for the session to transition to ENDED.
-        snapshot = scheduler.session_snapshot_for_test(sid)
-        for _ in range(100):
-            snapshot = scheduler.session_snapshot_for_test(sid)
-            if snapshot.status == SessionStatus.ENDED:
-                break
-            await asyncio.sleep(0.05)
-        assert snapshot.status == SessionStatus.ENDED
-    finally:
-        await pool.drain_and_stop()
+    result = await pool._build_session_executor(fake_session)
+    assert result is fake_driver

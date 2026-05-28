@@ -44,6 +44,8 @@ from matrix.worker.yield_runtime import (
     ParkedState,
 )
 
+from matrix.session.dispatch import SessionDispatchDeps, run_one_session_turn
+
 if TYPE_CHECKING:
     from matrix.agent.approval import ApprovalResolver
     from matrix.api.registries import ProviderRegistry, WorkspaceRegistry
@@ -432,34 +434,52 @@ class WorkerPool:
     async def _run_engine_session(self, engine_lease: ClaimLease) -> None:
         """Handle a SESSION claim from the engine.
 
-        Builds a synthetic scheduler Lease using the session's current turn_no
-        so the existing _run_one_turn logic (which uses the scheduler for
-        complete_turn / park / etc.) continues to work during the transition
-        until Task 15 removes those scheduler calls.
+        Dispatches to :func:`run_one_session_turn`, building a
+        :class:`SessionDispatchDeps` bundle at the call site.  The return
+        value is a :class:`ReleaseOutcome` which is passed to
+        ``engine.release`` so the engine's lease book-keeping stays
+        consistent.
         """
+        from matrix.int.claim import ReleaseOutcome
+
         sid = engine_lease.entity_id
-        # Load the session first to get the current turn_no (needed as fence
-        # token for scheduler.complete_turn).  _run_one_turn will reload it,
-        # but this read is cheap and avoids plumbing turn_no through Lease.
-        session = await self._load_session(sid)
-        turn_no = session.turn_no if session is not None else 0
-        sched_lease = Lease(
-            session_id=sid,
-            worker_id=self._worker_id,
-            expires_at=engine_lease.expires_at,
-            attempt_count=engine_lease.attempt_count,
-            turn_no=turn_no,
+
+        # One shim instance per claim so the session→workspace mapping is
+        # isolated to this turn.  The build_executor closure below registers
+        # the session_id→workspace_id mapping into the shim so
+        # append_message_line can resolve the right workspace.
+        io_shim = _WorkspaceIOShim(workspace_registry=self._workspace_registry)
+
+        async def _build_executor_with_shim_registration(
+            session: WorkspaceSession,
+        ):
+            io_shim.register_session(session.id, session.workspace_id)
+            return await self._build_session_executor(session)
+
+        deps = SessionDispatchDeps(
+            storage_provider=self._storage,
+            workspace_io=io_shim,
+            event_bus=self._event_bus,
+            build_executor=_build_executor_with_shim_registration,
         )
-        # Remove from _in_flight before delegating — _run_one_turn manages
-        # its own in_flight entry as (ClaimKind.SESSION, sid).
-        self._in_flight.discard((ClaimKind.SESSION, sid))
+
+        outcome = ReleaseOutcome(success=False, drop_lease=True)
         try:
-            await self._run_one_turn(sched_lease)
+            outcome = await run_one_session_turn(engine_lease, deps)
+        except Exception:
+            logger.exception(
+                "run_one_session_turn for session %s raised unexpectedly",
+                sid,
+            )
         finally:
-            # _run_one_turn's finally already discards the session-flavoured
-            # entry; re-ensure the engine tuple is also gone and wake.
             self._in_flight.discard((ClaimKind.SESSION, sid))
             self._wake.set()
+            try:
+                await self._engine.release(engine_lease, outcome=outcome)
+            except Exception:
+                logger.exception(
+                    "_run_engine_session: engine.release for %s failed", sid,
+                )
 
     async def _run_engine_chat(self, engine_lease: ClaimLease) -> None:
         """Handle a CHAT claim from the engine.
@@ -650,6 +670,16 @@ class WorkerPool:
         raise ValueError(
             f"unknown session binding kind: {session.binding.kind!r}"
         )
+
+    async def _build_session_executor(self, session: WorkspaceSession):
+        """Callable passed as ``SessionDispatchDeps.build_executor``.
+
+        Resolves the workspace for ``session.workspace_id`` then delegates
+        to :meth:`_build_executor`.  The returned executor exposes an
+        ``invoke(messages)`` async-generator of :class:`StreamEvent`s.
+        """
+        workspace = await self._load_workspace_for_persist(session.workspace_id)
+        return await self._build_executor(session, workspace)
 
     async def _build_agent_executor(self, session: WorkspaceSession, workspace):
         """Build a turn-driver around :class:`WorkspaceAgentExecutor`.
@@ -904,7 +934,7 @@ class WorkerPool:
             f"{[m.name for m in provider_row.models]}"
         )
 
-    def _infer_post_turn_status(self, executor, session: Session) -> SessionStatus:
+    def _infer_post_turn_status(self, executor, session: WorkspaceSession) -> SessionStatus:
         """Map the executor's last ``Done.stop_reason`` to a SessionStatus.
 
         :class:`WorkspaceAgentExecutor` exposes the trailing stop reason
@@ -1563,3 +1593,78 @@ class _GraphTurnDriver:
         """
         async for _ev in self._executor.invoke(messages):
             pass
+
+
+class _WorkspaceIOShim:
+    """Provisional ``WorkspaceIO`` adapter for the worker pool.
+
+    Satisfies the :class:`matrix.session.persistence.WorkspaceIO` protocol
+    used by :class:`WorkspaceMessageWriter`.
+
+    Dispatch strategy (in priority order):
+
+    1. If the workspace returned by the registry exposes an
+       ``append_message_line(session_id, line)`` method (added in Task 9),
+       delegate to it — the workspace runtime owns the actual storage.
+
+    2. Otherwise, fall back to an in-memory buffer keyed by
+       ``(workspace_id, session_id)``.  This provisional path is used
+       until Task 9 wires the runtime method on every backend.  Data in
+       the buffer is NOT flushed to disk and will be lost on process
+       restart — acceptable for the interim (flagged in task report as
+       DONE_WITH_CONCERNS).
+
+    The shim is stateless with respect to workspace identity; it calls
+    ``_workspace_registry.get_workspace(workspace_id)`` on each flush to
+    pick up hot-reloaded workspace instances during long-lived workers.
+    Because the session_id alone is enough to identify the session slot
+    inside the workspace, but the workspace_id is needed to locate the
+    workspace, the shim tracks the mapping via a lightweight
+    ``_session_to_workspace`` dict populated lazily on first use.
+    """
+
+    def __init__(self, workspace_registry) -> None:
+        self._registry = workspace_registry
+        # session_id -> workspace_id mapping; populated lazily via
+        # register_session() calls from _build_session_executor path.
+        self._session_to_workspace: dict[str, str] = {}
+        # Provisional in-memory fallback buffer (Task 9 removes the need
+        # for this once append_message_line is on the workspace runtime).
+        self._fallback_buffer: dict[str, list[bytes]] = {}
+
+    def register_session(self, session_id: str, workspace_id: str) -> None:
+        """Pre-register the workspace_id for a session (called by the pool)."""
+        self._session_to_workspace[session_id] = workspace_id
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        """Append ``line`` to the session's ``messages.jsonl``.
+
+        Prefers the workspace runtime's own ``append_message_line`` if it
+        exists; falls back to an in-memory buffer otherwise.
+        """
+        # Try to resolve the workspace and use its native method.
+        if self._registry is not None:
+            workspace_id = self._session_to_workspace.get(session_id)
+            if workspace_id is not None:
+                try:
+                    workspace = await self._registry.get_workspace(workspace_id)
+                    native = getattr(workspace, "append_message_line", None)
+                    if native is not None:
+                        await native(session_id, line)
+                        return
+                except Exception:
+                    logger.debug(
+                        "_WorkspaceIOShim: workspace %r unavailable for "
+                        "session %s; using fallback buffer",
+                        workspace_id, session_id,
+                    )
+
+        # Provisional fallback: buffer in-memory (Task 9 will make this
+        # path unreachable once the workspace runtime exposes the method).
+        buf = self._fallback_buffer.setdefault(session_id, [])
+        buf.append(line)
+        logger.debug(
+            "_WorkspaceIOShim: buffering %d bytes for session %s "
+            "(workspace runtime append_message_line not yet available)",
+            len(line), session_id,
+        )
