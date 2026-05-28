@@ -124,6 +124,46 @@ async def test_logout_clears_cookie(client):
 
 
 @pytest.mark.asyncio
+async def test_login_remember_false_omits_max_age(client):
+    """remember=False → session cookie (no Max-Age) so browser drops on close."""
+    await client.post(
+        "/v1/auth/register",
+        json={"username": "alice", "password": "supersecret"},
+    )
+    await client.post("/v1/auth/logout")
+    client.cookies.clear()
+
+    resp = await client.post(
+        "/v1/auth/login",
+        json={"username": "alice", "password": "supersecret", "remember": False},
+    )
+    assert resp.status_code == 200
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "primer_session=" in set_cookie
+    assert "Max-Age" not in set_cookie and "max-age" not in set_cookie
+
+
+@pytest.mark.asyncio
+async def test_login_remember_default_sets_max_age(client):
+    """Default remember (true) → persistent cookie with Max-Age."""
+    await client.post(
+        "/v1/auth/register",
+        json={"username": "alice", "password": "supersecret"},
+    )
+    await client.post("/v1/auth/logout")
+    client.cookies.clear()
+
+    resp = await client.post(
+        "/v1/auth/login",
+        json={"username": "alice", "password": "supersecret"},
+    )
+    assert resp.status_code == 200
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "primer_session=" in set_cookie
+    assert "Max-Age=604800" in set_cookie  # 7 days
+
+
+@pytest.mark.asyncio
 async def test_status_has_user_after_register(client):
     await client.post(
         "/v1/auth/register",

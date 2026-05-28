@@ -58,6 +58,14 @@ class RegisterBody(BaseModel):
 class LoginBody(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=1)  # not enforcing min on login
+    remember: bool = Field(
+        default=True,
+        description=(
+            "If true (default), the session cookie carries a Max-Age "
+            "and persists across browser restarts. If false, the cookie "
+            "has no Max-Age so the browser drops it when closed."
+        ),
+    )
 
 
 class AuthStatus(BaseModel):
@@ -118,16 +126,28 @@ async def _find_user_by_username(
     return page.items[0] if page.items else None
 
 
-def _set_session_cookie(request: Request, response: Response, user: User) -> None:
+def _set_session_cookie(
+    request: Request,
+    response: Response,
+    user: User,
+    *,
+    remember: bool = True,
+) -> None:
     cfg = request.app.state.config.auth
     secret = request.app.state.session_secret
     token = sign_session(
         user_id=user.id, username=user.username, secret=secret,
     )
+    # remember=False omits Max-Age so the browser treats it as a
+    # session cookie (cleared on browser close). The token's signed
+    # max-age stays at session_ttl_days either way — that's the
+    # server-side upper bound; browser persistence is the only thing
+    # remember actually toggles.
+    max_age = cfg.session_ttl_days * 86400 if remember else None
     response.set_cookie(
         key=cfg.cookie_name,
         value=token,
-        max_age=cfg.session_ttl_days * 86400,
+        max_age=max_age,
         httponly=True,
         secure=cfg.cookie_secure,
         samesite=cfg.cookie_samesite,
@@ -213,8 +233,10 @@ async def login(
     user.last_login_at = datetime.now(timezone.utc)
     storage = get_storage_provider(request).get_storage(User)
     await storage.update(user)
-    _set_session_cookie(request, response, user)
-    logger.info("auth.login success username=%s", username)
+    _set_session_cookie(request, response, user, remember=body.remember)
+    logger.info(
+        "auth.login success username=%s remember=%s", username, body.remember,
+    )
     return AuthOk(username=username)
 
 
