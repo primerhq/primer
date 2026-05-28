@@ -700,6 +700,47 @@ async def test_claim_engine_delete_lease_on_cancel(
     )
 
 
+# ===========================================================================
+# Task 11 — turn_status + last_seq + cancel_requested_at + pause_requested_at
+#            on detail GET
+# ===========================================================================
+
+
+async def test_detail_get_exposes_streaming_fields(
+    sessions_client, seeded_workspace, seeded_agent,
+):
+    """GET /v1/sessions/{sid} must return turn_status, last_seq,
+    cancel_requested_at, and pause_requested_at so the UI can render
+    the 'Thinking...' indicator without a separate WS connection.
+    """
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
+    )
+    assert create.status_code == 201, create.text
+    sid = create.json()["id"]
+
+    resp = await sessions_client.get(f"/v1/sessions/{sid}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # All four streaming lifecycle fields must be present.
+    assert "turn_status" in body, "turn_status missing from session detail GET"
+    assert "last_seq" in body, "last_seq missing from session detail GET"
+    assert "cancel_requested_at" in body, (
+        "cancel_requested_at missing from session detail GET"
+    )
+    assert "pause_requested_at" in body, (
+        "pause_requested_at missing from session detail GET"
+    )
+
+    # Freshly-created session: defaults are idle / 0 / null / null.
+    assert body["turn_status"] == "idle"
+    assert body["last_seq"] == 0
+    assert body["cancel_requested_at"] is None
+    assert body["pause_requested_at"] is None
+
+
 async def test_claim_engine_upsert_on_resume(
     app_with_engine,
 ):
