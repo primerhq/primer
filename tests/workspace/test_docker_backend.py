@@ -78,6 +78,20 @@ def _make_resources():
     return ResourceLimits()
 
 
+async def _teardown(sandbox, volume_name: str, adapter) -> None:
+    """Close RuntimeClient then stop/remove container and volume."""
+    if sandbox is not None:
+        # Close the underlying RuntimeClient to prevent unclosed-session warnings.
+        try:
+            await sandbox._client.aclose()  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+        await sandbox.stop()
+        await sandbox.remove()
+    await adapter.remove_volume(volume_name)
+    await adapter.aclose()
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -111,11 +125,7 @@ async def test_create_sandbox_returns_ws_sandbox() -> None:
             f"Expected WSSandbox, got {type(sandbox).__name__}"
         )
     finally:
-        if sandbox is not None:
-            await sandbox.stop()
-            await sandbox.remove()
-        await adapter.remove_volume("test-ws-vol-create")
-        await adapter.aclose()
+        await _teardown(sandbox, "test-ws-vol-create", adapter)
 
 
 @pytest.mark.asyncio
@@ -150,11 +160,7 @@ async def test_create_sandbox_injects_token() -> None:
             f"MATRIX_RUNTIME_TOKEN not found in container env: {env_list}"
         )
     finally:
-        if sandbox is not None:
-            await sandbox.stop()
-            await sandbox.remove()
-        await adapter.remove_volume("test-ws-vol-token")
-        await adapter.aclose()
+        await _teardown(sandbox, "test-ws-vol-token", adapter)
         await docker.close()
 
 
@@ -196,11 +202,7 @@ async def test_create_sandbox_port_mapped() -> None:
         host_port = int(ports[0]["HostPort"])
         assert host_port > 0, f"Host port should be positive, got {host_port}"
     finally:
-        if sandbox is not None:
-            await sandbox.stop()
-            await sandbox.remove()
-        await adapter.remove_volume("test-ws-vol-port")
-        await adapter.aclose()
+        await _teardown(sandbox, "test-ws-vol-port", adapter)
         await docker.close()
 
 
@@ -234,11 +236,7 @@ async def test_read_write_via_ws_sandbox() -> None:
             f"Expected {content!r}, got {read_back!r}"
         )
     finally:
-        if sandbox is not None:
-            await sandbox.stop()
-            await sandbox.remove()
-        await adapter.remove_volume("test-ws-vol-rw")
-        await adapter.aclose()
+        await _teardown(sandbox, "test-ws-vol-rw", adapter)
 
 
 @pytest.mark.asyncio
@@ -268,6 +266,8 @@ async def test_stop_and_remove_sandbox() -> None:
             pull_policy="never",
         )
         container_id = sandbox.id
+        # Close RuntimeClient before stopping container.
+        await sandbox._client.aclose()  # noqa: SLF001
         await sandbox.stop()
         await sandbox.remove()
         sandbox = None
@@ -280,8 +280,8 @@ async def test_stop_and_remove_sandbox() -> None:
         assert not found, "Container should be removed after remove()"
     finally:
         if sandbox is not None:
-            await sandbox.stop()
-            await sandbox.remove()
-        await adapter.remove_volume("test-ws-vol-stop")
-        await adapter.aclose()
+            await _teardown(sandbox, "test-ws-vol-stop", adapter)
+        else:
+            await adapter.remove_volume("test-ws-vol-stop")
+            await adapter.aclose()
         await docker.close()
