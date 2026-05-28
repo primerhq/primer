@@ -19,7 +19,7 @@ Errors:
 * :class:`AuthRequiredError` from an MCP toolset -> propagates so the
   workspace executor can transition the session to WAITING /
   ``_ToolApprovalWaiting``.
-* Any other :class:`MatrixError` -> caught and converted to a
+* Any other :class:`PrimerError` -> caught and converted to a
   :class:`ToolResultPart` with ``error=True`` so the LLM can react
   rather than the executor crashing.
 """
@@ -43,7 +43,7 @@ from primer.model.chat import Tool, ToolCallPart, ToolResultPart
 from primer.model.except_ import (
     AuthRequiredError,
     ConfigError,
-    MatrixError,
+    PrimerError,
     UnsupportedContentError,
 )
 from primer.model.yield_ import Yielded, YieldToWorker
@@ -385,7 +385,7 @@ class ToolExecutionManager:
             )
         except AuthRequiredError:
             raise
-        except MatrixError as exc:
+        except PrimerError as exc:
             logger.warning(
                 "ToolExecutionManager: toolset call failed; surfacing as "
                 "tool result error",
@@ -462,7 +462,7 @@ class ToolExecutionManager:
 
         try:
             result = await tool.execute(args_model, ctx)
-        except MatrixError as exc:
+        except PrimerError as exc:
             logger.warning(
                 "ToolExecutionManager: workspace tool failed; surfacing as "
                 "tool result error",

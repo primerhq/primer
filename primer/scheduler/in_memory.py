@@ -334,9 +334,9 @@ class InMemoryScheduler(Scheduler):
             if lease.runnable and lease.worker_id is None
         )
         return {
-            "matrix_sessions_active": sessions_by_status,
-            "matrix_sessions_runnable_queue_depth": runnable,
-            "matrix_lease_expirations_total": self._lease_expirations_total,
+            "primer_sessions_active": sessions_by_status,
+            "primer_sessions_runnable_queue_depth": runnable,
+            "primer_lease_expirations_total": self._lease_expirations_total,
             "primer_scheduler_notify_received_total": (
                 self._notify_received_total
             ),

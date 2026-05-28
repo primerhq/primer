@@ -60,7 +60,7 @@ _FAKE_TELEGRAM_TOKEN = "123456:" + "a" * 30
 
 
 @pytest.mark.asyncio
-async def test_t0855_multi_channel_multi_workspace_fanout_matrix(
+async def test_t0855_multi_channel_multi_workspace_fanout_primer(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path,
 ) -> None:
     """T0855 — Walk the full 2×2 cross-product association lattice.

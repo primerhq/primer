@@ -496,10 +496,10 @@ async def list_toolset_tools(
         # wrap any sub-exception in BaseExceptionGroup. Unwrap to find
         # the most informative inner exception, then map to the same
         # ProviderError envelope as the plain-Exception path.
-        from primer.model.except_ import MatrixError
-        # Surface a documented MatrixError if any sub-exception is one
+        from primer.model.except_ import PrimerError
+        # Surface a documented PrimerError if any sub-exception is one
         for sub in group.exceptions:
-            if isinstance(sub, MatrixError):
+            if isinstance(sub, PrimerError):
                 raise sub from group
         # Otherwise, take the first sub-exception's type+message
         first = group.exceptions[0] if group.exceptions else group
@@ -511,8 +511,8 @@ async def list_toolset_tools(
         # Re-raise the documented primer error types so the registry
         # mapper produces the correct envelope (NotFoundError → 404,
         # AuthRequiredError → 401, etc.).
-        from primer.model.except_ import MatrixError
-        if isinstance(exc, MatrixError):
+        from primer.model.except_ import PrimerError
+        if isinstance(exc, PrimerError):
             raise
         # MCP stdio transport failures (handshake refused, connection
         # closed, subprocess crash) come back as third-party exception

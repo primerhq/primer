@@ -24,7 +24,7 @@ from anthropic import (
 from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
-    MatrixError,
+    PrimerError,
     NetworkError,
     ProviderError,
     RateLimitError,
@@ -32,7 +32,7 @@ from primer.model.except_ import (
 )
 
 
-def classify_anthropic_exception(exc: Exception) -> MatrixError:
+def classify_anthropic_exception(exc: Exception) -> PrimerError:
     """Map an anthropic SDK exception to the primer exception hierarchy."""
     if isinstance(exc, (AnthropicAuthenticationError, AnthropicPermissionDeniedError)):
         return AuthenticationError(

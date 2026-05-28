@@ -25,7 +25,7 @@ from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
     ConfigError,
-    MatrixError,
+    PrimerError,
     NetworkError,
     ProviderError,
 )
@@ -39,7 +39,7 @@ from primer.model.provider import (
 logger = logging.getLogger(__name__)
 
 
-def _classify_hf_exception(exc: Exception) -> MatrixError:
+def _classify_hf_exception(exc: Exception) -> PrimerError:
     """Inline classifier mirroring the embedder's pattern.
 
     sentence-transformers / huggingface_hub don't share a common

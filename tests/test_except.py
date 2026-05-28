@@ -10,7 +10,7 @@ from primer.model.except_ import (
     BadRequestError,
     ConfigError,
     LeaseLostError,
-    MatrixError,
+    PrimerError,
     ModelNotFoundError,
     NetworkError,
     ProviderError,
@@ -23,13 +23,13 @@ from primer.model.except_ import (
 
 
 # ============================================================================
-# MatrixError base — fields, str() formatting, cause chaining
+# PrimerError base — fields, str() formatting, cause chaining
 # ============================================================================
 
 
-class TestMatrixError:
+class TestPrimerError:
     def test_message_only(self):
-        exc = MatrixError("oops")
+        exc = PrimerError("oops")
         assert exc.message == "oops"
         assert exc.code is None
         assert exc.status_code is None
@@ -37,76 +37,76 @@ class TestMatrixError:
         assert str(exc) == "oops"
 
     def test_with_code(self):
-        exc = MatrixError("oops", code="ERR_X")
+        exc = PrimerError("oops", code="ERR_X")
         assert exc.code == "ERR_X"
         assert str(exc) == "[ERR_X] oops"
 
     def test_with_status_code(self):
-        exc = MatrixError("oops", status_code=500)
+        exc = PrimerError("oops", status_code=500)
         assert exc.status_code == 500
         assert str(exc) == "[500] oops"
 
     def test_with_code_and_status(self):
-        exc = MatrixError("oops", code="ERR_X", status_code=500)
+        exc = PrimerError("oops", code="ERR_X", status_code=500)
         assert str(exc) == "[500 ERR_X] oops"
 
     def test_with_cause_sets_dunder_cause(self):
         original = ValueError("inner")
-        exc = MatrixError("outer", cause=original)
+        exc = PrimerError("outer", cause=original)
         assert exc.cause is original
         assert exc.__cause__ is original
 
     def test_can_be_raised(self):
-        with pytest.raises(MatrixError, match="oops"):
-            raise MatrixError("oops")
+        with pytest.raises(PrimerError, match="oops"):
+            raise PrimerError("oops")
 
     def test_inherits_from_exception(self):
-        assert issubclass(MatrixError, Exception)
+        assert issubclass(PrimerError, Exception)
 
     def test_message_is_required(self):
         with pytest.raises(TypeError):
-            MatrixError()  # type: ignore[call-arg]
+            PrimerError()  # type: ignore[call-arg]
 
 
 # ============================================================================
-# Inheritance chain — every leaf class is a MatrixError
+# Inheritance chain — every leaf class is a PrimerError
 # ============================================================================
 
 
 class TestExceptionHierarchy:
     def test_config_error_chain(self):
-        assert issubclass(ConfigError, MatrixError)
+        assert issubclass(ConfigError, PrimerError)
 
     def test_model_not_found_error_chain(self):
         assert issubclass(ModelNotFoundError, ConfigError)
-        assert issubclass(ModelNotFoundError, MatrixError)
+        assert issubclass(ModelNotFoundError, PrimerError)
 
     def test_unsupported_content_error_chain(self):
-        assert issubclass(UnsupportedContentError, MatrixError)
+        assert issubclass(UnsupportedContentError, PrimerError)
         assert not issubclass(UnsupportedContentError, ConfigError)
         assert not issubclass(UnsupportedContentError, ProviderError)
 
     def test_provider_error_chain(self):
-        assert issubclass(ProviderError, MatrixError)
+        assert issubclass(ProviderError, PrimerError)
 
     def test_authentication_error_chain(self):
         assert issubclass(AuthenticationError, ProviderError)
-        assert issubclass(AuthenticationError, MatrixError)
+        assert issubclass(AuthenticationError, PrimerError)
 
     def test_rate_limit_error_chain(self):
         assert issubclass(RateLimitError, ProviderError)
-        assert issubclass(RateLimitError, MatrixError)
+        assert issubclass(RateLimitError, PrimerError)
 
     def test_bad_request_error_chain(self):
         assert issubclass(BadRequestError, ProviderError)
-        assert issubclass(BadRequestError, MatrixError)
+        assert issubclass(BadRequestError, PrimerError)
 
     def test_server_error_chain(self):
         assert issubclass(ServerError, ProviderError)
-        assert issubclass(ServerError, MatrixError)
+        assert issubclass(ServerError, PrimerError)
 
     def test_network_error_chain(self):
-        assert issubclass(NetworkError, MatrixError)
+        assert issubclass(NetworkError, PrimerError)
         assert not issubclass(NetworkError, ProviderError)
 
 
@@ -123,7 +123,7 @@ class TestConcreteSubclasses:
             status_code=401,
         )
         assert isinstance(exc, ProviderError)
-        assert isinstance(exc, MatrixError)
+        assert isinstance(exc, PrimerError)
         assert exc.code == "invalid_api_key"
         assert exc.status_code == 401
         assert str(exc) == "[401 invalid_api_key] invalid api key"
@@ -148,15 +148,15 @@ class TestConcreteSubclasses:
     def test_model_not_found_error_construction(self):
         exc = ModelNotFoundError("model 'gpt-99' not in declared list")
         assert isinstance(exc, ConfigError)
-        assert isinstance(exc, MatrixError)
+        assert isinstance(exc, PrimerError)
 
     def test_unsupported_content_error_construction(self):
         exc = UnsupportedContentError("AudioPart not supported by Anthropic")
-        assert isinstance(exc, MatrixError)
+        assert isinstance(exc, PrimerError)
 
     def test_network_error_construction(self):
         exc = NetworkError("connection refused", cause=ConnectionRefusedError())
-        assert isinstance(exc, MatrixError)
+        assert isinstance(exc, PrimerError)
         assert isinstance(exc.cause, ConnectionRefusedError)
 
     def test_raise_from_clause_works(self):
@@ -186,13 +186,13 @@ class TestAuthRequiredError:
         assert e.state == "state-uuid-1"
         assert "consent required" in str(e)
 
-    def test_inherits_matrix_error(self) -> None:
+    def test_inherits_primer_error(self) -> None:
         e = AuthRequiredError(
             "x",
             auth_url="https://idp.example/auth",
             state="s",
         )
-        assert isinstance(e, MatrixError)
+        assert isinstance(e, PrimerError)
 
     def test_optional_fields_default_to_none(self) -> None:
         e = AuthRequiredError(
@@ -221,16 +221,16 @@ class TestAuthRequiredError:
 # ============================================================================
 
 
-def test_transient_error_is_matrix_error():
-    assert issubclass(TransientError, MatrixError)
+def test_transient_error_is_primer_error():
+    assert issubclass(TransientError, PrimerError)
 
 
-def test_lease_lost_error_is_matrix_error():
-    assert issubclass(LeaseLostError, MatrixError)
+def test_lease_lost_error_is_primer_error():
+    assert issubclass(LeaseLostError, PrimerError)
 
 
-def test_turn_conflict_error_is_matrix_error():
-    assert issubclass(TurnConflictError, MatrixError)
+def test_turn_conflict_error_is_primer_error():
+    assert issubclass(TurnConflictError, PrimerError)
 
 
 def test_transient_error_carries_message():

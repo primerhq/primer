@@ -34,20 +34,20 @@ def _make_openai_error(cls: type, *, status_code: int = 400, code: str | None = 
 
 
 class TestClassifyOpenaiException:
-    def test_authentication_error_maps_to_matrix_authentication(self) -> None:
+    def test_authentication_error_maps_to_primer_authentication(self) -> None:
         sdk_exc = _make_openai_error(openai.AuthenticationError, status_code=401)
         result = classify_openai_exception(sdk_exc)
         assert isinstance(result, AuthenticationError)
         assert result.status_code == 401
         assert result.cause is sdk_exc
 
-    def test_rate_limit_error_maps_to_matrix_rate_limit(self) -> None:
+    def test_rate_limit_error_maps_to_primer_rate_limit(self) -> None:
         sdk_exc = _make_openai_error(openai.RateLimitError, status_code=429)
         result = classify_openai_exception(sdk_exc)
         assert isinstance(result, RateLimitError)
         assert result.status_code == 429
 
-    def test_bad_request_error_maps_to_matrix_bad_request(self) -> None:
+    def test_bad_request_error_maps_to_primer_bad_request(self) -> None:
         sdk_exc = _make_openai_error(
             openai.BadRequestError, status_code=400, code="invalid_value"
         )
@@ -56,13 +56,13 @@ class TestClassifyOpenaiException:
         assert result.status_code == 400
         assert result.code == "invalid_value"
 
-    def test_internal_server_error_maps_to_matrix_server(self) -> None:
+    def test_internal_server_error_maps_to_primer_server(self) -> None:
         sdk_exc = _make_openai_error(openai.InternalServerError, status_code=500)
         result = classify_openai_exception(sdk_exc)
         assert isinstance(result, ServerError)
         assert result.status_code == 500
 
-    def test_5xx_api_status_error_maps_to_matrix_server(self) -> None:
+    def test_5xx_api_status_error_maps_to_primer_server(self) -> None:
         sdk_exc = _make_openai_error(openai.APIStatusError, status_code=503)
         result = classify_openai_exception(sdk_exc)
         assert isinstance(result, ServerError)

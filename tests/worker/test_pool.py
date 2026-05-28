@@ -677,15 +677,15 @@ async def test_metrics_snapshot_includes_in_flight_and_capacity(scheduler, engin
     assert "primer_worker_in_flight" in snap
     assert "primer_worker_capacity" in snap
     assert "primer_worker_claims_total" in snap
-    assert "matrix_session_turns_total" in snap
-    assert "matrix_session_turn_duration_seconds" in snap
+    assert "primer_session_turns_total" in snap
+    assert "primer_session_turn_duration_seconds" in snap
     # Capacity tracks the configured concurrency.
     assert snap["primer_worker_capacity"] == 3
     # Nothing has run yet — in_flight is 0, counters 0, dicts empty.
     assert snap["primer_worker_in_flight"] == 0
     assert snap["primer_worker_claims_total"] == 0
-    assert snap["matrix_session_turns_total"] == {}
-    assert snap["matrix_session_turn_duration_seconds"]["count"] == 0
+    assert snap["primer_session_turns_total"] == {}
+    assert snap["primer_session_turn_duration_seconds"]["count"] == 0
 
 
 async def test_metrics_records_turn_outcome_after_run_one_turn(
@@ -737,9 +737,9 @@ async def test_metrics_records_turn_outcome_after_run_one_turn(
     await pool._run_one_turn(lease)
 
     snap = pool.metrics_snapshot()
-    assert snap["matrix_session_turns_total"].get("success") == 1
-    assert snap["matrix_session_turn_duration_seconds"]["count"] == 1
-    assert snap["matrix_session_turn_duration_seconds"]["sum"] >= 0.0
+    assert snap["primer_session_turns_total"].get("success") == 1
+    assert snap["primer_session_turn_duration_seconds"]["count"] == 1
+    assert snap["primer_session_turn_duration_seconds"]["sum"] >= 0.0
     # In-flight cleared in the finally block.
     assert snap["primer_worker_in_flight"] == 0
 

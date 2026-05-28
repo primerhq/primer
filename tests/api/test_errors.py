@@ -21,7 +21,7 @@ from primer.model.except_ import (
     BadRequestError,
     ConfigError,
     ConflictError,
-    MatrixError,
+    PrimerError,
     ModelNotFoundError,
     NetworkError,
     NotFoundError,
@@ -80,11 +80,11 @@ class TestProblemDetails:
         (ServerError("upstream 5xx"), 502, "/errors/provider-server-error"),
         (ProviderError("provider failed"), 502, "/errors/provider-error"),
         (NetworkError("dns failed"), 504, "/errors/network-error"),
-        (MatrixError("generic"), 500, "/errors/internal"),
+        (PrimerError("generic"), 500, "/errors/internal"),
     ],
 )
-def test_matrix_error_maps_to_problem_details(
-    exc: MatrixError, expected_status: int, expected_type_suffix: str
+def test_primer_error_maps_to_problem_details(
+    exc: PrimerError, expected_status: int, expected_type_suffix: str
 ) -> None:
     app = _make_app()
     _mount_raiser(app, "/raise", exc)

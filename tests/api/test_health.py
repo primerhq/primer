@@ -28,8 +28,8 @@ async def test_health_surfaces_scheduler_alive(client, app) -> None:
     # spec §14 keys.
     assert body["scheduler"]["alive"] is True
     metrics = body["scheduler"]["metrics"]
-    assert "matrix_sessions_active" in metrics
-    assert "matrix_sessions_runnable_queue_depth" in metrics
+    assert "primer_sessions_active" in metrics
+    assert "primer_sessions_runnable_queue_depth" in metrics
     assert "primer_scheduler_notify_received_total" in metrics
 
 
@@ -73,7 +73,7 @@ async def test_health_surfaces_worker_pool_metrics_when_attached(
         assert body["worker_pool"]["capacity"] == 5
         metrics = body["worker_pool"]["metrics"]
         assert metrics["primer_worker_capacity"] == 5
-        assert "matrix_session_turns_total" in metrics
-        assert "matrix_session_turn_duration_seconds" in metrics
+        assert "primer_session_turns_total" in metrics
+        assert "primer_session_turn_duration_seconds" in metrics
     finally:
         app.state.worker_pool = None

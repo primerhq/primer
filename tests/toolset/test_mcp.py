@@ -244,8 +244,8 @@ class TestHttpTransportRouting:
     @pytest.mark.skip(
         reason="MCP SDK swallows transport exceptions in task groups; needs follow-up"
     )
-    async def test_unreachable_endpoint_raises_matrix_error(self) -> None:
-        from primer.model.except_ import MatrixError
+    async def test_unreachable_endpoint_raises_primer_error(self) -> None:
+        from primer.model.except_ import PrimerError
 
         provider = McpToolsetProvider(
             toolset_id="ts1",
@@ -254,7 +254,7 @@ class TestHttpTransportRouting:
                 config=HttpConfig(url="http://127.0.0.1:1/does-not-exist"),
             ),
         )
-        with pytest.raises(MatrixError):
+        with pytest.raises(PrimerError):
             async for _ in provider.list_tools():
                 pass
 
@@ -351,7 +351,7 @@ class TestHttpTransportSuccess:
         from contextlib import asynccontextmanager
         from unittest.mock import AsyncMock, MagicMock
 
-        from primer.model.except_ import MatrixError
+        from primer.model.except_ import PrimerError
 
         fake_session = MagicMock()
         fake_session.__aenter__ = AsyncMock(return_value=fake_session)
@@ -378,7 +378,7 @@ class TestHttpTransportSuccess:
                 config=HttpConfig(url="http://example.test/mcp"),
             ),
         )
-        with pytest.raises(MatrixError):
+        with pytest.raises(PrimerError):
             async for _ in provider.list_tools():
                 pass
 
@@ -474,26 +474,26 @@ class TestSessionRequestErrors:
     async def test_list_tools_session_failure_is_classified(self) -> None:
         from unittest.mock import AsyncMock, MagicMock
 
-        from primer.model.except_ import MatrixError
+        from primer.model.except_ import PrimerError
 
         fake_session = MagicMock()
         fake_session.list_tools = AsyncMock(side_effect=RuntimeError("kaboom"))
 
         provider = _InMemoryMcpToolsetProvider(toolset_id="ts1", session=fake_session)
-        with pytest.raises(MatrixError):
+        with pytest.raises(PrimerError):
             async for _ in provider.list_tools():
                 pass
 
     async def test_call_session_failure_is_classified(self) -> None:
         from unittest.mock import AsyncMock, MagicMock
 
-        from primer.model.except_ import MatrixError
+        from primer.model.except_ import PrimerError
 
         fake_session = MagicMock()
         fake_session.call_tool = AsyncMock(side_effect=RuntimeError("kaboom"))
 
         provider = _InMemoryMcpToolsetProvider(toolset_id="ts1", session=fake_session)
-        with pytest.raises(MatrixError):
+        with pytest.raises(PrimerError):
             await provider.call(tool_name="echo", arguments={})
 
 
@@ -505,10 +505,10 @@ class TestMcpOAuthIntegration:
         from unittest.mock import AsyncMock
 
         from primer.model.provider import OAuthConfig
-        from primer.toolset.oauth.handler import MatrixOAuthHandler
+        from primer.toolset.oauth.handler import PrimerOAuthHandler
 
         config = OAuthConfig(redirect_uri="https://app.example/cb")
-        handler = MatrixOAuthHandler(
+        handler = PrimerOAuthHandler(
             oauth_config=config,
             mcp_url="https://mcp.example/mcp",
             toolset_id="ts1",
@@ -536,10 +536,10 @@ class TestMcpOAuthIntegration:
     ) -> None:
         from primer.model.except_ import AuthRequiredError
         from primer.model.provider import OAuthConfig
-        from primer.toolset.oauth.handler import MatrixOAuthHandler
+        from primer.toolset.oauth.handler import PrimerOAuthHandler
 
         config = OAuthConfig(redirect_uri="https://app.example/cb")
-        handler = MatrixOAuthHandler(
+        handler = PrimerOAuthHandler(
             oauth_config=config,
             mcp_url="https://mcp.example/mcp",
             toolset_id="ts1",

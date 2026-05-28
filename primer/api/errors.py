@@ -1,7 +1,7 @@
 """RFC 7807 problem+json error model and FastAPI handler registration.
 
 Single ``ProblemDetails`` Pydantic model + an exception-handler chain
-that maps every :class:`primer.model.except_.MatrixError` subclass to
+that maps every :class:`primer.model.except_.PrimerError` subclass to
 the right HTTP status + problem-type URI. Type URIs are relative
 (``/errors/<code>``) per RFC 7807 §3.1.
 """
@@ -22,7 +22,7 @@ from primer.model.except_ import (
     BadRequestError,
     ConfigError,
     ConflictError,
-    MatrixError,
+    PrimerError,
     ModelNotFoundError,
     NetworkError,
     NotFoundError,
@@ -70,9 +70,9 @@ class ProblemDetails(BaseModel):
 
 
 # Order matters: handlers are checked most-specific first. We list the
-# more-derived classes BEFORE their bases so a MatrixError-base lookup
+# more-derived classes BEFORE their bases so a PrimerError-base lookup
 # falls through to the most specific match.
-_PRIMER_ERROR_MAP: list[tuple[type[MatrixError], int, str, str]] = [
+_PRIMER_ERROR_MAP: list[tuple[type[PrimerError], int, str, str]] = [
     (BadRequestError, 400, "/errors/bad-request", "Bad Request"),
     (AuthenticationError, 401, "/errors/authentication-failed", "Authentication Failed"),
     (AuthRequiredError, 401, "/errors/auth-required", "Authentication Required"),
@@ -86,7 +86,7 @@ _PRIMER_ERROR_MAP: list[tuple[type[MatrixError], int, str, str]] = [
     (ProviderError, 502, "/errors/provider-error", "Provider Error"),
     (NetworkError, 504, "/errors/network-error", "Network Error"),
     (ConfigError, 503, "/errors/service-unavailable", "Service Unavailable"),
-    (MatrixError, 500, "/errors/internal", "Internal Error"),
+    (PrimerError, 500, "/errors/internal", "Internal Error"),
 ]
 
 
@@ -157,8 +157,8 @@ def _problem_response(
     )
 
 
-def _make_matrix_error_handler(status: int, type_uri: str, title: str):
-    async def _handler(request: Request, exc: MatrixError) -> JSONResponse:
+def _make_primer_error_handler(status: int, type_uri: str, title: str):
+    async def _handler(request: Request, exc: PrimerError) -> JSONResponse:
         extensions: dict[str, Any] | None = None
         if isinstance(exc, AuthRequiredError):
             extensions = {"auth_url": exc.auth_url}
@@ -238,10 +238,10 @@ def register_error_handlers(app: FastAPI) -> None:
     """
     for exc_cls, status, type_uri, title in _PRIMER_ERROR_MAP:
         app.add_exception_handler(
-            exc_cls, _make_matrix_error_handler(status, type_uri, title)
+            exc_cls, _make_primer_error_handler(status, type_uri, title)
         )
     app.add_exception_handler(RequestValidationError, _validation_error_handler)
-    # Status-code 500 override; this is what catches unhandled non-MatrixError
+    # Status-code 500 override; this is what catches unhandled non-PrimerError
     # exceptions inside ServerErrorMiddleware.
     app.add_exception_handler(500, _bare_exception_handler)
 

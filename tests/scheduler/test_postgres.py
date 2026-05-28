@@ -37,7 +37,7 @@ pytestmark = pytest.mark.skipif(
     os.getenv(_DSN_ENV) is None,
     reason=(
         f"set {_DSN_ENV} to a Postgres DSN (e.g. "
-        "postgres://user:pw@localhost:5432/matrix_test) to run the "
+        "postgres://user:pw@localhost:5432/primer_test) to run the "
         "live PostgresScheduler tests"
     ),
 )

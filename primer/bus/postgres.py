@@ -3,12 +3,12 @@
 Spec: ``docs/superpowers/specs/2026-05-22-yielding-tools-design.md`` §6.2.
 
 Uses a sibling channel to the existing scheduler ``session_ready``
-NOTIFY: ``matrix_yield_events``. Payloads are JSON-encoded dicts of
+NOTIFY: ``primer_yield_events``. Payloads are JSON-encoded dicts of
 ``{"event_key": ..., "payload": ...}`` so a single channel handles
 all yield event_keys without spawning per-key channels.
 
 Publishers call :meth:`publish`, which runs ``NOTIFY
-matrix_yield_events, '<json>'``. Subscribers acquire a dedicated
+primer_yield_events, '<json>'``. Subscribers acquire a dedicated
 connection via :meth:`subscribe`, register an asyncpg ``add_listener``
 callback that pushes received payloads into a queue, and iterate the
 queue as :class:`Event` instances.
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-YIELD_EVENTS_CHANNEL = "matrix_yield_events"
+YIELD_EVENTS_CHANNEL = "primer_yield_events"
 """Postgres NOTIFY channel name. Distinct from session_ready so the
 existing scheduler wake-up traffic doesn't double-trigger yield
 resumes."""

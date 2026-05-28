@@ -243,10 +243,10 @@ def page(
     page.on("response", _on_response)
     page.goto(console_url, wait_until="domcontentloaded")
     # Stash on request.node so the post-call hook can find it.
-    request.node._matrix_page = page
-    request.node._matrix_console = console_messages
-    request.node._matrix_failed_requests = failed_requests
-    request.node._matrix_artifacts = artifact_dir
+    request.node._primer_page = page
+    request.node._primer_console = console_messages
+    request.node._primer_failed_requests = failed_requests
+    request.node._primer_artifacts = artifact_dir
     return page
 
 
@@ -302,9 +302,9 @@ def pytest_runtest_makereport(
     report = outcome.get_result()
     if report.when != "call" or not report.failed:
         return
-    page = getattr(item, "_matrix_page", None)
-    console = getattr(item, "_matrix_console", None)
-    artifacts = getattr(item, "_matrix_artifacts", None)
+    page = getattr(item, "_primer_page", None)
+    console = getattr(item, "_primer_console", None)
+    artifacts = getattr(item, "_primer_artifacts", None)
     if page is None or artifacts is None:
         return
     try:
@@ -316,7 +316,7 @@ def pytest_runtest_makereport(
             "\n".join(f"[{m['level']}] {m['text']}" for m in console),
             encoding="utf-8",
         )
-    failed = getattr(item, "_matrix_failed_requests", None)
+    failed = getattr(item, "_primer_failed_requests", None)
     if failed is not None:
         (artifacts / "failed-requests.log").write_text(
             "\n".join(

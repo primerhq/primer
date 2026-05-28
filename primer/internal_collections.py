@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from primer.model.agent import Agent
 from primer.model.chat import TextPart
 from primer.model.collection import Collection, CollectionEmbedder
-from primer.model.except_ import ConfigError, MatrixError, NotFoundError
+from primer.model.except_ import ConfigError, PrimerError, NotFoundError
 from primer.model.graph import Graph
 from primer.model.internal import (
     INTERNAL_COLLECTION_IDS,
@@ -469,7 +469,7 @@ class InternalCollectionsSubsystem:
     async def _safe_get_toolset(self, toolset_id: str):
         try:
             return await self._pr.get_toolset(toolset_id)
-        except (NotFoundError, MatrixError):  # pragma: no cover
+        except (NotFoundError, PrimerError):  # pragma: no cover
             return None
 
     async def _ingest_one_toolset(
@@ -494,7 +494,7 @@ class InternalCollectionsSubsystem:
                     n += 1
                 except Exception as exc:  # noqa: BLE001
                     await self._log_failure(event, exc)
-        except MatrixError as exc:
+        except PrimerError as exc:
             await self._log_failure(
                 IngestEvent(
                     op="upsert",

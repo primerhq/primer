@@ -207,7 +207,7 @@ async def _inject_approval_park_async(
         WHERE id = $1
     """
     # UI bringup uses the docker-compose `primer` DB; the API e2e
-    # bringup uses `matrix_e2e`. Honour the env override if present so
+    # bringup uses `primer_e2e`. Honour the env override if present so
     # both contexts work.
     import os
     db = os.environ.get("PRIMER_UI_E2E_DB", "primer")

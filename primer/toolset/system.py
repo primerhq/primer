@@ -54,7 +54,7 @@ from primer.model.collection import Collection, Document
 from primer.model.common import Identifiable
 from primer.model.except_ import (
     ConflictError,
-    MatrixError,
+    PrimerError,
     NotFoundError,
 )
 from primer.model.graph import Graph, GraphThread
@@ -123,7 +123,7 @@ def _err(message: str, *, error_type: str = "tool-error") -> ToolCallResult:
     )
 
 
-def _err_from_matrix(exc: MatrixError, *, error_type: str) -> ToolCallResult:
+def _err_from_primer(exc: PrimerError, *, error_type: str) -> ToolCallResult:
     return _err(getattr(exc, "message", str(exc)), error_type=error_type)
 
 
@@ -270,8 +270,8 @@ def _crud_tools_for(
             return _err(str(exc), error_type="bad-request")
         try:
             response = await storage.list(page, order_by=order_by)
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="storage-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         return _ok(response)
 
     tools[f"list_{entity_label_plural}"] = (
@@ -339,8 +339,8 @@ def _crud_tools_for(
             )
         try:
             created = await storage.create(entity)
-        except (ConflictError, MatrixError) as exc:
-            return _err_from_matrix(exc, error_type="storage-error")
+        except (ConflictError, PrimerError) as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         if on_create is not None:
             await on_create(created.id)
         return _ok(created)
@@ -393,8 +393,8 @@ def _crud_tools_for(
             )
         try:
             updated = await storage.update(entity)
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="storage-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         if on_update is not None:
             await on_update(updated.id)
         return _ok(updated)
@@ -441,8 +441,8 @@ def _crud_tools_for(
             )
         try:
             await storage.delete(args.id)
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="storage-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         if on_delete is not None:
             await on_delete(args.id)
         return _ok({"deleted": True, "id": args.id})
@@ -478,8 +478,8 @@ def _crud_tools_for(
             return _err(str(exc), error_type="bad-request")
         try:
             response = await storage.find(predicate, page, order_by=order_by)
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="storage-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         return _ok(response)
 
     tools[f"find_{entity_label_plural}"] = (
@@ -533,9 +533,9 @@ def _fetch_models_tool(
             adapter = await getattr(registry, fetch_method)(args.provider_id)
             models = await adapter.list_models()
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="provider-error")
+            return _err_from_primer(exc, error_type="not-found")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="provider-error")
         return _ok({"models": list(models)})
 
     name = f"fetch_{label}_models"
@@ -601,9 +601,9 @@ def _list_toolset_tools_tool(
         try:
             provider = await registry.get_toolset(args.toolset_id)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="provider-error")
+            return _err_from_primer(exc, error_type="not-found")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="provider-error")
         tools_out: list[dict[str, Any]] = []
         async for tool in provider.list_tools(principal=args.principal):
             tools_out.append(tool.model_dump(mode="json"))
@@ -638,17 +638,17 @@ def _call_tool_tool(
         try:
             provider = await registry.get_toolset(args.toolset_id)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="provider-error")
+            return _err_from_primer(exc, error_type="not-found")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="provider-error")
         try:
             result = await provider.call(
                 tool_name=args.tool_name,
                 arguments=args.arguments,
                 principal=args.principal,
             )
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="tool-call-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="tool-call-error")
         return ToolCallResult(
             output=result.output,
             is_error=result.is_error,
@@ -988,8 +988,8 @@ def _document_extras(
                 stored = await documents.create(doc)
             else:
                 stored = await documents.update(doc)
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="storage-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         return _ok(stored)
 
     out["put_document"] = (

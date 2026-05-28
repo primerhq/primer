@@ -25,7 +25,7 @@ def test_ask_user_message_has_metadata_and_thread_hint():
     body = build_ask_user_message(channel_id="C01", envelope=_env("ask_user"))
     assert body["channel"] == "C01"
     assert body["text"] == "please answer"
-    assert body["metadata"]["event_type"] == "matrix_ask"
+    assert body["metadata"]["event_type"] == "primer_ask"
     assert body["metadata"]["event_payload"] == {
         "kind": "ask_user", "ws": "ws1", "sid": "s1", "tcid": "tc1",
     }

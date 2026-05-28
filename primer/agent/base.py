@@ -61,7 +61,7 @@ from primer.model.chat import (
 from primer.model.except_ import (
     AuthRequiredError,
     BadRequestError,
-    MatrixError,
+    PrimerError,
 )
 
 
@@ -296,7 +296,7 @@ class _BaseAgentExecutor(ABC):
 
         AuthRequiredError is the only exception that propagates --
         subclasses handle it (chat: terminal stream Error; workspace:
-        WAITING transition). All other MatrixErrors are converted to
+        WAITING transition). All other PrimerErrors are converted to
         ToolResultPart(error=True) by the manager itself.
         """
         result_parts: list[ToolResultPart] = []
@@ -308,7 +308,7 @@ class _BaseAgentExecutor(ABC):
                 )
             except AuthRequiredError:
                 raise
-            except MatrixError as exc:  # defence-in-depth.
+            except PrimerError as exc:  # defence-in-depth.
                 rp = ToolResultPart(id=call.id, output=str(exc), error=True)
             result_parts.append(rp)
 

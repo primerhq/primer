@@ -13,7 +13,7 @@ import discord
 from discord import ButtonStyle, ui
 
 
-REJECT_MODAL_CUSTOM_ID_PREFIX = "matrix_reject_modal"
+REJECT_MODAL_CUSTOM_ID_PREFIX = "primer_reject_modal"
 
 
 def build_approval_custom_ids(

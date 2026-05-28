@@ -50,7 +50,7 @@ async def storage_provider(
 @pytest.fixture
 def root_dir(tmp_path: Path) -> Path:
     """Isolated root directory for provider file paths."""
-    d = tmp_path / "matrix_root"
+    d = tmp_path / "primer_root"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

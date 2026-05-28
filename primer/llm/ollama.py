@@ -53,7 +53,7 @@ from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
     ConfigError,
-    MatrixError,
+    PrimerError,
     ModelNotFoundError,
     NetworkError,
     ProviderError,
@@ -79,7 +79,7 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 
-def _classify_ollama_exception(exc: Exception) -> MatrixError:
+def _classify_ollama_exception(exc: Exception) -> PrimerError:
     """Map ollama / httpx exceptions onto the primer exception hierarchy."""
     if isinstance(exc, ollama.ResponseError):
         status = getattr(exc, "status_code", None)

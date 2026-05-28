@@ -26,7 +26,7 @@ from google.genai import errors as gerrors
 from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
-    MatrixError,
+    PrimerError,
     NetworkError,
     ProviderError,
     RateLimitError,
@@ -34,7 +34,7 @@ from primer.model.except_ import (
 )
 
 
-def classify_google_exception(exc: Exception) -> MatrixError:
+def classify_google_exception(exc: Exception) -> PrimerError:
     """Map a google-genai SDK exception to the primer exception hierarchy.
 
     Mapping rules:

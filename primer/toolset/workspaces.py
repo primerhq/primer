@@ -51,7 +51,7 @@ from primer.model.chat import Tool, ToolCallResult
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
-    MatrixError,
+    PrimerError,
     NotFoundError,
 )
 from primer.model.storage import CursorPage, OffsetPage, OrderBy
@@ -113,7 +113,7 @@ def _err_from_validation(exc: ValidationError) -> ToolCallResult:
     )
 
 
-def _err_from_matrix(exc: MatrixError, *, error_type: str) -> ToolCallResult:
+def _err_from_primer(exc: PrimerError, *, error_type: str) -> ToolCallResult:
     return _err(getattr(exc, "message", str(exc)), error_type=error_type)
 
 
@@ -292,8 +292,8 @@ def _make_create_handler(
             )
         try:
             created = await storage.create(entity)
-        except (ConflictError, MatrixError) as exc:
-            return _err_from_matrix(exc, error_type="storage-error")
+        except (ConflictError, PrimerError) as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         if on_create is not None:
             await on_create(created.id)
         return _ok(created)
@@ -325,8 +325,8 @@ def _make_update_handler(
             )
         try:
             updated = await storage.update(entity)
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="storage-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         if on_update is not None:
             await on_update(updated.id)
         return _ok(updated)
@@ -351,8 +351,8 @@ def _make_delete_handler(
             )
         try:
             await storage.delete(args.id)
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="storage-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         if on_delete is not None:
             await on_delete(args.id)
         return _ok({"deleted": True, "id": args.id})
@@ -691,8 +691,8 @@ def build_workspaces_toolset(
             live = await workspace_registry.materialise(
                 template=template, overrides=args.overrides
             )
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="backend-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="backend-error")
         row_id = args.id if args.id is not None else live.id
         row = WorkspaceRow(
             id=row_id,
@@ -726,9 +726,9 @@ def build_workspaces_toolset(
         try:
             await workspace_registry.destroy(args.id)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="backend-error")
+            return _err_from_primer(exc, error_type="not-found")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="backend-error")
         return _ok({"deleted": True, "id": args.id})
 
     name, entry = _tool(
@@ -751,7 +751,7 @@ def build_workspaces_toolset(
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
+            return _err_from_primer(exc, error_type="not-found")
         sessions = await ws.list_sessions()
         sliced = sessions[args.offset : args.offset + args.limit]
         return _ok(
@@ -782,7 +782,7 @@ def build_workspaces_toolset(
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
+            return _err_from_primer(exc, error_type="not-found")
         session = await ws.get_session(args.session_id)
         if session is None:
             return _err(
@@ -820,7 +820,7 @@ def build_workspaces_toolset(
             try:
                 ws = await workspace_registry.get_workspace(args.workspace_id)
             except NotFoundError as exc:
-                return _err_from_matrix(exc, error_type="not-found")
+                return _err_from_primer(exc, error_type="not-found")
             session = await ws.get_session(args.session_id)
             if session is None:
                 return _err(
@@ -831,8 +831,8 @@ def build_workspaces_toolset(
             method = getattr(session, op_name)
             try:
                 await method()
-            except MatrixError as exc:
-                return _err_from_matrix(exc, error_type="conflict")
+            except PrimerError as exc:
+                return _err_from_primer(exc, error_type="conflict")
             return _ok({"ok": True, "session_id": args.session_id})
 
         return _handler
@@ -867,7 +867,7 @@ def build_workspaces_toolset(
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
+            return _err_from_primer(exc, error_type="not-found")
         session = await ws.get_session(args.session_id)
         if session is None:
             return _err(
@@ -877,8 +877,8 @@ def build_workspaces_toolset(
             )
         try:
             instruction = await session.append_instruction(args.instruction)
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="conflict")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="conflict")
         return _ok(instruction.model_dump(mode="json"))
 
     name, entry = _tool(
@@ -903,9 +903,9 @@ def build_workspaces_toolset(
             ws = await workspace_registry.get_workspace(args.workspace_id)
             entries = await ws.list_files(args.path, recursive=args.recursive)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
-        except (BadRequestError, MatrixError) as exc:
-            return _err_from_matrix(exc, error_type="bad-request")
+            return _err_from_primer(exc, error_type="not-found")
+        except (BadRequestError, PrimerError) as exc:
+            return _err_from_primer(exc, error_type="bad-request")
         sliced = entries[args.offset : args.offset + args.limit]
         return _ok(
             {
@@ -939,9 +939,9 @@ def build_workspaces_toolset(
             ws = await workspace_registry.get_workspace(args.workspace_id)
             info = await ws.file_info(args.path)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
-        except (BadRequestError, MatrixError) as exc:
-            return _err_from_matrix(exc, error_type="bad-request")
+            return _err_from_primer(exc, error_type="not-found")
+        except (BadRequestError, PrimerError) as exc:
+            return _err_from_primer(exc, error_type="bad-request")
         return _ok(info)
 
     name, entry = _tool(
@@ -970,9 +970,9 @@ def build_workspaces_toolset(
             ws = await workspace_registry.get_workspace(args.workspace_id)
             raw = await ws.read_file(args.path)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
-        except (BadRequestError, MatrixError) as exc:
-            return _err_from_matrix(exc, error_type="bad-request")
+            return _err_from_primer(exc, error_type="not-found")
+        except (BadRequestError, PrimerError) as exc:
+            return _err_from_primer(exc, error_type="bad-request")
         if args.encoding == "text":
             try:
                 content = raw.decode("utf-8")
@@ -1015,9 +1015,9 @@ def build_workspaces_toolset(
             ws = await workspace_registry.get_workspace(args.workspace_id)
             await ws.delete_file(args.path)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
-        except (BadRequestError, MatrixError) as exc:
-            return _err_from_matrix(exc, error_type="bad-request")
+            return _err_from_primer(exc, error_type="not-found")
+        except (BadRequestError, PrimerError) as exc:
+            return _err_from_primer(exc, error_type="bad-request")
         return _ok({"deleted": True, "path": args.path})
 
     name, entry = _tool(
@@ -1055,9 +1055,9 @@ def build_workspaces_toolset(
             ws = await workspace_registry.get_workspace(args.workspace_id)
             await ws.write_file(args.path, raw)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
-        except (BadRequestError, MatrixError) as exc:
-            return _err_from_matrix(exc, error_type="bad-request")
+            return _err_from_primer(exc, error_type="not-found")
+        except (BadRequestError, PrimerError) as exc:
+            return _err_from_primer(exc, error_type="bad-request")
         return _ok({"path": args.path, "size_bytes": len(raw)})
 
     name, entry = _tool(
@@ -1084,9 +1084,9 @@ def build_workspaces_toolset(
             ws = await workspace_registry.get_workspace(args.workspace_id)
             commits = await ws.log(limit=args.limit)
         except NotFoundError as exc:
-            return _err_from_matrix(exc, error_type="not-found")
-        except MatrixError as exc:
-            return _err_from_matrix(exc, error_type="backend-error")
+            return _err_from_primer(exc, error_type="not-found")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="backend-error")
         return _ok({"commits": [c.model_dump(mode="json") for c in commits]})
 
     # watch_files — yielding tool (M4). Suspends the agent's turn until

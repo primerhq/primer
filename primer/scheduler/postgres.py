@@ -549,5 +549,5 @@ class PostgresScheduler(Scheduler):
                 for r in rows:
                     sessions_by_status[r["status"] or "unknown"] = r["n"]
         return {
-            "matrix_sessions_active": sessions_by_status,
+            "primer_sessions_active": sessions_by_status,
         }

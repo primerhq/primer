@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.model.chat import Tool, ToolCallResult
-from primer.model.except_ import ConfigError, MatrixError, NotFoundError
+from primer.model.except_ import ConfigError, PrimerError, NotFoundError
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -94,7 +94,7 @@ def _make_search_handler(
             return _err(str(exc), error_type="subsystem-inactive")
         except NotFoundError as exc:
             return _err(getattr(exc, "message", str(exc)), error_type="not-found")
-        except MatrixError as exc:
+        except PrimerError as exc:
             return _err(
                 getattr(exc, "message", str(exc)),
                 error_type="storage-error",

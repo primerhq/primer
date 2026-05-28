@@ -1051,7 +1051,7 @@ class TestStream:
 
 
 class TestExceptionWrapping:
-    async def test_pre_stream_auth_error_re_raised_as_matrix(
+    async def test_pre_stream_auth_error_re_raised_as_primer(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         provider = _make_provider()

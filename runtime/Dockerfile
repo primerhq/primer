@@ -14,7 +14,7 @@
 # .runtime.ready appears.
 #
 # Protocol dependency:
-#   runtime/matrix_runtime/protocol.py is a self-contained copy — no primer
+#   runtime/primer_runtime/protocol.py is a self-contained copy — no primer
 #   package needed at container runtime.  Keep it in sync with
 #   primer/workspace/runtime/protocol.py on the worker side.
 
@@ -26,10 +26,10 @@ LABEL runtime.primer.version="1.0.0"
 # Install runtime in its own directory so workspace files are not mixed in.
 WORKDIR /opt/primer-runtime
 COPY pyproject.toml ./
-COPY matrix_runtime/ ./matrix_runtime/
+COPY primer_runtime/ ./primer_runtime/
 
 # Install runtime package and its deps.  Using `pip install .` installs
-# matrix_runtime into site-packages so it is importable from any cwd.
+# primer_runtime into site-packages so it is importable from any cwd.
 # watchfiles ships with pre-built wheels for linux/amd64 and linux/arm64 so
 # no Rust toolchain is required.
 RUN pip install --no-cache-dir aiohttp watchfiles pydantic && \
@@ -44,4 +44,4 @@ WORKDIR /workspace
 
 EXPOSE 5959
 
-ENTRYPOINT ["python", "-m", "matrix_runtime.server"]
+ENTRYPOINT ["python", "-m", "primer_runtime.server"]

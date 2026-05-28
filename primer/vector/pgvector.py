@@ -3,7 +3,7 @@
 One vector table per collection (``<schema>.embeddings_<sanitised>``)
 with an HNSW index on the vector column (default) and a GIN index on
 the ``meta`` JSONB column for fast metadata-containment queries. The
-collection catalogue (``<schema>.matrix_collections``) records the
+collection catalogue (``<schema>.primer_collections``) records the
 table name, index name, index kind, dimensions, and distance metric
 for each collection so the provider can re-create handles after
 restart and so :meth:`maintain_indexes` can enumerate every managed
@@ -170,7 +170,7 @@ class PgVectorStoreProvider(VectorStoreProvider):
             # (the extension may not have existed when init ran).
             await register_vector(conn)
             await conn.execute(
-                f'CREATE TABLE IF NOT EXISTS "{self._schema}".matrix_collections ('
+                f'CREATE TABLE IF NOT EXISTS "{self._schema}".primer_collections ('
                 'collection_id text PRIMARY KEY, '
                 'table_name text NOT NULL, '
                 'index_name text NOT NULL, '
@@ -243,7 +243,7 @@ class PgVectorStoreProvider(VectorStoreProvider):
 
         catalog_sql = (
             f'SELECT collection_id, table_name, index_name, index_kind '
-            f'FROM "{self._schema}".matrix_collections '
+            f'FROM "{self._schema}".primer_collections '
             'ORDER BY collection_id'
         )
         async with self._pool.acquire() as conn:
@@ -517,7 +517,7 @@ class PgVectorStore(VectorStore):
                 # dimension/distance drift before we attempt DDL.
                 existing = await conn.fetchrow(
                     f'SELECT dimensions, distance FROM '
-                    f'"{self._schema}".matrix_collections '
+                    f'"{self._schema}".primer_collections '
                     f'WHERE collection_id = $1',
                     collection_id,
                 )
@@ -547,7 +547,7 @@ class PgVectorStore(VectorStore):
                     await conn.execute(ddl_meta_index)
                     await conn.execute(ddl_ann)
                     await conn.execute(
-                        f'INSERT INTO "{self._schema}".matrix_collections '
+                        f'INSERT INTO "{self._schema}".primer_collections '
                         f'(collection_id, table_name, index_name, '
                         f'index_kind, dimensions, distance) '
                         f'VALUES ($1, $2, $3, $4, $5, $6)',
@@ -589,7 +589,7 @@ class PgVectorStore(VectorStore):
         async with self._provider.pool.acquire() as conn:
             row = await conn.fetchrow(
                 f'SELECT table_name, index_name, dimensions, distance FROM '
-                f'"{self._schema}".matrix_collections WHERE collection_id = $1',
+                f'"{self._schema}".primer_collections WHERE collection_id = $1',
                 collection_id,
             )
         if row is None:

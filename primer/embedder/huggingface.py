@@ -42,7 +42,7 @@ from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
     ConfigError,
-    MatrixError,
+    PrimerError,
     ModelNotFoundError,
     NetworkError,
     ProviderError,
@@ -133,7 +133,7 @@ def _translate_response(
     return EmbedResponse(model=model, embeddings=embeddings, usage=None)
 
 
-def _classify_hf_exception(exc: Exception) -> MatrixError:
+def _classify_hf_exception(exc: Exception) -> PrimerError:
     """Inline classifier — sentence-transformers / huggingface_hub
     don't share a common base exception class, so we string-match on
     common error patterns plus check OSError for I/O failures."""

@@ -2,7 +2,7 @@
 
 Embedded-mode vector store: one ``lancedb.AsyncConnection`` per
 provider, one Lance table per collection. The provider owns a
-catalogue (``_matrix_collections``) that tracks every collection's
+catalogue (``_primer_collections``) that tracks every collection's
 table name, dimensions, distance metric, and whether an ANN index
 has been built — so :meth:`maintain_indexes` can enumerate managed
 tables without scanning the filesystem and so collection metadata
@@ -141,7 +141,7 @@ def _escape_sql_string(value: str) -> str:
 
 
 _COLLECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-_CATALOGUE_TABLE = "_matrix_collections"
+_CATALOGUE_TABLE = "_primer_collections"
 
 # Map the VectorStore ABC's distance vocabulary to LanceDB's.
 _DISTANCE_LANCE: dict[str, str] = {

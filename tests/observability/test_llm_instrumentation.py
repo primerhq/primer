@@ -340,18 +340,18 @@ async def test_anthropic_failure_counter(in_memory_tracer_provider):
     adapter = _make_anthropic_adapter()
 
     from primer.observability import metrics as m
-    from primer.model.except_ import MatrixError
+    from primer.model.except_ import PrimerError
 
     with _patch_tracer(provider):
         with patch.object(adapter, "_get_client") as mock_client:
             # Use a RuntimeError — something the Anthropic classifier doesn't know,
-            # so it wraps to ProviderError (still a MatrixError).
+            # so it wraps to ProviderError (still a PrimerError).
             mock_client.return_value.messages.create = AsyncMock(
                 side_effect=RuntimeError("boom")
             )
             from primer.model.chat import Message, TextPart
             messages = [Message(role="user", parts=[TextPart(text="hi")])]
-            with pytest.raises(MatrixError):
+            with pytest.raises(PrimerError):
                 await _drain(adapter.stream(
                     model="claude-3-haiku-20240307",
                     messages=messages,

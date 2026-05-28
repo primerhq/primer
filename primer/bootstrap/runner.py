@@ -300,9 +300,9 @@ class BootstrapRunner:
         path is expanded via :func:`Path.expanduser`.  Absolute or
         relative paths without ``~`` are returned unchanged.
         """
-        _tilde_matrix = "~/.primer"
-        if raw.startswith(_tilde_matrix):
-            suffix = raw[len(_tilde_matrix):]  # e.g. "/workspaces"
+        _tilde_primer = "~/.primer"
+        if raw.startswith(_tilde_primer):
+            suffix = raw[len(_tilde_primer):]  # e.g. "/workspaces"
             return self._root_dir / suffix.lstrip("/")
         return Path(raw).expanduser()
 

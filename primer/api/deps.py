@@ -330,10 +330,10 @@ def get_claim_engine(request: Request) -> "ClaimEngine | None":
 
 
 def get_principal(
-    x_matrix_principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
+    x_primer_principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
 ) -> str | None:
     """Per-request end-user identity. ``None`` if header absent."""
-    return x_matrix_principal
+    return x_primer_principal
 
 
 __all__ = [

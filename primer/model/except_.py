@@ -1,7 +1,7 @@
 """Project-wide exception hierarchy.
 
 Compact hierarchy with room to grow. Every exception inherits from
-:class:`MatrixError` so callers can catch the project's errors as a
+:class:`PrimerError` so callers can catch the project's errors as a
 single category. Each exception carries optional ``code``,
 ``status_code``, and ``cause`` so adapters can plumb provider-specific
 context without losing the underlying traceback.
@@ -10,7 +10,7 @@ context without losing the underlying traceback.
 from __future__ import annotations
 
 
-class MatrixError(Exception):
+class PrimerError(Exception):
     """Root of the primer exception hierarchy.
 
     All primer-raised exceptions inherit from this class. Carries optional
@@ -46,7 +46,7 @@ class MatrixError(Exception):
         return f"{prefix}{self.message}"
 
 
-class ConfigError(MatrixError):
+class ConfigError(PrimerError):
     """Programmer or setup error — invalid configuration or arguments."""
 
 
@@ -54,7 +54,7 @@ class ModelNotFoundError(ConfigError):
     """Requested model isn't in the adapter's declared models list."""
 
 
-class UnsupportedContentError(MatrixError):
+class UnsupportedContentError(PrimerError):
     """Adapter cannot transmit this Part type to the provider.
 
     Examples: AudioPart sent to Anthropic chat (Anthropic doesn't accept
@@ -63,7 +63,7 @@ class UnsupportedContentError(MatrixError):
     """
 
 
-class ValidationError(MatrixError):
+class ValidationError(PrimerError):
     """Request was structurally valid but failed semantic validation.
 
     Maps to HTTP 422 (Unprocessable Entity) at the API surface. Use for
@@ -75,7 +75,7 @@ class ValidationError(MatrixError):
     """
 
 
-class ProviderError(MatrixError):
+class ProviderError(PrimerError):
     """Upstream provider returned an error.
 
     Base class for all errors that originate from the provider's HTTP
@@ -100,7 +100,7 @@ class ServerError(ProviderError):
     """Provider encountered an internal error (5xx)."""
 
 
-class NetworkError(MatrixError):
+class NetworkError(PrimerError):
     """Network-level failure — connection refused, DNS failure, timeout.
 
     Distinct from :class:`ProviderError` because no response was received;
@@ -108,7 +108,7 @@ class NetworkError(MatrixError):
     """
 
 
-class NotFoundError(MatrixError):
+class NotFoundError(PrimerError):
     """Storage lookup found no entity matching the request.
 
     Raised by :class:`primer.int.Storage` operations that target a
@@ -123,7 +123,7 @@ class NotFoundError(MatrixError):
     """
 
 
-class ConflictError(MatrixError):
+class ConflictError(PrimerError):
     """Storage operation conflicts with the current state.
 
     Typical cases: :meth:`primer.int.Storage.create` when an entity
@@ -132,14 +132,14 @@ class ConflictError(MatrixError):
     """
 
 
-class AuthRequiredError(MatrixError):
+class AuthRequiredError(PrimerError):
     """OAuth consent required before this provider can serve requests.
 
     Distinct from :class:`AuthenticationError` -- that signals "we tried
     and the credentials were rejected"; this signals "the caller hasn't
     authenticated yet and the user must consent." Callers MUST handle
     this case explicitly (catch ``AuthRequiredError`` *before* any
-    generic ``except MatrixError``) so the URL reaches the end user.
+    generic ``except PrimerError``) so the URL reaches the end user.
 
     The ``state`` field is opaque to the application; the caller passes
     it back to :meth:`primer.toolset.mcp.McpToolsetProvider.complete_oauth`
@@ -162,7 +162,7 @@ class AuthRequiredError(MatrixError):
         self.state = state
 
 
-class TransientError(MatrixError):
+class TransientError(PrimerError):
     """Retryable failure raised by adapters (network blips, 5xx, etc.).
 
     The worker pool's transient-failure path catches this, applies
@@ -175,7 +175,7 @@ class TransientError(MatrixError):
     """
 
 
-class LeaseLostError(MatrixError):
+class LeaseLostError(PrimerError):
     """Internal: ``Scheduler.complete_turn`` returned ``LEASE_LOST``.
 
     The worker discards the in-progress turn output. Never escapes the
@@ -183,7 +183,7 @@ class LeaseLostError(MatrixError):
     """
 
 
-class TurnConflictError(MatrixError):
+class TurnConflictError(PrimerError):
     """Internal: ``Scheduler.complete_turn`` returned ``TURN_CONFLICT``.
 
     Another worker advanced the session ahead of us. The worker

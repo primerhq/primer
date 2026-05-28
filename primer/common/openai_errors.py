@@ -21,7 +21,7 @@ from openai import (
 from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
-    MatrixError,
+    PrimerError,
     NetworkError,
     ProviderError,
     RateLimitError,
@@ -29,7 +29,7 @@ from primer.model.except_ import (
 )
 
 
-def classify_openai_exception(exc: Exception) -> MatrixError:
+def classify_openai_exception(exc: Exception) -> PrimerError:
     """Map an openai SDK exception to the primer exception hierarchy.
 
     Mapping rules:

@@ -285,8 +285,8 @@ class WorkerPool:
             "primer_worker_capacity": self.config.concurrency,
             "primer_worker_claims_total": self._claims_total,
             "primer_worker_claims_empty_total": self._claims_empty_total,
-            "matrix_session_turns_total": dict(self._turns_total_by_result),
-            "matrix_session_turn_duration_seconds": {
+            "primer_session_turns_total": dict(self._turns_total_by_result),
+            "primer_session_turn_duration_seconds": {
                 "count": self._turn_duration_count,
                 "sum": self._turn_duration_seconds_total,
             },

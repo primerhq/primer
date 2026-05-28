@@ -1,6 +1,6 @@
 """OAuth subsystem for the MCP toolset provider."""
 
-from primer.toolset.oauth.handler import MatrixOAuthHandler
+from primer.toolset.oauth.handler import PrimerOAuthHandler
 from primer.toolset.oauth.registration import (
     ClientCredentialsCache,
     InMemoryClientCredentialsCache,
@@ -22,7 +22,7 @@ __all__ = [
     "InMemoryClientCredentialsCache",
     "InMemoryStateStore",
     "InMemoryTokenStore",
-    "MatrixOAuthHandler",
+    "PrimerOAuthHandler",
     "OAuthState",
     "StateStore",
     "TokenRecord",

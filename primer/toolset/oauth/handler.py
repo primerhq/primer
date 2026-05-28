@@ -4,10 +4,10 @@ Owns one TokenStore + StateStore + ClientCredentialsCache + httpx
 client per provider instance. Exposes two operations that the provider
 calls into:
 
-* :meth:`MatrixOAuthHandler.authorize` -- preflight before opening an
+* :meth:`PrimerOAuthHandler.authorize` -- preflight before opening an
   MCP session. Returns an ``Authorization`` header dict OR raises
   :class:`primer.model.except_.AuthRequiredError`.
-* :meth:`MatrixOAuthHandler.complete_oauth` -- called from the
+* :meth:`PrimerOAuthHandler.complete_oauth` -- called from the
   application's OAuth callback. Exchanges code+state for a token,
   persists it, returns. Subsequent ``authorize(principal)`` calls
   succeed.
@@ -25,7 +25,7 @@ from primer.model.except_ import (
     AuthenticationError,
     AuthRequiredError,
     BadRequestError,
-    MatrixError,
+    PrimerError,
 )
 from primer.model.provider import OAuthConfig
 from primer.toolset.oauth.discovery import (
@@ -69,7 +69,7 @@ def _origin(url: str) -> str:
     return urlunparse((p.scheme, p.netloc, "", "", "", ""))
 
 
-class MatrixOAuthHandler:
+class PrimerOAuthHandler:
     """Single-point OAuth orchestrator. See module docstring."""
 
     def __init__(
@@ -106,7 +106,7 @@ class MatrixOAuthHandler:
         if stale is not None and stale.refresh_token is not None:
             try:
                 new_rec = await self._refresh(stale)
-            except MatrixError:
+            except PrimerError:
                 logger.info(
                     "Refresh failed for principal %r; reissuing AuthRequiredError",
                     principal,

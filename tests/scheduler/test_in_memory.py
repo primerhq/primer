@@ -139,19 +139,19 @@ async def test_metrics_snapshot_returns_expected_keys(sched):
     await sched.enqueue("s1")
     snap = sched.metrics_snapshot()
     # Required keys per spec §14.
-    assert "matrix_sessions_active" in snap
-    assert "matrix_sessions_runnable_queue_depth" in snap
-    assert "matrix_lease_expirations_total" in snap
+    assert "primer_sessions_active" in snap
+    assert "primer_sessions_runnable_queue_depth" in snap
+    assert "primer_lease_expirations_total" in snap
     assert "primer_scheduler_notify_received_total" in snap
     # Sessions-by-status reflects what was registered.
-    assert snap["matrix_sessions_active"]["running"] == 1
-    assert snap["matrix_sessions_active"]["waiting"] == 1
+    assert snap["primer_sessions_active"]["running"] == 1
+    assert snap["primer_sessions_active"]["waiting"] == 1
     # One enqueue with one registered worker => one notify.
     assert snap["primer_scheduler_notify_received_total"] == 1
     # s1 is runnable + unclaimed.
-    assert snap["matrix_sessions_runnable_queue_depth"] == 1
+    assert snap["primer_sessions_runnable_queue_depth"] == 1
     # No expirations yet.
-    assert snap["matrix_lease_expirations_total"] == 0
+    assert snap["primer_lease_expirations_total"] == 0
 
 
 async def test_signal_cancel_routes_to_subscribers(sched):

@@ -110,7 +110,7 @@ def evaluate_policy(policy_text: str, input: dict[str, Any]) -> RegoVerdict:
         ) from exc
     try:
         interpreter = regopy.Interpreter()
-        interpreter.add_module("matrix_tool_approval", policy_text)
+        interpreter.add_module("primer_tool_approval", policy_text)
         interpreter.set_input(input)
         raw = interpreter.query(_PACKAGE_QUERY)
         if not raw.ok():

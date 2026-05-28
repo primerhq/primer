@@ -8,7 +8,7 @@
 #
 # Steps:
 #   1. $RUNTIME compose up -d, wait for postgres healthcheck
-#   2. drop+recreate the matrix_e2e database with the pgvector extension
+#   2. drop+recreate the primer_e2e database with the pgvector extension
 #   3. render tests/.e2e/config.yaml
 #   4. launch `uv run primer api` in the background (worker runs by default)
 #   5. poll /v1/health until 200 (30 s timeout)
@@ -68,7 +68,7 @@ STDOUT_FILE="$E2E_DIR/server.stdout"
 PORT="${PRIMER_E2E_PORT:-8765}"
 DB_USER="${PRIMER_DB_USER:-primer}"
 DB_PASSWORD="${PRIMER_DB_PASSWORD:-primer}"
-DB_NAME="matrix_e2e"
+DB_NAME="primer_e2e"
 # Set PRIMER_E2E_NO_VECTOR=1 to render an AppConfig without a vector_store
 # block. Used by gating tests that need to assert 503 behaviour on the
 # collection / document / search routes when the subsystem is disabled.

@@ -278,7 +278,7 @@ async def test_session_ws_streams_when_worker_on_other_process(
     import tempfile
     import os
 
-    tmpdir = tempfile.mkdtemp(prefix="matrix_ws_test_")
+    tmpdir = tempfile.mkdtemp(prefix="primer_ws_test_")
     try:
         async with cluster.client(0) as c0:
             resp = await c0.post(

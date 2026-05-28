@@ -20,7 +20,7 @@ and is treated as an anonymous principal by providers that distinguish.
 Adapters that need OAuth consent before they can answer raise
 :class:`primer.model.except_.AuthRequiredError` (added in sub-project
 #10). Callers MUST handle that case explicitly so the URL reaches the
-end user before any generic ``except MatrixError`` swallows it.
+end user before any generic ``except PrimerError`` swallows it.
 
 See the design spec at
 ``docs/superpowers/specs/2026-04-26-toolset-provider-oauth-design.md``

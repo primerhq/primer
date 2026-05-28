@@ -133,7 +133,7 @@ async def test_tool_exec_fail_counter_and_exception(in_memory_tracer):
     call = ToolCallPart(id="call-3", name="fake__boom", arguments={})
 
     with _patch_tracer(provider):
-        # The manager catches MatrixError internally and returns error ToolResultPart
+        # The manager catches PrimerError internally and returns error ToolResultPart
         result = await mgr.execute(call)
 
     # UnsupportedContentError bubbles up and is caught by _dispatch_toolset

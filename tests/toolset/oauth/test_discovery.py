@@ -487,14 +487,14 @@ class TestDiscoveryEdgeCases:
     async def test_post_token_http_error_is_classified(
         self, http_client: httpx.AsyncClient
     ) -> None:
-        from primer.model.except_ import MatrixError
+        from primer.model.except_ import PrimerError
 
         respx.post("https://idp.example/token").mock(
             side_effect=httpx.ConnectError("net down")
         )
         metadata = AuthServerMetadata(**_AUTH_SERVER_DOC)
         client = OAuthClientCredentials(client_id="abc")
-        with pytest.raises(MatrixError):
+        with pytest.raises(PrimerError):
             await exchange_code(
                 metadata=metadata,
                 client=client,
@@ -510,14 +510,14 @@ class TestDiscoveryEdgeCases:
     async def test_post_token_5xx_is_classified(
         self, http_client: httpx.AsyncClient
     ) -> None:
-        from primer.model.except_ import MatrixError
+        from primer.model.except_ import PrimerError
 
         respx.post("https://idp.example/token").mock(
             return_value=httpx.Response(503, text="upstream down")
         )
         metadata = AuthServerMetadata(**_AUTH_SERVER_DOC)
         client = OAuthClientCredentials(client_id="abc")
-        with pytest.raises(MatrixError):
+        with pytest.raises(PrimerError):
             await exchange_code(
                 metadata=metadata,
                 client=client,

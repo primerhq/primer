@@ -1,7 +1,7 @@
 """Per-(server, principal, toolset) OAuth token cache.
 
 The cache is keyed by an opaque string the
-:class:`primer.toolset.oauth.handler.MatrixOAuthHandler` constructs
+:class:`primer.toolset.oauth.handler.PrimerOAuthHandler` constructs
 from the auth server's origin, the caller-supplied principal, and the
 toolset id. Entries are evicted on read once their ``expires_at`` has
 passed; nothing in this module emits a periodic sweep -- short-lived

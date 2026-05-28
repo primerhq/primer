@@ -15,7 +15,7 @@ from mcp.shared.exceptions import McpError
 from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
-    MatrixError,
+    PrimerError,
     NetworkError,
     ProviderError,
     RateLimitError,
@@ -23,7 +23,7 @@ from primer.model.except_ import (
 )
 
 
-def classify_mcp_exception(exc: Exception) -> MatrixError:
+def classify_mcp_exception(exc: Exception) -> PrimerError:
     """Map an mcp / httpx exception to the primer exception hierarchy.
 
     Mapping rules:

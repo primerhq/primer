@@ -38,7 +38,7 @@ from primer.model.chat import (
     output_to_message,
     _ExecutorToolResult,
 )
-from primer.model.except_ import AuthRequiredError, MatrixError
+from primer.model.except_ import AuthRequiredError, PrimerError
 
 
 if TYPE_CHECKING:
@@ -179,7 +179,7 @@ async def _dispatch_tool_calls(
     """Dispatch tool calls; return tool-role messages to feed back to the LLM.
 
     AuthRequiredError propagates so the caller can react. All other
-    :class:`MatrixError` instances are converted to
+    :class:`PrimerError` instances are converted to
     ``ToolResultPart(error=True)`` by the manager itself; the
     defensive catch here is belt-and-braces for adapter bugs.
     """
@@ -189,7 +189,7 @@ async def _dispatch_tool_calls(
             rp = await tool_manager.execute(call, principal=principal)
         except AuthRequiredError:
             raise
-        except MatrixError as exc:  # defence-in-depth.
+        except PrimerError as exc:  # defence-in-depth.
             rp = ToolResultPart(id=call.id, output=str(exc), error=True)
         result_parts.append(rp)
     if not result_parts:

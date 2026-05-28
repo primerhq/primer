@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from primer.model.except_ import ConfigError, MatrixError, NotFoundError
+from primer.model.except_ import ConfigError, PrimerError, NotFoundError
 from primer.toolset.search import (
     SEARCH_TOOLSET_ID,
     build_search_toolset,
@@ -73,7 +73,7 @@ class TestSearchToolsetErrors:
         self, toolset, stub_subsystem
     ) -> None:
         stub_subsystem.search = AsyncMock(
-            side_effect=MatrixError("backend down")
+            side_effect=PrimerError("backend down")
         )
         result = await toolset.call(
             tool_name="search_agents", arguments={"query": "x"}

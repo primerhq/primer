@@ -37,7 +37,7 @@ def _ssp_body(sid: str) -> dict:
         "config": {
             "hostname": "localhost",
             "port": 5432,
-            "database": "matrix_e2e",
+            "database": "primer_e2e",
             "username": "primer",
             "password": "primer",
             "db_schema": "public",

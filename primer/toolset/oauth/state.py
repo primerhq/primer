@@ -1,6 +1,6 @@
 """Single-use OAuth state payloads, keyed by UUID.
 
-The :class:`MatrixOAuthHandler` issues one :class:`OAuthState` payload
+The :class:`PrimerOAuthHandler` issues one :class:`OAuthState` payload
 per authorization-URL build, persists it via :class:`StateStore`, and
 embeds the resulting UUID as the ``state`` query parameter on the URL.
 When the user returns from consent, the application's callback handler

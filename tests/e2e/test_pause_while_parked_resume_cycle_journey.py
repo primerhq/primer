@@ -97,7 +97,7 @@ async def _pg() -> asyncpg.Connection:
         port=5432,
         user="primer",
         password="primer",
-        database="matrix_e2e",
+        database="primer_e2e",
     )
 
 

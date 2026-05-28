@@ -28,7 +28,7 @@ The cycle:
   1. Seed full agent ladder + Session (auto_start=False).
   2. asyncpg-inject _approval park + session_leases at
      runnable=FALSE (mirrors what scheduler.park_turn writes).
-  3. asyncpg `pg_notify('matrix_yield_events', '<json>')` with
+  3. asyncpg `pg_notify('primer_yield_events', '<json>')` with
      the timeout-marker payload — simulates what
      TimeoutSweeper does.
   4. Bus listener flips parked → resumable + arms the lease.
@@ -41,7 +41,7 @@ The cycle:
   8. Asserts parked cleared + turn_no advanced.
 
 Multi-subsystem in one test:
-  * matrix_yield_events bus channel (Postgres NOTIFY)
+  * primer_yield_events bus channel (Postgres NOTIFY)
   * primer.bus.listener.YieldEventListener (in-app subscriber)
   * scheduler.mark_resumable + claim
   * worker pool _handle_resume → _resume_tool_approval timeout
@@ -70,7 +70,7 @@ async def _pg() -> asyncpg.Connection:
         port=5432,
         user="primer",
         password="primer",
-        database="matrix_e2e",
+        database="primer_e2e",
     )
 
 
@@ -240,7 +240,7 @@ async def _inject_approval_park_with_lease(
 
 
 async def _publish_timeout_marker(event_key: str) -> None:
-    """Fire pg_notify('matrix_yield_events', ...) with the
+    """Fire pg_notify('primer_yield_events', ...) with the
     timeout-marker payload directly from the test process.
 
     Simulates exactly what primer.bus.scheduler_tasks.TimeoutSweeper
@@ -258,7 +258,7 @@ async def _publish_timeout_marker(event_key: str) -> None:
     conn = await _pg()
     try:
         await conn.execute(
-            "SELECT pg_notify('matrix_yield_events', $1)",
+            "SELECT pg_notify('primer_yield_events', $1)",
             body,
         )
     finally:
@@ -362,7 +362,7 @@ async def test_t0863_approval_timeout_publish_resume_synthesises_rejection(
         assert r.json()["tool_call_id"] == tool_call_id, r.text
 
         # ----- 2. Simulate the TimeoutSweeper's publish ------------
-        # pg_notify('matrix_yield_events', '{...}') is what the
+        # pg_notify('primer_yield_events', '{...}') is what the
         # sweeper does once parked_until <= now(). The bus listener
         # in-app picks it up.
         await _publish_timeout_marker(event_key)

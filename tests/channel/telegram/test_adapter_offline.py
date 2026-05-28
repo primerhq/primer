@@ -32,7 +32,7 @@ class _StubBot:
         self.sent.append(body)
         return type("M", (), {"message_id": 42})()
     async def get_me(self) -> Any:
-        return type("M", (), {"username": "matrixbot"})()
+        return type("M", (), {"username": "primerbot"})()
     async def get_chat(self, chat_id: int) -> Any:
         return type("C", (), {"id": chat_id, "title": "general"})()
     async def edit_message_text(self, **kwargs) -> Any:

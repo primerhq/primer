@@ -6,7 +6,7 @@ Exports:
   and dev mode use this; the production app picks
   :class:`PostgresEventBus` instead.
 * :class:`PostgresEventBus` — backed by postgres ``LISTEN/NOTIFY``
-  on the ``matrix_yield_events`` channel. Production default.
+  on the ``primer_yield_events`` channel. Production default.
 * :class:`YieldEventListener` — background task wired up at app
   startup. Subscribes to the bus and routes each event to the
   scheduler's :meth:`mark_resumable` for any parked session keyed

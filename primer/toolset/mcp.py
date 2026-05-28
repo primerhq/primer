@@ -30,7 +30,7 @@ from primer.model.provider import (
     TransportType,
 )
 from primer.model.yield_ import ToolContext, Yielded
-from primer.toolset.oauth.handler import MatrixOAuthHandler
+from primer.toolset.oauth.handler import PrimerOAuthHandler
 
 
 # Canonical tool_name for MCP task parks in the resume registry.
@@ -80,7 +80,7 @@ class McpToolsetProvider(ToolsetProvider):
         toolset_id: str,
         config: McpConfig,
         *,
-        oauth: MatrixOAuthHandler | None = None,
+        oauth: PrimerOAuthHandler | None = None,
         client_name: str = "primer",
         client_version: str = "0.0.1",
         allowed_stdio_commands: frozenset[str] | None = None,
@@ -132,7 +132,7 @@ class McpToolsetProvider(ToolsetProvider):
             t.name for t in result.tools if is_mcp_task_tool(t)
         }
         for mcp_tool in result.tools:
-            yield self._mcp_tool_to_matrix(mcp_tool)
+            yield self._mcp_tool_to_primer(mcp_tool)
 
     async def call(
         self,
@@ -167,7 +167,7 @@ class McpToolsetProvider(ToolsetProvider):
             except Exception as exc:
                 raise classify_mcp_exception(exc) from exc
 
-            return self._mcp_call_result_to_matrix(result)
+            return self._mcp_call_result_to_primer(result)
 
     async def _call_task_mode(
         self,
@@ -434,7 +434,7 @@ class McpToolsetProvider(ToolsetProvider):
 
     # ---------- translation ----------------------------------------------
 
-    def _mcp_tool_to_matrix(self, t: mcp_types.Tool) -> Tool:
+    def _mcp_tool_to_primer(self, t: mcp_types.Tool) -> Tool:
         return Tool(
             id=t.name,
             description=t.description or "",
@@ -442,7 +442,7 @@ class McpToolsetProvider(ToolsetProvider):
             args_schema=t.inputSchema or {"type": "object", "properties": {}},
         )
 
-    def _mcp_call_result_to_matrix(
+    def _mcp_call_result_to_primer(
         self,
         r: mcp_types.CallToolResult,
     ) -> ToolCallResult:

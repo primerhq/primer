@@ -7,12 +7,12 @@ from typing import Any
 from primer.channel.adapter import PromptEnvelope
 
 
-REJECT_MODAL_CALLBACK_ID = "matrix_reject_modal"
+REJECT_MODAL_CALLBACK_ID = "primer_reject_modal"
 
 
 def _metadata(envelope: PromptEnvelope) -> dict[str, Any]:
     event_type = (
-        "matrix_ask" if envelope.kind == "ask_user" else "matrix_approval"
+        "primer_ask" if envelope.kind == "ask_user" else "primer_approval"
     )
     return {
         "event_type": event_type,
@@ -56,7 +56,7 @@ def build_tool_approval_message(
             {"type": "section",
              "text": {"type": "mrkdwn", "text": envelope.prompt}},
             {"type": "actions",
-             "block_id": "matrix_approval",
+             "block_id": "primer_approval",
              "elements": [
                 {"type": "button",
                  "action_id": "approve",

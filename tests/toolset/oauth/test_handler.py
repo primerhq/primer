@@ -1,4 +1,4 @@
-"""Tests for primer.toolset.oauth.handler.MatrixOAuthHandler."""
+"""Tests for primer.toolset.oauth.handler.PrimerOAuthHandler."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from primer.model.except_ import (
     BadRequestError,
 )
 from primer.model.provider import OAuthClientCredentials, OAuthConfig
-from primer.toolset.oauth.handler import MatrixOAuthHandler
+from primer.toolset.oauth.handler import PrimerOAuthHandler
 from primer.toolset.oauth.registration import InMemoryClientCredentialsCache
 from primer.toolset.oauth.state import InMemoryStateStore
 from primer.toolset.oauth.token_store import (
@@ -55,8 +55,8 @@ async def http_client():
         yield c
 
 
-def _handler(http: httpx.AsyncClient, *, static: bool = True) -> MatrixOAuthHandler:
-    return MatrixOAuthHandler(
+def _handler(http: httpx.AsyncClient, *, static: bool = True) -> PrimerOAuthHandler:
+    return PrimerOAuthHandler(
         oauth_config=_config(static=static),
         mcp_url="https://mcp.example/mcp",
         toolset_id="ts1",
