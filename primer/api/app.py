@@ -887,6 +887,7 @@ def create_app(config: AppConfig) -> FastAPI:
     _install_security_headers(app)
     _install_console_csp(app)
     _install_request_id(app)
+    _install_auth_middleware(app)
     _mount_routers(app, runtime_mode=config.runtime_mode)
     _mount_console(app)
     _mount_metrics(app, config)
@@ -930,6 +931,18 @@ def _install_root_redirect(app: FastAPI) -> None:
     @app.get("/", include_in_schema=False)
     async def _root_redirect() -> RedirectResponse:
         return RedirectResponse(url="/console/", status_code=307)
+
+
+def _install_auth_middleware(app: FastAPI) -> None:
+    """Install the cookie-auth middleware.
+
+    Populates ``request.state.user`` / ``.principal`` from a signed
+    ``primer_session`` cookie. Does not itself 401; routers do that
+    via :func:`primer.api.deps.require_auth`.
+    """
+    from primer.api.middleware.auth import AuthMiddleware
+
+    app.add_middleware(AuthMiddleware)
 
 
 def _install_security_headers(app: FastAPI) -> None:
@@ -1123,6 +1136,7 @@ def create_test_app(
         contact={"name": "primer"},
     )
     _install_request_id(app)
+    _install_auth_middleware(app)
     if workspace_registry is None:
         workspace_registry = WorkspaceRegistry(storage_provider)
     # Wire the SemanticSearchRegistry so /v1/ssp endpoints work in tests.

@@ -36,6 +36,7 @@ from primer.model.provider import (
     LLMProvider,
     Toolset,
 )
+from primer.model.user import User
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.workspace import (
     Workspace,
@@ -329,11 +330,33 @@ def get_claim_engine(request: Request) -> "ClaimEngine | None":
     return getattr(request.app.state, "claim_engine", None)
 
 
-def get_principal(
-    x_primer_principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
-) -> str | None:
-    """Per-request end-user identity. ``None`` if header absent."""
-    return x_primer_principal
+def get_principal(request: Request) -> str | None:
+    """Per-request end-user identity.
+
+    Populated by :class:`primer.api.middleware.auth.AuthMiddleware`
+    from the signed session cookie. ``None`` when the request is
+    unauthenticated. Routers that need to enforce auth use
+    :func:`require_auth` instead.
+    """
+    return getattr(request.state, "principal", None)
+
+
+def require_auth(request: Request) -> User:
+    """FastAPI dependency that enforces a valid session.
+
+    Returns the logged-in :class:`primer.model.user.User`. Raises
+    HTTP 401 if the request didn't carry a valid signed cookie.
+    Apply this to routers whose endpoints require authentication
+    (i.e. everything under /v1/* except the auth router itself plus
+    /v1/health, /metrics, and the env-gated /v1/_test/*).
+    """
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, User):
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "auth_required"},
+        )
+    return user
 
 
 __all__ = [
@@ -357,6 +380,7 @@ __all__ = [
     "get_llm_provider_storage",
     "get_principal",
     "get_provider_registry",
+    "require_auth",
     "get_scheduler",
     "get_semantic_search_registry",
     "get_semantic_search_storage",
