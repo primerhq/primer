@@ -67,10 +67,40 @@ async def app(
 
 
 @pytest.fixture
-async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+async def raw_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    """Plain HTTP client with no auto-authentication.
+
+    Use this from auth-focused tests that need to exercise the
+    unauthenticated and first-boot code paths.
+    """
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
+        yield c
+
+
+@pytest.fixture
+async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    """HTTP client with an auto-registered + logged-in test user.
+
+    Almost every existing test pre-dates auth; rather than make each
+    one log in, the fixture registers a default user and yields a
+    client that already carries the signed session cookie. Auth-
+    focused tests should depend on ``raw_client`` instead.
+    """
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        # Best-effort register; ignore 409 if a prior test already
+        # created the user (per-test storage reset means this is
+        # almost always the first call).
+        try:
+            await c.post(
+                "/v1/auth/register",
+                json={"username": "testuser", "password": "testpassword"},
+            )
+        except Exception:
+            pass
         yield c
 
 

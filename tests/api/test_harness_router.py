@@ -365,6 +365,10 @@ async def test_claim_engine_upsert_on_fetch(app_with_engine, fake_storage_provid
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         r = await c.post("/v1/harnesses/hns_fetch_eng/fetch")
         assert r.status_code == 202
 
@@ -385,6 +389,10 @@ async def test_claim_engine_upsert_on_delete_uninstall(app_with_engine, fake_sto
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         r = await c.delete("/v1/harnesses/hns_del_eng")
         assert r.status_code == 202
 
@@ -410,6 +418,10 @@ async def test_claim_engine_upsert_on_sync(app_with_engine, fake_storage_provide
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         r = await c.post("/v1/harnesses/hns_sync_eng/sync")
         assert r.status_code == 202
 
@@ -436,6 +448,10 @@ async def test_claim_engine_upsert_on_install(app_with_engine, fake_storage_prov
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         r = await c.post("/v1/harnesses/hns_inst_eng/install")
         assert r.status_code == 202
 
@@ -461,5 +477,9 @@ async def test_claim_engine_none_is_noop_for_harness(fake_storage_provider, fake
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         r = await c.post("/v1/harnesses/hns_noop/fetch")
         assert r.status_code == 202

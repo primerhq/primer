@@ -95,6 +95,10 @@ async def client(app):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         yield c
 
 
@@ -320,6 +324,8 @@ class TestChatTitle:
         from starlette.testclient import TestClient as SyncTestClient
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -341,6 +347,8 @@ class TestChatTitle:
             "primer imposes on the chat list"
         )
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -361,6 +369,8 @@ class TestChatTitle:
         from starlette.testclient import TestClient as SyncTestClient
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -386,6 +396,8 @@ class TestChatTitle:
         png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -409,6 +421,8 @@ class TestChatWebSocket:
         # ASGI WebSocket protocol is easier to drive synchronously.
         fake_llm._reply_text = "hello back"
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             assert r.status_code == 201
             cid = r.json()["id"]
@@ -435,6 +449,8 @@ class TestChatWebSocket:
         from starlette.testclient import TestClient as SyncTestClient
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             # Run one turn so the chat has some history.
@@ -458,6 +474,8 @@ class TestChatWebSocket:
         from starlette.testclient import TestClient as SyncTestClient
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -476,6 +494,8 @@ class TestChatWebSocket:
         from starlette.testclient import TestClient as SyncTestClient
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -503,6 +523,8 @@ class TestChatWebSocket:
 
         fake_llm._reply_text = "saw the image"
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -581,6 +603,8 @@ class TestChatWebSocket:
         png_b64 = base64.b64encode(png_bytes).decode("ascii")
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -646,6 +670,8 @@ class TestChatWebSocket:
         png_b64 = base64.b64encode(png_bytes).decode("ascii")
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
 
@@ -701,6 +727,8 @@ class TestChatWebSocket:
         fake_llm.raise_on_stream = BadRequestError("upstream is down")
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -720,6 +748,8 @@ class TestChatWebSocket:
         from starlette.testclient import TestClient as SyncTestClient
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -735,6 +765,8 @@ class TestChatWebSocket:
         from starlette.testclient import TestClient as SyncTestClient
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -746,6 +778,8 @@ class TestChatWebSocket:
         from starlette.testclient import TestClient as SyncTestClient
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -758,6 +792,8 @@ class TestChatWebSocket:
         from starlette.websockets import WebSocketDisconnect
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             with pytest.raises(WebSocketDisconnect) as excinfo:
                 with sclient.websocket_connect("/v1/chats/no-such/ws") as ws:
                     ws.receive_json()
@@ -769,6 +805,8 @@ class TestChatWebSocket:
         from starlette.websockets import WebSocketDisconnect
 
         with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             sclient.delete(f"/v1/chats/{cid}")
@@ -856,6 +894,8 @@ async def test_claim_engine_upsert_called_on_user_message(
     _app, engine = app_with_engine
 
     with SyncTestClient(_app) as sclient:
+        sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
         # Use the agent seeded by the seeded_agent fixture (id="ag-chat").
         r = sclient.post("/v1/chats", json={"agent_id": seeded_agent.id})
         assert r.status_code == 201, r.text
@@ -882,6 +922,10 @@ async def test_claim_engine_delete_lease_on_soft_end(
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         r = await c.post("/v1/chats", json={"agent_id": seeded_agent.id})
         assert r.status_code == 201
         cid = r.json()["id"]
@@ -905,6 +949,10 @@ async def test_claim_engine_delete_lease_on_force_delete(
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         r = await c.post("/v1/chats", json={"agent_id": seeded_agent.id})
         assert r.status_code == 201
         cid = r.json()["id"]
@@ -934,6 +982,10 @@ async def test_claim_engine_none_is_noop(
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         r = await c.post("/v1/chats", json={"agent_id": seeded_agent.id})
         assert r.status_code == 201
         cid = r.json()["id"]

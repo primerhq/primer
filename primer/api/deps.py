@@ -6,8 +6,9 @@ Three layers:
    ``app.state``.
 2. Per-model ``Storage[T]`` resolvers that use the
    :class:`StorageProvider` to fetch the right typed handle.
-3. Principal passthrough that pulls the optional
-   ``X-Primer-Principal`` request header.
+3. Principal passthrough that reads from ``request.state`` (populated
+   by :class:`primer.api.middleware.auth.AuthMiddleware` after
+   verifying the signed ``primer_session`` cookie).
 
 The lifespan handler (or test factory) MUST stash two attributes on
 ``app.state`` before the first request: ``storage_provider`` and
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 from primer.api.registries import (
     ProviderRegistry,
@@ -52,9 +53,6 @@ if TYPE_CHECKING:
     from primer.int.storage import Storage
     from primer.int.storage_provider import StorageProvider
     from primer.worker.pool import WorkerPool
-
-
-PRINCIPAL_HEADER = "X-Primer-Principal"
 
 
 def _assert_app_state_initialized(request: Request) -> None:
@@ -341,15 +339,26 @@ def get_principal(request: Request) -> str | None:
     return getattr(request.state, "principal", None)
 
 
-def require_auth(request: Request) -> User:
-    """FastAPI dependency that enforces a valid session.
+def require_auth(request: Request = None) -> User | None:  # type: ignore[assignment]
+    """FastAPI dependency that enforces a valid session on HTTP routes.
 
     Returns the logged-in :class:`primer.model.user.User`. Raises
     HTTP 401 if the request didn't carry a valid signed cookie.
     Apply this to routers whose endpoints require authentication
     (i.e. everything under /v1/* except the auth router itself plus
     /v1/health, /metrics, and the env-gated /v1/_test/*).
+
+    When a router serves BOTH HTTP and WebSocket endpoints, applying
+    this dep at ``include_router(dependencies=...)`` time only catches
+    the HTTP routes — FastAPI's dep resolver injects ``request=None``
+    for WebSocket routes (since there is no HTTP Request in that
+    scope), and we short-circuit to ``None`` for those. WS handlers
+    are responsible for calling :func:`require_auth_ws` themselves.
     """
+    if request is None:
+        # WebSocket scope — no Request to verify. WS handlers MUST call
+        # require_auth_ws() to enforce auth.
+        return None
     user = getattr(request.state, "user", None)
     if not isinstance(user, User):
         raise HTTPException(
@@ -359,8 +368,20 @@ def require_auth(request: Request) -> User:
     return user
 
 
+def require_auth_ws(websocket) -> User | None:
+    """WebSocket-side counterpart to :func:`require_auth`.
+
+    Returns the authenticated user, or ``None`` if the request was not
+    authenticated. WS handlers should close the socket with a 4401 code
+    when ``None`` is returned. Implemented as a plain helper rather than
+    a FastAPI dep because FastAPI's WS dependency resolver does not
+    inject :class:`Request` the same way it does for HTTP routes.
+    """
+    user = getattr(websocket.state, "user", None)
+    return user if isinstance(user, User) else None
+
+
 __all__ = [
-    "PRINCIPAL_HEADER",
     "get_approval_resolver",
     "get_agent_storage",
     "get_channel_dispatcher",
@@ -381,6 +402,7 @@ __all__ = [
     "get_principal",
     "get_provider_registry",
     "require_auth",
+    "require_auth_ws",
     "get_scheduler",
     "get_semantic_search_registry",
     "get_semantic_search_storage",

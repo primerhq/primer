@@ -789,78 +789,78 @@ def _mount_routers(
     collections, compute) are skipped because the worker process does
     not serve external traffic.
     """
+    from fastapi import Depends
+    from primer.api.deps import require_auth
+
     prefix = f"/{API_VERSION}"
     # Always-on routers — health probes + worker observability/drain.
+    # Public: no auth dep so liveness/readiness probes work pre-login.
     app.include_router(health.router, prefix=prefix)
     app.include_router(workers_router.router, prefix=prefix)
     # Auth router — mounted unconditionally so login/register work in
     # all runtime modes. The router itself enforces single-user-v1.
+    # Public by design (the endpoints ARE the auth surface).
     app.include_router(auth_router, prefix=prefix)
     if runtime_mode == RuntimeMode.WORKER:
         return
+
+    # Everything below requires a valid session cookie. require_auth
+    # is applied at include-router time so router internals don't need
+    # to change (Commit 6).
+    auth_dep = [Depends(require_auth)]
+
     # Phase 1 — providers + tools
-    app.include_router(providers.llm_provider_router, prefix=prefix)
-    app.include_router(providers.embedding_provider_router, prefix=prefix)
-    app.include_router(providers.cross_encoder_provider_router, prefix=prefix)
+    app.include_router(providers.llm_provider_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(providers.embedding_provider_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(providers.cross_encoder_provider_router, prefix=prefix, dependencies=auth_dep)
     # builtin_toolsets_router MUST be registered before toolset_router so
     # GET /toolsets/builtin is matched by the literal route rather than
     # being captured as toolset_id="builtin" by the CRUD GET-by-id.
-    app.include_router(providers.builtin_toolsets_router, prefix=prefix)
-    app.include_router(providers.toolset_router, prefix=prefix)
-    app.include_router(semantic_search_router, prefix=prefix)
+    app.include_router(providers.builtin_toolsets_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(providers.toolset_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(semantic_search_router, prefix=prefix, dependencies=auth_dep)
     # Phase 2 — compute (Agent + Graph)
-    app.include_router(compute.agent_router, prefix=prefix)
-    app.include_router(compute.graph_router, prefix=prefix)
-    # Phase 3 — knowledge (Collection + Document). VectorStoreConfig
-    # has been removed; vector store is now managed per-row via
-    # SemanticSearchProvider rows (SSP registry).
-    app.include_router(knowledge.collection_router, prefix=prefix)
-    app.include_router(knowledge.document_router, prefix=prefix)
-    # Internal collections subsystem (config + bootstrap + per-entity
-    # semantic search). The search routes return 503 until the
-    # subsystem has been bootstrapped at least once.
-    app.include_router(internal_collections.router, prefix=prefix)
-    # Workspaces (providers, templates, workspaces + sessions / files /
-    # log sub-resources). Bespoke create/delete; PUT only for templates.
-    app.include_router(workspaces_router.provider_router, prefix=prefix)
-    app.include_router(workspaces_router.template_router, prefix=prefix)
-    app.include_router(workspaces_router.workspace_router, prefix=prefix)
-    app.include_router(workspaces_router.sessions_router, prefix=prefix)
-    app.include_router(workspaces_router.files_router, prefix=prefix)
-    app.include_router(workspaces_router.log_router, prefix=prefix)
-    # Sessions: nested CREATE under /v1/workspaces/{wid}/sessions plus
-    # the (currently empty) top-level router. Task 20 fills the top
-    # router with cross-workspace list/get/find and the resume / pause /
-    # cancel sub-resources.
-    app.include_router(sessions_router.nested_session_router, prefix=prefix)
-    app.include_router(sessions_router.top_session_router, prefix=prefix)
-    # Yielding-tools surface (M3+): ask_user pending/respond + the
-    # tool-agnostic cancel-yielded-tool. Routes live under
-    # /v1/sessions/{id}/...; the lifespan handler attaches the event
-    # bus required by the publish path.
-    app.include_router(yields_router.yields_router, prefix=prefix)
-    # Chat surface (M6): REST + WS for agent-driven conversations.
-    # Park fields on the Chat row reuse the M1-M5 yield machinery so
-    # the same listener / timer / sweeper / watcher / mcp-bridge
-    # wakes parked chats just like parked sessions.
-    app.include_router(chats_router.chats_router, prefix=prefix)
-    # Tool approval policies (§2 task 5): CRUD + invalidate endpoint.
+    app.include_router(compute.agent_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(compute.graph_router, prefix=prefix, dependencies=auth_dep)
+    # Phase 3 — knowledge (Collection + Document).
+    app.include_router(knowledge.collection_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(knowledge.document_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(internal_collections.router, prefix=prefix, dependencies=auth_dep)
+    # Workspaces (providers, templates, workspaces + sub-resources).
+    app.include_router(workspaces_router.provider_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(workspaces_router.template_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(workspaces_router.workspace_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(workspaces_router.sessions_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(workspaces_router.files_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(workspaces_router.log_router, prefix=prefix, dependencies=auth_dep)
+    # Sessions.
+    app.include_router(sessions_router.nested_session_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(sessions_router.top_session_router, prefix=prefix, dependencies=auth_dep)
+    # Yields.
+    app.include_router(yields_router.yields_router, prefix=prefix, dependencies=auth_dep)
+    # Chat REST. NOTE: the WS endpoint inside this router cannot use
+    # the same dep mechanism (FastAPI does not enforce auth deps on
+    # WebSocket routes the same way). The WS handler reads
+    # request.state.user manually after upgrade — see chats.py.
+    app.include_router(chats_router.chats_router, prefix=prefix, dependencies=auth_dep)
+    # Tool approval policies.
     from primer.api.routers.tool_approval import make_tool_approval_router
-    app.include_router(make_tool_approval_router(), prefix=prefix)
-    # Channel providers, channels, and workspace channel associations (§3 tasks 5-6).
+    app.include_router(make_tool_approval_router(), prefix=prefix, dependencies=auth_dep)
+    # Channel providers, channels, and workspace channel associations.
     from primer.api.routers.channels import (
         make_channel_provider_router,
         make_channel_router,
         make_workspace_channel_association_router,
     )
-    app.include_router(make_channel_provider_router(), prefix=prefix)
-    app.include_router(make_channel_router(), prefix=prefix)
-    app.include_router(make_workspace_channel_association_router(), prefix=prefix)
-    # Harness REST router (Task 10).
+    app.include_router(make_channel_provider_router(), prefix=prefix, dependencies=auth_dep)
+    app.include_router(make_channel_router(), prefix=prefix, dependencies=auth_dep)
+    app.include_router(make_workspace_channel_association_router(), prefix=prefix, dependencies=auth_dep)
+    # Harness REST router.
     from primer.api.routers.harness import harness_router
-    app.include_router(harness_router)
+    app.include_router(harness_router, dependencies=auth_dep)
     # Instrumentation endpoints — only mounted when the env var is set.
-    # The import is deferred so the module never loads in production.
+    # Public to keep the distributed test harness simple; the env var
+    # itself is the access gate.
     import os as _os
     if _os.environ.get("PRIMER_ENABLE_TEST_ENDPOINTS") == "1":
         from primer.api.routers._test_endpoints import router as _test_router

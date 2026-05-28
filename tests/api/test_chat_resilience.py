@@ -110,6 +110,10 @@ async def test_disconnect_mid_stream_then_reconnect_replays(
     fake_llm._stream_factory = _slow_stream
 
     with SyncTestClient(app) as sclient:
+
+        sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+
+        sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
         r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
         cid = r.json()["id"]
         # First WS: send + receive a couple frames, then close.
@@ -150,6 +154,10 @@ async def test_interrupt_cancels_in_flight_turn(
     fake_llm._stream_factory = _slow_stream
 
     with SyncTestClient(app) as sclient:
+
+        sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+
+        sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
         r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
         cid = r.json()["id"]
         with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
@@ -179,6 +187,8 @@ async def test_queued_user_messages_processed_fifo(
 
     fake_llm._reply_text = "ok"
     with SyncTestClient(app) as sclient:
+        sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
         r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
         cid = r.json()["id"]
         with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:

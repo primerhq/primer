@@ -10,7 +10,6 @@ from fastapi import Depends, FastAPI
 from httpx import ASGITransport
 
 from primer.api.deps import (
-    PRINCIPAL_HEADER,
     get_cross_encoder_provider_storage,
     get_embedding_provider_storage,
     get_llm_provider_storage,
@@ -57,19 +56,21 @@ async def test_singleton_resolvers_return_app_state(client, app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_principal_header_round_trips(client, app) -> None:
+async def test_principal_populated_by_session_cookie(client, app) -> None:
+    """After login, get_principal reads from request.state (set by the
+    cookie middleware). The conftest ``client`` fixture auto-registers
+    ``testuser`` and yields an already-authenticated client."""
     _mount_state_echo(app)
-    response = await client.get(
-        "/echo-principal",
-        headers={PRINCIPAL_HEADER: "alice@example.com"},
-    )
+    response = await client.get("/echo-principal")
     assert response.status_code == 200
-    assert response.json() == {"principal": "alice@example.com"}
+    assert response.json() == {"principal": "testuser"}
 
 
 @pytest.mark.asyncio
-async def test_principal_absent_when_header_missing(client, app) -> None:
+async def test_principal_none_when_unauthenticated(client, app) -> None:
     _mount_state_echo(app)
+    # Drop the auto-registered session cookie to assert the unauth path.
+    client.cookies.clear()
     response = await client.get("/echo-principal")
     assert response.status_code == 200
     assert response.json() == {"principal": None}

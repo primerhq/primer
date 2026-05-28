@@ -578,6 +578,15 @@ async def session_ws(
     7. On disconnect: closes the tick subscription.
     """
     import time as _time
+
+    # Auth check: middleware populates websocket.state.user from the
+    # session cookie. Close with WS-spec code 4401 if missing.
+    from primer.api.deps import require_auth_ws
+    if require_auth_ws(websocket) is None:
+        await websocket.accept()
+        await websocket.close(code=4401, reason="auth_required")
+        return
+
     sp = websocket.app.state.storage_provider
     sessions_storage = sp.get_storage(WorkspaceSession)
     event_bus = getattr(websocket.app.state, "event_bus", None)

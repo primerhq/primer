@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 # Pull in the existing test app fixture.
-from tests.api.conftest import client, app, fake_provider_registry  # noqa: F401
+from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 
 
 @pytest.mark.asyncio

@@ -67,6 +67,10 @@ async def client(app, bus_and_listener):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         yield c
 
 

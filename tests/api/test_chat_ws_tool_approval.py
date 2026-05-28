@@ -182,6 +182,8 @@ class TestAutoRejectOnUserMessage:
         app.state.event_bus.publish = _capture  # type: ignore[method-assign]
         try:
             with SyncTestClient(app) as sclient:
+                sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+                sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
                 with sclient.websocket_connect(f"/v1/chats/{chat_id}/ws") as ws:
                     ws.send_json({"kind": "user_message", "content": "hello"})
                     # Use ping/pong to synchronize: ensures the user_message
@@ -229,6 +231,8 @@ class TestAutoRejectOnUserMessage:
         app.state.event_bus.publish = _capture  # type: ignore[method-assign]
         try:
             with SyncTestClient(app) as sclient:
+                sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+                sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
                 with sclient.websocket_connect(f"/v1/chats/{chat_id}/ws") as ws:
                     ws.send_json({"kind": "interrupt"})
                     # interrupt no longer emits a row itself; use ping/pong
@@ -281,6 +285,8 @@ class TestToolApprovalDecide:
         app.state.event_bus.publish = _capture  # type: ignore[method-assign]
         try:
             with SyncTestClient(app) as sclient:
+                sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+                sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
                 with sclient.websocket_connect(f"/v1/chats/{chat_id}/ws") as ws:
                     ws.send_json({
                         "kind": "tool_approval_decide",
@@ -331,6 +337,8 @@ class TestToolApprovalDecide:
         app.state.event_bus.publish = _capture  # type: ignore[method-assign]
         try:
             with SyncTestClient(app) as sclient:
+                sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+                sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
                 with sclient.websocket_connect(f"/v1/chats/{chat_id}/ws") as ws:
                     ws.send_json({
                         "kind": "tool_approval_decide",
@@ -367,6 +375,10 @@ class TestToolApprovalDecide:
         await chat_storage.create(chat)
 
         with SyncTestClient(app) as sclient:
+
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
             with sclient.websocket_connect(f"/v1/chats/{chat_id}/ws") as ws:
                 ws.send_json({
                     "kind": "tool_approval_decide",

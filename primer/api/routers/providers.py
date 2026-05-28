@@ -33,10 +33,10 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Reque
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.api.deps import (
-    PRINCIPAL_HEADER,
     get_cross_encoder_provider_storage,
     get_embedding_provider_storage,
     get_llm_provider_storage,
+    get_principal,
     get_provider_registry,
     get_storage_provider,
     get_toolset_storage,
@@ -475,7 +475,7 @@ async def invalidate_toolset_provider(
 )
 async def list_toolset_tools(
     toolset_id: str = Path(..., description="Toolset id"),
-    principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
+    principal: str | None = Depends(get_principal),
     registry: ProviderRegistry = Depends(get_provider_registry),
 ) -> dict:
     """Enumerate the toolset's tools from the live provider.
@@ -624,7 +624,7 @@ async def list_builtin_toolsets(
     ),
 )
 async def list_all_tools(
-    principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
+    principal: str | None = Depends(get_principal),
     registry: ProviderRegistry = Depends(get_provider_registry),
     storage_provider=Depends(get_storage_provider),
 ) -> dict:

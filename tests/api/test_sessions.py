@@ -126,6 +126,13 @@ async def sessions_client(app):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://t",
     ) as c:
+        try:
+            await c.post(
+                "/v1/auth/register",
+                json={"username": "testuser", "password": "testpassword"},
+            )
+        except Exception:
+            pass
         yield c
 
 
@@ -629,6 +636,10 @@ async def test_claim_engine_upsert_on_create(
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         resp = await c.post(
             "/v1/workspaces/ws-eng/sessions",
             json={"binding": {"kind": "agent", "agent_id": "ag-eng"}},
@@ -684,6 +695,10 @@ async def test_claim_engine_delete_lease_on_cancel(
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         r = await c.post(
             "/v1/workspaces/ws-can/sessions",
             json={"binding": {"kind": "agent", "agent_id": "ag-can"}},
@@ -783,6 +798,10 @@ async def test_claim_engine_upsert_on_resume(
     async with AsyncClient(
         transport=ASGITransport(app=_app), base_url="http://t",
     ) as c:
+        try:
+            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        except Exception:
+            pass
         r = await c.post(
             "/v1/workspaces/ws-res/sessions",
             json={"binding": {"kind": "agent", "agent_id": "ag-res"}},
