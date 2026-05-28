@@ -38,6 +38,7 @@ over env vars (init args > env in pydantic-settings priority).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -46,7 +47,7 @@ import typer
 import uvicorn
 import yaml
 
-from matrix.api.app import create_app
+from matrix.api.app import create_app, _build_storage_provider
 from matrix.api.config import AppConfig
 from matrix.common.log import configure_logging
 from matrix.model.scheduler import RuntimeMode
@@ -172,6 +173,72 @@ def run_worker(
     cfg = _load_config(config, RuntimeMode.WORKER)
     _apply_logging(cfg)
     _run_uvicorn(cfg)
+
+
+@app.command("init")
+def run_init(
+    config: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--config", "-c",
+        help=(
+            "Path to a YAML config file. When omitted, "
+            "~/.matrix/config.yaml is auto-loaded if it exists; "
+            "otherwise built-in defaults apply."
+        ),
+        dir_okay=False, readable=True,
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help=(
+            "Re-run bootstrap even if it has already completed. "
+            "Skips rows that already exist (idempotent), but ignores "
+            "the completion marker so partially-failed runs can be retried."
+        ),
+    ),
+) -> None:
+    """Run first-time bootstrap. Idempotent; --force re-runs even if completed."""
+    # Use API runtime_mode — we only need the storage layer.
+    cfg = _load_config(config, RuntimeMode.API)
+
+    async def _run() -> None:
+        from matrix.bootstrap.runner import BootstrapRunner
+        from matrix.model.provider import (
+            CrossEncoderProvider,
+            EmbeddingProvider,
+            SemanticSearchProvider,
+        )
+        from matrix.model.workspace import WorkspaceProvider
+
+        storage_provider = _build_storage_provider(cfg)
+        await storage_provider.initialize()
+        try:
+            root_dir = Path("~/.matrix").expanduser()
+            runner = BootstrapRunner(
+                storage=storage_provider,
+                embedder_storage=storage_provider.get_storage(EmbeddingProvider),
+                ssp_storage=storage_provider.get_storage(SemanticSearchProvider),
+                cross_encoder_storage=storage_provider.get_storage(
+                    CrossEncoderProvider
+                ),
+                workspace_provider_storage=storage_provider.get_storage(
+                    WorkspaceProvider
+                ),
+                root_dir=root_dir,
+            )
+            result = await runner.run(force=force)
+        finally:
+            await storage_provider.aclose()
+
+        if result.created:
+            typer.echo(f"Created: {', '.join(result.created)}")
+        if result.skipped:
+            typer.echo(f"Skipped (already present): {', '.join(result.skipped)}")
+        if result.errors:
+            for provider_id, reason in result.errors:
+                typer.echo(f"Error [{provider_id}]: {reason}", err=True)
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
 
 
 def main() -> None:  # pragma: no cover
