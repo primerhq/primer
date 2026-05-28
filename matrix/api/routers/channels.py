@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Body, Depends, Path, Request, status
+from fastapi import APIRouter, Request
 
 from matrix.api.deps import get_storage_provider
 from matrix.api.errors import common_responses
@@ -14,7 +14,7 @@ from matrix.model.channel import (
     ChannelProvider,
     WorkspaceChannelAssociation,
 )
-from matrix.model.except_ import ConflictError, NotFoundError
+from matrix.model.except_ import ConflictError
 from matrix.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 
 
@@ -149,10 +149,8 @@ def make_channel_router() -> APIRouter:
 # ---------------------------------------------------------------------------
 # WorkspaceChannelAssociation router
 # ---------------------------------------------------------------------------
-# The association is scoped under /v1/workspaces/{wid}/channel_associations.
-# make_crud_router doesn't support a scope_field knob, so we write the
-# endpoints manually and use the flat /v1/workspace_channel_associations
-# path internally while adding a thin proxy at the scoped path.
+# Flat CRUD at /v1/workspace_channel_associations (UI GET/PUT/DELETE paths).
+# Scoped CRUD at /v1/workspaces/{wid}/channel_associations via scope_field.
 # ---------------------------------------------------------------------------
 
 
@@ -190,12 +188,12 @@ def make_workspace_channel_association_router() -> APIRouter:
     """Returns two routers combined:
 
     1. A flat CRUD router at /v1/workspace_channel_associations (full CRUD).
-    2. A scoped proxy router at /v1/workspaces/{wid}/channel_associations
-       that handles POST (create) scoped to the workspace.
+    2. A scoped CRUD router at /v1/workspaces/{wid}/channel_associations
+       that enforces workspace_id from the path for all CRUD operations.
     """
     router = APIRouter(tags=["workspace_channel_associations"])
 
-    # Flat CRUD router.
+    # Flat CRUD router (preserves UI-facing GET/PUT/DELETE paths).
     flat = make_crud_router(
         model_cls=WorkspaceChannelAssociation,
         storage_dep=_get_association_storage,
@@ -205,34 +203,18 @@ def make_workspace_channel_association_router() -> APIRouter:
     )
     router.include_router(flat)
 
-    # Scoped proxy: POST /v1/workspaces/{wid}/channel_associations
-    # Accepts the full WorkspaceChannelAssociation body; the wid path param
-    # must match workspace_id in the body (or we fill it from the path).
-    @router.post(
-        "/workspaces/{wid}/channel_associations",
-        response_model=WorkspaceChannelAssociation,
-        status_code=status.HTTP_201_CREATED,
-        summary="Create WorkspaceChannelAssociation scoped to workspace",
-        responses=common_responses(409, 422, 500),
+    # Scoped CRUD router: /v1/workspaces/{parent_id}/channel_associations
+    # scope_field enforces that workspace_id in the body matches the path param.
+    scoped = make_crud_router(
+        model_cls=WorkspaceChannelAssociation,
+        storage_dep=_get_association_storage,
+        plural="channel_associations",
+        tag="workspace_channel_associations",
+        scope_field="workspace_id",
+        parent_path_segment="workspaces",
+        on_pre_create=_association_on_pre_create,
     )
-    async def _scoped_create(
-        request: Request,
-        wid: str = Path(..., description="Workspace id"),
-        entity: WorkspaceChannelAssociation = Body(
-            ..., description="WorkspaceChannelAssociation body"
-        ),
-        storage=Depends(_get_association_storage),
-    ) -> WorkspaceChannelAssociation:
-        # Populate workspace_id from the path if not set / mismatched.
-        if entity.workspace_id != wid:
-            entity = entity.model_copy(update={"workspace_id": wid})
-        existing = await storage.get(entity.id)
-        if existing is not None:
-            raise ConflictError(
-                f"WorkspaceChannelAssociation with id {entity.id!r} already exists"
-            )
-        await _association_on_pre_create(entity, request)
-        return await storage.create(entity)
+    router.include_router(scoped)
 
     return router
 
