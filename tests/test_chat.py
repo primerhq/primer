@@ -18,7 +18,7 @@ from typing import get_args
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from matrix.model.chat import (
+from primer.model.chat import (
     AudioPart,
     Citation,
     DocumentPart,
@@ -49,8 +49,8 @@ from matrix.model.chat import (
     Usage,
     output_to_message,
 )
-from matrix.model.chats import Chat, ChatMessage, ChatMessageKind
-from matrix.model.common import Describeable, Identifiable
+from primer.model.chats import Chat, ChatMessage, ChatMessageKind
+from primer.model.common import Describeable, Identifiable
 
 
 # ============================================================================
@@ -954,7 +954,7 @@ class TestToolCallResult:
     """ToolCallResult is the return type of ToolsetProvider.call."""
 
     def test_minimal_result_has_default_is_error_false_and_no_extended(self) -> None:
-        from matrix.model.chat import ToolCallResult
+        from primer.model.chat import ToolCallResult
 
         r = ToolCallResult(output="hello")
 
@@ -963,7 +963,7 @@ class TestToolCallResult:
         assert r.extended is None
 
     def test_error_result_is_distinct_from_success(self) -> None:
-        from matrix.model.chat import ToolCallResult
+        from primer.model.chat import ToolCallResult
 
         r = ToolCallResult(output="boom", is_error=True)
 
@@ -971,7 +971,7 @@ class TestToolCallResult:
         assert r.is_error is True
 
     def test_extended_carries_arbitrary_dict(self) -> None:
-        from matrix.model.chat import ToolCallResult
+        from primer.model.chat import ToolCallResult
 
         r = ToolCallResult(
             output="text",

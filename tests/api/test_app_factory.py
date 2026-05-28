@@ -9,15 +9,15 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 
-from matrix.api.app import _build_storage_provider, _make_lifespan, create_app
-from matrix.api.config import AppConfig
-from matrix.model.provider import (
+from primer.api.app import _build_storage_provider, _make_lifespan, create_app
+from primer.api.config import AppConfig
+from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
     StorageProviderType,
 )
-from matrix.model.scheduler import RuntimeMode
-from matrix.storage.sqlite import SqliteStorageProvider
+from primer.model.scheduler import RuntimeMode
+from primer.storage.sqlite import SqliteStorageProvider
 
 
 def test_build_storage_provider_defaults_to_sqlite_home_path(
@@ -67,7 +67,7 @@ async def test_lifespan_with_in_memory_scheduler_sets_claim_engine(
     """Lifespan with in-memory scheduler constructs an InMemoryClaimEngine
     and stores it on app.state.claim_engine."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    from matrix.model.scheduler import (
+    from primer.model.scheduler import (
         InMemorySchedulerConfig,
         SchedulerProviderConfig,
         SchedulerProviderType,
@@ -81,7 +81,7 @@ async def test_lifespan_with_in_memory_scheduler_sets_claim_engine(
     )
     app = FastAPI(lifespan=_make_lifespan(cfg))
     async with app.router.lifespan_context(app):
-        from matrix.claim.in_memory import InMemoryClaimEngine
+        from primer.claim.in_memory import InMemoryClaimEngine
         assert isinstance(app.state.claim_engine, InMemoryClaimEngine), (
             f"expected InMemoryClaimEngine, got {type(app.state.claim_engine)}"
         )

@@ -12,16 +12,16 @@ import pytest
 import pytest_asyncio
 from pydantic import SecretStr
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.chat.dispatch import ChatDispatchDeps, run_one_chat_turn
-from matrix.chat.tick_router import ChatTickRouter, Tick
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chat import Done, Message, StreamEvent, TextDelta
-from matrix.model.chats import Chat, ChatMessage
-from matrix.model.provider import (
+from primer.bus.in_memory import InMemoryEventBus
+from primer.chat.dispatch import ChatDispatchDeps, run_one_chat_turn
+from primer.chat.tick_router import ChatTickRouter, Tick
+from primer.model.agent import Agent, AgentModel
+from primer.model.chat import Done, Message, StreamEvent, TextDelta
+from primer.model.chats import Chat, ChatMessage
+from primer.model.provider import (
     AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
 )
-from matrix.model.storage import (
+from primer.model.storage import (
     FieldRef, Op, OffsetPage, OrderBy, Predicate, Value,
 )
 
@@ -327,7 +327,7 @@ class TestCancelLifecycle:
         to None. This pins the spec's 'storage is durable cancel state'
         contract — bus drop must not lose the cancel signal.
         """
-        from matrix.chat.executor import ChatTurnRunner
+        from primer.chat.executor import ChatTurnRunner
 
         await fake_storage_provider.get_storage(LLMProvider).create(
             LLMProvider(

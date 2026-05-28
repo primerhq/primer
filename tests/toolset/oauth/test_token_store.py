@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from matrix.toolset.oauth.token_store import (
+from primer.toolset.oauth.token_store import (
     InMemoryTokenStore,
     TokenRecord,
 )

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.agent.tail import tail_split
-from matrix.model.chat import Message, TextPart
+from primer.agent.tail import tail_split
+from primer.model.chat import Message, TextPart
 
 
 def _u(text: str) -> Message:

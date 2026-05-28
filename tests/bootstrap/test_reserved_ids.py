@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from matrix.bootstrap.defaults import (
+from primer.bootstrap.defaults import (
     ALL_RESERVED_IDS,
     RESERVED_CROSS_ENCODERS,
     RESERVED_EMBEDDERS,
@@ -25,7 +25,7 @@ from matrix.bootstrap.defaults import (
     RESERVED_SSPS,
     RESERVED_WORKSPACE_PROVIDERS,
 )
-from matrix.api.registries.provider_registry import (
+from primer.api.registries.provider_registry import (
     RESERVED_CROSS_ENCODER_IDS,
     RESERVED_EMBEDDER_IDS,
     RESERVED_LLM_IDS,
@@ -74,7 +74,7 @@ def test_factory_specs_present():
 
 def test_embedder_spec_constructs_pydantic_model():
     """HuggingFace embedder spec must produce a valid EmbeddingProvider."""
-    from matrix.model.provider import EmbeddingProvider
+    from primer.model.provider import EmbeddingProvider
 
     spec = RESERVED_EMBEDDERS[RESERVED_HUGGINGFACE_EMBEDDER].copy()
     provider = EmbeddingProvider(**spec)
@@ -87,7 +87,7 @@ def test_embedder_spec_constructs_pydantic_model():
 
 def test_cross_encoder_spec_constructs_pydantic_model():
     """HuggingFace cross-encoder spec must produce a valid CrossEncoderProvider."""
-    from matrix.model.provider import CrossEncoderProvider
+    from primer.model.provider import CrossEncoderProvider
 
     spec = RESERVED_CROSS_ENCODERS[RESERVED_HUGGINGFACE_CROSS_ENCODER].copy()
     provider = CrossEncoderProvider(**spec)
@@ -100,7 +100,7 @@ def test_cross_encoder_spec_constructs_pydantic_model():
 
 def test_ssp_spec_constructs_pydantic_model(tmp_path):
     """LanceDB SSP spec (with path resolved) must produce a valid SemanticSearchProvider."""
-    from matrix.model.provider import LanceConfig, SemanticSearchProvider
+    from primer.model.provider import LanceConfig, SemanticSearchProvider
 
     raw_spec = RESERVED_SSPS[RESERVED_LANCE_SSP]
     spec = raw_spec.copy()
@@ -117,7 +117,7 @@ def test_ssp_spec_constructs_pydantic_model(tmp_path):
 
 def test_workspace_provider_spec_constructs_pydantic_model(tmp_path):
     """Local workspace provider spec (with path resolved) must produce a valid WorkspaceProvider."""
-    from matrix.model.workspace import WorkspaceProvider
+    from primer.model.workspace import WorkspaceProvider
 
     raw_spec = RESERVED_WORKSPACE_PROVIDERS[RESERVED_LOCAL_WORKSPACE_PROVIDER]
     config_dict = dict(raw_spec["config"])

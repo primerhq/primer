@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.model.collection import Collection, CollectionEmbedder, Document
+from primer.model.collection import Collection, CollectionEmbedder, Document
 
 
 _SSP_BODY = {

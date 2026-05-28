@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from matrix.session.tick_router import SessionTickRouter, Tick
+from primer.session.tick_router import SessionTickRouter, Tick
 
 
 @pytest.mark.asyncio

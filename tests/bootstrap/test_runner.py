@@ -13,19 +13,19 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from matrix.bootstrap.defaults import (
+from primer.bootstrap.defaults import (
     RESERVED_HUGGINGFACE_CROSS_ENCODER,
     RESERVED_HUGGINGFACE_EMBEDDER,
     RESERVED_LANCE_SSP,
     RESERVED_LOCAL_WORKSPACE_PROVIDER,
 )
-from matrix.bootstrap.runner import BootstrapResult, BootstrapRunner
-from matrix.int.storage import Storage
-from matrix.model.common import Identifiable
-from matrix.model.except_ import ConflictError, NotFoundError
-from matrix.model.provider import SqliteConfig
-from matrix.model.system_state import SystemState
-from matrix.storage.sqlite import SqliteStorageProvider
+from primer.bootstrap.runner import BootstrapResult, BootstrapRunner
+from primer.int.storage import Storage
+from primer.model.common import Identifiable
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.provider import SqliteConfig
+from primer.model.system_state import SystemState
+from primer.storage.sqlite import SqliteStorageProvider
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ async def storage_provider(
     tmp_path: Path,
 ) -> AsyncIterator[SqliteStorageProvider]:
     """Fresh SQLite-backed storage provider per test."""
-    cfg = SqliteConfig(path=tmp_path / "matrix.sqlite")
+    cfg = SqliteConfig(path=tmp_path / "primer.sqlite")
     provider = SqliteStorageProvider(cfg)
     await provider.initialize()
     try:
@@ -66,22 +66,22 @@ def _make_runner(
         storage=storage,
         embedder_storage=embedder_storage or storage.get_storage(
             __import__(
-                "matrix.model.provider", fromlist=["EmbeddingProvider"]
+                "primer.model.provider", fromlist=["EmbeddingProvider"]
             ).EmbeddingProvider
         ),
         ssp_storage=storage.get_storage(
             __import__(
-                "matrix.model.provider", fromlist=["SemanticSearchProvider"]
+                "primer.model.provider", fromlist=["SemanticSearchProvider"]
             ).SemanticSearchProvider
         ),
         cross_encoder_storage=storage.get_storage(
             __import__(
-                "matrix.model.provider", fromlist=["CrossEncoderProvider"]
+                "primer.model.provider", fromlist=["CrossEncoderProvider"]
             ).CrossEncoderProvider
         ),
         workspace_provider_storage=storage.get_storage(
             __import__(
-                "matrix.model.workspace", fromlist=["WorkspaceProvider"]
+                "primer.model.workspace", fromlist=["WorkspaceProvider"]
             ).WorkspaceProvider
         ),
         root_dir=root,

@@ -6,7 +6,7 @@ import json
 
 from pydantic import BaseModel, SecretStr
 
-from matrix.model.common import dump_for_storage
+from primer.model.common import dump_for_storage
 
 
 class _Inner(BaseModel):

@@ -17,17 +17,17 @@ from typing import Any
 
 import pytest
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.int.claim import ClaimKind, Lease, ReleaseOutcome
-from matrix.model.chat import Done, Error, TextDelta
-from matrix.model.workspace_session import (
+from primer.bus.in_memory import InMemoryEventBus
+from primer.int.claim import ClaimKind, Lease, ReleaseOutcome
+from primer.model.chat import Done, Error, TextDelta
+from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionMessageKind,
     SessionStatus,
     WorkspaceSession,
 )
-from matrix.model.yield_ import Yielded, YieldToWorker
-from matrix.session.dispatch import SessionDispatchDeps, run_one_session_turn
+from primer.model.yield_ import Yielded, YieldToWorker
+from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
 
 
 # ---------------------------------------------------------------------------

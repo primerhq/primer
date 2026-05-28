@@ -14,23 +14,23 @@ from typing import Any
 
 import pytest
 
-from matrix.api.registries import WorkspaceRegistry
-from matrix.internal_collections import (
+from primer.api.registries import WorkspaceRegistry
+from primer.internal_collections import (
     INTERNAL_COLLECTION_IDS,
     build_subsystem,
 )
-from matrix.model.except_ import ConflictError, NotFoundError
-from matrix.model.internal import (
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.internal import (
     INTERNAL_COLLECTIONS_CONFIG_ID,
     InternalCollectionsConfig,
 )
-from matrix.model.storage import OffsetPage, OffsetPageResponse
-from matrix.model.workspace import (
+from primer.model.storage import OffsetPage, OffsetPageResponse
+from primer.model.workspace import (
     LocalWorkspaceConfig,
     WorkspaceProvider,
     WorkspaceProviderType,
 )
-from matrix.toolset.workspaces import (
+from primer.toolset.workspaces import (
     WORKSPACES_TOOLSET_ID,
     build_workspaces_toolset,
 )
@@ -95,14 +95,14 @@ class _LiveSession:
 
     def __init__(self, session_id="sess-1") -> None:
         from datetime import datetime, timezone
-        from matrix.model.workspace_session import SessionStatus
+        from primer.model.workspace_session import SessionStatus
 
         self.session_id = session_id
         self._status = SessionStatus.RUNNING
 
     async def info(self):
         from datetime import datetime, timezone
-        from matrix.model.workspace_session import SessionInfo
+        from primer.model.workspace_session import SessionInfo
 
         return SessionInfo(
             session_id=self.session_id,
@@ -118,18 +118,18 @@ class _LiveSession:
         return self._status
 
     async def request_pause(self):
-        from matrix.model.workspace_session import SessionStatus
+        from primer.model.workspace_session import SessionStatus
 
         self._status = SessionStatus.PAUSED
 
     async def request_resume(self):
-        from matrix.model.workspace_session import SessionStatus
+        from primer.model.workspace_session import SessionStatus
 
         self._status = SessionStatus.RUNNING
 
     async def append_instruction(self, content):
         from datetime import datetime, timezone
-        from matrix.model.workspace_session import Instruction
+        from primer.model.workspace_session import Instruction
 
         return Instruction(
             instruction_id="i-1",
@@ -149,7 +149,7 @@ class _LiveWorkspace:
 
     async def list_files(self, path=".", *, recursive=False):
         from datetime import datetime, timezone
-        from matrix.model.workspace import FileEntry
+        from primer.model.workspace import FileEntry
 
         return [
             FileEntry(
@@ -163,7 +163,7 @@ class _LiveWorkspace:
 
     async def file_info(self, path):
         from datetime import datetime, timezone
-        from matrix.model.workspace import FileEntry
+        from primer.model.workspace import FileEntry
 
         if path not in self._files:
             raise NotFoundError(f"{path!r} not found")
@@ -189,7 +189,7 @@ class _LiveWorkspace:
 
     async def log(self, *, limit=50):
         from datetime import datetime, timezone
-        from matrix.model.workspace import CommitInfo
+        from primer.model.workspace import CommitInfo
 
         return [
             CommitInfo(

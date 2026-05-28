@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from matrix.chat.tick_router import ChatTickRouter, Tick
+from primer.chat.tick_router import ChatTickRouter, Tick
 
 
 @pytest.mark.asyncio

@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from matrix.channel.telegram.connection import _TelegramConnectionRegistry
-from matrix.model.channel import (
+from primer.channel.telegram.connection import _TelegramConnectionRegistry
+from primer.model.channel import (
     ChannelProvider, ChannelProviderType, TelegramChannelProviderConfig,
 )
 
@@ -37,7 +37,7 @@ async def test_shared_application_refcounted(monkeypatch):
         updater = _U()
 
     monkeypatch.setattr(
-        "matrix.channel.telegram.connection._build_application",
+        "primer.channel.telegram.connection._build_application",
         lambda cfg: _FakeApp(),
     )
     reg = _TelegramConnectionRegistry()

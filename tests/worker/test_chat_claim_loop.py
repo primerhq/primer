@@ -10,9 +10,9 @@ import pytest
 import pytest_asyncio
 from pydantic import SecretStr
 
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chats import Chat, ChatMessage
-from matrix.model.provider import (
+from primer.model.agent import Agent, AgentModel
+from primer.model.chats import Chat, ChatMessage
+from primer.model.provider import (
     AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
 )
 
@@ -56,7 +56,7 @@ async def test_worker_pool_claims_and_processes_chat(
     chat.last_seq = 1
     await chats.update(chat)
     # Upsert the chat into the engine claim queue (new engine-based claim path).
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
     await app.state.worker_pool._engine.upsert(ClaimKind.CHAT, "c1", priority=100)
 
     # Wait up to ~2.5s for the chat to drain (turn_status→idle).

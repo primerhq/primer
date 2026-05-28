@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 import openai
 import pytest
 
-from matrix.common.openai_errors import classify_openai_exception
-from matrix.model.except_ import (
+from primer.common.openai_errors import classify_openai_exception
+from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
     NetworkError,

@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from matrix.observability.metrics import reset_for_test
+from primer.observability.metrics import reset_for_test
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ def in_memory_tracer_provider():
 
 def _patch_tracer(provider):
     return patch(
-        "matrix.observability.tracing.get_tracer",
+        "primer.observability.tracing.get_tracer",
         side_effect=lambda name: provider.get_tracer(name),
     )
 
@@ -57,9 +57,9 @@ async def _drain(agen):
 
 
 def _make_anthropic_adapter(*, trace_llm_io: bool):
-    from matrix.coordinator.in_memory import InMemoryRateLimiter
-    from matrix.llm.anthropic import AnthropicLLM
-    from matrix.model.provider import (
+    from primer.coordinator.in_memory import InMemoryRateLimiter
+    from primer.llm.anthropic import AnthropicLLM
+    from primer.model.provider import (
         AnthropicConfig,
         LLMModel,
         LLMProvider,
@@ -80,9 +80,9 @@ def _make_anthropic_adapter(*, trace_llm_io: bool):
 
 
 def _make_openresponses_adapter(*, trace_llm_io: bool):
-    from matrix.coordinator.in_memory import InMemoryRateLimiter
-    from matrix.llm.openresponses import OpenResponsesLLM
-    from matrix.model.provider import (
+    from primer.coordinator.in_memory import InMemoryRateLimiter
+    from primer.llm.openresponses import OpenResponsesLLM
+    from primer.model.provider import (
         LLMModel,
         LLMProvider,
         LLMProviderType,
@@ -108,9 +108,9 @@ def _make_openresponses_adapter(*, trace_llm_io: bool):
 
 
 def _make_gemini_adapter(*, trace_llm_io: bool):
-    from matrix.coordinator.in_memory import InMemoryRateLimiter
-    from matrix.llm.gemini import GeminiLLM
-    from matrix.model.provider import (
+    from primer.coordinator.in_memory import InMemoryRateLimiter
+    from primer.llm.gemini import GeminiLLM
+    from primer.model.provider import (
         GoogleConfig,
         LLMModel,
         LLMProvider,
@@ -131,9 +131,9 @@ def _make_gemini_adapter(*, trace_llm_io: bool):
 
 
 def _make_ollama_adapter(*, trace_llm_io: bool):
-    from matrix.coordinator.in_memory import InMemoryRateLimiter
-    from matrix.llm.ollama import OllamaLLM
-    from matrix.model.provider import (
+    from primer.coordinator.in_memory import InMemoryRateLimiter
+    from primer.llm.ollama import OllamaLLM
+    from primer.model.provider import (
         LLMModel,
         LLMProvider,
         LLMProviderType,
@@ -248,7 +248,7 @@ def _fake_ollama_stream_chunks():
 
 
 def _user_messages():
-    from matrix.model.chat import Message, TextPart
+    from primer.model.chat import Message, TextPart
     return [Message(role="user", parts=[TextPart(text="Hello world")])]
 
 

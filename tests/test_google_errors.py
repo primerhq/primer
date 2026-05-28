@@ -6,8 +6,8 @@ import httpx
 import pytest
 from google.genai import errors as gerrors
 
-from matrix.common.google_errors import classify_google_exception
-from matrix.model.except_ import (
+from primer.common.google_errors import classify_google_exception
+from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
     NetworkError,

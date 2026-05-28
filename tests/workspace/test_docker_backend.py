@@ -69,12 +69,12 @@ pytestmark = pytest.mark.skipif(
 
 def _make_config():
     """Return a minimal DockerRuntimeConfig with default socket."""
-    from matrix.model.workspace import DockerRuntimeConfig
+    from primer.model.workspace import DockerRuntimeConfig
     return DockerRuntimeConfig()
 
 
 def _make_resources():
-    from matrix.model.workspace import ResourceLimits
+    from primer.model.workspace import ResourceLimits
     return ResourceLimits()
 
 
@@ -100,8 +100,8 @@ async def _teardown(sandbox, volume_name: str, adapter) -> None:
 @pytest.mark.asyncio
 async def test_create_sandbox_returns_ws_sandbox() -> None:
     """create_sandbox should return a WSSandbox (not DockerSandbox)."""
-    from matrix.workspace.runtime.docker import DockerRuntimeAdapter
-    from matrix.workspace.runtime.ws_sandbox import WSSandbox
+    from primer.workspace.runtime.docker import DockerRuntimeAdapter
+    from primer.workspace.runtime.ws_sandbox import WSSandbox
 
     adapter = DockerRuntimeAdapter(_make_config())
     await adapter.initialize()
@@ -132,7 +132,7 @@ async def test_create_sandbox_returns_ws_sandbox() -> None:
 async def test_create_sandbox_injects_token() -> None:
     """Container should have MATRIX_RUNTIME_TOKEN in its environment."""
     import aiodocker as _aiodocker
-    from matrix.workspace.runtime.docker import DockerRuntimeAdapter
+    from primer.workspace.runtime.docker import DockerRuntimeAdapter
 
     adapter = DockerRuntimeAdapter(_make_config())
     await adapter.initialize()
@@ -168,7 +168,7 @@ async def test_create_sandbox_injects_token() -> None:
 async def test_create_sandbox_port_mapped() -> None:
     """Container should expose a host-side port mapping for 5959/tcp."""
     import aiodocker as _aiodocker
-    from matrix.workspace.runtime.docker import DockerRuntimeAdapter, _RUNTIME_PORT
+    from primer.workspace.runtime.docker import DockerRuntimeAdapter, _RUNTIME_PORT
 
     adapter = DockerRuntimeAdapter(_make_config())
     await adapter.initialize()
@@ -209,7 +209,7 @@ async def test_create_sandbox_port_mapped() -> None:
 @pytest.mark.asyncio
 async def test_read_write_via_ws_sandbox() -> None:
     """Basic read/write file operation via WSSandbox against live runtime."""
-    from matrix.workspace.runtime.docker import DockerRuntimeAdapter
+    from primer.workspace.runtime.docker import DockerRuntimeAdapter
 
     adapter = DockerRuntimeAdapter(_make_config())
     await adapter.initialize()
@@ -242,7 +242,7 @@ async def test_read_write_via_ws_sandbox() -> None:
 @pytest.mark.asyncio
 async def test_stop_and_remove_sandbox() -> None:
     """stop() and remove() should complete without raising."""
-    from matrix.workspace.runtime.docker import DockerRuntimeAdapter
+    from primer.workspace.runtime.docker import DockerRuntimeAdapter
     import aiodocker as _aiodocker
 
     adapter = DockerRuntimeAdapter(_make_config())

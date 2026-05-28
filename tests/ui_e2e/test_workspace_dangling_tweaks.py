@@ -12,7 +12,7 @@ Covers backlog items:
 * U0090 — Graph status panel turns red with a missing-agent issue
   after the referenced agent is deleted via the API.
 * U0093 — Sidebar section-header collapse state persists via
-  ``localStorage["matrix.sidebar.collapsed"]`` across reload.
+  ``localStorage["primer.sidebar.collapsed"]`` across reload.
 """
 
 from __future__ import annotations
@@ -423,7 +423,7 @@ def test_u0093_sidebar_section_collapse_persists_via_localstorage(
 ) -> None:
     """U0093 — Clicking a sidebar section header (e.g. "Compute")
     toggles its collapsed state, persists ``{<group>: true}`` into
-    ``localStorage["matrix.sidebar.collapsed"]`` (chrome.jsx:127-132),
+    ``localStorage["primer.sidebar.collapsed"]`` (chrome.jsx:127-132),
     and on reload the section renders with the ``collapsed`` class
     applied to ``.nav-section``.
 
@@ -435,7 +435,7 @@ def test_u0093_sidebar_section_collapse_persists_via_localstorage(
     # Reset state so the test is deterministic regardless of prior
     # iterations leaving collapse state in localStorage.
     page.evaluate(
-        "() => { try { localStorage.removeItem('matrix.sidebar.collapsed'); } catch(_e){} }"
+        "() => { try { localStorage.removeItem('primer.sidebar.collapsed'); } catch(_e){} }"
     )
     page.reload(wait_until="domcontentloaded")
     page.locator(".nav-item").first.wait_for(
@@ -462,12 +462,12 @@ def test_u0093_sidebar_section_collapse_persists_via_localstorage(
 
     # localStorage now carries the persisted state.
     stored = page.evaluate(
-        "() => localStorage.getItem('matrix.sidebar.collapsed')"
+        "() => localStorage.getItem('primer.sidebar.collapsed')"
     )
     assert stored is not None, "localStorage matrix.sidebar.collapsed not written"
     parsed = json.loads(stored)
     assert parsed.get("Compute") is True, (
-        f"matrix.sidebar.collapsed missing Compute=true; got {parsed!r}"
+        f"primer.sidebar.collapsed missing Compute=true; got {parsed!r}"
     )
 
     # Reload — collapsed class must persist on the section.
@@ -488,5 +488,5 @@ def test_u0093_sidebar_section_collapse_persists_via_localstorage(
     # Clean up — restore default uncollapsed state so subsequent
     # tests see a fresh sidebar.
     page.evaluate(
-        "() => { try { localStorage.removeItem('matrix.sidebar.collapsed'); } catch(_e){} }"
+        "() => { try { localStorage.removeItem('primer.sidebar.collapsed'); } catch(_e){} }"
     )

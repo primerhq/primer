@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from matrix.catalog import SemanticEntityType, SemanticHit
+from primer.catalog import SemanticEntityType, SemanticHit
 
 
 class TestSemanticEntityType:

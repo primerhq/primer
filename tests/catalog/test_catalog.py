@@ -8,14 +8,14 @@ from typing import Any
 
 import pytest
 
-from matrix.catalog import SemanticCatalog, SemanticEntityType
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chat import Tool
-from matrix.model.collection import Collection, CollectionEmbedder
-from matrix.model.embedding import EmbedResponse, Embedding
-from matrix.model.except_ import BadRequestError, ConfigError, NotFoundError
-from matrix.model.graph import Graph, _AgentNodeRef
-from matrix.model.vector import EmbeddingRecord, SearchResult
+from primer.catalog import SemanticCatalog, SemanticEntityType
+from primer.model.agent import Agent, AgentModel
+from primer.model.chat import Tool
+from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.embedding import EmbedResponse, Embedding
+from primer.model.except_ import BadRequestError, ConfigError, NotFoundError
+from primer.model.graph import Graph, _AgentNodeRef
+from primer.model.vector import EmbeddingRecord, SearchResult
 
 
 # ===========================================================================

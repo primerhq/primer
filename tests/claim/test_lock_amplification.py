@@ -27,10 +27,10 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 import pytest_asyncio
 
-from matrix.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
-from matrix.claim.postgres import PostgresClaimEngine
-from matrix.model.provider import PoolConfig, PostgresConfig
-from matrix.storage.postgres import PostgresStorageProvider
+from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
+from primer.claim.postgres import PostgresClaimEngine
+from primer.model.provider import PoolConfig, PostgresConfig
+from primer.storage.postgres import PostgresStorageProvider
 
 
 _URL_ENV = "MATRIX_TEST_POSTGRES_URL"
@@ -49,7 +49,7 @@ _needs_pg = pytest.mark.skipif(
 
 
 def _parse_url(url: str) -> PostgresConfig:
-    from matrix.model.except_ import ConfigError
+    from primer.model.except_ import ConfigError
 
     p = urlparse(url)
     if p.scheme not in {"postgres", "postgresql"}:

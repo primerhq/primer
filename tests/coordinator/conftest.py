@@ -7,9 +7,9 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest_asyncio
 
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import PoolConfig, PostgresConfig
-from matrix.storage.postgres import PostgresStorageProvider
+from primer.model.except_ import ConfigError
+from primer.model.provider import PoolConfig, PostgresConfig
+from primer.storage.postgres import PostgresStorageProvider
 
 
 _URL_ENV = "MATRIX_TEST_POSTGRES_URL"

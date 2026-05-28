@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.model.except_ import (
+from primer.model.except_ import (
     AuthenticationError,
     AuthRequiredError,
     BadRequestError,

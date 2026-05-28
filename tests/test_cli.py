@@ -1,4 +1,4 @@
-"""Unit tests for the Typer CLI in :mod:`matrix.cli`.
+"""Unit tests for the Typer CLI in :mod:`primer.cli`.
 
 Covers config loading, runtime-mode forcing, and command wiring.
 We do NOT actually start uvicorn — the test app patches the
@@ -15,10 +15,10 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-import matrix.cli as cli_mod
-from matrix.api.config import AppConfig
-from matrix.model.provider import StorageProviderType
-from matrix.model.scheduler import RuntimeMode
+import primer.cli as cli_mod
+from primer.api.config import AppConfig
+from primer.model.provider import StorageProviderType
+from primer.model.scheduler import RuntimeMode
 
 
 # ---------------------------------------------------------------------------

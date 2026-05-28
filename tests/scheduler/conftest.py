@@ -26,12 +26,12 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import PoolConfig, PostgresConfig
-from matrix.model.scheduler import PostgresSchedulerConfig
-from matrix.scheduler.in_memory import InMemoryScheduler
-from matrix.scheduler.postgres import PostgresScheduler
-from matrix.storage.postgres import PostgresStorageProvider
+from primer.model.except_ import ConfigError
+from primer.model.provider import PoolConfig, PostgresConfig
+from primer.model.scheduler import PostgresSchedulerConfig
+from primer.scheduler.in_memory import InMemoryScheduler
+from primer.scheduler.postgres import PostgresScheduler
+from primer.storage.postgres import PostgresStorageProvider
 
 
 _DSN_ENV = "MATRIX_PG_TEST_DSN"

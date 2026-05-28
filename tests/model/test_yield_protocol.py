@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from matrix.model.yield_ import (
+from primer.model.yield_ import (
     ToolContext,
     YieldCancelled,
     YieldTimeout,

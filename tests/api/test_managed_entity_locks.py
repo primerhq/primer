@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.collection import Collection, CollectionEmbedder, Document
-from matrix.model.graph import Graph, _AgentNodeRef, _TerminalNode
-from matrix.model.provider import Toolset, ToolsetProviderType
+from primer.model.agent import Agent, AgentModel
+from primer.model.collection import Collection, CollectionEmbedder, Document
+from primer.model.graph import Graph, _AgentNodeRef, _TerminalNode
+from primer.model.provider import Toolset, ToolsetProviderType
 
 
 # ---------------------------------------------------------------------------

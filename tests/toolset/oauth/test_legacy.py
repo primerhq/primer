@@ -6,10 +6,10 @@ import httpx
 import pytest
 import respx
 
-from matrix.model.except_ import BadRequestError
-from matrix.model.provider import OAuthClientCredentials
-from matrix.toolset.oauth.discovery import AuthServerMetadata
-from matrix.toolset.oauth.legacy import (
+from primer.model.except_ import BadRequestError
+from primer.model.provider import OAuthClientCredentials
+from primer.toolset.oauth.discovery import AuthServerMetadata
+from primer.toolset.oauth.legacy import (
     build_authorization_url_legacy,
     discover_legacy,
     exchange_code_legacy,

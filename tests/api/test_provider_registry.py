@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import SecretStr
 
-from matrix.api.registries.provider_registry import ProviderRegistry
-from matrix.model.except_ import ConfigError, NotFoundError
-from matrix.model.provider import (
+from primer.api.registries.provider_registry import ProviderRegistry
+from primer.model.except_ import ConfigError, NotFoundError
+from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderModel,
     CrossEncoderProvider,
@@ -153,14 +153,14 @@ class TestEmbedderResolution:
 class TestToolsetDispatchDefault:
     @pytest.mark.asyncio
     async def test_default_factory_constructs_mcp_provider(self) -> None:
-        from matrix.model.provider import (
+        from primer.model.provider import (
             McpConfig,
             StdioConfig,
             Toolset,
             ToolsetProviderType,
             TransportType,
         )
-        from matrix.toolset.mcp import McpToolsetProvider
+        from primer.toolset.mcp import McpToolsetProvider
 
         sp = _FakeStorageProvider()
         await sp.get_storage(Toolset).create(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from matrix.model.scheduler import (
+from primer.model.scheduler import (
     InMemorySchedulerConfig,
     PostgresSchedulerConfig,
     RuntimeMode,

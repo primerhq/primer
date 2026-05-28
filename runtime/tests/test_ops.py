@@ -1,4 +1,4 @@
-"""Tests for runtime/matrix_runtime/ops.py — one per op, including error cases.
+"""Tests for runtime/primer_runtime/ops.py — one per op, including error cases.
 
 We test the handlers directly (unit-level) AND through the WS server (integration-level)
 to ensure the server correctly routes to each handler.
@@ -17,10 +17,10 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestServer
 
-from matrix_runtime.exec import run_exec
-from matrix_runtime.ops import OpError, append_line, delete, list_dir, read_file, stat, write_file
-from matrix_runtime.protocol import ErrorCode
-from matrix_runtime.server import build_app
+from primer_runtime.exec import run_exec
+from primer_runtime.ops import OpError, append_line, delete, list_dir, read_file, stat, write_file
+from primer_runtime.protocol import ErrorCode
+from primer_runtime.server import build_app
 
 
 # ---------------------------------------------------------------------------

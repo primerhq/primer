@@ -9,7 +9,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from matrix.observability.metrics import reset_for_test
+from primer.observability.metrics import reset_for_test
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +28,7 @@ def in_memory_tracer():
 
 def _patch_tracer(provider):
     return patch(
-        "matrix.observability.tracing.get_tracer",
+        "primer.observability.tracing.get_tracer",
         side_effect=lambda name: provider.get_tracer(name),
     )
 
@@ -40,9 +40,9 @@ def _patch_tracer(provider):
 
 def _make_manager_with_fake_tool(tool_name: str, tool_result: str, *, raises=None):
     """Build a ToolExecutionManager with one registered fake toolset tool."""
-    from matrix.agent.tool_manager import ToolExecutionManager
-    from matrix.int.toolset import ToolsetProvider
-    from matrix.model.chat import Tool
+    from primer.agent.tool_manager import ToolExecutionManager
+    from primer.int.toolset import ToolsetProvider
+    from primer.model.chat import Tool
 
     class FakeToolsetProvider(ToolsetProvider):
         async def list_tools(self, *, principal=None):
@@ -75,7 +75,7 @@ def _make_manager_with_fake_tool(tool_name: str, tool_result: str, *, raises=Non
 @pytest.mark.asyncio
 async def test_tool_exec_span_attributes(in_memory_tracer):
     provider, exporter = in_memory_tracer
-    from matrix.model.chat import ToolCallPart
+    from primer.model.chat import ToolCallPart
 
     mgr = _make_manager_with_fake_tool("search", "result")
     # Pre-build catalogue so routing is set up
@@ -99,8 +99,8 @@ async def test_tool_exec_span_attributes(in_memory_tracer):
 @pytest.mark.asyncio
 async def test_tool_exec_ok_counter(in_memory_tracer):
     provider, exporter = in_memory_tracer
-    import matrix.observability.metrics as m
-    from matrix.model.chat import ToolCallPart
+    import primer.observability.metrics as m
+    from primer.model.chat import ToolCallPart
 
     mgr = _make_manager_with_fake_tool("calc", "42")
     await mgr.list_tools()
@@ -122,9 +122,9 @@ async def test_tool_exec_ok_counter(in_memory_tracer):
 @pytest.mark.asyncio
 async def test_tool_exec_fail_counter_and_exception(in_memory_tracer):
     provider, exporter = in_memory_tracer
-    import matrix.observability.metrics as m
-    from matrix.model.chat import ToolCallPart
-    from matrix.model.except_ import UnsupportedContentError
+    import primer.observability.metrics as m
+    from primer.model.chat import ToolCallPart
+    from primer.model.except_ import UnsupportedContentError
 
     mgr = _make_manager_with_fake_tool(
         "boom", "never", raises=UnsupportedContentError("kaboom")
@@ -155,11 +155,11 @@ async def test_tool_exec_fail_counter_and_exception(in_memory_tracer):
 async def test_tool_exec_fail_on_unknown_tool(in_memory_tracer):
     """Unknown tool name should increment fail counter and record exception."""
     provider, exporter = in_memory_tracer
-    import matrix.observability.metrics as m
-    from matrix.model.chat import ToolCallPart
-    from matrix.model.except_ import UnsupportedContentError
+    import primer.observability.metrics as m
+    from primer.model.chat import ToolCallPart
+    from primer.model.except_ import UnsupportedContentError
 
-    from matrix.agent.tool_manager import ToolExecutionManager
+    from primer.agent.tool_manager import ToolExecutionManager
     mgr = ToolExecutionManager(toolset_providers={})
     await mgr.list_tools()
 
@@ -187,8 +187,8 @@ async def test_tool_exec_fail_on_unknown_tool(in_memory_tracer):
 @pytest.mark.asyncio
 async def test_tool_exec_duration_observed(in_memory_tracer):
     provider, exporter = in_memory_tracer
-    import matrix.observability.metrics as m
-    from matrix.model.chat import ToolCallPart
+    import primer.observability.metrics as m
+    from primer.model.chat import ToolCallPart
 
     mgr = _make_manager_with_fake_tool("timer", "done")
     await mgr.list_tools()

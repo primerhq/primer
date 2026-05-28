@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import HttpUrl, SecretStr
 
-from matrix.llm.openresponses import OpenResponsesLLM, _POLICY_BY_FLAVOR, _FlavorPolicy
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import (
+from primer.llm.openresponses import OpenResponsesLLM, _POLICY_BY_FLAVOR, _FlavorPolicy
+from primer.model.except_ import ConfigError
+from primer.model.provider import (
     Limits,
     LLMModel,
     LLMProvider,
@@ -112,14 +112,14 @@ class TestConstructor:
             OpenResponsesLLM(provider)
 
     def test_initialises_rate_limiter(self) -> None:
-        from matrix.coordinator.in_memory import InMemoryRateLimiter
+        from primer.coordinator.in_memory import InMemoryRateLimiter
         provider = _make_provider(max_concurrency=3)
         llm = OpenResponsesLLM(provider)
         assert isinstance(llm._rate_limiter, InMemoryRateLimiter)
         assert llm._max_concurrency == 3
 
     def test_logs_init_with_structured_context(self, caplog: pytest.LogCaptureFixture) -> None:
-        caplog.set_level(logging.INFO, logger="matrix.llm.openresponses")
+        caplog.set_level(logging.INFO, logger="primer.llm.openresponses")
         provider = _make_provider(
             models=["gpt-4o-mini", "gpt-4o"], max_concurrency=2
         )
@@ -155,7 +155,7 @@ class TestListModels:
 
 import openai
 
-from matrix.model.except_ import AuthenticationError
+from primer.model.except_ import AuthenticationError
 
 
 def _make_openai_error(cls: type, *, status_code: int = 400, code: str | None = None):
@@ -175,8 +175,8 @@ def _make_openai_error(cls: type, *, status_code: int = 400, code: str | None = 
 
 import base64
 
-from matrix.llm.openresponses import _messages_to_input_items, _part_to_input_content
-from matrix.model.chat import (
+from primer.llm.openresponses import _messages_to_input_items, _part_to_input_content
+from primer.model.chat import (
     AudioPart,
     DocumentPart,
     ExtendedPart,
@@ -187,7 +187,7 @@ from matrix.model.chat import (
     ToolResultPart,
     VideoPart,
 )
-from matrix.model.except_ import UnsupportedContentError
+from primer.model.except_ import UnsupportedContentError
 
 
 class TestPartToInputContent:
@@ -439,14 +439,14 @@ class TestMessagesToInputItems:
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from matrix.llm.openresponses import (
+from primer.llm.openresponses import (
     _build_sampling_params,
     _extract_extended_kwargs,
     _response_format_to_text_param,
     _tool_choice_to_openai,
     _tool_to_openai,
 )
-from matrix.model.chat import Tool
+from primer.model.chat import Tool
 
 
 class TestTools:
@@ -543,7 +543,7 @@ class TestSampling:
     def test_stop_silently_dropped_with_warning(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.WARNING, logger="matrix.llm.openresponses")
+        caplog.set_level(logging.WARNING, logger="primer.llm.openresponses")
         out = _build_sampling_params(
             temperature=None, top_p=None, max_output_tokens=None, stop=["\n", "END"]
         )
@@ -557,7 +557,7 @@ class TestExtendedKwargs:
     def test_unknown_keys_dropped_with_debug_log(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="matrix.llm.openresponses")
+        caplog.set_level(logging.DEBUG, logger="primer.llm.openresponses")
         out = _extract_extended_kwargs({"frobnicate": True, "foobar": 42})
         assert out == {}
         debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
@@ -602,7 +602,7 @@ class TestExtendedKwargs:
         assert _extract_extended_kwargs({}) == {}
 
 
-from matrix.llm.openresponses import (
+from primer.llm.openresponses import (
     _StreamState,
     _map_incomplete_reason,
     _map_stop_reason,
@@ -641,7 +641,7 @@ class TestStopReason:
 
 from types import SimpleNamespace as NS
 
-from matrix.model.chat import (
+from primer.model.chat import (
     Citation,
     Done,
     ExtendedEvent,
@@ -659,7 +659,7 @@ from matrix.model.chat import (
     ToolCallStart,
     Usage,
 )
-from matrix.model.chat import Error as ChatError
+from primer.model.chat import Error as ChatError
 
 
 class TestStreamMapping:
@@ -991,7 +991,7 @@ class TestStreamMapping:
     def test_unknown_event_type_returns_empty(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="matrix.llm.openresponses")
+        caplog.set_level(logging.DEBUG, logger="primer.llm.openresponses")
         out = _translate_event(NS(type="response.some_future_event"), _StreamState())
         assert out == []
         assert any("response.some_future_event" in r.message for r in caplog.records)
@@ -999,7 +999,7 @@ class TestStreamMapping:
 
 from collections.abc import AsyncIterator
 
-from matrix.model.except_ import ModelNotFoundError
+from primer.model.except_ import ModelNotFoundError
 
 
 async def _aiter(items: list) -> AsyncIterator:
@@ -1018,7 +1018,7 @@ def _patched_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock_instance.responses = MagicMock()
     mock_instance.responses.create = AsyncMock()
     cls_mock = MagicMock(return_value=mock_instance)
-    monkeypatch.setattr("matrix.llm.openresponses.AsyncOpenAI", cls_mock)
+    monkeypatch.setattr("primer.llm.openresponses.AsyncOpenAI", cls_mock)
     return mock_instance
 
 
@@ -1262,7 +1262,7 @@ class TestConcurrency:
 
 class TestPackageReexport:
     def test_openresponses_llm_reexported_from_package(self) -> None:
-        import matrix.llm as llm_pkg
+        import primer.llm as llm_pkg
 
         assert "OpenResponsesLLM" in llm_pkg.__all__
         assert llm_pkg.OpenResponsesLLM is OpenResponsesLLM

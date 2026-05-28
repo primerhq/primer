@@ -9,30 +9,30 @@ from typing import Any
 
 import pytest
 
-from matrix.agent.tool_manager import ToolExecutionManager
-from matrix.agent.workspace_executor import WorkspaceAgentExecutor
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chat import (
+from primer.agent.tool_manager import ToolExecutionManager
+from primer.agent.workspace_executor import WorkspaceAgentExecutor
+from primer.model.agent import Agent, AgentModel
+from primer.model.chat import (
     Done,
     Message,
     StreamEvent,
     TextDelta,
     TextPart,
 )
-from matrix.model.except_ import ConflictError
-from matrix.model.provider import LLMModel
-from matrix.model.workspace_session import (
+from primer.model.except_ import ConflictError
+from primer.model.provider import LLMModel
+from primer.model.workspace_session import (
     AgentBinding,
     SessionStatus,
 )
-from matrix.model.workspace import (
+from primer.model.workspace import (
     FileMount,
     LocalWorkspaceConfig,
     WorkspaceProvider,
     WorkspaceProviderType,
     WorkspaceTemplate,
 )
-from matrix.workspace import (
+from primer.workspace import (
     LocalWorkspaceBackend,
     WorkspaceBackendFactory,
 )

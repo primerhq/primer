@@ -13,9 +13,9 @@ from typing import cast
 import pytest
 from pydantic import HttpUrl
 
-from matrix.llm.ollama import OllamaLLM
-from matrix.model.chat import Done, Message, StreamEvent, TextDelta, TextPart
-from matrix.model.provider import (
+from primer.llm.ollama import OllamaLLM
+from primer.model.chat import Done, Message, StreamEvent, TextDelta, TextPart
+from primer.model.provider import (
     Limits,
     LLMModel,
     LLMProvider,

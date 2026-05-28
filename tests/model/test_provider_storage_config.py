@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from matrix.model.provider import (
+from primer.model.provider import (
     PostgresConfig,
     PoolConfig,
     SqliteConfig,

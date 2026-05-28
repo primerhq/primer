@@ -12,11 +12,11 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
-from matrix.api.app import create_test_app
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chat import Done, Message, StreamEvent, TextDelta
-from matrix.model.chats import Chat, ChatMessage
-from matrix.model.provider import (
+from primer.api.app import create_test_app
+from primer.model.agent import Agent, AgentModel
+from primer.model.chat import Done, Message, StreamEvent, TextDelta
+from primer.model.chats import Chat, ChatMessage
+from primer.model.provider import (
     AnthropicConfig,
     Limits,
     LLMModel,
@@ -562,7 +562,7 @@ class TestChatWebSocket:
         import base64
         from starlette.testclient import TestClient as SyncTestClient
 
-        from matrix.model.except_ import BadRequestError
+        from primer.model.except_ import BadRequestError
 
         # Make the fake LLM reject the call with the same shape
         # OpenAI / LM Studio return when content includes a file/image
@@ -637,7 +637,7 @@ class TestChatWebSocket:
         import base64
         from starlette.testclient import TestClient as SyncTestClient
 
-        from matrix.model.except_ import BadRequestError
+        from primer.model.except_ import BadRequestError
 
         png_bytes = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42m"
@@ -696,7 +696,7 @@ class TestChatWebSocket:
         actually an attachment that could explain the rejection."""
         from starlette.testclient import TestClient as SyncTestClient
 
-        from matrix.model.except_ import BadRequestError
+        from primer.model.except_ import BadRequestError
 
         fake_llm.raise_on_stream = BadRequestError("upstream is down")
 
@@ -850,7 +850,7 @@ async def test_claim_engine_upsert_called_on_user_message(
     ``app_with_engine`` also uses) so both fixtures share the same LLMProvider
     and Agent rows.
     """
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
     from starlette.testclient import TestClient as SyncTestClient
 
     _app, engine = app_with_engine
@@ -876,7 +876,7 @@ async def test_claim_engine_delete_lease_on_soft_end(
     app_with_engine, seeded_agent,
 ):
     """DELETE /chats/{id} (soft-end) calls engine.delete_lease(CHAT, chat_id)."""
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
 
     _app, engine = app_with_engine
     async with AsyncClient(
@@ -899,7 +899,7 @@ async def test_claim_engine_delete_lease_on_force_delete(
     app_with_engine, seeded_agent,
 ):
     """DELETE /chats/{id}?force=true calls engine.delete_lease(CHAT, chat_id)."""
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
 
     _app, engine = app_with_engine
     async with AsyncClient(

@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime, UTC, timedelta
-from matrix.int.claim import (
+from primer.int.claim import (
     ClaimKind, Lease, ReleaseOutcome, ClaimAdapter, ClaimEngine,
 )
 

@@ -18,10 +18,10 @@ from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport
 from pydantic import BaseModel
 
-from matrix.api.errors import register_error_handlers
-from matrix.api.routers._crud import make_crud_router
-from matrix.api.routers._references import ReferenceCheck, build_reference_block_hook
-from matrix.model.storage import FieldRef, OffsetPage, OffsetPageResponse, Op, Predicate, Value
+from primer.api.errors import register_error_handlers
+from primer.api.routers._crud import make_crud_router
+from primer.api.routers._references import ReferenceCheck, build_reference_block_hook
+from primer.model.storage import FieldRef, OffsetPage, OffsetPageResponse, Op, Predicate, Value
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ class _FakeStorage:
 
     async def find(self, predicate: Any, page: OffsetPage, **_: Any) -> OffsetPageResponse[Any]:  # type: ignore[override]
         # Evaluate the simple EQ predicate manually.
-        from matrix.model.storage import FieldRef, Op, Predicate, Value
+        from primer.model.storage import FieldRef, Op, Predicate, Value
 
         matched: list[Any] = []
         if isinstance(predicate, Predicate) and predicate.op == Op.EQ:

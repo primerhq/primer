@@ -11,10 +11,10 @@ import asyncio
 
 import pytest
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.channel.adapter import ResponseEnvelope
-from matrix.channel.inbox import ChannelInbox
-from matrix.model.except_ import BadRequestError
+from primer.bus.in_memory import InMemoryEventBus
+from primer.channel.adapter import ResponseEnvelope
+from primer.channel.inbox import ChannelInbox
+from primer.model.except_ import BadRequestError
 
 
 @pytest.mark.asyncio

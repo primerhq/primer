@@ -8,14 +8,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from matrix.api.config import AppConfig
-from matrix.model.provider import (
+from primer.api.config import AppConfig
+from primer.model.provider import (
     PostgresConfig,
     SqliteConfig,
     StorageProviderConfig,
     StorageProviderType,
 )
-from matrix.model.scheduler import (
+from primer.model.scheduler import (
     InMemorySchedulerConfig,
     RuntimeMode,
     SchedulerProviderConfig,
@@ -53,7 +53,7 @@ class TestDbField:
         assert cfg.db.provider == StorageProviderType.SQLITE
 
     def test_db_accepts_postgres(self) -> None:
-        from matrix.model.provider import PoolConfig
+        from primer.model.provider import PoolConfig
 
         cfg = AppConfig(
             db=StorageProviderConfig(
@@ -111,7 +111,7 @@ class TestTomlConfigPath:
         tmp_path: Path,
     ) -> None:
         sqlite_path = tmp_path / "from-toml.sqlite"
-        toml_path = tmp_path / "matrix.toml"
+        toml_path = tmp_path / "primer.toml"
         toml_path.write_text(
             textwrap.dedent(
                 f"""
@@ -139,7 +139,7 @@ class TestTomlConfigPath:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        toml_path = tmp_path / "matrix.toml"
+        toml_path = tmp_path / "primer.toml"
         toml_path.write_text(
             'log_level = "debug"\n', encoding="utf-8",
         )

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from matrix.harness.diff import DiffOp, diff_renderings
-from matrix.model.harness import RenderedEntry
+from primer.harness.diff import DiffOp, diff_renderings
+from primer.model.harness import RenderedEntry
 
 
 def _entry(kind, name, rendered_hash, resolved_id=None):

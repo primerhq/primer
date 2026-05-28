@@ -12,8 +12,8 @@ import asyncio
 
 import pytest
 
-from matrix.bus.host_inotify_probe import HostInotifyProbe
-from matrix.bus.ws_watch_probe import Change
+from primer.bus.host_inotify_probe import HostInotifyProbe
+from primer.bus.ws_watch_probe import Change
 
 
 @pytest.mark.asyncio

@@ -20,11 +20,11 @@ import pytest_asyncio
 from fastapi import FastAPI
 from pydantic import SecretStr
 
-from matrix.api.app import create_test_app
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chat import Done, Message, StreamEvent, TextDelta
-from matrix.model.chats import Chat
-from matrix.model.provider import (
+from primer.api.app import create_test_app
+from primer.model.agent import Agent, AgentModel
+from primer.model.chat import Done, Message, StreamEvent, TextDelta
+from primer.model.chats import Chat
+from primer.model.provider import (
     AnthropicConfig,
     Limits,
     LLMModel,
@@ -386,7 +386,7 @@ class TestToolApprovalDecide:
 @pytest.mark.asyncio
 async def test_maybe_auto_reject_publishes_when_parked_on_approval() -> None:
     """Helper publishes rejection when chat is parked on _approval."""
-    from matrix.api.routers.chats import _maybe_auto_reject_pending_approval
+    from primer.api.routers.chats import _maybe_auto_reject_pending_approval
 
     class _StubBus:
         def __init__(self) -> None:
@@ -417,7 +417,7 @@ async def test_maybe_auto_reject_publishes_when_parked_on_approval() -> None:
 @pytest.mark.asyncio
 async def test_maybe_auto_reject_noop_when_not_parked() -> None:
     """Helper is a no-op when chat is not parked."""
-    from matrix.api.routers.chats import _maybe_auto_reject_pending_approval
+    from primer.api.routers.chats import _maybe_auto_reject_pending_approval
 
     class _StubBus:
         def __init__(self) -> None:
@@ -442,7 +442,7 @@ async def test_maybe_auto_reject_noop_when_not_parked() -> None:
 @pytest.mark.asyncio
 async def test_maybe_auto_reject_noop_when_parked_on_non_approval_tool() -> None:
     """Helper is a no-op when chat is parked on a tool that is NOT _approval."""
-    from matrix.api.routers.chats import _maybe_auto_reject_pending_approval
+    from primer.api.routers.chats import _maybe_auto_reject_pending_approval
 
     class _StubBus:
         def __init__(self) -> None:

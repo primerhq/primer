@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import matrix.cli as cli_mod
+import primer.cli as cli_mod
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ def runner() -> CliRunner:
 def _write_config(tmp_path: Path) -> Path:
     """Write a minimal YAML config pointing the SQLite DB at tmp_path."""
     cfg_file = tmp_path / "config.yaml"
-    db_path = tmp_path / "matrix.sqlite"
+    db_path = tmp_path / "primer.sqlite"
     cfg_file.write_text(
         textwrap.dedent(
             f"""\

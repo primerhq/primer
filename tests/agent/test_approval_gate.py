@@ -7,12 +7,12 @@ from typing import Any
 
 import pytest
 
-from matrix.agent.approval import (
+from primer.agent.approval import (
     ApprovalContext,
     ApprovalVerdict,
     evaluate_approval_gate,
 )
-from matrix.model.tool_approval import (
+from primer.model.tool_approval import (
     LlmApprovalConfig,
     PolicyApprovalConfig,
     RequiredApprovalConfig,
@@ -109,7 +109,7 @@ async def test_llm_judge_returns_structured_verdict(monkeypatch):
         return {"required": True, "reason": "looks risky"}
 
     monkeypatch.setattr(
-        "matrix.agent.approval._dispatch_llm_judge", _fake_judge,
+        "primer.agent.approval._dispatch_llm_judge", _fake_judge,
     )
     v = await evaluate_approval_gate(
         policy=policy, context=_ctx(),
@@ -132,7 +132,7 @@ async def test_llm_judge_failure_fails_closed(monkeypatch):
         raise RuntimeError("provider down")
 
     monkeypatch.setattr(
-        "matrix.agent.approval._dispatch_llm_judge", _boom,
+        "primer.agent.approval._dispatch_llm_judge", _boom,
     )
     v = await evaluate_approval_gate(
         policy=policy, context=_ctx(),

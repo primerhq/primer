@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.int.scheduler import Scheduler
-from matrix.model.except_ import ConfigError
-from matrix.model.scheduler import (
+from primer.int.scheduler import Scheduler
+from primer.model.except_ import ConfigError
+from primer.model.scheduler import (
     InMemorySchedulerConfig,
     SchedulerProviderConfig,
     SchedulerProviderType,
 )
-from matrix.scheduler.factory import SchedulerFactory
+from primer.scheduler.factory import SchedulerFactory
 
 
 def test_factory_creates_in_memory():
@@ -25,7 +25,7 @@ def test_factory_creates_in_memory():
 
 def test_factory_postgres_requires_storage_provider():
     """Postgres impl needs the storage provider's connection pool."""
-    from matrix.model.scheduler import PostgresSchedulerConfig
+    from primer.model.scheduler import PostgresSchedulerConfig
     cfg = SchedulerProviderConfig(
         provider=SchedulerProviderType.POSTGRES,
         config=PostgresSchedulerConfig(),

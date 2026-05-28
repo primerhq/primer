@@ -10,15 +10,15 @@ import pytest
 # Importing matrix.workspace ensures ToolCallContext.model_rebuild() runs so
 # the forward reference to AgentSession resolves before the manager
 # constructs a context.
-import matrix.workspace  # noqa: F401
-from matrix.agent.tool_manager import ToolExecutionManager
-from matrix.model.chat import (
+import primer.workspace  # noqa: F401
+from primer.agent.tool_manager import ToolExecutionManager
+from primer.model.chat import (
     Tool,
     ToolCallPart,
     ToolCallResult,
     ToolResultPart,
 )
-from matrix.model.except_ import (
+from primer.model.except_ import (
     AuthRequiredError,
     ConfigError,
     ProviderError,
@@ -236,7 +236,7 @@ class _FakeWorkspaceTool:
 
     async def execute(self, args, ctx):
         self.executed.append((args, ctx))
-        from matrix.workspace.tool import ToolResult
+        from primer.workspace.tool import ToolResult
 
         return ToolResult(output=f"ws({args.x})", metadata={}, truncated=False)
 
@@ -307,7 +307,7 @@ class TestWorkspaceRouting:
 
         class _BigTool(_FakeWorkspaceTool):
             async def execute(self, args, ctx):
-                from matrix.workspace.tool import ToolResult
+                from primer.workspace.tool import ToolResult
 
                 return ToolResult(output=big, metadata={}, truncated=False)
 

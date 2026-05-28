@@ -9,7 +9,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport
 
-from matrix.api.deps import (
+from primer.api.deps import (
     PRINCIPAL_HEADER,
     get_cross_encoder_provider_storage,
     get_embedding_provider_storage,
@@ -22,10 +22,10 @@ from matrix.api.deps import (
     get_toolset_storage,
     get_worker_pool,
 )
-from matrix.api.errors import register_error_handlers
-from matrix.api.registries import ProviderRegistry
-from matrix.model.except_ import ConfigError
-from matrix.model.workspace_session import WorkspaceSession
+from primer.api.errors import register_error_handlers
+from primer.api.registries import ProviderRegistry
+from primer.model.except_ import ConfigError
+from primer.model.workspace_session import WorkspaceSession
 
 
 def _mount_state_echo(app: FastAPI) -> None:
@@ -97,7 +97,7 @@ async def test_per_model_storage_helpers_resolve_correct_handles(
     client, app, fake_storage_provider
 ) -> None:
     """The four Storage[T] helpers each return the right typed handle."""
-    from matrix.model.provider import (
+    from primer.model.provider import (
         CrossEncoderProvider,
         EmbeddingProvider,
         LLMProvider,
@@ -151,7 +151,7 @@ def test_get_session_storage_returns_storage(app, fake_storage_provider):
 
 
 def test_get_scheduler_returns_scheduler_when_present(app):
-    from matrix.scheduler.in_memory import InMemoryScheduler
+    from primer.scheduler.in_memory import InMemoryScheduler
 
     sched = InMemoryScheduler()
     app.state.scheduler = sched

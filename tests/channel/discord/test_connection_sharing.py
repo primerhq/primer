@@ -7,8 +7,8 @@ from pydantic import SecretStr
 
 discord = pytest.importorskip("discord")
 
-from matrix.channel.discord.connection import _DiscordConnectionRegistry
-from matrix.model.channel import (
+from primer.channel.discord.connection import _DiscordConnectionRegistry
+from primer.model.channel import (
     ChannelProvider, ChannelProviderType, DiscordChannelProviderConfig,
 )
 
@@ -35,14 +35,14 @@ async def test_acquire_returns_same_client(monkeypatch):
         def user(self): return type("U", (), {"id": 42})()
 
     monkeypatch.setattr(
-        "matrix.channel.discord.connection._build_client",
+        "primer.channel.discord.connection._build_client",
         lambda cfg: _FakeClient(),
     )
     # Stub the start-as-task helper so the test doesn't actually
     # try to connect to Discord.
     async def _start_task(client, token, *, ready_wait=1.0): pass
     monkeypatch.setattr(
-        "matrix.channel.discord.connection._start_client_as_task",
+        "primer.channel.discord.connection._start_client_as_task",
         _start_task,
     )
     reg = _DiscordConnectionRegistry()

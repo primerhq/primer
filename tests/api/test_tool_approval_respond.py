@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from matrix.model.workspace_session import WorkspaceSession
+from primer.model.workspace_session import WorkspaceSession
 
 
 def _make_approval_parked_session(*, session_id: str, tool_call_id: str) -> WorkspaceSession:

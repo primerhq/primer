@@ -34,7 +34,7 @@ import pytest
 import pytest_asyncio
 
 from tests.distributed.cluster import TestCluster
-from matrix.int.coordinator import ROLE_TIMER_SCHEDULER
+from primer.int.coordinator import ROLE_TIMER_SCHEDULER
 
 
 # ---------------------------------------------------------------------------

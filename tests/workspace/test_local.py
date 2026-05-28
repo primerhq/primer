@@ -10,16 +10,16 @@ from pathlib import Path
 
 import pytest
 
-from matrix.model.except_ import BadRequestError, NotFoundError
-from matrix.model.workspace_session import AgentBinding, SessionStatus
-from matrix.model.workspace import (
+from primer.model.except_ import BadRequestError, NotFoundError
+from primer.model.workspace_session import AgentBinding, SessionStatus
+from primer.model.workspace import (
     FileMount,
     PackageSpec,
     ResourceLimits,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from matrix.workspace import LocalWorkspace, LocalWorkspaceBackend
+from primer.workspace import LocalWorkspace, LocalWorkspaceBackend
 
 
 pytestmark = pytest.mark.skipif(
@@ -397,7 +397,7 @@ class TestWorkspaceSessions:
     async def test_start_session_with_duplicate_id_raises(
         self, provider: LocalWorkspaceBackend
     ) -> None:
-        from matrix.model.except_ import ConflictError
+        from primer.model.except_ import ConflictError
 
         ws = await provider.create(_template())
         await ws.start_session(_binding(), id="dup")
@@ -580,12 +580,12 @@ class TestWorkspaceAclose:
 
 class TestFactory:
     async def test_create_local_backend_from_config(self, tmp_path: Path) -> None:
-        from matrix.model.workspace import (
+        from primer.model.workspace import (
             LocalWorkspaceConfig,
             WorkspaceProvider,
             WorkspaceProviderType,
         )
-        from matrix.workspace import WorkspaceBackendFactory
+        from primer.workspace import WorkspaceBackendFactory
 
         config = WorkspaceProvider(
             id="local-1",

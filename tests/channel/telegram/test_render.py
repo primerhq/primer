@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from matrix.channel.adapter import PromptEnvelope
-from matrix.channel.telegram.render import (
+from primer.channel.adapter import PromptEnvelope
+from primer.channel.telegram.render import (
     ASK_TOKEN_RE, REJECT_TOKEN_RE,
     build_ask_user_message, build_tool_approval_message,
     compute_tag,

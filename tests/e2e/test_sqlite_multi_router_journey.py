@@ -44,14 +44,14 @@ from pathlib import Path
 import httpx
 import pytest
 
-from matrix.api.app import create_app
-from matrix.api.config import AppConfig
-from matrix.model.provider import (
+from primer.api.app import create_app
+from primer.api.config import AppConfig
+from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
     StorageProviderType,
 )
-from matrix.model.scheduler import (
+from primer.model.scheduler import (
     InMemorySchedulerConfig,
     RuntimeMode,
     SchedulerProviderConfig,

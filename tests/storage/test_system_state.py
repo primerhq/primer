@@ -14,11 +14,11 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 import pytest_asyncio
 
-from matrix.int.storage_provider import StorageProvider
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import PoolConfig, PostgresConfig, SqliteConfig
-from matrix.storage.postgres import PostgresStorageProvider
-from matrix.storage.sqlite import SqliteStorageProvider
+from primer.int.storage_provider import StorageProvider
+from primer.model.except_ import ConfigError
+from primer.model.provider import PoolConfig, PostgresConfig, SqliteConfig
+from primer.storage.postgres import PostgresStorageProvider
+from primer.storage.sqlite import SqliteStorageProvider
 
 
 # ---------------------------------------------------------------------------

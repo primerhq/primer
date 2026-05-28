@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from matrix.model.except_ import ConfigError, MatrixError, NotFoundError
-from matrix.toolset.search import (
+from primer.model.except_ import ConfigError, MatrixError, NotFoundError
+from primer.toolset.search import (
     SEARCH_TOOLSET_ID,
     build_search_toolset,
 )

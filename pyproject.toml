@@ -1,5 +1,5 @@
 [project]
-name = "matrix"
+name = "primer"
 version = "0.0.1"
 description = "Microagents framework"
 readme = "README.md"
@@ -49,14 +49,14 @@ dependencies = [
 ]
 
 [project.scripts]
-matrix = "matrix.cli:app"
+primer = "primer.cli:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["matrix"]
+packages = ["primer"]
 
 [dependency-groups]
 dev = [
@@ -86,17 +86,17 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["matrix"]
+source = ["primer"]
 omit = [
-    "matrix/test.py",
-    "matrix/test_compaction.py",   # hand-driven LLM probe script (research/compaction.md)
-    "matrix/*/test_*.py",
+    "primer/test.py",
+    "primer/test_compaction.py",   # hand-driven LLM probe script (research/compaction.md)
+    "primer/*/test_*.py",
     # Embedding data types — exercised once the embedder adapters and their
     # tests land in a later sub-project.
-    "matrix/model/embedding.py",
-    # CLI entry point — only invoked via `python -m matrix.api`; needs
+    "primer/model/embedding.py",
+    # CLI entry point — only invoked via `python -m primer.api`; needs
     # a live Postgres to run, so not covered by the unit suite.
-    "matrix/api/__main__.py",
+    "primer/api/__main__.py",
     # Typer CLI launcher — uvicorn invocation requires a live Postgres,
     # so the no-cover lines are the uvicorn.run() and main() shims.
     # The pure helpers (_load_config, _apply_logging) and the command
@@ -105,20 +105,20 @@ omit = [
     # Postgres scheduler — exercised by tests/scheduler/test_postgres.py
     # which gates on MATRIX_PG_TEST_DSN. Without a live Postgres the
     # tests skip and this file shows ~25% coverage; same treatment as
-    # the matrix/storage/postgres.py family in CI-with-DSN runs.
-    "matrix/scheduler/postgres.py",
+    # the primer/storage/postgres.py family in CI-with-DSN runs.
+    "primer/scheduler/postgres.py",
     # FakeSandbox is a test seam (production-importable but only used by tests).
-    "matrix/workspace/sandbox/fake.py",
+    "primer/workspace/sandbox/fake.py",
     # ContainerRuntimeAdapter ABC has no concrete impls in Phase A.
-    "matrix/workspace/runtime/adapter.py",
+    "primer/workspace/runtime/adapter.py",
     # Runtime adapters need real Docker/Podman/containerd daemons;
     # gated contract tests cover them when env vars are set.
-    "matrix/workspace/runtime/docker.py",
-    "matrix/workspace/runtime/podman.py",
-    "matrix/workspace/runtime/containerd/adapter.py",
+    "primer/workspace/runtime/docker.py",
+    "primer/workspace/runtime/podman.py",
+    "primer/workspace/runtime/containerd/adapter.py",
     # K8s backend needs a real cluster; gated integration tests.
-    "matrix/workspace/k8s/sandbox.py",
-    "matrix/workspace/k8s/backend.py",
+    "primer/workspace/k8s/sandbox.py",
+    "primer/workspace/k8s/backend.py",
 ]
 
 [tool.coverage.report]
@@ -129,5 +129,5 @@ exclude_lines = [
     "if TYPE_CHECKING:",
 ]
 # Per-module overrides — adapter modules ramp up to 90% as they land.
-# Until matrix/llm/* and matrix/embedder/* contain code, the gate is
+# Until primer/llm/* and primer/embedder/* contain code, the gate is
 # effectively a no-op because there are no covered statements yet.

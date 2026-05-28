@@ -7,12 +7,12 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
-from matrix.channel.adapter import PromptEnvelope, ResponseEnvelope
-from matrix.channel.inbox import ChannelInbox
-from matrix.channel.telegram.adapter import TelegramChannelAdapter
-from matrix.channel.telegram.connection import TELEGRAM_CONNECTIONS
-from matrix.channel.telegram.render import compute_tag
-from matrix.model.channel import (
+from primer.channel.adapter import PromptEnvelope, ResponseEnvelope
+from primer.channel.inbox import ChannelInbox
+from primer.channel.telegram.adapter import TelegramChannelAdapter
+from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
+from primer.channel.telegram.render import compute_tag
+from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
     TelegramChannelProviderConfig,
 )

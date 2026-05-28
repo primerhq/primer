@@ -7,9 +7,9 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import SqliteConfig
-from matrix.storage.sqlite import SqliteStorage, SqliteStorageProvider
+from primer.model.except_ import ConfigError
+from primer.model.provider import SqliteConfig
+from primer.storage.sqlite import SqliteStorage, SqliteStorageProvider
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,7 @@ async def test_aclose_idempotent(tmp_path: Path):
 async def test_get_storage_returns_same_instance_for_same_model(
     sqlite_provider: SqliteStorageProvider,
 ):
-    from matrix.model.common import Identifiable
+    from primer.model.common import Identifiable
 
     class _A(Identifiable):
         v: int
@@ -89,7 +89,7 @@ async def test_get_storage_returns_same_instance_for_same_model(
 @pytest.mark.asyncio
 async def test_get_storage_before_initialize_raises(tmp_path: Path):
     provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "x.sqlite"))
-    from matrix.model.common import Identifiable
+    from primer.model.common import Identifiable
 
     class _A(Identifiable):
         v: int

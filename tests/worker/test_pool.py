@@ -8,17 +8,17 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from matrix.model.scheduler import WorkerConfig
-from matrix.model.workspace_session import (
+from primer.model.scheduler import WorkerConfig
+from primer.model.workspace_session import (
     AgentSessionBinding,
     WorkspaceSession,
     SessionStatus,
 )
-from matrix.claim.in_memory import InMemoryClaimEngine
-from matrix.int.claim import ClaimKind, Lease as ClaimLease, ReleaseOutcome
-from matrix.int.scheduler import Lease as SchedLease
-from matrix.scheduler.in_memory import InMemoryScheduler
-from matrix.worker.pool import WorkerPool
+from primer.claim.in_memory import InMemoryClaimEngine
+from primer.int.claim import ClaimKind, Lease as ClaimLease, ReleaseOutcome
+from primer.int.scheduler import Lease as SchedLease
+from primer.scheduler.in_memory import InMemoryScheduler
+from primer.worker.pool import WorkerPool
 
 
 @pytest.fixture
@@ -146,7 +146,7 @@ async def test_run_one_turn_marks_complete(scheduler, engine, monkeypatch):
         worker_id="wrk-test", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    from matrix.scheduler.in_memory import _LeaseState
+    from primer.scheduler.in_memory import _LeaseState
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     lease = _make_sched_lease(sid, "wrk-test")
 
@@ -200,7 +200,7 @@ async def test_run_one_turn_skips_when_session_already_ended(scheduler, engine, 
         worker_id="wrk-test", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    from matrix.scheduler.in_memory import _LeaseState
+    from primer.scheduler.in_memory import _LeaseState
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     lease = _make_sched_lease(sid, "wrk-test")
 
@@ -244,7 +244,7 @@ async def test_run_one_turn_honours_cancel_requested_flag(scheduler, engine, mon
         worker_id="wrk-test", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    from matrix.scheduler.in_memory import _LeaseState
+    from primer.scheduler.in_memory import _LeaseState
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     lease = _make_sched_lease(sid, "wrk-test")
 
@@ -288,7 +288,7 @@ async def test_run_one_turn_honours_pause_requested_flag(scheduler, engine, monk
         worker_id="wrk-test", host="h", pid=1, capacity=1,
     )
     await scheduler.enqueue(sid)
-    from matrix.scheduler.in_memory import _LeaseState
+    from primer.scheduler.in_memory import _LeaseState
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     lease = _make_sched_lease(sid, "wrk-test")
 
@@ -340,7 +340,7 @@ async def test_claim_loop_runs_runnable_session(scheduler, engine, monkeypatch):
     await pool.start()
     try:
         with patch(
-            "matrix.worker.pool.run_one_session_turn",
+            "primer.worker.pool.run_one_session_turn",
             side_effect=_fake_run_one_session_turn,
         ):
             await engine.upsert(ClaimKind.SESSION, sid, priority=100)
@@ -359,7 +359,7 @@ async def test_claim_loop_runs_runnable_session(scheduler, engine, monkeypatch):
 async def test_run_one_turn_now_helper_executes_one_turn(scheduler, engine, monkeypatch):
     """Public test helper: engine.upsert + run_one_turn_now dispatches to
     run_one_session_turn."""
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
     sid = "sess-helper-1"
     scheduler.register_session_for_test(sid)
     pool = WorkerPool(
@@ -384,7 +384,7 @@ async def test_run_one_turn_now_helper_executes_one_turn(scheduler, engine, monk
     await engine.upsert(ClaimKind.SESSION, sid, priority=100)
 
     with patch(
-        "matrix.worker.pool.run_one_session_turn",
+        "primer.worker.pool.run_one_session_turn",
         side_effect=_fake_run_one_session_turn,
     ):
         await pool.run_one_turn_now(sid)
@@ -427,10 +427,10 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
     """Smoke: _build_executor for an agent binding constructs a
     WorkspaceAgentExecutor (wrapped in _TurnDriver) without raising
     NotImplementedError."""
-    from matrix.agent.workspace_executor import WorkspaceAgentExecutor
-    from matrix.model.agent import Agent, AgentModel
-    from matrix.model.provider import LLMModel
-    from matrix.worker.pool import _TurnDriver
+    from primer.agent.workspace_executor import WorkspaceAgentExecutor
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.provider import LLMModel
+    from primer.worker.pool import _TurnDriver
 
     sid = "sess-build-1"
     agent = Agent(
@@ -498,9 +498,9 @@ async def test_build_executor_raises_for_graph_binding_without_state_repo(monkey
     naming the workspace and the missing attribute. The default
     Workspace.state_repo is None, so backends opt in by override —
     legacy fakes get the helpful error."""
-    from matrix.model.except_ import ConfigError
-    from matrix.model.graph import Graph, _AgentNodeRef, _TerminalNode, _StaticEdge
-    from matrix.model.workspace_session import GraphSessionBinding
+    from primer.model.except_ import ConfigError
+    from primer.model.graph import Graph, _AgentNodeRef, _TerminalNode, _StaticEdge
+    from primer.model.workspace_session import GraphSessionBinding
 
     sid = "sess-graph-1"
     graph_snapshot = Graph(
@@ -538,16 +538,16 @@ async def test_build_graph_executor_returns_graph_turn_driver(monkeypatch, tmp_p
     WorkspaceGraphExecutor wrapped in _GraphTurnDriver, against a
     workspace with a real LocalStateRepo. The driver's last_done_reason
     is the 'graph_ended' sentinel that the post-turn mapper recognises."""
-    from matrix.graph.workspace_executor import WorkspaceGraphExecutor
-    from matrix.model.graph import (
+    from primer.graph.workspace_executor import WorkspaceGraphExecutor
+    from primer.model.graph import (
         Graph,
         _AgentNodeRef,
         _StaticEdge,
         _TerminalNode,
     )
-    from matrix.model.workspace_session import GraphSessionBinding
-    from matrix.worker.pool import _GraphTurnDriver
-    from matrix.workspace.local.state import LocalStateRepo
+    from primer.model.workspace_session import GraphSessionBinding
+    from primer.worker.pool import _GraphTurnDriver
+    from primer.workspace.local.state import LocalStateRepo
 
     sid = "sess-graph-ok-1"
     graph_snapshot = Graph(
@@ -693,7 +693,7 @@ async def test_metrics_records_turn_outcome_after_run_one_turn(
 ):
     """After a happy-path turn, the success counter and duration aggregates
     are bumped."""
-    from matrix.scheduler.in_memory import _LeaseState
+    from primer.scheduler.in_memory import _LeaseState
     sid = "sess-metrics-1"
     scheduler.register_session_for_test(sid, status=SessionStatus.RUNNING)
     pool = WorkerPool(
@@ -747,7 +747,7 @@ async def test_metrics_records_turn_outcome_after_run_one_turn(
 async def test_turn_driver_drains_async_generator():
     """_TurnDriver.invoke must consume an async-generator executor to
     completion, then expose the underlying ``last_done_reason``."""
-    from matrix.worker.pool import _TurnDriver
+    from primer.worker.pool import _TurnDriver
 
     class _StreamingExecutor:
         def __init__(self) -> None:
@@ -792,7 +792,7 @@ async def test_cancel_loop_routes_to_active_scope(scheduler, engine, monkeypatch
     await pool.start()
     try:
         with patch(
-            "matrix.worker.pool.run_one_session_turn",
+            "primer.worker.pool.run_one_session_turn",
             side_effect=_fake_run_one_session_turn,
         ):
             await engine.upsert(ClaimKind.SESSION, sid, priority=100)
@@ -868,7 +868,7 @@ async def test_run_engine_session_dispatches_to_run_one_session_turn(
 
     # Patch at the module level where pool.py imports it.
     with patch(
-        "matrix.worker.pool.run_one_session_turn",
+        "primer.worker.pool.run_one_session_turn",
         side_effect=_fake_run_one_session_turn,
     ):
         engine_lease = _make_claim_lease(sid)
@@ -879,7 +879,7 @@ async def test_run_engine_session_dispatches_to_run_one_session_turn(
     assert lease_arg.entity_id == sid
     assert lease_arg.kind == ClaimKind.SESSION
     # Deps bundle must supply the required attributes.
-    from matrix.session.dispatch import SessionDispatchDeps
+    from primer.session.dispatch import SessionDispatchDeps
     assert isinstance(deps_arg, SessionDispatchDeps)
     assert deps_arg.storage_provider is pool._storage
     assert deps_arg.event_bus is pool._event_bus
@@ -929,7 +929,7 @@ async def test_run_engine_session_releases_engine_lease_on_success(
     await engine.upsert(ClaimKind.SESSION, sid, priority=100)
 
     with patch(
-        "matrix.worker.pool.run_one_session_turn",
+        "primer.worker.pool.run_one_session_turn",
         return_value=ReleaseOutcome(success=True, drop_lease=True),
     ):
         await pool._run_engine_session(engine_lease)
@@ -991,7 +991,7 @@ async def test_build_session_executor_returns_callable(scheduler, engine, monkey
 @pytest.mark.asyncio
 async def test_workspace_io_shim_delegates_to_workspace():
     """_WorkspaceIOShim.append_message_line forwards to workspace.append_message_line."""
-    from matrix.worker.pool import _WorkspaceIOShim
+    from primer.worker.pool import _WorkspaceIOShim
 
     received: list[tuple[str, bytes]] = []
 
@@ -1015,7 +1015,7 @@ async def test_workspace_io_shim_delegates_to_workspace():
 async def test_workspace_io_shim_warns_when_no_registry():
     """_WorkspaceIOShim drops the line and logs a warning when no registry."""
     import logging
-    from matrix.worker.pool import _WorkspaceIOShim
+    from primer.worker.pool import _WorkspaceIOShim
 
     shim = _WorkspaceIOShim(workspace_registry=None)
     shim.register_session("sess-1", "ws-1")
@@ -1027,7 +1027,7 @@ async def test_workspace_io_shim_warns_when_no_registry():
 @pytest.mark.asyncio
 async def test_workspace_io_shim_warns_when_no_mapping():
     """_WorkspaceIOShim drops the line when session has no workspace mapping."""
-    from matrix.worker.pool import _WorkspaceIOShim
+    from primer.worker.pool import _WorkspaceIOShim
 
     class _FakeRegistry:
         async def get_workspace(self, workspace_id: str):

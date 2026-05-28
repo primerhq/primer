@@ -6,10 +6,10 @@ import asyncio
 
 import pytest
 
-from matrix.channel.adapter import PromptEnvelope
-from matrix.model.workspace_session import WorkspaceSession, AgentSessionBinding, SessionStatus
-from matrix.model.yield_ import Yielded
-from matrix.worker.yield_runtime import _dispatch_to_channels
+from primer.channel.adapter import PromptEnvelope
+from primer.model.workspace_session import WorkspaceSession, AgentSessionBinding, SessionStatus
+from primer.model.yield_ import Yielded
+from primer.worker.yield_runtime import _dispatch_to_channels
 from datetime import datetime, timezone
 
 

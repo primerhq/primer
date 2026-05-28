@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.ingest.splitters.recursive import RecursiveSplitter
-from matrix.model.ingest import LoadedDocument
+from primer.ingest.splitters.recursive import RecursiveSplitter
+from primer.model.ingest import LoadedDocument
 
 
 def _doc(text: str) -> LoadedDocument:

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.model.common import Identifiable
-from matrix.model.except_ import BadRequestError
-from matrix.model.storage import OrderBy
-from matrix.storage._cursor import (
+from primer.model.common import Identifiable
+from primer.model.except_ import BadRequestError
+from primer.model.storage import OrderBy
+from primer.storage._cursor import (
     _decode_cursor,
     _encode_cursor_for,
     _resolve_dotted,

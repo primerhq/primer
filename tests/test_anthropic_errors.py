@@ -5,8 +5,8 @@ from __future__ import annotations
 import anthropic
 import pytest
 
-from matrix.common.anthropic_errors import classify_anthropic_exception
-from matrix.model.except_ import (
+from primer.common.anthropic_errors import classify_anthropic_exception
+from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
     NetworkError,

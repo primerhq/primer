@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from matrix.workspace.sandbox.fake import FakeSandbox
-from matrix.workspace.sandbox.state import SandboxStateRepo
+from primer.workspace.sandbox.fake import FakeSandbox
+from primer.workspace.sandbox.state import SandboxStateRepo
 
 
 pytestmark = pytest.mark.skipif(

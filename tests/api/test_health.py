@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.api.version import APP_VERSION
+from primer.api.version import APP_VERSION
 
 
 @pytest.mark.asyncio
@@ -53,9 +53,9 @@ async def test_health_surfaces_worker_pool_metrics_when_attached(
 ) -> None:
     """When app.state.worker_pool is set, /v1/health surfaces its
     in_flight + capacity from the metrics snapshot."""
-    from matrix.claim.in_memory import InMemoryClaimEngine
-    from matrix.model.scheduler import WorkerConfig
-    from matrix.worker.pool import WorkerPool
+    from primer.claim.in_memory import InMemoryClaimEngine
+    from primer.model.scheduler import WorkerConfig
+    from primer.worker.pool import WorkerPool
 
     pool = WorkerPool(
         config=WorkerConfig(concurrency=5),

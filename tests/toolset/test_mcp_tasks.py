@@ -15,22 +15,22 @@ from datetime import datetime, timedelta, timezone
 import mcp.types as mcp_types
 import pytest
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.bus.mcp_tasks import McpTaskBridge
-from matrix.model.workspace_session import (
+from primer.bus.in_memory import InMemoryEventBus
+from primer.bus.mcp_tasks import McpTaskBridge
+from primer.model.workspace_session import (
     AgentSessionBinding,
     WorkspaceSession,
     SessionStatus,
 )
-from matrix.model.yield_ import (
+from primer.model.yield_ import (
     ToolContext,
     YieldCancelled,
     YieldTimeout,
     YieldToWorker,
     Yielded,
 )
-from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
-from matrix.toolset.mcp import (
+from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.toolset.mcp import (
     McpToolsetProvider,
     is_mcp_task_tool,
     mcp_task_resume,
@@ -165,7 +165,7 @@ class _FakeStdioProvider(McpToolsetProvider):
     """
 
     def __init__(self, session, *, toolset_id="t-mcp"):
-        from matrix.model.provider import (
+        from primer.model.provider import (
             McpConfig, StdioConfig, TransportType,
         )
         super().__init__(
@@ -322,8 +322,8 @@ class TestMcpTaskResumeHook:
 
 
 def test_mcp_task_resume_hook_is_registered():
-    import matrix.toolset.mcp  # noqa: F401
-    from matrix.worker.yield_resume_registry import get_resume_hook
+    import primer.toolset.mcp  # noqa: F401
+    from primer.worker.yield_resume_registry import get_resume_hook
 
     hook = get_resume_hook("__mcp_task__")
     assert callable(hook)
@@ -384,7 +384,7 @@ class _MockProviderRegistry:
     async def get_toolset(self, toolset_id: str):
         provider = self._mapping.get(toolset_id)
         if provider is None:
-            from matrix.model.except_ import NotFoundError
+            from primer.model.except_ import NotFoundError
             raise NotFoundError(f"toolset {toolset_id!r} not found")
         return provider
 

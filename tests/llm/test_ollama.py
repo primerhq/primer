@@ -16,7 +16,7 @@ import pytest
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import HttpUrl, SecretStr
 
-from matrix.llm.ollama import (
+from primer.llm.ollama import (
     OllamaLLM,
     _build_options_and_kwargs,
     _classify_ollama_exception,
@@ -31,7 +31,7 @@ from matrix.llm.ollama import (
     _tools_to_ollama,
     _translate_chunk,
 )
-from matrix.model.chat import (
+from primer.model.chat import (
     AudioPart,
     DocumentPart,
     Done,
@@ -51,8 +51,8 @@ from matrix.model.chat import (
     Usage,
     VideoPart,
 )
-from matrix.model.chat import Error as ChatError
-from matrix.model.except_ import (
+from primer.model.chat import Error as ChatError
+from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
     ConfigError,
@@ -63,7 +63,7 @@ from matrix.model.except_ import (
     ServerError,
     UnsupportedContentError,
 )
-from matrix.model.provider import (
+from primer.model.provider import (
     Limits,
     LLMModel,
     LLMProvider,
@@ -114,7 +114,7 @@ def _patched_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock_instance = MagicMock()
     mock_instance.chat = AsyncMock()
     cls_mock = MagicMock(return_value=mock_instance)
-    monkeypatch.setattr("matrix.llm.ollama.ollama.AsyncClient", cls_mock)
+    monkeypatch.setattr("primer.llm.ollama.ollama.AsyncClient", cls_mock)
     return mock_instance
 
 
@@ -168,7 +168,7 @@ class TestConstructor:
             OllamaLLM(provider)
 
     def test_rejects_wrong_config_type(self) -> None:
-        from matrix.model.provider import OpenResponsesConfig
+        from primer.model.provider import OpenResponsesConfig
 
         provider = LLMProvider(
             id="x",
@@ -184,14 +184,14 @@ class TestConstructor:
             OllamaLLM(provider)
 
     def test_initialises_rate_limiter(self) -> None:
-        from matrix.coordinator.in_memory import InMemoryRateLimiter
+        from primer.coordinator.in_memory import InMemoryRateLimiter
         provider = _make_provider(max_concurrency=3)
         llm = OllamaLLM(provider)
         assert isinstance(llm._rate_limiter, InMemoryRateLimiter)
         assert llm._max_concurrency == 3
 
     def test_logs_init(self, caplog: pytest.LogCaptureFixture) -> None:
-        caplog.set_level(logging.INFO, logger="matrix.llm.ollama")
+        caplog.set_level(logging.INFO, logger="primer.llm.ollama")
         provider = _make_provider(models=["llama3", "mistral"], max_concurrency=2)
         OllamaLLM(provider)
         records = [r for r in caplog.records if "Ollama adapter initialized" in r.message]
@@ -221,7 +221,7 @@ class TestGetClient:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         cls_mock = MagicMock(return_value=MagicMock())
-        monkeypatch.setattr("matrix.llm.ollama.ollama.AsyncClient", cls_mock)
+        monkeypatch.setattr("primer.llm.ollama.ollama.AsyncClient", cls_mock)
         provider = _make_provider()
         llm = OllamaLLM(provider)
         llm._get_client()
@@ -233,7 +233,7 @@ class TestGetClient:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         cls_mock = MagicMock(return_value=MagicMock())
-        monkeypatch.setattr("matrix.llm.ollama.ollama.AsyncClient", cls_mock)
+        monkeypatch.setattr("primer.llm.ollama.ollama.AsyncClient", cls_mock)
         provider = _make_provider(api_key="my-token")
         llm = OllamaLLM(provider)
         llm._get_client()
@@ -244,7 +244,7 @@ class TestGetClient:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         cls_mock = MagicMock(return_value=MagicMock())
-        monkeypatch.setattr("matrix.llm.ollama.ollama.AsyncClient", cls_mock)
+        monkeypatch.setattr("primer.llm.ollama.ollama.AsyncClient", cls_mock)
         provider = _make_provider(api_key="")
         llm = OllamaLLM(provider)
         llm._get_client()
@@ -253,7 +253,7 @@ class TestGetClient:
 
     def test_client_is_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         cls_mock = MagicMock(return_value=MagicMock())
-        monkeypatch.setattr("matrix.llm.ollama.ollama.AsyncClient", cls_mock)
+        monkeypatch.setattr("primer.llm.ollama.ollama.AsyncClient", cls_mock)
         provider = _make_provider()
         llm = OllamaLLM(provider)
         c1 = llm._get_client()
@@ -462,13 +462,13 @@ class TestTools:
 
 class TestToolChoice:
     def test_none_silent(self, caplog: pytest.LogCaptureFixture) -> None:
-        caplog.set_level(logging.DEBUG, logger="matrix.llm.ollama")
+        caplog.set_level(logging.DEBUG, logger="primer.llm.ollama")
         _maybe_log_unsupported_tool_choice(None)
         debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
         assert all("tool_choice" not in r.message for r in debug_records)
 
     def test_non_none_logs_debug(self, caplog: pytest.LogCaptureFixture) -> None:
-        caplog.set_level(logging.DEBUG, logger="matrix.llm.ollama")
+        caplog.set_level(logging.DEBUG, logger="primer.llm.ollama")
         _maybe_log_unsupported_tool_choice("auto")
         debug_records = [
             r
@@ -598,7 +598,7 @@ class TestOptionsAndKwargs:
     def test_unknown_keys_dropped_with_debug(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="matrix.llm.ollama")
+        caplog.set_level(logging.DEBUG, logger="primer.llm.ollama")
         options, top = _build_options_and_kwargs(
             temperature=None,
             top_p=None,
@@ -1086,12 +1086,12 @@ class TestConcurrency:
 
 class TestPackageReexport:
     def test_reexported(self) -> None:
-        import matrix.llm as llm_pkg
+        import primer.llm as llm_pkg
         assert "OllamaLLM" in llm_pkg.__all__
         assert llm_pkg.OllamaLLM is OllamaLLM
 
     def test_others_still_reexported(self) -> None:
-        import matrix.llm as llm_pkg
+        import primer.llm as llm_pkg
         assert "AnthropicLLM" in llm_pkg.__all__
         assert "GeminiLLM" in llm_pkg.__all__
         assert "OpenResponsesLLM" in llm_pkg.__all__

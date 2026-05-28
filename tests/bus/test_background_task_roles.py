@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.bus.scheduler_tasks import ChatSweeper, HarnessSweeper, TimeoutSweeper, TimerScheduler
-from matrix.bus.watcher import WatcherManager
-from matrix.bus.mcp_tasks import McpTaskBridge
-from matrix.int.coordinator import (
+from primer.bus.scheduler_tasks import ChatSweeper, HarnessSweeper, TimeoutSweeper, TimerScheduler
+from primer.bus.watcher import WatcherManager
+from primer.bus.mcp_tasks import McpTaskBridge
+from primer.int.coordinator import (
     ROLE_CHAT_SWEEPER, ROLE_HARNESS_SWEEPER, ROLE_MCP_BRIDGE,
     ROLE_TIMEOUT_SWEEPER, ROLE_TIMER_SCHEDULER, ROLE_WATCHER_MANAGER,
 )

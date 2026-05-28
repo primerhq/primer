@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from matrix.llm.gemini import GeminiLLM
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import (
+from primer.llm.gemini import GeminiLLM
+from primer.model.except_ import ConfigError
+from primer.model.provider import (
     GoogleConfig,
     Limits,
     LLMModel,
@@ -71,7 +71,7 @@ class TestConstructor:
 
     def test_rejects_wrong_config_type(self) -> None:
         from pydantic import HttpUrl
-        from matrix.model.provider import OpenResponsesConfig
+        from primer.model.provider import OpenResponsesConfig
 
         # Build a provider with the right enum but wrong config class.
         provider = LLMProvider(
@@ -88,7 +88,7 @@ class TestConstructor:
             GeminiLLM(provider)
 
     def test_initialises_rate_limiter(self) -> None:
-        from matrix.coordinator.in_memory import InMemoryRateLimiter
+        from primer.coordinator.in_memory import InMemoryRateLimiter
         provider = _make_provider(max_concurrency=3)
         llm = GeminiLLM(provider)
         assert isinstance(llm._rate_limiter, InMemoryRateLimiter)
@@ -97,7 +97,7 @@ class TestConstructor:
     def test_logs_init_with_structured_context(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.INFO, logger="matrix.llm.gemini")
+        caplog.set_level(logging.INFO, logger="primer.llm.gemini")
         provider = _make_provider(
             models=["gemini-2.5-flash", "gemini-2.5-pro"],
             max_concurrency=2,
@@ -141,8 +141,8 @@ class TestListModels:
 # ------------------------------------------------------------------------- #
 
 
-from matrix.llm.gemini import _messages_to_gemini, _part_to_gemini
-from matrix.model.chat import (
+from primer.llm.gemini import _messages_to_gemini, _part_to_gemini
+from primer.model.chat import (
     AudioPart,
     DocumentPart,
     ExtendedPart,
@@ -153,7 +153,7 @@ from matrix.model.chat import (
     ToolResultPart,
     VideoPart,
 )
-from matrix.model.except_ import UnsupportedContentError
+from primer.model.except_ import UnsupportedContentError
 
 
 class TestInputMapping:
@@ -367,14 +367,14 @@ class TestToolResultLookup:
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from matrix.llm.gemini import (
+from primer.llm.gemini import (
     _build_sampling_kwargs,
     _extract_extended_kwargs,
     _response_format_to_gemini,
     _tool_choice_to_gemini,
     _tools_to_gemini,
 )
-from matrix.model.chat import Tool
+from primer.model.chat import Tool
 
 
 class TestToolDefinitions:
@@ -538,7 +538,7 @@ class TestExtendedKwargs:
     def test_unknown_keys_dropped_with_debug_log(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="matrix.llm.gemini")
+        caplog.set_level(logging.DEBUG, logger="primer.llm.gemini")
         out = _extract_extended_kwargs({"frobnicate": True, "foobar": 1})
         assert out == {}
         debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
@@ -548,7 +548,7 @@ class TestExtendedKwargs:
         )
 
 
-from matrix.llm.gemini import (
+from primer.llm.gemini import (
     _StreamState,
     _map_finish_reason,
     _translate_chunk,
@@ -591,7 +591,7 @@ class TestStopReason:
 
 from types import SimpleNamespace as NS
 
-from matrix.model.chat import (
+from primer.model.chat import (
     Citation,
     Done,
     ExtendedEvent,
@@ -775,7 +775,7 @@ from collections.abc import AsyncIterator
 
 from google.genai import errors as gerrors
 
-from matrix.model.except_ import (
+from primer.model.except_ import (
     AuthenticationError,
     ModelNotFoundError,
     RateLimitError,
@@ -794,7 +794,7 @@ def _patched_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock_instance.aio.models = MagicMock()
     mock_instance.aio.models.generate_content_stream = AsyncMock()
     cls_mock = MagicMock(return_value=mock_instance)
-    monkeypatch.setattr("matrix.llm.gemini.genai.Client", cls_mock)
+    monkeypatch.setattr("primer.llm.gemini.genai.Client", cls_mock)
     return mock_instance
 
 
@@ -982,7 +982,7 @@ class TestExceptionWrapping:
                 messages=[Message(role="user", parts=[TextPart(text="hi")])],
             )
         ]
-        from matrix.model.chat import Error as ChatError
+        from primer.model.chat import Error as ChatError
 
         assert isinstance(events[-1], ChatError)
         assert events[-1].fatal is True
@@ -1031,12 +1031,12 @@ class TestConcurrency:
 
 class TestPackageReexport:
     def test_gemini_llm_reexported_from_package(self) -> None:
-        import matrix.llm as llm_pkg
+        import primer.llm as llm_pkg
 
         assert "GeminiLLM" in llm_pkg.__all__
         assert llm_pkg.GeminiLLM is GeminiLLM
 
     def test_openresponses_llm_still_reexported(self) -> None:
-        import matrix.llm as llm_pkg
+        import primer.llm as llm_pkg
 
         assert "OpenResponsesLLM" in llm_pkg.__all__

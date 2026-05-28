@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from matrix.model.channel import (
+from primer.model.channel import (
     Channel,
     ChannelProvider,
     ChannelProviderType,
@@ -96,7 +96,7 @@ def test_slack_config_accepts_valid_token_prefixes():
 def test_telegram_config_requires_token_shape():
     import pytest
     from pydantic import SecretStr, ValidationError
-    from matrix.model.channel import TelegramChannelProviderConfig
+    from primer.model.channel import TelegramChannelProviderConfig
     with pytest.raises(ValidationError):
         TelegramChannelProviderConfig(bot_token=SecretStr("short"))
     TelegramChannelProviderConfig(
@@ -107,7 +107,7 @@ def test_telegram_config_requires_token_shape():
 def test_telegram_poll_timeout_bounds():
     import pytest
     from pydantic import SecretStr, ValidationError
-    from matrix.model.channel import TelegramChannelProviderConfig
+    from primer.model.channel import TelegramChannelProviderConfig
     with pytest.raises(ValidationError):
         TelegramChannelProviderConfig(
             bot_token=SecretStr("123456:abcdefghijklmnopqrstuvwxyz123456"),
@@ -118,7 +118,7 @@ def test_telegram_poll_timeout_bounds():
 def test_discord_config_requires_long_token():
     import pytest
     from pydantic import SecretStr, ValidationError
-    from matrix.model.channel import DiscordChannelProviderConfig
+    from primer.model.channel import DiscordChannelProviderConfig
     with pytest.raises(ValidationError):
         DiscordChannelProviderConfig(bot_token=SecretStr("tiny"))
     cfg = DiscordChannelProviderConfig(
@@ -129,7 +129,7 @@ def test_discord_config_requires_long_token():
 
 def test_discord_config_enable_dms_toggles():
     from pydantic import SecretStr
-    from matrix.model.channel import DiscordChannelProviderConfig
+    from primer.model.channel import DiscordChannelProviderConfig
     cfg = DiscordChannelProviderConfig(
         bot_token=SecretStr("a" * 60), enable_dms=False,
     )

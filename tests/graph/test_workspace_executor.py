@@ -15,10 +15,10 @@ from typing import Any
 
 import pytest
 
-from matrix.agent.tool_manager import ToolExecutionManager
-from matrix.graph.workspace_executor import WorkspaceGraphExecutor
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chat import (
+from primer.agent.tool_manager import ToolExecutionManager
+from primer.graph.workspace_executor import WorkspaceGraphExecutor
+from primer.model.agent import Agent, AgentModel
+from primer.model.chat import (
     Done,
     Message,
     StreamEvent,
@@ -27,15 +27,15 @@ from matrix.model.chat import (
     ToolCallEnd,
     ToolCallStart,
 )
-from matrix.model.graph import (
+from primer.model.graph import (
     Graph,
     _AgentNodeRef,
     _GraphNodeRef,
     _StaticEdge,
     _TerminalNode,
 )
-from matrix.model.provider import LLMModel
-from matrix.workspace.local.state import LocalStateRepo as StateRepo
+from primer.model.provider import LLMModel
+from primer.workspace.local.state import LocalStateRepo as StateRepo
 
 
 # ===========================================================================
@@ -102,7 +102,7 @@ class _FakeToolsetProvider:
                 "principal": principal,
             }
         )
-        from matrix.int.toolset import ToolCallResult
+        from primer.int.toolset import ToolCallResult
 
         return ToolCallResult(output=self._output, is_error=False)
 

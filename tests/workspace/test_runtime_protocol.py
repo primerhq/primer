@@ -1,4 +1,4 @@
-from matrix.workspace.runtime.protocol import (
+from primer.workspace.runtime.protocol import (
     Request, Response, Event, ErrorCode, OpName,
     serialize, deserialize,
 )

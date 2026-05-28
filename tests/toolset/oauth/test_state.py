@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from matrix.model.except_ import BadRequestError
-from matrix.toolset.oauth.state import (
+from primer.model.except_ import BadRequestError
+from primer.toolset.oauth.state import (
     InMemoryStateStore,
     OAuthState,
 )

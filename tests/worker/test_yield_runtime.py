@@ -11,8 +11,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from matrix.model.yield_ import YieldCancelled, YieldTimeout, Yielded
-from matrix.worker.yield_runtime import (
+from primer.model.yield_ import YieldCancelled, YieldTimeout, Yielded
+from primer.worker.yield_runtime import (
     PARKED_STATE_SCHEMA_VERSION,
     ParkedState,
     classify_resume_payload,

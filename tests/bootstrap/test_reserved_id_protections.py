@@ -24,8 +24,8 @@ from fastapi import FastAPI
 from httpx import ASGITransport
 from pydantic import SecretStr
 
-from matrix.api.app import create_test_app
-from matrix.api.registries import ProviderRegistry
+from primer.api.app import create_test_app
+from primer.api.registries import ProviderRegistry
 from tests.conftest import _FakeStorageProvider
 
 

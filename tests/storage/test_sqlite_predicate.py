@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.model.common import Identifiable
-from matrix.model.except_ import BadRequestError
-from matrix.model.storage import FieldRef, Op, OrderBy, Predicate, Value
-from matrix.storage._sqlite_predicate import (
+from primer.model.common import Identifiable
+from primer.model.except_ import BadRequestError
+from primer.model.storage import FieldRef, Op, OrderBy, Predicate, Value
+from primer.storage._sqlite_predicate import (
     _SqlitePredicateTranslator,
     render_order_by_sqlite,
 )

@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from matrix.model.chat import Message, TextPart
-from matrix.model.except_ import ConflictError
-from matrix.model.workspace_session import (
+from primer.model.chat import Message, TextPart
+from primer.model.except_ import ConflictError
+from primer.model.workspace_session import (
     AgentBinding,
     SessionStatus,
 )
-from matrix.workspace.local.cache import LocalTruncationStore as TruncationStore
-from matrix.workspace.local.state import LocalStateRepo as StateRepo
-from matrix.workspace.session import AgentSession
+from primer.workspace.local.cache import LocalTruncationStore as TruncationStore
+from primer.workspace.local.state import LocalStateRepo as StateRepo
+from primer.workspace.session import AgentSession
 
 
 pytestmark = pytest.mark.skipif(
@@ -115,7 +115,7 @@ class TestStart:
     ) -> None:
         from datetime import datetime, timezone
 
-        from matrix.model.workspace_session import SessionInfo
+        from primer.model.workspace_session import SessionInfo
 
         info = SessionInfo(
             session_id="sess-x",
@@ -203,7 +203,7 @@ class TestAppendInstruction:
     ) -> None:
         from datetime import datetime, timezone
 
-        from matrix.model.workspace_session import _UserInputWaiting  # type: ignore[attr-defined]
+        from primer.model.workspace_session import _UserInputWaiting  # type: ignore[attr-defined]
 
         session = await _start_session(state_repo, truncation_store)
         await session.set_status(
@@ -375,7 +375,7 @@ class TestSetStatus:
     ) -> None:
         from datetime import datetime, timezone
 
-        from matrix.model.workspace_session import _UserInputWaiting  # type: ignore[attr-defined]
+        from primer.model.workspace_session import _UserInputWaiting  # type: ignore[attr-defined]
 
         session = await _start_session(state_repo, truncation_store)
         await session.set_status(
@@ -398,7 +398,7 @@ class TestSetStatus:
     ) -> None:
         from datetime import datetime, timezone
 
-        from matrix.model.workspace_session import _UserInputWaiting  # type: ignore[attr-defined]
+        from primer.model.workspace_session import _UserInputWaiting  # type: ignore[attr-defined]
 
         session = await _start_session(state_repo, truncation_store)
         await session.set_status(

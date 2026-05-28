@@ -10,7 +10,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from matrix.observability.metrics import reset_for_test
+from primer.observability.metrics import reset_for_test
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +29,7 @@ def in_memory_tracer():
 
 def _patch_tracer(provider):
     return patch(
-        "matrix.observability.tracing.get_tracer",
+        "primer.observability.tracing.get_tracer",
         side_effect=lambda name: provider.get_tracer(name),
     )
 
@@ -40,8 +40,8 @@ def _patch_tracer(provider):
 
 
 def _make_in_memory_engine():
-    from matrix.claim.in_memory import InMemoryClaimEngine
-    from matrix.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
+    from primer.claim.in_memory import InMemoryClaimEngine
+    from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
 
     class FakeChatAdapter(ClaimAdapter):
         kind = ClaimKind.CHAT
@@ -64,7 +64,7 @@ def _make_in_memory_engine():
 @pytest.mark.asyncio
 async def test_claim_due_span_attributes(in_memory_tracer):
     provider, exporter = in_memory_tracer
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
 
     engine = _make_in_memory_engine()
 
@@ -87,8 +87,8 @@ async def test_claim_due_span_attributes(in_memory_tracer):
 @pytest.mark.asyncio
 async def test_claim_due_latency_histogram(in_memory_tracer):
     provider, exporter = in_memory_tracer
-    import matrix.observability.metrics as m
-    from matrix.int.claim import ClaimKind
+    import primer.observability.metrics as m
+    from primer.int.claim import ClaimKind
 
     engine = _make_in_memory_engine()
     await engine.upsert(ClaimKind.CHAT, "chat-0")
@@ -113,7 +113,7 @@ async def test_claim_due_latency_histogram(in_memory_tracer):
 @pytest.mark.asyncio
 async def test_claim_due_span_events_per_lease(in_memory_tracer):
     provider, exporter = in_memory_tracer
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
 
     engine = _make_in_memory_engine()
     await engine.upsert(ClaimKind.CHAT, "chat-0")
@@ -134,7 +134,7 @@ async def test_claim_due_span_events_per_lease(in_memory_tracer):
 @pytest.mark.asyncio
 async def test_claim_due_empty_returns_zero_count(in_memory_tracer):
     provider, exporter = in_memory_tracer
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
 
     engine = _make_in_memory_engine()
     # No leases registered
@@ -152,8 +152,8 @@ async def test_claim_due_empty_returns_zero_count(in_memory_tracer):
 async def test_claim_due_enqueue_latency_positive(in_memory_tracer):
     """Leases past their next_attempt_at should record positive wait time."""
     provider, exporter = in_memory_tracer
-    import matrix.observability.metrics as m
-    from matrix.int.claim import ClaimKind
+    import primer.observability.metrics as m
+    from primer.int.claim import ClaimKind
 
     engine = _make_in_memory_engine()
     # Register a lease that was due 5 seconds ago

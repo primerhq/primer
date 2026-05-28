@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.harness.template import (
+from primer.harness.template import (
     HarnessTemplateError, render_template, RenderedFile, render_bundle,
 )
 

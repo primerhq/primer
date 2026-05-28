@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from matrix.channel.slack.connection import _SlackConnectionRegistry
-from matrix.model.channel import (
+from primer.channel.slack.connection import _SlackConnectionRegistry
+from primer.model.channel import (
     ChannelProvider, ChannelProviderType, SlackChannelProviderConfig,
 )
 
@@ -32,7 +32,7 @@ async def test_acquire_returns_same_connection_for_same_provider(monkeypatch):
         async def close_async(self): started.append("close")
 
     monkeypatch.setattr(
-        "matrix.channel.slack.connection._build_app_and_handler",
+        "primer.channel.slack.connection._build_app_and_handler",
         lambda cfg: _FakeApp(token=cfg.bot_token.get_secret_value()),
     )
 
@@ -52,7 +52,7 @@ async def test_different_providers_get_distinct_connections(monkeypatch):
         async def start_async(self): pass
         async def close_async(self): pass
     monkeypatch.setattr(
-        "matrix.channel.slack.connection._build_app_and_handler",
+        "primer.channel.slack.connection._build_app_and_handler",
         lambda cfg: _FakeApp(),
     )
 

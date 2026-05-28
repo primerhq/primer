@@ -18,7 +18,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
-from matrix.observability.metrics import reset_for_test
+from primer.observability.metrics import reset_for_test
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ def in_memory_tracer_provider():
 def _patch_tracer(provider):
     """Context manager that replaces the matrix.llm.*.get_tracer call."""
     return patch(
-        "matrix.observability.tracing.get_tracer",
+        "primer.observability.tracing.get_tracer",
         side_effect=lambda name: provider.get_tracer(name),
     )
 
@@ -68,15 +68,15 @@ async def _drain(agen):
 
 
 def _make_anthropic_adapter():
-    from matrix.model.provider import (
+    from primer.model.provider import (
         AnthropicConfig,
         LLMProvider,
         LLMProviderType,
         Limits as LLMProviderLimits,
         LLMModel,
     )
-    from matrix.llm.anthropic import AnthropicLLM
-    from matrix.coordinator.in_memory import InMemoryRateLimiter
+    from primer.llm.anthropic import AnthropicLLM
+    from primer.coordinator.in_memory import InMemoryRateLimiter
 
     config = AnthropicConfig(api_key="sk-test")
     provider = LLMProvider(
@@ -91,7 +91,7 @@ def _make_anthropic_adapter():
 
 
 def _make_openresponses_adapter():
-    from matrix.model.provider import (
+    from primer.model.provider import (
         OpenResponsesConfig,
         OpenResponsesFlavor,
         LLMProvider,
@@ -99,8 +99,8 @@ def _make_openresponses_adapter():
         Limits as LLMProviderLimits,
         LLMModel,
     )
-    from matrix.llm.openresponses import OpenResponsesLLM
-    from matrix.coordinator.in_memory import InMemoryRateLimiter
+    from primer.llm.openresponses import OpenResponsesLLM
+    from primer.coordinator.in_memory import InMemoryRateLimiter
 
     config = OpenResponsesConfig(
         url="http://localhost:1234",
@@ -119,15 +119,15 @@ def _make_openresponses_adapter():
 
 
 def _make_gemini_adapter():
-    from matrix.model.provider import (
+    from primer.model.provider import (
         GoogleConfig,
         LLMProvider,
         LLMProviderType,
         Limits as LLMProviderLimits,
         LLMModel,
     )
-    from matrix.llm.gemini import GeminiLLM
-    from matrix.coordinator.in_memory import InMemoryRateLimiter
+    from primer.llm.gemini import GeminiLLM
+    from primer.coordinator.in_memory import InMemoryRateLimiter
 
     config = GoogleConfig(api_key="AIza-test")
     provider = LLMProvider(
@@ -142,15 +142,15 @@ def _make_gemini_adapter():
 
 
 def _make_ollama_adapter():
-    from matrix.model.provider import (
+    from primer.model.provider import (
         OllamaConfig,
         LLMProvider,
         LLMProviderType,
         Limits as LLMProviderLimits,
         LLMModel,
     )
-    from matrix.llm.ollama import OllamaLLM
-    from matrix.coordinator.in_memory import InMemoryRateLimiter
+    from primer.llm.ollama import OllamaLLM
+    from primer.coordinator.in_memory import InMemoryRateLimiter
 
     config = OllamaConfig(url="http://localhost:11434")
     provider = LLMProvider(
@@ -286,7 +286,7 @@ async def test_anthropic_span_attributes(in_memory_tracer_provider):
             mock_client.return_value.messages.create = AsyncMock(
                 return_value=mock_sdk_stream
             )
-            from matrix.model.chat import Message, TextPart
+            from primer.model.chat import Message, TextPart
             messages = [Message(role="user", parts=[TextPart(text="hi")])]
             await _drain(adapter.stream(
                 model="claude-3-haiku-20240307",
@@ -313,14 +313,14 @@ async def test_anthropic_token_counters(in_memory_tracer_provider):
         for e in _fake_anthropic_stream_events():
             yield e
 
-    from matrix.observability import metrics as m
+    from primer.observability import metrics as m
 
     with _patch_tracer(provider):
         with patch.object(adapter, "_get_client") as mock_client:
             mock_client.return_value.messages.create = AsyncMock(
                 return_value=_fake_sdk_stream()
             )
-            from matrix.model.chat import Message, TextPart
+            from primer.model.chat import Message, TextPart
             messages = [Message(role="user", parts=[TextPart(text="hi")])]
             await _drain(adapter.stream(
                 model="claude-3-haiku-20240307",
@@ -339,8 +339,8 @@ async def test_anthropic_failure_counter(in_memory_tracer_provider):
     provider, exporter = in_memory_tracer_provider
     adapter = _make_anthropic_adapter()
 
-    from matrix.observability import metrics as m
-    from matrix.model.except_ import MatrixError
+    from primer.observability import metrics as m
+    from primer.model.except_ import MatrixError
 
     with _patch_tracer(provider):
         with patch.object(adapter, "_get_client") as mock_client:
@@ -349,7 +349,7 @@ async def test_anthropic_failure_counter(in_memory_tracer_provider):
             mock_client.return_value.messages.create = AsyncMock(
                 side_effect=RuntimeError("boom")
             )
-            from matrix.model.chat import Message, TextPart
+            from primer.model.chat import Message, TextPart
             messages = [Message(role="user", parts=[TextPart(text="hi")])]
             with pytest.raises(MatrixError):
                 await _drain(adapter.stream(
@@ -391,7 +391,7 @@ async def test_openresponses_span_attributes(in_memory_tracer_provider):
             mock_client.return_value.responses.create = AsyncMock(
                 return_value=_fake_sdk_stream()
             )
-            from matrix.model.chat import Message, TextPart
+            from primer.model.chat import Message, TextPart
             messages = [Message(role="user", parts=[TextPart(text="hi")])]
             await _drain(adapter.stream(
                 model="gpt-4o-mini",
@@ -412,7 +412,7 @@ async def test_openresponses_token_counters(in_memory_tracer_provider):
     provider, exporter = in_memory_tracer_provider
     adapter = _make_openresponses_adapter()
 
-    from matrix.observability import metrics as m
+    from primer.observability import metrics as m
 
     async def _fake_sdk_stream():
         for e in _fake_openresponses_stream_events():
@@ -423,7 +423,7 @@ async def test_openresponses_token_counters(in_memory_tracer_provider):
             mock_client.return_value.responses.create = AsyncMock(
                 return_value=_fake_sdk_stream()
             )
-            from matrix.model.chat import Message, TextPart
+            from primer.model.chat import Message, TextPart
             messages = [Message(role="user", parts=[TextPart(text="hi")])]
             await _drain(adapter.stream(
                 model="gpt-4o-mini",
@@ -455,7 +455,7 @@ async def test_gemini_span_attributes(in_memory_tracer_provider):
             mock_client.return_value.aio.models.generate_content_stream = AsyncMock(
                 return_value=_fake_sdk_stream()
             )
-            from matrix.model.chat import Message, TextPart
+            from primer.model.chat import Message, TextPart
             messages = [Message(role="user", parts=[TextPart(text="hi")])]
             await _drain(adapter.stream(
                 model="gemini-2.0-flash",
@@ -488,7 +488,7 @@ async def test_ollama_span_attributes(in_memory_tracer_provider):
             mock_client.return_value.chat = AsyncMock(
                 return_value=_fake_sdk_stream()
             )
-            from matrix.model.chat import Message, TextPart
+            from primer.model.chat import Message, TextPart
             messages = [Message(role="user", parts=[TextPart(text="hi")])]
             await _drain(adapter.stream(
                 model="llama3.2",
@@ -509,7 +509,7 @@ async def test_ollama_token_counters(in_memory_tracer_provider):
     provider, exporter = in_memory_tracer_provider
     adapter = _make_ollama_adapter()
 
-    from matrix.observability import metrics as m
+    from primer.observability import metrics as m
 
     async def _fake_sdk_stream():
         for c in _fake_ollama_stream_chunks():
@@ -520,7 +520,7 @@ async def test_ollama_token_counters(in_memory_tracer_provider):
             mock_client.return_value.chat = AsyncMock(
                 return_value=_fake_sdk_stream()
             )
-            from matrix.model.chat import Message, TextPart
+            from primer.model.chat import Message, TextPart
             messages = [Message(role="user", parts=[TextPart(text="hi")])]
             await _drain(adapter.stream(
                 model="llama3.2",
@@ -539,7 +539,7 @@ async def test_llm_duration_observed(in_memory_tracer_provider):
     provider, exporter = in_memory_tracer_provider
     adapter = _make_ollama_adapter()
 
-    from matrix.observability import metrics as m
+    from primer.observability import metrics as m
 
     async def _fake_sdk_stream():
         for c in _fake_ollama_stream_chunks():
@@ -550,7 +550,7 @@ async def test_llm_duration_observed(in_memory_tracer_provider):
             mock_client.return_value.chat = AsyncMock(
                 return_value=_fake_sdk_stream()
             )
-            from matrix.model.chat import Message, TextPart
+            from primer.model.chat import Message, TextPart
             messages = [Message(role="user", parts=[TextPart(text="hi")])]
             await _drain(adapter.stream(
                 model="llama3.2",

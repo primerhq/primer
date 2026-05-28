@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from matrix.channel.adapter import PromptEnvelope
-from matrix.channel.slack.render import (
+from primer.channel.adapter import PromptEnvelope
+from primer.channel.slack.render import (
     REJECT_MODAL_CALLBACK_ID,
     build_ask_user_message,
     build_reject_modal,

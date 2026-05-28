@@ -15,15 +15,15 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from matrix.int.storage_provider import StorageProvider
-from matrix.model.common import Identifiable
-from matrix.model.except_ import ConflictError, NotFoundError
-from matrix.model.provider import (
+from primer.int.storage_provider import StorageProvider
+from primer.model.common import Identifiable
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
     StorageProviderType,
 )
-from matrix.model.storage import (
+from primer.model.storage import (
     FieldRef,
     OffsetPage,
     Op,
@@ -31,7 +31,7 @@ from matrix.model.storage import (
     Predicate,
     Value,
 )
-from matrix.storage.factory import StorageProviderFactory
+from primer.storage.factory import StorageProviderFactory
 
 
 class _Thing(Identifiable):

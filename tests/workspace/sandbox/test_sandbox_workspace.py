@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from matrix.model.workspace import (
+from primer.model.workspace import (
     WorkspaceStatus,
     WorkspaceTemplate,
     ContainerTemplateConfig,
 )
-from matrix.workspace.sandbox.fake import FakeSandbox
-from matrix.workspace.sandbox.workspace import SandboxWorkspace
+from primer.workspace.sandbox.fake import FakeSandbox
+from primer.workspace.sandbox.workspace import SandboxWorkspace
 
 
 pytestmark = pytest.mark.skipif(
@@ -87,7 +87,7 @@ async def test_refuses_writes_under_state(tmp_path: Path) -> None:
         workspace_id="ws-1", template=_template(),
         sandbox=sb, backend_kind="container",
     )
-    from matrix.model.except_ import BadRequestError
+    from primer.model.except_ import BadRequestError
     with pytest.raises(BadRequestError):
         await ws.write_file(".state/sneaky", b"x")
 

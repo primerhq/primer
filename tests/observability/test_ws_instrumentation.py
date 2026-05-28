@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from matrix.observability.metrics import reset_for_test
+from primer.observability.metrics import reset_for_test
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +34,7 @@ def in_memory_tracer():
 
 def _patch_tracer(provider):
     return patch(
-        "matrix.observability.tracing.get_tracer",
+        "primer.observability.tracing.get_tracer",
         side_effect=lambda name: provider.get_tracer(name),
     )
 
@@ -76,7 +76,7 @@ def _get_counter_value(counter, *label_values):
 
 def test_ws_connections_active_gauge_chat():
     """The active gauge increments/decrements correctly."""
-    import matrix.observability.metrics as m
+    import primer.observability.metrics as m
 
     assert _get_gauge_value(m.ws_connections_active, "chat") == 0.0
 
@@ -94,7 +94,7 @@ def test_ws_connections_active_gauge_chat():
 
 
 def test_ws_connections_active_gauge_session():
-    import matrix.observability.metrics as m
+    import primer.observability.metrics as m
 
     m.ws_connections_active.labels("session").inc()
     assert _get_gauge_value(m.ws_connections_active, "session") == 1.0
@@ -110,9 +110,9 @@ def test_ws_connections_active_gauge_session():
 @pytest.mark.asyncio
 async def test_chat_send_loop_increments_frame_counter():
     """_send_loop_instrumented should increment ws_frames_sent_total per frame."""
-    import matrix.observability.metrics as m
-    from matrix.api.routers.chats import _send_loop_instrumented
-    from matrix.model.chats import ChatMessage
+    import primer.observability.metrics as m
+    from primer.api.routers.chats import _send_loop_instrumented
+    from primer.model.chats import ChatMessage
     from datetime import datetime, timezone
 
     # Build two fake ChatMessage rows
@@ -162,7 +162,7 @@ async def test_chat_send_loop_increments_frame_counter():
 @pytest.mark.asyncio
 async def test_ws_session_duration_histogram():
     """ws_session_duration_seconds should observe once per connection lifetime."""
-    import matrix.observability.metrics as m
+    import primer.observability.metrics as m
 
     # Simulate the pattern in chat_ws: inc before, observe in finally
     m.ws_connections_active.labels("chat").inc()
@@ -189,7 +189,7 @@ def test_ws_span_name_chat(in_memory_tracer):
     provider, exporter = in_memory_tracer
 
     with _patch_tracer(provider):
-        tracer = provider.get_tracer("matrix.ws")
+        tracer = provider.get_tracer("primer.ws")
         with tracer.start_as_current_span("ws.chat") as span:
             span.set_attribute("ws.frames_sent", 3)
 
@@ -204,7 +204,7 @@ def test_ws_span_name_session(in_memory_tracer):
     provider, exporter = in_memory_tracer
 
     with _patch_tracer(provider):
-        tracer = provider.get_tracer("matrix.ws")
+        tracer = provider.get_tracer("primer.ws")
         with tracer.start_as_current_span("ws.session") as span:
             span.set_attribute("ws.frames_sent", 0)
 

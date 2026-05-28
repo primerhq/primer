@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from matrix.model.chat import TextPart, ToolCallPart, ToolResultPart
-from matrix.model.thread import Thread, ThreadMessage
+from primer.model.chat import TextPart, ToolCallPart, ToolResultPart
+from primer.model.thread import Thread, ThreadMessage
 
 
 # ---- Thread -----------------------------------------------------------------

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from matrix.model.agent import Agent, AgentModel
+from primer.model.agent import Agent, AgentModel
 
 
 # ---- AgentModel ---------------------------------------------------------

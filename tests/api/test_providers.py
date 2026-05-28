@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import SecretStr
 
-from matrix.api.registries import ProviderRegistry
-from matrix.model.provider import (
+from primer.api.registries import ProviderRegistry
+from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderModel,
     CrossEncoderProvider,

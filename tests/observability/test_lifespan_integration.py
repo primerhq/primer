@@ -9,9 +9,9 @@ import httpx
 from fastapi import FastAPI
 from httpx import ASGITransport
 
-from matrix.api.app import _make_lifespan, create_app
-from matrix.api.config import AppConfig, ObservabilityConfig
-from matrix.model.scheduler import RuntimeMode
+from primer.api.app import _make_lifespan, create_app
+from primer.api.config import AppConfig, ObservabilityConfig
+from primer.model.scheduler import RuntimeMode
 
 
 @pytest.fixture
@@ -127,7 +127,7 @@ class TestLifespanTracingWiring:
         self, sqlite_config: AppConfig
     ) -> None:
         """Lifespan sets the module-level _provider when traces_enabled=True."""
-        from matrix.observability import tracing as tracing_module
+        from primer.observability import tracing as tracing_module
 
         # Reset module state before the test.
         tracing_module._provider = None
@@ -144,7 +144,7 @@ class TestLifespanTracingWiring:
     ) -> None:
         """When traces_enabled=False, setup() is a no-op and _provider stays None."""
         monkeypatch.setenv("HOME", str(tmp_path))
-        from matrix.observability import tracing as tracing_module
+        from primer.observability import tracing as tracing_module
 
         tracing_module._provider = None
 

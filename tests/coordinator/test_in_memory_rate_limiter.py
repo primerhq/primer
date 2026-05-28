@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from matrix.coordinator.in_memory import InMemoryRateLimiter
+from primer.coordinator.in_memory import InMemoryRateLimiter
 
 
 @pytest.mark.asyncio

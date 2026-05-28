@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from matrix.harness.git import (
+from primer.harness.git import (
     HarnessGitError,
     clone_at_ref,
     ls_remote,

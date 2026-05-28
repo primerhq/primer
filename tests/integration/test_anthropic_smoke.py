@@ -12,15 +12,15 @@ from typing import cast
 import pytest
 from pydantic import SecretStr
 
-from matrix.llm.anthropic import AnthropicLLM
-from matrix.model.chat import (
+from primer.llm.anthropic import AnthropicLLM
+from primer.model.chat import (
     Done,
     Message,
     StreamEvent,
     TextDelta,
     TextPart,
 )
-from matrix.model.provider import (
+from primer.model.provider import (
     AnthropicConfig,
     Limits,
     LLMModel,

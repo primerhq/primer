@@ -7,11 +7,11 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
-from matrix.channel.adapter import PromptEnvelope, ResponseEnvelope
-from matrix.channel.inbox import ChannelInbox
-from matrix.channel.slack.adapter import SlackChannelAdapter
-from matrix.channel.slack.connection import SLACK_CONNECTIONS
-from matrix.model.channel import (
+from primer.channel.adapter import PromptEnvelope, ResponseEnvelope
+from primer.channel.inbox import ChannelInbox
+from primer.channel.slack.adapter import SlackChannelAdapter
+from primer.channel.slack.connection import SLACK_CONNECTIONS
+from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
     SlackChannelProviderConfig,
 )
@@ -68,7 +68,7 @@ def _channel() -> Channel:
 @pytest.mark.asyncio
 async def test_verify_calls_auth_test_and_conversations_info(monkeypatch):
     monkeypatch.setattr(
-        "matrix.channel.slack.adapter._get_web_client",
+        "primer.channel.slack.adapter._get_web_client",
         lambda conn: conn.client,
     )
     conn = _StubConnection()
@@ -94,7 +94,7 @@ async def test_verify_calls_auth_test_and_conversations_info(monkeypatch):
 async def test_post_prompt_ask_user_calls_chat_postMessage(monkeypatch):
     conn = _StubConnection()
     monkeypatch.setattr(
-        "matrix.channel.slack.adapter._get_web_client",
+        "primer.channel.slack.adapter._get_web_client",
         lambda conn: conn.client,
     )
     async def _acquire(provider): return conn
@@ -124,7 +124,7 @@ async def test_post_prompt_ask_user_calls_chat_postMessage(monkeypatch):
 async def test_handle_decision_publishes_to_inbox(monkeypatch):
     conn = _StubConnection()
     monkeypatch.setattr(
-        "matrix.channel.slack.adapter._get_web_client",
+        "primer.channel.slack.adapter._get_web_client",
         lambda conn: conn.client,
     )
     async def _acquire(provider): return conn
@@ -153,7 +153,7 @@ async def test_handle_decision_publishes_to_inbox(monkeypatch):
 async def test_handle_text_reply_publishes_ask_user(monkeypatch):
     conn = _StubConnection()
     monkeypatch.setattr(
-        "matrix.channel.slack.adapter._get_web_client",
+        "primer.channel.slack.adapter._get_web_client",
         lambda conn: conn.client,
     )
     async def _acquire(provider): return conn

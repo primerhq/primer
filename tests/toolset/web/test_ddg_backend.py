@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from matrix.model.except_ import ProviderError
-from matrix.toolset.web.backends.ddg import DuckDuckGoBackend
+from primer.model.except_ import ProviderError
+from primer.toolset.web.backends.ddg import DuckDuckGoBackend
 
 
 def _patch_ddgs(scripted_results):

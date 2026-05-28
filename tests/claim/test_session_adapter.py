@@ -5,9 +5,9 @@ from typing import Any
 
 import pytest
 
-from matrix.int.claim import ClaimKind, ReleaseOutcome
-from matrix.claim.adapters.sessions import SessionClaimAdapter
-from matrix.model.workspace_session import (
+from primer.int.claim import ClaimKind, ReleaseOutcome
+from primer.claim.adapters.sessions import SessionClaimAdapter
+from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionMessageKind,
     SessionStatus,

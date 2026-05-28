@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.graph.router import (
+from primer.graph.router import (
     RouterRegistry,
     first_matching_branch,
     match_json_path,
 )
-from matrix.model.chat import Message, TextPart
-from matrix.model.except_ import ConfigError
-from matrix.model.graph import GraphContext, JsonPathBranch, NodeOutput
+from primer.model.chat import Message, TextPart
+from primer.model.except_ import ConfigError
+from primer.model.graph import GraphContext, JsonPathBranch, NodeOutput
 
 
 def _ctx() -> GraphContext:

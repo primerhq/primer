@@ -7,15 +7,15 @@ from typing import Any
 
 import pytest
 
-from matrix.agent.compaction import (
+from primer.agent.compaction import (
     DEFAULT_CONTEXT_LIMIT,
     MODEL_CONTEXT_FALLBACK,
     CompactedTurn,
     CompactionStrategy,
     lookup_context_length,
 )
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chat import (
+from primer.model.agent import Agent, AgentModel
+from primer.model.chat import (
     Done,
     Error,
     Message,
@@ -26,8 +26,8 @@ from matrix.model.chat import (
     ToolCallPart,
     ToolResultPart,
 )
-from matrix.model.except_ import ServerError
-from matrix.model.provider import LLMModel
+from primer.model.except_ import ServerError
+from primer.model.provider import LLMModel
 
 
 # ===========================================================================

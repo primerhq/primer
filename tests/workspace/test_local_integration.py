@@ -20,13 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from matrix.model.workspace_session import (
+from primer.model.workspace_session import (
     AgentBinding,
     SessionStatus,
     _ToolApprovalWaiting,  # type: ignore[attr-defined]
     _UserInputWaiting,  # type: ignore[attr-defined]
 )
-from matrix.model.workspace import (
+from primer.model.workspace import (
     FileMount,
     LocalWorkspaceConfig,
     WorkspaceProvider,
@@ -34,14 +34,14 @@ from matrix.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from matrix.workspace import (
+from primer.workspace import (
     AgentSession,
     LocalWorkspace,
     LocalWorkspaceBackend,
     ToolCallContext,
     WorkspaceBackendFactory,
 )
-from matrix.workspace.local.tools import EditArgs, ExecArgs, GrepArgs, ReadArgs
+from primer.workspace.local.tools import EditArgs, ExecArgs, GrepArgs, ReadArgs
 
 
 pytestmark = pytest.mark.skipif(

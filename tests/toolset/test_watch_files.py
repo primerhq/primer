@@ -11,14 +11,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from matrix.model.yield_ import (
+from primer.model.yield_ import (
     ToolContext,
     YieldCancelled,
     YieldTimeout,
     YieldToWorker,
     Yielded,
 )
-from matrix.toolset.workspaces import build_workspaces_toolset
+from primer.toolset.workspaces import build_workspaces_toolset
 
 
 class _NoopWorkspaceRegistry:
@@ -179,7 +179,7 @@ class TestWatchFilesHandler:
 @pytest.mark.asyncio
 class TestWatchFilesResumeHook:
     async def test_resume_with_real_changes(self):
-        from matrix.toolset.workspaces import watch_files_resume
+        from primer.toolset.workspaces import watch_files_resume
 
         meta = {
             "paths": ["a.txt"],
@@ -202,7 +202,7 @@ class TestWatchFilesResumeHook:
         assert body["changes"] == payload["changes"]
 
     async def test_resume_with_timeout(self):
-        from matrix.toolset.workspaces import watch_files_resume
+        from primer.toolset.workspaces import watch_files_resume
 
         meta = {"paths": ["a"], "batch_window_ms": 250}
         result = watch_files_resume(meta, YieldTimeout(elapsed_seconds=60.0))
@@ -212,7 +212,7 @@ class TestWatchFilesResumeHook:
         assert body["elapsed_seconds"] == 60.0
 
     async def test_resume_with_cancelled(self):
-        from matrix.toolset.workspaces import watch_files_resume
+        from primer.toolset.workspaces import watch_files_resume
 
         meta = {"paths": ["a"], "batch_window_ms": 250}
         result = watch_files_resume(
@@ -240,8 +240,8 @@ async def test_watch_files_tool_is_registered():
 
 
 def test_watch_files_resume_hook_is_registered():
-    import matrix.toolset.workspaces  # noqa: F401
-    from matrix.worker.yield_resume_registry import get_resume_hook
+    import primer.toolset.workspaces  # noqa: F401
+    from primer.worker.yield_resume_registry import get_resume_hook
 
     hook = get_resume_hook("watch_files")
     assert callable(hook)

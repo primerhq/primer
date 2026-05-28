@@ -10,11 +10,11 @@ from typing import Any
 
 import pytest
 
-from matrix.chat.executor import ChatTurnRunner
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chat import Done, Message, StreamEvent, TextDelta
-from matrix.model.chats import Chat, ChatMessage
-from matrix.model.provider import LLMModel
+from primer.chat.executor import ChatTurnRunner
+from primer.model.agent import Agent, AgentModel
+from primer.model.chat import Done, Message, StreamEvent, TextDelta
+from primer.model.chats import Chat, ChatMessage
+from primer.model.provider import LLMModel
 
 
 class _NeverEndingStream:

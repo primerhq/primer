@@ -13,9 +13,9 @@ from typing import Any, Generic, TypeVar
 
 import pytest
 
-from matrix.model.common import Identifiable
-from matrix.model.except_ import ConflictError, NotFoundError
-from matrix.model.storage import (
+from primer.model.common import Identifiable
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.storage import (
     CursorPage,
     CursorPageResponse,
     FieldRef,
@@ -166,7 +166,7 @@ class _FakeStorageProvider:
         return
 
     async def get_system_state(self) -> Any:
-        from matrix.model.system_state import SystemState
+        from primer.model.system_state import SystemState
         return SystemState(bootstrap_completed_at=self._bootstrap_completed_at)
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
@@ -188,7 +188,7 @@ def fake_provider_registry(
     real LLM should monkey-patch ``registry.get_llm`` directly (the
     ``deps`` fixture in tests/chat/test_dispatch.py does this).
     """
-    from matrix.api.registries import ProviderRegistry
+    from primer.api.registries import ProviderRegistry
 
     return ProviderRegistry(
         fake_storage_provider,  # type: ignore[arg-type]
@@ -215,13 +215,13 @@ class _FakeLLM:
         return ["m"]
 
     def stream(self, *, model: str, messages: Any, **kwargs: Any) -> Any:
-        from matrix.model.chat import Done, TextDelta
+        from primer.model.chat import Done, TextDelta
 
         self.calls.append({"model": model, "messages": list(messages), **kwargs})
         return self._stream_impl()
 
     async def _stream_impl(self) -> AsyncIterator[Any]:
-        from matrix.model.chat import Done, TextDelta
+        from primer.model.chat import Done, TextDelta
 
         if self._stream_factory is not None:
             async for ev in self._stream_factory():

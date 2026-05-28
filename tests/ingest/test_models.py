@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from matrix.model.ingest import Chunk, IngestResult, LoadedDocument
+from primer.model.ingest import Chunk, IngestResult, LoadedDocument
 
 
 # ---- LoadedDocument --------------------------------------------------------

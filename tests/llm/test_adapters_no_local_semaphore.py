@@ -10,14 +10,14 @@ import pytest
 
 
 _ADAPTER_MODULES = [
-    "matrix.llm.anthropic",
-    "matrix.llm.openresponses",
-    "matrix.llm.gemini",
-    "matrix.llm.ollama",
-    "matrix.embedder.openai",
-    "matrix.embedder.gemini",
-    "matrix.embedder.huggingface",
-    "matrix.cross_encoder.huggingface",
+    "primer.llm.anthropic",
+    "primer.llm.openresponses",
+    "primer.llm.gemini",
+    "primer.llm.ollama",
+    "primer.embedder.openai",
+    "primer.embedder.gemini",
+    "primer.embedder.huggingface",
+    "primer.cross_encoder.huggingface",
 ]
 
 
@@ -31,9 +31,9 @@ def test_adapter_no_local_semaphore(module_path):
 
 
 _KWARG_TARGETS = [
-    ("matrix.llm.openresponses", "OpenResponsesLLM"),
-    ("matrix.llm.gemini", "GeminiLLM"),
-    ("matrix.llm.ollama", "OllamaLLM"),
+    ("primer.llm.openresponses", "OpenResponsesLLM"),
+    ("primer.llm.gemini", "GeminiLLM"),
+    ("primer.llm.ollama", "OllamaLLM"),
 ]
 
 

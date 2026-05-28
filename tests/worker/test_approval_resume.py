@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from matrix.model.chat import ToolCallPart, ToolResultPart
-from matrix.model.yield_ import YieldCancelled, YieldTimeout
-from matrix.worker.yield_runtime import _resume_tool_approval
+from primer.model.chat import ToolCallPart, ToolResultPart
+from primer.model.yield_ import YieldCancelled, YieldTimeout
+from primer.worker.yield_runtime import _resume_tool_approval
 
 
 class _FakeToolManager:

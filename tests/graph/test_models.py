@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from matrix.model.chat import (
+from primer.model.chat import (
     ExtendedEvent,
     Message,
     StreamEvent,
@@ -15,7 +15,7 @@ from matrix.model.chat import (
     TextPart,
     _GraphNodeEvent,
 )
-from matrix.model.graph import (
+from primer.model.graph import (
     Graph,
     GraphContext,
     GraphEdge,
@@ -34,7 +34,7 @@ from matrix.model.graph import (
     _StaticEdge,
     _TerminalNode,
 )
-from matrix.model.workspace_session import SessionStatus
+from primer.model.workspace_session import SessionStatus
 
 
 # ===========================================================================

@@ -7,7 +7,7 @@ import re
 import pytest
 
 discord = pytest.importorskip("discord")
-from matrix.channel.discord.views import (
+from primer.channel.discord.views import (
     REJECT_MODAL_CUSTOM_ID_PREFIX,
     ApprovalView,
     build_approval_custom_ids,

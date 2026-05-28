@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from matrix.model.workspace_session import SessionMessageKind, SessionMessageRecord
-from matrix.session.persistence import WorkspaceMessageWriter
+from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
+from primer.session.persistence import WorkspaceMessageWriter
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +184,8 @@ async def test_seq_written_into_persisted_record(
 
 def test_translate_text_delta_coalesces() -> None:
     """Multiple TextDeltas in a row coalesce; Done flushes them as one assistant_token."""
-    from matrix.model.chat import Done, TextDelta
-    from matrix.session.persistence import _CoalesceState, translate_stream_event
+    from primer.model.chat import Done, TextDelta
+    from primer.session.persistence import _CoalesceState, translate_stream_event
 
     state = _CoalesceState()
     rec1 = translate_stream_event(TextDelta(text="hello ", index=0), state)
@@ -204,8 +204,8 @@ def test_translate_text_delta_coalesces() -> None:
 
 def test_translate_done_no_text_emits_only_done() -> None:
     """Done with no buffered text emits a single DONE record (not a list)."""
-    from matrix.model.chat import Done
-    from matrix.session.persistence import _CoalesceState, translate_stream_event
+    from primer.model.chat import Done
+    from primer.session.persistence import _CoalesceState, translate_stream_event
 
     state = _CoalesceState()
     result = translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state)
@@ -217,8 +217,8 @@ def test_translate_done_no_text_emits_only_done() -> None:
 
 def test_translate_tool_call_end() -> None:
     """ToolCallEnd emits a TOOL_CALL record."""
-    from matrix.model.chat import ToolCallEnd
-    from matrix.session.persistence import _CoalesceState, translate_stream_event
+    from primer.model.chat import ToolCallEnd
+    from primer.session.persistence import _CoalesceState, translate_stream_event
 
     state = _CoalesceState()
     rec = translate_stream_event(
@@ -231,8 +231,8 @@ def test_translate_tool_call_end() -> None:
 
 def test_translate_tool_call_end_flushes_text_buffer() -> None:
     """ToolCallEnd flushes any coalesced text first, then emits TOOL_CALL."""
-    from matrix.model.chat import TextDelta, ToolCallEnd
-    from matrix.session.persistence import _CoalesceState, translate_stream_event
+    from primer.model.chat import TextDelta, ToolCallEnd
+    from primer.session.persistence import _CoalesceState, translate_stream_event
 
     state = _CoalesceState()
     translate_stream_event(TextDelta(text="thinking", index=0), state)
@@ -248,8 +248,8 @@ def test_translate_tool_call_end_flushes_text_buffer() -> None:
 
 def test_translate_executor_tool_result() -> None:
     """ExtendedEvent wrapping _ExecutorToolResult emits a TOOL_RESULT record."""
-    from matrix.model.chat import ExtendedEvent, _ExecutorToolResult
-    from matrix.session.persistence import _CoalesceState, translate_stream_event
+    from primer.model.chat import ExtendedEvent, _ExecutorToolResult
+    from primer.session.persistence import _CoalesceState, translate_stream_event
 
     state = _CoalesceState()
     event = ExtendedEvent(
@@ -263,8 +263,8 @@ def test_translate_executor_tool_result() -> None:
 
 def test_translate_error() -> None:
     """Error emits an ERROR record."""
-    from matrix.model.chat import Error
-    from matrix.session.persistence import _CoalesceState, translate_stream_event
+    from primer.model.chat import Error
+    from primer.session.persistence import _CoalesceState, translate_stream_event
 
     state = _CoalesceState()
     rec = translate_stream_event(Error(message="boom", code="x", fatal=True), state)
@@ -275,8 +275,8 @@ def test_translate_error() -> None:
 
 def test_translate_dropped_events_return_none() -> None:
     """StreamStart, Usage, ReasoningDelta etc. are silently dropped (return None)."""
-    from matrix.model.chat import ReasoningDelta, StreamStart, Usage
-    from matrix.session.persistence import _CoalesceState, translate_stream_event
+    from primer.model.chat import ReasoningDelta, StreamStart, Usage
+    from primer.session.persistence import _CoalesceState, translate_stream_event
 
     state = _CoalesceState()
     assert translate_stream_event(StreamStart(model="x", request_id=None), state) is None

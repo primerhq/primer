@@ -25,19 +25,19 @@ from pathlib import Path
 
 import pytest
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.bus.host_inotify_probe import HostInotifyProbe
-from matrix.bus.watcher import (
+from primer.bus.in_memory import InMemoryEventBus
+from primer.bus.host_inotify_probe import HostInotifyProbe
+from primer.bus.watcher import (
     EventDrivenWatcher,
     WatcherManager,
 )
-from matrix.bus.ws_watch_probe import Change, WatchProbe
-from matrix.model.workspace_session import (
+from primer.bus.ws_watch_probe import Change, WatchProbe
+from primer.model.workspace_session import (
     AgentSessionBinding,
     WorkspaceSession,
     SessionStatus,
 )
-from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
 
 
 # ===========================================================================

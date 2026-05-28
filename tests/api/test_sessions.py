@@ -18,8 +18,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from matrix.api.app import create_test_app
-from matrix.api.registries import (
+from primer.api.app import create_test_app
+from primer.api.registries import (
     ProviderRegistry,
     WorkspaceRegistry,
 )
@@ -55,7 +55,7 @@ class _FakeWorkspaceForSessions:
                 "REST API must always supply an explicit id to start_session"
             )
         if id in self.started_sessions:
-            from matrix.model.except_ import ConflictError
+            from primer.model.except_ import ConflictError
 
             raise ConflictError(f"session {id!r} already exists")
         self.started_sessions[id] = {
@@ -137,7 +137,7 @@ async def seeded_workspace(app):
     resolves the live workspace via :class:`WorkspaceRegistry`, which
     looks up the backend by ``provider_id``.
     """
-    from matrix.model.workspace import (
+    from primer.model.workspace import (
         LocalWorkspaceConfig,
         Workspace,
         WorkspaceProvider,
@@ -176,7 +176,7 @@ async def seeded_workspace(app):
 @pytest.fixture
 async def seeded_agent(app):
     """Insert a synthetic Agent row directly via Storage[Agent]."""
-    from matrix.model.agent import Agent, AgentModel
+    from primer.model.agent import Agent, AgentModel
 
     storage = app.state.storage_provider.get_storage(Agent)
     agent = Agent(
@@ -253,7 +253,7 @@ async def test_create_session_with_graph_binding(
     sessions_client, seeded_workspace, app,
 ):
     """Smoke test for the graph binding kind. Insert a synthetic Graph row."""
-    from matrix.model.graph import Graph, _TerminalNode
+    from primer.model.graph import Graph, _TerminalNode
 
     storage = app.state.storage_provider.get_storage(Graph)
     graph = Graph(
@@ -322,7 +322,7 @@ async def test_resume_already_running_is_idempotent_200(
 async def test_resume_ended_session_is_409(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
-    from matrix.model.workspace_session import WorkspaceSession
+    from primer.model.workspace_session import WorkspaceSession
     create = await sessions_client.post(
         f"/v1/workspaces/{seeded_workspace.id}/sessions",
         json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
@@ -358,7 +358,7 @@ async def test_cancel_from_created_ends_immediately(
 async def test_pause_running_sets_pause_requested_flag(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
-    from matrix.model.workspace_session import WorkspaceSession
+    from primer.model.workspace_session import WorkspaceSession
     create = await sessions_client.post(
         f"/v1/workspaces/{seeded_workspace.id}/sessions",
         json={
@@ -434,7 +434,7 @@ async def test_create_session_graph_binding_skips_on_disk_slot(
 ):
     """Graph bindings must not allocate an on-disk slot (graph executor
     wires its own per-node session slots)."""
-    from matrix.model.graph import Graph, _TerminalNode
+    from primer.model.graph import Graph, _TerminalNode
 
     storage = app.state.storage_provider.get_storage(Graph)
     graph = Graph(
@@ -467,7 +467,7 @@ async def test_top_level_list_sessions_filtered_by_status(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
     """Top-level GET /v1/sessions must honour ``?status=`` from §11.2."""
-    from matrix.model.workspace_session import WorkspaceSession, SessionStatus
+    from primer.model.workspace_session import WorkspaceSession, SessionStatus
 
     # Two sessions: one CREATED (default), one auto-started → RUNNING.
     r1 = await sessions_client.post(
@@ -510,7 +510,7 @@ async def test_top_level_list_sessions_filtered_by_agent_id(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
     """``?agent_id=`` filters by ``binding.agent_id`` (nested-JSON path)."""
-    from matrix.model.agent import Agent, AgentModel
+    from primer.model.agent import Agent, AgentModel
 
     # Insert a second agent so we have two distinct agent_id values.
     storage = app.state.storage_provider.get_storage(Agent)
@@ -589,12 +589,12 @@ async def test_claim_engine_upsert_on_create(
     app_with_engine, seeded_workspace, seeded_agent,
 ):
     """create_session calls engine.upsert(SESSION, sid) after persisting."""
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
 
     _app, engine = app_with_engine
     # seeded_workspace/seeded_agent fixtures are bound to the `app` fixture;
     # reuse their workspace_id but insert the agent into *this* app's storage.
-    from matrix.model.agent import Agent, AgentModel
+    from primer.model.agent import Agent, AgentModel
     agent_storage = _app.state.storage_provider.get_storage(Agent)
     try:
         await agent_storage.create(Agent(
@@ -606,7 +606,7 @@ async def test_claim_engine_upsert_on_create(
         ))
     except Exception:
         pass
-    from matrix.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
+    from primer.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
     from datetime import datetime, timezone
     sp = _app.state.storage_provider
     try:
@@ -636,7 +636,7 @@ async def test_claim_engine_upsert_on_create(
         assert resp.status_code == 201, resp.text
         sid = resp.json()["id"]
 
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
     assert (ClaimKind.SESSION, sid) in engine.upserted, (
         f"Expected engine.upsert(SESSION, {sid!r}) but got: {engine.upserted!r}"
     )
@@ -646,9 +646,9 @@ async def test_claim_engine_delete_lease_on_cancel(
     app_with_engine, seeded_workspace, seeded_agent,
 ):
     """cancel_session (when session ends immediately) calls engine.delete_lease."""
-    from matrix.int.claim import ClaimKind
-    from matrix.model.agent import Agent, AgentModel
-    from matrix.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
+    from primer.int.claim import ClaimKind
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
     from datetime import datetime, timezone
 
     _app, engine = app_with_engine
@@ -745,9 +745,9 @@ async def test_claim_engine_upsert_on_resume(
     app_with_engine,
 ):
     """resume_session calls engine.upsert(SESSION, sid) when transitioning to RUNNING."""
-    from matrix.int.claim import ClaimKind
-    from matrix.model.agent import Agent, AgentModel
-    from matrix.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
+    from primer.int.claim import ClaimKind
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
     from datetime import datetime, timezone
 
     _app, engine = app_with_engine

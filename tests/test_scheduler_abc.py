@@ -1,4 +1,4 @@
-"""Tests for the Scheduler ABC + value types in matrix.int.scheduler."""
+"""Tests for the Scheduler ABC + value types in primer.int.scheduler."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from matrix.int.scheduler import (
+from primer.int.scheduler import (
     CompleteTurnResult,
     FailureRecord,
     Lease,
@@ -55,7 +55,7 @@ def test_scheduler_is_abstract():
         Scheduler()  # type: ignore[abstract]
 
 
-def test_scheduler_re_exported_from_matrix_int():
-    """Scheduler should be re-exported from matrix.int alongside other ABCs."""
-    from matrix import int as matrix_int
-    assert hasattr(matrix_int, "Scheduler")
+def test_scheduler_re_exported_from_primer_int():
+    """Scheduler should be re-exported from primer.int alongside other ABCs."""
+    from primer import int as primer_int
+    assert hasattr(primer_int, "Scheduler")

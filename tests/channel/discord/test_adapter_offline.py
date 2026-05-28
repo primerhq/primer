@@ -9,11 +9,11 @@ from pydantic import SecretStr
 
 discord = pytest.importorskip("discord")
 
-from matrix.channel.adapter import PromptEnvelope, ResponseEnvelope
-from matrix.channel.inbox import ChannelInbox
-from matrix.channel.discord.adapter import DiscordChannelAdapter
-from matrix.channel.discord.connection import DISCORD_CONNECTIONS
-from matrix.model.channel import (
+from primer.channel.adapter import PromptEnvelope, ResponseEnvelope
+from primer.channel.inbox import ChannelInbox
+from primer.channel.discord.adapter import DiscordChannelAdapter
+from primer.channel.discord.connection import DISCORD_CONNECTIONS
+from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
     DiscordChannelProviderConfig,
 )

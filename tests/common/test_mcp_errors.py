@@ -7,8 +7,8 @@ import pytest
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
 
-from matrix.common.mcp_errors import classify_mcp_exception
-from matrix.model.except_ import (
+from primer.common.mcp_errors import classify_mcp_exception
+from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
     NetworkError,

@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from matrix.bus.in_memory import InMemoryEventBus
+from primer.bus.in_memory import InMemoryEventBus
 
 
 @pytest.fixture

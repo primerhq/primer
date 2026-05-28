@@ -13,18 +13,18 @@ from pathlib import Path
 
 import pytest
 
-from matrix.model.except_ import BadRequestError, ConflictError, NotFoundError
-from matrix.model.workspace_session import AgentBinding
+from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
+from primer.model.workspace_session import AgentBinding
 
 # Import the workspace package up-front so ToolCallContext.model_rebuild()
 # runs before any test constructs one (see matrix/workspace/__init__.py).
-import matrix.workspace as _workspace_pkg  # noqa: F401
+import primer.workspace as _workspace_pkg  # noqa: F401
 
-from matrix.workspace.local.cache import LocalTruncationStore as TruncationStore
-from matrix.workspace.local.state import LocalStateRepo as StateRepo
-from matrix.workspace.session import AgentSession
-from matrix.workspace.tool import ToolCallContext
-from matrix.workspace.local.tools import (
+from primer.workspace.local.cache import LocalTruncationStore as TruncationStore
+from primer.workspace.local.state import LocalStateRepo as StateRepo
+from primer.workspace.session import AgentSession
+from primer.workspace.tool import ToolCallContext
+from primer.workspace.local.tools import (
     Edit,
     EditArgs,
     Exec,

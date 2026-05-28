@@ -27,23 +27,23 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from matrix.int.scheduler import CompleteTurnResult
-from matrix.model.workspace_session import (
+from primer.int.scheduler import CompleteTurnResult
+from primer.model.workspace_session import (
     AgentSessionBinding,
     WorkspaceSession,
     SessionStatus,
 )
-from matrix.model.yield_ import (
+from primer.model.yield_ import (
     ToolContext,
     YieldCancelled,
     YieldTimeout,
     YieldToWorker,
     Yielded,
 )
-from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
-from matrix.toolset.misc import build_misc_toolset
-from matrix.worker.yield_resume_registry import get_resume_hook
-from matrix.worker.yield_runtime import (
+from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.toolset.misc import build_misc_toolset
+from primer.worker.yield_resume_registry import get_resume_hook
+from primer.worker.yield_runtime import (
     ParkedState,
     classify_resume_payload,
     make_cancelled_payload,

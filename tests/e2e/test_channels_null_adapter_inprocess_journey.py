@@ -45,31 +45,31 @@ from typing import Any
 
 import pytest
 
-from matrix.api.app import create_app
-from matrix.api.config import AppConfig
-from matrix.channel.adapter import (
+from primer.api.app import create_app
+from primer.api.config import AppConfig
+from primer.channel.adapter import (
     ChannelAdapter,
     PromptEnvelope,
     ResponseEnvelope,
 )
-from matrix.channel.factory import (
+from primer.channel.factory import (
     clear_factories_for_tests,
     register_adapter_factory,
 )
-from matrix.channel.null_adapter import NullChannelAdapter
-from matrix.model.channel import (
+from primer.channel.null_adapter import NullChannelAdapter
+from primer.model.channel import (
     Channel,
     ChannelProvider,
     ChannelProviderType,
     SlackChannelProviderConfig,
     WorkspaceChannelAssociation,
 )
-from matrix.model.provider import (
+from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
     StorageProviderType,
 )
-from matrix.model.scheduler import (
+from primer.model.scheduler import (
     InMemorySchedulerConfig,
     RuntimeMode,
     SchedulerProviderConfig,

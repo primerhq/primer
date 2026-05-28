@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from matrix.cross_encoder.huggingface import HuggingFaceCrossEncoder
-from matrix.model.except_ import BadRequestError, ConfigError, ProviderError
-from matrix.model.provider import (
+from primer.cross_encoder.huggingface import HuggingFaceCrossEncoder
+from primer.model.except_ import BadRequestError, ConfigError, ProviderError
+from primer.model.provider import (
     CrossEncoderModel,
     CrossEncoderProvider,
     CrossEncoderProviderType,
@@ -64,7 +64,7 @@ class TestConstructor:
     def test_logs_init_with_structured_context(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.INFO, logger="matrix.cross_encoder.huggingface")
+        caplog.set_level(logging.INFO, logger="primer.cross_encoder.huggingface")
         provider = _make_provider(models=["a", "b"], max_concurrency=2)
         HuggingFaceCrossEncoder(provider)
         records = [
@@ -94,7 +94,7 @@ class TestScore:
         adapter = HuggingFaceCrossEncoder(provider)
         # No model is loaded (zero docs ⇒ zero pairs ⇒ no predict call).
         with patch(
-            "matrix.cross_encoder.huggingface.STCrossEncoder"
+            "primer.cross_encoder.huggingface.STCrossEncoder"
         ) as mock_st:
             scores = await adapter.score(
                 model="BAAI/bge-reranker-v2-m3",
@@ -137,7 +137,7 @@ class TestScore:
         fake_model.predict.return_value = [0.7, 0.3]
 
         with patch(
-            "matrix.cross_encoder.huggingface.STCrossEncoder",
+            "primer.cross_encoder.huggingface.STCrossEncoder",
             return_value=fake_model,
         ) as mock_st:
             await adapter.score(model="m1", query="q", documents=["a", "b"])
@@ -157,7 +157,7 @@ class TestScore:
         fake_model.predict.return_value = [0.9, 0.1, 0.5]
 
         with patch(
-            "matrix.cross_encoder.huggingface.STCrossEncoder",
+            "primer.cross_encoder.huggingface.STCrossEncoder",
             return_value=fake_model,
         ):
             scores = await adapter.score(
@@ -187,7 +187,7 @@ class TestScore:
         fake_model.predict.return_value = [0.5]
 
         with patch(
-            "matrix.cross_encoder.huggingface.STCrossEncoder",
+            "primer.cross_encoder.huggingface.STCrossEncoder",
             return_value=fake_model,
         ) as mock_st:
             await adapter.score(model="m1", query="q", documents=["d"])
@@ -206,7 +206,7 @@ class TestScore:
         fake_model.predict.return_value = [0.1]  # only one for two docs
 
         with patch(
-            "matrix.cross_encoder.huggingface.STCrossEncoder",
+            "primer.cross_encoder.huggingface.STCrossEncoder",
             return_value=fake_model,
         ):
             with pytest.raises(ProviderError, match="returned 1 scores for 2"):

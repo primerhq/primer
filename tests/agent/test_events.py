@@ -5,13 +5,13 @@ from __future__ import annotations
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from matrix.agent.events import (
+from primer.agent.events import (
     AgentEventSubscriber,
     Subscription,
     _ExecutorToolResult,
 )
-from matrix.agent.prompts import DEFAULT_COMPACTION_PROMPT
-from matrix.model.chat import ExtendedEvent, StreamEvent
+from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
+from primer.model.chat import ExtendedEvent, StreamEvent
 
 
 # ---- _ExecutorToolResult ---------------------------------------------------

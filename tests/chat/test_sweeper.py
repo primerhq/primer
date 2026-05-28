@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import pytest
 
-from matrix.chat.dispatch import sweep_chats
+from primer.chat.dispatch import sweep_chats
 
 
 @pytest.mark.asyncio

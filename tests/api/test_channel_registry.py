@@ -8,22 +8,22 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from matrix.api.registries.channel_registry import ChannelRegistry
-from matrix.channel.factory import (
+from primer.api.registries.channel_registry import ChannelRegistry
+from primer.channel.factory import (
     clear_factories_for_tests,
     register_adapter_factory,
 )
-from matrix.channel.inbox import ChannelInbox
-from matrix.channel.null_adapter import NullChannelAdapter
-from matrix.model.channel import (
+from primer.channel.inbox import ChannelInbox
+from primer.channel.null_adapter import NullChannelAdapter
+from primer.model.channel import (
     Channel,
     ChannelProvider,
     ChannelProviderType,
     SlackChannelProviderConfig,
     WorkspaceChannelAssociation,
 )
-from matrix.model.provider import SqliteConfig
-from matrix.storage.sqlite import SqliteStorageProvider
+from primer.model.provider import SqliteConfig
+from primer.storage.sqlite import SqliteStorageProvider
 
 
 @pytest.fixture(autouse=True)

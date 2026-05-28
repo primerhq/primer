@@ -11,7 +11,7 @@ import openai
 import pytest
 from pydantic import HttpUrl, SecretStr
 
-from matrix.embedder.openai import (
+from primer.embedder.openai import (
     OpenAIEmbedder,
     _FlavorPolicy,
     _POLICY_BY_FLAVOR,
@@ -19,13 +19,13 @@ from matrix.embedder.openai import (
     _part_to_openai_input,
     _translate_response,
 )
-from matrix.model.chat import (
+from primer.model.chat import (
     AudioPart,
     DocumentPart,
     ImagePart,
     VideoPart,
 )
-from matrix.model.embedding import (
+from primer.model.embedding import (
     EmbedResponse,
     Embedding,
     EmbeddingPart,
@@ -35,7 +35,7 @@ from matrix.model.embedding import (
     TextPart,
     TokensPart,
 )
-from matrix.model.except_ import (
+from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
     ConfigError,
@@ -44,7 +44,7 @@ from matrix.model.except_ import (
     RateLimitError,
     UnsupportedContentError,
 )
-from matrix.model.provider import (
+from primer.model.provider import (
     EmbeddingModel,
     EmbeddingProvider,
     EmbeddingProviderType,
@@ -159,7 +159,7 @@ class TestConstructor:
     def test_logs_init_with_structured_context(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.INFO, logger="matrix.embedder.openai")
+        caplog.set_level(logging.INFO, logger="primer.embedder.openai")
         provider = _make_provider(
             models=["text-embedding-3-small", "text-embedding-3-large"],
             max_concurrency=2,
@@ -375,7 +375,7 @@ def _patched_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock_instance.embeddings = MagicMock()
     mock_instance.embeddings.create = AsyncMock()
     cls_mock = MagicMock(return_value=mock_instance)
-    monkeypatch.setattr("matrix.embedder.openai.AsyncOpenAI", cls_mock)
+    monkeypatch.setattr("primer.embedder.openai.AsyncOpenAI", cls_mock)
     return mock_instance
 
 
@@ -641,7 +641,7 @@ class TestExtendedConfig:
 
 class TestPackageReexport:
     def test_openai_embedder_reexported_from_package(self) -> None:
-        import matrix.embedder as embedder_pkg
+        import primer.embedder as embedder_pkg
 
         assert "OpenAIEmbedder" in embedder_pkg.__all__
         assert embedder_pkg.OpenAIEmbedder is OpenAIEmbedder

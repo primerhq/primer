@@ -22,13 +22,13 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from matrix.int.scheduler import CompleteTurnResult, FailureRecord
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import PoolConfig, PostgresConfig
-from matrix.model.scheduler import PostgresSchedulerConfig
-from matrix.model.workspace_session import WorkspaceSession, SessionStatus
-from matrix.scheduler.postgres import PostgresScheduler
-from matrix.storage.postgres import PostgresStorageProvider
+from primer.int.scheduler import CompleteTurnResult, FailureRecord
+from primer.model.except_ import ConfigError
+from primer.model.provider import PoolConfig, PostgresConfig
+from primer.model.scheduler import PostgresSchedulerConfig
+from primer.model.workspace_session import WorkspaceSession, SessionStatus
+from primer.scheduler.postgres import PostgresScheduler
+from primer.storage.postgres import PostgresStorageProvider
 
 
 _DSN_ENV = "MATRIX_PG_TEST_DSN"

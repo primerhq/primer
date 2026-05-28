@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from matrix.model.workspace_session import (
+from primer.model.workspace_session import (
     AgentBinding,
     Instruction,
     SessionInfo,
@@ -286,7 +286,7 @@ class TestWaitingStateDiscriminatedUnion:
 # ---- WorkspaceSession entity (scheduler-visible) ----------------------------------
 
 
-from matrix.model.workspace_session import (  # noqa: E402
+from primer.model.workspace_session import (  # noqa: E402
     AgentSessionBinding,
     GraphSessionBinding,
     WorkspaceSession,
@@ -342,7 +342,7 @@ class TestSessionMessageKind:
     """Verify SessionMessageKind enum variants (Task 3)."""
 
     def test_session_message_kind_variants(self):
-        from matrix.model.workspace_session import SessionMessageKind
+        from primer.model.workspace_session import SessionMessageKind
 
         expected = {
             "user_input",
@@ -363,7 +363,7 @@ class TestSessionMessageRecord:
     """Verify SessionMessageRecord round-trip serialisation (Task 3)."""
 
     def test_session_message_record_round_trip(self):
-        from matrix.model.workspace_session import SessionMessageKind, SessionMessageRecord
+        from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
 
         rec = SessionMessageRecord(
             seq=1,

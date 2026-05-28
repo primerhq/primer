@@ -8,14 +8,14 @@ from typing import Any, Literal
 
 import pytest
 
-from matrix.ingest.ingester import DocumentIngester
-from matrix.ingest.loader import DocumentLoader
-from matrix.ingest.splitters.recursive import RecursiveSplitter
-from matrix.model.collection import Collection, CollectionEmbedder, Document
-from matrix.model.embedding import Embedding, EmbedResponse
-from matrix.model.except_ import BadRequestError
-from matrix.model.ingest import LoadedDocument
-from matrix.model.vector import EmbeddingRecord, SearchResult, Vector
+from primer.ingest.ingester import DocumentIngester
+from primer.ingest.loader import DocumentLoader
+from primer.ingest.splitters.recursive import RecursiveSplitter
+from primer.model.collection import Collection, CollectionEmbedder, Document
+from primer.model.embedding import Embedding, EmbedResponse
+from primer.model.except_ import BadRequestError
+from primer.model.ingest import LoadedDocument
+from primer.model.vector import EmbeddingRecord, SearchResult, Vector
 
 
 # ===========================================================================
@@ -78,7 +78,7 @@ class _InMemoryVectorStore:
         existing = self.collections.get(collection_id)
         if existing is not None:
             if existing["dimensions"] != dimensions:
-                from matrix.model.except_ import ConflictError
+                from primer.model.except_ import ConflictError
 
                 raise ConflictError(
                     f"existing dim {existing['dimensions']} != new {dimensions}"

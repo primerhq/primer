@@ -19,10 +19,10 @@ from pydantic import SecretStr
 
 # asyncio is used in the test functions for async stream generators.
 
-from matrix.api.app import create_test_app
-from matrix.api.registries import ProviderRegistry
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.provider import (
+from primer.api.app import create_test_app
+from primer.api.registries import ProviderRegistry
+from primer.model.agent import Agent, AgentModel
+from primer.model.provider import (
     AnthropicConfig,
     Limits,
     LLMModel,
@@ -101,7 +101,7 @@ async def test_disconnect_mid_stream_then_reconnect_replays(
     from starlette.testclient import TestClient as SyncTestClient
 
     async def _slow_stream():
-        from matrix.model.chat import Done, TextDelta
+        from primer.model.chat import Done, TextDelta
         for t in ("first ", "second ", "third ", "fourth"):
             await asyncio.sleep(0.05)
             yield TextDelta(text=t, index=0)
@@ -141,7 +141,7 @@ async def test_interrupt_cancels_in_flight_turn(
     from starlette.testclient import TestClient as SyncTestClient
 
     async def _slow_stream():
-        from matrix.model.chat import Done, TextDelta
+        from primer.model.chat import Done, TextDelta
         for t in ("token1 ", "token2 ", "token3 "):
             await asyncio.sleep(0.1)
             yield TextDelta(text=t, index=0)

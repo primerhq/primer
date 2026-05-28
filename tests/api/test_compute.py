@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from matrix.model.agent import Agent, AgentModel
+from primer.model.agent import Agent, AgentModel
 
 
 def _agent(**overrides) -> Agent:
@@ -45,7 +45,7 @@ class TestAgentStatus:
     async def test_status_ok_when_provider_exists(
         self, client, fake_storage_provider
     ) -> None:
-        from matrix.model.provider import (
+        from primer.model.provider import (
             AnthropicConfig,
             Limits,
             LLMModel,
@@ -91,7 +91,7 @@ class TestAgentStatus:
         """Built-in toolsets (web/search/system/workspaces/misc/harness)
         have no Toolset storage row — the live registry resolves them
         directly. The status check must NOT flag them as missing."""
-        from matrix.model.provider import (
+        from primer.model.provider import (
             AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
         )
         await fake_storage_provider.get_storage(LLMProvider).create(

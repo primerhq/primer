@@ -9,9 +9,9 @@ import httpx
 import pytest
 import respx
 
-from matrix.model.except_ import BadRequestError
-from matrix.model.provider import OAuthClientCredentials
-from matrix.toolset.oauth.discovery import (
+from primer.model.except_ import BadRequestError
+from primer.model.provider import OAuthClientCredentials
+from primer.toolset.oauth.discovery import (
     AuthServerMetadata,
     build_authorization_url,
     exchange_code,
@@ -487,7 +487,7 @@ class TestDiscoveryEdgeCases:
     async def test_post_token_http_error_is_classified(
         self, http_client: httpx.AsyncClient
     ) -> None:
-        from matrix.model.except_ import MatrixError
+        from primer.model.except_ import MatrixError
 
         respx.post("https://idp.example/token").mock(
             side_effect=httpx.ConnectError("net down")
@@ -510,7 +510,7 @@ class TestDiscoveryEdgeCases:
     async def test_post_token_5xx_is_classified(
         self, http_client: httpx.AsyncClient
     ) -> None:
-        from matrix.model.except_ import MatrixError
+        from primer.model.except_ import MatrixError
 
         respx.post("https://idp.example/token").mock(
             return_value=httpx.Response(503, text="upstream down")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.api.config import AppConfig, ObservabilityConfig
+from primer.api.config import AppConfig, ObservabilityConfig
 
 
 class TestObservabilityConfigDefaults:

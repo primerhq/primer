@@ -20,15 +20,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.bus.listener import YieldEventListener
-from matrix.bus.scheduler_tasks import TimeoutSweeper, TimerScheduler
-from matrix.model.workspace_session import (
+from primer.bus.in_memory import InMemoryEventBus
+from primer.bus.listener import YieldEventListener
+from primer.bus.scheduler_tasks import TimeoutSweeper, TimerScheduler
+from primer.model.workspace_session import (
     AgentSessionBinding,
     WorkspaceSession,
     SessionStatus,
 )
-from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
 
 
 def _make_parked_session(

@@ -6,15 +6,15 @@ without needing a real K8s cluster.
 
 from __future__ import annotations
 
-from matrix.model.workspace import (
+from primer.model.workspace import (
     KubernetesWorkspaceConfig,
     WorkspaceTemplate,
     KubernetesTemplateConfig,
 )
 import pytest
 
-from matrix.model.except_ import ConfigError
-from matrix.workspace.k8s.backend import (
+from primer.model.except_ import ConfigError
+from primer.workspace.k8s.backend import (
     _assert_no_dangerous_keys,
     _build_statefulset_manifest,
     _deep_merge,
@@ -161,7 +161,7 @@ def test_workspace_label_present() -> None:
         provider_cfg=cfg,
     )
     labels = m["metadata"]["labels"]
-    assert labels["matrix.workspace.id"] == "abc"
+    assert labels["primer.workspace.id"] == "abc"
     assert labels["team"] == "platform"
     annotations = m["metadata"]["annotations"]
     assert annotations["owner"] == "matrix"

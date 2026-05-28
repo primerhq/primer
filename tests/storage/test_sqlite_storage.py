@@ -7,9 +7,9 @@ from typing import Optional
 import pytest
 from pydantic import SecretStr
 
-from matrix.model.common import Identifiable
-from matrix.model.except_ import ConflictError, NotFoundError
-from matrix.storage.sqlite import SqliteStorageProvider
+from primer.model.common import Identifiable
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.storage.sqlite import SqliteStorageProvider
 
 
 class _Doc(Identifiable):
@@ -89,7 +89,7 @@ async def test_secretstr_roundtrips_via_storage(
     assert fetched.secret.get_secret_value() == "hunter2"
 
 
-from matrix.model.storage import (
+from primer.model.storage import (
     CursorPage,
     CursorPageResponse,
     FieldRef,

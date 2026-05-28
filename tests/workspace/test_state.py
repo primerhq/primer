@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from matrix.model.workspace_session import (
+from primer.model.workspace_session import (
     AgentBinding,
     SessionInfo,
     SessionStatus,
 )
-from matrix.model.workspace import CommitInfo
-from matrix.workspace.local.state import LocalStateRepo as StateRepo
+from primer.model.workspace import CommitInfo
+from primer.workspace.local.state import LocalStateRepo as StateRepo
 
 
 # ===========================================================================

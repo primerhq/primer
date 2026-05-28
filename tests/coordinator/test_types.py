@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.int.coordinator import (
+from primer.int.coordinator import (
     Coordinator,
     InvalidationBus,
     InvalidationTopic,

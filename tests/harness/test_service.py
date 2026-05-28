@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from matrix.harness.hashes import hash_rendered_payload, hash_template_source
-from matrix.harness.service import (
+from primer.harness.hashes import hash_rendered_payload, hash_template_source
+from primer.harness.service import (
     BuildErrors,
     apply_install,
     apply_sync,
@@ -17,8 +17,8 @@ from matrix.harness.service import (
     build_rendered_entries,
     resolved_id,
 )
-from matrix.harness.template import RenderedFile
-from matrix.model.harness import Harness, HarnessRendering, HarnessStatus, RenderedEntry
+from primer.harness.template import RenderedFile
+from primer.model.harness import Harness, HarnessRendering, HarnessStatus, RenderedEntry
 
 
 # ---------------------------------------------------------------------------
@@ -370,10 +370,10 @@ async def test_apply_install_orders_kinds(fake_storage_provider):
 
     created_kinds: list[str] = []
 
-    from matrix.model.provider import Toolset
-    from matrix.model.collection import Collection, Document
-    from matrix.model.agent import Agent
-    from matrix.model.graph import Graph
+    from primer.model.provider import Toolset
+    from primer.model.collection import Collection, Document
+    from primer.model.agent import Agent
+    from primer.model.graph import Graph
 
     original_create_toolset = fake_storage_provider.get_storage(Toolset).create
     original_create_collection = fake_storage_provider.get_storage(Collection).create
@@ -449,7 +449,7 @@ async def test_apply_install_sets_harness_id_on_entities(fake_storage_provider):
     )
 
     assert error is None
-    from matrix.model.agent import Agent
+    from primer.model.agent import Agent
     stored = await fake_storage_provider.get_storage(Agent).get("acme__asst")
     assert stored is not None
     assert stored.harness_id == harness.id
@@ -507,10 +507,10 @@ async def test_apply_uninstall_deletes_in_reverse_order(fake_storage_provider):
     """Uninstall deletes graph → agent → document → collection → toolset."""
     harness = _make_harness("acme")
 
-    from matrix.model.provider import Toolset, ToolsetProviderType
-    from matrix.model.collection import Collection, CollectionEmbedder, Document
-    from matrix.model.agent import Agent, AgentModel
-    from matrix.model.graph import Graph
+    from primer.model.provider import Toolset, ToolsetProviderType
+    from primer.model.collection import Collection, CollectionEmbedder, Document
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.graph import Graph
 
     # Seed the storage with managed entities
     await fake_storage_provider.get_storage(Toolset).create(
@@ -644,7 +644,7 @@ async def test_apply_sync_noop_when_hashes_match(fake_storage_provider):
     await fake_storage_provider.get_storage(HarnessRendering).create(existing_rendering)
 
     # Track any mutations to agent storage
-    from matrix.model.agent import Agent
+    from primer.model.agent import Agent
     agent_mutations: list[str] = []
     original_create = fake_storage_provider.get_storage(Agent).create
     original_update = fake_storage_provider.get_storage(Agent).update
@@ -735,7 +735,7 @@ async def test_apply_sync_creates_added_entries(fake_storage_provider):
 
     assert error is None
 
-    from matrix.model.agent import Agent
+    from primer.model.agent import Agent
     stored = await fake_storage_provider.get_storage(Agent).get("acme__new-agent")
     assert stored is not None
     assert stored.harness_id == harness.id
@@ -746,7 +746,7 @@ async def test_apply_sync_deletes_removed_entries(fake_storage_provider):
     """apply_sync deletes entries that existed in old rendering but not in new."""
     harness = _make_harness("acme")
 
-    from matrix.model.agent import Agent, AgentModel
+    from primer.model.agent import Agent, AgentModel
 
     # Create the agent in storage (from prior install)
     await fake_storage_provider.get_storage(Agent).create(
@@ -795,7 +795,7 @@ async def test_apply_sync_updates_changed_entries(fake_storage_provider):
     """apply_sync updates entries whose rendered_hash differs."""
     harness = _make_harness("acme")
 
-    from matrix.model.agent import Agent, AgentModel
+    from primer.model.agent import Agent, AgentModel
 
     # Create the agent with old payload
     await fake_storage_provider.get_storage(Agent).create(
@@ -924,7 +924,7 @@ async def test_apply_install_payload_cannot_override_harness_id(fake_storage_pro
     )
     assert error is None
 
-    from matrix.model.agent import Agent
+    from primer.model.agent import Agent
     stored = await fake_storage_provider.get_storage(Agent).get("acme__asst")
     assert stored.harness_id == harness.id, (
         "Dispatch's harness_id must win over template payload"
@@ -965,7 +965,7 @@ async def test_apply_sync_surfaces_partial_apply_errors(fake_storage_provider):
 
     # Wrap the Agent storage to raise on create, simulating a per-entity
     # apply failure (e.g. unique-id conflict with a hand-created entity).
-    from matrix.model.agent import Agent
+    from primer.model.agent import Agent
     agent_storage = fake_storage_provider.get_storage(Agent)
     orig_create = agent_storage.create
 

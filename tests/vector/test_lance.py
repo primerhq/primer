@@ -10,8 +10,8 @@ import pytest
 
 pytest.importorskip("lancedb")  # type: ignore[arg-type]
 
-from matrix.model.provider import LanceConfig
-from matrix.vector.lance import LanceVectorStoreProvider
+from primer.model.provider import LanceConfig
+from primer.vector.lance import LanceVectorStoreProvider
 
 
 # ---------- Lifecycle -----------------------------------------------------
@@ -101,7 +101,7 @@ async def test_create_collection_idempotent_same_args(lance_provider):
 
 @pytest.mark.asyncio
 async def test_create_collection_dimension_mismatch_conflict(lance_provider):
-    from matrix.model.except_ import ConflictError
+    from primer.model.except_ import ConflictError
 
     store = lance_provider.get_vector_store()
     await store.create_collection("col-a", dimensions=4)
@@ -111,7 +111,7 @@ async def test_create_collection_dimension_mismatch_conflict(lance_provider):
 
 @pytest.mark.asyncio
 async def test_create_collection_bad_id_rejected(lance_provider):
-    from matrix.model.except_ import BadRequestError
+    from primer.model.except_ import BadRequestError
 
     store = lance_provider.get_vector_store()
     with pytest.raises(BadRequestError):
@@ -130,7 +130,7 @@ async def test_create_collection_ip_distance_maps_to_dot(lance_provider):
 
 
 def _record(*, doc, chunk, vec, text="t", meta=None):
-    from matrix.model.vector import EmbeddingRecord
+    from primer.model.vector import EmbeddingRecord
     return EmbeddingRecord(
         collection_id="col-a",
         document_id=doc,
@@ -269,7 +269,7 @@ async def test_search_by_meta_nested(lance_provider):
 
 @pytest.mark.asyncio
 async def test_unknown_collection_raises_bad_request(lance_provider):
-    from matrix.model.except_ import BadRequestError
+    from primer.model.except_ import BadRequestError
     store = lance_provider.get_vector_store()
     with pytest.raises(BadRequestError):
         await store.put(_record(doc="d1", chunk="c1", vec=[0.0, 0.0, 0.0]))

@@ -14,22 +14,22 @@ from typing import Any
 
 import pytest
 
-from matrix.internal_collections import (
+from primer.internal_collections import (
     INTERNAL_COLLECTION_IDS,
     IngestEvent,
     InternalCollectionsSubsystem,
     build_subsystem,
     embedding_text_for,
 )
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.collection import Collection, CollectionEmbedder
-from matrix.model.except_ import ConfigError, ConflictError, NotFoundError
-from matrix.model.internal import (
+from primer.model.agent import Agent, AgentModel
+from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.except_ import ConfigError, ConflictError, NotFoundError
+from primer.model.internal import (
     INTERNAL_COLLECTIONS_CONFIG_ID,
     IngestFailure,
     InternalCollectionsConfig,
 )
-from matrix.model.storage import OffsetPage, OffsetPageResponse
+from primer.model.storage import OffsetPage, OffsetPageResponse
 
 
 # ===========================================================================
@@ -116,7 +116,7 @@ class _FakeVectorStore:
 
     async def search(self, collection_id, vector, k):
         self.searches.append((collection_id, list(vector), k))
-        from matrix.model.vector import SearchResult
+        from primer.model.vector import SearchResult
 
         hits = []
         for (cid, _, _), record in self.records.items():
@@ -337,7 +337,7 @@ class TestBootstrap:
     async def test_bootstrap_ingests_injected_toolset_providers(
         self, cfg, sp, pr, ssr, store
     ) -> None:
-        from matrix.model.chat import Tool
+        from primer.model.chat import Tool
 
         class _ToolsetProvider:
             async def list_tools(self, principal=None):
@@ -493,7 +493,7 @@ class TestSearch:
 def test_internal_collections_config_requires_search_provider_id():
     import pytest
     from pydantic import ValidationError
-    from matrix.model.internal import InternalCollectionsConfig
+    from primer.model.internal import InternalCollectionsConfig
 
     with pytest.raises(ValidationError):
         InternalCollectionsConfig(
@@ -505,7 +505,7 @@ def test_internal_collections_config_requires_search_provider_id():
 
 
 def test_internal_collections_config_with_search_provider_id_constructs():
-    from matrix.model.internal import InternalCollectionsConfig
+    from primer.model.internal import InternalCollectionsConfig
 
     cfg = InternalCollectionsConfig(
         id="_internal_collections_config",

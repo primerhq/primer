@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from matrix.model.except_ import TransientError
-from matrix.worker.turn import (
+from primer.model.except_ import TransientError
+from primer.worker.turn import (
     _CancelScope,
     classify_exception,
     compute_backoff,

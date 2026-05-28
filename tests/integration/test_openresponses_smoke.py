@@ -14,15 +14,15 @@ from typing import cast
 import pytest
 from pydantic import HttpUrl, SecretStr
 
-from matrix.llm.openresponses import OpenResponsesLLM
-from matrix.model.chat import (
+from primer.llm.openresponses import OpenResponsesLLM
+from primer.model.chat import (
     Done,
     Message,
     StreamEvent,
     TextDelta,
     TextPart,
 )
-from matrix.model.provider import (
+from primer.model.provider import (
     Limits,
     LLMModel,
     LLMProvider,

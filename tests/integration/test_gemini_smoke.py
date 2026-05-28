@@ -11,15 +11,15 @@ from typing import cast
 import pytest
 from pydantic import SecretStr
 
-from matrix.llm.gemini import GeminiLLM
-from matrix.model.chat import (
+from primer.llm.gemini import GeminiLLM
+from primer.model.chat import (
     Done,
     Message,
     StreamEvent,
     TextDelta,
     TextPart,
 )
-from matrix.model.provider import (
+from primer.model.provider import (
     GoogleConfig,
     Limits,
     LLMModel,

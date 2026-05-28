@@ -12,9 +12,9 @@ import asyncio
 
 import pytest
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.coordinator.postgres import PostgresInvalidationBus
-from matrix.int.coordinator import InvalidationTopic
+from primer.bus.in_memory import InMemoryEventBus
+from primer.coordinator.postgres import PostgresInvalidationBus
+from primer.int.coordinator import InvalidationTopic
 
 
 @pytest.mark.asyncio

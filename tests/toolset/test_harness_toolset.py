@@ -19,9 +19,9 @@ from typing import Any
 
 import pytest
 
-from matrix.model.harness import Harness, HarnessOperation, HarnessStatus
-from matrix.model.storage import FieldRef, OffsetPage, OffsetPageResponse, Op, Predicate, Value
-from matrix.toolset.harness import HARNESS_TOOLSET_ID, build_harness_toolset_provider
+from primer.model.harness import Harness, HarnessOperation, HarnessStatus
+from primer.model.storage import FieldRef, OffsetPage, OffsetPageResponse, Op, Predicate, Value
+from primer.toolset.harness import HARNESS_TOOLSET_ID, build_harness_toolset_provider
 from pydantic import SecretStr
 
 
@@ -38,7 +38,7 @@ class _Storage:
         return self._data.get(id)
 
     async def create(self, entity):
-        from matrix.model.except_ import ConflictError
+        from primer.model.except_ import ConflictError
 
         if entity.id in self._data:
             raise ConflictError(f"id {entity.id!r} already exists")
@@ -46,7 +46,7 @@ class _Storage:
         return entity
 
     async def update(self, entity):
-        from matrix.model.except_ import NotFoundError
+        from primer.model.except_ import NotFoundError
 
         if entity.id not in self._data:
             raise NotFoundError(f"no entity with id {entity.id!r}")
@@ -54,7 +54,7 @@ class _Storage:
         return entity
 
     async def delete(self, id: str):
-        from matrix.model.except_ import NotFoundError
+        from primer.model.except_ import NotFoundError
 
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")

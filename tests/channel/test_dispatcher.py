@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from matrix.channel.adapter import PromptEnvelope
-from matrix.channel.dispatcher import ChannelDispatcher
-from matrix.channel.null_adapter import NullChannelAdapter
+from primer.channel.adapter import PromptEnvelope
+from primer.channel.dispatcher import ChannelDispatcher
+from primer.channel.null_adapter import NullChannelAdapter
 
 
 class _StubRegistry:

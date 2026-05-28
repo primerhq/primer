@@ -20,9 +20,9 @@ from fastapi import FastAPI, Request
 from httpx import ASGITransport
 from pydantic import BaseModel
 
-from matrix.api.errors import register_error_handlers
-from matrix.api.routers._crud import make_crud_router
-from matrix.model.storage import OffsetPage, OffsetPageResponse
+from primer.api.errors import register_error_handlers
+from primer.api.routers._crud import make_crud_router
+from primer.model.storage import OffsetPage, OffsetPageResponse
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +81,7 @@ class _AgentStorage:
 
 @pytest.fixture(autouse=True)
 def _reset_cdc() -> Any:  # type: ignore[return]
-    from matrix.api.routers._cdc_hooks import _reset_for_test
+    from primer.api.routers._cdc_hooks import _reset_for_test
 
     _reset_for_test()
     yield
@@ -95,7 +95,7 @@ def _reset_cdc() -> Any:  # type: ignore[return]
 
 def test_cdc_kind_registers_at_factory_call() -> None:
     """Calling make_crud_router with cdc_kind= registers the kind immediately."""
-    from matrix.api.routers._cdc_hooks import known_cdc_kinds
+    from primer.api.routers._cdc_hooks import known_cdc_kinds
 
     storage = _AgentStorage()
 
@@ -118,7 +118,7 @@ def test_cdc_kind_registers_at_factory_call() -> None:
 
 def test_cdc_kind_idempotent_same_model() -> None:
     """Re-registering the same kind + model is a no-op (safe on re-import)."""
-    from matrix.api.routers._cdc_hooks import known_cdc_kinds
+    from primer.api.routers._cdc_hooks import known_cdc_kinds
 
     storage = _AgentStorage()
 

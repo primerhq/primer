@@ -18,8 +18,8 @@ import aiohttp
 import pytest
 from aiohttp import web
 
-from matrix.workspace.runtime.protocol import ErrorCode, OpName, serialize
-from matrix.workspace.runtime.runtime_client import ChangeEvent, RuntimeClient, RuntimeError
+from primer.workspace.runtime.protocol import ErrorCode, OpName, serialize
+from primer.workspace.runtime.runtime_client import ChangeEvent, RuntimeClient, RuntimeError
 
 
 # ---------------------------------------------------------------------------

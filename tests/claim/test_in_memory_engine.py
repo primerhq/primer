@@ -1,8 +1,8 @@
 import asyncio
 import pytest
 from datetime import datetime, UTC, timedelta
-from matrix.int.claim import ClaimKind, ReleaseOutcome
-from matrix.claim.in_memory import InMemoryClaimEngine
+from primer.int.claim import ClaimKind, ReleaseOutcome
+from primer.claim.in_memory import InMemoryClaimEngine
 
 
 @pytest.mark.asyncio

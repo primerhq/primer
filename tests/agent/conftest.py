@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from matrix.agent.tool_manager import ToolExecutionManager
-from matrix.model.chat import Tool, ToolCallResult
+from primer.agent.tool_manager import ToolExecutionManager
+from primer.model.chat import Tool, ToolCallResult
 
 
 class _EchoProvider:

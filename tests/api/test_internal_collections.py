@@ -21,11 +21,11 @@ from httpx import ASGITransport
 
 from pydantic import SecretStr
 
-from matrix.api.app import create_test_app
-from matrix.api.registries import ProviderRegistry
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.except_ import ConflictError, NotFoundError
-from matrix.model.provider import (
+from primer.api.app import create_test_app
+from primer.api.registries import ProviderRegistry
+from primer.model.agent import Agent, AgentModel
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.provider import (
     EmbeddingModel,
     EmbeddingProvider,
     EmbeddingProviderType,
@@ -35,7 +35,7 @@ from matrix.model.provider import (
     SemanticSearchProvider,
     SemanticSearchProviderType,
 )
-from matrix.model.storage import OffsetPage, OffsetPageResponse
+from primer.model.storage import OffsetPage, OffsetPageResponse
 
 
 # ===========================================================================
@@ -117,7 +117,7 @@ class _FakeStore:
                 del self.records[key]
 
     async def search(self, cid, vector, k):
-        from matrix.model.vector import SearchResult
+        from primer.model.vector import SearchResult
 
         return [
             SearchResult(record=r, score=1.0)

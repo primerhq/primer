@@ -7,8 +7,8 @@ import asyncio
 
 import pytest
 
-from matrix.coordinator.in_memory import InMemoryInvalidationBus
-from matrix.int.coordinator import InvalidationTopic
+from primer.coordinator.in_memory import InMemoryInvalidationBus
+from primer.int.coordinator import InvalidationTopic
 
 
 @pytest.mark.asyncio
@@ -17,7 +17,7 @@ async def test_registry_invalidates_llm_when_bus_publishes(
 ):
     """Publishing on the bus reaches the registry's invalidate_llm
     code path via the registered handler."""
-    from matrix.api.registries.provider_registry import ProviderRegistry
+    from primer.api.registries.provider_registry import ProviderRegistry
 
     bus = InMemoryInvalidationBus()
     registry = ProviderRegistry(storage_provider=fake_storage_provider)
@@ -42,7 +42,7 @@ async def test_invalidate_llm_publishes_to_bus_when_bound(
     """Calling the public invalidate_llm() routes through the bus when
     one is bound; the cache eviction still happens (via the subscription
     handler firing inside the publish call)."""
-    from matrix.api.registries.provider_registry import ProviderRegistry
+    from primer.api.registries.provider_registry import ProviderRegistry
 
     bus = InMemoryInvalidationBus()
     registry = ProviderRegistry(storage_provider=fake_storage_provider)
@@ -59,7 +59,7 @@ async def test_invalidate_llm_publishes_to_bus_when_bound(
 async def test_invalidate_llm_works_without_bus(fake_storage_provider):
     """Legacy path: a registry constructed without binding the bus still
     invalidates the local cache when invalidate_llm() is called."""
-    from matrix.api.registries.provider_registry import ProviderRegistry
+    from primer.api.registries.provider_registry import ProviderRegistry
 
     registry = ProviderRegistry(storage_provider=fake_storage_provider)
     registry._llm_cache["x"] = ("v",)  # type: ignore[attr-defined]

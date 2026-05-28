@@ -10,14 +10,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from matrix.embedder.gemini import (
+from primer.embedder.gemini import (
     GeminiEmbedder,
     _extract_embed_config,
     _part_to_text,
     _translate_response,
 )
-from matrix.model.chat import AudioPart, DocumentPart, ImagePart, VideoPart
-from matrix.model.embedding import (
+from primer.model.chat import AudioPart, DocumentPart, ImagePart, VideoPart
+from primer.model.embedding import (
     EmbedResponse,
     Embedding,
     EmbeddingUsage,
@@ -26,13 +26,13 @@ from matrix.model.embedding import (
     TextPart,
     TokensPart,
 )
-from matrix.model.except_ import (
+from primer.model.except_ import (
     AuthenticationError,
     ConfigError,
     ModelNotFoundError,
     UnsupportedContentError,
 )
-from matrix.model.provider import (
+from primer.model.provider import (
     EmbeddingModel,
     EmbeddingProvider,
     EmbeddingProviderType,
@@ -81,7 +81,7 @@ class TestConstructor:
 
     def test_rejects_wrong_config_type(self) -> None:
         from pydantic import HttpUrl
-        from matrix.model.provider import OpenAIConfig
+        from primer.model.provider import OpenAIConfig
 
         provider = EmbeddingProvider(
             id="x",
@@ -104,7 +104,7 @@ class TestConstructor:
         assert embedder._rate_limit_key == "embedder:gemini-emb-default"
 
     def test_logs_init(self, caplog: pytest.LogCaptureFixture) -> None:
-        caplog.set_level(logging.INFO, logger="matrix.embedder.gemini")
+        caplog.set_level(logging.INFO, logger="primer.embedder.gemini")
         provider = _make_provider(models=["text-embedding-004"], max_concurrency=2)
         GeminiEmbedder(provider)
         records = [r for r in caplog.records if "Gemini embedder initialized" in r.message]
@@ -246,7 +246,7 @@ def _patched_client(monkeypatch: pytest.MonkeyPatch):
     instance.aio.models = MagicMock()
     instance.aio.models.embed_content = AsyncMock()
     cls_mock = MagicMock(return_value=instance)
-    monkeypatch.setattr("matrix.embedder.gemini.genai.Client", cls_mock)
+    monkeypatch.setattr("primer.embedder.gemini.genai.Client", cls_mock)
     return cls_mock, instance
 
 
@@ -355,11 +355,11 @@ class TestConcurrency:
 
 class TestPackageReexport:
     def test_reexported(self) -> None:
-        import matrix.embedder as e
+        import primer.embedder as e
         assert "GeminiEmbedder" in e.__all__
         assert e.GeminiEmbedder is GeminiEmbedder
 
     def test_others_still_reexported(self) -> None:
-        import matrix.embedder as e
+        import primer.embedder as e
         assert "OpenAIEmbedder" in e.__all__
         assert "HuggingFaceEmbedder" in e.__all__

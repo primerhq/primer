@@ -13,13 +13,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from matrix.model.yield_ import (
+from primer.model.yield_ import (
     ToolContext,
     YieldCancelled,
     YieldTimeout,
     Yielded,
 )
-from matrix.toolset.misc import build_misc_toolset
+from primer.toolset.misc import build_misc_toolset
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ class TestAskUserHandler:
     async def test_handler_returns_yielded_with_event_key(self, misc):
         # Direct handler call via the provider — this is the path the
         # worker takes; provider stamps tool_name and raises.
-        from matrix.model.yield_ import YieldToWorker
+        from primer.model.yield_ import YieldToWorker
 
         ctx = ToolContext(
             tool_call_id="tc-abc",
@@ -57,7 +57,7 @@ class TestAskUserHandler:
         assert y.resume_metadata["tool_call_id"] == "tc-abc"
 
     async def test_handler_honours_explicit_timeout(self, misc):
-        from matrix.model.yield_ import YieldToWorker
+        from primer.model.yield_ import YieldToWorker
 
         ctx = ToolContext(
             tool_call_id="tc-t",
@@ -73,7 +73,7 @@ class TestAskUserHandler:
         assert exc_info.value.yielded.timeout == 90.0
 
     async def test_handler_persists_response_schema(self, misc):
-        from matrix.model.yield_ import YieldToWorker
+        from primer.model.yield_ import YieldToWorker
 
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
         ctx = ToolContext(
@@ -131,7 +131,7 @@ class TestAskUserResumeHook:
     """The resume hook produces the right ToolCallResult per payload."""
 
     async def test_resume_with_real_response(self):
-        from matrix.toolset.misc import ask_user_resume
+        from primer.toolset.misc import ask_user_resume
 
         meta = {
             "prompt": "What is your name?",
@@ -146,7 +146,7 @@ class TestAskUserResumeHook:
 
     async def test_resume_with_complex_response_value(self):
         # response may be any JSON-serialisable value (object, array, etc.)
-        from matrix.toolset.misc import ask_user_resume
+        from primer.toolset.misc import ask_user_resume
 
         meta = {
             "prompt": "Provide config",
@@ -160,7 +160,7 @@ class TestAskUserResumeHook:
         assert body["response"] == {"foo": "bar", "n": 7}
 
     async def test_resume_with_timeout(self):
-        from matrix.toolset.misc import ask_user_resume
+        from primer.toolset.misc import ask_user_resume
 
         meta = {
             "prompt": "?",
@@ -174,7 +174,7 @@ class TestAskUserResumeHook:
         assert body["elapsed_seconds"] == 42.5
 
     async def test_resume_with_cancelled(self):
-        from matrix.toolset.misc import ask_user_resume
+        from primer.toolset.misc import ask_user_resume
 
         meta = {
             "prompt": "?",
@@ -207,8 +207,8 @@ async def test_ask_user_tool_is_registered():
 def test_ask_user_resume_hook_is_registered():
     """Import-time registration lets the worker look the hook up by name."""
     # Importing misc triggers register_resume_hook("ask_user", ...).
-    import matrix.toolset.misc  # noqa: F401
-    from matrix.worker.yield_resume_registry import get_resume_hook
+    import primer.toolset.misc  # noqa: F401
+    from primer.worker.yield_resume_registry import get_resume_hook
 
     hook = get_resume_hook("ask_user")
     assert callable(hook)

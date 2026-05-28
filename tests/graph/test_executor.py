@@ -8,10 +8,10 @@ from typing import Any, Generic, TypeVar
 
 import pytest
 
-from matrix.graph.executor import GraphExecutor
-from matrix.graph.router import RouterRegistry
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chat import (
+from primer.graph.executor import GraphExecutor
+from primer.graph.router import RouterRegistry
+from primer.model.agent import Agent, AgentModel
+from primer.model.chat import (
     Done,
     ExtendedEvent,
     Message,
@@ -20,9 +20,9 @@ from matrix.model.chat import (
     TextPart,
     _GraphNodeEvent,
 )
-from matrix.model.common import Identifiable
-from matrix.model.except_ import ConflictError, NotFoundError
-from matrix.model.graph import (
+from primer.model.common import Identifiable
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.graph import (
     Graph,
     GraphContext,
     GraphNodeMessage,
@@ -36,9 +36,9 @@ from matrix.model.graph import (
     _StaticEdge,
     _TerminalNode,
 )
-from matrix.model.provider import LLMModel
-from matrix.model.workspace_session import SessionStatus
-from matrix.model.storage import (
+from primer.model.provider import LLMModel
+from primer.model.workspace_session import SessionStatus
+from primer.model.storage import (
     CursorPage,
     CursorPageResponse,
     FieldRef,

@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from matrix.model.chat import Tool, ToolCallResult
-from matrix.model.except_ import ConfigError, UnsupportedContentError
-from matrix.toolset.internal import InternalToolsetProvider
+from primer.model.chat import Tool, ToolCallResult
+from primer.model.except_ import ConfigError, UnsupportedContentError
+from primer.toolset.internal import InternalToolsetProvider
 
 
 def _make_tool(name: str, toolset_id: str = "ts1") -> Tool:

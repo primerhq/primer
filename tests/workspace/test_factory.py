@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.model.except_ import ConfigError
-from matrix.model.workspace import (
+from primer.model.except_ import ConfigError
+from primer.model.workspace import (
     ContainerWorkspaceConfig,
     KubernetesWorkspaceConfig,
     LocalWorkspaceConfig,
@@ -21,8 +21,8 @@ from matrix.model.workspace import (
     DockerRuntimeConfig,
     PodmanRuntimeConfig,
 )
-from matrix.workspace.factory import WorkspaceBackendFactory
-from matrix.workspace.local import LocalWorkspaceBackend
+from primer.workspace.factory import WorkspaceBackendFactory
+from primer.workspace.local import LocalWorkspaceBackend
 
 
 def test_factory_builds_local() -> None:
@@ -42,7 +42,7 @@ def test_factory_builds_container_docker() -> None:
         config=ContainerWorkspaceConfig(runtime=DockerRuntimeConfig()),
     )
     backend = WorkspaceBackendFactory.create(cfg)
-    from matrix.workspace.container.backend import ContainerWorkspaceBackend
+    from primer.workspace.container.backend import ContainerWorkspaceBackend
 
     assert isinstance(backend, ContainerWorkspaceBackend)
 
@@ -65,7 +65,7 @@ def test_factory_builds_kubernetes() -> None:
         config=KubernetesWorkspaceConfig(),
     )
     backend = WorkspaceBackendFactory.create(cfg)
-    from matrix.workspace.k8s.backend import KubernetesWorkspaceBackend
+    from primer.workspace.k8s.backend import KubernetesWorkspaceBackend
 
     assert isinstance(backend, KubernetesWorkspaceBackend)
 

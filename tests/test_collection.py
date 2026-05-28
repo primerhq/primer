@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from matrix.model.collection import Collection, CollectionEmbedder
-from matrix.model.search import (
+from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.search import (
     CollectionCrossEncoder,
     CollectionSearch,
     MmrConfig,

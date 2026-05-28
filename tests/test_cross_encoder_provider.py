@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from matrix.model.provider import (
+from primer.model.provider import (
     CrossEncoderModel,
     CrossEncoderProvider,
     CrossEncoderProviderType,

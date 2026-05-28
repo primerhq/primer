@@ -13,8 +13,8 @@ needs a real synthetic row inserted via the helper in
 
 from __future__ import annotations
 
-from matrix.int.scheduler import CompleteTurnResult
-from matrix.model.workspace_session import SessionStatus
+from primer.int.scheduler import CompleteTurnResult
+from primer.model.workspace_session import SessionStatus
 
 
 async def _seed_session(scheduler, pg_storage_or_none, sid: str,
@@ -38,7 +38,7 @@ def _seed_lease(scheduler, session_id: str, worker_id: str) -> None:
     Postgres: skipped (Postgres claim path is handled by ClaimEngine).
     """
     if hasattr(scheduler, "_leases"):
-        from matrix.scheduler.in_memory import _LeaseState
+        from primer.scheduler.in_memory import _LeaseState
         scheduler._leases[session_id] = _LeaseState(
             worker_id=worker_id, runnable=True,
         )

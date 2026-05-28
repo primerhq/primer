@@ -8,12 +8,12 @@ from typing import Any, Generic, TypeVar
 
 import pytest
 
-from matrix.agent.compaction import CompactionStrategy
-from matrix.agent.events import _ExecutorToolResult
-from matrix.agent.executor import AgentExecutor
-from matrix.agent.tool_manager import ToolExecutionManager
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.chat import (
+from primer.agent.compaction import CompactionStrategy
+from primer.agent.events import _ExecutorToolResult
+from primer.agent.executor import AgentExecutor
+from primer.agent.tool_manager import ToolExecutionManager
+from primer.model.agent import Agent, AgentModel
+from primer.model.chat import (
     Done,
     ExtendedEvent,
     Message,
@@ -26,14 +26,14 @@ from matrix.model.chat import (
     ToolCallResult,
     ToolCallStart,
 )
-from matrix.model.common import Identifiable
-from matrix.model.except_ import (
+from primer.model.common import Identifiable
+from primer.model.except_ import (
     BadRequestError,
     ConflictError,
     NotFoundError,
 )
-from matrix.model.provider import LLMModel
-from matrix.model.storage import (
+from primer.model.provider import LLMModel
+from primer.model.storage import (
     CursorPage,
     CursorPageResponse,
     FieldRef,
@@ -44,7 +44,7 @@ from matrix.model.storage import (
     Predicate,
     Value,
 )
-from matrix.model.thread import Thread, ThreadMessage
+from primer.model.thread import Thread, ThreadMessage
 
 
 # ===========================================================================
@@ -439,8 +439,8 @@ class TestYieldHistoryCapture:
         synthesised tool_result against, and the LLM history would
         be malformed.
         """
-        from matrix.model.yield_ import YieldToWorker, Yielded
-        from matrix.model.chat import ToolCallPart
+        from primer.model.yield_ import YieldToWorker, Yielded
+        from primer.model.chat import ToolCallPart
 
         # The LLM emits a tool_call that the handler will reject with
         # YieldToWorker. We only need ONE script (the loop bails out

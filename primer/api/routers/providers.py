@@ -1,0 +1,744 @@
+"""Provider entity routers: LLM / Embedding / CrossEncoder / Toolset.
+
+Each entity follows the standard CRUD + Find shape from
+:mod:`matrix.api.routers._crud`, plus entity-specific operations:
+
+* LLMProvider:           ``GET /v1/llm_providers/{id}/models``
+                         ``POST /v1/llm_providers/{id}/invalidate``
+                         ``POST /v1/llm_providers/_discover_models``
+* EmbeddingProvider:     ``GET /v1/embedding_providers/{id}/models``
+                         ``POST /v1/embedding_providers/{id}/invalidate``
+                         ``POST /v1/embedding_providers/_discover_models``
+* CrossEncoderProvider:  ``GET /v1/cross_encoder_providers/{id}/models``
+                         ``POST /v1/cross_encoder_providers/{id}/invalidate``
+* Toolset:               ``GET  /v1/toolsets/{id}/tools``
+                         ``POST /v1/toolsets/{id}/invalidate``
+
+PUT and DELETE on every entity cascade-invalidate the matching cached
+adapter in the per-request ProviderRegistry via the CRUD callbacks.
+
+The ``_discover_models`` endpoints accept a draft provider config
+(provider type + config block) and live-probe the upstream API to
+return the list of available models — used by the console's "Fetch
+Models" button. They build a transient adapter, call its
+``list_models()``, then dispose. They do NOT persist anything.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from uuid import uuid4
+
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Request
+from pydantic import BaseModel, Field, ValidationError
+
+from primer.api.deps import (
+    PRINCIPAL_HEADER,
+    get_cross_encoder_provider_storage,
+    get_embedding_provider_storage,
+    get_llm_provider_storage,
+    get_provider_registry,
+    get_storage_provider,
+    get_toolset_storage,
+)
+from primer.api.errors import common_responses
+from primer.model.except_ import BadRequestError
+from primer.api.registries import ProviderRegistry
+from primer.api.registries.provider_registry import (
+    RESERVED_CROSS_ENCODER_IDS,
+    RESERVED_EMBEDDER_IDS,
+    RESERVED_LLM_IDS,
+)
+from primer.api.routers._cdc_hooks import register_cdc_kind
+from primer.api.routers._crud import make_crud_router
+from primer.model.provider import (
+    CrossEncoderProvider,
+    EmbeddingProvider,
+    LLMProvider,
+    Toolset,
+)
+from primer.api.routers._references import ReferenceCheck
+from primer.model.storage import OffsetPage
+from primer.model.tool_approval import ToolApprovalPolicy
+
+
+# ---- Reserved-id protection helpers ---------------------------------------
+
+
+def _make_reserved_create_guard(reserved_ids: frozenset[str], kind: str):
+    """Return an ``on_pre_create`` hook that rejects POST with a reserved id."""
+    async def _guard(entity, request: Request) -> None:
+        if entity.id in reserved_ids:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "reserved_id",
+                    "kind": kind,
+                    "reserved": sorted(reserved_ids),
+                    "message": (
+                        f"id {entity.id!r} is reserved and cannot be "
+                        "created via the API"
+                    ),
+                },
+            )
+    _guard.__name__ = f"_reject_reserved_{kind}_create"
+    return _guard
+
+
+def _make_reserved_delete_guard(reserved_ids: frozenset[str], kind: str):
+    """Return an ``on_pre_delete_id`` hook that rejects DELETE of a reserved id."""
+    async def _guard(entity_id: str, request: Request) -> None:
+        if entity_id in reserved_ids:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "reserved_id_protected",
+                    "kind": kind,
+                    "message": (
+                        f"id {entity_id!r} is a reserved {kind} and "
+                        "cannot be deleted"
+                    ),
+                },
+            )
+    _guard.__name__ = f"_reject_reserved_{kind}_delete"
+    return _guard
+
+
+# ---- Discovery body shapes -------------------------------------------------
+
+
+class _DiscoverModelsBody(BaseModel):
+    """Body for ``POST /v1/<entity>/_discover_models``.
+
+    A draft provider config — same shape as a real provider entry but
+    without ``id``, ``models``, or ``limits`` (the endpoint synthesizes
+    those to satisfy the model validator before constructing the
+    transient adapter).
+    """
+
+    provider: str = Field(..., description="Provider type discriminator.")
+    config: dict[str, Any] = Field(
+        ..., description="Provider-specific connection config.",
+    )
+
+
+def _build_stub_provider(
+    model_cls: type,
+    *,
+    provider: str,
+    config: dict[str, Any],
+    models: list[dict[str, Any]],
+) -> Any:
+    """Construct a transient provider row for discovery probes.
+
+    Validates the draft via the canonical Pydantic model so config-
+    shape errors surface as a 400 with the field path, instead of an
+    obscure 500 from inside the adapter constructor. The id and limits
+    are synthesized — neither matters for ``list_models()``.
+    """
+    try:
+        return model_cls.model_validate({
+            "id": f"_probe_{uuid4().hex[:8]}",
+            "provider": provider,
+            "config": config,
+            "models": models,
+            "limits": {"max_concurrency": 1},
+        })
+    except ValidationError as e:
+        raise BadRequestError(
+            "Draft provider failed validation: " + str(e),
+        ) from e
+
+
+# ---- cascade-invalidation hooks --------------------------------------------
+
+
+def _make_invalidator(method_name: str):
+    """Build a CRUD-router hook that invalidates the named cache slot
+    on the request's :class:`ProviderRegistry`."""
+    async def _hook(entity_id: str, request: Request) -> None:
+        registry: ProviderRegistry = request.app.state.provider_registry
+        await getattr(registry, method_name)(entity_id)
+    _hook.__name__ = f"_invalidate_{method_name.removeprefix('invalidate_')}"
+    return _hook
+
+
+_invalidate_llm = _make_invalidator("invalidate_llm")
+_invalidate_embedder = _make_invalidator("invalidate_embedder")
+_invalidate_cross_encoder = _make_invalidator("invalidate_cross_encoder")
+_invalidate_toolset = _make_invalidator("invalidate_toolset")
+
+
+# ---- LLMProvider router ----------------------------------------------------
+
+llm_provider_router = make_crud_router(
+    model_cls=LLMProvider,
+    storage_dep=get_llm_provider_storage,
+    plural="llm_providers",
+    tag="llm-providers",
+    on_update=_invalidate_llm,
+    on_delete=_invalidate_llm,
+    on_pre_create=_make_reserved_create_guard(RESERVED_LLM_IDS, "llm_provider"),
+    on_pre_delete_id=_make_reserved_delete_guard(RESERVED_LLM_IDS, "llm_provider"),
+)
+
+
+@llm_provider_router.post(
+    "/llm_providers/{provider_id}/invalidate",
+    status_code=204,
+    summary="Invalidate cached LLM adapter",
+    responses=common_responses(500),
+)
+async def invalidate_llm_provider(
+    provider_id: str = Path(..., description="LLMProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> None:
+    await registry.invalidate_llm(provider_id)
+
+
+@llm_provider_router.get(
+    "/llm_providers/{provider_id}/models",
+    summary="Fetch live model list from the LLM provider",
+    responses=common_responses(404, 500, 502, 504),
+)
+async def get_llm_provider_models(
+    provider_id: str = Path(..., description="LLMProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    adapter = await registry.get_llm(provider_id)
+    models = await adapter.list_models()
+    return {"models": list(models)}
+
+
+@llm_provider_router.post(
+    "/llm_providers/_discover_models",
+    summary="Probe a draft LLM provider for its model list",
+    responses=common_responses(400, 422, 502),
+)
+async def discover_llm_models(
+    body: _DiscoverModelsBody = Body(...),
+) -> dict:
+    """Live-probe the upstream provider for its available models.
+
+    Used by the console's "Fetch Models" button before any provider
+    has been persisted. Returns ``{"models": [{name, context_length?}, ...]}``.
+
+    Note: the adapters' ``list_models()`` method returns the stored
+    row's static model list (anomaly T0025), not a live probe. This
+    endpoint deliberately bypasses the adapter for discovery and calls
+    the provider's native list endpoint directly.
+
+    Only ``ollama`` and ``openresponses`` expose a useful list-models
+    API. For ``anthropic`` and ``gemini`` the frontend should fall back
+    to a curated suggested-model list — those providers return 400 here.
+    """
+    # Validate the draft via the canonical model so config shape errors
+    # surface cleanly. We never persist or run anything from the stub.
+    _build_stub_provider(
+        LLMProvider,
+        provider=body.provider,
+        config=body.config,
+        models=[{"name": "_probe", "context_length": 1}],
+    )
+    if body.provider == "ollama":
+        return await _probe_ollama_models(body.config)
+    if body.provider == "openresponses":
+        return await _probe_openai_compatible_models(body.config)
+    raise BadRequestError(
+        f"live model discovery is not supported for provider "
+        f"{body.provider!r}; populate the models list manually or "
+        f"use the UI's 'Suggest models' fallback.",
+    )
+
+
+# ---- EmbeddingProvider router ----------------------------------------------
+
+embedding_provider_router = make_crud_router(
+    model_cls=EmbeddingProvider,
+    storage_dep=get_embedding_provider_storage,
+    plural="embedding_providers",
+    tag="embedding-providers",
+    on_update=_invalidate_embedder,
+    on_delete=_invalidate_embedder,
+    on_pre_create=_make_reserved_create_guard(RESERVED_EMBEDDER_IDS, "embedding_provider"),
+    on_pre_delete_id=_make_reserved_delete_guard(RESERVED_EMBEDDER_IDS, "embedding_provider"),
+)
+
+
+@embedding_provider_router.post(
+    "/embedding_providers/{provider_id}/invalidate",
+    status_code=204,
+    summary="Invalidate cached embedder adapter",
+    responses=common_responses(500),
+)
+async def invalidate_embedding_provider(
+    provider_id: str = Path(..., description="EmbeddingProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> None:
+    await registry.invalidate_embedder(provider_id)
+
+
+@embedding_provider_router.get(
+    "/embedding_providers/{provider_id}/models",
+    summary="Fetch live model list from the embedding provider",
+    responses=common_responses(404, 500, 502, 504),
+)
+async def get_embedding_provider_models(
+    provider_id: str = Path(..., description="EmbeddingProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    adapter = await registry.get_embedder(provider_id)
+    models = await adapter.list_models()
+    return {"models": list(models)}
+
+
+@embedding_provider_router.post(
+    "/embedding_providers/_discover_models",
+    summary="Probe a draft embedding provider for its model list",
+    responses=common_responses(400, 422, 502),
+)
+async def discover_embedding_models(
+    body: _DiscoverModelsBody = Body(...),
+) -> dict:
+    """Mirror of ``discover_llm_models`` for embedding providers.
+
+    Only ``openai`` (OpenAI-compatible HTTP) is live-discoverable.
+    ``huggingface`` (local sentence-transformers) and ``gemini`` have
+    no usable list endpoint — the frontend falls back to curated
+    suggestions.
+    """
+    _build_stub_provider(
+        EmbeddingProvider,
+        provider=body.provider,
+        config=body.config,
+        models=[{"name": "_probe"}],
+    )
+    if body.provider == "openai":
+        return await _probe_openai_compatible_models(body.config)
+    raise BadRequestError(
+        f"live model discovery is not supported for embedding "
+        f"provider {body.provider!r}; populate the models list "
+        f"manually or use the UI's 'Suggest models' fallback.",
+    )
+
+
+# ---- Discovery probes ------------------------------------------------------
+
+
+async def _probe_ollama_models(config: dict[str, Any]) -> dict:
+    """List models locally available on an Ollama server."""
+    import ollama
+
+    headers: dict[str, str] = {}
+    api_key = config.get("api_key")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    client = ollama.AsyncClient(host=config["url"], headers=headers or None)
+    try:
+        resp = await client.list()
+    except Exception as exc:  # pragma: no cover — network paths
+        raise BadRequestError(
+            f"ollama probe failed: {type(exc).__name__}: {exc}",
+        ) from exc
+    finally:
+        # ollama.AsyncClient does not expose aclose() in all versions;
+        # rely on httpx's GC for cleanup.
+        pass
+    # ollama.list() returns a ListResponse with .models[].model (the name).
+    # context_length is not exposed on the list endpoint; would need a
+    # per-model `client.show(name)` call. Skip — operators edit it in
+    # the form.
+    models = getattr(resp, "models", None) or resp.get("models", [])
+    out: list[dict[str, Any]] = []
+    for m in models:
+        name = getattr(m, "model", None) or (m.get("model") if isinstance(m, dict) else None)
+        if name:
+            out.append({"name": name})
+    return {"models": out}
+
+
+async def _probe_openai_compatible_models(config: dict[str, Any]) -> dict:
+    """List models from an OpenAI-compatible /v1/models endpoint."""
+    import httpx
+
+    url = str(config["url"]).rstrip("/")
+    api_key = config.get("api_key") or ""
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"{url}/models", headers=headers)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as exc:  # pragma: no cover — network paths
+        raise BadRequestError(
+            f"openai-compatible probe failed: {type(exc).__name__}: {exc}",
+        ) from exc
+    items = data.get("data") or []
+    # OpenAI returns {data: [{id, ...}, ...]}. context_length isn't in
+    # the list response (it's model-specific; the chat-completions API
+    # returns it on a per-request error path). The UI seeds a default
+    # context_length and the operator can edit it.
+    return {"models": [{"name": m["id"]} for m in items if "id" in m]}
+
+
+# ---- CrossEncoderProvider router -------------------------------------------
+
+cross_encoder_provider_router = make_crud_router(
+    model_cls=CrossEncoderProvider,
+    storage_dep=get_cross_encoder_provider_storage,
+    plural="cross_encoder_providers",
+    tag="cross-encoder-providers",
+    on_update=_invalidate_cross_encoder,
+    on_delete=_invalidate_cross_encoder,
+    on_pre_create=_make_reserved_create_guard(RESERVED_CROSS_ENCODER_IDS, "cross_encoder_provider"),
+    on_pre_delete_id=_make_reserved_delete_guard(RESERVED_CROSS_ENCODER_IDS, "cross_encoder_provider"),
+)
+
+
+@cross_encoder_provider_router.post(
+    "/cross_encoder_providers/{provider_id}/invalidate",
+    status_code=204,
+    summary="Invalidate cached cross-encoder adapter",
+    responses=common_responses(500),
+)
+async def invalidate_cross_encoder_provider(
+    provider_id: str = Path(..., description="CrossEncoderProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> None:
+    await registry.invalidate_cross_encoder(provider_id)
+
+
+@cross_encoder_provider_router.get(
+    "/cross_encoder_providers/{provider_id}/models",
+    summary="Fetch live model list from the cross-encoder provider",
+    responses=common_responses(404, 500, 502, 504),
+)
+async def get_cross_encoder_provider_models(
+    provider_id: str = Path(..., description="CrossEncoderProvider id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    adapter = await registry.get_cross_encoder(provider_id)
+    models = await adapter.list_models()
+    return {"models": list(models)}
+
+
+# Register Toolset in the CDC kinds registry so the harness service can
+# resolve it via known_cdc_kinds().  Toolset is harness-managed but has no
+# internal-collections vector index entry, so no CDC event hooks are wired.
+register_cdc_kind("toolset", Toolset)
+
+
+# ---- Toolset storage helper (for reference check) --------------------------
+
+
+def _get_tool_approval_policy_storage(request: Request):
+    return request.app.state.storage_provider.get_storage(ToolApprovalPolicy)
+
+
+# ---- Toolset router --------------------------------------------------------
+
+toolset_router = make_crud_router(
+    model_cls=Toolset,
+    storage_dep=get_toolset_storage,
+    plural="toolsets",
+    tag="toolsets",
+    on_update=_invalidate_toolset,
+    on_delete=_invalidate_toolset,
+    managed_by_field="harness_id",
+    references=[
+        ReferenceCheck(
+            child_kind="tool_approval_policy",
+            child_storage=_get_tool_approval_policy_storage,
+            child_field="toolset_id",
+        ),
+    ],
+)
+
+
+@toolset_router.post(
+    "/toolsets/{toolset_id}/invalidate",
+    status_code=204,
+    summary="Invalidate cached toolset provider",
+    responses=common_responses(500),
+)
+async def invalidate_toolset_provider(
+    toolset_id: str = Path(..., description="Toolset id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> None:
+    await registry.invalidate_toolset(toolset_id)
+
+
+@toolset_router.get(
+    "/toolsets/{toolset_id}/tools",
+    summary="List tools currently exposed by a toolset",
+    responses=common_responses(401, 404, 500, 502, 504),
+)
+async def list_toolset_tools(
+    toolset_id: str = Path(..., description="Toolset id"),
+    principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    """Enumerate the toolset's tools from the live provider.
+
+    OAuth-protected MCP toolsets raise ``AuthRequiredError``, which the
+    error mapper serialises as 401 + ``extensions.auth_url`` so the
+    caller can prompt the user to consent.
+    """
+    from primer.model.except_ import ProviderError
+
+    provider = await registry.get_toolset(toolset_id)
+    tools = []
+    try:
+        async for tool in provider.list_tools(principal=principal):
+            tools.append(tool.model_dump(mode="json"))
+    except BaseExceptionGroup as group:
+        # HTTP/SSE MCP transports run inside anyio task groups, which
+        # wrap any sub-exception in BaseExceptionGroup. Unwrap to find
+        # the most informative inner exception, then map to the same
+        # ProviderError envelope as the plain-Exception path.
+        from primer.model.except_ import MatrixError
+        # Surface a documented MatrixError if any sub-exception is one
+        for sub in group.exceptions:
+            if isinstance(sub, MatrixError):
+                raise sub from group
+        # Otherwise, take the first sub-exception's type+message
+        first = group.exceptions[0] if group.exceptions else group
+        raise ProviderError(
+            f"toolset {toolset_id!r} provider failed to enumerate tools: "
+            f"{type(first).__name__}: {first}"
+        ) from group
+    except Exception as exc:
+        # Re-raise the documented matrix error types so the registry
+        # mapper produces the correct envelope (NotFoundError → 404,
+        # AuthRequiredError → 401, etc.).
+        from primer.model.except_ import MatrixError
+        if isinstance(exc, MatrixError):
+            raise
+        # MCP stdio transport failures (handshake refused, connection
+        # closed, subprocess crash) come back as third-party exception
+        # types like mcp.shared.exceptions.McpError. Map to 502
+        # provider-error rather than letting the 500 leak.
+        raise ProviderError(
+            f"toolset {toolset_id!r} provider failed to enumerate tools: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    return {"tools": tools}
+
+
+# ---------- Built-in toolsets registry --------------------------------------
+#
+# The five reserved built-in toolset ids live in
+# matrix/api/registries/provider_registry.py. Their operator-facing
+# metadata (tagline, icon hint, availability semantics) lives here so
+# the UI can render the built-in cards dynamically from one source of
+# truth instead of hard-coding the list.
+
+_BUILTIN_TOOLSETS: list[dict] = [
+    {
+        "id": "system",
+        "tagline": "Operator + diagnostic tools",
+        "icon": "settings",
+        "always_on": True,
+    },
+    {
+        "id": "workspaces",
+        "tagline": "File ops + exec inside the bound workspace",
+        "icon": "box",
+        "always_on": True,
+    },
+    {
+        "id": "search",
+        "tagline": (
+            "Semantic search over indexed entities — available once "
+            "Internal Collections is bootstrapped"
+        ),
+        "icon": "search",
+        "always_on": False,  # gated on IC subsystem
+    },
+    {
+        "id": "misc",
+        "tagline": "Datetime, sleep, UUID, hashing, arithmetic utilities",
+        "icon": "wrench",
+        "always_on": True,
+    },
+    {
+        "id": "web",
+        "tagline": "DuckDuckGo search + page-fetch primitives",
+        "icon": "external",
+        "always_on": True,
+    },
+]
+
+# A dedicated router registered BEFORE toolset_router in app.py so that
+# GET /toolsets/builtin is matched by this literal route rather than
+# being captured as toolset_id="builtin" by the CRUD GET-by-id.
+builtin_toolsets_router = APIRouter()
+
+
+@builtin_toolsets_router.get(
+    "/toolsets/builtin",
+    summary="List the five built-in toolsets and their availability",
+)
+async def list_builtin_toolsets(
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Operator-facing catalogue of the always-available built-ins.
+
+    The UI uses this in place of a hard-coded list so adding a new
+    built-in toolset to the runtime doesn't require a UI change.
+    ``available`` is True for always-on built-ins; for the IC-gated
+    ``search`` toolset, it's True iff an InternalCollectionsConfig
+    row exists in storage (mirrors the topbar IC-config probe).
+    """
+    from primer.model.internal import InternalCollectionsConfig
+
+    # Probe IC config to decide search-toolset availability.
+    ic_storage = storage_provider.get_storage(InternalCollectionsConfig)
+    ic_active = False
+    try:
+        page = await ic_storage.find(
+            None, OffsetPage(offset=0, length=1),
+        )
+        ic_active = len(page.items) > 0
+    except Exception:
+        # Storage layer failure: treat as IC-off rather than 500.
+        ic_active = False
+
+    items = []
+    for spec in _BUILTIN_TOOLSETS:
+        available = spec["always_on"] or (
+            spec["id"] == "search" and ic_active
+        )
+        items.append({
+            **spec,
+            "available": available,
+        })
+    return {"items": items}
+
+
+@builtin_toolsets_router.get(
+    "/tools",
+    summary=(
+        "List every tool currently exposed by every registered "
+        "toolset (built-in + user-defined)."
+    ),
+)
+async def list_all_tools(
+    principal: str | None = Header(default=None, alias=PRINCIPAL_HEADER),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Fan out across every reachable toolset and return a single
+    flat catalogue keyed by toolset.
+
+    Powers the operator console's per-tool agent picker — without
+    this, the UI would have to issue one ``/toolsets/{id}/tools``
+    request per toolset to populate the search box.
+
+    Failure tolerance: a toolset that 401s, 5xxs, or just times out
+    is reported with ``available: false`` and the failure reason
+    instead of bringing down the whole catalogue. The UI shows the
+    rest of the picker so one broken MCP server doesn't block the
+    operator from configuring an agent.
+    """
+    from primer.model.internal import InternalCollectionsConfig
+    from primer.model.provider import Toolset
+
+    out: list[dict] = []
+
+    # 1. Built-in toolsets (system / workspaces / search / misc / web).
+    # ``search`` is gated by the InternalCollectionsConfig probe — same
+    # logic as list_builtin_toolsets() above.
+    ic_storage = storage_provider.get_storage(InternalCollectionsConfig)
+    ic_active = False
+    try:
+        page = await ic_storage.find(
+            None, OffsetPage(offset=0, length=1),
+        )
+        ic_active = len(page.items) > 0
+    except Exception:
+        ic_active = False
+
+    for spec in _BUILTIN_TOOLSETS:
+        tid = spec["id"]
+        available = spec["always_on"] or (tid == "search" and ic_active)
+        entry: dict = {
+            "id": tid,
+            "builtin": True,
+            "label": spec.get("label", tid),
+            "tagline": spec.get("tagline", ""),
+            "available": available,
+            "tools": [],
+        }
+        if not available:
+            entry["unavailable_reason"] = (
+                "internal collections not bootstrapped"
+                if tid == "search" else "subsystem disabled"
+            )
+            out.append(entry)
+            continue
+        try:
+            provider = await registry.get_toolset(tid)
+            async for tool in provider.list_tools(principal=principal):
+                entry["tools"].append({
+                    "id": tool.id,
+                    "scoped_id": f"{tid}__{tool.id}",
+                    "description": tool.description or "",
+                })
+        except Exception as exc:  # noqa: BLE001
+            entry["available"] = False
+            entry["unavailable_reason"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+        out.append(entry)
+
+    # 2. User-defined Toolset rows. Page through storage so the
+    # catalogue scales beyond the default 200-row cap.
+    ts_storage = storage_provider.get_storage(Toolset)
+    seen_user_ids: set[str] = set()
+    offset = 0
+    page_size = 200
+    while True:
+        page = await ts_storage.list(
+            OffsetPage(offset=offset, length=page_size),
+        )
+        for row in page.items:
+            if row.id in seen_user_ids:
+                continue
+            seen_user_ids.add(row.id)
+            entry = {
+                "id": row.id,
+                "builtin": False,
+                "label": row.id,
+                "tagline": row.description or "",
+                "available": True,
+                "tools": [],
+            }
+            try:
+                provider = await registry.get_toolset(row.id)
+                async for tool in provider.list_tools(principal=principal):
+                    entry["tools"].append({
+                        "id": tool.id,
+                        "scoped_id": f"{row.id}__{tool.id}",
+                        "description": tool.description or "",
+                    })
+            except Exception as exc:  # noqa: BLE001
+                entry["available"] = False
+                entry["unavailable_reason"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+            out.append(entry)
+        if len(page.items) < page_size:
+            break
+        offset += page_size
+
+    return {"items": out}
+
+
+__all__ = [
+    "builtin_toolsets_router",
+    "cross_encoder_provider_router",
+    "embedding_provider_router",
+    "llm_provider_router",
+    "toolset_router",
+]

@@ -9,13 +9,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from matrix.api.errors import (
+from primer.api.errors import (
     PROBLEM_JSON_MEDIA_TYPE,
     ProblemDetails,
     common_responses,
     register_error_handlers,
 )
-from matrix.model.except_ import (
+from primer.model.except_ import (
     AuthenticationError,
     AuthRequiredError,
     BadRequestError,

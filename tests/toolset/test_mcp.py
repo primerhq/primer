@@ -15,10 +15,10 @@ import pytest
 from mcp.server.lowlevel import Server
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from matrix.model.chat import Tool, ToolCallResult
-from matrix.model.except_ import ConfigError, UnsupportedContentError
-from matrix.model.provider import HttpConfig, McpConfig, StdioConfig, TransportType
-from matrix.toolset.mcp import McpToolsetProvider
+from primer.model.chat import Tool, ToolCallResult
+from primer.model.except_ import ConfigError, UnsupportedContentError
+from primer.model.provider import HttpConfig, McpConfig, StdioConfig, TransportType
+from primer.toolset.mcp import McpToolsetProvider
 
 
 # ---------- in-memory MCP server fixtures ---------------------------------
@@ -166,7 +166,7 @@ class TestCallToolStdio:
         assert result.is_error is True
 
     async def test_unknown_tool_propagates_as_provider_error(self) -> None:
-        from matrix.model.except_ import ProviderError
+        from primer.model.except_ import ProviderError
 
         # The MCP lowlevel server catches handler exceptions and converts
         # them to ``CallToolResult(isError=True, content=[TextContent(...)])``
@@ -245,7 +245,7 @@ class TestHttpTransportRouting:
         reason="MCP SDK swallows transport exceptions in task groups; needs follow-up"
     )
     async def test_unreachable_endpoint_raises_matrix_error(self) -> None:
-        from matrix.model.except_ import MatrixError
+        from primer.model.except_ import MatrixError
 
         provider = McpToolsetProvider(
             toolset_id="ts1",
@@ -286,7 +286,7 @@ class TestHttpTransportSuccess:
             fake_streamablehttp,
         )
         monkeypatch.setattr(
-            "matrix.toolset.mcp.ClientSession",
+            "primer.toolset.mcp.ClientSession",
             lambda *args, **kwargs: fake_session,
         )
 
@@ -327,7 +327,7 @@ class TestHttpTransportSuccess:
             fake_streamablehttp,
         )
         monkeypatch.setattr(
-            "matrix.toolset.mcp.ClientSession",
+            "primer.toolset.mcp.ClientSession",
             lambda *args, **kwargs: fake_session,
         )
 
@@ -351,7 +351,7 @@ class TestHttpTransportSuccess:
         from contextlib import asynccontextmanager
         from unittest.mock import AsyncMock, MagicMock
 
-        from matrix.model.except_ import MatrixError
+        from primer.model.except_ import MatrixError
 
         fake_session = MagicMock()
         fake_session.__aenter__ = AsyncMock(return_value=fake_session)
@@ -367,7 +367,7 @@ class TestHttpTransportSuccess:
             fake_streamablehttp,
         )
         monkeypatch.setattr(
-            "matrix.toolset.mcp.ClientSession",
+            "primer.toolset.mcp.ClientSession",
             lambda *args, **kwargs: fake_session,
         )
 
@@ -406,11 +406,11 @@ class TestStdioSessionLifecycle:
             yield (object(), object())
 
         monkeypatch.setattr(
-            "matrix.toolset.mcp.stdio_client",
+            "primer.toolset.mcp.stdio_client",
             fake_stdio_client,
         )
         monkeypatch.setattr(
-            "matrix.toolset.mcp.ClientSession",
+            "primer.toolset.mcp.ClientSession",
             lambda *args, **kwargs: fake_session,
         )
 
@@ -448,11 +448,11 @@ class TestStdioSessionLifecycle:
             yield (object(), object())
 
         monkeypatch.setattr(
-            "matrix.toolset.mcp.stdio_client",
+            "primer.toolset.mcp.stdio_client",
             fake_stdio_client,
         )
         monkeypatch.setattr(
-            "matrix.toolset.mcp.ClientSession",
+            "primer.toolset.mcp.ClientSession",
             lambda *args, **kwargs: fake_session,
         )
 
@@ -474,7 +474,7 @@ class TestSessionRequestErrors:
     async def test_list_tools_session_failure_is_classified(self) -> None:
         from unittest.mock import AsyncMock, MagicMock
 
-        from matrix.model.except_ import MatrixError
+        from primer.model.except_ import MatrixError
 
         fake_session = MagicMock()
         fake_session.list_tools = AsyncMock(side_effect=RuntimeError("kaboom"))
@@ -487,7 +487,7 @@ class TestSessionRequestErrors:
     async def test_call_session_failure_is_classified(self) -> None:
         from unittest.mock import AsyncMock, MagicMock
 
-        from matrix.model.except_ import MatrixError
+        from primer.model.except_ import MatrixError
 
         fake_session = MagicMock()
         fake_session.call_tool = AsyncMock(side_effect=RuntimeError("kaboom"))
@@ -504,8 +504,8 @@ class TestMcpOAuthIntegration:
     def test_complete_oauth_with_handler_dispatches(self, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 
-        from matrix.model.provider import OAuthConfig
-        from matrix.toolset.oauth.handler import MatrixOAuthHandler
+        from primer.model.provider import OAuthConfig
+        from primer.toolset.oauth.handler import MatrixOAuthHandler
 
         config = OAuthConfig(redirect_uri="https://app.example/cb")
         handler = MatrixOAuthHandler(
@@ -534,9 +534,9 @@ class TestMcpOAuthIntegration:
     async def test_oauth_authorize_raises_auth_required_propagates_to_list_tools(
         self, monkeypatch
     ) -> None:
-        from matrix.model.except_ import AuthRequiredError
-        from matrix.model.provider import OAuthConfig
-        from matrix.toolset.oauth.handler import MatrixOAuthHandler
+        from primer.model.except_ import AuthRequiredError
+        from primer.model.provider import OAuthConfig
+        from primer.toolset.oauth.handler import MatrixOAuthHandler
 
         config = OAuthConfig(redirect_uri="https://app.example/cb")
         handler = MatrixOAuthHandler(

@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from matrix.harness.hashes import hash_overrides
-from matrix.model.harness import Harness, HarnessOperation, HarnessStatus
+from primer.harness.hashes import hash_overrides
+from primer.model.harness import Harness, HarnessOperation, HarnessStatus
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +343,7 @@ class _FakeClaimEngine:
 
 @pytest.fixture
 def app_with_engine(fake_storage_provider, fake_provider_registry):
-    from matrix.api.app import create_test_app
+    from primer.api.app import create_test_app
     _app = create_test_app(
         storage_provider=fake_storage_provider,
         provider_registry=fake_provider_registry,
@@ -356,7 +356,7 @@ def app_with_engine(fake_storage_provider, fake_provider_registry):
 @pytest.mark.asyncio
 async def test_claim_engine_upsert_on_fetch(app_with_engine, fake_storage_provider):
     """POST /{id}/fetch calls engine.upsert(HARNESS, hid, priority=10)."""
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
 
     _app, engine = app_with_engine
     harness = _make_harness(id="hns_fetch_eng", slug="fetch-eng")
@@ -376,7 +376,7 @@ async def test_claim_engine_upsert_on_fetch(app_with_engine, fake_storage_provid
 @pytest.mark.asyncio
 async def test_claim_engine_upsert_on_delete_uninstall(app_with_engine, fake_storage_provider):
     """DELETE /{id} (enqueues UNINSTALL) calls engine.upsert(HARNESS, hid, priority=10)."""
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
 
     _app, engine = app_with_engine
     harness = _make_harness(id="hns_del_eng", slug="del-eng", status=HarnessStatus.INSTALLED)
@@ -396,7 +396,7 @@ async def test_claim_engine_upsert_on_delete_uninstall(app_with_engine, fake_sto
 @pytest.mark.asyncio
 async def test_claim_engine_upsert_on_sync(app_with_engine, fake_storage_provider):
     """POST /{id}/sync calls engine.upsert(HARNESS, hid, priority=10)."""
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
 
     _app, engine = app_with_engine
     harness = _make_harness(
@@ -421,7 +421,7 @@ async def test_claim_engine_upsert_on_sync(app_with_engine, fake_storage_provide
 @pytest.mark.asyncio
 async def test_claim_engine_upsert_on_install(app_with_engine, fake_storage_provider):
     """POST /{id}/install calls engine.upsert(HARNESS, hid, priority=10)."""
-    from matrix.int.claim import ClaimKind
+    from primer.int.claim import ClaimKind
 
     _app, engine = app_with_engine
     schema = {"type": "object", "properties": {}, "additionalProperties": True}
@@ -447,7 +447,7 @@ async def test_claim_engine_upsert_on_install(app_with_engine, fake_storage_prov
 @pytest.mark.asyncio
 async def test_claim_engine_none_is_noop_for_harness(fake_storage_provider, fake_provider_registry):
     """When claim_engine is absent from app.state, harness ops still work."""
-    from matrix.api.app import create_test_app
+    from primer.api.app import create_test_app
 
     _app = create_test_app(
         storage_provider=fake_storage_provider,

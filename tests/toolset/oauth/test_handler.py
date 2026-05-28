@@ -8,16 +8,16 @@ import httpx
 import pytest
 import respx
 
-from matrix.model.except_ import (
+from primer.model.except_ import (
     AuthenticationError,
     AuthRequiredError,
     BadRequestError,
 )
-from matrix.model.provider import OAuthClientCredentials, OAuthConfig
-from matrix.toolset.oauth.handler import MatrixOAuthHandler
-from matrix.toolset.oauth.registration import InMemoryClientCredentialsCache
-from matrix.toolset.oauth.state import InMemoryStateStore
-from matrix.toolset.oauth.token_store import (
+from primer.model.provider import OAuthClientCredentials, OAuthConfig
+from primer.toolset.oauth.handler import MatrixOAuthHandler
+from primer.toolset.oauth.registration import InMemoryClientCredentialsCache
+from primer.toolset.oauth.state import InMemoryStateStore
+from primer.toolset.oauth.token_store import (
     InMemoryTokenStore,
     TokenRecord,
 )

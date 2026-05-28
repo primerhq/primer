@@ -26,14 +26,14 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from matrix.api.app import create_app
-from matrix.api.config import AppConfig
-from matrix.model.provider import (
+from primer.api.app import create_app
+from primer.api.config import AppConfig
+from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
     StorageProviderType,
 )
-from matrix.model.scheduler import RuntimeMode
+from primer.model.scheduler import RuntimeMode
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ async def test_fresh_boot_with_opt_out_skips(
     tmp_db_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Fresh DB + auto_bootstrap=False: no providers created; warning logged."""
-    with caplog.at_level(logging.WARNING, logger="matrix.api.app"):
+    with caplog.at_level(logging.WARNING, logger="primer.api.app"):
         async with _boot_app(auto_bootstrap=False, db_path=tmp_db_path) as handle:
             resp = await handle.client.get("/v1/embedding_providers")
             assert resp.status_code == 200, resp.text
@@ -138,7 +138,7 @@ async def test_second_boot_does_not_re_bootstrap(
 
     # Second boot: marker already set, should NOT log "running auto-bootstrap".
     caplog.clear()
-    with caplog.at_level(logging.INFO, logger="matrix.api.app"):
+    with caplog.at_level(logging.INFO, logger="primer.api.app"):
         async with _boot_app(auto_bootstrap=True, db_path=tmp_db_path) as handle:
             # Providers are still there from first boot.
             resp = await handle.client.get("/v1/embedding_providers")

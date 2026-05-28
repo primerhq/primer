@@ -21,13 +21,13 @@ import shlex
 
 import pytest
 
-from matrix.model.provider import (
+from primer.model.provider import (
     HttpConfig,
     McpConfig,
     StdioConfig,
     TransportType,
 )
-from matrix.toolset.mcp import McpToolsetProvider
+from primer.toolset.mcp import McpToolsetProvider
 
 
 _STDIO_CMD = os.environ.get("MCP_TEST_STDIO_CMD")

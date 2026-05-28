@@ -27,9 +27,9 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient as SyncTestClient
 
-from matrix.api.app import create_test_app
-from matrix.api.registries import ProviderRegistry, WorkspaceRegistry
-from matrix.model.workspace_session import (
+from primer.api.app import create_test_app
+from primer.api.registries import ProviderRegistry, WorkspaceRegistry
+from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
     AgentSessionBinding,
@@ -69,7 +69,7 @@ class _FakeWorkspaceForWS:
 
     async def read_file(self, path: str) -> bytes:
         """Return the in-memory content for path, or raise NotFoundError."""
-        from matrix.model.except_ import NotFoundError
+        from primer.model.except_ import NotFoundError
         if path not in self._files:
             raise NotFoundError(f"{path!r} not found")
         return self._files[path]
@@ -152,7 +152,7 @@ def app(fake_storage_provider, fake_provider_registry, workspace_registry):
     )
     # Wire session_tick_router (Task 12 will do this in the lifespan;
     # for this task we wire it directly in the test fixture).
-    from matrix.session.tick_router import SessionTickRouter
+    from primer.session.tick_router import SessionTickRouter
     _app.state.session_tick_router = SessionTickRouter()
     return _app
 
@@ -160,7 +160,7 @@ def app(fake_storage_provider, fake_provider_registry, workspace_registry):
 @pytest.fixture
 async def seeded_workspace_id(app, workspace_registry):
     """Ensure the workspace handle exists in the registry."""
-    from matrix.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
+    from primer.model.workspace import Workspace, WorkspaceProvider, WorkspaceProviderType, LocalWorkspaceConfig
 
     sp = app.state.storage_provider
     try:

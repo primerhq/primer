@@ -18,15 +18,15 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from matrix.api.app import create_test_app
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.bus.listener import YieldEventListener
-from matrix.model.workspace_session import (
+from primer.api.app import create_test_app
+from primer.bus.in_memory import InMemoryEventBus
+from primer.bus.listener import YieldEventListener
+from primer.model.workspace_session import (
     AgentSessionBinding,
     WorkspaceSession,
     SessionStatus,
 )
-from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
 
 
 @pytest.fixture

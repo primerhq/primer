@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.coordinator.factory import CoordinatorFactory
-from matrix.coordinator.in_memory import (
+from primer.bus.in_memory import InMemoryEventBus
+from primer.coordinator.factory import CoordinatorFactory
+from primer.coordinator.in_memory import (
     InMemoryInvalidationBus,
     InMemoryLeaderElector,
     InMemoryRateLimiter,
 )
-from matrix.int.coordinator import Coordinator
+from primer.int.coordinator import Coordinator
 
 
 @pytest.mark.asyncio

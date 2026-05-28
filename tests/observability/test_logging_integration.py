@@ -17,8 +17,8 @@ from opentelemetry import trace as otel_trace
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 
-from matrix.common.log import _JsonFormatter
-from matrix.observability.logging_integration import install_log_correlation
+from primer.common.log import _JsonFormatter
+from primer.observability.logging_integration import install_log_correlation
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ def _isolated_otel_provider():
 
 @pytest.fixture()
 def tracer(_isolated_otel_provider: TracerProvider):
-    return _isolated_otel_provider.get_tracer("matrix.test")
+    return _isolated_otel_provider.get_tracer("primer.test")
 
 
 @pytest.fixture()
@@ -64,7 +64,7 @@ def capturing_handler() -> _CapturingHandler:
 
 @pytest.fixture()
 def test_logger(capturing_handler: _CapturingHandler) -> logging.Logger:
-    lg = logging.getLogger("matrix.test.log_correlation")
+    lg = logging.getLogger("primer.test.log_correlation")
     lg.setLevel(logging.DEBUG)
     lg.addHandler(capturing_handler)
     lg.propagate = False

@@ -1649,123 +1649,6 @@ wheels = [
 ]
 
 [[package]]
-name = "matrix"
-version = "0.0.1"
-source = { editable = "." }
-dependencies = [
-    { name = "aiodocker" },
-    { name = "aiohttp" },
-    { name = "aiosqlite" },
-    { name = "anthropic" },
-    { name = "asyncpg" },
-    { name = "croniter" },
-    { name = "ddgs" },
-    { name = "discord-py" },
-    { name = "docling" },
-    { name = "fastapi" },
-    { name = "google-genai" },
-    { name = "grpcio" },
-    { name = "jinja2" },
-    { name = "jsonschema" },
-    { name = "kubernetes-asyncio" },
-    { name = "lancedb" },
-    { name = "mcp" },
-    { name = "ollama" },
-    { name = "openai" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp" },
-    { name = "opentelemetry-instrumentation-asyncpg" },
-    { name = "opentelemetry-instrumentation-fastapi" },
-    { name = "opentelemetry-instrumentation-httpx" },
-    { name = "opentelemetry-instrumentation-logging" },
-    { name = "opentelemetry-sdk" },
-    { name = "pgvector" },
-    { name = "prometheus-client" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "python-multipart" },
-    { name = "python-telegram-bot" },
-    { name = "pyyaml" },
-    { name = "regopy" },
-    { name = "sentence-transformers" },
-    { name = "slack-bolt" },
-    { name = "slack-sdk" },
-    { name = "transformers" },
-    { name = "typer" },
-    { name = "tzdata" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "grpcio-tools" },
-    { name = "playwright" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-playwright" },
-    { name = "respx" },
-    { name = "testcontainers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiodocker", specifier = ">=0.21" },
-    { name = "aiohttp", specifier = ">=3.11" },
-    { name = "aiosqlite", specifier = ">=0.20" },
-    { name = "anthropic", specifier = ">=0.97.0" },
-    { name = "asyncpg", specifier = ">=0.30.0" },
-    { name = "croniter", specifier = ">=2.0.5" },
-    { name = "ddgs", specifier = ">=9.0" },
-    { name = "discord-py", specifier = ">=2.4" },
-    { name = "docling", specifier = ">=2.0" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "google-genai", specifier = ">=1.73.1" },
-    { name = "grpcio", specifier = ">=1.60.0" },
-    { name = "jinja2", specifier = ">=3.1.0" },
-    { name = "jsonschema", specifier = ">=4.20" },
-    { name = "kubernetes-asyncio", specifier = ">=32.0" },
-    { name = "lancedb", specifier = ">=0.15" },
-    { name = "mcp", specifier = ">=1.16.0" },
-    { name = "ollama", specifier = ">=0.6.1" },
-    { name = "openai", specifier = ">=1.50.0" },
-    { name = "opentelemetry-api", specifier = ">=1.20.0" },
-    { name = "opentelemetry-exporter-otlp", specifier = ">=1.20.0" },
-    { name = "opentelemetry-instrumentation-asyncpg", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.41b0" },
-    { name = "opentelemetry-instrumentation-logging", specifier = ">=0.41b0" },
-    { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
-    { name = "pgvector", specifier = ">=0.3.6" },
-    { name = "prometheus-client", specifier = ">=0.20.0" },
-    { name = "pydantic", specifier = ">=2.13.3" },
-    { name = "pydantic-settings", specifier = ">=2.6" },
-    { name = "python-multipart", specifier = ">=0.0.12" },
-    { name = "python-telegram-bot", specifier = ">=21.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "regopy", specifier = ">=0.4" },
-    { name = "sentence-transformers", specifier = ">=3.0.0" },
-    { name = "slack-bolt", specifier = ">=1.20" },
-    { name = "slack-sdk", specifier = ">=3.27" },
-    { name = "transformers", specifier = ">=5.6.2" },
-    { name = "typer", specifier = ">=0.12" },
-    { name = "tzdata", specifier = ">=2026.2" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "grpcio-tools", specifier = ">=1.60.0" },
-    { name = "playwright", specifier = ">=1.49.0" },
-    { name = "pytest", specifier = ">=9.0.3" },
-    { name = "pytest-asyncio", specifier = ">=0.24.0" },
-    { name = "pytest-cov", specifier = ">=7.1.0" },
-    { name = "pytest-playwright", specifier = ">=0.6.2" },
-    { name = "respx", specifier = ">=0.21.1" },
-    { name = "testcontainers", extras = ["postgres"], specifier = ">=4.0" },
-]
-
-[[package]]
 name = "mcp"
 version = "1.27.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2582,6 +2465,123 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/85/68/7717bd9e63ed254617a7d3dc9260904fb736d6ea203e58ffddcb186c64e4/polyfactory-3.3.0.tar.gz", hash = "sha256:237258b6ff43edf362ffd1f68086bb796466f786adfa002b0ac256dbf2246e9a", size = 348668, upload-time = "2026-02-22T09:46:28.01Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dd/34/b6f19941adcdaf415b5e8a8d577499f5b6a76b59cbae37f9b125a9ffe9f2/polyfactory-3.3.0-py3-none-any.whl", hash = "sha256:686abcaa761930d3df87b91e95b26b8d8cb9fdbbbe0b03d5f918acff5c72606e", size = 62707, upload-time = "2026-02-22T09:46:25.985Z" },
+]
+
+[[package]]
+name = "primer"
+version = "0.0.1"
+source = { editable = "." }
+dependencies = [
+    { name = "aiodocker" },
+    { name = "aiohttp" },
+    { name = "aiosqlite" },
+    { name = "anthropic" },
+    { name = "asyncpg" },
+    { name = "croniter" },
+    { name = "ddgs" },
+    { name = "discord-py" },
+    { name = "docling" },
+    { name = "fastapi" },
+    { name = "google-genai" },
+    { name = "grpcio" },
+    { name = "jinja2" },
+    { name = "jsonschema" },
+    { name = "kubernetes-asyncio" },
+    { name = "lancedb" },
+    { name = "mcp" },
+    { name = "ollama" },
+    { name = "openai" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-instrumentation-asyncpg" },
+    { name = "opentelemetry-instrumentation-fastapi" },
+    { name = "opentelemetry-instrumentation-httpx" },
+    { name = "opentelemetry-instrumentation-logging" },
+    { name = "opentelemetry-sdk" },
+    { name = "pgvector" },
+    { name = "prometheus-client" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-multipart" },
+    { name = "python-telegram-bot" },
+    { name = "pyyaml" },
+    { name = "regopy" },
+    { name = "sentence-transformers" },
+    { name = "slack-bolt" },
+    { name = "slack-sdk" },
+    { name = "transformers" },
+    { name = "typer" },
+    { name = "tzdata" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "grpcio-tools" },
+    { name = "playwright" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-playwright" },
+    { name = "respx" },
+    { name = "testcontainers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiodocker", specifier = ">=0.21" },
+    { name = "aiohttp", specifier = ">=3.11" },
+    { name = "aiosqlite", specifier = ">=0.20" },
+    { name = "anthropic", specifier = ">=0.97.0" },
+    { name = "asyncpg", specifier = ">=0.30.0" },
+    { name = "croniter", specifier = ">=2.0.5" },
+    { name = "ddgs", specifier = ">=9.0" },
+    { name = "discord-py", specifier = ">=2.4" },
+    { name = "docling", specifier = ">=2.0" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "google-genai", specifier = ">=1.73.1" },
+    { name = "grpcio", specifier = ">=1.60.0" },
+    { name = "jinja2", specifier = ">=3.1.0" },
+    { name = "jsonschema", specifier = ">=4.20" },
+    { name = "kubernetes-asyncio", specifier = ">=32.0" },
+    { name = "lancedb", specifier = ">=0.15" },
+    { name = "mcp", specifier = ">=1.16.0" },
+    { name = "ollama", specifier = ">=0.6.1" },
+    { name = "openai", specifier = ">=1.50.0" },
+    { name = "opentelemetry-api", specifier = ">=1.20.0" },
+    { name = "opentelemetry-exporter-otlp", specifier = ">=1.20.0" },
+    { name = "opentelemetry-instrumentation-asyncpg", specifier = ">=0.41b0" },
+    { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.41b0" },
+    { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.41b0" },
+    { name = "opentelemetry-instrumentation-logging", specifier = ">=0.41b0" },
+    { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
+    { name = "pgvector", specifier = ">=0.3.6" },
+    { name = "prometheus-client", specifier = ">=0.20.0" },
+    { name = "pydantic", specifier = ">=2.13.3" },
+    { name = "pydantic-settings", specifier = ">=2.6" },
+    { name = "python-multipart", specifier = ">=0.0.12" },
+    { name = "python-telegram-bot", specifier = ">=21.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "regopy", specifier = ">=0.4" },
+    { name = "sentence-transformers", specifier = ">=3.0.0" },
+    { name = "slack-bolt", specifier = ">=1.20" },
+    { name = "slack-sdk", specifier = ">=3.27" },
+    { name = "transformers", specifier = ">=5.6.2" },
+    { name = "typer", specifier = ">=0.12" },
+    { name = "tzdata", specifier = ">=2026.2" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "grpcio-tools", specifier = ">=1.60.0" },
+    { name = "playwright", specifier = ">=1.49.0" },
+    { name = "pytest", specifier = ">=9.0.3" },
+    { name = "pytest-asyncio", specifier = ">=0.24.0" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-playwright", specifier = ">=0.6.2" },
+    { name = "respx", specifier = ">=0.21.1" },
+    { name = "testcontainers", extras = ["postgres"], specifier = ">=4.0" },
 ]
 
 [[package]]

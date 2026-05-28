@@ -1,5 +1,5 @@
-from matrix.int.claim import ClaimKind
-from matrix.claim.adapters.harnesses import HarnessClaimAdapter
+from primer.int.claim import ClaimKind
+from primer.claim.adapters.harnesses import HarnessClaimAdapter
 
 
 def test_harness_eligibility_sql():

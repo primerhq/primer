@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from matrix.model.except_ import BadRequestError, ConflictError, NotFoundError
-from matrix.workspace.sandbox.fake import FakeSandbox
-from matrix.workspace.sandbox.tools import (
+from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
+from primer.workspace.sandbox.fake import FakeSandbox
+from primer.workspace.sandbox.tools import (
     SandboxEdit,
     SandboxExec,
     SandboxGlob,
@@ -18,7 +18,7 @@ from matrix.workspace.sandbox.tools import (
     SandboxRead,
     SandboxWrite,
 )
-from matrix.workspace.tool import ToolCallContext
+from primer.workspace.tool import ToolCallContext
 
 
 class _StubSession:

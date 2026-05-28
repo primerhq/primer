@@ -11,9 +11,9 @@ import os
 import pytest
 from pydantic import SecretStr
 
-from matrix.embedder.huggingface import HuggingFaceEmbedder
-from matrix.model.embedding import EmbedResponse, TextPart
-from matrix.model.provider import (
+from primer.embedder.huggingface import HuggingFaceEmbedder
+from primer.model.embedding import EmbedResponse, TextPart
+from primer.model.provider import (
     EmbeddingModel,
     EmbeddingProvider,
     EmbeddingProviderType,

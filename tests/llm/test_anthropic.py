@@ -10,12 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from matrix.llm.anthropic import (
+from primer.llm.anthropic import (
     AnthropicLLM,
     _messages_to_anthropic,
     _part_to_anthropic_block,
 )
-from matrix.model.chat import (
+from primer.model.chat import (
     AudioPart,
     DocumentPart,
     ExtendedPart,
@@ -26,8 +26,8 @@ from matrix.model.chat import (
     ToolResultPart,
     VideoPart,
 )
-from matrix.model.except_ import ConfigError, UnsupportedContentError
-from matrix.model.provider import (
+from primer.model.except_ import ConfigError, UnsupportedContentError
+from primer.model.provider import (
     AnthropicConfig,
     Limits,
     LLMModel,
@@ -77,7 +77,7 @@ class TestConstructor:
 
     def test_rejects_wrong_config_type(self) -> None:
         from pydantic import HttpUrl
-        from matrix.model.provider import OpenResponsesConfig
+        from primer.model.provider import OpenResponsesConfig
 
         provider = LLMProvider(
             id="x",
@@ -93,14 +93,14 @@ class TestConstructor:
             AnthropicLLM(provider)
 
     def test_initialises_rate_limiter(self) -> None:
-        from matrix.coordinator.in_memory import InMemoryRateLimiter
+        from primer.coordinator.in_memory import InMemoryRateLimiter
         provider = _make_provider(max_concurrency=3)
         llm = AnthropicLLM(provider)
         assert isinstance(llm._rate_limiter, InMemoryRateLimiter)
         assert llm._max_concurrency == 3
 
     def test_logs_init(self, caplog: pytest.LogCaptureFixture) -> None:
-        caplog.set_level(logging.INFO, logger="matrix.llm.anthropic")
+        caplog.set_level(logging.INFO, logger="primer.llm.anthropic")
         provider = _make_provider(models=["claude-sonnet-4-5", "claude-opus-4-7"], max_concurrency=2)
         AnthropicLLM(provider)
         records = [r for r in caplog.records if "Anthropic adapter initialized" in r.message]
@@ -304,14 +304,14 @@ from typing import Any
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from matrix.llm.anthropic import (
+from primer.llm.anthropic import (
     _build_sampling_kwargs,
     _extract_extended_kwargs,
     _response_format_to_emulation,
     _tool_choice_to_anthropic,
     _tools_to_anthropic,
 )
-from matrix.model.chat import Tool
+from primer.model.chat import Tool
 
 
 class TestTools:
@@ -455,7 +455,7 @@ class TestSampling:
     def test_max_tokens_default_when_none_with_info_log(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.INFO, logger="matrix.llm.anthropic")
+        caplog.set_level(logging.INFO, logger="primer.llm.anthropic")
         out = _build_sampling_kwargs(
             temperature=None,
             top_p=None,
@@ -490,7 +490,7 @@ class TestExtendedKwargs:
     def test_unknown_keys_dropped_with_debug_log(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="matrix.llm.anthropic")
+        caplog.set_level(logging.DEBUG, logger="primer.llm.anthropic")
         out = _extract_extended_kwargs({"frobnicate": True, "foobar": 42})
         assert out == {}
         debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
@@ -516,12 +516,12 @@ class TestExtendedKwargs:
 
 from types import SimpleNamespace as NS
 
-from matrix.llm.anthropic import (
+from primer.llm.anthropic import (
     _StreamState,
     _map_stop_reason,
     _translate_event,
 )
-from matrix.model.chat import (
+from primer.model.chat import (
     Citation,
     Done,
     ExtendedEvent,
@@ -878,8 +878,8 @@ from collections.abc import AsyncIterator
 
 import anthropic
 
-from matrix.model.chat import Error as ChatError
-from matrix.model.except_ import AuthenticationError, ModelNotFoundError
+from primer.model.chat import Error as ChatError
+from primer.model.except_ import AuthenticationError, ModelNotFoundError
 
 
 async def _aiter(items: list) -> AsyncIterator:
@@ -898,7 +898,7 @@ def _patched_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock_instance.messages = MagicMock()
     mock_instance.messages.create = AsyncMock()
     cls_mock = MagicMock(return_value=mock_instance)
-    monkeypatch.setattr("matrix.llm.anthropic.AsyncAnthropic", cls_mock)
+    monkeypatch.setattr("primer.llm.anthropic.AsyncAnthropic", cls_mock)
     return mock_instance
 
 
@@ -980,7 +980,7 @@ class TestStream:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        caplog.set_level(logging.INFO, logger="matrix.llm.anthropic")
+        caplog.set_level(logging.INFO, logger="primer.llm.anthropic")
         provider = _make_provider()
         llm = AnthropicLLM(provider)
         client = _patched_client(monkeypatch)
@@ -1138,7 +1138,7 @@ class TestConcurrency:
 
 class TestPackageReexport:
     def test_anthropic_llm_reexported_from_package(self) -> None:
-        import matrix.llm as llm_pkg
+        import primer.llm as llm_pkg
 
         assert "AnthropicLLM" in llm_pkg.__all__
         assert llm_pkg.AnthropicLLM is AnthropicLLM

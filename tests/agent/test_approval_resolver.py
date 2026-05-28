@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from matrix.agent.approval import ApprovalResolver
-from matrix.model.tool_approval import (
+from primer.agent.approval import ApprovalResolver
+from primer.model.tool_approval import (
     RequiredApprovalConfig,
     ToolApprovalPolicy,
 )

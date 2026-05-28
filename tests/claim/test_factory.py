@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.claim.factory import ClaimEngineFactory
-from matrix.claim.in_memory import InMemoryClaimEngine
-from matrix.claim.postgres import PostgresClaimEngine
-from matrix.int.claim import ClaimKind
+from primer.bus.in_memory import InMemoryEventBus
+from primer.claim.factory import ClaimEngineFactory
+from primer.claim.in_memory import InMemoryClaimEngine
+from primer.claim.postgres import PostgresClaimEngine
+from primer.int.claim import ClaimKind
 
 
 # ---------------------------------------------------------------------------

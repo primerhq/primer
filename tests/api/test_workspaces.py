@@ -16,19 +16,19 @@ import httpx
 import pytest
 from httpx import ASGITransport
 
-from matrix.api.app import create_test_app
-from matrix.api.registries import (
+from primer.api.app import create_test_app
+from primer.api.registries import (
     ProviderRegistry,
     WorkspaceRegistry,
 )
-from matrix.model.except_ import (
+from primer.model.except_ import (
     BadRequestError,
     ConflictError,
     NotFoundError,
 )
-from matrix.model.workspace_session import SessionInfo, SessionStatus
-from matrix.model.storage import OffsetPage, OffsetPageResponse
-from matrix.model.workspace import (
+from primer.model.workspace_session import SessionInfo, SessionStatus
+from primer.model.storage import OffsetPage, OffsetPageResponse
+from primer.model.workspace import (
     FileEntry,
     LocalWorkspaceConfig,
     WorkspaceProvider,
@@ -134,7 +134,7 @@ class _FakeAgentSession:
 
     async def append_instruction(self, content: str):
         self.appended.append(content)
-        from matrix.model.workspace_session import Instruction
+        from primer.model.workspace_session import Instruction
 
         return Instruction(
             instruction_id=f"inst-{len(self.appended)}",
@@ -200,7 +200,7 @@ class _FakeWorkspace:
         del self._files[path]
 
     async def log(self, *, limit=50):
-        from matrix.model.workspace import CommitInfo
+        from primer.model.workspace import CommitInfo
 
         return [
             CommitInfo(
@@ -635,7 +635,7 @@ class TestSessionsSubResource:
         # /v1/workspaces/{wid}/sessions/{sid}/{pause,resume} backed by
         # the persisted WorkspaceSession row (Task 20). Seed a WorkspaceSession row so the
         # new endpoints have something to look up.
-        from matrix.model.workspace_session import (
+        from primer.model.workspace_session import (
             AgentSessionBinding,
             WorkspaceSession,
             SessionStatus,

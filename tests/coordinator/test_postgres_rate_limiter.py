@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_postgres_rate_limiter_basic(postgres_storage_provider):
-    from matrix.coordinator.postgres import PostgresRateLimiter
+    from primer.coordinator.postgres import PostgresRateLimiter
 
     rl = PostgresRateLimiter(postgres_storage_provider, owner_id="t1")
 
@@ -31,7 +31,7 @@ async def test_postgres_rate_limiter_basic(postgres_storage_provider):
 
 @pytest.mark.asyncio
 async def test_postgres_rate_limiter_keys_independent(postgres_storage_provider):
-    from matrix.coordinator.postgres import PostgresRateLimiter
+    from primer.coordinator.postgres import PostgresRateLimiter
 
     rl = PostgresRateLimiter(postgres_storage_provider, owner_id="t2")
 

@@ -5,11 +5,11 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from matrix.api.registries.semantic_search_registry import (
+from primer.api.registries.semantic_search_registry import (
     SemanticSearchRegistry,
 )
-from matrix.model.except_ import NotFoundError
-from matrix.model.provider import (
+from primer.model.except_ import NotFoundError
+from primer.model.provider import (
     PgVectorConfig,
     PoolConfig,
     SemanticSearchProvider,
@@ -148,13 +148,13 @@ async def test_default_factory_dispatches_lance(tmp_path):
     """Verify SemanticSearchRegistry._default_factory dispatches a
     lance-backed row to LanceVectorStoreProvider."""
     pytest.importorskip("lancedb")  # type: ignore[arg-type]
-    from matrix.api.registries.semantic_search_registry import _default_factory
-    from matrix.model.provider import (
+    from primer.api.registries.semantic_search_registry import _default_factory
+    from primer.model.provider import (
         LanceConfig,
         SemanticSearchProvider,
         SemanticSearchProviderType,
     )
-    from matrix.vector.lance import LanceVectorStoreProvider
+    from primer.vector.lance import LanceVectorStoreProvider
 
     row = SemanticSearchProvider(
         id="ssp-lance",

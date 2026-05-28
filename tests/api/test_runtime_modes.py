@@ -16,15 +16,15 @@ import asyncio
 
 import pytest
 
-from matrix.api.app import create_app
-from matrix.api.config import AppConfig
-from matrix.model.scheduler import (
+from primer.api.app import create_app
+from primer.api.config import AppConfig
+from primer.model.scheduler import (
     InMemorySchedulerConfig,
     RuntimeMode,
     SchedulerProviderConfig,
     SchedulerProviderType,
 )
-from matrix.scheduler.in_memory import InMemoryScheduler
+from primer.scheduler.in_memory import InMemoryScheduler
 
 from tests.api.conftest import _FakeStorageProvider
 
@@ -42,7 +42,7 @@ async def test_api_only_mode_does_not_start_worker_pool(
 ) -> None:
     """API mode with a scheduler still does not start a worker pool."""
     monkeypatch.setattr(
-        "matrix.api.app._build_storage_provider",
+        "primer.api.app._build_storage_provider",
         lambda _cfg: mock_storage_provider,
     )
     cfg = AppConfig(
@@ -64,7 +64,7 @@ async def test_api_only_mode_without_scheduler_is_ok(
 ) -> None:
     """Pure API mode does not require a scheduler; scheduler stays None."""
     monkeypatch.setattr(
-        "matrix.api.app._build_storage_provider",
+        "primer.api.app._build_storage_provider",
         lambda _cfg: mock_storage_provider,
     )
     cfg = AppConfig(runtime_mode=RuntimeMode.API, scheduler=None)
@@ -80,7 +80,7 @@ async def test_worker_mode_without_scheduler_defaults_to_in_memory(
 ) -> None:
     """WORKER mode with scheduler=None now boots with an in-memory scheduler."""
     monkeypatch.setattr(
-        "matrix.api.app._build_storage_provider",
+        "primer.api.app._build_storage_provider",
         lambda _cfg: mock_storage_provider,
     )
     cfg = AppConfig(runtime_mode=RuntimeMode.WORKER, scheduler=None)
@@ -96,7 +96,7 @@ async def test_api_plus_worker_mode_without_scheduler_defaults_to_in_memory(
 ) -> None:
     """API_PLUS_WORKER mode with scheduler=None now boots with an in-memory scheduler."""
     monkeypatch.setattr(
-        "matrix.api.app._build_storage_provider",
+        "primer.api.app._build_storage_provider",
         lambda _cfg: mock_storage_provider,
     )
     cfg = AppConfig(runtime_mode=RuntimeMode.API_PLUS_WORKER, scheduler=None)
@@ -113,7 +113,7 @@ async def test_api_plus_worker_mode_starts_worker_pool(
     """API_PLUS_WORKER mode wires both the scheduler and the worker pool,
     and the pool registers itself with the scheduler at startup."""
     monkeypatch.setattr(
-        "matrix.api.app._build_storage_provider",
+        "primer.api.app._build_storage_provider",
         lambda _cfg: mock_storage_provider,
     )
     cfg = AppConfig(
@@ -139,7 +139,7 @@ async def test_worker_only_mode_does_not_mount_entity_routers(
     """In WORKER-only mode only health + workers routers should mount;
     entity routers (workspaces, sessions, etc.) must be absent."""
     monkeypatch.setattr(
-        "matrix.api.app._build_storage_provider",
+        "primer.api.app._build_storage_provider",
         lambda _cfg: mock_storage_provider,
     )
     cfg = AppConfig(
@@ -168,7 +168,7 @@ async def test_in_memory_scheduler_with_worker_mode_emits_warning(
     warning about multi-worker safety."""
     import logging
     monkeypatch.setattr(
-        "matrix.api.app._build_storage_provider",
+        "primer.api.app._build_storage_provider",
         lambda _cfg: mock_storage_provider,
     )
     cfg = AppConfig(
@@ -179,7 +179,7 @@ async def test_in_memory_scheduler_with_worker_mode_emits_warning(
         ),
     )
     app = create_app(cfg)
-    with caplog.at_level(logging.WARNING, logger="matrix.api.app"):
+    with caplog.at_level(logging.WARNING, logger="primer.api.app"):
         async with app.router.lifespan_context(app):
             pass
     assert any(
@@ -196,7 +196,7 @@ async def test_in_memory_scheduler_with_api_mode_does_not_warn(
     """API-only mode is fine with in-memory; no warning."""
     import logging
     monkeypatch.setattr(
-        "matrix.api.app._build_storage_provider",
+        "primer.api.app._build_storage_provider",
         lambda _cfg: mock_storage_provider,
     )
     cfg = AppConfig(
@@ -207,7 +207,7 @@ async def test_in_memory_scheduler_with_api_mode_does_not_warn(
         ),
     )
     app = create_app(cfg)
-    with caplog.at_level(logging.WARNING, logger="matrix.api.app"):
+    with caplog.at_level(logging.WARNING, logger="primer.api.app"):
         async with app.router.lifespan_context(app):
             pass
     assert not any(

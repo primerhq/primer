@@ -12,15 +12,15 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from matrix.int.claim import ClaimKind, ReleaseOutcome
-from matrix.model.harness import Harness, HarnessOperation, HarnessStatus
-from matrix.model.chats import Chat
-from matrix.model.workspace_session import WorkspaceSession, SessionStatus, AgentSessionBinding
-from matrix.model.provider import SqliteConfig
-from matrix.storage.sqlite import SqliteStorageProvider
-from matrix.claim.adapters.sessions import SessionClaimAdapter
-from matrix.claim.adapters.chats import ChatClaimAdapter
-from matrix.claim.adapters.harnesses import HarnessClaimAdapter
+from primer.int.claim import ClaimKind, ReleaseOutcome
+from primer.model.harness import Harness, HarnessOperation, HarnessStatus
+from primer.model.chats import Chat
+from primer.model.workspace_session import WorkspaceSession, SessionStatus, AgentSessionBinding
+from primer.model.provider import SqliteConfig
+from primer.storage.sqlite import SqliteStorageProvider
+from primer.claim.adapters.sessions import SessionClaimAdapter
+from primer.claim.adapters.chats import ChatClaimAdapter
+from primer.claim.adapters.harnesses import HarnessClaimAdapter
 
 
 # ---------------------------------------------------------------------------

@@ -3,8 +3,8 @@
 import pytest
 from pydantic import BaseModel
 
-from matrix.storage.q import Q
-from matrix.model.storage import FieldRef, Op, Predicate, Value
+from primer.storage.q import Q
+from primer.model.storage import FieldRef, Op, Predicate, Value
 
 
 class _M(BaseModel):

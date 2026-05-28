@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_first_caller_wins(postgres_storage_provider):
-    from matrix.coordinator.postgres import PostgresLeaderElector
+    from primer.coordinator.postgres import PostgresLeaderElector
 
     e1 = PostgresLeaderElector(postgres_storage_provider, owner_id="o1")
     e2 = PostgresLeaderElector(postgres_storage_provider, owner_id="o2")
@@ -34,7 +34,7 @@ async def test_first_caller_wins(postgres_storage_provider):
 async def test_expired_lease_can_be_stolen(postgres_storage_provider):
     """Cancelling the heartbeat task lets the lease expire; another
     instance can then take the role."""
-    from matrix.coordinator.postgres import PostgresLeaderElector
+    from primer.coordinator.postgres import PostgresLeaderElector
 
     e1 = PostgresLeaderElector(postgres_storage_provider, owner_id="o1")
     e2 = PostgresLeaderElector(postgres_storage_provider, owner_id="o2")

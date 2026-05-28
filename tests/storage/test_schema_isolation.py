@@ -15,17 +15,17 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from matrix.model.common import Identifiable
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import (
+from primer.model.common import Identifiable
+from primer.model.except_ import ConfigError
+from primer.model.provider import (
     PoolConfig,
     PostgresConfig,
     SqliteConfig,
     StorageProviderConfig,
     StorageProviderType,
 )
-from matrix.storage.postgres import PostgresStorageProvider
-from matrix.storage.sqlite import SqliteStorageProvider
+from primer.storage.postgres import PostgresStorageProvider
+from primer.storage.sqlite import SqliteStorageProvider
 
 _POSTGRES_URL_ENV = "MATRIX_TEST_POSTGRES_URL"
 
@@ -72,7 +72,7 @@ async def test_sqlite_schema_override_has_no_effect(tmp_path: Path) -> None:
     override is silently ignored.  The provider must still initialise and
     accept writes correctly.
     """
-    from matrix.api.config import AppConfig
+    from primer.api.config import AppConfig
 
     cfg = AppConfig(
         db=StorageProviderConfig(
@@ -85,7 +85,7 @@ async def test_sqlite_schema_override_has_no_effect(tmp_path: Path) -> None:
 
     # Replicate what _build_storage_provider does (import locally so this
     # test doesn't depend on a running FastAPI app).
-    from matrix.api.app import _build_storage_provider
+    from primer.api.app import _build_storage_provider
 
     provider = _build_storage_provider(cfg)
     assert isinstance(provider, SqliteStorageProvider)
@@ -165,7 +165,7 @@ async def test_postgres_db_schema_env_override() -> None:
         pytest.skip(f"set {_POSTGRES_URL_ENV} to run Postgres schema-isolation tests")
 
     p = urlparse(url)
-    from matrix.api.config import AppConfig
+    from primer.api.config import AppConfig
 
     cfg = AppConfig(
         db=StorageProviderConfig(
@@ -183,7 +183,7 @@ async def test_postgres_db_schema_env_override() -> None:
         auto_bootstrap=False,
     )
 
-    from matrix.api.app import _build_storage_provider
+    from primer.api.app import _build_storage_provider
 
     provider = _build_storage_provider(cfg)
     assert isinstance(provider, PostgresStorageProvider)

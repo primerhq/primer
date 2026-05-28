@@ -8,10 +8,10 @@ import httpx
 import pytest
 import respx
 
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import OAuthClientCredentials
-from matrix.toolset.oauth.discovery import AuthServerMetadata
-from matrix.toolset.oauth.registration import (
+from primer.model.except_ import ConfigError
+from primer.model.provider import OAuthClientCredentials
+from primer.toolset.oauth.discovery import AuthServerMetadata
+from primer.toolset.oauth.registration import (
     InMemoryClientCredentialsCache,
     resolve,
 )
@@ -171,7 +171,7 @@ class TestResolve:
     async def test_dcr_4xx_propagates_as_bad_request(
         self, http_client: httpx.AsyncClient
     ) -> None:
-        from matrix.model.except_ import BadRequestError
+        from primer.model.except_ import BadRequestError
 
         cache = InMemoryClientCredentialsCache()
         respx.post("https://idp.example/register").mock(

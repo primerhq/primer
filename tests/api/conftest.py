@@ -11,8 +11,8 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport
 
-from matrix.api.app import create_test_app
-from matrix.api.registries import ProviderRegistry
+from primer.api.app import create_test_app
+from primer.api.registries import ProviderRegistry
 
 # Re-export the shared storage helpers so existing imports from this
 # module continue to work.

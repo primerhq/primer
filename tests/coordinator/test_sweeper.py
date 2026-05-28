@@ -23,7 +23,7 @@ pytestmark_pg = pytest.mark.skipif(
 @pytest.mark.asyncio
 async def test_sweeper_deletes_expired_rate_limit_leases(postgres_storage_provider):
     """Insert an expired lease; run the sweep once; lease is gone."""
-    from matrix.coordinator.sweeper import sweep_expired_leases
+    from primer.coordinator.sweeper import sweep_expired_leases
 
     async with postgres_storage_provider.pool.acquire() as conn:
         await conn.execute(
@@ -46,7 +46,7 @@ async def test_sweeper_deletes_expired_rate_limit_leases(postgres_storage_provid
 @pytestmark_pg
 @pytest.mark.asyncio
 async def test_sweeper_deletes_expired_leader_leases(postgres_storage_provider):
-    from matrix.coordinator.sweeper import sweep_expired_leases
+    from primer.coordinator.sweeper import sweep_expired_leases
 
     async with postgres_storage_provider.pool.acquire() as conn:
         await conn.execute(
@@ -69,9 +69,9 @@ async def test_sweeper_deletes_expired_leader_leases(postgres_storage_provider):
 @pytest.mark.asyncio
 async def test_factory_returns_in_memory_for_in_memory_bus(fake_storage_provider):
     """Factory still returns in-memory backends for in-memory bus."""
-    from matrix.bus.in_memory import InMemoryEventBus
-    from matrix.coordinator.factory import CoordinatorFactory
-    from matrix.coordinator.in_memory import (
+    from primer.bus.in_memory import InMemoryEventBus
+    from primer.coordinator.factory import CoordinatorFactory
+    from primer.coordinator.in_memory import (
         InMemoryInvalidationBus, InMemoryLeaderElector, InMemoryRateLimiter,
     )
 
@@ -95,9 +95,9 @@ async def test_factory_returns_postgres_for_postgres_bus(postgres_storage_provid
 
     Construct a real PostgresEventBus to satisfy the isinstance check in
     the factory, so we verify the Postgres branch isn't dead code."""
-    from matrix.bus.postgres import PostgresEventBus
-    from matrix.coordinator.factory import CoordinatorFactory
-    from matrix.coordinator.postgres import (
+    from primer.bus.postgres import PostgresEventBus
+    from primer.coordinator.factory import CoordinatorFactory
+    from primer.coordinator.postgres import (
         PostgresInvalidationBus, PostgresLeaderElector, PostgresRateLimiter,
     )
 

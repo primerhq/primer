@@ -6,10 +6,10 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from matrix.api.errors import register_error_handlers
-from matrix.api.pagination import FindRequest, parse_order_by, parse_page
-from matrix.model.except_ import BadRequestError
-from matrix.model.storage import (
+from primer.api.errors import register_error_handlers
+from primer.api.pagination import FindRequest, parse_order_by, parse_page
+from primer.model.except_ import BadRequestError
+from primer.model.storage import (
     CursorPage,
     OffsetPage,
     Op,

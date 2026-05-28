@@ -14,9 +14,9 @@ import socket
 import pytest
 from pydantic import HttpUrl, SecretStr
 
-from matrix.embedder.openai import OpenAIEmbedder
-from matrix.model.embedding import EmbedResponse, TextPart
-from matrix.model.provider import (
+from primer.embedder.openai import OpenAIEmbedder
+from primer.model.embedding import EmbedResponse, TextPart
+from primer.model.provider import (
     EmbeddingModel,
     EmbeddingProvider,
     EmbeddingProviderType,

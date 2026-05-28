@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from matrix.api.routers._cdc_hooks import (
+from primer.api.routers._cdc_hooks import (
     _reset_for_test,
     known_cdc_kinds,
     register_cdc_kind,

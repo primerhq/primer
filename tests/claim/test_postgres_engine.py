@@ -19,13 +19,13 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 import pytest_asyncio
 
-from matrix.int.claim import ClaimKind, ReleaseOutcome
-from matrix.claim.adapters.chats import ChatClaimAdapter
-from matrix.claim.adapters.sessions import SessionClaimAdapter
-from matrix.claim.postgres import PostgresClaimEngine
-from matrix.claim.sql import build_claim_query
-from matrix.model.provider import PoolConfig, PostgresConfig
-from matrix.storage.postgres import PostgresStorageProvider
+from primer.int.claim import ClaimKind, ReleaseOutcome
+from primer.claim.adapters.chats import ChatClaimAdapter
+from primer.claim.adapters.sessions import SessionClaimAdapter
+from primer.claim.postgres import PostgresClaimEngine
+from primer.claim.sql import build_claim_query
+from primer.model.provider import PoolConfig, PostgresConfig
+from primer.storage.postgres import PostgresStorageProvider
 
 
 _URL_ENV = "MATRIX_TEST_POSTGRES_URL"
@@ -45,7 +45,7 @@ _needs_pg = pytest.mark.skipif(
 
 
 def _parse_url(url: str) -> PostgresConfig:
-    from matrix.model.except_ import ConfigError
+    from primer.model.except_ import ConfigError
 
     p = urlparse(url)
     if p.scheme not in {"postgres", "postgresql"}:
@@ -216,7 +216,7 @@ async def test_postgres_claim_due_respects_max_count(pg_storage):
     lease alias (no entity table JOIN needed) so we don't have to seed
     any entity rows.
     """
-    from matrix.int.claim import ClaimAdapter
+    from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
         kind = ClaimKind.CHAT
@@ -243,7 +243,7 @@ async def test_postgres_claim_due_respects_max_count(pg_storage):
 @pytest.mark.asyncio
 async def test_postgres_claim_due_skips_already_claimed(pg_storage):
     """A lease already claimed (within TTL) should not be returned again."""
-    from matrix.int.claim import ClaimAdapter
+    from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
         kind = ClaimKind.SESSION
@@ -325,7 +325,7 @@ async def test_postgres_heartbeat_refreshes_expiry(pg_engine, pg_storage):
     from datetime import UTC, timedelta
 
     # Use the no-join adapter trick so no entity row is needed.
-    from matrix.int.claim import ClaimAdapter
+    from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
         kind = ClaimKind.CHAT
@@ -366,7 +366,7 @@ async def test_postgres_heartbeat_refreshes_expiry(pg_engine, pg_storage):
 @pytest.mark.asyncio
 async def test_postgres_heartbeat_rejects_non_owner(pg_engine, pg_storage):
     """heartbeat with the wrong worker_id returns an empty list."""
-    from matrix.int.claim import ClaimAdapter
+    from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
         kind = ClaimKind.SESSION
@@ -404,7 +404,7 @@ async def test_postgres_heartbeat_empty_list(pg_engine):
 @pytest.mark.asyncio
 async def test_postgres_release_drop_lease_deletes_row(pg_storage):
     """release with drop_lease=True removes the lease row."""
-    from matrix.int.claim import ClaimAdapter
+    from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
         kind = ClaimKind.CHAT
@@ -434,7 +434,7 @@ async def test_postgres_release_drop_lease_deletes_row(pg_storage):
 @pytest.mark.asyncio
 async def test_postgres_release_without_drop_clears_claim_fields(pg_storage):
     """release without drop_lease clears claimed_by and makes row reclaimable."""
-    from matrix.int.claim import ClaimAdapter
+    from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
         kind = ClaimKind.CHAT
@@ -467,7 +467,7 @@ async def test_postgres_release_without_drop_clears_claim_fields(pg_storage):
 async def test_postgres_release_failure_bumps_attempt_count(pg_storage):
     """release with success=False increments attempt_count and stores last_error."""
     from datetime import timedelta
-    from matrix.int.claim import ClaimAdapter
+    from primer.int.claim import ClaimAdapter
 
     class _NoJoinAdapter(ClaimAdapter):
         kind = ClaimKind.CHAT
@@ -520,11 +520,11 @@ async def test_postgres_release_on_release_runs_in_transaction(pg_storage):
     row is gone AND the chat's turn_status became 'idle'.
     """
     from datetime import datetime, UTC
-    from matrix.model.chats import Chat
-    from matrix.storage.postgres import PostgresStorage
+    from primer.model.chats import Chat
+    from primer.storage.postgres import PostgresStorage
 
     # Prepare a real chat storage backed by the test provider.
-    from matrix.int.storage import Storage
+    from primer.int.storage import Storage
     chat_storage: Storage[Chat] = pg_storage.get_storage(Chat)
 
     # Create a chat row with turn_status='claimable'.

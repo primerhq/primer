@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.coordinator.in_memory import InMemoryInvalidationBus
-from matrix.int.coordinator import InvalidationTopic
+from primer.coordinator.in_memory import InMemoryInvalidationBus
+from primer.int.coordinator import InvalidationTopic
 
 
 @pytest.mark.asyncio

@@ -16,13 +16,13 @@ from typing import Any
 import httpx
 import pytest
 
-from matrix.model.except_ import BadRequestError
-from matrix.toolset.web.backends.base import (
+from primer.model.except_ import BadRequestError
+from primer.toolset.web.backends.base import (
     SafeSearchLevel,
     SearchHit,
     WebSearchBackend,
 )
-from matrix.toolset.web.tools import (
+from primer.toolset.web.tools import (
     HttpRequestArgs,
     WebSearchArgs,
     make_http_request_descriptor,

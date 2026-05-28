@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.harness.hashes import (
+from primer.harness.hashes import (
     canonical_json,
     hash_bundle,
     hash_overrides,

@@ -19,9 +19,9 @@ from fastapi import FastAPI
 from httpx import ASGITransport
 from pydantic import BaseModel
 
-from matrix.api.errors import register_error_handlers
-from matrix.api.routers._crud import make_crud_router
-from matrix.model.storage import OffsetPage, OffsetPageResponse
+from primer.api.errors import register_error_handlers
+from primer.api.routers._crud import make_crud_router
+from primer.model.storage import OffsetPage, OffsetPageResponse
 
 
 # ---------------------------------------------------------------------------

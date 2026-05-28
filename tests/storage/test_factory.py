@@ -6,17 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import (
+from primer.model.except_ import ConfigError
+from primer.model.provider import (
     PoolConfig,
     PostgresConfig,
     SqliteConfig,
     StorageProviderConfig,
     StorageProviderType,
 )
-from matrix.storage.factory import StorageProviderFactory
-from matrix.storage.postgres import PostgresStorageProvider
-from matrix.storage.sqlite import SqliteStorageProvider
+from primer.storage.factory import StorageProviderFactory
+from primer.storage.postgres import PostgresStorageProvider
+from primer.storage.sqlite import SqliteStorageProvider
 
 
 def test_factory_dispatches_to_sqlite(tmp_path: Path):

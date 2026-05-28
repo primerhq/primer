@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from matrix.embedder.huggingface import HuggingFaceEmbedder
-from matrix.model.except_ import ConfigError
-from matrix.model.provider import (
+from primer.embedder.huggingface import HuggingFaceEmbedder
+from primer.model.except_ import ConfigError
+from primer.model.provider import (
     EmbeddingModel,
     EmbeddingProvider,
     EmbeddingProviderType,
@@ -52,7 +52,7 @@ class TestConstructor:
 
     def test_rejects_wrong_config_type(self) -> None:
         from pydantic import HttpUrl
-        from matrix.model.provider import OpenAIConfig
+        from primer.model.provider import OpenAIConfig
 
         provider = EmbeddingProvider(
             id="x",
@@ -77,7 +77,7 @@ class TestConstructor:
     def test_logs_init_with_structured_context(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.INFO, logger="matrix.embedder.huggingface")
+        caplog.set_level(logging.INFO, logger="primer.embedder.huggingface")
         provider = _make_provider(models=["a", "b"], max_concurrency=2)
         HuggingFaceEmbedder(provider)
         records = [r for r in caplog.records if "HuggingFace embedder initialized" in r.message]
@@ -104,19 +104,19 @@ class TestListModels:
 
 import numpy as np
 
-from matrix.embedder.huggingface import (
+from primer.embedder.huggingface import (
     _classify_hf_exception,
     _encode_sync,
     _part_to_text,
     _translate_response,
 )
-from matrix.model.chat import (
+from primer.model.chat import (
     AudioPart,
     DocumentPart,
     ImagePart,
     VideoPart,
 )
-from matrix.model.embedding import (
+from primer.model.embedding import (
     EmbedResponse,
     Embedding,
     ExtendedEmbeddingPart,
@@ -124,7 +124,7 @@ from matrix.model.embedding import (
     TextPart,
     TokensPart,
 )
-from matrix.model.except_ import (
+from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
     NetworkError,
@@ -233,8 +233,8 @@ class TestClassifyHfException:
         assert "weird input" in str(result)
 
 
-from matrix.model.embedding import ExtendedEmbeddingConfig
-from matrix.model.except_ import ModelNotFoundError
+from primer.model.embedding import ExtendedEmbeddingConfig
+from primer.model.except_ import ModelNotFoundError
 
 
 def _make_st_mock(arrays_per_call=None):
@@ -247,7 +247,7 @@ def _make_st_mock(arrays_per_call=None):
 def _patched_st(monkeypatch: pytest.MonkeyPatch, arrays):
     instance = _make_st_mock(arrays)
     cls_mock = MagicMock(return_value=instance)
-    monkeypatch.setattr("matrix.embedder.huggingface.SentenceTransformer", cls_mock)
+    monkeypatch.setattr("primer.embedder.huggingface.SentenceTransformer", cls_mock)
     return cls_mock, instance
 
 
@@ -344,7 +344,7 @@ class TestExceptionWrapping:
         instance = _make_st_mock()
         instance.encode.side_effect = RuntimeError("401 unauthorized")
         cls_mock = MagicMock(return_value=instance)
-        monkeypatch.setattr("matrix.embedder.huggingface.SentenceTransformer", cls_mock)
+        monkeypatch.setattr("primer.embedder.huggingface.SentenceTransformer", cls_mock)
         with pytest.raises(AuthenticationError):
             await embedder.embed(model="m1", inputs=[TextPart(text="hi")])
 
@@ -356,7 +356,7 @@ class TestExceptionWrapping:
         instance = _make_st_mock()
         instance.encode.side_effect = OSError("disk failure")
         cls_mock = MagicMock(return_value=instance)
-        monkeypatch.setattr("matrix.embedder.huggingface.SentenceTransformer", cls_mock)
+        monkeypatch.setattr("primer.embedder.huggingface.SentenceTransformer", cls_mock)
         with pytest.raises(NetworkError):
             await embedder.embed(model="m1", inputs=[TextPart(text="hi")])
 
@@ -382,7 +382,7 @@ class TestConcurrency:
         instance = MagicMock()
         instance.encode.side_effect = slow_encode
         cls_mock = MagicMock(return_value=instance)
-        monkeypatch.setattr("matrix.embedder.huggingface.SentenceTransformer", cls_mock)
+        monkeypatch.setattr("primer.embedder.huggingface.SentenceTransformer", cls_mock)
 
         async def consume() -> None:
             await embedder.embed(model="m1", inputs=[TextPart(text="hi")])
@@ -393,12 +393,12 @@ class TestConcurrency:
 
 class TestPackageReexport:
     def test_reexported(self) -> None:
-        import matrix.embedder as e
+        import primer.embedder as e
 
         assert "HuggingFaceEmbedder" in e.__all__
         assert e.HuggingFaceEmbedder is HuggingFaceEmbedder
 
     def test_openai_still_reexported(self) -> None:
-        import matrix.embedder as e
+        import primer.embedder as e
 
         assert "OpenAIEmbedder" in e.__all__

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from matrix.model.workspace import (
+from primer.model.workspace import (
     FileEntry,
     FileMount,
     LocalWorkspaceConfig,

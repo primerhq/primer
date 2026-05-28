@@ -26,7 +26,7 @@ from fastapi import FastAPI
 
 def test_create_test_app_has_session_tick_router(app) -> None:
     """create_test_app must wire app.state.session_tick_router."""
-    from matrix.session.tick_router import SessionTickRouter
+    from primer.session.tick_router import SessionTickRouter
 
     router = getattr(app.state, "session_tick_router", None)
     assert router is not None, "app.state.session_tick_router must be set"
@@ -105,15 +105,15 @@ async def test_lifespan_wires_session_tick_router(
     """Full lifespan (with in-memory scheduler) must set session_tick_router."""
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    from matrix.api.app import _make_lifespan
-    from matrix.api.config import AppConfig
-    from matrix.model.scheduler import (
+    from primer.api.app import _make_lifespan
+    from primer.api.config import AppConfig
+    from primer.model.scheduler import (
         InMemorySchedulerConfig,
         RuntimeMode,
         SchedulerProviderConfig,
         SchedulerProviderType,
     )
-    from matrix.session.tick_router import SessionTickRouter
+    from primer.session.tick_router import SessionTickRouter
 
     cfg = AppConfig(
         runtime_mode=RuntimeMode.API,

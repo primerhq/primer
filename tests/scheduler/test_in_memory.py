@@ -6,12 +6,12 @@ import asyncio
 
 import pytest
 
-from matrix.int.scheduler import (
+from primer.int.scheduler import (
     CompleteTurnResult,
     FailureRecord,
 )
-from matrix.model.workspace_session import SessionStatus
-from matrix.scheduler.in_memory import InMemoryScheduler
+from primer.model.workspace_session import SessionStatus
+from primer.scheduler.in_memory import InMemoryScheduler
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ async def test_register_and_list_workers(sched):
 
 def _seed_lease(sched, session_id: str, worker_id: str) -> None:
     """Simulate a claimed lease by directly setting worker_id on _LeaseState."""
-    from matrix.scheduler.in_memory import _LeaseState
+    from primer.scheduler.in_memory import _LeaseState
     sched._leases[session_id] = _LeaseState(worker_id=worker_id, runnable=True)
 
 

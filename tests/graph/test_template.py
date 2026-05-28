@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.graph.template import render_input_template
-from matrix.model.chat import Message, TextPart
-from matrix.model.except_ import BadRequestError
-from matrix.model.graph import GraphContext, NodeOutput
+from primer.graph.template import render_input_template
+from primer.model.chat import Message, TextPart
+from primer.model.except_ import BadRequestError
+from primer.model.graph import GraphContext, NodeOutput
 
 
 def _ctx(

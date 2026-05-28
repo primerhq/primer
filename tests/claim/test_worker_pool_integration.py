@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from matrix.claim.in_memory import InMemoryClaimEngine
-from matrix.int.claim import ClaimKind, Lease as ClaimLease, ReleaseOutcome
-from matrix.int.scheduler import Scheduler
-from matrix.model.scheduler import WorkerConfig
-from matrix.worker.pool import WorkerPool
+from primer.claim.in_memory import InMemoryClaimEngine
+from primer.int.claim import ClaimKind, Lease as ClaimLease, ReleaseOutcome
+from primer.int.scheduler import Scheduler
+from primer.model.scheduler import WorkerConfig
+from primer.worker.pool import WorkerPool
 
 
 # ---------------------------------------------------------------------------
@@ -54,14 +54,14 @@ class _NullScheduler(Scheduler):
         pass
 
     async def complete_turn(self, worker_id, session_id, **kwargs):
-        from matrix.int.scheduler import CompleteTurnResult
+        from primer.int.scheduler import CompleteTurnResult
         return CompleteTurnResult.SUCCESS
 
     async def park_turn(
         self, worker_id, session_id, *, expected_turn_no,
         parked_event_key, parked_until, parked_at, parked_state,
     ):
-        from matrix.int.scheduler import CompleteTurnResult
+        from primer.int.scheduler import CompleteTurnResult
         return CompleteTurnResult.SUCCESS
 
     async def clear_park(self, session_id):

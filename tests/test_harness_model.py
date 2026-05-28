@@ -6,7 +6,7 @@ import pytest
 from datetime import datetime, timezone
 from pydantic import SecretStr, ValidationError
 
-from matrix.model.harness import (
+from primer.model.harness import (
     Harness, HarnessRendering, HarnessStatus, HarnessOperation, RenderedEntry,
 )
 
@@ -76,7 +76,7 @@ class TestHarnessRendering:
 
 
 def test_agent_carries_harness_id():
-    from matrix.model.agent import Agent, AgentModel
+    from primer.model.agent import Agent, AgentModel
     a = Agent(
         id="a1", description="x",
         model=AgentModel(provider_id="p", model_name="m"),
@@ -87,8 +87,8 @@ def test_agent_carries_harness_id():
 
 def test_graph_carries_harness_id():
     # Imports inside the function to avoid circular-import issues at module level
-    import matrix.model.workspace_session  # noqa: F401 — ensure workspace_session is fully initialised first
-    from matrix.model.graph import Graph, _AgentNodeRef
+    import primer.model.workspace_session  # noqa: F401 — ensure workspace_session is fully initialised first
+    from primer.model.graph import Graph, _AgentNodeRef
     # Graph requires at least one node; provide a minimal valid graph
     node = _AgentNodeRef(id="n1", agent_id="a1")
     g = Graph(
@@ -101,7 +101,7 @@ def test_graph_carries_harness_id():
 
 
 def test_collection_carries_harness_id():
-    from matrix.model.collection import Collection, CollectionEmbedder, Document
+    from primer.model.collection import Collection, CollectionEmbedder, Document
     c = Collection(
         id="c1", description="x",
         embedder=CollectionEmbedder(provider_id="p", model="m"),
@@ -114,6 +114,6 @@ def test_collection_carries_harness_id():
 
 
 def test_toolset_carries_harness_id():
-    from matrix.model.provider import Toolset, ToolsetProviderType
+    from primer.model.provider import Toolset, ToolsetProviderType
     t = Toolset(id="t1", provider=ToolsetProviderType.INTERNAL, harness_id="h1")
     assert t.harness_id == "h1"

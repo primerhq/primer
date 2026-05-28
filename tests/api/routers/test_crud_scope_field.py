@@ -20,10 +20,10 @@ from fastapi import FastAPI
 from httpx import ASGITransport
 from pydantic import BaseModel
 
-from matrix.api.errors import register_error_handlers
-from matrix.api.routers._crud import make_crud_router
-from matrix.model.common import Identifiable
-from matrix.model.storage import OffsetPage, OffsetPageResponse
+from primer.api.errors import register_error_handlers
+from primer.api.routers._crud import make_crud_router
+from primer.model.common import Identifiable
+from primer.model.storage import OffsetPage, OffsetPageResponse
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ class _ItemStorage:
     async def find(self, predicate: Any, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_Item]:
         if predicate is None:
             return await self.list(page, order_by=order_by)
-        from matrix.model.storage import FieldRef, Op, Predicate, Value
+        from primer.model.storage import FieldRef, Op, Predicate, Value
 
         def _matches(item: _Item, node: Any) -> bool:
             if isinstance(node, Predicate):

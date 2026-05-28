@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.harness.dispatch import HarnessDispatchDeps, run_one_harness_operation, sweep_harnesses
-from matrix.model.agent import Agent
-from matrix.model.harness import Harness, HarnessOperation, HarnessRendering, HarnessStatus
+from primer.bus.in_memory import InMemoryEventBus
+from primer.harness.dispatch import HarnessDispatchDeps, run_one_harness_operation, sweep_harnesses
+from primer.model.agent import Agent
+from primer.model.harness import Harness, HarnessOperation, HarnessRendering, HarnessStatus
 
 # ---------------------------------------------------------------------------
 # Local bare-repo fixture seeded with harness files

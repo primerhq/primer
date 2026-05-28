@@ -12,7 +12,7 @@ Current fixtures
 * ``ws_sandbox``    — :class:`~matrix.workspace.runtime.ws_sandbox.WSSandbox`
   backed by a real :class:`~matrix.workspace.runtime.runtime_client.RuntimeClient`
   that speaks to an in-process ``aiohttp`` test server running the actual
-  ``matrix_runtime.server`` code against a ``tmp_path``.  No Docker required.
+  ``primer_runtime.server`` code against a ``tmp_path``.  No Docker required.
 
 Adding a new implementation
 ---------------------------
@@ -34,10 +34,10 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestServer
 
-from matrix.int.sandbox import FileStat, Sandbox, SandboxInspectInfo
-from matrix.workspace.runtime.runtime_client import RuntimeClient
-from matrix.workspace.runtime.ws_sandbox import WSSandbox
-from matrix.workspace.sandbox.fake import FakeSandbox
+from primer.int.sandbox import FileStat, Sandbox, SandboxInspectInfo
+from primer.workspace.runtime.runtime_client import RuntimeClient
+from primer.workspace.runtime.ws_sandbox import WSSandbox
+from primer.workspace.sandbox.fake import FakeSandbox
 
 
 # ---------------------------------------------------------------------------
@@ -71,13 +71,13 @@ async def _make_fake_sandbox(tmp_path: Path) -> AsyncIterator[Sandbox]:
 async def _make_ws_sandbox(tmp_path: Path) -> AsyncIterator[Sandbox]:
     """Yield a WSSandbox connected to an in-process runtime server.
 
-    Spins up ``matrix_runtime.server.build_app`` via aiohttp's ``TestServer``
+    Spins up ``primer_runtime.server.build_app`` via aiohttp's ``TestServer``
     so no Docker is involved.  A real :class:`RuntimeClient` connects and
     completes the ``hello`` handshake before the fixture is yielded.
     """
     # Import here so the runtime package is loaded lazily (it lives in
     # ``runtime/`` which is on the pytest pythonpath via pyproject.toml).
-    from matrix_runtime.server import build_app  # type: ignore[import-untyped]
+    from primer_runtime.server import build_app  # type: ignore[import-untyped]
 
     token = "contract-test-token"
     workspace_root = str(tmp_path / "workspace")

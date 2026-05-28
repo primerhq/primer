@@ -1,4 +1,4 @@
-"""Tests for runtime/matrix_runtime/watch.py — inotify/watchfiles subscriptions.
+"""Tests for runtime/primer_runtime/watch.py — inotify/watchfiles subscriptions.
 
 Three tests:
     test_watch_modify_event          — change event arrives within 200 ms
@@ -23,7 +23,7 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestServer
 
-from matrix_runtime.server import build_app
+from primer_runtime.server import build_app
 
 
 # ---------------------------------------------------------------------------

@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from matrix.int.sandbox import ExecResult, FileStat, SandboxInspectInfo
-from matrix.workspace.runtime.ws_sandbox import WSSandbox
+from primer.int.sandbox import ExecResult, FileStat, SandboxInspectInfo
+from primer.workspace.runtime.ws_sandbox import WSSandbox
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +351,7 @@ async def test_remove_raises_not_implemented() -> None:
 
 
 def test_ws_sandbox_is_sandbox_subclass() -> None:
-    from matrix.int.sandbox import Sandbox
+    from primer.int.sandbox import Sandbox
 
     assert issubclass(WSSandbox, Sandbox)
 

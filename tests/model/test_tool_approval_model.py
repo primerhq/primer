@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from matrix.model.tool_approval import (
+from primer.model.tool_approval import (
     ApprovalType,
     LlmApprovalConfig,
     PolicyApprovalConfig,

@@ -7,16 +7,16 @@ from datetime import datetime, timezone
 
 import pytest
 
-from matrix.model.scheduler import WorkerConfig
-from matrix.model.workspace_session import (
+from primer.model.scheduler import WorkerConfig
+from primer.model.workspace_session import (
     AgentSessionBinding,
     WorkspaceSession,
     SessionStatus,
 )
-from matrix.claim.in_memory import InMemoryClaimEngine
-from matrix.int.scheduler import Lease as SchedLease
-from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
-from matrix.worker.pool import WorkerPool
+from primer.claim.in_memory import InMemoryClaimEngine
+from primer.int.scheduler import Lease as SchedLease
+from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.worker.pool import WorkerPool
 
 
 def _make_lease(session_id: str, worker_id: str, turn_no: int = 0) -> SchedLease:

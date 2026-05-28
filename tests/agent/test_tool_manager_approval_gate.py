@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.agent.approval import ApprovalResolver
-from matrix.model.tool_approval import (
+from primer.agent.approval import ApprovalResolver
+from primer.model.tool_approval import (
     RequiredApprovalConfig,
     ToolApprovalPolicy,
 )
-from matrix.model.yield_ import YieldToWorker
+from primer.model.yield_ import YieldToWorker
 
 
 class _PoliciesOnlyResolver(ApprovalResolver):
@@ -47,7 +47,7 @@ async def test_execute_raises_yield_to_worker_on_required_policy(
             ),
         ]
     )
-    from matrix.model.chat import ToolCallPart
+    from primer.model.chat import ToolCallPart
 
     with pytest.raises(YieldToWorker) as ei:
         await tm.execute(ToolCallPart(id="c1", name=_SCOPED_NAME, arguments={"x": 1}))
@@ -74,7 +74,7 @@ async def test_execute_bypass_approval_skips_gate(
             ),
         ]
     )
-    from matrix.model.chat import ToolCallPart
+    from primer.model.chat import ToolCallPart
 
     result = await tm.execute(
         ToolCallPart(id="c2", name=_SCOPED_NAME, arguments={"x": 2}),
@@ -89,7 +89,7 @@ async def test_execute_no_policy_dispatches_normally(
 ):
     tm = tool_manager_with_test_tools
     tm._approval_resolver = _PoliciesOnlyResolver([])
-    from matrix.model.chat import ToolCallPart
+    from primer.model.chat import ToolCallPart
 
     result = await tm.execute(
         ToolCallPart(id="c3", name=_SCOPED_NAME, arguments={"x": 3}),

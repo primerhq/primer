@@ -221,7 +221,7 @@ async def test_file_op_latency(tmp_path: Path) -> None:
 
     Aspirational: if the dev box is slower the test warns rather than fails.
     """
-    from matrix.workspace.runtime.runtime_client import RuntimeClient
+    from primer.workspace.runtime.runtime_client import RuntimeClient
 
     workspace = str(tmp_path)
 
@@ -276,7 +276,7 @@ async def test_stat_parallel(tmp_path: Path) -> None:
 
     Aspirational: warns on miss rather than failing.
     """
-    from matrix.workspace.runtime.runtime_client import RuntimeClient
+    from primer.workspace.runtime.runtime_client import RuntimeClient
 
     workspace = str(tmp_path)
 
@@ -324,7 +324,7 @@ async def test_watch_latency(tmp_path: Path) -> None:
     3. Write a file via the RuntimeClient itself (simulating host FS change).
     4. Assert the change event arrives within 100 ms.
     """
-    from matrix.workspace.runtime.runtime_client import RuntimeClient
+    from primer.workspace.runtime.runtime_client import RuntimeClient
 
     workspace = str(tmp_path)
     watch_file = "/workspace/watch_target.txt"

@@ -13,7 +13,7 @@ import logging.handlers
 
 import pytest
 
-from matrix.common.log import configure_logging
+from primer.common.log import configure_logging
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +40,7 @@ def _capture_to_buf(json_format: bool) -> tuple[logging.Logger, io.StringIO]:
     root_handler = logging.getLogger().handlers[0]
     handler.setFormatter(root_handler.formatter)
     logging.getLogger().addHandler(handler)
-    return logging.getLogger("matrix.test"), buf
+    return logging.getLogger("primer.test"), buf
 
 
 # ============================================================================
@@ -92,7 +92,7 @@ class TestConfigureLogging:
     def test_file_path_writes_records(self, tmp_path):
         log_file = tmp_path / "app.log"
         configure_logging(file_path=log_file, json_format=True)
-        logger = logging.getLogger("matrix.test")
+        logger = logging.getLogger("primer.test")
         logger.info("hello-from-file")
         for h in logging.getLogger().handlers:
             h.flush()
@@ -104,7 +104,7 @@ class TestConfigureLogging:
     def test_file_path_creates_parent_directory(self, tmp_path):
         log_file = tmp_path / "nested" / "deeper" / "app.log"
         configure_logging(file_path=log_file)
-        logging.getLogger("matrix.test").info("create-parents")
+        logging.getLogger("primer.test").info("create-parents")
         for h in logging.getLogger().handlers:
             h.flush()
             h.close()
@@ -122,7 +122,7 @@ class TestJsonFormatter:
         logger.info("hello")
         record = json.loads(buf.getvalue().strip())
         assert record["level"] == "INFO"
-        assert record["logger"] == "matrix.test"
+        assert record["logger"] == "primer.test"
         assert record["message"] == "hello"
         assert "timestamp" in record
 
@@ -167,7 +167,7 @@ class TestJsonFormatter:
         )
         record = json.loads(buf.getvalue().strip())
         assert record["level"] == "INFO"
-        assert record["logger"] == "matrix.test"
+        assert record["logger"] == "primer.test"
         assert record["timestamp"] != "1970-01-01T00:00:00+00:00"
         assert "T" in record["timestamp"]  # real ISO 8601, not the hacked value
 
@@ -210,7 +210,7 @@ class TestDevFormatter:
         logger.info("hello")
         line = buf.getvalue().strip()
         assert "[INFO]" in line
-        assert "matrix.test" in line
+        assert "primer.test" in line
         assert line.endswith("hello")
 
     def test_warning_level_in_output(self):

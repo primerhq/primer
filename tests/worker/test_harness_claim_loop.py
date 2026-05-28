@@ -10,13 +10,13 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from matrix.bus.in_memory import InMemoryEventBus
-from matrix.claim.factory import ClaimEngineFactory
-from matrix.int.claim import ClaimKind
-from matrix.model.harness import Harness, HarnessOperation, HarnessStatus
-from matrix.model.scheduler import WorkerConfig
-from matrix.scheduler.in_memory import InMemoryScheduler
-from matrix.worker.pool import WorkerPool
+from primer.bus.in_memory import InMemoryEventBus
+from primer.claim.factory import ClaimEngineFactory
+from primer.int.claim import ClaimKind
+from primer.model.harness import Harness, HarnessOperation, HarnessStatus
+from primer.model.scheduler import WorkerConfig
+from primer.scheduler.in_memory import InMemoryScheduler
+from primer.worker.pool import WorkerPool
 
 
 @pytest_asyncio.fixture

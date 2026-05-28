@@ -8,10 +8,10 @@ from typing import Any
 import httpx
 import pytest
 
-from matrix.model.except_ import UnsupportedContentError
-from matrix.toolset import build_web_toolset
-from matrix.toolset.internal import InternalToolsetProvider
-from matrix.toolset.web.backends.base import (
+from primer.model.except_ import UnsupportedContentError
+from primer.toolset import build_web_toolset
+from primer.toolset.internal import InternalToolsetProvider
+from primer.toolset.web.backends.base import (
     SafeSearchLevel,
     SearchHit,
     WebSearchBackend,
@@ -127,7 +127,7 @@ class TestFactory:
         # When backend is omitted the factory constructs DuckDuckGoBackend.
         # We only check the type / construction path; we DON'T actually
         # call .search() here so no network traffic happens.
-        from matrix.toolset.web.backends.ddg import DuckDuckGoBackend
+        from primer.toolset.web.backends.ddg import DuckDuckGoBackend
 
         client = _ok_client()
         ts = build_web_toolset(http_client=client)

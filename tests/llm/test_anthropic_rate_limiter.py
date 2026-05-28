@@ -11,14 +11,14 @@ import pytest
 @pytest.mark.asyncio
 async def test_anthropic_constructor_accepts_rate_limiter():
     """AnthropicLLM.__init__ has a rate_limiter kwarg."""
-    from matrix.llm.anthropic import AnthropicLLM
+    from primer.llm.anthropic import AnthropicLLM
     sig = inspect.signature(AnthropicLLM.__init__)
     assert "rate_limiter" in sig.parameters
 
 
 def test_anthropic_no_local_semaphore():
     """The adapter no longer constructs its own asyncio.Semaphore."""
-    from matrix.llm import anthropic
+    from primer.llm import anthropic
     source = inspect.getsource(anthropic)
     # Permit one false-positive guard: importing asyncio is fine; what's
     # forbidden is constructing an asyncio.Semaphore inside this module.
@@ -30,7 +30,7 @@ def test_anthropic_no_local_semaphore():
 @pytest.mark.asyncio
 async def test_anthropic_acquires_rate_limiter_during_call(monkeypatch):
     """Holding the limiter for a key blocks a second concurrent acquire."""
-    from matrix.coordinator.in_memory import InMemoryRateLimiter
+    from primer.coordinator.in_memory import InMemoryRateLimiter
 
     rl = InMemoryRateLimiter()
     lease1 = await rl.acquire("llm:test", max_concurrency=1)

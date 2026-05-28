@@ -15,16 +15,16 @@ import asyncio
 
 import pytest
 
-from matrix.model.chat import Tool, ToolCallResult
-from matrix.model.except_ import ConfigError
-from matrix.model.yield_ import (
+from primer.model.chat import Tool, ToolCallResult
+from primer.model.except_ import ConfigError
+from primer.model.yield_ import (
     ToolContext,
     YieldCancelled,
     YieldToWorker,
     Yielded,
 )
-from matrix.toolset.internal import InternalToolsetProvider, _handler_takes_ctx
-from matrix.worker.yield_resume_registry import (
+from primer.toolset.internal import InternalToolsetProvider, _handler_takes_ctx
+from primer.worker.yield_resume_registry import (
     _reset_for_tests,
     get_resume_hook,
     has_resume_hook,
@@ -162,12 +162,12 @@ class TestResumeHookRegistry:
     def setup_method(self):
         # Snapshot + restore the registry around each test so we
         # don't leak state.
-        from matrix.worker.yield_resume_registry import _registry
+        from primer.worker.yield_resume_registry import _registry
         self._snapshot = dict(_registry)
         _reset_for_tests()
 
     def teardown_method(self):
-        from matrix.worker.yield_resume_registry import _registry
+        from primer.worker.yield_resume_registry import _registry
         _reset_for_tests()
         _registry.update(self._snapshot)
 
@@ -213,7 +213,7 @@ class TestSleepToolE2E:
     async def test_zero_seconds_short_circuits(self):
         # Sleep with seconds=0 returns directly without yielding —
         # there's nothing to wait for.
-        from matrix.toolset.misc import build_misc_toolset
+        from primer.toolset.misc import build_misc_toolset
         provider = build_misc_toolset()
         result = await provider.call(
             tool_name="sleep",
@@ -226,7 +226,7 @@ class TestSleepToolE2E:
         assert body == {"requested_seconds": 0.0, "elapsed_seconds": 0.0}
 
     async def test_nonzero_seconds_yields(self):
-        from matrix.toolset.misc import build_misc_toolset
+        from primer.toolset.misc import build_misc_toolset
         provider = build_misc_toolset()
         ctx = ToolContext(tool_call_id="tc-z", session_id="s", workspace_id="w")
         with pytest.raises(YieldToWorker) as info:
@@ -284,7 +284,7 @@ class TestSleepToolE2E:
         # Sleep's pydantic schema enforces ge=0.0; the existing
         # 300s cap was removed (it's now the global cap), so very
         # large values are accepted at the validation layer.
-        from matrix.toolset.misc import build_misc_toolset
+        from primer.toolset.misc import build_misc_toolset
         provider = build_misc_toolset()
         ctx = ToolContext(tool_call_id="tc-x", session_id="s", workspace_id="w")
         result = await provider.call(
@@ -298,7 +298,7 @@ class TestSleepToolE2E:
         # Removal of the 300s cap means a 1-hour sleep yields cleanly
         # at the tool layer; the worker pool's global cap (M2)
         # bounds total wait.
-        from matrix.toolset.misc import build_misc_toolset
+        from primer.toolset.misc import build_misc_toolset
         provider = build_misc_toolset()
         ctx = ToolContext(tool_call_id="tc-l", session_id="s", workspace_id="w")
         with pytest.raises(YieldToWorker) as info:

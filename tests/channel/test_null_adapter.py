@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.channel.adapter import (
+from primer.channel.adapter import (
     ChannelAdapter,
     PromptEnvelope,
     ResponseEnvelope,
 )
-from matrix.channel.null_adapter import NullChannelAdapter
+from primer.channel.null_adapter import NullChannelAdapter
 
 
 def _envelope() -> PromptEnvelope:

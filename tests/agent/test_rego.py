@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from matrix.agent.rego import RegoCompileError, RegoEvaluator, evaluate_policy
+from primer.agent.rego import RegoCompileError, RegoEvaluator, evaluate_policy
 
 
 _PASS = """

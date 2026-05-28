@@ -6,16 +6,16 @@ from typing import Any
 
 import pytest
 
-from matrix.model.collection import Collection, CollectionEmbedder
-from matrix.model.embedding import EmbedResponse, Embedding
-from matrix.model.except_ import BadRequestError, ConfigError
-from matrix.model.search import (
+from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.embedding import EmbedResponse, Embedding
+from primer.model.except_ import BadRequestError, ConfigError
+from primer.model.search import (
     CollectionCrossEncoder,
     CollectionSearch,
     MmrConfig,
 )
-from matrix.model.vector import EmbeddingRecord, SearchResult, Vector
-from matrix.search.searcher import CollectionSearcher
+from primer.model.vector import EmbeddingRecord, SearchResult, Vector
+from primer.search.searcher import CollectionSearcher
 
 
 # ===========================================================================

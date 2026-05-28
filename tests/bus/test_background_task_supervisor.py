@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from matrix.bus.scheduler_tasks import _BackgroundTask
-from matrix.coordinator.in_memory import InMemoryLeaderElector
+from primer.bus.scheduler_tasks import _BackgroundTask
+from primer.coordinator.in_memory import InMemoryLeaderElector
 
 
 class _CountingTask(_BackgroundTask):

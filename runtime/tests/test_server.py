@@ -1,4 +1,4 @@
-"""Tests for runtime/matrix_runtime/server.py — handshake + auth."""
+"""Tests for runtime/primer_runtime/server.py — handshake + auth."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from matrix_runtime.server import build_app, PROTOCOL_VERSION
+from primer_runtime.server import build_app, PROTOCOL_VERSION
 
 
 class WSAuthError(Exception):

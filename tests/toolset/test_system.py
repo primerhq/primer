@@ -16,11 +16,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import SecretStr
 
-from matrix.api.registries import ProviderRegistry
-from matrix.model.agent import Agent, AgentModel
-from matrix.model.collection import Collection, CollectionEmbedder
-from matrix.model.except_ import ConflictError, NotFoundError
-from matrix.model.provider import (
+from primer.api.registries import ProviderRegistry
+from primer.model.agent import Agent, AgentModel
+from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.provider import (
     AnthropicConfig,
     EmbeddingModel,
     EmbeddingProvider,
@@ -31,12 +31,12 @@ from matrix.model.provider import (
     LLMProvider,
     LLMProviderType,
 )
-from matrix.model.storage import (
+from primer.model.storage import (
     CursorPageResponse,
     OffsetPageResponse,
 )
-from matrix.model.thread import Thread
-from matrix.toolset.system import SYSTEM_TOOLSET_ID, build_system_toolset
+from primer.model.thread import Thread
+from primer.toolset.system import SYSTEM_TOOLSET_ID, build_system_toolset
 
 
 # ===========================================================================
@@ -70,7 +70,7 @@ class _Storage:
 
     async def list(self, page, *, order_by=None):
         items = list(self._data.values())
-        from matrix.model.storage import OffsetPage
+        from primer.model.storage import OffsetPage
 
         if isinstance(page, OffsetPage):
             sliced = items[page.offset : page.offset + page.length]
@@ -678,7 +678,7 @@ class TestProviderRegistrySystemHandling:
 
 
 def _ce() -> dict:
-    from matrix.model.provider import (
+    from primer.model.provider import (
         CrossEncoderModel,
         CrossEncoderProvider,
         CrossEncoderProviderType,
@@ -695,7 +695,7 @@ def _ce() -> dict:
 
 
 def _toolset_body() -> dict:
-    from matrix.model.provider import (
+    from primer.model.provider import (
         McpConfig,
         StdioConfig,
         Toolset,
@@ -715,7 +715,7 @@ def _toolset_body() -> dict:
 
 def _graph_thread() -> dict:
     now = datetime.now(timezone.utc)
-    from matrix.model.graph import GraphThread
+    from primer.model.graph import GraphThread
 
     return GraphThread(
         id="gth-1",
@@ -908,7 +908,7 @@ class TestExtras:
 
     @pytest.mark.asyncio
     async def test_unknown_tool_raises_unsupported(self, system_toolset) -> None:
-        from matrix.model.except_ import UnsupportedContentError
+        from primer.model.except_ import UnsupportedContentError
 
         with pytest.raises(UnsupportedContentError):
             await system_toolset.call(

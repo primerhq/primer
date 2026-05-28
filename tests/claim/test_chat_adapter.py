@@ -1,5 +1,5 @@
-from matrix.int.claim import ClaimKind
-from matrix.claim.adapters.chats import ChatClaimAdapter
+from primer.int.claim import ClaimKind
+from primer.claim.adapters.chats import ChatClaimAdapter
 
 
 def test_chat_eligibility_sql_pinned():

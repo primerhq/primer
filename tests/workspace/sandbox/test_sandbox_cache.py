@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from matrix.workspace.sandbox.cache import SandboxTruncationStore
-from matrix.workspace.sandbox.fake import FakeSandbox
+from primer.workspace.sandbox.cache import SandboxTruncationStore
+from primer.workspace.sandbox.fake import FakeSandbox
 
 
 @pytest.mark.asyncio

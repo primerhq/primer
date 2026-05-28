@@ -31,14 +31,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from matrix.model.chat import Message, ToolCallPart, ToolResultPart
-from matrix.model.scheduler import WorkerConfig
-from matrix.model.workspace_session import AgentSessionBinding, WorkspaceSession, SessionStatus
-from matrix.model.yield_ import Yielded
-from matrix.claim.in_memory import InMemoryClaimEngine
-from matrix.int.scheduler import Lease as SchedLease
-from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
-from matrix.worker.pool import WorkerPool
+from primer.model.chat import Message, ToolCallPart, ToolResultPart
+from primer.model.scheduler import WorkerConfig
+from primer.model.workspace_session import AgentSessionBinding, WorkspaceSession, SessionStatus
+from primer.model.yield_ import Yielded
+from primer.claim.in_memory import InMemoryClaimEngine
+from primer.int.scheduler import Lease as SchedLease
+from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
+from primer.worker.pool import WorkerPool
 
 
 def _make_sched_lease(session_id: str, worker_id: str, turn_no: int = 0) -> SchedLease:
@@ -49,14 +49,14 @@ def _make_sched_lease(session_id: str, worker_id: str, turn_no: int = 0) -> Sche
         attempt_count=0,
         turn_no=turn_no,
     )
-from matrix.worker.yield_runtime import ParkedState
+from primer.worker.yield_runtime import ParkedState
 
 # Import the misc toolset for its resume-hook side-effects
 # (register_resume_hook("sleep", ...) at module load time). Without
 # this the worker's resume branch raises ConfigError("no resume hook
 # registered for 'sleep'") under test, because the toolset module
 # wouldn't otherwise be imported in this test process.
-import matrix.toolset.misc  # noqa: F401
+import primer.toolset.misc  # noqa: F401
 
 
 @pytest.fixture

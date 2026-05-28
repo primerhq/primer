@@ -12,8 +12,8 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from matrix.bus.ws_watch_probe import Change, WSWatchProbe
-from matrix.workspace.runtime.runtime_client import ChangeEvent
+from primer.bus.ws_watch_probe import Change, WSWatchProbe
+from primer.workspace.runtime.runtime_client import ChangeEvent
 
 
 # ---------------------------------------------------------------------------

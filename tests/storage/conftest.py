@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest_asyncio
 
-from matrix.model.provider import SqliteConfig
-from matrix.storage.sqlite import SqliteStorageProvider
+from primer.model.provider import SqliteConfig
+from primer.storage.sqlite import SqliteStorageProvider
 
 
 @pytest_asyncio.fixture

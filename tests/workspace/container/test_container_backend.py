@@ -14,9 +14,9 @@ from typing import Literal
 
 import pytest
 
-from matrix.int.sandbox import Sandbox
-from matrix.model.except_ import ConfigError, NotFoundError
-from matrix.model.workspace import (
+from primer.int.sandbox import Sandbox
+from primer.model.except_ import ConfigError, NotFoundError
+from primer.model.workspace import (
     ContainerWorkspaceConfig,
     ResourceLimits,
     VolumeMount,
@@ -24,9 +24,9 @@ from matrix.model.workspace import (
     ContainerTemplateConfig,
     DockerRuntimeConfig,
 )
-from matrix.workspace.container.backend import ContainerWorkspaceBackend
-from matrix.workspace.runtime.adapter import ContainerRuntimeAdapter
-from matrix.workspace.sandbox.fake import FakeSandbox
+from primer.workspace.container.backend import ContainerWorkspaceBackend
+from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
+from primer.workspace.sandbox.fake import FakeSandbox
 
 
 pytestmark = pytest.mark.skipif(

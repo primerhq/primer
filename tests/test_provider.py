@@ -1,4 +1,4 @@
-"""Unit tests for the new Toolset / McpConfig types in matrix/model/provider.py.
+"""Unit tests for the new Toolset / McpConfig types in primer/model/provider.py.
 
 Covers:
 
@@ -15,8 +15,8 @@ from __future__ import annotations
 import pytest
 from pydantic import HttpUrl, SecretStr, ValidationError
 
-from matrix.model.common import Identifiable
-from matrix.model.provider import (
+from primer.model.common import Identifiable
+from primer.model.provider import (
     GoogleConfig,
     HttpConfig,
     McpConfig,
@@ -494,12 +494,12 @@ class TestOpenAIEmbeddingFlavor:
 
 class TestGeminiProviderType:
     def test_gemini_enum_value(self) -> None:
-        from matrix.model.provider import LLMProviderType
+        from primer.model.provider import LLMProviderType
 
         assert LLMProviderType.GEMINI.value == "gemini"
 
     def test_existing_openresponses_value_unchanged(self) -> None:
-        from matrix.model.provider import LLMProviderType
+        from primer.model.provider import LLMProviderType
 
         assert LLMProviderType.OPENRESPONSES.value == "openresponses"
 
@@ -529,7 +529,7 @@ class TestGoogleConfig:
 class TestLLMProviderConfigUnion:
     def test_accepts_openresponses_config(self) -> None:
         from pydantic import HttpUrl, SecretStr
-        from matrix.model.provider import (
+        from primer.model.provider import (
             LLMModel,
             LLMProvider,
             LLMProviderType,
@@ -551,7 +551,7 @@ class TestLLMProviderConfigUnion:
 
     def test_accepts_google_config(self) -> None:
         from pydantic import SecretStr
-        from matrix.model.provider import (
+        from primer.model.provider import (
             LLMModel,
             LLMProvider,
             LLMProviderType,
@@ -569,16 +569,16 @@ class TestLLMProviderConfigUnion:
         assert provider.config.api_key.get_secret_value() == "api-x"
 
 
-from matrix.model.provider import AnthropicConfig
+from primer.model.provider import AnthropicConfig
 
 
 class TestAnthropicProviderType:
     def test_anthropic_enum_value(self) -> None:
-        from matrix.model.provider import LLMProviderType
+        from primer.model.provider import LLMProviderType
         assert LLMProviderType.ANTHROPIC.value == "anthropic"
 
     def test_existing_values_unchanged(self) -> None:
-        from matrix.model.provider import LLMProviderType
+        from primer.model.provider import LLMProviderType
         assert LLMProviderType.OPENRESPONSES.value == "openresponses"
         assert LLMProviderType.GEMINI.value == "gemini"
 
@@ -600,7 +600,7 @@ class TestAnthropicConfig:
 class TestAnthropicConfigInUnion:
     def test_llm_provider_accepts_anthropic_config(self) -> None:
         from pydantic import SecretStr
-        from matrix.model.provider import (
+        from primer.model.provider import (
             LLMModel, LLMProvider, LLMProviderType, Limits,
         )
         provider = LLMProvider(
@@ -615,11 +615,11 @@ class TestAnthropicConfigInUnion:
 
 class TestGeminiEmbeddingProviderType:
     def test_gemini_enum_value(self) -> None:
-        from matrix.model.provider import EmbeddingProviderType
+        from primer.model.provider import EmbeddingProviderType
         assert EmbeddingProviderType.GEMINI.value == "gemini"
 
     def test_existing_values_unchanged(self) -> None:
-        from matrix.model.provider import EmbeddingProviderType
+        from primer.model.provider import EmbeddingProviderType
         assert EmbeddingProviderType.OPENAI.value == "openai"
         assert EmbeddingProviderType.HUGGINGFACE.value == "huggingface"
 
@@ -627,7 +627,7 @@ class TestGeminiEmbeddingProviderType:
 class TestEmbeddingProviderConfigUnionGoogle:
     def test_accepts_google_config_for_gemini(self) -> None:
         from pydantic import SecretStr
-        from matrix.model.provider import (
+        from primer.model.provider import (
             EmbeddingModel,
             EmbeddingProvider,
             EmbeddingProviderType,
@@ -646,20 +646,20 @@ class TestEmbeddingProviderConfigUnionGoogle:
 
 class TestOllamaProviderType:
     def test_ollama_enum_value(self) -> None:
-        from matrix.model.provider import LLMProviderType
+        from primer.model.provider import LLMProviderType
         assert LLMProviderType.OLLAMA.value == "ollama"
 
 
 class TestOllamaConfig:
     def test_constructed_with_url_only(self) -> None:
         from pydantic import HttpUrl
-        from matrix.model.provider import OllamaConfig
+        from primer.model.provider import OllamaConfig
         cfg = OllamaConfig(url=HttpUrl("http://localhost:11434"))
         assert cfg.api_key is None
 
     def test_constructed_with_url_and_api_key(self) -> None:
         from pydantic import HttpUrl, SecretStr
-        from matrix.model.provider import OllamaConfig
+        from primer.model.provider import OllamaConfig
         cfg = OllamaConfig(
             url=HttpUrl("https://ollama.example.com"),
             api_key=SecretStr("secret"),
@@ -668,7 +668,7 @@ class TestOllamaConfig:
 
     def test_rejects_missing_url(self) -> None:
         from pydantic import ValidationError
-        from matrix.model.provider import OllamaConfig
+        from primer.model.provider import OllamaConfig
         with pytest.raises(ValidationError):
             OllamaConfig()  # type: ignore[call-arg]
 
@@ -676,7 +676,7 @@ class TestOllamaConfig:
 class TestOllamaConfigInUnion:
     def test_llm_provider_accepts_ollama_config(self) -> None:
         from pydantic import HttpUrl
-        from matrix.model.provider import (
+        from primer.model.provider import (
             LLMModel, LLMProvider, LLMProviderType, Limits, OllamaConfig,
         )
         provider = LLMProvider(
@@ -693,16 +693,16 @@ class TestToolsetProviderReexports:
     """ToolsetProvider and its concrete implementations are reachable
     from their documented import paths."""
 
-    def test_toolset_provider_abc_reachable_from_matrix_int(self) -> None:
-        from matrix.int import ToolsetProvider as A
-        from matrix.int.toolset import ToolsetProvider as B
+    def test_toolset_provider_abc_reachable_from_primer_int(self) -> None:
+        from primer.int import ToolsetProvider as A
+        from primer.int.toolset import ToolsetProvider as B
         assert A is B
 
-    def test_concrete_providers_reachable_from_matrix_toolset(self) -> None:
-        from matrix.toolset import InternalToolsetProvider as I
-        from matrix.toolset import McpToolsetProvider as M
-        from matrix.toolset.internal import InternalToolsetProvider as I2
-        from matrix.toolset.mcp import McpToolsetProvider as M2
+    def test_concrete_providers_reachable_from_primer_toolset(self) -> None:
+        from primer.toolset import InternalToolsetProvider as I
+        from primer.toolset import McpToolsetProvider as M
+        from primer.toolset.internal import InternalToolsetProvider as I2
+        from primer.toolset.mcp import McpToolsetProvider as M2
         assert I is I2
         assert M is M2
 
@@ -714,14 +714,14 @@ class TestToolsetProviderReexports:
 
 class TestOAuthClientCredentials:
     def test_minimal_public_client(self) -> None:
-        from matrix.model.provider import OAuthClientCredentials
+        from primer.model.provider import OAuthClientCredentials
 
         c = OAuthClientCredentials(client_id="abc")
         assert c.client_id == "abc"
         assert c.client_secret is None
 
     def test_confidential_client(self) -> None:
-        from matrix.model.provider import OAuthClientCredentials
+        from primer.model.provider import OAuthClientCredentials
 
         c = OAuthClientCredentials(
             client_id="abc",
@@ -734,7 +734,7 @@ class TestOAuthClientCredentials:
         import pytest
         from pydantic import ValidationError
 
-        from matrix.model.provider import OAuthClientCredentials
+        from primer.model.provider import OAuthClientCredentials
 
         with pytest.raises(ValidationError):
             OAuthClientCredentials(client_id="")
@@ -742,7 +742,7 @@ class TestOAuthClientCredentials:
 
 class TestOAuthConfig:
     def test_minimal_oauth_config(self) -> None:
-        from matrix.model.provider import OAuthConfig
+        from primer.model.provider import OAuthConfig
 
         c = OAuthConfig(redirect_uri="https://app.example/callback")
         assert str(c.redirect_uri).startswith("https://app.example/callback")
@@ -753,7 +753,7 @@ class TestOAuthConfig:
         assert c.client_name == "matrix"
 
     def test_with_scopes_and_static_client(self) -> None:
-        from matrix.model.provider import OAuthClientCredentials, OAuthConfig
+        from primer.model.provider import OAuthClientCredentials, OAuthConfig
 
         c = OAuthConfig(
             redirect_uri="https://app.example/cb",
@@ -773,7 +773,7 @@ class TestOAuthConfig:
         import pytest
         from pydantic import ValidationError
 
-        from matrix.model.provider import OAuthConfig
+        from primer.model.provider import OAuthConfig
 
         with pytest.raises(ValidationError):
             OAuthConfig(
@@ -784,13 +784,13 @@ class TestOAuthConfig:
 
 class TestHttpConfigOAuth:
     def test_default_oauth_is_none(self) -> None:
-        from matrix.model.provider import HttpConfig
+        from primer.model.provider import HttpConfig
 
         c = HttpConfig(url="http://localhost:9999/mcp")
         assert c.oauth is None
 
     def test_oauth_can_be_attached(self) -> None:
-        from matrix.model.provider import HttpConfig, OAuthConfig
+        from primer.model.provider import HttpConfig, OAuthConfig
 
         c = HttpConfig(
             url="http://localhost:9999/mcp",
@@ -854,7 +854,7 @@ def test_semantic_search_provider_mismatched_config_rejected_pgvectorscale():
 
 class TestLanceConfig:
     def test_construction_minimal(self, tmp_path):
-        from matrix.model.provider import LanceConfig
+        from primer.model.provider import LanceConfig
 
         cfg = LanceConfig(path=tmp_path)
         assert cfg.path == tmp_path
@@ -864,7 +864,7 @@ class TestLanceConfig:
         assert cfg.index_min_rows == 1000
 
     def test_construction_with_overrides(self, tmp_path):
-        from matrix.model.provider import LanceConfig
+        from primer.model.provider import LanceConfig
 
         cfg = LanceConfig(
             path=tmp_path,
@@ -881,7 +881,7 @@ class TestLanceConfig:
 
     def test_path_required(self):
         from pydantic import ValidationError
-        from matrix.model.provider import LanceConfig
+        from primer.model.provider import LanceConfig
 
         with pytest.raises(ValidationError):
             LanceConfig()  # type: ignore[call-arg]
@@ -889,7 +889,7 @@ class TestLanceConfig:
 
 class TestSemanticSearchProviderLanceBackend:
     def test_lance_row_round_trip(self, tmp_path):
-        from matrix.model.provider import (
+        from primer.model.provider import (
             LanceConfig,
             SemanticSearchProvider,
             SemanticSearchProviderType,
@@ -909,7 +909,7 @@ class TestSemanticSearchProviderLanceBackend:
 
     def test_lance_provider_with_pgvector_config_rejected(self, tmp_path):
         from pydantic import ValidationError
-        from matrix.model.provider import (
+        from primer.model.provider import (
             PgVectorConfig,
             SemanticSearchProvider,
             SemanticSearchProviderType,
@@ -928,7 +928,7 @@ class TestSemanticSearchProviderLanceBackend:
 
     def test_pgvector_provider_with_lance_config_rejected(self, tmp_path):
         from pydantic import ValidationError
-        from matrix.model.provider import (
+        from primer.model.provider import (
             LanceConfig,
             SemanticSearchProvider,
             SemanticSearchProviderType,
@@ -949,7 +949,7 @@ class TestVectorStoreProviderConfigLanceBackend:
     LANCE branch validates symmetrically."""
 
     def test_lance_config_round_trip(self, tmp_path):
-        from matrix.model.provider import (
+        from primer.model.provider import (
             LanceConfig,
             VectorStoreProviderConfig,
             VectorStoreProviderType,
@@ -964,7 +964,7 @@ class TestVectorStoreProviderConfigLanceBackend:
 
     def test_lance_provider_with_pgvector_config_rejected(self):
         from pydantic import ValidationError
-        from matrix.model.provider import (
+        from primer.model.provider import (
             PgVectorConfig,
             VectorStoreProviderConfig,
             VectorStoreProviderType,
