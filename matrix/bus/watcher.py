@@ -2,55 +2,35 @@
 
 Spec: ``docs/superpowers/specs/2026-05-22-yielding-tools-design.md`` §8.3.
 
-Three public classes + one protocol:
+Two public classes + one type alias:
 
-* :class:`StatProbe` — protocol describing how to snapshot a list of
-  paths. Two implementations are provided:
-  :class:`HostStatProbe` (host-side ``os.stat``) and
-  :class:`SandboxStatProbe` (exec-based, for container / k8s workspaces).
-* :class:`WorkspaceFilesWatcher` — the unit. Polls via a ``StatProbe``
-  for a list of workspace-relative paths, fires an async ``on_change``
-  callback with a coalesced batch of change events whenever something
-  shifts. No bus, no scheduler — pure observation. Trivially
-  unit-testable.
-* :class:`WatcherManager` — the lifecycle owner. Periodically scans
-  the scheduler for sessions parked on ``watch:*`` keys, starts a
-  watcher per park, and stops watchers when the park flips to
-  ``resumable`` or the deadline passes. Publishes change bursts on
-  the event bus on behalf of each watcher.
+* :class:`EventDrivenWatcher` — the unit.  Consumes push events from a
+  :class:`~matrix.bus.ws_watch_probe.WatchProbe` and fires an async
+  ``on_change`` callback with a coalesced batch of change events whenever
+  something arrives.  No bus, no scheduler — pure observation.
+* :class:`WatcherManager` — the lifecycle owner.  Periodically scans the
+  scheduler for sessions parked on ``watch:*`` keys, starts a watcher per
+  park, and stops watchers when the park flips to ``resumable`` or the
+  deadline passes.  Publishes change bursts on the event bus on behalf of
+  each watcher.
 
-Why a polling watcher instead of ``watchdog`` / inotify in v1?
-
-* No new C-extension dependency.
-* Predictable cross-platform behaviour (Windows handles inotify-
-  equivalent APIs differently).
-* The agent-driven workloads are typically watching a handful of
-  paths for low-frequency changes — polling at 500ms is fine.
-
-A ``watchdog`` migration is straightforward later: the
-:class:`WorkspaceFilesWatcher` surface (constructor + start/stop +
-on_change callback) doesn't change, only its insides.
-
-Container / k8s workspaces use a different probe backend: instead of
-host-side os.stat, they exec ``stat -c '%n|%Y|%s'`` inside the sandbox.
-One exec call per poll cycle batches all of a watcher's paths to
-amortise the docker-exec overhead (~100ms per call). Operators
-watching more than ~50 paths per session will see noticeable polling
-latency; the host-side variant has no such ceiling.
+Watch probes are resolved via a :data:`WorkspaceProbeResolver` callable that
+maps ``workspace_id → WatchProbe | None``.  For local workspaces this
+returns a :class:`~matrix.bus.host_inotify_probe.HostInotifyProbe`; for
+container / k8s workspaces it returns a
+:class:`~matrix.bus.ws_watch_probe.WSWatchProbe`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import shlex
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from matrix.bus.scheduler_tasks import _BackgroundTask
+from matrix.bus.ws_watch_probe import Change, WatchProbe
 from matrix.int.coordinator import ROLE_WATCHER_MANAGER
 from matrix.int.event_bus import EventBus
 
@@ -67,266 +47,75 @@ DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 DEFAULT_SCAN_INTERVAL_SECONDS = 2.0
 DEFAULT_BATCH_WINDOW_MS = 250
 
-# Maximum paths per single sandbox exec() call to stay under ARG_MAX.
-# A bash -c script string is bounded by ARG_MAX (typically 128KB).
-# With paths of up to ~256 bytes each, 50 paths * 256 = ~12KB, well
-# within limit. Paths over 50 are split into multiple exec calls.
-_SANDBOX_BATCH_SIZE = 50
+# Event type normalisation: new probes use present-tense verbs;
+# the bus payload uses past tense for backward compatibility.
+_EVENT_TYPE_MAP: dict[str, str] = {
+    "modify": "modified",
+    "create": "created",
+    "delete": "deleted",
+    # Pass through already-normalised values unchanged.
+    "modified": "modified",
+    "created": "created",
+    "deleted": "deleted",
+}
+
+
+def _normalise_event_type(event_type: str) -> str:
+    return _EVENT_TYPE_MAP.get(event_type, event_type)
+
+
+def _change_to_dict(change: Change) -> dict:
+    """Convert a :class:`~matrix.bus.ws_watch_probe.Change` to the bus payload dict."""
+    return {
+        "path": change.path,
+        "event_type": _normalise_event_type(change.event_type),
+        "mtime_after": (
+            datetime.fromtimestamp(change.mtime, tz=timezone.utc).isoformat()
+            if change.mtime is not None
+            else None
+        ),
+    }
 
 
 # ===========================================================================
-# StatProbe protocol
+# EventDrivenWatcher
 # ===========================================================================
 
 
-@runtime_checkable
-class StatProbe(Protocol):
-    """Snapshot the (mtime, size, exists) state of a list of paths.
-
-    Per call, returns a dict keyed by the path string (as it was
-    passed in). Each value is a (mtime_seconds_or_None, size_or_None,
-    exists_bool) triple. mtime is integer seconds since the epoch
-    (best portability — sandbox stat -c '%Y' returns seconds); size
-    is bytes; exists is True iff the path resolved to something on
-    the filesystem. Non-existent paths report (None, None, False) —
-    they're a valid state, not an error, and may exist in a later
-    poll.
-    """
-
-    async def snapshot(
-        self, paths: list[str],
-    ) -> dict[str, tuple[int | float | None, int | None, bool]]:
-        ...
-
-
-# ===========================================================================
-# HostStatProbe
-# ===========================================================================
-
-
-class HostStatProbe:
-    """StatProbe that calls os.stat() on host filesystem paths.
-
-    Each path in ``paths`` is resolved as ``root / path``. ENOENT →
-    (None, None, False). Other OSError → (None, None, False) with a
-    warning logged (permission denied etc. are 'no event' from the
-    agent's view).
-
-    Returns float mtime (sub-second precision from st_mtime_ns) to
-    correctly detect rapid back-to-back writes within the same wall-clock
-    second. The SandboxStatProbe returns integer seconds (stat -c %Y
-    only provides second resolution), so both are acceptable by the
-    callers which only care about change detection, not the exact value.
-    """
-
-    def __init__(self, *, root: Path) -> None:
-        self._root = root
-
-    async def snapshot(
-        self, paths: list[str],
-    ) -> dict[str, tuple[int | float | None, int | None, bool]]:
-        out: dict[str, tuple[int | None, int | None, bool]] = {}
-        for rel in paths:
-            out[rel] = _host_stat(self._root / rel)
-        return out
-
-
-def _host_stat(p: Path) -> tuple[float | None, int | None, bool]:
-    """Return (mtime_float, size, exists) for a host path.
-
-    Uses ``st_mtime`` (float, nanosecond precision on most modern kernels)
-    rather than truncating to integer seconds so that two rapid writes
-    within the same wall-clock second are still distinguishable.
-    """
-    try:
-        st = p.stat()
-        return (st.st_mtime, st.st_size, True)
-    except FileNotFoundError:
-        return (None, None, False)
-    except OSError as exc:
-        logger.warning(
-            "watch-files: os.stat(%s) failed: %s — treating as missing",
-            p, exc,
-        )
-        return (None, None, False)
-
-
-# ===========================================================================
-# SandboxStatProbe
-# ===========================================================================
-
-
-class SandboxStatProbe:
-    """StatProbe that execs ``stat`` inside a :class:`~matrix.int.sandbox.Sandbox`.
-
-    All paths are workspace-relative (e.g. ``"src/main.py"``).
-    They are joined with ``workspace_root`` before being passed to the
-    sandbox script (e.g. ``"/workspace/src/main.py"``).
-
-    Paths containing newlines are rejected at construction time with
-    :class:`ValueError` — the output parser splits on ``\\n``.
-
-    Each :meth:`snapshot` call batches up to ``_SANDBOX_BATCH_SIZE``
-    paths into one exec call to amortise the docker-exec overhead.
-    """
-
-    def __init__(self, *, sandbox: "Sandbox", workspace_root: str) -> None:
-        self._sandbox = sandbox
-        self._workspace_root = workspace_root.rstrip("/")
-
-    def _abs(self, rel: str) -> str:
-        return f"{self._workspace_root}/{rel}"
-
-    async def snapshot(
-        self, paths: list[str],
-    ) -> dict[str, tuple[int | float | None, int | None, bool]]:
-        # Reject newlines early — they would break our line-oriented parsing.
-        for rel in paths:
-            if "\n" in rel:
-                raise ValueError(
-                    f"SandboxStatProbe: path contains a newline: {rel!r}"
-                )
-
-        out: dict[str, tuple[int | None, int | None, bool]] = {}
-        # Seed all as missing; successful parse rows will overwrite.
-        for rel in paths:
-            out[rel] = (None, None, False)
-
-        # Process in batches to avoid ARG_MAX overflow.
-        # See module-level _SANDBOX_BATCH_SIZE comment.
-        for i in range(0, len(paths), _SANDBOX_BATCH_SIZE):
-            batch = paths[i : i + _SANDBOX_BATCH_SIZE]
-            batch_result = await self._exec_batch(batch)
-            out.update(batch_result)
-
-        return out
-
-    async def _exec_batch(
-        self, paths: list[str],
-    ) -> dict[str, tuple[int | float | None, int | None, bool]]:
-        """Run a single stat exec for the given relative paths."""
-        out: dict[str, tuple[int | float | None, int | None, bool]] = {}
-
-        # Build a shell script that, for each path, either prints
-        # <rel_path>|<mtime_sec>|<size_bytes> or <rel_path>|MISS|MISS.
-        # We iterate over the workspace-absolute paths in the script;
-        # the output uses the relative path so we can match back to
-        # the caller's keys without stripping the workspace_root prefix.
-        parts: list[str] = []
-        rel_to_abs: dict[str, str] = {}
-        for rel in paths:
-            abs_p = self._abs(rel)
-            rel_to_abs[rel] = abs_p
-            # shlex.quote ensures no shell injection from the path string.
-            q = shlex.quote(abs_p)
-            rel_q = shlex.quote(rel)
-            parts.append(
-                f"if [ -e {q} ]; then "
-                f"stat -c {rel_q}'|%Y|%s' {q}; "
-                f"else echo {rel_q}'|MISS|MISS'; fi"
-            )
-        script = "; ".join(parts)
-
-        try:
-            result = await self._sandbox.exec(
-                ["sh", "-c", script],
-                workdir=self._workspace_root,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "SandboxStatProbe: sandbox.exec raised: %s — "
-                "treating all paths as missing",
-                exc,
-            )
-            for rel in paths:
-                out[rel] = (None, None, False)
-            return out
-
-        if result.exit_code != 0:
-            logger.debug(
-                "SandboxStatProbe: exec exited %d (stderr=%r) — "
-                "treating all paths as missing",
-                result.exit_code, result.stderr[:200],
-            )
-            for rel in paths:
-                out[rel] = (None, None, False)
-            return out
-
-        # Parse output: each line is <rel_path>|<mtime>|<size>  or  <rel_path>|MISS|MISS
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts_row = line.split("|", 2)
-            if len(parts_row) != 3:  # noqa: PLR2004
-                logger.warning(
-                    "SandboxStatProbe: malformed stat output line %r — skipping",
-                    line,
-                )
-                continue
-            rel_path, mtime_raw, size_raw = parts_row
-            if mtime_raw == "MISS" or size_raw == "MISS":
-                out[rel_path] = (None, None, False)
-            else:
-                try:
-                    out[rel_path] = (int(mtime_raw), int(size_raw), True)
-                except ValueError:
-                    logger.warning(
-                        "SandboxStatProbe: could not parse stat values "
-                        "mtime=%r size=%r for path %r — skipping",
-                        mtime_raw, size_raw, rel_path,
-                    )
-
-        return out
-
-
-# ===========================================================================
-# WorkspaceFilesWatcher
-# ===========================================================================
-
-
-class WorkspaceFilesWatcher:
-    """Polling watcher for a fixed list of workspace-relative paths.
+class EventDrivenWatcher:
+    """Event-driven watcher for a fixed list of workspace-relative paths.
 
     Backend-agnostic: works against any object that implements the
-    StatProbe protocol. The hot loop calls probe.snapshot(paths)
-    every poll_interval_seconds, diffs against the previous
-    snapshot, and emits a coalesced batch via on_change.
+    :class:`~matrix.bus.ws_watch_probe.WatchProbe` interface.
 
-    Each path is snapshotted every ``poll_interval_seconds``. When a
-    change is detected (mtime delta, file appeared, or file
-    disappeared), the watcher waits ``batch_window_ms`` for more
-    changes, collects them, and fires ``on_change`` once with the
-    full batch.
+    The watcher opens a ``probe.watch(paths)`` async iterator and forwards
+    arriving :class:`~matrix.bus.ws_watch_probe.Change` events to the
+    ``on_change`` callback after an optional coalescing window.
 
-    A burst that crosses the batch window boundary is split — the
-    watcher emits whatever it had at window-close, then re-arms the
-    detection state and waits for the next change.
+    Coalescing: when the first change arrives, the watcher waits
+    ``batch_window_ms`` milliseconds, collects any additional changes that
+    land in the interim, then fires ``on_change`` once with the full batch.
+    Later changes on the same path within the window overwrite earlier ones
+    (last-writer wins).
 
-    Lifecycle: ``start()`` schedules the asyncio task; ``stop()``
-    cancels it and awaits exit. ``start`` is idempotent (re-calling
-    is a no-op); ``stop`` is idempotent (re-calling does nothing).
+    Lifecycle: ``start()`` schedules the asyncio task; ``stop()`` cancels it
+    and awaits exit.  ``start`` is idempotent; ``stop`` is idempotent.
     """
 
     def __init__(
         self,
         *,
-        probe: StatProbe,
+        probe: WatchProbe,
         paths: list[str],
         on_change: Callable[[list[dict]], Awaitable[None]],
-        poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         batch_window_ms: int = DEFAULT_BATCH_WINDOW_MS,
     ) -> None:
         self._probe = probe
         self._paths = list(paths)
         self._batch_window_ms = batch_window_ms
-        self._poll = poll_interval_seconds
         self._on_change = on_change
         self._task: asyncio.Task | None = None
         self._stopping = False
-        # Path → (mtime, size, exists). Populated on the first snapshot
-        # baseline; subsequent polls diff against this dict.
-        self._state: dict[str, tuple[int | float | None, int | None, bool]] = {}
 
     def start(self) -> None:
         if self._task is not None:
@@ -348,90 +137,44 @@ class WorkspaceFilesWatcher:
             pass
 
     async def _run(self) -> None:
-        # Establish baseline before announcing any changes — only
-        # mutations AFTER the watcher started are interesting.
-        self._state = await self._probe.snapshot(self._paths)
-        while not self._stopping:
+        # Accumulated pending changes: path → dict (last-writer wins).
+        pending: dict[str, dict] = {}
+        flush_task: asyncio.Task | None = None
+
+        async def _flush_after_window() -> None:
             try:
-                await asyncio.sleep(self._poll)
+                await asyncio.sleep(self._batch_window_ms / 1000.0)
             except asyncio.CancelledError:
-                break
-            try:
-                changes = await self._diff_against_state()
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "watch-files: stat poll failed: %s", exc,
-                )
-                continue
-            if not changes:
-                continue
-            # Coalesce — wait for the batch window to elapse, then
-            # collect any additional changes that landed in the
-            # interim, fire once.
-            if self._batch_window_ms > 0:
+                return
+            if pending:
+                batch = list(pending.values())
+                pending.clear()
                 try:
-                    await asyncio.sleep(self._batch_window_ms / 1000.0)
-                except asyncio.CancelledError:
-                    break
-                try:
-                    extra = await self._diff_against_state()
+                    await self._on_change(batch)
                 except Exception as exc:  # noqa: BLE001
-                    logger.exception(
-                        "watch-files: stat poll (batch window) failed: %s", exc,
-                    )
-                    extra = []
-                if extra:
-                    # Merge: later events on the same path win.
-                    by_path: dict[str, dict] = {c["path"]: c for c in changes}
-                    for c in extra:
-                        by_path[c["path"]] = c
-                    changes = list(by_path.values())
-            try:
-                await self._on_change(changes)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "watch-files: on_change callback raised: %s", exc,
-                )
+                    logger.exception("watch-files: on_change callback raised: %s", exc)
 
-    async def _diff_against_state(self) -> list[dict]:
-        """Return change events for paths whose mtime/existence shifted.
-
-        Mutates ``self._state`` to the new snapshot so subsequent
-        polls see the new baseline (i.e. each change is reported
-        exactly once).
-        """
-        new_snap = await self._probe.snapshot(self._paths)
-        changes: list[dict] = []
-        for rel in self._paths:
-            old = self._state.get(rel)
-            new = new_snap.get(rel, (None, None, False))
-            old_mtime = old[0] if old is not None else None
-            old_exists = old[2] if old is not None else False
-            new_mtime = new[0]
-            new_exists = new[2]
-            # Determine if anything changed: either existence or mtime
-            changed = (old_exists != new_exists) or (old_mtime != new_mtime)
-            if not changed:
-                continue
-            self._state[rel] = new
-            if not old_exists and new_exists:
-                event_type = "created"
-            elif old_exists and not new_exists:
-                event_type = "deleted"
-            else:
-                event_type = "modified"
-            changes.append(
-                {
-                    "path": rel,
-                    "event_type": event_type,
-                    "mtime_after": (
-                        datetime.fromtimestamp(new_mtime, tz=timezone.utc).isoformat()
-                        if new_mtime is not None
-                        else None
-                    ),
-                }
-            )
-        return changes
+        try:
+            async for change in self._probe.watch(self._paths):
+                if self._stopping:
+                    break
+                d = _change_to_dict(change)
+                pending[change.path] = d
+                # Arm the flush timer once (the first change in a burst).
+                if flush_task is None or flush_task.done():
+                    flush_task = asyncio.create_task(_flush_after_window())
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("watch-files: probe.watch raised: %s", exc)
+        finally:
+            # Drain any remaining flush timer.
+            if flush_task is not None and not flush_task.done():
+                flush_task.cancel()
+                try:
+                    await flush_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
 
 
 # ===========================================================================
@@ -439,14 +182,14 @@ class WorkspaceFilesWatcher:
 # ===========================================================================
 
 
-WorkspaceProbeResolver = Callable[[str], Awaitable["StatProbe | None"]]
+WorkspaceProbeResolver = Callable[[str], Awaitable["WatchProbe | None"]]
 
 # Keep the old name available for any external code that may reference it.
 WorkspaceRootResolver = WorkspaceProbeResolver
 
 
 class WatcherManager(_BackgroundTask):
-    """Lifecycle owner for :class:`WorkspaceFilesWatcher` instances.
+    """Lifecycle owner for :class:`EventDrivenWatcher` instances.
 
     On each scan:
 
@@ -477,9 +220,11 @@ class WatcherManager(_BackgroundTask):
         self._scheduler = scheduler
         self._resolve = workspace_root_resolver
         self._scan = scan_interval_seconds
+        # poll_interval_seconds is kept for API compatibility but no longer
+        # used internally — the new probes are push-based.
         self._poll = poll_interval_seconds
         # event_key → live watcher
-        self._watchers: dict[str, WorkspaceFilesWatcher] = {}
+        self._watchers: dict[str, EventDrivenWatcher] = {}
 
     async def stop(self) -> None:
         await super().stop()
@@ -552,11 +297,10 @@ class WatcherManager(_BackgroundTask):
         async def on_change(changes: list[dict], _key=event_key) -> None:
             await self._bus.publish(_key, {"changes": changes})
 
-        watcher = WorkspaceFilesWatcher(
+        watcher = EventDrivenWatcher(
             probe=probe,
             paths=paths,
             batch_window_ms=batch_window_ms,
-            poll_interval_seconds=self._poll,
             on_change=on_change,
         )
         watcher.start()
@@ -666,10 +410,7 @@ __all__ = [
     "DEFAULT_BATCH_WINDOW_MS",
     "DEFAULT_POLL_INTERVAL_SECONDS",
     "DEFAULT_SCAN_INTERVAL_SECONDS",
-    "HostStatProbe",
-    "SandboxStatProbe",
-    "StatProbe",
-    "WorkspaceFilesWatcher",
+    "EventDrivenWatcher",
     "WatcherManager",
     "WorkspaceProbeResolver",
     "WorkspaceRootResolver",

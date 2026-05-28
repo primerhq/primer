@@ -1,35 +1,37 @@
-"""Tests for WorkspaceFilesWatcher + WatcherManager.
+"""Tests for EventDrivenWatcher + WatcherManager.
 
 Two layers:
 
-* :class:`WorkspaceFilesWatcher` — the unit. Polls via a StatProbe for
-  a list of paths, fires a callback when changes land, coalesces bursts
-  with ``batch_window_ms``.
-* :class:`WatcherManager` — the lifecycle owner. Periodically scans
-  the scheduler for ``watch:*`` parks and starts / stops watchers to
-  match. Publishes change bursts on the event bus on behalf of each
-  watcher.
+* :class:`EventDrivenWatcher` — the unit.  Consumes push events from a
+  :class:`~matrix.bus.ws_watch_probe.WatchProbe` and fires a callback when
+  changes land, coalescing bursts via ``batch_window_ms``.
+* :class:`WatcherManager` — the lifecycle owner.  Periodically scans the
+  scheduler for ``watch:*`` parks and starts / stops watchers to match.
+  Publishes change bursts on the event bus on behalf of each watcher.
 
-The tests use real on-disk files (under ``tmp_path``) via
-:class:`HostStatProbe` because that's the path the production watcher
-exercises for local workspaces. They use very short poll windows so each
-test runs in milliseconds.
+The unit tests use a fake :class:`WatchProbe` that yields injected
+:class:`~matrix.bus.ws_watch_probe.Change` events.  The integration tests
+wire a real :class:`~matrix.bus.host_inotify_probe.HostInotifyProbe` against
+real on-disk files so that the full push path executes.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from matrix.bus.in_memory import InMemoryEventBus
+from matrix.bus.host_inotify_probe import HostInotifyProbe
 from matrix.bus.watcher import (
-    HostStatProbe,
+    EventDrivenWatcher,
     WatcherManager,
-    WorkspaceFilesWatcher,
 )
+from matrix.bus.ws_watch_probe import Change, WatchProbe
 from matrix.model.workspace_session import (
     AgentSessionBinding,
     WorkspaceSession,
@@ -39,33 +41,58 @@ from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
 
 
 # ===========================================================================
-# WorkspaceFilesWatcher (unit)
+# Fake WatchProbe for unit tests
+# ===========================================================================
+
+
+class _FakeWatchProbe(WatchProbe):
+    """A WatchProbe that yields pre-injected Change events.
+
+    Call :meth:`inject` to queue events; the :meth:`watch` iterator yields
+    them and then blocks until more are injected or the caller closes it.
+    """
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[Change | None] = asyncio.Queue()
+
+    def inject(self, change: Change) -> None:
+        self._queue.put_nowait(change)
+
+    def close(self) -> None:
+        """Signal the iterator to terminate."""
+        self._queue.put_nowait(None)
+
+    async def watch(self, paths: list[str]) -> AsyncIterator[Change]:  # type: ignore[override]
+        while True:
+            item = await self._queue.get()
+            if item is None:
+                return
+            yield item
+
+
+# ===========================================================================
+# EventDrivenWatcher (unit)
 # ===========================================================================
 
 
 @pytest.mark.asyncio
-class TestWorkspaceFilesWatcher:
-    async def test_emits_modified_event_on_mtime_change(self, tmp_path):
-        f = tmp_path / "a.txt"
-        f.write_text("v1")
+class TestEventDrivenWatcher:
+    async def test_emits_modified_event(self):
+        probe = _FakeWatchProbe()
         received: list[list[dict]] = []
 
         async def on_change(changes):
             received.append(changes)
 
-        probe = HostStatProbe(root=tmp_path)
-        w = WorkspaceFilesWatcher(
+        w = EventDrivenWatcher(
             probe=probe,
             paths=["a.txt"],
             batch_window_ms=20,
-            poll_interval_seconds=0.02,
             on_change=on_change,
         )
         w.start()
         try:
-            # Bump mtime past the watcher's first stat baseline.
-            await asyncio.sleep(0.05)
-            f.write_text("v2")
+            probe.inject(Change(path="a.txt", event_type="modify", mtime=1716000000.0))
             for _ in range(50):
                 await asyncio.sleep(0.02)
                 if received:
@@ -77,28 +104,25 @@ class TestWorkspaceFilesWatcher:
                 for c in burst
             )
         finally:
+            probe.close()
             await w.stop()
 
-    async def test_emits_created_event_when_missing_file_appears(
-        self, tmp_path,
-    ):
+    async def test_emits_created_event(self):
+        probe = _FakeWatchProbe()
         received: list[list[dict]] = []
 
         async def on_change(changes):
             received.append(changes)
 
-        probe = HostStatProbe(root=tmp_path)
-        w = WorkspaceFilesWatcher(
+        w = EventDrivenWatcher(
             probe=probe,
             paths=["new.txt"],
             batch_window_ms=20,
-            poll_interval_seconds=0.02,
             on_change=on_change,
         )
         w.start()
         try:
-            await asyncio.sleep(0.05)
-            (tmp_path / "new.txt").write_text("hello")
+            probe.inject(Change(path="new.txt", event_type="create"))
             for _ in range(50):
                 await asyncio.sleep(0.02)
                 if received:
@@ -109,28 +133,25 @@ class TestWorkspaceFilesWatcher:
                 for c in received[-1]
             )
         finally:
+            probe.close()
             await w.stop()
 
-    async def test_emits_deleted_event_when_file_removed(self, tmp_path):
-        f = tmp_path / "doomed.txt"
-        f.write_text("x")
+    async def test_emits_deleted_event(self):
+        probe = _FakeWatchProbe()
         received: list[list[dict]] = []
 
         async def on_change(changes):
             received.append(changes)
 
-        probe = HostStatProbe(root=tmp_path)
-        w = WorkspaceFilesWatcher(
+        w = EventDrivenWatcher(
             probe=probe,
             paths=["doomed.txt"],
             batch_window_ms=20,
-            poll_interval_seconds=0.02,
             on_change=on_change,
         )
         w.start()
         try:
-            await asyncio.sleep(0.05)
-            f.unlink()
+            probe.inject(Change(path="doomed.txt", event_type="delete"))
             for _ in range(50):
                 await asyncio.sleep(0.02)
                 if received:
@@ -141,32 +162,27 @@ class TestWorkspaceFilesWatcher:
                 for c in received[-1]
             )
         finally:
+            probe.close()
             await w.stop()
 
-    async def test_coalesces_burst_within_batch_window(self, tmp_path):
-        f1 = tmp_path / "a"
-        f2 = tmp_path / "b"
-        f1.write_text("1")
-        f2.write_text("1")
+    async def test_coalesces_burst_within_batch_window(self):
+        probe = _FakeWatchProbe()
         received: list[list[dict]] = []
 
         async def on_change(changes):
             received.append(changes)
 
-        probe = HostStatProbe(root=tmp_path)
-        w = WorkspaceFilesWatcher(
+        w = EventDrivenWatcher(
             probe=probe,
             paths=["a", "b"],
-            batch_window_ms=150,  # generous window — both writes fall in
-            poll_interval_seconds=0.02,
+            batch_window_ms=150,
             on_change=on_change,
         )
         w.start()
         try:
-            await asyncio.sleep(0.05)
-            f1.write_text("2")
+            probe.inject(Change(path="a", event_type="modify"))
             await asyncio.sleep(0.02)
-            f2.write_text("2")
+            probe.inject(Change(path="b", event_type="modify"))
             for _ in range(50):
                 await asyncio.sleep(0.02)
                 if received:
@@ -176,20 +192,93 @@ class TestWorkspaceFilesWatcher:
             paths = {c["path"] for c in burst}
             assert paths == {"a", "b"}
         finally:
+            probe.close()
             await w.stop()
 
-    async def test_stop_is_idempotent(self, tmp_path):
-        probe = HostStatProbe(root=tmp_path)
-        w = WorkspaceFilesWatcher(
+    async def test_last_writer_wins_within_batch_window(self):
+        """If the same path changes twice within the batch window, only the
+        last event is emitted."""
+        probe = _FakeWatchProbe()
+        received: list[list[dict]] = []
+
+        async def on_change(changes):
+            received.append(changes)
+
+        w = EventDrivenWatcher(
+            probe=probe,
+            paths=["x.txt"],
+            batch_window_ms=150,
+            on_change=on_change,
+        )
+        w.start()
+        try:
+            probe.inject(Change(path="x.txt", event_type="create"))
+            await asyncio.sleep(0.02)
+            probe.inject(Change(path="x.txt", event_type="modify", mtime=9999.0))
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                if received:
+                    break
+            assert received
+            burst = received[-1]
+            # Only one change for x.txt; the later "modify" overwrites "create".
+            x_changes = [c for c in burst if c["path"] == "x.txt"]
+            assert len(x_changes) == 1
+            assert x_changes[0]["event_type"] == "modified"
+        finally:
+            probe.close()
+            await w.stop()
+
+    async def test_stop_is_idempotent(self):
+        probe = _FakeWatchProbe()
+        w = EventDrivenWatcher(
             probe=probe,
             paths=["a"],
             batch_window_ms=10,
-            poll_interval_seconds=0.02,
-            on_change=lambda c: None,  # ignored — never fires
+            on_change=lambda c: None,
         )
         w.start()
+        probe.close()
         await w.stop()
         await w.stop()  # second call must not raise
+
+
+# ===========================================================================
+# EventDrivenWatcher with real HostInotifyProbe (inotify integration)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_event_driven_watcher_with_host_inotify_probe(tmp_path):
+    """EventDrivenWatcher + HostInotifyProbe fires on a real file mutation."""
+    target = tmp_path / "f.txt"
+    target.write_text("v1")
+
+    received: list[list[dict]] = []
+
+    async def on_change(changes):
+        received.append(changes)
+
+    probe = HostInotifyProbe(root=str(tmp_path))
+    w = EventDrivenWatcher(
+        probe=probe,
+        paths=["f.txt"],
+        batch_window_ms=20,
+        on_change=on_change,
+    )
+    w.start()
+    try:
+        await asyncio.sleep(0.1)  # give watchfiles time to register
+        target.write_text("v2")
+        for _ in range(50):
+            await asyncio.sleep(0.05)
+            if received:
+                break
+        assert received, "watcher never fired"
+        burst = received[-1]
+        assert any(c["path"] == "f.txt" for c in burst)
+    finally:
+        await w.stop()
 
 
 # ===========================================================================
@@ -243,7 +332,7 @@ def _make_watch_parked_session(
 class _StaticProbeResolver:
     """Test stand-in for the production probe resolver.
 
-    Holds a fixed mapping ``workspace_id → StatProbe``.
+    Holds a fixed mapping ``workspace_id → WatchProbe``.
     """
 
     def __init__(self, mapping: dict[str, object]) -> None:
@@ -284,7 +373,7 @@ class TestWatcherManager:
             next_attempt_at=datetime.now(timezone.utc),
         )
 
-        probe = HostStatProbe(root=tmp_path)
+        probe = HostInotifyProbe(root=str(tmp_path))
         resolver = _StaticProbeResolver({"ws-A": probe})
         mgr = WatcherManager(
             bus=bus,
@@ -298,11 +387,11 @@ class TestWatcherManager:
         sub = bus.subscribe()
         mgr.start()
         try:
-            # Give the manager a tick to start the watcher.
-            await asyncio.sleep(0.15)
+            # Give the manager a tick to start the watcher + watchfiles to register.
+            await asyncio.sleep(0.3)
             target.write_text("v2")
             # The watcher should publish a burst on the bus.
-            event = await asyncio.wait_for(anext(sub), timeout=2.0)
+            event = await asyncio.wait_for(anext(sub), timeout=3.0)
             assert event.event_key == "watch:sess-A:tc-A"
             assert "changes" in event.payload
             paths = [c["path"] for c in event.payload["changes"]]
@@ -337,7 +426,7 @@ class TestWatcherManager:
             runnable=False,
             next_attempt_at=datetime.now(timezone.utc),
         )
-        probe = HostStatProbe(root=tmp_path)
+        probe = HostInotifyProbe(root=str(tmp_path))
         resolver = _StaticProbeResolver({"ws-B": probe})
         mgr = WatcherManager(
             bus=bus,
@@ -405,7 +494,7 @@ class TestWatcherManager:
             runnable=False,
             next_attempt_at=datetime.now(timezone.utc),
         )
-        probe = HostStatProbe(root=tmp_path)
+        probe = HostInotifyProbe(root=str(tmp_path))
         resolver = _StaticProbeResolver({"ws-C": probe})
         mgr = WatcherManager(
             bus=bus,

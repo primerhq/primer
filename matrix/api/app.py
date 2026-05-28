@@ -228,11 +228,7 @@ def _make_lifespan(config: AppConfig):
             from matrix.bus.scheduler_tasks import (
                 TimeoutSweeper, TimerScheduler,
             )
-            from matrix.bus.watcher import (
-                HostStatProbe,
-                SandboxStatProbe,
-                WatcherManager,
-            )
+            from matrix.bus.watcher import WatcherManager
             from matrix.scheduler.postgres import PostgresScheduler
 
             # Pair the bus to the scheduler flavour: postgres scheduler
@@ -299,27 +295,30 @@ def _make_lifespan(config: AppConfig):
             harness_sweeper.start(coordinator.leader_elector)
 
             # watch_files watcher manager — resolves workspace_id →
-            # StatProbe via the workspace registry.
-            # Local workspaces expose a `root` Path → HostStatProbe.
-            # Container / k8s workspaces expose `_sandbox` + `_workspace_root`
-            # → SandboxStatProbe (batched `stat` exec per poll cycle).
+            # WatchProbe via the workspace registry.
+            # Local workspaces expose a `root` Path → HostInotifyProbe.
+            # Container / k8s workspaces expose `_sandbox` (a WSSandbox with
+            # a RuntimeClient) + `_workspace_root` → WSWatchProbe.
             # Unknown / destroyed workspaces → None (manager skips).
             async def _resolve_probe(workspace_id: str):
+                from matrix.bus.host_inotify_probe import HostInotifyProbe
+                from matrix.bus.ws_watch_probe import WSWatchProbe
+                from matrix.workspace.runtime.ws_sandbox import WSSandbox
                 try:
                     ws = await workspace_registry.get_workspace(workspace_id)
                 except Exception:
                     return None
-                # Local workspace exposes `root` (a Path); wrap in HostStatProbe.
+                # Local workspace exposes `root` (a Path).
                 root = getattr(ws, "root", None)
                 if root is not None:
-                    return HostStatProbe(root=root)
-                # Sandbox workspace (container / k8s) exposes a sandbox +
+                    return HostInotifyProbe(root=str(root))
+                # Sandbox workspace (container / k8s) exposes a WSSandbox +
                 # workspace_root.
                 sandbox = getattr(ws, "_sandbox", None)
                 workspace_root = getattr(ws, "_workspace_root", None)
-                if sandbox is not None and workspace_root is not None:
-                    return SandboxStatProbe(
-                        sandbox=sandbox,
+                if isinstance(sandbox, WSSandbox) and workspace_root is not None:
+                    return WSWatchProbe(
+                        runtime_client=sandbox._client,
                         workspace_root=workspace_root,
                     )
                 return None
