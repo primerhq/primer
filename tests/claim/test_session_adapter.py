@@ -1,6 +1,18 @@
+import json
+from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Any
+
 import pytest
+
 from matrix.int.claim import ClaimKind, ReleaseOutcome
 from matrix.claim.adapters.sessions import SessionClaimAdapter
+from matrix.model.workspace_session import (
+    AgentSessionBinding,
+    SessionMessageKind,
+    SessionStatus,
+    WorkspaceSession,
+)
 
 
 def test_session_adapter_kind():
@@ -13,3 +25,129 @@ def test_session_eligibility_sql():
     a = SessionClaimAdapter(session_storage=None)
     sql = a.eligibility_sql()
     assert "parked_status IS NULL" in sql
+
+
+# ---------------------------------------------------------------------------
+# Helpers for on_release tests
+# ---------------------------------------------------------------------------
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _make_session(session_id: str) -> WorkspaceSession:
+    return WorkspaceSession(
+        id=session_id,
+        workspace_id="w1",
+        binding=AgentSessionBinding(agent_id="ag1"),
+        status=SessionStatus.RUNNING,
+        created_at=_now(),
+        turn_no=0,
+    )
+
+
+class FakeStorage:
+    def __init__(self, session: WorkspaceSession) -> None:
+        self._session = session
+        self.updated: list[WorkspaceSession] = []
+
+    async def get(self, id: str) -> WorkspaceSession | None:
+        return self._session if self._session.id == id else None
+
+    async def update(self, entity: WorkspaceSession) -> WorkspaceSession:
+        self.updated.append(entity)
+        self._session = entity
+        return entity
+
+
+class FakeWorkspaceIO:
+    def __init__(self) -> None:
+        self._data: dict[tuple[str, str], bytes] = defaultdict(bytes)
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        self._data[(session_id, "messages.jsonl")] += line
+
+    def read_lines(self, session_id: str, filename: str) -> list[str]:
+        raw = self._data.get((session_id, filename), b"")
+        return [ln for ln in raw.decode().splitlines() if ln.strip()]
+
+
+# ---------------------------------------------------------------------------
+# on_release tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_release_writes_terminal_record_on_reclaim() -> None:
+    """A reclaim failure writes an error-kind record to messages.jsonl."""
+    sess = _make_session("s1")
+    fake_storage = FakeStorage(sess)
+    fake_io = FakeWorkspaceIO()
+
+    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_io=fake_io)
+    await adapter.on_release(
+        conn=None,
+        entity_id="s1",
+        outcome=ReleaseOutcome(success=False, last_error="reclaim", drop_lease=True),
+    )
+
+    lines = fake_io.read_lines("s1", "messages.jsonl")
+    assert lines, "Expected at least one record in messages.jsonl"
+    assert any(json.loads(ln)["kind"] == "error" for ln in lines)
+
+
+@pytest.mark.asyncio
+async def test_on_release_writes_error_record_on_generic_failure() -> None:
+    """Any failure outcome writes an error-kind record."""
+    sess = _make_session("s2")
+    fake_storage = FakeStorage(sess)
+    fake_io = FakeWorkspaceIO()
+
+    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_io=fake_io)
+    await adapter.on_release(
+        conn=None,
+        entity_id="s2",
+        outcome=ReleaseOutcome(success=False, last_error="worker_crash"),
+    )
+
+    lines = fake_io.read_lines("s2", "messages.jsonl")
+    assert lines, "Expected at least one record in messages.jsonl"
+    record = json.loads(lines[0])
+    assert record["kind"] == "error"
+    assert record["payload"]["reason"] == "worker_crash"
+
+
+@pytest.mark.asyncio
+async def test_on_release_no_record_on_success() -> None:
+    """A successful release does NOT write any message record."""
+    sess = _make_session("s3")
+    fake_storage = FakeStorage(sess)
+    fake_io = FakeWorkspaceIO()
+
+    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_io=fake_io)
+    await adapter.on_release(
+        conn=None,
+        entity_id="s3",
+        outcome=ReleaseOutcome(success=True),
+    )
+
+    lines = fake_io.read_lines("s3", "messages.jsonl")
+    assert lines == [], "No records expected on successful release"
+
+
+@pytest.mark.asyncio
+async def test_on_release_no_workspace_io_still_updates_storage() -> None:
+    """When workspace_io is None, storage is still updated (graceful degradation)."""
+    sess = _make_session("s4")
+    fake_storage = FakeStorage(sess)
+
+    adapter = SessionClaimAdapter(session_storage=fake_storage, workspace_io=None)
+    # Should NOT raise even without workspace_io
+    await adapter.on_release(
+        conn=None,
+        entity_id="s4",
+        outcome=ReleaseOutcome(success=False, last_error="reclaim", drop_lease=True),
+    )
+    # Storage update still happened
+    assert len(fake_storage.updated) == 1
