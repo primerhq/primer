@@ -31,11 +31,6 @@ from matrix.api.errors import common_responses
 from matrix.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from matrix.api.routers._cdc_hooks import make_cdc_hooks
 from matrix.api.routers._crud import make_crud_router
-from matrix.api.routers._managed import (
-    on_pre_update_reject_if_managed,
-    reject_if_body_sets_harness_id,
-    reject_if_managed,
-)
 from matrix.model.agent import Agent
 from matrix.model.except_ import NotFoundError
 from matrix.model.graph import Graph
@@ -58,9 +53,7 @@ agent_router = make_crud_router(
     on_create=_agent_create,
     on_update=_agent_update,
     on_delete=_agent_delete,
-    on_pre_create=reject_if_body_sets_harness_id,
-    on_pre_update=on_pre_update_reject_if_managed,
-    on_pre_delete=reject_if_managed,
+    managed_by_field="harness_id",
 )
 
 
@@ -131,9 +124,7 @@ graph_router = make_crud_router(
     on_create=_graph_create,
     on_update=_graph_update,
     on_delete=_graph_delete,
-    on_pre_create=reject_if_body_sets_harness_id,
-    on_pre_update=on_pre_update_reject_if_managed,
-    on_pre_delete=reject_if_managed,
+    managed_by_field="harness_id",
 )
 
 

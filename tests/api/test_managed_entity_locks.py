@@ -2,10 +2,10 @@
 
 Each of the five managed entity types (Agent, Graph, Collection, Document,
 Toolset) must:
-  - Reject PUT with 409 (managed_by_harness) when harness_id is set.
-  - Reject DELETE with 409 (managed_by_harness) when harness_id is set.
+  - Reject PUT with 409 (managed_entity) when harness_id is set.
+  - Reject DELETE with 409 (managed_entity) when harness_id is set.
   - Allow GET (read is free).
-  - Reject POST with 422 (harness_id_forbidden) when body sets harness_id.
+  - Reject POST with 422 (managed_field_set) when body sets harness_id.
 """
 
 from __future__ import annotations
@@ -148,7 +148,7 @@ _CASES = [
 async def test_put_rejects_managed_entity_with_409(
     client, fake_storage_provider, kind, plural, model_cls, builder, put_body_fn
 ):
-    """PUT on a managed row returns 409 managed_by_harness."""
+    """PUT on a managed row returns 409 managed_entity."""
     row = builder()
     await fake_storage_provider.get_storage(model_cls).create(row)
 
@@ -156,7 +156,8 @@ async def test_put_rejects_managed_entity_with_409(
     resp = await client.put(f"/v1/{plural}/{row.id}", json=body)
     assert resp.status_code == 409, f"{kind} PUT: {resp.text}"
     detail = resp.json()["detail"]
-    assert detail["code"] == "managed_by_harness", detail
+    assert detail["code"] == "managed_entity", detail
+    assert detail["field"] == "harness_id", detail
 
 
 @pytest.mark.asyncio
@@ -164,14 +165,15 @@ async def test_put_rejects_managed_entity_with_409(
 async def test_delete_rejects_managed_entity_with_409(
     client, fake_storage_provider, kind, plural, model_cls, builder, put_body_fn
 ):
-    """DELETE on a managed row returns 409 managed_by_harness."""
+    """DELETE on a managed row returns 409 managed_entity."""
     row = builder()
     await fake_storage_provider.get_storage(model_cls).create(row)
 
     resp = await client.delete(f"/v1/{plural}/{row.id}")
     assert resp.status_code == 409, f"{kind} DELETE: {resp.text}"
     detail = resp.json()["detail"]
-    assert detail["code"] == "managed_by_harness", detail
+    assert detail["code"] == "managed_entity", detail
+    assert detail["field"] == "harness_id", detail
 
 
 @pytest.mark.asyncio
@@ -193,14 +195,15 @@ async def test_get_allows_managed_entity(
 async def test_post_rejects_harness_id_in_body_with_422(
     client, kind, plural, model_cls, builder, put_body_fn
 ):
-    """POST with harness_id set in the body returns 422 harness_id_forbidden."""
+    """POST with harness_id set in the body returns 422 managed_field_set."""
     body = builder(harness_id="x").model_dump(mode="json")
     # Use a fresh id to avoid conflicts with other tests
     body["id"] = f"new-{kind}-99"
     resp = await client.post(f"/v1/{plural}", json=body)
     assert resp.status_code == 422, f"{kind} POST: {resp.text}"
     detail = resp.json()["detail"]
-    assert detail["code"] == "harness_id_forbidden", detail
+    assert detail["error"] == "managed_field_set", detail
+    assert detail["field"] == "harness_id", detail
 
 
 @pytest.mark.asyncio

@@ -34,11 +34,6 @@ from matrix.api.errors import common_responses
 from matrix.api.registries import ProviderRegistry, SemanticSearchRegistry
 from matrix.api.routers._cdc_hooks import make_cdc_hooks
 from matrix.api.routers._crud import make_crud_router
-from matrix.api.routers._managed import (
-    on_pre_update_reject_if_managed,
-    reject_if_body_sets_harness_id,
-    reject_if_managed,
-)
 from matrix.model.chat import TextPart
 from matrix.model.collection import Collection, Document
 from matrix.model.except_ import NotFoundError
@@ -107,16 +102,14 @@ async def _validate_ssp_immutable(
 
 
 async def _collection_pre_create(entity: Collection, request: Request) -> None:
-    """Composed on_pre_create: harness guard + SSP reference check."""
-    await reject_if_body_sets_harness_id(entity, request)
+    """Composed on_pre_create: SSP reference check."""
     await _validate_ssp_exists(entity, request)
 
 
 async def _collection_pre_update(
     entity: Collection, existing: Collection, request: Request
 ) -> None:
-    """Composed on_pre_update: harness guard + SSP immutability check."""
-    await on_pre_update_reject_if_managed(entity, existing, request)
+    """Composed on_pre_update: SSP immutability check."""
     await _validate_ssp_immutable(entity, existing, request)
 
 
@@ -130,9 +123,9 @@ collection_router = make_crud_router(
     on_create=_collection_create,
     on_update=_collection_update,
     on_delete=_collection_delete,
+    managed_by_field="harness_id",
     on_pre_create=_collection_pre_create,
     on_pre_update=_collection_pre_update,
-    on_pre_delete=reject_if_managed,
 )
 
 
@@ -278,9 +271,7 @@ document_router = make_crud_router(
     storage_dep=get_document_storage,
     plural="documents",
     tag="documents",
-    on_pre_create=reject_if_body_sets_harness_id,
-    on_pre_update=on_pre_update_reject_if_managed,
-    on_pre_delete=reject_if_managed,
+    managed_by_field="harness_id",
 )
 
 
