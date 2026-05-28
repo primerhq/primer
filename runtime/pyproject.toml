@@ -5,7 +5,7 @@ description = "Workspace runtime server — persistent in-container WS process"
 requires-python = ">=3.13"
 dependencies = [
     "aiohttp>=3.11",
-    "aionotify>=0.3",
+    "watchfiles>=1.0",
     "pydantic>=2.13",
 ]
 
