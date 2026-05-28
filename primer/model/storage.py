@@ -1,7 +1,7 @@
 """Data types for the storage abstraction layer.
 
 Carries the request/response shapes and predicate trees that
-:class:`matrix.int.Storage` consumes and produces. No storage logic ships
+:class:`primer.int.Storage` consumes and produces. No storage logic ships
 in this module -- backend adapters live alongside the ABC and translate
 these types to their native query shape (SQL, MongoDB, in-memory dict,
 etc.).
@@ -40,7 +40,7 @@ class Op(str, Enum):
     :class:`FieldRef` on the left and :class:`Value` on the right, but
     backends MAY accept :class:`FieldRef` on both sides for column-vs-
     column comparison. Backends that can't translate a given operand
-    layout should raise :class:`matrix.model.except_.BadRequestError`.
+    layout should raise :class:`primer.model.except_.BadRequestError`.
 
     ``IN`` expects a :class:`FieldRef` on the left and a :class:`Value`
     on the right whose ``value`` is a list of scalars. Matches when
@@ -87,7 +87,7 @@ class FieldRef(BaseModel):
     (e.g. ``"meta.author"``) are permitted for nested fields; backend
     support for nesting varies (SQL JSON paths, MongoDB dot notation).
     Backends that can't translate a path should raise
-    :class:`matrix.model.except_.BadRequestError` rather than silently
+    :class:`primer.model.except_.BadRequestError` rather than silently
     misinterpreting.
     """
 

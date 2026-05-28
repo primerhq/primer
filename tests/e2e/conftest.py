@@ -1,6 +1,6 @@
 """Shared fixtures for the e2e test suite.
 
-These tests run against a live ``matrix api --run-worker`` instance that was
+These tests run against a live ``primer api --run-worker`` instance that was
 started by ``scripts/e2e/bringup.sh``. The fixtures here do NOT start the
 server — that is the harness's responsibility, not pytest's.
 
@@ -29,7 +29,7 @@ if os.environ.get("PRIMER_RUN_E2E") != "1":
 
 
 def _base_url() -> str:
-    """Resolve the base URL of the running matrix server.
+    """Resolve the base URL of the running primer server.
 
     Defaults match ``scripts/e2e/bringup.sh``. Override via
     ``PRIMER_E2E_BASE_URL`` for unusual setups (different host, port, etc.).

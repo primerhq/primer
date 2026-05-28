@@ -2,10 +2,10 @@
 
 Two router kinds are supported (per spec):
 
-* :class:`matrix.model.graph._JsonPathRouter` -- branch routing by
+* :class:`primer.model.graph._JsonPathRouter` -- branch routing by
   matching dotted-path key/value pairs against a node's parsed
   structured output. The matching function is :func:`match_json_path`.
-* :class:`matrix.model.graph._CallableRouter` -- looks up a Python
+* :class:`primer.model.graph._CallableRouter` -- looks up a Python
   callable in a :class:`RouterRegistry` and delegates routing to it.
 
 The graph executor (G2/G3) consumes both via the same dispatch
@@ -88,7 +88,7 @@ _RouterFn = Union[
 class RouterRegistry:
     """In-process registry that resolves ``callable_id`` to a router fn.
 
-    Mirrors :class:`matrix.agent.ToolExecutionManager`'s registration
+    Mirrors :class:`primer.agent.ToolExecutionManager`'s registration
     pattern so :class:`Graph` definitions stay JSON-serialisable
     while the actual routing logic lives in code. Constructed by the
     application; the executor accepts one optional registry at init

@@ -1,4 +1,4 @@
-"""Unit tests for matrix.catalog.catalog.SemanticCatalog."""
+"""Unit tests for primer.catalog.catalog.SemanticCatalog."""
 
 from __future__ import annotations
 

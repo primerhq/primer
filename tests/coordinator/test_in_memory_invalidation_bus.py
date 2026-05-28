@@ -1,4 +1,4 @@
-"""Tests for matrix.coordinator.in_memory.InMemoryInvalidationBus."""
+"""Tests for primer.coordinator.in_memory.InMemoryInvalidationBus."""
 
 from __future__ import annotations
 

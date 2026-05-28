@@ -3,7 +3,7 @@
 In-memory bus  → InMemoryClaimEngine  (single-process, zero-config).
 Any other bus  → PostgresClaimEngine  (distributed, Postgres-backed leases).
 
-Selection mirrors :class:`matrix.coordinator.factory.CoordinatorFactory` so a
+Selection mirrors :class:`primer.coordinator.factory.CoordinatorFactory` so a
 single runtime-mode choice configures the whole stack consistently.
 """
 
@@ -34,9 +34,9 @@ class ClaimEngineFactory:
         """Build a ClaimEngine + the three standard adapters.
 
         The bus type drives the selection:
-        - :class:`~matrix.bus.in_memory.InMemoryEventBus` → in-memory engine
+        - :class:`~primer.bus.in_memory.InMemoryEventBus` → in-memory engine
           (no Postgres pool required).
-        - Any other bus → :class:`~matrix.claim.postgres.PostgresClaimEngine`
+        - Any other bus → :class:`~primer.claim.postgres.PostgresClaimEngine`
           (requires ``storage_provider.pool`` and ``storage_provider.leases_table``).
 
         Adapters are constructed here so callers do not need to know about the

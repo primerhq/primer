@@ -1,4 +1,4 @@
-"""Unit tests for matrix.worker.yield_runtime — park/resume serialisation.
+"""Unit tests for primer.worker.yield_runtime — park/resume serialisation.
 
 Verifies the ParkedState JSON round-trip, the resume-payload
 classifier (real event / timeout / cancelled), and the publisher

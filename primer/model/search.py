@@ -9,7 +9,7 @@ base vector search:
   Carbonell & Goldstein, 1998:
   ``MMR = argmax_d [ λ·sim(d, q) − (1−λ)·max sim(d, d_j) ]``.
 * :class:`CollectionCrossEncoder` — pointer to a configured
-  :class:`matrix.model.provider.CrossEncoderProvider` plus tuning
+  :class:`primer.model.provider.CrossEncoderProvider` plus tuning
   knobs. When set, retrieved candidates are re-scored by the
   cross-encoder and re-sorted before being returned.
 
@@ -60,7 +60,7 @@ class MmrConfig(BaseModel):
 class CollectionCrossEncoder(BaseModel):
     """User-facing pointer to a :class:`CrossEncoderProvider`.
 
-    Mirrors :class:`matrix.model.collection.CollectionEmbedder`: the
+    Mirrors :class:`primer.model.collection.CollectionEmbedder`: the
     ``provider_id`` references an entry in the application's
     :class:`CrossEncoderProvider` registry, and ``model`` names one
     of that provider's permitted models. Both are validated against

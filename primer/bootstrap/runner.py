@@ -1,13 +1,13 @@
 """BootstrapRunner — idempotent first-boot provider creation.
 
 Creates the four reserved-id providers on first boot so a fresh
-``matrix api`` install is immediately usable. Each ``_ensure_*``
+``primer api`` install is immediately usable. Each ``_ensure_*``
 method is independent: a failure in one records the error and
 continues so the other providers are still attempted.
 
 The bootstrap marker (``system_state.bootstrap_completed_at``) is only
 stamped when ALL four ensure-steps succeed. If any step errored the
-marker stays NULL so a subsequent run (or ``matrix init --force``) can
+marker stays NULL so a subsequent run (or ``primer init --force``) can
 retry.
 
 Usage example (from the lifespan)::
@@ -85,20 +85,20 @@ class BootstrapRunner:
     Parameters
     ----------
     storage:
-        The top-level :class:`~matrix.int.storage_provider.StorageProvider`.
+        The top-level :class:`~primer.int.storage_provider.StorageProvider`.
         Used for ``get_system_state`` / ``set_bootstrap_completed`` only.
     embedder_storage:
-        :class:`~matrix.int.storage.Storage` bound to
-        :class:`~matrix.model.provider.EmbeddingProvider`.
+        :class:`~primer.int.storage.Storage` bound to
+        :class:`~primer.model.provider.EmbeddingProvider`.
     ssp_storage:
-        :class:`~matrix.int.storage.Storage` bound to
-        :class:`~matrix.model.provider.SemanticSearchProvider`.
+        :class:`~primer.int.storage.Storage` bound to
+        :class:`~primer.model.provider.SemanticSearchProvider`.
     cross_encoder_storage:
-        :class:`~matrix.int.storage.Storage` bound to
-        :class:`~matrix.model.provider.CrossEncoderProvider`.
+        :class:`~primer.int.storage.Storage` bound to
+        :class:`~primer.model.provider.CrossEncoderProvider`.
     workspace_provider_storage:
-        :class:`~matrix.int.storage.Storage` bound to
-        :class:`~matrix.model.workspace.WorkspaceProvider`.
+        :class:`~primer.int.storage.Storage` bound to
+        :class:`~primer.model.workspace.WorkspaceProvider`.
     root_dir:
         Filesystem root used for resolving tilde paths in the factory
         specs (e.g. ``~/.primer/workspaces`` → ``root_dir / "workspaces"``).
@@ -169,7 +169,7 @@ class BootstrapRunner:
         else:
             logger.warning(
                 "bootstrap finished with errors — marker NOT stamped; "
-                "retry with 'matrix init --force'. errors=%r",
+                "retry with 'primer init --force'. errors=%r",
                 result.errors,
             )
 

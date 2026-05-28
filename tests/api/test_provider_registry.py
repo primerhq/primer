@@ -1,4 +1,4 @@
-"""Unit tests for matrix.api.registries.provider_registry.ProviderRegistry."""
+"""Unit tests for primer.api.registries.provider_registry.ProviderRegistry."""
 
 from __future__ import annotations
 

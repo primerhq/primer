@@ -1,7 +1,7 @@
 """Concrete Storage implementations.
 
-Each implementation subclasses :class:`matrix.int.StorageProvider` and
-exposes model-bound :class:`matrix.int.Storage` handles via
+Each implementation subclasses :class:`primer.int.StorageProvider` and
+exposes model-bound :class:`primer.int.Storage` handles via
 ``get_storage(model_class)``. Use the factory to obtain a provider:
 
 .. code-block:: python

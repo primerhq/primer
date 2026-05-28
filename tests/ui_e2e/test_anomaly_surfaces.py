@@ -382,7 +382,7 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
     not the parent ``<AgentToolsTab>``.
 
     Good toolset: the built-in ``misc`` internal toolset (always
-    available, returns 5 tools per matrix/toolset/misc.py).
+    available, returns 5 tools per primer/toolset/misc.py).
     Bad toolset: an MCP-HTTP toolset pointing at an unreachable
     URL — identical pattern to U0008's T0711 trigger.
     """

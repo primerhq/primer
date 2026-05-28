@@ -1,4 +1,4 @@
-"""Concrete :class:`matrix.workspace.tool.WorkspaceTool` implementations.
+"""Concrete :class:`primer.workspace.tool.WorkspaceTool` implementations.
 
 Seven tools, each in its own module:
 

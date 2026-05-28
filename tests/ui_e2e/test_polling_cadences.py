@@ -1,6 +1,6 @@
 """Polling-cadence regression tests.
 
-The matrix console keeps sidebar counts and the topbar worker pill in
+The primer console keeps sidebar counts and the topbar worker pill in
 sync with the API by polling — never via push. This module pins the
 contract that those polled views catch up to the live state within
 the documented interval, without requiring a manual refresh.
@@ -184,7 +184,7 @@ def test_u0003_topbar_worker_pill_renders_active_total_from_workers(
 ) -> None:
     """U0003 — The topbar worker pill renders ``<active>/<total>``
     consistent with ``GET /v1/workers``. The bringup runs
-    ``matrix api --run-worker`` so the live container always has at
+    ``primer api --run-worker`` so the live container always has at
     least one worker; the pill text must include that worker's count.
 
     Priority 4 — polling cadence. The pill text comes from

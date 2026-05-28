@@ -1,4 +1,4 @@
-"""Tests for matrix.scheduler.SchedulerFactory."""
+"""Tests for primer.scheduler.SchedulerFactory."""
 
 from __future__ import annotations
 

@@ -280,7 +280,7 @@ class GraphExecutor(_BaseGraphExecutor):
                     ),
                 ),
                 # CursorPage.length is capped at 200 server-side
-                # (matrix/model/storage.py:265). Loop continues until
+                # (primer/model/storage.py:265). Loop continues until
                 # next_cursor is None to cover larger result sets.
                 CursorPage(cursor=cursor, length=200),
                 order_by=[

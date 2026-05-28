@@ -9,7 +9,7 @@ A yielding tool's tool-call lifecycle is split across two functions:
   becomes resumable).
 
 The two functions live next to each other in the tool's module
-(``matrix.toolset.misc.sleep_resume`` for the prototype). The
+(``primer.toolset.misc.sleep_resume`` for the prototype). The
 worker's resume path needs to find the right hook by tool name —
 this module owns that lookup table.
 

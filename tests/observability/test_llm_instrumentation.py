@@ -42,7 +42,7 @@ def in_memory_tracer_provider():
 
 
 def _patch_tracer(provider):
-    """Context manager that replaces the matrix.llm.*.get_tracer call."""
+    """Context manager that replaces the primer.llm.*.get_tracer call."""
     return patch(
         "primer.observability.tracing.get_tracer",
         side_effect=lambda name: provider.get_tracer(name),

@@ -1,4 +1,4 @@
-"""Unit tests for matrix.common.log.
+"""Unit tests for primer.common.log.
 
 Covers ``configure_logging()`` and the two formatters
 (:class:`_JsonFormatter` and :class:`_DevFormatter`).

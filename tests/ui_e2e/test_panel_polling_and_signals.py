@@ -298,7 +298,7 @@ def test_u0067_resume_re_toasts_on_repeat_click(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
     """U0067 — Clicking Resume on a CREATED session emits a
-    "Resume signal sent" toast each time (the matrix POST is
+    "Resume signal sent" toast each time (the primer POST is
     idempotent — 2xx no-op if already running). The UI's onResume
     handler shows a toast on each click without an error toast,
     even if the row was already running by the time the second

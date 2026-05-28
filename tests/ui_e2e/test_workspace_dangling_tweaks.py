@@ -430,7 +430,7 @@ def test_u0093_sidebar_section_collapse_persists_via_localstorage(
     Pins the localStorage-backed collapse contract — the only
     sidebar-collapse tweak that survives reload today (the icons-only
     sidebar toggle uses a separate key
-    ``matrix.sidebar.iconsOnly``).
+    ``primer.sidebar.iconsOnly``).
     """
     # Reset state so the test is deterministic regardless of prior
     # iterations leaving collapse state in localStorage.
@@ -464,7 +464,7 @@ def test_u0093_sidebar_section_collapse_persists_via_localstorage(
     stored = page.evaluate(
         "() => localStorage.getItem('primer.sidebar.collapsed')"
     )
-    assert stored is not None, "localStorage matrix.sidebar.collapsed not written"
+    assert stored is not None, "localStorage primer.sidebar.collapsed not written"
     parsed = json.loads(stored)
     assert parsed.get("Compute") is True, (
         f"primer.sidebar.collapsed missing Compute=true; got {parsed!r}"

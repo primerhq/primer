@@ -11,9 +11,9 @@ from __future__ import annotations
 
 
 class MatrixError(Exception):
-    """Root of the matrix exception hierarchy.
+    """Root of the primer exception hierarchy.
 
-    All matrix-raised exceptions inherit from this class. Carries optional
+    All primer-raised exceptions inherit from this class. Carries optional
     structured context: ``code`` (provider-side error code, when known),
     ``status_code`` (HTTP status, when applicable), and ``cause`` (the
     wrapped underlying exception, also set on ``__cause__`` so tracebacks
@@ -111,13 +111,13 @@ class NetworkError(MatrixError):
 class NotFoundError(MatrixError):
     """Storage lookup found no entity matching the request.
 
-    Raised by :class:`matrix.int.Storage` operations that target a
+    Raised by :class:`primer.int.Storage` operations that target a
     specific entity (``update``, ``delete``) when the id does not
     exist. Distinct from :class:`ModelNotFoundError`, which is about
     LLM/embedding model names not being in an adapter's permitted
     models list.
 
-    :meth:`matrix.int.Storage.get` does NOT raise this -- it returns
+    :meth:`primer.int.Storage.get` does NOT raise this -- it returns
     ``None`` for missing entities so callers can branch without
     catching exceptions.
     """
@@ -126,7 +126,7 @@ class NotFoundError(MatrixError):
 class ConflictError(MatrixError):
     """Storage operation conflicts with the current state.
 
-    Typical cases: :meth:`matrix.int.Storage.create` when an entity
+    Typical cases: :meth:`primer.int.Storage.create` when an entity
     with the same id already exists; optimistic-concurrency mismatch
     on update for backends that implement it.
     """
@@ -142,7 +142,7 @@ class AuthRequiredError(MatrixError):
     generic ``except MatrixError``) so the URL reaches the end user.
 
     The ``state`` field is opaque to the application; the caller passes
-    it back to :meth:`matrix.toolset.mcp.McpToolsetProvider.complete_oauth`
+    it back to :meth:`primer.toolset.mcp.McpToolsetProvider.complete_oauth`
     together with the ``code`` query parameter the OAuth server delivered
     to the redirect URI.
     """

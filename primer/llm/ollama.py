@@ -1,7 +1,7 @@
 """Ollama LLM adapter — wraps ollama.AsyncClient.
 
-Subclasses :class:`matrix.int.LLM` and translates the universal chat
-interface (:mod:`matrix.model.chat`) onto the Ollama ``client.chat``
+Subclasses :class:`primer.int.LLM` and translates the universal chat
+interface (:mod:`primer.model.chat`) onto the Ollama ``client.chat``
 streaming surface.
 
 Targets local or remote Ollama HTTP servers. Supports text + inline
@@ -80,7 +80,7 @@ logger = logging.getLogger(__name__)
 
 
 def _classify_ollama_exception(exc: Exception) -> MatrixError:
-    """Map ollama / httpx exceptions onto the matrix exception hierarchy."""
+    """Map ollama / httpx exceptions onto the primer exception hierarchy."""
     if isinstance(exc, ollama.ResponseError):
         status = getattr(exc, "status_code", None)
         msg = str(exc) or "Ollama rejected the request"

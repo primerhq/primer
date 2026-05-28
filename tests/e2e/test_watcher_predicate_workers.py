@@ -37,7 +37,7 @@ import pytest
 async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost", port=5432,
-        user="matrix", password="matrix", database="matrix_e2e",
+        user="primer", password="primer", database="matrix_e2e",
     )
 
 
@@ -210,7 +210,7 @@ async def test_t0800_watcher_fires_on_file_change_and_flips_row(
 ) -> None:
     """T0800 — End-to-end M4 pin. Inject a session parked on
     watch_files with a single path. Touch the file via API/PUT.
-    WatcherManager (running in the matrix lifespan) polls mtimes
+    WatcherManager (running in the primer lifespan) polls mtimes
     every 500ms; on detecting the change it publishes
     {"changes":[...]} on the bus. Listener flips row → resumable.
 
@@ -374,7 +374,7 @@ async def test_t0802_sessions_find_multi_clause_and_predicate(
     matching BOTH clauses; rows matching only one (different
     workspace or different status) are filtered out.
 
-    Pins the predicate composition path in matrix/api/routers/sessions
+    Pins the predicate composition path in primer/api/routers/sessions
     and the backend's AND handling.
     """
     pid = f"llm-p802-{unique_suffix}"
@@ -449,7 +449,7 @@ async def test_t0802_sessions_find_multi_clause_and_predicate(
 async def test_t0803_workers_list_returns_registered_worker(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0803 — The bringup launches matrix with --run-worker, which
+    """T0803 — The bringup launches primer with --run-worker, which
     registers one worker into the scheduler. GET /v1/workers must
     return at least that one worker with a non-empty id; envelope
     is the standard {"items": [...]} shape.

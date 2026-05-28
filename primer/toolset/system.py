@@ -3,8 +3,8 @@
 The system toolset is **immutable** (its provider instance is constructed
 once at app startup and lives for the process lifetime) and **reserved**
 (its toolset id ``system`` short-circuits the normal ``Toolset`` row
-lookup in :class:`matrix.api.registries.ProviderRegistry`). It dogfoods
-the entire matrix REST API to agents so they can self-administer the
+lookup in :class:`primer.api.registries.ProviderRegistry`). It dogfoods
+the entire primer REST API to agents so they can self-administer the
 configuration that drives them.
 
 Tool catalog
@@ -191,7 +191,7 @@ class _FindArgs(_PaginationArgs):
     predicate: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Predicate tree (see :class:`matrix.model.storage.Predicate`). "
+            "Predicate tree (see :class:`primer.model.storage.Predicate`). "
             "Binary tree of comparison/logical ops. Each node is "
             "``{kind:'predicate', left:..., op:..., right:...}``; leaf "
             "field references are ``{kind:'field', name:'...'}`` and "

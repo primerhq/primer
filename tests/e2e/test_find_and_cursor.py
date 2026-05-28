@@ -2710,7 +2710,7 @@ async def test_t0377_predicate_like_leading_wildcard_matches_suffix(
 async def test_t0404_predicate_op_not_clean_envelope(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0404 — The Op enum (matrix/model/storage.py:35) does NOT
+    """T0404 — The Op enum (primer/model/storage.py:35) does NOT
     include a NOT operator; the wire vocabulary is `=`, `!=`, `~=`,
     `>`, `<`, `>=`, `<=`, `in`, `and`, `or`. Per spec contract,
     `op="not"` MUST be rejected with 422 — never accepted as a
@@ -2908,7 +2908,7 @@ async def test_t0439_predicate_eq_null_on_nullable_column_clean_envelope(
 ) -> None:
     """T0439 — Send `{op:"=", left:{name:"description"},
     right:{value:null}}` against /v1/toolsets/find. The predicate
-    translator (matrix/storage/_predicate.py) does NOT special-case
+    translator (primer/storage/_predicate.py) does NOT special-case
     NULL — the rendered SQL is `data->>'description' = NULL` which
     in Postgres ALWAYS evaluates to NULL (treated as falsy by WHERE).
 
@@ -3024,7 +3024,7 @@ async def test_t0452_cursor_token_single_char_flipped_clean_envelope(
     """T0452 — Pin cursor opaqueness contract: a tampered cursor
     token (single char changed) is rejected with a clean 4xx
     envelope (400 /errors/bad-request per
-    matrix/storage/postgres.py:_decode_cursor). Never 5xx, never
+    primer/storage/postgres.py:_decode_cursor). Never 5xx, never
     /errors/internal.
     """
     prefix = f"ts-t0452-{unique_suffix}"
@@ -3093,7 +3093,7 @@ async def test_t0453_cursor_token_truncated_clean_envelope(
     """T0453 — Sibling of T0452. Truncate a real cursor to half its
     length and reuse. Pin: 4xx with clean envelope (BadRequestError
     from _decode_cursor's `try/except → BadRequestError("malformed
-    cursor: ...")` per matrix/storage/postgres.py:599); never 5xx;
+    cursor: ...")` per primer/storage/postgres.py:599); never 5xx;
     never /errors/internal.
     """
     prefix = f"ts-t0453-{unique_suffix}"
@@ -3269,7 +3269,7 @@ async def test_t0455_predicate_nested_100_levels_clean_envelope(
 async def test_t0483_predicate_like_underscore_matches_single_char_tail(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0483 — Per matrix/storage.Op.LIKE docstring, `~=` follows
+    """T0483 — Per primer/storage.Op.LIKE docstring, `~=` follows
     SQL LIKE semantics: `%` matches any sequence, `_` matches a
     single character. Pin: predicate `id ~= "<prefix>-_"` on rows
     {prefix-a, prefix-aa, prefix-b} matches exactly the two
@@ -3765,7 +3765,7 @@ async def test_t0506_predicate_like_with_null_right_clean_envelope(
 async def test_t0507_predicate_and_with_value_operand_returns_4xx(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0507 — Per matrix/storage/_predicate.py:225-228, the
+    """T0507 — Per primer/storage/_predicate.py:225-228, the
     predicate translator requires both operands of a logical AND/OR
     to be Predicate sub-trees. Pydantic accepts `kind:"value"` as a
     valid Operand (it's in the discriminated union), so the body
@@ -4114,7 +4114,7 @@ async def test_t0536_find_with_empty_order_by_clean_envelope(
 async def test_t0542_find_body_missing_page_field_returns_422(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0542 — `page` is a required field on FindBody (matrix/
+    """T0542 — `page` is a required field on FindBody (primer/
     model/storage.py: PageRequest is the discriminated union of
     OffsetPage / CursorPage). Pin: omitting `page` entirely
     returns 422 /errors/validation-error mentioning the missing
@@ -4294,7 +4294,7 @@ async def test_t0558_predicate_in_with_1000_element_list_clean_envelope(
 async def test_t0559_predicate_field_consecutive_dots_clean_envelope(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0559 — Per matrix/storage._predicate _resolve_dotted +
+    """T0559 — Per primer/storage._predicate _resolve_dotted +
     _render_field_expr, dotted paths split on `.`. A field name
     with consecutive dots like `meta..tag` would split to
     `["meta", "", "tag"]` — the empty middle segment is degenerate.
@@ -4921,7 +4921,7 @@ async def test_t0731_predicate_or_with_value_operand_returns_clean_4xx(
     T0731 pins the OR branch. Together they prove the discriminator
     is enforced symmetrically across both compound predicates.
 
-    Defence shape: the matrix predicate engine should reject this at
+    Defence shape: the primer predicate engine should reject this at
     Pydantic-validation time (before query-build), so the failure
     surfaces as 422 with a field-level error pointing at
     ``body.predicate.left``.

@@ -9,7 +9,7 @@ for each collection so the provider can re-create handles after
 restart and so :meth:`maintain_indexes` can enumerate every managed
 table without scanning ``pg_class``.
 
-Subclasses (e.g. :class:`matrix.vector.pgvectorscale.PgVectorScaleStore`)
+Subclasses (e.g. :class:`primer.vector.pgvectorscale.PgVectorScaleStore`)
 override :meth:`PgVectorStore._index_kind`,
 :meth:`PgVectorStore._render_index_ddl`, and
 :meth:`PgVectorStoreProvider._apply_search_guc` to swap in a different
@@ -20,7 +20,7 @@ HNSW maintenance (:meth:`PgVectorStoreProvider.maintain_indexes`)
 inspects every catalogued table and applies ``ANALYZE``,
 ``VACUUM ANALYZE``, or ``REINDEX INDEX CONCURRENTLY`` based on the
 heuristic documented on
-:meth:`matrix.int.VectorStoreProvider.maintain_indexes`. All forms
+:meth:`primer.int.VectorStoreProvider.maintain_indexes`. All forms
 run non-blocking to readers and writers.
 """
 

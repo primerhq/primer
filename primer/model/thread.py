@@ -3,7 +3,7 @@
 A *thread* is one persistent chat conversation between a user and an
 agent. The ``AgentExecutor`` (sub-project F3) drives turns against
 threads; thread + message rows are persisted via the existing
-:class:`matrix.int.Storage` interface (typically against the Postgres
+:class:`primer.int.Storage` interface (typically against the Postgres
 backend, but any storage that satisfies ``Storage[T]`` works).
 
 See ``docs/superpowers/specs/2026-05-03-agent-executor-design.md``
@@ -28,7 +28,7 @@ class Thread(Identifiable):
         ...,
         min_length=1,
         description=(
-            "Identifier of the :class:`matrix.model.agent.Agent` this "
+            "Identifier of the :class:`primer.model.agent.Agent` this "
             "thread runs against. Snapshot -- if the agent definition "
             "changes later, existing threads keep their original "
             "agent_id but pick up the new agent definition's "
@@ -41,7 +41,7 @@ class Thread(Identifiable):
             "Optional human-readable thread title. The executor does "
             "NOT auto-generate one; UIs that want titles supply their "
             "own at open time or update later via "
-            ":meth:`matrix.int.Storage.update`."
+            ":meth:`primer.int.Storage.update`."
         ),
     )
     created_at: datetime = Field(
@@ -69,7 +69,7 @@ class ThreadMessage(Identifiable):
         ...,
         description=(
             "Speaker role for this message. Mirrors "
-            ":attr:`matrix.model.chat.Message.role`."
+            ":attr:`primer.model.chat.Message.role`."
         ),
     )
     parts: list[Part] = Field(
@@ -77,7 +77,7 @@ class ThreadMessage(Identifiable):
         min_length=1,
         description=(
             "Ordered content parts of this message. Same shape as "
-            ":attr:`matrix.model.chat.Message.parts`."
+            ":attr:`primer.model.chat.Message.parts`."
         ),
     )
     created_at: datetime = Field(

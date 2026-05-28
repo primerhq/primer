@@ -37,7 +37,7 @@ from primer.model.workspace_session import SessionStatus
 class NodeRuntimeStatus(str, Enum):
     """Per-node lifecycle within a graph execution.
 
-    Distinct from :class:`matrix.model.session.SessionStatus` because
+    Distinct from :class:`primer.model.session.SessionStatus` because
     graphs add the ``pending`` (not yet reached) and ``failed``
     (errored out) states that don't apply to standalone agent
     sessions. The graph's :class:`SessionStatus` is aggregated FROM
@@ -150,7 +150,7 @@ _DEFAULT_INPUT_TEMPLATE = (
 
 
 class _AgentNodeRef(BaseModel):
-    """Node that runs a single :class:`matrix.model.agent.Agent`."""
+    """Node that runs a single :class:`primer.model.agent.Agent`."""
 
     kind: Literal["agent"] = Field(
         default="agent",
@@ -286,7 +286,7 @@ class _CallableRouter(BaseModel):
     """Routes via a registered Python callable.
 
     ``callable_id`` is resolved at run time against the executor's
-    :class:`matrix.graph.RouterRegistry`. The callable signature is
+    :class:`primer.graph.RouterRegistry`. The callable signature is
     ``(context: GraphContext, source: NodeOutput) -> str`` (sync or
     async); the returned string MUST be the id of an existing node.
     """
@@ -353,7 +353,7 @@ class Graph(Describeable):
     """A directed graph of agent nodes (and optionally sub-graph nodes).
 
     Inherits ``id`` and ``description`` from :class:`Describeable`.
-    Persisted via :class:`matrix.int.Storage` with model class
+    Persisted via :class:`primer.int.Storage` with model class
     ``Graph``.
 
     Cyclic graphs MUST set ``max_iterations`` to bound execution;
@@ -447,7 +447,7 @@ class Graph(Describeable):
 class GraphThread(Identifiable):
     """One execution of one graph (standalone, storage-backed).
 
-    Persisted via :class:`matrix.int.Storage` with model class
+    Persisted via :class:`primer.int.Storage` with model class
     ``GraphThread``. The G2 sub-project introduces this as the
     parent row for per-node :class:`GraphNodeMessage` rows; the
     type lives here so the model layer is self-contained.
@@ -477,7 +477,7 @@ class GraphThread(Identifiable):
 class GraphNodeMessage(Identifiable):
     """One message persisted under a :class:`GraphThread`'s node.
 
-    Parallel to :class:`matrix.model.thread.ThreadMessage` but
+    Parallel to :class:`primer.model.thread.ThreadMessage` but
     additionally scoped by ``node_id`` so a single graph thread
     holds many independent message histories (one per node).
     """
@@ -489,7 +489,7 @@ class GraphNodeMessage(Identifiable):
         ...,
         min_length=1,
         description=(
-            "List of :class:`matrix.model.chat.Part` instances. Typed "
+            "List of :class:`primer.model.chat.Part` instances. Typed "
             "as ``list[Any]`` here to avoid a circular import of the "
             "Part union; downstream consumers re-cast via "
             "``Message(role=..., parts=row.parts)``."

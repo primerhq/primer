@@ -1,6 +1,6 @@
 """HuggingFace embedder adapter — wraps sentence-transformers locally.
 
-Subclasses :class:`matrix.int.Embedder`. First matrix adapter that is
+Subclasses :class:`primer.int.Embedder`. First primer adapter that is
 not API-shaped: no SDK client, no HTTP. Wraps the synchronous
 :class:`sentence_transformers.SentenceTransformer` in
 :func:`asyncio.to_thread`.

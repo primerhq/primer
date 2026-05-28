@@ -3,8 +3,8 @@
 A :class:`DocumentLoader` accepts a source (raw bytes, filesystem
 path, or string that resolves to a path or URL) and produces a
 :class:`LoadedDocument`. The default implementation is
-:class:`matrix.ingest.loaders.docling.DoclingLoader` (re-exported
-as :class:`matrix.ingest.DoclingLoader`); subclasses can substitute
+:class:`primer.ingest.loaders.docling.DoclingLoader` (re-exported
+as :class:`primer.ingest.DoclingLoader`); subclasses can substitute
 a custom backend by implementing :meth:`load`.
 
 Implementations bind to a backend library at construction time;
@@ -39,7 +39,7 @@ class DocumentLoader(ABC):
         * :class:`str` -- either a filesystem path (if it exists) or
           an HTTP(S) URL (if it parses as one). Loaders that don't
           fetch URLs raise
-          :class:`matrix.model.except_.UnsupportedContentError`.
+          :class:`primer.model.except_.UnsupportedContentError`.
 
         Implementations that can't handle the resolved mime type raise
         :class:`UnsupportedContentError` rather than silently emitting
@@ -51,13 +51,13 @@ class DocumentLoader(ABC):
 
         Raises
         ------
-        matrix.model.except_.BadRequestError
+        primer.model.except_.BadRequestError
             ``source`` is a string that resolves to neither a path
             nor a URL.
-        matrix.model.except_.UnsupportedContentError
+        primer.model.except_.UnsupportedContentError
             The loader can't handle the resolved mime type, or the
             ``source`` is a URL and this loader doesn't fetch URLs.
-        matrix.model.except_.ConfigError
+        primer.model.except_.ConfigError
             The loader's backend library is not installed.
         """
 

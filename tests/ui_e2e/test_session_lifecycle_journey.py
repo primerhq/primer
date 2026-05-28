@@ -34,7 +34,7 @@ from playwright.sync_api import expect
 
 # ---------------------------------------------------------------------------
 # Container-internal workspace provider path — host tmp_path is not visible
-# from the matrix-app container; using /tmp/<suffix> inside the container
+# from the primer-app container; using /tmp/<suffix> inside the container
 # avoids the U0072/U0080-class host-path unreachability problem.
 # ---------------------------------------------------------------------------
 

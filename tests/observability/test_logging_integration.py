@@ -1,4 +1,4 @@
-"""Tests for matrix.observability.logging_integration.
+"""Tests for primer.observability.logging_integration.
 
 Verifies that ``install_log_correlation`` injects ``otelTraceID`` /
 ``otelSpanID`` onto LogRecords produced inside an active OTEL span, and

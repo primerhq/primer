@@ -128,7 +128,7 @@ async def test_t0860_channels_cross_platform_validation_journey(
         )
         assert r.status_code == 422, r.text
         env = r.json()
-        # FastAPI/Pydantic validation envelopes carry the matrix slug
+        # FastAPI/Pydantic validation envelopes carry the primer slug
         # via the configured exception handler.
         assert env["type"].endswith("/validation-error"), env
         env_str = json.dumps(env)
@@ -223,7 +223,7 @@ async def test_t0860_channels_cross_platform_validation_journey(
         assert env["type"].endswith("/conflict"), env
         detail = env.get("detail") or ""
         # Conflict detail names both fields + the existing id per
-        # _channel_on_pre_create in matrix/api/routers/channels.py.
+        # _channel_on_pre_create in primer/api/routers/channels.py.
         assert slack_id in detail and ch_external_id in detail, (
             f"conflict detail should name both fields; got: {detail!r}"
         )

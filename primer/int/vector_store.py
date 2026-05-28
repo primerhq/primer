@@ -1,10 +1,10 @@
 """Abstract base class for vector stores.
 
-Sibling of :class:`matrix.int.LLM`, :class:`matrix.int.Embedder`,
-:class:`matrix.int.ToolsetProvider`, and :class:`matrix.int.Storage`.
+Sibling of :class:`primer.int.LLM`, :class:`primer.int.Embedder`,
+:class:`primer.int.ToolsetProvider`, and :class:`primer.int.Storage`.
 A :class:`VectorStore` instance is bound to one backend (in-memory,
 FAISS, pgvector, Qdrant, Pinecone, Weaviate, etc.) and accepts
-:class:`matrix.model.vector.EmbeddingRecord` rows keyed by the
+:class:`primer.model.vector.EmbeddingRecord` rows keyed by the
 composite ``(collection_id, document_id, chunk_id)``.
 
 The interface covers the full "register a collection, index its chunked
@@ -59,7 +59,7 @@ class VectorStore(ABC):
         Idempotent: calling for an already-registered collection with
         the same dimensions and distance metric is a no-op. Calling
         with a different dimensionality after data has been inserted
-        is a :class:`matrix.model.except_.ConflictError`.
+        is a :class:`primer.model.except_.ConflictError`.
 
         Parameters
         ----------
@@ -67,7 +67,7 @@ class VectorStore(ABC):
             Identifier of the collection. Backends that derive table /
             index names from this MUST sanitise it (allow only
             ``[A-Za-z0-9_-]``); reject other characters with
-            :class:`matrix.model.except_.BadRequestError`.
+            :class:`primer.model.except_.BadRequestError`.
         dimensions
             Length of the vectors that will be stored in this
             collection. Must match the embedding model's output
@@ -118,7 +118,7 @@ class VectorStore(ABC):
             The query vector. Length must match the dimensionality
             declared for ``collection_id`` at
             :meth:`create_collection` time; backends raise
-            :class:`matrix.model.except_.BadRequestError` on mismatch.
+            :class:`primer.model.except_.BadRequestError` on mismatch.
         k
             Maximum number of results to return. Backends MAY return
             fewer (e.g. when the index holds fewer than ``k`` rows or
@@ -131,7 +131,7 @@ class VectorStore(ABC):
             :attr:`SearchResult.score` field is populated when the
             backend exposes a similarity metric (always normalised so
             higher = more similar; see
-            :class:`matrix.model.vector.SearchResult` for the
+            :class:`primer.model.vector.SearchResult` for the
             convention). An empty list is returned when nothing
             matches.
 
@@ -178,7 +178,7 @@ class VectorStore(ABC):
 
         Raises
         ------
-        matrix.model.except_.BadRequestError
+        primer.model.except_.BadRequestError
             ``collection_id`` has not been created.
         """
 

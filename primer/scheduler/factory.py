@@ -1,6 +1,6 @@
 """Dispatch a :class:`SchedulerProviderConfig` to the right impl.
 
-Mirrors :class:`matrix.storage.factory.StorageProviderFactory` — local
+Mirrors :class:`primer.storage.factory.StorageProviderFactory` — local
 imports inside the dispatch branches keep heavyweight modules
 (asyncpg) off the import path until they're needed.
 """

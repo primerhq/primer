@@ -12,7 +12,7 @@ tool result, and the LLM call continues.
 This module ships the M1 foundation:
 
 * :class:`Yielded` — the sentinel a yielding tool returns instead of
-  a normal :class:`matrix.model.chat.ToolCallResult`.
+  a normal :class:`primer.model.chat.ToolCallResult`.
 * :class:`YieldTimeout` — synthetic payload passed to a tool's
   :meth:`resume` hook when the park's ``parked_until`` elapses
   before any real event fires.
@@ -226,7 +226,7 @@ class YieldToWorker(Exception):
     against, and the LLM history would be malformed.
 
     Tools that raise YieldToWorker themselves (e.g. the approval
-    gate in :mod:`matrix.agent.tool_manager`) do NOT need to
+    gate in :mod:`primer.agent.tool_manager`) do NOT need to
     populate this — the executor stamps it on the way out.
     """
 
@@ -245,7 +245,7 @@ class YieldToWorker(Exception):
         self.yielded = yielded
         self.tool_call_id = tool_call_id
         # The executor stamps in-progress turn messages here on the
-        # way out (matrix/agent/base.py). Default ``None`` lets
+        # way out (primer/agent/base.py). Default ``None`` lets
         # callers that raise directly leave it for the executor to
         # fill in.
         self.llm_messages: list | None = llm_messages

@@ -1,4 +1,4 @@
-"""Unit tests for the matrix exception hierarchy."""
+"""Unit tests for the primer exception hierarchy."""
 
 from __future__ import annotations
 

@@ -25,7 +25,7 @@ from primer.model.search import CollectionSearch
 class CollectionEmbedder(BaseModel):
     """Which embedding provider + model a collection uses to vectorise documents.
 
-    The ``provider_id`` references an :class:`matrix.model.provider.EmbeddingProvider`
+    The ``provider_id`` references an :class:`primer.model.provider.EmbeddingProvider`
     by its user-chosen id; the ``model`` names one of that provider's
     permitted embedding models. Both are validated against the application's
     configured providers at runtime, not here -- this model just carries
@@ -86,7 +86,7 @@ class Collection(Describeable):
             "Marginal Relevance diversification; setting ``cer`` "
             "adds cross-encoder reranking; setting both runs "
             "``vector → cross-encoder rerank → MMR``. See "
-            ":class:`matrix.model.search.CollectionSearch`."
+            ":class:`primer.model.search.CollectionSearch`."
         ),
     )
     system: bool = Field(

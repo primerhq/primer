@@ -71,8 +71,8 @@ async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
         port=5432,
-        user="matrix",
-        password="matrix",
+        user="primer",
+        password="primer",
         database="matrix_e2e",
     )
 
@@ -318,7 +318,7 @@ async def test_t0865_resume_after_on_disk_ended_clears_park(
         parked_status clears AND the session is set ENDED-failed.
         No stuck row, no claim loop.
 
-    The defensive branch was added to matrix/worker/pool.py
+    The defensive branch was added to primer/worker/pool.py
     in the same commit as this test.
     """
     sid, _wid, cleanup_urls = await _seed_ladder(

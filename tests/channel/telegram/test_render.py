@@ -64,6 +64,6 @@ def test_token_regexes_match_emitted_messages():
     # And the reject regex matches a synthesised reject prompt.
     reject_prompt = (
         "Why are you rejecting?\n"
-        f"[matrix:reject:{compute_tag(workspace_id='w', session_id='s', tool_call_id='tc')}]"
+        f"[primer:reject:{compute_tag(workspace_id='w', session_id='s', tool_call_id='tc')}]"
     )
     assert REJECT_TOKEN_RE.search(reject_prompt)

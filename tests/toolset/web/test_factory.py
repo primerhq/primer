@@ -1,4 +1,4 @@
-"""Unit tests for matrix.toolset.web.build_web_toolset."""
+"""Unit tests for primer.toolset.web.build_web_toolset."""
 
 from __future__ import annotations
 

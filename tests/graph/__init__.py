@@ -1,1 +1,1 @@
-"""Tests for matrix.graph -- agent graph runtime."""
+"""Tests for primer.graph -- agent graph runtime."""

@@ -1,6 +1,6 @@
 """Jinja2 template renderer for graph node input templates.
 
-Each :class:`matrix.model.graph._AgentNodeRef` (and
+Each :class:`primer.model.graph._AgentNodeRef` (and
 :class:`_GraphNodeRef`) carries an ``input_template`` string. The
 graph executor renders it against a :class:`GraphContext` to
 produce the user-role text that becomes the node's input for that

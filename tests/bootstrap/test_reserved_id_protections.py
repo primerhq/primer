@@ -113,9 +113,9 @@ def _ssp_body(provider_id: str) -> dict:
         "config": {
             "hostname": "localhost",
             "port": 5432,
-            "database": "matrix",
-            "username": "matrix",
-            "password": "matrix",
+            "database": "primer",
+            "username": "primer",
+            "password": "primer",
             "db_schema": "public",
         },
     }
@@ -126,7 +126,7 @@ def _workspace_provider_body(provider_id: str) -> dict:
     return {
         "id": provider_id,
         "provider": "local",
-        "config": {"kind": "local", "path": "/tmp/matrix-test-ws"},
+        "config": {"kind": "local", "path": "/tmp/primer-test-ws"},
     }
 
 

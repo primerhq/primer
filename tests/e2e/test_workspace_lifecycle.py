@@ -1996,7 +1996,7 @@ async def test_t0163_file_ops_on_destroyed_workspace_return_404(
         # Every file sub-resource path must 404 cleanly
         # NB: PUT /files takes `path` as a query string param, NOT in the
         # body (body is just {content, encoding?}). Spec §12 is slightly
-        # wrong on this — confirmed against matrix/api/routers/workspaces.py.
+        # wrong on this — confirmed against primer/api/routers/workspaces.py.
         ops: list[tuple[str, str, dict | None]] = [
             ("GET", f"/v1/workspaces/{workspace_id}/files?path=.", None),
             ("GET", f"/v1/workspaces/{workspace_id}/files/info?path=foo", None),
@@ -4272,7 +4272,7 @@ async def test_t0395_workspace_template_state_path_override_works(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
     """T0395 — WorkspaceTemplate.state_path defaults to `.state` (per
-    matrix/model/workspace.py). Pin that overriding it to a custom
+    primer/model/workspace.py). Pin that overriding it to a custom
     path (e.g. `.primer-state`) still produces a working workspace:
     materialise succeeds, /log finds the repo at the new location,
     and the file ops surface still works.
@@ -4352,7 +4352,7 @@ async def test_t0396_workspace_state_path_user_files_collision_clean(
     """T0396 — User/state isolation: a PUT to a user-file path that
     falls inside the template's `state_path` (e.g. `.state/foo`) MUST
     NOT clobber the state repo. The local backend (per
-    matrix/workspace/local/workspace.py L293) blocks writes / deletes
+    primer/workspace/local/workspace.py L293) blocks writes / deletes
     inside `.state` and `.tmp`. The contract is a clean 4xx envelope,
     never a 5xx and never a silent overwrite of internal state.
     """
@@ -4492,7 +4492,7 @@ async def test_t0434_workspace_template_state_path_path_traversal_rejected(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
     """T0434 — `state_path` is documented as "Path inside the
-    workspace root where the state repo lives" (matrix/model/
+    workspace root where the state repo lives" (primer/model/
     workspace.py:389). A traversal-style value like `..` or
     `../escape` would let the state repo land OUTSIDE the workspace
     root: `Path(root) / ".."` resolves to `root.parent`, which is the
@@ -4850,7 +4850,7 @@ async def test_t0437_workspace_destroy_mid_burst_put_all_clean(
 async def test_t0438_workspace_template_init_command_failure_clean_envelope(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0438 — Per matrix/workspace/local/backend.py:227, when an
+    """T0438 — Per primer/workspace/local/backend.py:227, when an
     init_command exits non-zero the backend raises BadRequestError
     with the rc + stderr surfaced. The API must turn that into a
     400 /errors/bad-request envelope (or similar 4xx) — never 5xx.
@@ -5385,7 +5385,7 @@ async def test_t0479_workspace_template_empty_packages_materialises_cleanly(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
     """T0479 — WorkspaceTemplate.packages defaults to `[]` per
-    matrix/model/workspace.py:370. Pin: explicitly setting
+    primer/model/workspace.py:370. Pin: explicitly setting
     `packages: []` materialises a workspace cleanly (no fallback to
     a "default packages" set or 5xx). /files and /log respond 200
     on the materialised workspace.
@@ -6704,7 +6704,7 @@ async def test_t0551_workspace_template_10k_description_round_trip(
 async def test_t0552_workspace_template_empty_state_path_returns_422(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0552 — Per matrix/model/workspace.py:389-393, `state_path`
+    """T0552 — Per primer/model/workspace.py:389-393, `state_path`
     has `min_length=1`. Pin: explicit empty string is rejected
     with 422 /errors/validation-error (Pydantic min_length).
     Validator complement to T0434 (`..` traversal) and T0435
@@ -7193,7 +7193,7 @@ async def test_t0577_workspace_template_tmp_path_traversal_rejected(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
     """T0577 — Mirror of T0434 for `tmp_path`. The shared validator
-    `_validate_workspace_relative_path` (matrix/model/workspace.py:411)
+    `_validate_workspace_relative_path` (primer/model/workspace.py:411)
     is registered against BOTH `state_path` and `tmp_path`. T0434
     pinned state_path; this is the parallel pin for tmp_path.
 
@@ -7358,7 +7358,7 @@ async def test_t0578_workspace_template_tmp_path_absolute_rejected(
 async def test_t0579_workspace_template_empty_tmp_path_returns_422(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0579 — Per matrix/model/workspace.py:401-405, `tmp_path` has
+    """T0579 — Per primer/model/workspace.py:401-405, `tmp_path` has
     `min_length=1`. Pin: explicit empty string is rejected with 422
     /errors/validation-error (Pydantic min_length). Validator
     complement to T0577 (`..` traversal) and T0578 (absolute path).
@@ -8265,7 +8265,7 @@ async def test_t0628_workspace_log_limit_at_documented_max_accepted(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
     """T0628 — Sister of T0198 (probes 0/501 boundaries). Per
-    matrix/api/routers/workspaces.py:530, /log accepts `limit ge=1
+    primer/api/routers/workspaces.py:530, /log accepts `limit ge=1
     le=500`. T0198 pinned the OUTSIDE-bounds case (0 and 501);
     this pins the EXACT upper-bound value 500 as accepted with
     a clean envelope and the documented `commits` shape.
@@ -10257,7 +10257,7 @@ async def test_t0627_workspace_template_long_running_init_command_clean_envelope
         assert pr.status_code == 201, pr.text
 
         # 30s sleep then exit 0. Cross-platform: python is on PATH in
-        # the test environment (matrix is python; uv-managed venv).
+        # the test environment (primer is python; uv-managed venv).
         long_cmd = 'python -c "import time; time.sleep(30)"'
         tpl = await client.post(
             "/v1/workspace_templates",

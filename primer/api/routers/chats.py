@@ -16,7 +16,7 @@ losing messages — any rows with ``seq > cursor`` are flushed first,
 then the connection takes over live streaming.
 
 The chat executor itself is a thin stub (see
-:mod:`matrix.chat.executor`) for the M6 scaffold; the agent loop
+:mod:`primer.chat.executor`) for the M6 scaffold; the agent loop
 that produces real assistant_token streams + tool_call dispatch
 plugs in by replacing :class:`ChatTurnRunner.run_turn`.
 """

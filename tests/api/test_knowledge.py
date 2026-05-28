@@ -13,9 +13,9 @@ _SSP_BODY = {
     "config": {
         "hostname": "localhost",
         "port": 5432,
-        "database": "matrix",
-        "username": "matrix",
-        "password": "matrix",
+        "database": "primer",
+        "username": "primer",
+        "password": "primer",
         "db_schema": "public",
     },
 }

@@ -3,7 +3,7 @@
 Public surface added by sub-project G1 (Foundation):
 
 * :class:`RouterRegistry` -- registers callable routers keyed by
-  ``callable_id`` (mirrors :class:`matrix.agent.ToolExecutionManager`).
+  ``callable_id`` (mirrors :class:`primer.agent.ToolExecutionManager`).
 * :func:`match_json_path` -- evaluates a :class:`JsonPathBranch`
   against a parsed structured output dict.
 * :func:`render_input_template` -- Jinja2 sandboxed renderer for a

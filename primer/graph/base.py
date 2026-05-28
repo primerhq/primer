@@ -2,15 +2,15 @@
 
 The :class:`_BaseGraphExecutor` is intentionally non-public (leading
 underscore in the name); concrete executors are
-:class:`matrix.graph.GraphExecutor` (storage-backed) and
-:class:`matrix.graph.WorkspaceGraphExecutor` (workspace-backed).
+:class:`primer.graph.GraphExecutor` (storage-backed) and
+:class:`primer.graph.WorkspaceGraphExecutor` (workspace-backed).
 
 Behaviour:
 
 * Pregel-style superstep loop -- compute the ready set, run all
   ready nodes concurrently, evaluate outgoing edges, recompute the
   ready set, increment the iteration counter.
-* Per-node LLM dispatch goes through :func:`matrix.agent.loop.run_agent_turn`
+* Per-node LLM dispatch goes through :func:`primer.agent.loop.run_agent_turn`
   so tool dispatch inside a graph node is identical to a standalone
   agent's tool dispatch (multi-turn loops, error mapping, etc).
 * Live streaming -- every event from every concurrently-running node

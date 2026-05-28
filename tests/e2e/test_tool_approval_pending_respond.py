@@ -49,8 +49,8 @@ async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
         port=5432,
-        user="matrix",
-        password="matrix",
+        user="primer",
+        password="primer",
         database="matrix_e2e",
     )
 
@@ -155,7 +155,7 @@ async def _seed_ladder(
 
 
 # ---------------------------------------------------------------------------
-# Park injection: matches the shape matrix.api.routers.tool_approval
+# Park injection: matches the shape primer.api.routers.tool_approval
 # reads via _approval_blob_or_404 + _build_pending_response.
 # ---------------------------------------------------------------------------
 
@@ -329,7 +329,7 @@ async def test_t0833_sessions_tool_approval_pending_returns_200_on_approval_park
     parked_at present), reading from parked_state.yielded
     .resume_metadata.original_call.
 
-    Pins matrix/api/routers/tool_approval.py:_build_pending_response.
+    Pins primer/api/routers/tool_approval.py:_build_pending_response.
     """
     sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
     tcid = f"tc-appr-{unique_suffix}"
@@ -383,7 +383,7 @@ async def test_t0834_sessions_tool_approval_pending_404_when_parked_on_ask_user(
 
     Mirror of T0759 for the tool_approval surface. Defends the
     cross-tool isolation in _approval_blob_or_404 at
-    matrix/api/routers/tool_approval.py.
+    primer/api/routers/tool_approval.py.
     """
     sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
     tcid = f"tc-mix-{unique_suffix}"
@@ -422,7 +422,7 @@ async def test_t0835_sessions_tool_approval_respond_returns_202(
     """T0835 — POSTing to /tool_approval/respond with the parked
     yield's tool_call_id and a valid decision must return
     202 {"status":"accepted"}. Pins
-    matrix/api/routers/tool_approval.py:post_session_tool_approval_respond.
+    primer/api/routers/tool_approval.py:post_session_tool_approval_respond.
 
     A tool_call_id mismatch is a separate negative test; this one
     confirms the golden path lands on 202 and never leaks /errors/internal.
@@ -470,7 +470,7 @@ async def test_t0836_chats_tool_approval_pending_404_when_no_park(
     clean 404 /errors/not-found envelope, never /errors/internal.
 
     Pins the chat-surface mirror of the session pending endpoint
-    at matrix/api/routers/tool_approval.py:get_chat_tool_approval_pending.
+    at primer/api/routers/tool_approval.py:get_chat_tool_approval_pending.
     """
     pid = f"llm-chat-appr-{unique_suffix}"
     aid = f"ag-chat-appr-{unique_suffix}"

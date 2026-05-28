@@ -14,7 +14,7 @@ cascade-block lattice across THREE entity routers in one test:
                                      |
                               WorkspaceProvider → Template → Workspace
 
-Per matrix/api/routers/channels.py:
+Per primer/api/routers/channels.py:
 
   * ChannelProvider DELETE blocks while a Channel references it (409)
   * Channel DELETE blocks while a WorkspaceChannelAssociation

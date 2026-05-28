@@ -1,4 +1,4 @@
-"""Unit tests for matrix.toolset.web.backends.ddg.DuckDuckGoBackend."""
+"""Unit tests for primer.toolset.web.backends.ddg.DuckDuckGoBackend."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Integration tests for matrix.session.dispatch.run_one_session_turn.
+"""Integration tests for primer.session.dispatch.run_one_session_turn.
 
 Each test boots a fake executor that emits a scripted StreamEvent sequence,
 then verifies:

@@ -1,6 +1,6 @@
 """Shared fixtures for the UI e2e test suite.
 
-These tests run against a live ``matrix-app`` container (or ``matrix api
+These tests run against a live ``primer-app`` container (or ``primer api
 --run-worker``) serving the operator console at ``/console/``. The
 fixtures here do NOT start the server — that is the harness's
 responsibility (see ``scripts/e2e/ui-bringup.sh``).
@@ -57,7 +57,7 @@ if os.environ.get("PRIMER_RUN_UI_E2E") != "1":
 
 
 def _base_url() -> str:
-    """Where the matrix server is listening.
+    """Where the primer server is listening.
 
     Defaults match ``scripts/e2e/ui-bringup.sh`` (and the production
     docker-compose). Override with ``PRIMER_UI_E2E_BASE_URL`` for
@@ -152,13 +152,13 @@ def browser_context_args(browser_context_args: dict) -> dict:
       exercises the path explicitly.
     * ``ignore_https_errors``: True — the dev container is http-only
       today, but operators may proxy through https in the future.
-    * ``user_agent``: marked so server logs can grep for ``matrix-ui-e2e``.
+    * ``user_agent``: marked so server logs can grep for ``primer-ui-e2e``.
     """
     return {
         **browser_context_args,
         "viewport": {"width": 1366, "height": 768},
         "ignore_https_errors": True,
-        "user_agent": "Mozilla/5.0 (matrix-ui-e2e) Playwright",
+        "user_agent": "Mozilla/5.0 (primer-ui-e2e) Playwright",
     }
 
 

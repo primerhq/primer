@@ -614,7 +614,7 @@ async def test_claim_engine_upsert_on_create(
             WorkspaceProvider(
                 id="p-eng",
                 provider=WorkspaceProviderType.LOCAL,
-                config=LocalWorkspaceConfig(path="/tmp/matrix-eng"),
+                config=LocalWorkspaceConfig(path="/tmp/primer-eng"),
             )
         )
         await sp.get_storage(Workspace).create(Workspace(
@@ -658,7 +658,7 @@ async def test_claim_engine_delete_lease_on_cancel(
             WorkspaceProvider(
                 id="p-can",
                 provider=WorkspaceProviderType.LOCAL,
-                config=LocalWorkspaceConfig(path="/tmp/matrix-can"),
+                config=LocalWorkspaceConfig(path="/tmp/primer-can"),
             )
         )
         await sp.get_storage(Workspace).create(Workspace(
@@ -757,7 +757,7 @@ async def test_claim_engine_upsert_on_resume(
             WorkspaceProvider(
                 id="p-res",
                 provider=WorkspaceProviderType.LOCAL,
-                config=LocalWorkspaceConfig(path="/tmp/matrix-res"),
+                config=LocalWorkspaceConfig(path="/tmp/primer-res"),
             )
         )
         await sp.get_storage(Workspace).create(Workspace(

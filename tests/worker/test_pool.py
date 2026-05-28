@@ -1,4 +1,4 @@
-"""Tests for matrix.worker.pool.WorkerPool — start/stop + heartbeat skeleton."""
+"""Tests for primer.worker.pool.WorkerPool — start/stop + heartbeat skeleton."""
 
 from __future__ import annotations
 

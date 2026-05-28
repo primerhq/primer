@@ -32,7 +32,7 @@ import pytest
 async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost", port=5432,
-        user="matrix", password="matrix", database="matrix_e2e",
+        user="primer", password="primer", database="matrix_e2e",
     )
 
 

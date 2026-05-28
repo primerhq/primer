@@ -1,4 +1,4 @@
-"""Tests for matrix.agent.executor.AgentExecutor."""
+"""Tests for primer.agent.executor.AgentExecutor."""
 
 from __future__ import annotations
 
@@ -457,7 +457,7 @@ class TestYieldHistoryCapture:
         )
 
         # Handler raises YieldToWorker — same shape the approval gate
-        # raises (matrix/agent/tool_manager.py:268 inline form).
+        # raises (primer/agent/tool_manager.py:268 inline form).
         async def _yieldy_handler(name, args, principal):
             raise YieldToWorker(
                 Yielded(

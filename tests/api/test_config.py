@@ -1,4 +1,4 @@
-"""Unit tests for matrix.api.config.AppConfig (post-SQLite reshape)."""
+"""Unit tests for primer.api.config.AppConfig (post-SQLite reshape)."""
 
 from __future__ import annotations
 

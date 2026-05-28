@@ -3,7 +3,7 @@
 ``ReferenceCheck`` declares that a parent entity must not be deleted while
 child records still reference it.  ``build_reference_block_hook`` composes a
 list of checks into a single pre-delete async hook suitable for use as
-``on_pre_delete`` in :func:`matrix.api.routers._crud.make_crud_router`.
+``on_pre_delete`` in :func:`primer.api.routers._crud.make_crud_router`.
 
 Example::
 

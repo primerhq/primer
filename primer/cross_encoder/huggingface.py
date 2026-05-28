@@ -1,7 +1,7 @@
 """HuggingFace cross-encoder adapter — wraps sentence-transformers locally.
 
-Subclasses :class:`matrix.int.CrossEncoder`. Mirrors the shape of
-:class:`matrix.embedder.huggingface.HuggingFaceEmbedder`: bound to a
+Subclasses :class:`primer.int.CrossEncoder`. Mirrors the shape of
+:class:`primer.embedder.huggingface.HuggingFaceEmbedder`: bound to a
 configured :class:`CrossEncoderProvider` at construction time, lazy-
 loads each requested model on first call, runs the synchronous
 :class:`sentence_transformers.CrossEncoder.predict` inside

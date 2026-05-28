@@ -5,7 +5,7 @@ can't reliably compute themselves: current time, controlled pacing,
 stable id generation, content hashing, and arithmetic. Like
 ``system`` and ``workspaces``, ``misc`` is reserved (its toolset id
 short-circuits the normal ``Toolset`` row lookup in
-:class:`matrix.api.registries.ProviderRegistry`) and built once at
+:class:`primer.api.registries.ProviderRegistry`) and built once at
 app startup.
 
 Tool catalog
@@ -687,7 +687,7 @@ def build_misc_toolset(
 
 # Register yielding-tool resume hooks at import time. The worker's
 # resume path looks up hooks by tool name from this central
-# registry — see matrix/worker/yield_resume_registry.py.
+# registry — see primer/worker/yield_resume_registry.py.
 from primer.worker.yield_resume_registry import register_resume_hook  # noqa: E402
 
 register_resume_hook("sleep", sleep_resume)

@@ -1,4 +1,4 @@
-"""Unit tests for the CrossEncoderProvider config types in matrix/model/provider.py.
+"""Unit tests for the CrossEncoderProvider config types in primer/model/provider.py.
 
 Covers:
 

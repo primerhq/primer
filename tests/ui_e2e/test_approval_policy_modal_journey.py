@@ -32,7 +32,7 @@ Multi-subsystem exercised:
 
 Covers backlog item U0110. Does NOT require LM Studio — the LLM
 provider row is configured with a placeholder api_key so the
-provider+model identity validates against the row (matrix-side
+provider+model identity validates against the row (primer-side
 _validate_approval_config) without any upstream call.
 """
 

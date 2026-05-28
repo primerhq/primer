@@ -1,4 +1,4 @@
-"""Unit tests for matrix.search.searcher.CollectionSearcher."""
+"""Unit tests for primer.search.searcher.CollectionSearcher."""
 
 from __future__ import annotations
 

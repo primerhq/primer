@@ -1,4 +1,4 @@
-"""Tests for matrix.graph.workspace_executor.WorkspaceGraphExecutor.
+"""Tests for primer.graph.workspace_executor.WorkspaceGraphExecutor.
 
 These tests build a real :class:`StateRepo` on a tmp path so we
 exercise the git-versioning behaviour end-to-end (one commit per

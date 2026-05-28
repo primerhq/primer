@@ -22,7 +22,7 @@ retry — that's the scheduler's job in the next sub-project.
 
 The subsystem ingests four entity types — Agent, Graph, Collection,
 Tool — each into its own reserved collection
-(:data:`matrix.model.internal.INTERNAL_COLLECTION_IDS`). Tools are not
+(:data:`primer.model.internal.INTERNAL_COLLECTION_IDS`). Tools are not
 persisted as storage rows; the bootstrap enumerates every Toolset row
 plus the reserved ``_system`` and ``_search`` toolset providers and
 calls ``list_tools()`` on each.

@@ -4,7 +4,7 @@ In this version the MCP server itself acts as the auth server -- there
 is no protected-resource indirection -- and the ``resource`` parameter
 (RFC 8707) is not used. Aside from those two differences, everything
 else is identical to the modern flow in
-:mod:`matrix.toolset.oauth.discovery`, so this module is mostly a thin
+:mod:`primer.toolset.oauth.discovery`, so this module is mostly a thin
 layer over the same helpers.
 """
 

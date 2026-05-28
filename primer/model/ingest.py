@@ -1,7 +1,7 @@
 """Data types for the document-ingestion pipeline.
 
 The pipeline turns one external document into one or more
-:class:`matrix.model.vector.EmbeddingRecord` rows. Three intermediate
+:class:`primer.model.vector.EmbeddingRecord` rows. Three intermediate
 models live here:
 
 * :class:`LoadedDocument` -- what a :class:`DocumentLoader` produces:
@@ -69,7 +69,7 @@ class Chunk(BaseModel):
     """One chunk produced by a :class:`DocumentSplitter`.
 
     The ingester turns each ``Chunk`` into one
-    :class:`matrix.model.vector.EmbeddingRecord` after embedding.
+    :class:`primer.model.vector.EmbeddingRecord` after embedding.
     """
 
     text: str = Field(

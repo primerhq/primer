@@ -5,7 +5,7 @@ Spec: ``docs/superpowers/specs/2026-05-22-yielding-tools-design.md`` §8.3.
 Two public classes + one type alias:
 
 * :class:`EventDrivenWatcher` — the unit.  Consumes push events from a
-  :class:`~matrix.bus.ws_watch_probe.WatchProbe` and fires an async
+  :class:`~primer.bus.ws_watch_probe.WatchProbe` and fires an async
   ``on_change`` callback with a coalesced batch of change events whenever
   something arrives.  No bus, no scheduler — pure observation.
 * :class:`WatcherManager` — the lifecycle owner.  Periodically scans the
@@ -16,9 +16,9 @@ Two public classes + one type alias:
 
 Watch probes are resolved via a :data:`WorkspaceProbeResolver` callable that
 maps ``workspace_id → WatchProbe | None``.  For local workspaces this
-returns a :class:`~matrix.bus.host_inotify_probe.HostInotifyProbe`; for
+returns a :class:`~primer.bus.host_inotify_probe.HostInotifyProbe`; for
 container / k8s workspaces it returns a
-:class:`~matrix.bus.ws_watch_probe.WSWatchProbe`.
+:class:`~primer.bus.ws_watch_probe.WSWatchProbe`.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def _normalise_event_type(event_type: str) -> str:
 
 
 def _change_to_dict(change: Change) -> dict:
-    """Convert a :class:`~matrix.bus.ws_watch_probe.Change` to the bus payload dict."""
+    """Convert a :class:`~primer.bus.ws_watch_probe.Change` to the bus payload dict."""
     return {
         "path": change.path,
         "event_type": _normalise_event_type(change.event_type),
@@ -86,10 +86,10 @@ class EventDrivenWatcher:
     """Event-driven watcher for a fixed list of workspace-relative paths.
 
     Backend-agnostic: works against any object that implements the
-    :class:`~matrix.bus.ws_watch_probe.WatchProbe` interface.
+    :class:`~primer.bus.ws_watch_probe.WatchProbe` interface.
 
     The watcher opens a ``probe.watch(paths)`` async iterator and forwards
-    arriving :class:`~matrix.bus.ws_watch_probe.Change` events to the
+    arriving :class:`~primer.bus.ws_watch_probe.Change` events to the
     ``on_change`` callback after an optional coalescing window.
 
     Coalescing: when the first change arrives, the watcher waits

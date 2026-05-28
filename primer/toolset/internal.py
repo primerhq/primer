@@ -2,7 +2,7 @@
 
 Suitable for tools the application implements itself -- no remote server,
 no transport, no auth. The registry maps each tool's wire name to a
-:class:`matrix.model.chat.Tool` descriptor (the schema the LLM sees) and
+:class:`primer.model.chat.Tool` descriptor (the schema the LLM sees) and
 an async handler that executes the call.
 
 Handlers may yield. A handler that returns a :class:`Yielded` instance

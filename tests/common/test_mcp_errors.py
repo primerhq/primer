@@ -1,4 +1,4 @@
-"""Tests for matrix.common.mcp_errors.classify_mcp_exception."""
+"""Tests for primer.common.mcp_errors.classify_mcp_exception."""
 
 from __future__ import annotations
 

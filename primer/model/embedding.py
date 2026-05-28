@@ -1,6 +1,6 @@
 """Provider-agnostic embedding input/output types.
 
-Embedding-side counterpart to :mod:`matrix.model.chat`. Built from
+Embedding-side counterpart to :mod:`primer.model.chat`. Built from
 comparative SDK research in ``research/embedding_interface.md`` covering
 OpenAI embeddings, Google GenAI ``embed_content``, and HuggingFace
 ``transformers``.
@@ -8,7 +8,7 @@ OpenAI embeddings, Google GenAI ``embed_content``, and HuggingFace
 The interface follows the same layered design as ``chat.py``:
 
 * **Universal types** — :class:`TextPart` and :class:`ImagePart` (re-exported
-  from :mod:`matrix.model.chat`) — are the primary surface. Every adapter
+  from :mod:`primer.model.chat`) — are the primary surface. Every adapter
   must accept them, even if it has to reject some at runtime (e.g. the
   OpenAI adapter rejects images because OpenAI embeddings are text-only).
 * **Extended types** — audio, video, document/PDF, and pre-tokenised input

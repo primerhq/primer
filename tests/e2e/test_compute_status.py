@@ -1170,7 +1170,7 @@ async def test_t0413_delete_toolset_flips_agent_status_ok_false(
 async def test_t0430_graph_create_edge_unknown_node_id_returns_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0430 — Graph topology validator (matrix/model/graph.py:387)
+    """T0430 — Graph topology validator (primer/model/graph.py:387)
     rejects edges whose `from_node` or `to_node` doesn't match any
     declared node id. Pin: 422 /errors/validation-error with the
     bad node id surfaced in the envelope, never /errors/internal.
@@ -1259,7 +1259,7 @@ async def test_t0430_graph_create_edge_unknown_node_id_returns_422(
 async def test_t0431_graph_create_with_cyclic_edges_documented_behavior(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0431 — Per matrix/model/graph.py:359-363, "Cyclic graphs MUST
+    """T0431 — Per primer/model/graph.py:359-363, "Cyclic graphs MUST
     set max_iterations to bound execution; otherwise a stuck cycle
     runs unbounded." The validator does NOT statically detect cycles
     (only edge-id integrity); responsibility for unbounded loops is
@@ -1434,7 +1434,7 @@ async def test_t0447_concurrent_post_agents_same_id_one_wins(
 async def test_t0469_graph_router_branch_unknown_to_node_returns_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0469 — Per matrix/model/graph.py:418-429, the topology
+    """T0469 — Per primer/model/graph.py:418-429, the topology
     validator walks `_JsonPathRouter.branches[*].to_node` and rejects
     any branch whose target isn't in the declared node ids. Sibling
     of T0430 (static edge to_node) for the conditional-edge path.
@@ -1584,7 +1584,7 @@ async def test_t0471_graph_with_self_loop_edge_returns_clean_envelope(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0471 — A static edge from n1 to n1 is a self-loop. The
-    topology validator (matrix/model/graph.py:387) only checks edge
+    topology validator (primer/model/graph.py:387) only checks edge
     endpoints exist as nodes — self-loop is structurally legal.
     Pin observed behaviour: 201 (current permissive accept like
     T0431 cycles) or 422 with cycle wording. Never /errors/internal.
@@ -1973,7 +1973,7 @@ async def test_t0474_delete_graph_with_bound_session_orphan_tolerated(
 async def test_t0475_graph_subgraph_node_missing_graph_id_status_clean(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0475 — Per matrix/api/routers/compute.py:152-155, /graphs/
+    """T0475 — Per primer/api/routers/compute.py:152-155, /graphs/
     {id}/status walks each node and surfaces a missing-Graph issue
     for any subgraph_ref whose target id doesn't exist. Mirror of
     T0413 (missing-toolset on Agent) for the Graph→subgraph path.
@@ -2055,7 +2055,7 @@ async def test_t0492_agent_status_with_malformed_provider_url_clean(
     body; never /errors/internal at create or status walk.
 
     The status walk only checks REFERENCE existence (per
-    matrix/api/routers/compute.py:142-156), not adapter
+    primer/api/routers/compute.py:142-156), not adapter
     constructability — so even if the provider's url couldn't
     actually connect, the agent /status should still report
     ok=true (the LLMProvider row exists). The hard pin is the
@@ -2135,7 +2135,7 @@ async def test_t0495_graph_max_iterations_zero_rejected_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0495 — Graph.max_iterations is `PositiveInt | None` per
-    matrix/model/graph.py:379. PositiveInt forbids 0 and negatives.
+    primer/model/graph.py:379. PositiveInt forbids 0 and negatives.
     Pin: 0 is rejected with 422 /errors/validation-error; row not
     created.
     """
@@ -2300,7 +2300,7 @@ async def test_t0497_graph_max_iterations_very_large_accepted_round_trip(
 async def test_t0498_graph_with_callable_router_create_clean(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0498 — Per matrix/model/graph.py:285-302, _CallableRouter has
+    """T0498 — Per primer/model/graph.py:285-302, _CallableRouter has
     `kind="callable"` + `callable_id: str`. The topology validator
     does NOT resolve the callable at create time (per the docstring,
     "The callable signature is ... the returned string MUST be the
@@ -2391,7 +2391,7 @@ async def test_t0498_graph_with_callable_router_create_clean(
 async def test_t0499_put_graph_body_id_mismatch_returns_409(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0499 — Per matrix/api/routers/_crud.py:152-155, PUT raises
+    """T0499 — Per primer/api/routers/_crud.py:152-155, PUT raises
     ConflictError when path id != body id. Pin: 409
     /errors/conflict; existing row not corrupted by the rejected
     PUT. Mirror of the same pattern across all entity types — this
@@ -2566,7 +2566,7 @@ async def test_t0500_post_graph_concurrent_put_same_id_clean(
 async def test_t0519_graph_node_ids_edge_cases_round_trip(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0519 — Per matrix/model/graph.py:159-162 + 198, node `id`
+    """T0519 — Per primer/model/graph.py:159-162 + 198, node `id`
     is a `str` with `min_length=1`. Pin: edge-shaped node ids
     (single char, unicode, leading-whitespace-only, very long)
     round-trip byte-exact through POST → GET, and graph /status
@@ -2851,7 +2851,7 @@ async def test_t0521_graph_with_subgraph_and_agent_siblings_round_trip(
 async def test_t0522_graph_with_empty_description_accepted(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0522 — Per matrix/model/common.Describeable, `description`
+    """T0522 — Per primer/model/common.Describeable, `description`
     defaults to "" and has no min_length constraint. Pin: explicit
     empty description is accepted (201) and round-trips byte-exact;
     /status returns clean envelope.
@@ -3041,11 +3041,11 @@ async def test_t0524_graph_node_jinja_syntax_error_in_template_accepted(
 async def test_t0525_post_graph_invalidate_clean_envelope(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0525 — Per matrix/api/routers/compute.py, the Graph CRUD
+    """T0525 — Per primer/api/routers/compute.py, the Graph CRUD
     router (built via make_crud_router) does NOT mount an
     /invalidate endpoint. Only LLMProvider / EmbeddingProvider /
     CrossEncoderProvider / Toolset have invalidate (they manage
-    cached adapters per matrix/api/registries/provider_registry.py).
+    cached adapters per primer/api/registries/provider_registry.py).
 
     Pin: POST /v1/graphs/{id}/invalidate returns a clean envelope
     (404 not-found on the route, OR 405 method-not-allowed). Never
@@ -3505,7 +3505,7 @@ async def test_t0548_put_graph_with_paused_session_clean(
 async def test_t0561_post_agent_with_explicit_null_temperature_accepted(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0561 — Per matrix/model/agent.py:79, Agent.temperature is
+    """T0561 — Per primer/model/agent.py:79, Agent.temperature is
     `float | None` defaulting to None. Pin: explicit `null` in the
     request body is accepted (201) — null is the documented
     "defer to adapter" sentinel. GET round-trips with field absent
@@ -3561,7 +3561,7 @@ async def test_t0563_post_entity_description_with_deep_unicode_escapes(
 ) -> None:
     """T0563 — Mirror of T0493 (api_key) for the description field
     on a Describeable entity. Use Agent (extends Describeable; per
-    matrix/model/agent.py:66 — Toolset only extends Identifiable
+    primer/model/agent.py:66 — Toolset only extends Identifiable
     so description would be silently dropped). Build a description
     with 100+ stacked `\\u` escape sequences embedded in JSON wire
     bytes. Pin: 201 (accepted byte-exact) or clean 4xx; never
@@ -3640,7 +3640,7 @@ async def test_t0563_post_entity_description_with_deep_unicode_escapes(
 async def test_t0567_graph_post_empty_nodes_returns_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0567 — Per matrix/model/graph.py:365-368, Graph.nodes is
+    """T0567 — Per primer/model/graph.py:365-368, Graph.nodes is
     `list[GraphNode]` with `min_length=1`. Pin: empty nodes list
     is rejected at create with 422 /errors/validation-error
     (Pydantic min_length); never /errors/internal.
@@ -3678,7 +3678,7 @@ async def test_t0567_graph_post_empty_nodes_returns_422(
 async def test_t0568_graph_post_entry_node_id_missing_returns_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0568 — Per matrix/model/graph.py:399-402, the topology
+    """T0568 — Per primer/model/graph.py:399-402, the topology
     validator rejects entry_node_id values not present in nodes.
     Pin: 422 /errors/validation-error; never /errors/internal;
     row not created.
@@ -3956,7 +3956,7 @@ async def test_t0571_post_delete_post_then_status_clean(
 async def test_t0588_agent_create_with_null_tool_entry_returns_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0588 — Per matrix/model/agent.py, `Agent.tools` is `list[str]`
+    """T0588 — Per primer/model/agent.py, `Agent.tools` is `list[str]`
     (tool ids; the list itself MAY be empty but its entries must
     each be a string). A `null` element violates the inner type and
     must surface as 422 /errors/validation-error from Pydantic — never
@@ -4180,7 +4180,7 @@ async def test_t0600_agent_burst_create_delete_race_clean_envelopes(
 async def test_t0589_llm_provider_max_concurrency_zero_returns_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0589 — Per matrix/model/provider.py:313, `Limits.max_concurrency`
+    """T0589 — Per primer/model/provider.py:313, `Limits.max_concurrency`
     is `PositiveInt`. Pydantic rejects 0 with 422 — never accepted as
     "no concurrency cap" (a different field would be used for that).
 
@@ -4315,7 +4315,7 @@ async def test_t0617_graph_node_with_both_agent_id_and_graph_id_clean(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0617 — Graph nodes are a discriminated union by `kind`. Per
-    matrix/model/graph.py:152-201, _AgentNodeRef has fields
+    primer/model/graph.py:152-201, _AgentNodeRef has fields
     {kind, id, agent_id} and _GraphNodeRef has {kind, id, graph_id}.
     Sending kind="agent" with BOTH agent_id and graph_id is
     structurally suspicious — Pydantic's default extra=ignore
@@ -4537,7 +4537,7 @@ async def test_t0619_graph_duplicate_edges_round_trip(
 async def test_t0620_graph_node_empty_id_returns_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0620 — Per matrix/model/graph.py:160-162, _AgentNodeRef.id
+    """T0620 — Per primer/model/graph.py:160-162, _AgentNodeRef.id
     has min_length=1 (and similarly for _GraphNodeRef and
     _TerminalNode). Pin: explicit empty-string id is rejected with
     422 /errors/validation-error; row not created.
@@ -4663,7 +4663,7 @@ async def test_t0621_graph_zero_edges_multi_node_accepted_clean(
 async def test_t0622_graph_max_iterations_null_accepted(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0622 — Per matrix/model/graph.py:379, `max_iterations` is
+    """T0622 — Per primer/model/graph.py:379, `max_iterations` is
     `PositiveInt | None` with default `None`. Pin: an explicit `null`
     in the body is accepted (201), GET round-trips null, /status
     returns clean. Sister of T0497 (very-large value).
@@ -4823,7 +4823,7 @@ async def test_t0624_graph_deleted_then_resume_session_clean_fatal_path(
         2. DELETE the graph row
         3. Resume the session
 
-    Per matrix/worker/pool.py:478, the executor is NotImplemented
+    Per primer/worker/pool.py:478, the executor is NotImplemented
     regardless. The session must converge to ENDED via _handle_fatal
     with a clean error path. Hard pin: never /errors/internal at any
     step; resume returns a documented status code; subsequent GET
@@ -5532,7 +5532,7 @@ async def test_t0642_graph_duplicate_node_ids_clean_envelope(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0642 — Two nodes sharing the same id ("n1"). The topology
-    validator (matrix/model/graph.py) should reject this with 422
+    validator (primer/model/graph.py) should reject this with 422
     surfacing the duplicate id; the row must NOT be created.
 
     Hard pin: never /errors/internal. If a future iteration relaxes

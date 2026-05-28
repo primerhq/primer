@@ -74,10 +74,10 @@ def _template(image: str = "python:3.13", **kwargs) -> WorkspaceTemplate:
 
 
 def test_manifest_has_one_replica_and_pvc_template() -> None:
-    cfg = KubernetesWorkspaceConfig(namespace="matrix")
+    cfg = KubernetesWorkspaceConfig(namespace="primer")
     m = _build_statefulset_manifest(
         sts_name="primer-ws-abc",
-        namespace="matrix",
+        namespace="primer",
         workspace_id="abc",
         template=_template(),
         provider_cfg=cfg,
@@ -151,7 +151,7 @@ def test_provider_storage_class_lands_on_pvc() -> None:
 def test_workspace_label_present() -> None:
     cfg = KubernetesWorkspaceConfig(
         labels={"team": "platform"},
-        annotations={"owner": "matrix"},
+        annotations={"owner": "primer"},
     )
     m = _build_statefulset_manifest(
         sts_name="primer-ws-abc",
@@ -164,7 +164,7 @@ def test_workspace_label_present() -> None:
     assert labels["primer.workspace.id"] == "abc"
     assert labels["team"] == "platform"
     annotations = m["metadata"]["annotations"]
-    assert annotations["owner"] == "matrix"
+    assert annotations["owner"] == "primer"
 
 
 # ---- _validate_template_overrides ----------------------------------------

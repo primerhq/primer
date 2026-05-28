@@ -1,4 +1,4 @@
-"""Unit tests for the Q typed predicate builder (matrix.storage.q)."""
+"""Unit tests for the Q typed predicate builder (primer.storage.q)."""
 
 import pytest
 from pydantic import BaseModel

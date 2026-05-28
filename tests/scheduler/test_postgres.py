@@ -1,4 +1,4 @@
-"""Tests for matrix.scheduler.postgres.PostgresScheduler.
+"""Tests for primer.scheduler.postgres.PostgresScheduler.
 
 Real-Postgres tests. They are skipped automatically when the
 ``PRIMER_PG_TEST_DSN`` environment variable isn't set — no other

@@ -1,12 +1,12 @@
 """Predicate-tree -> SQLite SQL translator.
 
-Sibling of :mod:`matrix.storage._predicate` (the Postgres translator).
+Sibling of :mod:`primer.storage._predicate` (the Postgres translator).
 Emits ``json_extract(data, '$.path')`` for field references,
 ``CAST(... AS INTEGER|REAL)`` for numeric comparisons, ``?`` as the
 positional placeholder, and ``IN (?, ?, ...)`` expanded inline for
 :class:`Op.IN`.
 
-Module-private; consumed only by :mod:`matrix.storage.sqlite`.
+Module-private; consumed only by :mod:`primer.storage.sqlite`.
 """
 
 from __future__ import annotations

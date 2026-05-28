@@ -750,7 +750,7 @@ class TestOAuthConfig:
         assert c.resource_uri is None
         assert c.static_client is None
         assert c.spec_version is None
-        assert c.client_name == "matrix"
+        assert c.client_name == "primer"
 
     def test_with_scopes_and_static_client(self) -> None:
         from primer.model.provider import OAuthClientCredentials, OAuthConfig

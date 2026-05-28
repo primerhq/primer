@@ -1,4 +1,4 @@
-"""Tests for matrix.graph.router (JSON-path matcher + RouterRegistry)."""
+"""Tests for primer.graph.router (JSON-path matcher + RouterRegistry)."""
 
 from __future__ import annotations
 

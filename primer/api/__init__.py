@@ -1,4 +1,4 @@
-"""FastAPI REST API for the matrix framework.
+"""FastAPI REST API for the primer framework.
 
 Public surface:
 

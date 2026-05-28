@@ -956,7 +956,7 @@ async def test_t0165_tools_search_returns_200_after_bootstrap(
     are indexed at bootstrap time.
 
     NB: Spec §11 lists Tool as one of four CDC-mirrored entity kinds,
-    but matrix/api/routers/_cdc_hooks.py only wires hooks for
+    but primer/api/routers/_cdc_hooks.py only wires hooks for
     agent / graph / collection — Toolset CRUD does NOT live-update
     the tools index. This test pins the positive-control bootstrap
     path; live CDC for Toolsets is out of scope.
@@ -1006,7 +1006,7 @@ async def test_t0174_search_query_distinguishes_two_agents(
     a marker unique to agent A must rank agent A above agent B.
 
     NB: spec §11 documents `SearchRequest = { query, top_k?, filter? }`
-    but matrix/api/routers/internal_collections.py:97 actually only
+    but primer/api/routers/internal_collections.py:97 actually only
     accepts `{ query, top_k }` — the `filter` field is silently
     ignored by Pydantic. This test pins the IMPLEMENTED behaviour
     (semantic search via the query string) rather than the
@@ -1805,7 +1805,7 @@ async def test_t0269_ic_config_put_with_empty_collections_list(
 ) -> None:
     """T0269 — Spec §11 mentioned `collections=[...]` as a body field
     on PUT /v1/internal_collections/config. The actual model
-    (matrix/model/internal.py) does not have a `collections` field,
+    (primer/model/internal.py) does not have a `collections` field,
     so passing `collections=[]` should be silently ignored by Pydantic
     (extra=ignore default) and the PUT succeeds.
 
@@ -1948,7 +1948,7 @@ async def test_t0286_get_config_collections_field_round_trip(
 ) -> None:
     """T0286 — Subsystem config introspection: pin GET response shape
     after PUT with an explicit `collections` field. The actual model
-    (matrix/model/internal.py) does NOT define a `collections` field,
+    (primer/model/internal.py) does NOT define a `collections` field,
     so it's silently ignored on PUT (T0269 confirmed) and absent on
     GET. This test pins that the GET response does NOT include
     `collections` (so callers know not to depend on it), AND the

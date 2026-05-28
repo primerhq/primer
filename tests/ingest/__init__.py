@@ -1,1 +1,1 @@
-"""Tests for matrix.ingest -- document ingestion pipeline."""
+"""Tests for primer.ingest -- document ingestion pipeline."""

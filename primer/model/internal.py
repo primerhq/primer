@@ -58,7 +58,7 @@ class InternalCollectionsConfig(Identifiable):
         min_length=1,
         description=(
             "Id of the configured "
-            ":class:`matrix.model.provider.EmbeddingProvider` used to "
+            ":class:`primer.model.provider.EmbeddingProvider` used to "
             "vectorise every internal collection. Must reference an "
             "existing provider row at activation time."
         ),

@@ -1,8 +1,8 @@
 """Abstract base class for cross-encoder rerankers.
 
-Sibling of :class:`matrix.int.LLM`, :class:`matrix.int.Embedder`,
-:class:`matrix.int.VectorStore`, :class:`matrix.int.ToolsetProvider`,
-and :class:`matrix.int.Storage`. A :class:`CrossEncoder` instance is
+Sibling of :class:`primer.int.LLM`, :class:`primer.int.Embedder`,
+:class:`primer.int.VectorStore`, :class:`primer.int.ToolsetProvider`,
+and :class:`primer.int.Storage`. A :class:`CrossEncoder` instance is
 bound to one provider (HuggingFace local, Cohere, Jina, …) at
 construction time and may serve multiple cross-encoder models — the
 ``model`` parameter on :meth:`score` selects which one to use for a
@@ -54,7 +54,7 @@ class CrossEncoder(ABC):
             Provider-side cross-encoder model name. Must be one of
             the names returned by :meth:`list_models`; adapters
             should validate before dispatch and raise
-            :class:`matrix.model.except_.ConfigError` on a miss.
+            :class:`primer.model.except_.ConfigError` on a miss.
         query
             The retrieval query as plain text.
         documents
@@ -74,13 +74,13 @@ class CrossEncoder(ABC):
 
         Raises
         ------
-        matrix.model.except_.ConfigError
+        primer.model.except_.ConfigError
             ``model`` is not one of this provider's permitted models,
             or the underlying backend library is misconfigured.
-        matrix.model.except_.ProviderError
+        primer.model.except_.ProviderError
             The remote provider (Cohere / Jina) returned an error
             response or an unexpected payload.
-        matrix.model.except_.NetworkError
+        primer.model.except_.NetworkError
             Network failure communicating with a remote provider.
         """
 

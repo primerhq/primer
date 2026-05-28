@@ -1,21 +1,21 @@
 """Shared google-genai SDK exception classifier.
 
-Used by every matrix adapter that wraps the google-genai client
+Used by every primer adapter that wraps the google-genai client
 (currently GeminiLLM; the Gemini Embedder sub-project will share
 this when it ships). Maps the google-genai exception hierarchy to
-the matrix exception hierarchy so callers see one universal error
+the primer exception hierarchy so callers see one universal error
 surface regardless of which adapter raised.
 
 Dispatches primarily on the HTTP status code carried by
 ``google.genai.errors.APIError.code`` rather than on subclass identity
 (google-genai only distinguishes 4xx ``ClientError`` vs 5xx
 ``ServerError`` via subclass; the granular semantic distinctions
-matrix cares about — auth vs rate-limit vs bad-request — live in the
+primer cares about — auth vs rate-limit vs bad-request — live in the
 HTTP code).
 
 Network failures from the underlying httpx transport (``TimeoutException``,
 ``NetworkError``, ``ConnectError``) are caught and mapped to
-``matrix.NetworkError``.
+``primer.NetworkError``.
 """
 
 from __future__ import annotations
@@ -35,11 +35,11 @@ from primer.model.except_ import (
 
 
 def classify_google_exception(exc: Exception) -> MatrixError:
-    """Map a google-genai SDK exception to the matrix exception hierarchy.
+    """Map a google-genai SDK exception to the primer exception hierarchy.
 
     Mapping rules:
 
-    | google-genai exception | matrix exception |
+    | google-genai exception | primer exception |
     |---|---|
     | ``APIError`` with code in {401, 403} | ``AuthenticationError`` |
     | ``APIError`` with code == 429 | ``RateLimitError`` |

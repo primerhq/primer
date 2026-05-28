@@ -1,4 +1,4 @@
-"""Tests for matrix.harness.hashes."""
+"""Tests for primer.harness.hashes."""
 
 from __future__ import annotations
 

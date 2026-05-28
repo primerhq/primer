@@ -1,20 +1,20 @@
-"""Typer CLI: ``matrix api [--no-worker]`` and ``matrix worker``.
+"""Typer CLI: ``primer api [--no-worker]`` and ``primer worker``.
 
 Both entrypoints load (or auto-discover) a YAML config file that
-populates :class:`matrix.api.config.AppConfig`. The CLI is the
+populates :class:`primer.api.config.AppConfig`. The CLI is the
 single place that configures stdlib logging — library code never
 touches it.
 
 Layout
 ------
-* ``matrix api`` — serve the HTTP API AND start an in-process worker
+* ``primer api`` — serve the HTTP API AND start an in-process worker
   pool. With no flags, auto-loads ``~/.primer/config.yaml`` if
   present, otherwise runs with built-in defaults (embedded SQLite at
   ``~/.primer/db/data.sqlite``).
-* ``matrix api --config path/to/config.yaml`` — explicit config.
+* ``primer api --config path/to/config.yaml`` — explicit config.
 * ``primer api --no-worker`` — serve the API only; the worker pool is
-  expected to run in a separate ``matrix worker`` process.
-* ``matrix worker`` — run the worker pool. A minimal HTTP surface
+  expected to run in a separate ``primer worker`` process.
+* ``primer worker`` — run the worker pool. A minimal HTTP surface
   (``/v1/health`` and ``/v1/workers``) is still served for
   liveness/readiness probes.
 
@@ -146,7 +146,7 @@ def run_api(
         help=(
             "Serve the API only; do NOT start the in-process worker pool. "
             "Default is api+worker (single-process) — pass this when the "
-            "worker is running in a separate `matrix worker` process."
+            "worker is running in a separate `primer worker` process."
         ),
     ),
 ) -> None:

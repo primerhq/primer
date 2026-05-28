@@ -1,4 +1,4 @@
-"""Tests for matrix.observability.tracing."""
+"""Tests for primer.observability.tracing."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from primer.observability.tracing import get_tracer, setup
 def _reset_tracing() -> None:
     """Reset the module-level provider so tests are independent.
 
-    Only clears the Matrix-level reference; avoids touching OTEL internals
+    Only clears the Primer-level reference; avoids touching OTEL internals
     that vary across SDK versions.
     """
     tracing_module._provider = None

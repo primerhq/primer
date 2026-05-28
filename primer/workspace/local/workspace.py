@@ -1,6 +1,6 @@
 """LocalWorkspace — one materialised workspace backed by a host directory.
 
-Constructed by :meth:`matrix.workspace.local.backend.LocalWorkspaceBackend.create`
+Constructed by :meth:`primer.workspace.local.backend.LocalWorkspaceBackend.create`
 and held by the in-process workspace registry. Owns one
 :class:`StateRepo`, one :class:`TruncationStore`, the seven concrete
 workspace tools, and an in-memory session registry.

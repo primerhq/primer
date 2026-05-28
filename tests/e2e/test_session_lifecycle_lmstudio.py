@@ -1124,7 +1124,7 @@ async def test_t0139_agent_with_empty_tools_list_still_completes_turn(
     row) still produces a session that reaches terminal with a non-zero
     turn_no.
 
-    Per matrix/model/agent.py:91-101, "Workspace tools are NOT listed
+    Per primer/model/agent.py:91-101, "Workspace tools are NOT listed
     here -- those are composed onto the agent automatically when it
     attaches to a workspace." This test pins that the empty-tools path
     doesn't crash the runtime composition step, which would otherwise
@@ -1180,14 +1180,14 @@ async def test_t0156_graph_bound_session_terminates_cleanly(
     """T0156 — bind a session via `binding={kind:"graph", graph_id:…}`.
 
     Graph executor wiring is explicitly DEFERRED in v1
-    (matrix/worker/pool.py:_build_graph_executor raises NotImplementedError
+    (primer/worker/pool.py:_build_graph_executor raises NotImplementedError
     by design — see the docstring there: "graph executor wiring is the
     next sub-project"). The contract this test pins is therefore the
     failure path: the worker must surface that NotImplementedError as a
     clean session-row update (status=ended, last_error populated) rather
     than letting the exception bubble out of the turn loop and leave
     the session stuck in RUNNING. (The original "stuck-in-RUNNING"
-    behaviour was the bug fixed in this iteration's matrix/ change.)
+    behaviour was the bug fixed in this iteration's primer/ change.)
     """
     env = await _full_setup(client, unique_suffix, tmp_path)
     graph_id = f"lmgraph-{unique_suffix}"
@@ -1809,7 +1809,7 @@ async def test_t0490_two_pause_calls_on_running_session_clean(
     a moment to claim and start running, then fire two pause calls
     without delay. Both must return 204 (the pause handler sets
     pause_requested=True idempotently for RUNNING per
-    matrix/api/routers/sessions.py:255). Pin: never /errors/internal;
+    primer/api/routers/sessions.py:255). Pin: never /errors/internal;
     session converges to a terminal status; both pause calls < 500.
 
     LM-Studio dependent — module-level skip applies if LM Studio

@@ -1,4 +1,4 @@
-"""Tests for matrix.coordinator.factory.CoordinatorFactory."""
+"""Tests for primer.coordinator.factory.CoordinatorFactory."""
 
 from __future__ import annotations
 

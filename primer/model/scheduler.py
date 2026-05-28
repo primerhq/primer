@@ -77,7 +77,7 @@ class InMemorySchedulerConfig(BaseModel):
 class SchedulerProviderConfig(BaseModel):
     """Discriminated config selecting the Scheduler impl.
 
-    Mirrors the shape of :class:`matrix.model.provider.StorageProviderConfig`
+    Mirrors the shape of :class:`primer.model.provider.StorageProviderConfig`
     so the factory pattern is identical.
     """
 

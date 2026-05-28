@@ -2,9 +2,9 @@
 
 A :class:`DocumentSplitter` accepts a :class:`LoadedDocument` and
 returns a list of :class:`Chunk`s. The default implementation is
-:class:`matrix.ingest.splitters.docling.DoclingSplitter`
+:class:`primer.ingest.splitters.docling.DoclingSplitter`
 (structure-aware, paired with :class:`DoclingLoader`);
-:class:`matrix.ingest.splitters.recursive.RecursiveSplitter` is a
+:class:`primer.ingest.splitters.recursive.RecursiveSplitter` is a
 pure-Python fallback for callers that want no external parser.
 """
 

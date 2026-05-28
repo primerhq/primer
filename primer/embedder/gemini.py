@@ -1,10 +1,10 @@
 """Gemini embedder adapter — wraps google-genai's embed_content.
 
-Subclasses :class:`matrix.int.Embedder`. Honors task_type, title,
+Subclasses :class:`primer.int.Embedder`. Honors task_type, title,
 auto_truncate, document_ocr, audio_track_extraction from
 :class:`ExtendedEmbeddingConfig`. Reuses GoogleConfig from sub-project
 #4 (LLM side) and classify_google_exception from
-matrix.common.google_errors.
+primer.common.google_errors.
 """
 
 from __future__ import annotations

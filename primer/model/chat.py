@@ -310,7 +310,7 @@ class ToolResultPart(BaseModel):
 
 
 class ToolCallResult(BaseModel):
-    """Result of executing a tool through a :class:`matrix.int.ToolsetProvider`.
+    """Result of executing a tool through a :class:`primer.int.ToolsetProvider`.
 
     Mirrors the shape of MCP's tool-call response so downstream consumers
     can convert directly to a :class:`ToolResultPart` for the next chat
@@ -1164,16 +1164,16 @@ class _ExecutorToolResult(BaseModel):
     """Synthetic event: an agent executor fed a tool result back to the LLM.
 
     Reachable only through :class:`ExtendedEvent`. The agent executor
-    (``matrix.agent.AgentExecutor`` / ``WorkspaceAgentExecutor``)
+    (``primer.agent.AgentExecutor`` / ``WorkspaceAgentExecutor``)
     emits one of these per :class:`ToolResultPart` it sends to the
     LLM so streaming-tap subscribers can render the tool round-trip
     as part of the normal stream channel. Not produced by any LLM
     adapter -- only the executor emits it.
 
-    Lives in this module (rather than ``matrix.agent.events``) to
+    Lives in this module (rather than ``primer.agent.events``) to
     keep the :data:`ExtendedStreamContent` discriminated union
     self-contained and avoid a chat -> agent module cycle.
-    ``matrix.agent.events`` re-exports the type for clarity at the
+    ``primer.agent.events`` re-exports the type for clarity at the
     agent-side import site.
     """
 
@@ -1200,13 +1200,13 @@ class _GraphNodeEvent(BaseModel):
     """Synthetic event: a graph executor forwarded a child node's stream event.
 
     Reachable only through :class:`ExtendedEvent`. The graph
-    executor (``matrix.graph.GraphExecutor`` /
+    executor (``primer.graph.GraphExecutor`` /
     ``WorkspaceGraphExecutor``) wraps every event produced by a
     child agent executor so streaming-tap subscribers can correlate
     by graph node + iteration. Not produced by any LLM adapter --
     only the graph executor emits it.
 
-    Lives in this module (rather than ``matrix.graph.events``) for
+    Lives in this module (rather than ``primer.graph.events``) for
     the same reason as :class:`_ExecutorToolResult` -- keeping the
     :data:`ExtendedStreamContent` union self-contained and avoiding
     a chat -> graph module cycle.

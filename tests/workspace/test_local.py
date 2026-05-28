@@ -1,4 +1,4 @@
-"""Tests for matrix.workspace.local.LocalWorkspaceBackend + LocalWorkspace."""
+"""Tests for primer.workspace.local.LocalWorkspaceBackend + LocalWorkspace."""
 
 from __future__ import annotations
 

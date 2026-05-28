@@ -150,7 +150,7 @@ async def test_t0101_health_endpoint_stable_under_repeated_load(
 async def test_t0102_options_preflight_pins_documented_behaviour(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0102 — `OPTIONS /v1/health` with an `Origin` header. The matrix
+    """T0102 — `OPTIONS /v1/health` with an `Origin` header. The primer
     server doesn't install CORS middleware (none is in the spec or
     `app.py`), so OPTIONS resolves through Starlette's default
     method-handling. This test pins the actual behaviour:
@@ -341,7 +341,7 @@ async def test_t0343_worker_heartbeat_advances_under_idle(
 # ============================================================================
 
 
-_LOG_FILE = "tests/.e2e/logs/matrix.log"
+_LOG_FILE = "tests/.e2e/logs/primer.log"
 
 
 @pytest.mark.asyncio

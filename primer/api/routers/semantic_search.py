@@ -1,6 +1,6 @@
 """CRUD router for SemanticSearchProvider (/v1/ssp).
 
-Follows the same pattern as :mod:`matrix.api.routers.providers` —
+Follows the same pattern as :mod:`primer.api.routers.providers` —
 wraps :func:`make_crud_router` with per-entity hooks for invalidation
 and cascade-block-on-delete.
 

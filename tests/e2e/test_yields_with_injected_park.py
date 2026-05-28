@@ -1,6 +1,6 @@
 """E2E tests: yielding-tools endpoints with directly-injected park state.
 
-The matrix process exposes ask_user / cancel-yielded-tool / pending
+The primer process exposes ask_user / cancel-yielded-tool / pending
 endpoints that require a session to be in the parked state. Without
 LM Studio wired in, no agent loop can drive a real park, so we use
 direct postgres JSONB injection as fixture setup — identical to the
@@ -44,8 +44,8 @@ async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
         port=5432,
-        user="matrix",
-        password="matrix",
+        user="primer",
+        password="primer",
         database="matrix_e2e",
     )
 
@@ -137,7 +137,7 @@ async def _inject_park(
     response_schema: dict | None = None,
 ) -> None:
     """Inject parked_* fields onto a session row, mirroring the shape
-    matrix.worker.pool._handle_yield writes via scheduler.park_turn.
+    primer.worker.pool._handle_yield writes via scheduler.park_turn.
 
     All five M1 park fields are written:
       parked_status='parked', parked_event_key, parked_until,
@@ -267,7 +267,7 @@ async def test_t0759_ask_user_pending_404_when_parked_on_sleep(
     """T0759 — A session parked on the sleep tool (not ask_user) must
     cause GET /ask_user/pending to return 404, NOT 200 with sleep's
     resume_metadata leaked. Pins cross-tool isolation in the
-    pending endpoint at matrix/api/routers/yields.py.
+    pending endpoint at primer/api/routers/yields.py.
     """
     sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
     tcid = f"tc-sleep-{unique_suffix}"
@@ -308,7 +308,7 @@ async def test_t0760_ask_user_respond_404_when_tool_call_id_mismatch(
 ) -> None:
     """T0760 — POSTing to /ask_user/respond with a tool_call_id that
     doesn't match the parked yield's tool_call_id must 404 and leave
-    the row parked. Defends matrix/api/routers/yields.py's
+    the row parked. Defends primer/api/routers/yields.py's
     _tool_call_id_for() lookup against silently flipping the wrong
     yield to resumable.
     """
@@ -360,7 +360,7 @@ async def test_t0761_yields_cancel_returns_409_when_cancel_requested_true(
     cancel-yielded-tool. If a session has cancel_requested=true
     already, POSTing to /yields/{tcid}/cancel must 409, not 202.
     Defends the conflict-resolution rule in
-    matrix/api/routers/yields.py:post_cancel_yielded_tool.
+    primer/api/routers/yields.py:post_cancel_yielded_tool.
     """
     sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
     tcid = f"tc-409-{unique_suffix}"

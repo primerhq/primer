@@ -338,7 +338,7 @@ class TestChatTitle:
         long_text = (
             "this is a really really long opening message that goes on "
             "and on and on and far exceeds the 80-character title cap "
-            "matrix imposes on the chat list"
+            "primer imposes on the chat list"
         )
         with SyncTestClient(app) as sclient:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})

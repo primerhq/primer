@@ -1,4 +1,4 @@
-"""Tests for matrix.ingest.splitters.recursive.RecursiveSplitter."""
+"""Tests for primer.ingest.splitters.recursive.RecursiveSplitter."""
 
 from __future__ import annotations
 

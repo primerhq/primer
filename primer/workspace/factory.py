@@ -1,7 +1,7 @@
 """Factory for instantiating :class:`WorkspaceBackend`s from config.
 
-Mirrors the :class:`matrix.storage.factory.StorageProviderFactory` /
-:class:`matrix.vector.factory.VectorStoreProviderFactory` pattern.
+Mirrors the :class:`primer.storage.factory.StorageProviderFactory` /
+:class:`primer.vector.factory.VectorStoreProviderFactory` pattern.
 
 Phase A wires only the Local provider. Container / Kubernetes raise
 :class:`ConfigError` until phases B and C land.

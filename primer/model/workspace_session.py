@@ -188,7 +188,7 @@ class AgentBinding(BaseModel):
 class SessionInfo(BaseModel):
     """Serialisable summary of an :class:`AgentSession`.
 
-    What :meth:`matrix.int.Workspace.list_sessions` returns. Persisted
+    What :meth:`primer.int.Workspace.list_sessions` returns. Persisted
     as ``.state/sessions/<session_id>/session.json`` so it survives
     workspace restart.
     """
@@ -410,7 +410,7 @@ class WorkspaceSession(Identifiable):
     )
 
     # ------------------------------------------------------------------
-    # Streaming lifecycle fields (mirrors Chat model in matrix.model.chats).
+    # Streaming lifecycle fields (mirrors Chat model in primer.model.chats).
     # See docs/superpowers/specs/2026-05-27-workspace-session-streaming-design.md.
     # ------------------------------------------------------------------
     last_seq: int = Field(
@@ -420,7 +420,7 @@ class WorkspaceSession(Identifiable):
             "for this session.  Authoritative cursor for cursor-replay on "
             "WS reconnect; the WS endpoint emits records with "
             "``seq > cursor`` in order.  Bumped atomically by the "
-            "message writer (see matrix.session.persistence)."
+            "message writer (see primer.session.persistence)."
         ),
     )
     turn_status: Literal["idle", "claimable", "running"] = Field(
@@ -464,7 +464,7 @@ class WorkspaceSession(Identifiable):
 class SessionMessageKind(StrEnum):
     """Wire-level message kinds emitted by the session executor.
 
-    Mirrors :data:`matrix.model.chats.ChatMessageKind` for the workspace
+    Mirrors :data:`primer.model.chats.ChatMessageKind` for the workspace
     session streaming surface.  Each record in the per-session message
     log carries the kind plus a kind-specific ``payload`` JSON blob.
     """
@@ -483,7 +483,7 @@ class SessionMessageKind(StrEnum):
 class SessionMessageRecord(BaseModel):
     """One row in the per-session append-only message log.
 
-    Mirrors :class:`matrix.model.chats.ChatMessage` for the workspace
+    Mirrors :class:`primer.model.chats.ChatMessage` for the workspace
     session streaming surface.  ``seq`` is monotonically increasing per
     session; the composite ``(session_id, seq)`` is the natural primary
     key (the storage layer composes an ``id`` from these two).
@@ -501,7 +501,7 @@ class SessionMessageRecord(BaseModel):
 #
 # AgentSessionBinding.agent_snapshot and GraphSessionBinding.graph_snapshot
 # reference Agent / Graph, which we import only under TYPE_CHECKING above to
-# avoid a circular import (matrix.model.graph already imports SessionStatus
+# avoid a circular import (primer.model.graph already imports SessionStatus
 # from this module). Pydantic v2 needs concrete classes to build the schema,
 # so we resolve the forward refs lazily inside a deferred-import helper that
 # runs after this module has finished executing.

@@ -5,7 +5,7 @@ Three exports:
 * :class:`WorkspaceTool` -- ABC every workspace tool implements
   (``ls``, ``read``, ``write``, ``edit``, ``glob``, ``grep``, ``exec``
   in v1; concrete implementations land in
-  :mod:`matrix.workspace.tools` under sub-project C).
+  :mod:`primer.workspace.tools` under sub-project C).
 * :class:`ToolCallContext` -- per-call context the agent runtime hands
   the tool's ``execute()``.
 * :class:`ToolResult` -- what a tool returns: the string the LLM sees
@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 if TYPE_CHECKING:
-    # AgentSession is concrete and lives at matrix/workspace/session.py,
+    # AgentSession is concrete and lives at primer/workspace/session.py,
     # which lands in sub-project D. Until then, the forward reference
     # below stays as a string so this module is importable without it.
     from primer.workspace.session import AgentSession
@@ -161,7 +161,7 @@ class WorkspaceTool(ABC):
     """One tool that operates on a workspace's filesystem / shell.
 
     Concrete subclasses (``Ls``, ``Read``, ``Write``, ``Edit``,
-    ``Glob``, ``Grep``, ``Exec``) ship in :mod:`matrix.workspace.tools`
+    ``Glob``, ``Grep``, ``Exec``) ship in :mod:`primer.workspace.tools`
     under sub-project C. Each defines a Pydantic ``parameters()`` model
     for argument validation and an ``execute(args, ctx)`` body that
     actually does the work.

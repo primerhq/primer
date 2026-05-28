@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bring up the matrix test environment.
+# Bring up the primer test environment.
 #
 # Container runtime: Podman or Docker. The script auto-detects which one
 # is on $PATH (podman first, then docker) and uses its `compose`
@@ -10,7 +10,7 @@
 #   1. $RUNTIME compose up -d, wait for postgres healthcheck
 #   2. drop+recreate the matrix_e2e database with the pgvector extension
 #   3. render tests/.e2e/config.yaml
-#   4. launch `uv run matrix api` in the background (worker runs by default)
+#   4. launch `uv run primer api` in the background (worker runs by default)
 #   5. poll /v1/health until 200 (30 s timeout)
 #
 # Exit code 0 means the server is up and ready for tests.
@@ -66,8 +66,8 @@ PID_FILE="$E2E_DIR/server.pid"
 STDOUT_FILE="$E2E_DIR/server.stdout"
 
 PORT="${PRIMER_E2E_PORT:-8765}"
-DB_USER="${PRIMER_DB_USER:-matrix}"
-DB_PASSWORD="${PRIMER_DB_PASSWORD:-matrix}"
+DB_USER="${PRIMER_DB_USER:-primer}"
+DB_PASSWORD="${PRIMER_DB_PASSWORD:-primer}"
 DB_NAME="matrix_e2e"
 # Set PRIMER_E2E_NO_VECTOR=1 to render an AppConfig without a vector_store
 # block. Used by gating tests that need to assert 503 behaviour on the
@@ -129,7 +129,7 @@ port: $PORT
 
 log_level: info
 log_json: true
-log_file: ./tests/.e2e/logs/matrix.log
+log_file: ./tests/.e2e/logs/primer.log
 
 scheduler:
   provider: postgres
@@ -173,7 +173,7 @@ mcp_stdio_allowed_commands:
 EOF
 echo "[bringup] rendered $CONFIG" >&2
 
-# ---- 4. Defensive: stop the docker-compose matrix-app container if it's
+# ---- 4. Defensive: stop the docker-compose primer-app container if it's
 #         running. The UI loop's bring-up leaves the container alive between
 #         iterations (per docs/testing/04-ui-test-loop.md Phase 6 step 1) on
 #         the same host port we use here. The container's image is built
@@ -181,9 +181,9 @@ echo "[bringup] rendered $CONFIG" >&2
 #         than the host's working tree — letting it win the bind race causes
 #         spurious 404s when the host's newer routes aren't present.
 #         This stop is idempotent: no-op when the container isn't up.
-if "$RUNTIME" compose ps --services --filter "status=running" 2>/dev/null | grep -qx "matrix"; then
-    echo "[bringup] stopping leftover matrix-app container so the host process can bind $PORT..." >&2
-    "$RUNTIME" compose stop matrix >&2 || true
+if "$RUNTIME" compose ps --services --filter "status=running" 2>/dev/null | grep -qx "primer"; then
+    echo "[bringup] stopping leftover primer-app container so the host process can bind $PORT..." >&2
+    "$RUNTIME" compose stop primer >&2 || true
 fi
 
 # ---- 5. Defensive: kill any leftover host server from a previous crashed run
@@ -199,12 +199,12 @@ if [[ -f "$PID_FILE" ]]; then
     rm -f "$PID_FILE"
 fi
 
-# ---- 5. Launch matrix in background -----------------------------------------
+# ---- 5. Launch primer in background -----------------------------------------
 
-echo "[bringup] launching matrix on port $PORT..." >&2
+echo "[bringup] launching primer on port $PORT..." >&2
 : > "$STDOUT_FILE"
 (
-    uv run matrix api --config "$CONFIG" \
+    uv run primer api --config "$CONFIG" \
         > "$STDOUT_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     disown
@@ -225,8 +225,8 @@ while true; do
         echo "[bringup] FATAL: server died during startup" >&2
         echo "--- last 100 lines of server.stdout ---" >&2
         tail -n 100 "$STDOUT_FILE" >&2 || true
-        echo "--- last 100 lines of matrix.log ---" >&2
-        [[ -f "$LOG_DIR/matrix.log" ]] && tail -n 100 "$LOG_DIR/matrix.log" >&2 || true
+        echo "--- last 100 lines of primer.log ---" >&2
+        [[ -f "$LOG_DIR/primer.log" ]] && tail -n 100 "$LOG_DIR/primer.log" >&2 || true
         exit 1
     fi
     if curl -fsS "http://127.0.0.1:$PORT/v1/health" > /dev/null 2>&1; then
@@ -243,8 +243,8 @@ while true; do
         echo "[bringup] FATAL: /v1/health did not respond within 60s" >&2
         echo "--- last 100 lines of server.stdout ---" >&2
         tail -n 100 "$STDOUT_FILE" >&2 || true
-        echo "--- last 100 lines of matrix.log ---" >&2
-        [[ -f "$LOG_DIR/matrix.log" ]] && tail -n 100 "$LOG_DIR/matrix.log" >&2 || true
+        echo "--- last 100 lines of primer.log ---" >&2
+        [[ -f "$LOG_DIR/primer.log" ]] && tail -n 100 "$LOG_DIR/primer.log" >&2 || true
         kill "$server_pid" 2>/dev/null || true
         exit 1
     fi

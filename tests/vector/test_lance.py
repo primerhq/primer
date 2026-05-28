@@ -1,4 +1,4 @@
-"""Unit tests for matrix.vector.lance.LanceVectorStoreProvider + LanceVectorStore.
+"""Unit tests for primer.vector.lance.LanceVectorStoreProvider + LanceVectorStore.
 
 Runs against a tmp_path LanceDB. Skipped-soft when the lancedb package
 is unavailable so test gates surface the dependency at the right place.

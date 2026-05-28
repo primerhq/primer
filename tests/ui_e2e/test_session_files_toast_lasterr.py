@@ -228,13 +228,13 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
     the child file ``a.txt`` becomes visible (lazy expand via the
     DirectoryNode setOpen handler).
 
-    Skip-soft when the matrix-app container can't reach the host
+    Skip-soft when the primer-app container can't reach the host
     tmp_path the workspace provider points at — the PUT files
     call fails 5xx, same root cause as U0072.
     """
     wp_id = f"wp-80-{unique_suffix}"
     tpl_id = f"tpl-80-{unique_suffix}"
-    # Use a container-internal path (matrix-app linux container can't
+    # Use a container-internal path (primer-app linux container can't
     # reach host Windows tmp_path that pytest's tmp_path fixture
     # provides — workspace materialise + file ops would crash or
     # silently fall back). /tmp inside the container is writable.
@@ -260,7 +260,7 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
     ]
     try:
         # Skip-soft probe: PUT a file via API. If the workspace
-        # provider's backend path is unreachable (matrix-app
+        # provider's backend path is unreachable (primer-app
         # container vs host tmp_path), this PUT fails.
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             r = c.put(
@@ -273,7 +273,7 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
             if r.status_code >= 500:
                 pytest.skip(
                     f"workspace files PUT returned {r.status_code} — "
-                    f"matrix-app container likely can't reach host tmp_path "
+                    f"primer-app container likely can't reach host tmp_path "
                     f"(same root cause as U0072). text={r.text[:200]!r}"
                 )
             assert r.status_code in (200, 201, 204), r.text

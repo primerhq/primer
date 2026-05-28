@@ -1,4 +1,4 @@
-"""Entry point: ``python -m matrix.api`` runs the API with uvicorn."""
+"""Entry point: ``python -m primer.api`` runs the API with uvicorn."""
 
 from __future__ import annotations
 

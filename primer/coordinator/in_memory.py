@@ -2,7 +2,7 @@
 
 Used in single-process mode. Each backend is process-local; nothing is
 durable. Distributed mode uses the Postgres backends in
-:mod:`matrix.coordinator.postgres`.
+:mod:`primer.coordinator.postgres`.
 """
 
 from __future__ import annotations

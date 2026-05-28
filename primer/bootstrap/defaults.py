@@ -2,7 +2,7 @@
 
 Defines one reserved id per built-in provider kind, and a matching
 factory-spec dict describing the CREATE body shape that
-:class:`matrix.bootstrap.runner.BootstrapRunner` uses to upsert the
+:class:`primer.bootstrap.runner.BootstrapRunner` uses to upsert the
 row idempotently on first boot.
 
 Design note
@@ -16,10 +16,10 @@ POST → 409, DELETE → 403.
 
 Reserved ids by kind
 --------------------
-* ``local``         — :class:`matrix.model.workspace.WorkspaceProvider`
-* ``huggingface``   — :class:`matrix.model.provider.EmbeddingProvider`
-* ``lance``         — :class:`matrix.model.provider.SemanticSearchProvider`
-* ``huggingface-ce``— :class:`matrix.model.provider.CrossEncoderProvider`
+* ``local``         — :class:`primer.model.workspace.WorkspaceProvider`
+* ``huggingface``   — :class:`primer.model.provider.EmbeddingProvider`
+* ``lance``         — :class:`primer.model.provider.SemanticSearchProvider`
+* ``huggingface-ce``— :class:`primer.model.provider.CrossEncoderProvider`
 
 LLM providers are intentionally excluded — they require API keys and
 must be provisioned explicitly by the operator.

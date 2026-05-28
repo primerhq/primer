@@ -1,4 +1,4 @@
-"""Tests for matrix.coordinator.in_memory.InMemoryLeaderElector."""
+"""Tests for primer.coordinator.in_memory.InMemoryLeaderElector."""
 
 from __future__ import annotations
 

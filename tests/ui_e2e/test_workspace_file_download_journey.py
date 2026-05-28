@@ -28,7 +28,7 @@ Multi-feature exercise in one test:
 
 Covers backlog item U0106.
 
-Skip-soft (U0072/U0080-class) when the matrix-app container can't
+Skip-soft (U0072/U0080-class) when the primer-app container can't
 reach the workspace provider's path — we use container-internal
 /tmp/u0106-<suffix> to avoid the host bind-mount unreachability.
 """
@@ -142,7 +142,7 @@ def test_u0106_workspace_file_inspect_and_download_journey(
             if r.status_code >= 500:
                 pytest.skip(
                     f"workspace files PUT returned {r.status_code} — "
-                    f"matrix-app container likely can't reach host tmp "
+                    f"primer-app container likely can't reach host tmp "
                     f"(same root cause as U0072/U0080)."
                 )
             assert r.status_code in (200, 201, 204), r.text

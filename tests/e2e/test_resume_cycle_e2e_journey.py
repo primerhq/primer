@@ -24,7 +24,7 @@ This test walks that cycle:
      re-arms the lease, which wakes the worker pool.
   5. Poll GET /v1/sessions/{id} until parked_status is None,
      bounded 20s timeout. Resume happens in-process (the bringup
-     runs `matrix api --run-worker`), so the cycle completes
+     runs `primer api --run-worker`), so the cycle completes
      synchronously plus poll latency.
   6. Assert parked_state has been cleared AND turn_no has
      advanced from the parked turn — both observable signals
@@ -72,8 +72,8 @@ async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
         port=5432,
-        user="matrix",
-        password="matrix",
+        user="primer",
+        password="primer",
         database="matrix_e2e",
     )
 

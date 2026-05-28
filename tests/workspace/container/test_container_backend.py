@@ -1,7 +1,7 @@
 """Tests for ContainerWorkspaceBackend using a fake adapter.
 
 The real runtime adapters (Docker / Podman / containerd) live in
-:mod:`matrix.workspace.runtime` and have their own gated contract
+:mod:`primer.workspace.runtime` and have their own gated contract
 tests. The backend itself is unit-testable against a fake adapter that
 returns :class:`FakeSandbox` instances.
 """

@@ -1,4 +1,4 @@
-"""Tests for matrix.coordinator.in_memory.InMemoryRateLimiter."""
+"""Tests for primer.coordinator.in_memory.InMemoryRateLimiter."""
 
 from __future__ import annotations
 

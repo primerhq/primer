@@ -10,7 +10,7 @@
   toolset's ``put_document`` provides an in-process upsert path.
 
 NOTE: ``POST /v1/collections/search`` (no id, in
-:mod:`matrix.api.routers.internal_collections`) is a different
+:mod:`primer.api.routers.internal_collections`) is a different
 operation — it searches the *collection metadata* internal index for
 the "find collection by description" use case. The per-collection
 ``/{id}/search`` route here searches the *document contents*.

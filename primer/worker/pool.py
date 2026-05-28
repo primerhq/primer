@@ -770,7 +770,7 @@ class WorkerPool:
         Resolves the graph (snapshot first, falls back to storage),
         the per-node agent + LLM + toolset resolvers (which mirror the
         agent path), the workspace's git-backed state repo (required —
-        only :class:`matrix.workspace.local.LocalWorkspace` exposes
+        only :class:`primer.workspace.local.LocalWorkspace` exposes
         one today; sandbox/container/k8s backends will need StateRepo
         parity before they can host graph dispatch), and an optional
         :class:`RouterRegistry` stashed on app.state at startup.
@@ -1208,7 +1208,7 @@ class WorkerPool:
         # ``YieldToWorker.llm_messages`` with the assistant message
         # that emitted the tool_use (loop.py appends it before
         # _dispatch_tool_calls). Round-trip through model_dump so
-        # the JSONB column carries canonical Matrix message-dicts
+        # the JSONB column carries canonical Primer message-dicts
         # — ParkedState.from_jsonable rebuilds typed Messages on
         # resume. Tools that synthesise their result from metadata
         # alone (e.g. sleep) work even with an empty list; tools
@@ -1436,7 +1436,7 @@ class WorkerPool:
         # ----- Persist the [assistant_tool_use, tool_result] pair ----
         # The assistant message that emitted the tool_use lives in
         # parked_state.llm_messages (stamped by the executor at park
-        # time — see matrix/agent/base.py). Rehydrate as typed
+        # time — see primer/agent/base.py). Rehydrate as typed
         # Messages, then build the matching tool-role message.
         rehydrated_assistant = [
             Message.model_validate(m) for m in parked.llm_messages
@@ -1555,7 +1555,7 @@ class _TurnDriver:
 
 
 class _GraphTurnDriver:
-    """Adapter for :class:`matrix.graph.workspace_executor.WorkspaceGraphExecutor`.
+    """Adapter for :class:`primer.graph.workspace_executor.WorkspaceGraphExecutor`.
 
     Two differences from :class:`_TurnDriver`:
 
@@ -1598,12 +1598,12 @@ class _GraphTurnDriver:
 class _WorkspaceIOShim:
     """``WorkspaceIO`` adapter that delegates to the workspace runtime.
 
-    Satisfies the :class:`matrix.session.persistence.WorkspaceIO` protocol
+    Satisfies the :class:`primer.session.persistence.WorkspaceIO` protocol
     used by :class:`WorkspaceMessageWriter`.
 
     Dispatch: resolves the workspace from the registry and calls
     ``workspace.append_message_line(session_id, line)`` directly.  Every
-    concrete :class:`matrix.int.workspace.Workspace` backend now implements
+    concrete :class:`primer.int.workspace.Workspace` backend now implements
     this method (added in Task 9).
 
     The shim calls ``_workspace_registry.get_workspace(workspace_id)`` on

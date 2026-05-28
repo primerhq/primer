@@ -38,8 +38,8 @@ def _ssp_body(sid: str) -> dict:
             "hostname": "localhost",
             "port": 5432,
             "database": "matrix_e2e",
-            "username": "matrix",
-            "password": "matrix",
+            "username": "primer",
+            "password": "primer",
             "db_schema": "public",
         },
     }

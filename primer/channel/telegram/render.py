@@ -10,8 +10,8 @@ from typing import Any
 from primer.channel.adapter import PromptEnvelope
 
 
-ASK_TOKEN_RE = re.compile(r"\[matrix:([A-Za-z0-9_-]{16})\]")
-REJECT_TOKEN_RE = re.compile(r"\[matrix:reject:([A-Za-z0-9_-]{16})\]")
+ASK_TOKEN_RE = re.compile(r"\[primer:([A-Za-z0-9_-]{16})\]")
+REJECT_TOKEN_RE = re.compile(r"\[primer:reject:([A-Za-z0-9_-]{16})\]")
 
 
 def compute_tag(
@@ -34,7 +34,7 @@ def build_ask_user_message(
     text = (
         f"{envelope.prompt}\n\n"
         "Reply to this message to answer.\n"
-        f"[matrix:{tag}]"
+        f"[primer:{tag}]"
     )
     return {"chat_id": int(chat_id), "text": text}
 
@@ -47,7 +47,7 @@ def build_tool_approval_message(
         session_id=envelope.session_id,
         tool_call_id=envelope.tool_call_id,
     )
-    text = f"{envelope.prompt}\n[matrix:{tag}]"
+    text = f"{envelope.prompt}\n[primer:{tag}]"
     return {
         "chat_id": int(chat_id),
         "text": text,
@@ -65,7 +65,7 @@ def build_rejection_prompt(*, tag: str) -> dict[str, Any]:
     return {
         "text": (
             "Why are you rejecting?\n"
-            f"[matrix:reject:{tag}]"
+            f"[primer:reject:{tag}]"
         ),
         "reply_markup": {"force_reply": True, "selective": True},
     }

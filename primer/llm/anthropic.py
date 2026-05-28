@@ -1,7 +1,7 @@
 """Anthropic LLM adapter — wraps anthropic.AsyncAnthropic.
 
-Subclasses :class:`matrix.int.LLM` and translates the universal chat
-interface (:mod:`matrix.model.chat`) onto the Anthropic Messages API
+Subclasses :class:`primer.int.LLM` and translates the universal chat
+interface (:mod:`primer.model.chat`) onto the Anthropic Messages API
 streaming surface.
 
 See spec at ``docs/superpowers/specs/2026-04-26-anthropic-llm-design.md``.

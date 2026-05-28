@@ -38,7 +38,7 @@ class HostInotifyProbe(WatchProbe):
     """Watch-probe for host-side workspaces using ``watchfiles.awatch``.
 
     Monitors the workspace root directory and yields workspace-relative
-    :class:`~matrix.bus.ws_watch_probe.Change` events as inotify (or
+    :class:`~primer.bus.ws_watch_probe.Change` events as inotify (or
     equivalent OS-level) notifications arrive.
 
     Only changes to paths listed in the ``paths`` argument passed to

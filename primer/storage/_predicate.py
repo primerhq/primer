@@ -1,6 +1,6 @@
 """Predicate-tree -> SQL ``WHERE`` translator for the Postgres Storage backend.
 
-Walks a :class:`matrix.model.storage.Predicate` tree and emits a
+Walks a :class:`primer.model.storage.Predicate` tree and emits a
 parametrised SQL fragment plus an ordered list of bind parameters that
 asyncpg can dispatch. Field references are resolved through the
 target Pydantic model's ``model_fields`` so numeric comparisons get
@@ -12,7 +12,7 @@ This module also handles the ``OrderBy`` -> SQL ``ORDER BY`` mapping
 because the casting rules are identical: order keys on numeric
 columns must cast to keep the index ordering meaningful.
 
-Module-private; consumed only by :mod:`matrix.storage.postgres`.
+Module-private; consumed only by :mod:`primer.storage.postgres`.
 """
 
 from __future__ import annotations

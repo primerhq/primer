@@ -1,4 +1,4 @@
-"""Unit tests for matrix.api.pagination — query-param translators + FindRequest."""
+"""Unit tests for primer.api.pagination — query-param translators + FindRequest."""
 
 from __future__ import annotations
 

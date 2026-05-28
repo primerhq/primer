@@ -6,8 +6,8 @@ lifecycle (complete_turn / park_turn / clear_park / mark_resumable),
 and signalling. Claim / heartbeat / release for sessions, chats, and
 harnesses have been replaced by the polymorphic :class:`ClaimEngine`.
 
-Two impls ship: :class:`matrix.scheduler.PostgresScheduler` for
-production; :class:`matrix.scheduler.InMemoryScheduler` for tests and
+Two impls ship: :class:`primer.scheduler.PostgresScheduler` for
+production; :class:`primer.scheduler.InMemoryScheduler` for tests and
 single-process dev.
 
 See ``docs/superpowers/specs/2026-05-10-background-execution-scheduler-design.md``

@@ -1,11 +1,11 @@
 """Docling HybridChunker-backed :class:`DocumentSplitter`.
 
 The default structure-aware splitter used throughout
-:mod:`matrix.ingest`. Wraps :class:`docling.chunking.HybridChunker`
+:mod:`primer.ingest`. Wraps :class:`docling.chunking.HybridChunker`
 to produce structure-aware chunks from a :class:`LoadedDocument`
 whose ``structure`` field carries a serialised
 :class:`DoclingDocument` (populated by
-:class:`matrix.ingest.loaders.docling.DoclingLoader`).
+:class:`primer.ingest.loaders.docling.DoclingLoader`).
 
 ``docling`` is a core dependency, so this splitter is always
 available alongside :class:`DoclingLoader`.

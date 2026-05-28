@@ -238,7 +238,7 @@ Op = Literal[
 class CommitInfo(BaseModel):
     """One commit in the state repo, with trailers parsed.
 
-    Returned from :meth:`matrix.int.workspace.Workspace.log` and from
+    Returned from :meth:`primer.int.workspace.Workspace.log` and from
     every concrete ``StateRepo.history`` implementation. Lives in the
     model layer so both the ABC and the concrete impls depend on the
     model rather than on each other.
@@ -505,7 +505,7 @@ class FileEntry(BaseModel):
 class WorkspaceStatus(BaseModel):
     """Backend-agnostic workspace health snapshot.
 
-    Returned from :meth:`matrix.int.workspace.Workspace.status`. The
+    Returned from :meth:`primer.int.workspace.Workspace.status`. The
     ``state`` field is the universal vocabulary; ``detail`` carries
     backend-specific extras (container id, pod phase, etc.) the caller
     can render verbatim.
@@ -544,7 +544,7 @@ class WorkspaceProviderType(str, Enum):
 class LocalWorkspaceConfig(BaseModel):
     """Connection settings for the local-FS workspace backend.
 
-    Used by :class:`matrix.workspace.local.LocalWorkspaceBackend`. The
+    Used by :class:`primer.workspace.local.LocalWorkspaceBackend`. The
     only knob is the directory under which every workspace is
     materialised; each workspace gets its own subdirectory beneath it.
     """

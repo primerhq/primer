@@ -1,4 +1,4 @@
-"""Tests for matrix.agent.workspace_executor.WorkspaceAgentExecutor."""
+"""Tests for primer.agent.workspace_executor.WorkspaceAgentExecutor."""
 
 from __future__ import annotations
 

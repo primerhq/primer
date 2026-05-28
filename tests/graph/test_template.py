@@ -1,4 +1,4 @@
-"""Tests for matrix.graph.template.render_input_template."""
+"""Tests for primer.graph.template.render_input_template."""
 
 from __future__ import annotations
 

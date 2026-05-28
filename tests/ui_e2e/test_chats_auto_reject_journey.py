@@ -67,7 +67,7 @@ async def _inject_chat_approval_park_async(
 ) -> None:
     """Stamp parked_status=parked + _approval parked_state onto the chat row."""
     import os
-    db = os.environ.get("PRIMER_UI_E2E_DB", "matrix")
+    db = os.environ.get("PRIMER_UI_E2E_DB", "primer")
     now = datetime.now(timezone.utc)
     parked_until = now + timedelta(seconds=600)
     parked_state: dict[str, Any] = {
@@ -112,7 +112,7 @@ async def _inject_chat_approval_park_async(
     """
     conn = await asyncpg.connect(
         host="localhost", port=5432,
-        user="matrix", password="matrix", database=db,
+        user="primer", password="primer", database=db,
     )
     try:
         await conn.execute(

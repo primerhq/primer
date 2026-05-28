@@ -1,7 +1,7 @@
 """Gemini LLM adapter — wraps the google-genai SDK.
 
-Subclasses :class:`matrix.int.LLM` and translates the universal chat
-interface (:mod:`matrix.model.chat`) onto the Gemini Generate Content
+Subclasses :class:`primer.int.LLM` and translates the universal chat
+interface (:mod:`primer.model.chat`) onto the Gemini Generate Content
 streaming API. Targets the Gemini API (Google AI Studio) — single
 api_key auth. Vertex AI is out of scope for this adapter.
 
@@ -79,7 +79,7 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
-# Input mapping: matrix.model.chat.Part -> google.genai.types.Part            #
+# Input mapping: primer.model.chat.Part -> google.genai.types.Part            #
 # --------------------------------------------------------------------------- #
 
 
@@ -90,7 +90,7 @@ def _part_to_gemini(part: Part, name_lookup: dict[str, str]) -> gtypes.Part:
     names so :class:`ToolResultPart` (which only carries an id) can
     populate the ``FunctionResponse.name`` field Gemini requires.
 
-    The first matrix adapter that accepts every universal Part type
+    The first primer adapter that accepts every universal Part type
     natively — Gemini handles text, image, document, audio, and video.
     """
     if isinstance(part, TextPart):

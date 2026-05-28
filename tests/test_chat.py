@@ -1,4 +1,4 @@
-"""Unit tests for the new functionality added to matrix/model/chat.py:
+"""Unit tests for the new functionality added to primer/model/chat.py:
 
 * :class:`ToolCallPart` — assistant tool-call part for round-tripping.
 * :class:`ToolResultPart` — tool-result part for the next turn.

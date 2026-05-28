@@ -133,7 +133,7 @@ async def test_t0124_workspace_template_description_optional(
         json={
             "id": provider_id,
             "provider": "local",
-            "config": {"kind": "local", "path": "/tmp/matrix-e2e-t0124"},
+            "config": {"kind": "local", "path": "/tmp/primer-e2e-t0124"},
         },
     )
     assert pr.status_code == 201, pr.text
@@ -185,7 +185,7 @@ async def test_t0052_delete_workspace_provider_round_trip(
     body = {
         "id": entity_id,
         "provider": "local",
-        "config": {"kind": "local", "path": "/tmp/matrix-e2e-t0052"},
+        "config": {"kind": "local", "path": "/tmp/primer-e2e-t0052"},
     }
     create = await client.post("/v1/workspace_providers", json=body)
     assert create.status_code == 201, create.text

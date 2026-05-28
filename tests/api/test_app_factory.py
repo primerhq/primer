@@ -1,4 +1,4 @@
-"""Tests for matrix.api.app create_app + lifespan wiring."""
+"""Tests for primer.api.app create_app + lifespan wiring."""
 
 from __future__ import annotations
 

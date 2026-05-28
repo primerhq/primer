@@ -1,6 +1,6 @@
 """SandboxTruncationStore -- truncation cache inside a Sandbox.
 
-Same contract as :class:`matrix.workspace.local.cache.LocalTruncationStore`
+Same contract as :class:`primer.workspace.local.cache.LocalTruncationStore`
 (``output`` / ``write`` / ``cleanup`` / ``cleanup_session``) but writes
 + reads go through the sandbox via argv-form file ops. The filename
 pattern ``tool_<nanos>_<counter>.txt`` is identical so callers can read

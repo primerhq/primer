@@ -1,4 +1,4 @@
-"""Tests for the ``matrix init`` CLI subcommand.
+"""Tests for the ``primer init`` CLI subcommand.
 
 Uses ``typer.testing.CliRunner`` (the same runner as existing CLI tests)
 so no real subprocess is spawned and the test stays in-process.

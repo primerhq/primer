@@ -1,4 +1,4 @@
-"""Tests for matrix.worker.turn helpers (_CancelScope + retry classification)."""
+"""Tests for primer.worker.turn helpers (_CancelScope + retry classification)."""
 
 from __future__ import annotations
 

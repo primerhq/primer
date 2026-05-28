@@ -1,5 +1,5 @@
-# Example config.yaml for `matrix api --config config.yaml` and
-# `matrix worker --config config.yaml`. Copy this to `config.yaml`
+# Example config.yaml for `primer api --config config.yaml` and
+# `primer worker --config config.yaml`. Copy this to `config.yaml`
 # (which is gitignored by convention) and tweak.
 #
 # Defaults match the compose service in this repo (run with `podman
@@ -9,9 +9,9 @@
 # --- Storage (Postgres) ----------------------------------------------------
 db_host: localhost
 db_port: 5432
-db_database: matrix
-db_user: matrix
-db_password: matrix
+db_database: primer
+db_user: primer
+db_password: primer
 db_min_pool_size: 1
 db_max_pool_size: 10
 
@@ -22,7 +22,7 @@ port: 8000
 # --- Logging ---------------------------------------------------------------
 log_level: info       # one of: debug, info, warning, error
 log_json: true        # JSON lines (true) or human-readable (false)
-# log_file: ./logs/matrix.log   # uncomment to log to a rotating file
+# log_file: ./logs/primer.log   # uncomment to log to a rotating file
 
 # --- Vector store (optional, required for collections + search) ------------
 vector_store:
@@ -30,9 +30,9 @@ vector_store:
   config:
     hostname: localhost
     port: 5432
-    database: matrix
-    username: matrix
-    password: matrix
+    database: primer
+    username: primer
+    password: primer
 
 # --- Scheduler (required when running a worker; CLI overrides runtime_mode)
 scheduler:

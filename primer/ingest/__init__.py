@@ -7,7 +7,7 @@ Public surface:
   into chunks.
 * :class:`DocumentIngester` -- concrete orchestrator that drives
   ``loader.load -> splitter.split -> embedder.embed -> vector_store.put``
-  for one :class:`matrix.model.collection.Document`.
+  for one :class:`primer.model.collection.Document`.
 * :class:`DoclingLoader` -- DEFAULT loader. Wraps Docling for
   high-quality multi-format parsing (PDF / DOCX / PPTX / HTML /
   ...). Always available because ``docling`` is a core dependency.

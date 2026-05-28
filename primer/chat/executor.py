@@ -396,7 +396,7 @@ class ChatTurnRunner:
 
             # Append the assistant turn to the prompt so subsequent
             # iterations (tool round-trip) carry the model's prior
-            # output, mirroring the agent loop in matrix/agent/loop.py.
+            # output, mirroring the agent loop in primer/agent/loop.py.
             assistant_parts: list[Any] = []
             if assistant_text_parts:
                 assistant_parts.append(

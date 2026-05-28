@@ -1,7 +1,7 @@
 """Workspace runtime + tool implementations.
 
 This package holds the concrete classes that implement the workspace
-contract defined under :mod:`matrix.int.workspace`:
+contract defined under :mod:`primer.int.workspace`:
 
 * :class:`WorkspaceTool` -- ABC for one workspace-scoped tool
   (``ls``, ``read``, ``write``, ``edit``, ``glob``, ``grep``, ``exec``).

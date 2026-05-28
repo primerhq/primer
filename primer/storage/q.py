@@ -1,4 +1,4 @@
-"""Type-safe predicate builder for the Matrix storage layer.
+"""Type-safe predicate builder for the Primer storage layer.
 
 ``Q[ModelT]`` validates every field name against ``model_cls.model_fields``
 at call time, making SQL-injection-via-field-name structurally impossible for

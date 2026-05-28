@@ -15,7 +15,7 @@ Subsystems exercised in one test:
   2. ToolApprovalPolicy CRUD (§2 surface that just landed)
   3. real LLM dispatch via LM Studio (tool-calling)
   4. worker pool claim + agent runtime
-  5. approval gate (matrix.agent.approval — ApprovalResolver)
+  5. approval gate (primer.agent.approval — ApprovalResolver)
   6. yield protocol (YieldToWorker → park_turn)
   7. tool_approval REST surface (pending + respond)
   8. session lifecycle (CREATED → RUNNING → parked)

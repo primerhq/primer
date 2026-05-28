@@ -1,4 +1,4 @@
-"""OTEL tracing setup + auto-instrumentation for the Matrix API.
+"""OTEL tracing setup + auto-instrumentation for the Primer API.
 
 Usage
 -----

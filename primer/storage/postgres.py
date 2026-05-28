@@ -20,14 +20,14 @@ the table's primary key with the obvious B-tree index. Everything
 else lives under ``data`` (Pydantic's ``model_dump(mode="json")``
 output minus ``id``). The GIN index makes containment-style
 predicate scans fast; ``WHERE`` fragments produced by
-:mod:`matrix.storage._predicate` use ``data->>'field'`` paths that
+:mod:`primer.storage._predicate` use ``data->>'field'`` paths that
 remain index-friendly when combined with that GIN.
 
-Pagination supports both styles required by :class:`matrix.int.Storage`:
+Pagination supports both styles required by :class:`primer.int.Storage`:
 
-* :class:`matrix.model.storage.OffsetPage` -> SQL ``LIMIT/OFFSET`` plus
+* :class:`primer.model.storage.OffsetPage` -> SQL ``LIMIT/OFFSET`` plus
   a separate ``COUNT(*)`` for the response's ``total``.
-* :class:`matrix.model.storage.CursorPage` -> keyset seek using the
+* :class:`primer.model.storage.CursorPage` -> keyset seek using the
   ``ORDER BY`` keys + the primary key as the tiebreaker. Cursors are
   opaque base64 JSON; their structure is internal to this module.
 """
@@ -112,7 +112,7 @@ def _table_name_for(model_class: type[BaseModel]) -> str:
 
     One historic exception: the ``Session`` model is stored in a
     ``sessions`` (plural) table. The scheduler layer
-    (``matrix.scheduler.postgres``) hard-codes ``sessions`` in its
+    (``primer.scheduler.postgres``) hard-codes ``sessions`` in its
     JOINs and FK constraints, and the scheduler unit tests assume the
     same name. Mapping ``Session`` -> ``sessions`` here keeps both
     sides in sync without rewriting every SQL string in the scheduler.
@@ -209,7 +209,7 @@ class PostgresStorageProvider(StorageProvider):
                 f'CREATE SCHEMA IF NOT EXISTS "{self._schema}"'
             )
             # Coordinator lease tables live in the same schema as the
-            # rest of matrix so two deployments sharing a Postgres
+            # rest of primer so two deployments sharing a Postgres
             # cluster with distinct db_schema settings keep their
             # leases isolated. Coordinator backends read these names
             # off the provider via .rate_limit_lease_table / .leader_lease_table.
@@ -667,7 +667,7 @@ class PostgresStorage(Storage[ModelT]):
     # ---------- error mapping ---------------------------------------------
 
     def _wrap_db_error(self, exc: Exception) -> Exception:
-        """Map asyncpg exceptions onto the matrix exception hierarchy."""
+        """Map asyncpg exceptions onto the primer exception hierarchy."""
         if isinstance(exc, asyncpg.UniqueViolationError):
             return ConflictError(str(exc), cause=exc)
         if isinstance(exc, asyncpg.PostgresError):

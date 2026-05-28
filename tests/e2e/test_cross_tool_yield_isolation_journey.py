@@ -54,8 +54,8 @@ async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
         port=5432,
-        user="matrix",
-        password="matrix",
+        user="primer",
+        password="primer",
         database="matrix_e2e",
     )
 
@@ -243,7 +243,7 @@ async def test_t0854_cross_tool_yield_isolation_journey(
            - Session A → ask_user (with a secret prompt to detect leakage)
            - Session B → sleep   (with requested_seconds=30)
            - Session C → _approval (with original_call metadata)
-      4. Cross-tool 404 matrix:
+      4. Cross-tool 404 primer:
            - GET A/ask_user/pending      → 200 (matches)
            - GET A/tool_approval/pending → 404 (cross-tool)
            - GET B/ask_user/pending      → 404 (sleep, not ask_user)
@@ -329,7 +329,7 @@ async def test_t0854_cross_tool_yield_isolation_journey(
         for sid in (sid_a, sid_b, sid_c):
             assert (await _read_park_state(sid))["parked_status"] == "parked"
 
-        # ----- 4. Cross-tool 404 matrix -----------------------------------
+        # ----- 4. Cross-tool 404 primer -----------------------------------
         # Session A (ask_user) — only ask_user/pending should match.
         r = await client.get(f"/v1/sessions/{sid_a}/ask_user/pending")
         assert r.status_code == 200, r.text

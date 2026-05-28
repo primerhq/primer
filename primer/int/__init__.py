@@ -8,10 +8,10 @@ Eleven abstract base classes are exported:
   :class:`EmbedResponse` out).
 * :class:`CrossEncoder` -- cross-encoder reranker interface
   (``(query, document) -> relevance score``); used by
-  :class:`matrix.search.CollectionSearcher` for two-stage rerank.
+  :class:`primer.search.CollectionSearcher` for two-stage rerank.
 * :class:`ToolsetProvider` -- toolset interface (list and invoke tools).
 * :class:`Storage` -- generic CRUD + search interface for any
-  :class:`matrix.model.common.Identifiable` model.
+  :class:`primer.model.common.Identifiable` model.
 * :class:`StorageProvider` -- shared backend state + factory for
   model-bound :class:`Storage` handles.
 * :class:`VectorStore` -- embedding-vector store with create_collection /

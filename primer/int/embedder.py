@@ -7,7 +7,7 @@ models — model selection happens per call.
 The signature was derived from the cross-SDK comparison documented in
 ``research/embedding_interface.md`` and ``research/abc_interface.md``.
 The ``inputs`` and ``config`` parameters reuse types from
-:mod:`matrix.model.embedding`; ``output_dimensions`` is the universal
+:mod:`primer.model.embedding`; ``output_dimensions`` is the universal
 Matryoshka-truncation knob (OpenAI ``dimensions``, Google
 ``output_dimensionality``, Ollama ``dimensions``).
 
@@ -83,7 +83,7 @@ class Embedder(ABC):
         EmbedResponse
             One :class:`Embedding` per input in input order, plus
             optional :class:`EmbeddingUsage` request-level telemetry.
-            See :mod:`matrix.model.embedding` for the full output shape.
+            See :mod:`primer.model.embedding` for the full output shape.
         """
 
     async def aclose(self) -> None:

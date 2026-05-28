@@ -1,8 +1,8 @@
 """Shared anthropic SDK exception classifier.
 
-Used by every matrix adapter that wraps anthropic.AsyncAnthropic.
+Used by every primer adapter that wraps anthropic.AsyncAnthropic.
 Maps the anthropic exception hierarchy (which mirrors openai's class
-names) to the matrix exception hierarchy.
+names) to the primer exception hierarchy.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from primer.model.except_ import (
 
 
 def classify_anthropic_exception(exc: Exception) -> MatrixError:
-    """Map an anthropic SDK exception to the matrix exception hierarchy."""
+    """Map an anthropic SDK exception to the primer exception hierarchy."""
     if isinstance(exc, (AnthropicAuthenticationError, AnthropicPermissionDeniedError)):
         return AuthenticationError(
             "Anthropic authentication failed",

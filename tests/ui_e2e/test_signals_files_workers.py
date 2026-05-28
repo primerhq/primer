@@ -75,7 +75,7 @@ def _seed_session(base_url: str, workspace_id: str, agent_id: str) -> str:
 
 def _put_file(base_url: str, workspace_id: str, path: str, content: str) -> int:
     """Write a file via API; returns status code so callers can skip-soft
-    on container-vs-host filesystem mismatches (the UI loop's matrix
+    on container-vs-host filesystem mismatches (the UI loop's primer
     runs in a container that can't access host tmp_path).
     """
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
@@ -111,7 +111,7 @@ def test_u0068_steer_queue_renders_submitted_instruction(
     * The instruction text is visible in the queued panel
 
     Defends the optimistic-queue update + toast in
-    matrix's session-detail.jsx onSteer handler.
+    primer's session-detail.jsx onSteer handler.
     """
     pid = f"llm-st-{unique_suffix}"
     aid = f"ag-st-{unique_suffix}"
@@ -253,7 +253,7 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
     and should update from "1/1" to "0/1" within ~10s.
 
     Pins the worker-pill polling cadence + status filter in
-    matrix's chrome.jsx TopBar.
+    primer's chrome.jsx TopBar.
     """
     # Find the registered worker via API. If no active workers
     # remain (a prior test already drained the sole worker — drain

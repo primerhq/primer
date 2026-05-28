@@ -201,7 +201,7 @@ async def test_t0494_misc_calculate_dispatches_end_to_end(
 
     Falls back to the underlying provider call directly via the
     `/v1/toolsets/{id}/tools` endpoint if a direct invocation route
-    isn't exposed at the HTTP layer; matrix exposes tool listing but
+    isn't exposed at the HTTP layer; primer exposes tool listing but
     NOT a per-tool POST endpoint, so this test keeps to the
     listing-shape contract above and pins the description content
     of the `calculate` tool as a proxy for "the handler exists and

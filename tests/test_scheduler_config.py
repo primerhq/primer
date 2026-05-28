@@ -1,4 +1,4 @@
-"""Tests for matrix.model.scheduler config models."""
+"""Tests for primer.model.scheduler config models."""
 
 from __future__ import annotations
 

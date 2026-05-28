@@ -7,7 +7,7 @@ LISTEN/NOTIFY behaviour where every listener on a channel sees every
 NOTIFY.
 
 Not safe across processes. The production app uses
-:class:`matrix.bus.postgres.PostgresEventBus`.
+:class:`primer.bus.postgres.PostgresEventBus`.
 """
 
 from __future__ import annotations

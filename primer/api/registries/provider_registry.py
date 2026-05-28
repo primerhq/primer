@@ -46,7 +46,7 @@ def _build_default_llm_factory(
 
     ``rate_limiter`` is forwarded to every LLM adapter so all providers
     participate in the global concurrency limiter. ``None`` causes each
-    adapter to fall back to a local :class:`~matrix.coordinator.in_memory.InMemoryRateLimiter`.
+    adapter to fall back to a local :class:`~primer.coordinator.in_memory.InMemoryRateLimiter`.
     ``trace_llm_io`` controls whether prompt messages are included in spans.
     """
     def _factory(provider: LLMProvider) -> LLM:  # pragma: no cover
@@ -92,7 +92,7 @@ def _build_default_embedder_factory(
     ``rate_limiter`` is forwarded to every embedder adapter so all
     providers participate in the global concurrency limiter. ``None``
     causes each adapter to fall back to a local
-    :class:`~matrix.coordinator.in_memory.InMemoryRateLimiter`.
+    :class:`~primer.coordinator.in_memory.InMemoryRateLimiter`.
     """
     def _factory(provider: EmbeddingProvider) -> Embedder:  # pragma: no cover
         match provider.provider:
@@ -127,7 +127,7 @@ def _build_default_cross_encoder_factory(
     ``rate_limiter`` is forwarded to every cross-encoder adapter so all
     providers participate in the global concurrency limiter. ``None``
     causes each adapter to fall back to a local
-    :class:`~matrix.coordinator.in_memory.InMemoryRateLimiter`.
+    :class:`~primer.coordinator.in_memory.InMemoryRateLimiter`.
     """
     def _factory(provider: CrossEncoderProvider) -> CrossEncoder:  # pragma: no cover
         match provider.provider:
@@ -172,8 +172,8 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
 #
 # These ids are protected at the API layer (POST → 409, DELETE → 403).
 # The factory specs that describe how to create these rows live in
-# :mod:`matrix.bootstrap.defaults`; the rows are upserted idempotently
-# by :class:`matrix.bootstrap.runner.BootstrapRunner` at first boot.
+# :mod:`primer.bootstrap.defaults`; the rows are upserted idempotently
+# by :class:`primer.bootstrap.runner.BootstrapRunner` at first boot.
 #
 # Design: factories are NOT consulted at lookup time.  After bootstrap
 # the row exists in storage like any other.  The reserved-id sets below

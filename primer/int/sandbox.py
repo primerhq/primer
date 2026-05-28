@@ -1,7 +1,7 @@
 """Sandbox ABC -- universal execution + filesystem interface for
 non-local workspace backends.
 
-Sibling of :class:`matrix.int.workspace.Workspace`, but at a lower
+Sibling of :class:`primer.int.workspace.Workspace`, but at a lower
 layer: a Workspace owns one Sandbox; the Sandbox owns the actual
 container / pod and presents a uniform interface to it. The
 :class:`SandboxWorkspace` impl wraps any Sandbox to satisfy the

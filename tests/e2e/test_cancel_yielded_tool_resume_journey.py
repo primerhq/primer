@@ -21,7 +21,7 @@ The cycle:
   3. POST /v1/sessions/{sid}/yields/{tcid}/cancel
      {reason: "user changed mind"} → 202.
      The cancel router publishes make_cancelled_payload onto
-     the bus (matrix.api.routers.yields:314).
+     the bus (primer.api.routers.yields:314).
   4. In-app YieldEventListener picks up the NOTIFY, calls
      scheduler.mark_resumable.
   5. Worker pool claim loop wakes, claims the row.
@@ -29,7 +29,7 @@ The cycle:
      __yield_cancelled__ marker → constructs a YieldCancelled
      instance → get_resume_hook("ask_user") → ask_user_resume
      synthesises a ToolCallResult carrying cancelled=True +
-     cancel_reason (matrix.toolset.misc:ask_user_resume).
+     cancel_reason (primer.toolset.misc:ask_user_resume).
   7. Worker wraps as ToolResultPart → inject_resume_messages →
      clear_park + complete_turn(RUNNING, re_enqueue=True).
   8. Test polls /v1/sessions/{sid} until parked_status=None.
@@ -67,8 +67,8 @@ async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
         port=5432,
-        user="matrix",
-        password="matrix",
+        user="primer",
+        password="primer",
         database="matrix_e2e",
     )
 
@@ -274,7 +274,7 @@ async def test_t0864_cancel_yielded_tool_publishes_and_resumes_session(
         with the reason.
       * get_resume_hook("ask_user") → ask_user_resume
         synthesises a ToolCallResult carrying cancelled=True +
-        cancel_reason (matrix.toolset.misc:ask_user_resume).
+        cancel_reason (primer.toolset.misc:ask_user_resume).
       * Worker wraps as ToolResultPart → inject_resume_messages
         → clear_park + complete_turn(RUNNING, re_enqueue=True).
       * Observable: parked_status=None, turn_no advanced.

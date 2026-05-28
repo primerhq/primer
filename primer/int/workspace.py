@@ -1,8 +1,8 @@
 """Abstract base classes for Workspace and WorkspaceBackend.
 
-Sibling of :class:`matrix.int.LLM`, :class:`matrix.int.Embedder`,
-:class:`matrix.int.ToolsetProvider`, :class:`matrix.int.Storage`, and
-:class:`matrix.int.VectorStore`.
+Sibling of :class:`primer.int.LLM`, :class:`primer.int.Embedder`,
+:class:`primer.int.ToolsetProvider`, :class:`primer.int.Storage`, and
+:class:`primer.int.VectorStore`.
 
 Two ABCs are exported:
 
@@ -14,10 +14,10 @@ Two ABCs are exported:
   (``LocalWorkspaceBackend`` ships in sub-project E; future
   Docker / Firecracker / chroot backends in later sub-projects). The
   configuration that selects which backend is the
-  :class:`matrix.model.workspace.WorkspaceProvider` model.
+  :class:`primer.model.workspace.WorkspaceProvider` model.
 
 The :class:`AgentSession` concrete class and the workspace tool
-implementations live under :mod:`matrix.workspace` -- those land in
+implementations live under :mod:`primer.workspace` -- those land in
 sub-projects D and C respectively. This module references them
 through forward strings so it remains importable on its own.
 
@@ -41,8 +41,8 @@ from primer.model.workspace import (
 
 
 if TYPE_CHECKING:
-    # AgentSession is concrete and lives at matrix/workspace/session.py
-    # (sub-project D); WorkspaceTool ABC lives at matrix/workspace/tool.py
+    # AgentSession is concrete and lives at primer/workspace/session.py
+    # (sub-project D); WorkspaceTool ABC lives at primer/workspace/tool.py
     # (already shipped in sub-project A). Import both here under
     # TYPE_CHECKING so this module is importable without sub-project D
     # while still giving type checkers the right types.
@@ -82,8 +82,8 @@ class Workspace(ABC):
         """Optional handle to the workspace's state repository.
 
         Backends that persist state via a local git repo (currently
-        :class:`matrix.workspace.local.LocalWorkspace`) expose a
-        :class:`matrix.workspace.local.state.LocalStateRepo` here so
+        :class:`primer.workspace.local.LocalWorkspace`) expose a
+        :class:`primer.workspace.local.state.LocalStateRepo` here so
         downstream callers — primarily the graph executor — can
         commit per-graph state directly. Backends that do not yet
         offer a compatible state-repo surface (sandbox / container /
@@ -93,7 +93,7 @@ class Workspace(ABC):
         Default implementation returns ``None`` so existing backends
         opt in by override rather than being broken by the new
         method. The graph dispatch in
-        :mod:`matrix.worker.pool` is the only consumer today.
+        :mod:`primer.worker.pool` is the only consumer today.
         """
         return None
 
@@ -205,8 +205,8 @@ class Workspace(ABC):
         ABC declaration uses a regular ``def`` returning
         :class:`AsyncIterator` so the call shape doesn't require an
         extra ``await`` before iteration -- mirroring the convention
-        used by :meth:`matrix.int.LLM.stream` and
-        :meth:`matrix.int.Storage.list_tools`.
+        used by :meth:`primer.int.LLM.stream` and
+        :meth:`primer.int.Storage.list_tools`.
         """
 
     @abstractmethod
@@ -215,8 +215,8 @@ class Workspace(ABC):
 
         User-facing — distinct from the agent ``ls`` tool which
         returns descriptive metadata for many entries. Raises
-        :class:`matrix.model.except_.NotFoundError` if the path does
-        not exist; :class:`matrix.model.except_.BadRequestError` if
+        :class:`primer.model.except_.NotFoundError` if the path does
+        not exist; :class:`primer.model.except_.BadRequestError` if
         the path tries to escape the workspace root.
         """
 
@@ -225,7 +225,7 @@ class Workspace(ABC):
         """Replace (or create) the file at ``path`` with ``content``.
 
         Creates parent directories as needed. Raises
-        :class:`matrix.model.except_.BadRequestError` for invalid
+        :class:`primer.model.except_.BadRequestError` for invalid
         paths (null byte, escape-attempt, attempts to overwrite a
         directory).
         """
@@ -234,10 +234,10 @@ class Workspace(ABC):
     async def delete_file(self, path: str) -> None:
         """Delete the file or empty directory at ``path``.
 
-        Raises :class:`matrix.model.except_.NotFoundError` if absent.
+        Raises :class:`primer.model.except_.NotFoundError` if absent.
         Refuses to delete the workspace root or the ``.state`` /
         ``.tmp`` directories with
-        :class:`matrix.model.except_.BadRequestError`.
+        :class:`primer.model.except_.BadRequestError`.
         """
 
     @abstractmethod
@@ -254,7 +254,7 @@ class Workspace(ABC):
     async def status(self) -> WorkspaceStatus:
         """Return a snapshot of this workspace's runtime health.
 
-        See :class:`matrix.model.workspace.WorkspaceStatus`. The
+        See :class:`primer.model.workspace.WorkspaceStatus`. The
         ``backend`` field in the returned object identifies the
         materialising backend ('local', 'container', 'kubernetes').
         """
@@ -266,7 +266,7 @@ class Workspace(ABC):
         inside the workspace.  The method ensures ``line`` ends with a
         newline byte before writing.
 
-        Called by :class:`matrix.session.persistence.WorkspaceMessageWriter`
+        Called by :class:`primer.session.persistence.WorkspaceMessageWriter`
         (via the ``WorkspaceIO`` protocol) on every buffer flush.  Multiple
         workers may hold leases on *different* sessions of the same workspace
         concurrently, so implementations must be safe for concurrent callers
@@ -304,10 +304,10 @@ class WorkspaceBackend(ABC):
     """Backend-agnostic factory + lifecycle for :class:`Workspace`.
 
     One per execution backend. Mirrors the
-    :class:`matrix.int.StorageProvider` /
-    :class:`matrix.int.VectorStoreProvider` pattern. The configuration
+    :class:`primer.int.StorageProvider` /
+    :class:`primer.int.VectorStoreProvider` pattern. The configuration
     that selects which backend (and supplies its connection settings)
-    lives in :class:`matrix.model.workspace.WorkspaceProvider`.
+    lives in :class:`primer.model.workspace.WorkspaceProvider`.
     """
 
     @abstractmethod
@@ -330,7 +330,7 @@ class WorkspaceBackend(ABC):
         ``overrides`` allows per-instantiation tweaks (additional env
         vars, additional files, additional init commands). Override
         semantics are merge-then-extend (see
-        :class:`matrix.model.workspace.WorkspaceTemplateOverrides`).
+        :class:`primer.model.workspace.WorkspaceTemplateOverrides`).
         """
 
     @abstractmethod
@@ -361,7 +361,7 @@ class WorkspaceBackend(ABC):
 
         Distinct from :meth:`Workspace.aclose`, which only releases
         the runtime handle. Raises
-        :class:`matrix.model.except_.NotFoundError` if no such
+        :class:`primer.model.except_.NotFoundError` if no such
         workspace exists.
         """
 

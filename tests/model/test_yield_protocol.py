@@ -1,4 +1,4 @@
-"""Unit tests for matrix.model.yield_ — the yielding-tool primitives.
+"""Unit tests for primer.model.yield_ — the yielding-tool primitives.
 
 Verifies the dataclasses' shape, JSON round-trip, and the
 YieldToWorker exception construction. No I/O, no DB, no server.

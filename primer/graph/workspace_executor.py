@@ -1,7 +1,7 @@
 """Workspace-backed graph executor.
 
 State persistence is git-versioned through the workspace's
-:class:`matrix.workspace.state.StateRepo`. Every turn end (each
+:class:`primer.workspace.state.StateRepo`. Every turn end (each
 superstep + the final ENDED transition) commits the updated graph
 state to the workspace's ``.state/`` repo via
 :meth:`StateRepo.commit_arbitrary`. Callers can inspect the history

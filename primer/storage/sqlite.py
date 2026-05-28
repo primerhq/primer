@@ -66,7 +66,7 @@ ModelT = TypeVar("ModelT", bound=Identifiable)
 def _table_name_for(model_class: type[BaseModel]) -> str:
     """Derive a table name from a model class.
 
-    Mirrors :func:`matrix.storage.postgres._table_name_for` exactly so
+    Mirrors :func:`primer.storage.postgres._table_name_for` exactly so
     the two backends place each model in the same-named table; an
     operator can swap providers without renaming anything.
     """
@@ -519,10 +519,10 @@ class SqliteStorage(Storage[ModelT]):
         return "(" + " OR ".join(clauses) + ")"
 
 
-# Map sqlite3 exception classes onto matrix domain exceptions.
+# Map sqlite3 exception classes onto primer domain exceptions.
 # Used by CRUD methods in Task 5.
 def _wrap_sqlite_error(exc: Exception, *, model_name: str, op: str) -> Exception:
-    """Translate sqlite3 errors into matrix domain exceptions."""
+    """Translate sqlite3 errors into primer domain exceptions."""
 
     if isinstance(exc, sqlite3.IntegrityError):
         # UNIQUE violation surfaces as IntegrityError; the message

@@ -28,7 +28,7 @@ import pytest
 
 @contextmanager
 def _api(base_url: str) -> Iterator[httpx.Client]:
-    """Sync httpx client bound to the live matrix backend. We use sync
+    """Sync httpx client bound to the live primer backend. We use sync
     here because the pytest-playwright ``page`` fixture is sync and
     mixing sync+async fixtures in one test is messy. The async
     ``client`` fixture in conftest is reserved for future async tests."""

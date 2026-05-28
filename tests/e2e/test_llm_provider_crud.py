@@ -322,7 +322,7 @@ async def test_t0448_llm_provider_models_endpoint_single_item(
 async def test_t0449_llm_provider_create_with_empty_models_returns_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0449 — Per matrix/model/provider.py:334-337, the LLMProvider
+    """T0449 — Per primer/model/provider.py:334-337, the LLMProvider
     `models` field has `min_length=1`. Pin that POST with `models: []`
     is rejected with a 422 /errors/validation-error envelope; row is
     not created.
@@ -539,7 +539,7 @@ async def test_t0493_llm_provider_create_with_deep_unicode_escapes_clean(
 async def test_t0562_post_llm_provider_with_duplicate_model_names_clean(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0562 — Per matrix/model/provider.py:334-337, LLMProvider.
+    """T0562 — Per primer/model/provider.py:334-337, LLMProvider.
     models is `list[LLMModel]` with no documented dedup constraint.
     Pin observed behavior: duplicate model names are accepted (201)
     or rejected (422) deterministically across two consecutive

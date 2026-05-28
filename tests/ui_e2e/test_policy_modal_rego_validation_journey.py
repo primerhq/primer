@@ -8,7 +8,7 @@ on the policy modal — Rego compile errors render inline under the
 The modal lives at /approvals → Policies tab → "New policy". When
 the operator picks the "Policy (Rego)" type and submits with broken
 Rego, the server's `_validate_approval_config` hook compiles the
-Rego eagerly (matrix/api/routers/tool_approval.py:_validate_approval_config),
+Rego eagerly (primer/api/routers/tool_approval.py:_validate_approval_config),
 catches RegoCompileError, and re-raises as RequestValidationError
 with loc=("approval", "policy"). The error envelope's fieldErrors
 arrive on the client; approvals.jsx routes them under the matching

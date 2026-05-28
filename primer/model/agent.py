@@ -2,7 +2,7 @@
 
 An agent is the user-facing unit of "an LLM with a personality and a
 toolset." Stored as a :class:`Document` in an agents
-:class:`matrix.model.collection.Collection` (the ``description``
+:class:`primer.model.collection.Collection` (the ``description``
 inherited from :class:`Describeable` doubles as embedding-text for
 vector search over agents in a future release).
 
@@ -10,7 +10,7 @@ Carries:
 
 * identity + description (from :class:`Describeable`).
 * :attr:`Agent.model` -- which configured
-  :class:`matrix.model.provider.LLMProvider` + which model name.
+  :class:`primer.model.provider.LLMProvider` + which model name.
 * :attr:`Agent.temperature` -- sampling temperature for every call.
 * :attr:`Agent.tools` -- first-class tools registered with the agent
   (referenced by id; resolved against the application's toolsets at
@@ -21,7 +21,7 @@ Carries:
   ``\\n\\n`` for OpenAI / Ollama).
 
 This is the *definition* model. The per-session snapshot taken at
-session start is :class:`matrix.model.session.AgentBinding` -- two
+session start is :class:`primer.model.session.AgentBinding` -- two
 distinct types because session history is preserved even after the
 underlying agent definition has been edited or deleted.
 """
@@ -46,7 +46,7 @@ class AgentModel(BaseModel):
         min_length=1,
         description=(
             "Identifier of the configured "
-            ":class:`matrix.model.provider.LLMProvider` this agent uses. "
+            ":class:`primer.model.provider.LLMProvider` this agent uses. "
             "Resolved against the application's provider registry at "
             "session-start time; not validated at construction."
         ),
@@ -68,7 +68,7 @@ class Agent(Describeable):
 
     Inherits ``id`` and ``description`` from :class:`Describeable`.
     The ``description`` is intended for human display AND for vector
-    indexing once an agents :class:`matrix.model.collection.Collection`
+    indexing once an agents :class:`primer.model.collection.Collection`
     is introduced.
     """
 
@@ -99,7 +99,7 @@ class Agent(Describeable):
             "the listed tools to the LLM — never a whole toolset. "
             "Workspace tools are NOT listed here; they are composed "
             "onto the agent automatically when it attaches to a "
-            "workspace (see :class:`matrix.workspace.session.AgentSession`)."
+            "workspace (see :class:`primer.workspace.session.AgentSession`)."
         ),
     )
     system_prompt: list[str] = Field(

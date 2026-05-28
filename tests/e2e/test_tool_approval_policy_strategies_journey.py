@@ -8,7 +8,7 @@ across the cross-router LLM-provider integrity hook.
 Multi-subsystem in one test:
 
   1. LLMProvider seed — feeds the `llm`-type policy's validation
-     hook (matrix/api/routers/tool_approval.py:_validate_approval_config).
+     hook (primer/api/routers/tool_approval.py:_validate_approval_config).
   2. ToolApprovalPolicy POST/GET/PUT/DELETE for the `required`
      strategy — full CRUD round-trip + enabled toggle.
   3. ToolApprovalPolicy POST for the `policy` (Rego) strategy with
@@ -85,7 +85,7 @@ _VALID_REGO = (
     # Package name MUST be primer.tool_approval — the validator
     # queries data.primer.tool_approval, so any other package
     # returns empty output and the regopy-JSON parse fails (a
-    # subtle gotcha — see matrix/agent/rego.py:_PACKAGE_QUERY).
+    # subtle gotcha — see primer/agent/rego.py:_PACKAGE_QUERY).
     "package primer.tool_approval\n"
     "\n"
     "default required := false\n"

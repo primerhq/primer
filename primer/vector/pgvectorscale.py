@@ -1,12 +1,12 @@
 """pgvectorscale-backed VectorStore.
 
-Extends :class:`matrix.vector.pgvector.PgVectorStoreProvider` with the
+Extends :class:`primer.vector.pgvector.PgVectorStoreProvider` with the
 ``vectorscale`` Postgres extension installed alongside ``vector``.
 pgvectorscale is layered on top of pgvector and adds the
 StreamingDiskANN index plus Statistical Binary Quantization (SBQ).
 
 Two index modes are supported, gated by
-:attr:`matrix.model.provider.PgVectorScaleConfig.enable_diskann`:
+:attr:`primer.model.provider.PgVectorScaleConfig.enable_diskann`:
 
 * ``enable_diskann = False`` -- per-collection tables get an HNSW
   index (identical layout to the plain pgvector provider). The

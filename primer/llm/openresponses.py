@@ -1,7 +1,7 @@
 """OpenResponses LLM adapter — wraps the OpenAI Responses API.
 
-Subclasses :class:`matrix.int.LLM` and translates the universal chat
-interface (:mod:`matrix.model.chat`) onto the OpenAI Responses wire
+Subclasses :class:`primer.int.LLM` and translates the universal chat
+interface (:mod:`primer.model.chat`) onto the OpenAI Responses wire
 format. Supports both real OpenAI and LM Studio's OpenAI-compatible
 endpoint via the :class:`OpenResponsesFlavor` discriminator on the
 provider config.
@@ -80,7 +80,7 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
-# Input mapping: matrix.model.chat -> OpenAI Responses input items            #
+# Input mapping: primer.model.chat -> OpenAI Responses input items            #
 # --------------------------------------------------------------------------- #
 
 

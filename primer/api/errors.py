@@ -1,7 +1,7 @@
 """RFC 7807 problem+json error model and FastAPI handler registration.
 
 Single ``ProblemDetails`` Pydantic model + an exception-handler chain
-that maps every :class:`matrix.model.except_.MatrixError` subclass to
+that maps every :class:`primer.model.except_.MatrixError` subclass to
 the right HTTP status + problem-type URI. Type URIs are relative
 (``/errors/<code>``) per RFC 7807 §3.1.
 """
@@ -134,7 +134,7 @@ def _problem_response(
     extensions: dict[str, Any] | None = None,
 ) -> JSONResponse:
     # Thread the request-id from request.state (set by the
-    # _install_request_id middleware in matrix.api.app) into the
+    # _install_request_id middleware in primer.api.app) into the
     # envelope's extensions so the UI's "Copy request id" link works
     # on the 4xx/5xx path. Skipped silently when the middleware is
     # absent (e.g. a unit test that constructs a Request without the

@@ -1,6 +1,6 @@
 """Register the Slack adapter factory at import time.
 
-Imported once from ``matrix/api/app.py`` (or wherever boot-time
+Imported once from ``primer/api/app.py`` (or wherever boot-time
 factory registration happens). The module body runs the
 ``register_adapter_factory`` call so the channels core can
 build SlackChannelAdapter instances when asked.

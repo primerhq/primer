@@ -268,7 +268,7 @@ async def test_t0765_chats_delete_twice_returns_409(
 ) -> None:
     """T0765 — DELETE on an already-ended chat must return 409 Conflict,
     not /errors/internal. Defends the explicit ConflictError raise in
-    matrix/api/routers/chats.py:end_chat against silently degrading to
+    primer/api/routers/chats.py:end_chat against silently degrading to
     no-op or 5xx leak.
     """
     pid = f"llm-t765-{unique_suffix}"

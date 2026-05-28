@@ -1,14 +1,14 @@
 """Abstract base class for toolset providers.
 
-A *toolset* is the matrix term for a source of tools the application
+A *toolset* is the primer term for a source of tools the application
 can offer to LLMs. Implementations bind to a configured provider at
 construction time and expose two operations:
 
 * :meth:`ToolsetProvider.list_tools` -- enumerate the tools this provider
-  exposes (returned as :class:`matrix.model.chat.Tool` descriptors so
+  exposes (returned as :class:`primer.model.chat.Tool` descriptors so
   they can be passed straight to the LLM adapter's ``tools`` parameter).
 * :meth:`ToolsetProvider.call` -- invoke one tool by name with an
-  argument dict, returning a :class:`matrix.model.chat.ToolCallResult`.
+  argument dict, returning a :class:`primer.model.chat.ToolCallResult`.
 
 The optional ``principal`` parameter on both methods is the
 caller-supplied identity of the end user on whose behalf the operation
@@ -18,7 +18,7 @@ internal registry, MCP without OAuth) ignore it. ``None`` is permitted
 and is treated as an anonymous principal by providers that distinguish.
 
 Adapters that need OAuth consent before they can answer raise
-:class:`matrix.model.except_.AuthRequiredError` (added in sub-project
+:class:`primer.model.except_.AuthRequiredError` (added in sub-project
 #10). Callers MUST handle that case explicitly so the URL reaches the
 end user before any generic ``except MatrixError`` swallows it.
 
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 class ToolsetProvider(ABC):
     """Provider-agnostic interface to a source of tools.
 
-    Sibling of :class:`matrix.int.LLM` and :class:`matrix.int.Embedder`.
+    Sibling of :class:`primer.int.LLM` and :class:`primer.int.Embedder`.
     Subclasses are bound to one configured toolset; ``list_tools`` /
     ``call`` are the only operations.
     """
@@ -69,17 +69,17 @@ class ToolsetProvider(ABC):
         Returns
         -------
         AsyncIterator[Tool]
-            Async iterator of :class:`matrix.model.chat.Tool` descriptors.
+            Async iterator of :class:`primer.model.chat.Tool` descriptors.
             Each descriptor's :attr:`Tool.toolset_id` MUST match the
             provider's configured toolset id so callers can route
             tool-call invocations back to the right provider.
 
         Raises
         ------
-        matrix.model.except_.AuthRequiredError
+        primer.model.except_.AuthRequiredError
             OAuth consent required before this provider can answer.
-        matrix.model.except_.ProviderError
-        matrix.model.except_.NetworkError
+        primer.model.except_.ProviderError
+        primer.model.except_.NetworkError
             Standard upstream / transport failures.
         """
 
@@ -106,7 +106,7 @@ class ToolsetProvider(ABC):
         principal
             See :meth:`list_tools`.
         ctx
-            Optional :class:`matrix.model.yield_.ToolContext` injected
+            Optional :class:`primer.model.yield_.ToolContext` injected
             for yielding tools (carries ``tool_call_id``,
             ``session_id``, ``workspace_id``, and on resume
             ``parked_at``). Providers ignore it for non-yielding
@@ -124,14 +124,14 @@ class ToolsetProvider(ABC):
 
         Raises
         ------
-        matrix.model.except_.UnsupportedContentError
+        primer.model.except_.UnsupportedContentError
             ``tool_name`` is not exposed by this provider.
-        matrix.model.except_.AuthRequiredError
+        primer.model.except_.AuthRequiredError
             OAuth consent required before this provider can answer.
-        matrix.model.except_.ProviderError
-        matrix.model.except_.NetworkError
+        primer.model.except_.ProviderError
+        primer.model.except_.NetworkError
             Standard upstream / transport failures.
-        matrix.model.yield_.YieldToWorker
+        primer.model.yield_.YieldToWorker
             The tool yielded — its turn is paused until the named
             event fires. Caller (typically the agent's tool manager)
             propagates this up to the worker pool which writes the

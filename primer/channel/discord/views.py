@@ -2,7 +2,7 @@
 
 Each Button's ``custom_id`` carries the (verb, workspace_id,
 session_id, tool_call_id) tuple verbatim. Discord's 100-char
-limit on ``custom_id`` is plenty for short matrix IDs.
+limit on ``custom_id`` is plenty for short primer IDs.
 """
 
 from __future__ import annotations

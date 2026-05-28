@@ -42,7 +42,7 @@ import pytest
 async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost", port=5432,
-        user="matrix", password="matrix", database="matrix_e2e",
+        user="primer", password="primer", database="matrix_e2e",
     )
 
 
@@ -296,7 +296,7 @@ async def test_t0811_chat_ws_interrupt_persists_error_row(
     and send it back to the client. The row text mentions 'interrupted'.
 
     Pins the M6 interrupt-message protocol path at
-    matrix/api/routers/chats.py:chat_ws (the kind=='interrupt' branch).
+    primer/api/routers/chats.py:chat_ws (the kind=='interrupt' branch).
     """
     import websockets
 
@@ -365,7 +365,7 @@ async def test_t0812_park_resume_worker_claim_chain(
     LLM available). That's beyond this test's scope — the
     contract under test is "claim happens", not "resume
     succeeds". The worker pool's exception leakage on
-    _run_one_turn failure is observable separately in matrix.log.
+    _run_one_turn failure is observable separately in primer.log.
     """
     sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
     tcid = f"tc-chain-{unique_suffix}"

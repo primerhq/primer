@@ -1,7 +1,7 @@
 """OAuth metadata discovery, PKCE, authorization-URL build, token exchange.
 
 Modern path (2025-06-18 + 2025-11-25). The 2025-03-26 legacy variant
-lives in :mod:`matrix.toolset.oauth.legacy` -- the wire shapes diverge
+lives in :mod:`primer.toolset.oauth.legacy` -- the wire shapes diverge
 enough (no protected-resource indirection, no ``resource`` parameter)
 that splitting the path keeps each side small enough to read in one
 sitting.

@@ -1,4 +1,4 @@
-"""Unit tests for matrix.catalog.types.
+"""Unit tests for primer.catalog.types.
 
 Covers enum string-value stability (these values are stored in
 `EmbeddingRecord.meta` and MUST remain stable across releases) and

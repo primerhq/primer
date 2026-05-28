@@ -105,7 +105,7 @@ async def test_t0773_chat_messages_get_returns_404_for_unknown_chat(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0773 — list_chat_messages explicitly 404s on a missing chat
-    BEFORE reading the messages table (per matrix/api/routers/chats.py:
+    BEFORE reading the messages table (per primer/api/routers/chats.py:
     'so we don't leak \"this id has no messages\" as a probe surface').
 
     Pins that probe-resistance contract against accidental degradation

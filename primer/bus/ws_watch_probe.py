@@ -78,14 +78,14 @@ class WatchProbe:
 class WSWatchProbe(WatchProbe):
     """Watch-probe that subscribes to the in-container runtime via WebSocket.
 
-    Translates :class:`~matrix.workspace.runtime.runtime_client.ChangeEvent`
+    Translates :class:`~primer.workspace.runtime.runtime_client.ChangeEvent`
     objects (which carry absolute paths) into workspace-relative
     :class:`Change` objects by stripping the ``workspace_root`` prefix.
 
     Parameters
     ----------
     runtime_client:
-        A connected :class:`~matrix.workspace.runtime.runtime_client.RuntimeClient`.
+        A connected :class:`~primer.workspace.runtime.runtime_client.RuntimeClient`.
     workspace_root:
         Absolute path of the workspace inside the container
         (e.g. ``"/workspace"``).  Used to build absolute paths for the

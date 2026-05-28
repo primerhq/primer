@@ -22,7 +22,7 @@ class _CancelScope:
     The cancellation propagates through the awaitable chain via
     :class:`asyncio.CancelledError`. ``msg`` is best-effort: passed to
     ``Task.cancel`` on Python 3.9+; silently dropped on older versions
-    (matrix targets 3.13 so this fallback is defensive).
+    (primer targets 3.13 so this fallback is defensive).
     """
 
     def __init__(self) -> None:

@@ -1,4 +1,4 @@
-"""Tests for matrix.workspace.session.AgentSession."""
+"""Tests for primer.workspace.session.AgentSession."""
 
 from __future__ import annotations
 

@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 # ===========================================================================
 
 
-_AUTHOR_NAME = "matrix"
-_AUTHOR_EMAIL = "matrix@local"
+_AUTHOR_NAME = "primer"
+_AUTHOR_EMAIL = "primer@local"
 
 # Trailer keys -- machine-readable identifiers in the commit body.
 _TRAILER_WORKSPACE = "X-Primer-Workspace"
@@ -59,7 +59,7 @@ _TRAILER_TOOL = "X-Primer-Tool"
 _TRAILER_CALL = "X-Primer-Call"
 
 # Allowed values of the ``op`` trailer (canonical type lives in
-# ``matrix.model.workspace.Op``; this set is the runtime validator).
+# ``primer.model.workspace.Op``; this set is the runtime validator).
 _VALID_OPS: frozenset[str] = frozenset(
     [
         "attach",

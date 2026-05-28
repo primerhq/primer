@@ -193,7 +193,7 @@ def test_u0099_sidebar_workers_count_matches_api(
         r = c.get("/v1/workers")
         assert r.status_code == 200, r.text
         expected = len(r.json().get("items", []))
-    # matrix-app runs with --run-worker so at least 1 worker is alive.
+    # primer-app runs with --run-worker so at least 1 worker is alive.
     assert expected >= 1, (
         f"expected at least 1 registered worker; API returned {expected}"
     )

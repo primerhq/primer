@@ -5,8 +5,8 @@ A :class:`WebSearchBackend` is any object exposing an async
 as a :class:`Protocol` rather than an ABC so the factory can accept
 small ad-hoc test doubles without inheritance plumbing.
 
-Backends ship under :mod:`matrix.toolset.web.backends`. The default is
-:class:`matrix.toolset.web.backends.ddg.DuckDuckGoBackend` (no API key,
+Backends ship under :mod:`primer.toolset.web.backends`. The default is
+:class:`primer.toolset.web.backends.ddg.DuckDuckGoBackend` (no API key,
 pure Python). Future Brave / Tavily / Serper / Exa adapters drop in as
 additional implementations of the same protocol; the factory accepts
 any ``WebSearchBackend``.
@@ -69,7 +69,7 @@ class WebSearchBackend(Protocol):
 
         * return at most ``count`` results (engines may cap lower);
         * preserve engine-supplied result order (relevance-first);
-        * raise :class:`matrix.model.except_.ProviderError` on
+        * raise :class:`primer.model.except_.ProviderError` on
           backend-side failures (rate limits, scraper breakage,
           unexpected response shape).
         """

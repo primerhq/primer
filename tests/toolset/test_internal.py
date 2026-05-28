@@ -1,4 +1,4 @@
-"""Tests for matrix.toolset.internal.InternalToolsetProvider."""
+"""Tests for primer.toolset.internal.InternalToolsetProvider."""
 
 from __future__ import annotations
 

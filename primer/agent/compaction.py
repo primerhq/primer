@@ -1,8 +1,8 @@
 """Two-tier history compaction for the agent executors.
 
 The :class:`CompactionStrategy` is shared between
-:class:`matrix.agent.AgentExecutor` (chat threads) and
-:class:`matrix.agent.WorkspaceAgentExecutor` (workspace-backed). It is
+:class:`primer.agent.AgentExecutor` (chat threads) and
+:class:`primer.agent.WorkspaceAgentExecutor` (workspace-backed). It is
 called between turns to keep the prompt under the configured LLM's
 context limit.
 
@@ -176,7 +176,7 @@ class CompactionStrategy:
 
     The strategy uses the agent's :attr:`Agent.compaction_prompt` if
     non-empty, else the system default in
-    :data:`matrix.agent.prompts.DEFAULT_COMPACTION_PROMPT`. Compaction
+    :data:`primer.agent.prompts.DEFAULT_COMPACTION_PROMPT`. Compaction
     summarisation calls back into the SAME ``llm`` / ``model`` the
     agent uses (cheaper than running a separate model per the
     user-confirmed design decision).

@@ -485,7 +485,7 @@ def mcp_task_resume(
 
     The bridge publishes ``{"result": <CallToolResult-shaped dict>}``
     on the bus when a task transitions to a terminal state. This hook
-    translates that payload into a Matrix :class:`ToolCallResult`. On
+    translates that payload into a Primer :class:`ToolCallResult`. On
     timeout / cancel, the upstream MCP task is cancelled by the
     bridge / pre_cancel hook (best-effort) and the agent sees a
     structured marker so it can decide what to do next.

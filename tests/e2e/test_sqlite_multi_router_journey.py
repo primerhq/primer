@@ -10,7 +10,7 @@ major router proves it actually works against the SQLite Storage
 adapter (not just Postgres).
 
 Why this is a "user journey" and not a contract pin: it walks the
-shape of a realistic operator standing up a brand-new matrix
+shape of a realistic operator standing up a brand-new primer
 instance — pick a provider, register an agent, set up a workspace,
 spin up a session, register a channel — and re-reads every entity
 to confirm round-trip persistence. If any router or its Storage

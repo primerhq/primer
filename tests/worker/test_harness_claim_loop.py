@@ -27,7 +27,7 @@ async def local_bare_repo(tmp_path):
     subprocess.run(["git", "config", "user.email", "t@t"], cwd=work, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=work, check=True)
     (work / "harness.yaml").write_text(
-        "apiVersion: matrix/v1\nkind: Harness\nmetadata:\n  name: t\n"
+        "apiVersion: primer/v1\nkind: Harness\nmetadata:\n  name: t\n"
     )
     (work / "overrides.schema.json").write_text('{"type":"object","properties":{}}')
     (work / "templates").mkdir()

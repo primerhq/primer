@@ -1,4 +1,4 @@
-"""Tests for matrix.toolset.oauth.handler.MatrixOAuthHandler."""
+"""Tests for primer.toolset.oauth.handler.MatrixOAuthHandler."""
 
 from __future__ import annotations
 

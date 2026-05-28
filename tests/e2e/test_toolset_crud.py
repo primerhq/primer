@@ -82,7 +82,7 @@ async def test_t0402_toolset_post_stdio_with_http_config_shape_422(
 ) -> None:
     """T0402 — McpConfig is discriminated by `transport` and the
     inner `config` field is a `StdioConfig | HttpConfig` union; a
-    model_validator (matrix/model/provider.py:548) enforces that the
+    model_validator (primer/model/provider.py:548) enforces that the
     inner type matches the discriminator.
 
     Build a body with `transport="stdio"` but an HTTP-shaped inner

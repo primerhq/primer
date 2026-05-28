@@ -95,8 +95,8 @@ async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
         port=5432,
-        user="matrix",
-        password="matrix",
+        user="primer",
+        password="primer",
         database="matrix_e2e",
     )
 
@@ -326,7 +326,7 @@ async def test_t0867_pause_while_parked_then_cancel_then_resume_cycle(
     """T0867 — Walk a session through pause-while-parked,
     cancel-yielded-tool (worker pickup pauses-not-resumes),
     /resume (worker pickup resumes-via-hook). Pin the full
-    interaction matrix in one test.
+    interaction primer in one test.
     """
     sid, wid, cleanup_urls = await _seed_ladder(
         client, unique_suffix, tmp_path,

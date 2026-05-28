@@ -53,7 +53,7 @@ import pytest
 
 
 # Container-internal tmp dir — host tmp_path is not visible inside the
-# matrix-app container. Use /tmp/<suffix>; the local backend convention.
+# primer-app container. Use /tmp/<suffix>; the local backend convention.
 def _container_lance_root(suffix: str) -> str:
     return f"/tmp/lance-t{suffix}"
 

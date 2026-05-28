@@ -940,7 +940,7 @@ async def test_t0161_pause_on_cancelled_session_returns_409(
     CANCELLED→PAUSED transition must surface as 409 /errors/conflict.
 
     Together with T0160 this gives full pause/resume coverage of the
-    illegal-from-terminal transition matrix.
+    illegal-from-terminal transition primer.
     """
     env = await _full_setup(client, unique_suffix, tmp_path)
     workspace_id: str | None = None
@@ -1634,7 +1634,7 @@ async def test_t0324_steer_on_missing_session_returns_404(
     """T0324 — T0159 covers cancel/pause/resume on a missing session
     id; steer was not pinned. Pin: steer on a missing session id
     returns 404 /errors/not-found cleanly, completing the signal-verb
-    coverage matrix.
+    coverage primer.
     """
     env = await _full_setup(client, unique_suffix, tmp_path)
     workspace_id: str | None = None
@@ -2298,7 +2298,7 @@ async def test_t0273_session_create_binding_missing_kind_returns_422(
 async def test_t0397_session_pause_from_created_idempotent(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0397 — Per matrix/api/routers/sessions.py:251, pause on a
+    """T0397 — Per primer/api/routers/sessions.py:251, pause on a
     CREATED/WAITING session (no worker holding a lease) transitions
     directly to PAUSED with status_code=204. Pin two contracts:
 
@@ -2426,7 +2426,7 @@ async def test_t0399_session_steer_after_terminal_clean_envelope(
     """T0399 — Spec §11 line 493 documents steer as "Does NOT gate on
     session status — instructions can be queued on a CREATED, PAUSED,
     or RUNNING session". ENDED is not in that list. Meanwhile
-    matrix/workspace/session.py:352 raises ConflictError on ENDED.
+    primer/workspace/session.py:352 raises ConflictError on ENDED.
     There's a known stale-cache between the two: the WorkspaceRegistry
     holds an in-memory Session view whose `_info.status` doesn't
     refresh from storage right after cancel, so the 200/409 outcome
@@ -2809,7 +2809,7 @@ async def test_t0429_graph_bound_session_terminates_via_fatal_path(
 ) -> None:
     """T0429 — Sibling of T0156 without the LM Studio dependency.
     Graph executor wiring is `NotImplementedError` in
-    matrix/worker/pool.py:478. The worker must surface that as a
+    primer/worker/pool.py:478. The worker must surface that as a
     clean session ENDED/failed with `last_error` populated, NOT
     leave the row stuck in RUNNING.
 
@@ -3022,7 +3022,7 @@ async def test_t0433_top_level_get_reflects_fatal_ended_reason(
     /v1/workspaces/{wid}/sessions/{sid} returns `{info, status}`
     sourced from the LocalWorkspace's in-memory `_sessions` dict,
     which is populated only by `start_session` for AGENT bindings
-    (matrix/workspace/local/workspace.py:135-160). Graph-bound
+    (primer/workspace/local/workspace.py:135-160). Graph-bound
     sessions never get a live AgentSession object, so the nested
     GET 404s. The top-level GET reads session_storage directly and
     works for both binding kinds. This is a real spec/impl drift
@@ -3358,7 +3358,7 @@ async def test_t0489_session_cancel_resume_cancel_resume_post_terminal_sticky(
     worker activity, so works without LM Studio):
 
       1. cancel — CREATED → ENDED/cancelled (200, direct
-         short-circuit per matrix/api/routers/sessions.py:287-296)
+         short-circuit per primer/api/routers/sessions.py:287-296)
       2. resume — on ENDED — 409 /errors/conflict
       3. cancel — already ended — 409 /errors/conflict
       4. resume — still ended — 409 /errors/conflict
@@ -3537,7 +3537,7 @@ async def test_t0503_steer_empty_then_valid_both_clean(
         )
 
         # Step 1: empty instruction — Pydantic min_length=1 → 422
-        # (per matrix/api/routers/workspaces.py:120-130 SteerBody)
+        # (per primer/api/routers/workspaces.py:120-130 SteerBody)
         empty = await client.post(
             f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
             json={"instruction": ""},
@@ -3588,7 +3588,7 @@ async def test_t0504_pause_then_resume_on_created_session_clean(
 ) -> None:
     """T0504 — Walk pause→resume on a CREATED session (the
     pause-handler short-circuits CREATED → PAUSED per
-    matrix/api/routers/sessions.py:251-254). Pin: each step returns
+    primer/api/routers/sessions.py:251-254). Pin: each step returns
     a documented code; the row goes through observable state
     transitions (CREATED→PAUSED→running-or-ended); never
     /errors/internal.
@@ -3612,7 +3612,7 @@ async def test_t0504_pause_then_resume_on_created_session_clean(
         )
         assert pause.status_code == 204, pause.text
 
-        # Observable: status is PAUSED (per matrix/api/routers/
+        # Observable: status is PAUSED (per primer/api/routers/
         # sessions.py:252)
         before_resume = await client.get(f"/v1/sessions/{session_id}")
         assert before_resume.status_code == 200, before_resume.text
@@ -4294,7 +4294,7 @@ async def test_t0634_predicate_eq_bool_on_cancel_requested(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
     """T0634 — Sister of T0361 (`=` on int column) and T0594 (`=`
-    on float column) for a BOOL column. Per matrix/model/session.py:
+    on float column) for a BOOL column. Per primer/model/session.py:
     363-364, `Session.cancel_requested: bool` is the actual bool
     column on the model (the original proposal said `auto_start`
     but that lives only on the create-body, not the persisted row).

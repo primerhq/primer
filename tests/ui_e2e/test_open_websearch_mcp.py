@@ -4,7 +4,7 @@ Covers backlog item:
 * U0053 — Open-websearch MCP toolset detail page renders the 6-tool
   catalog with no MCP-HTTP error block.
 
-The matrix-app docker container may not have ``node`` / ``npx`` on
+The primer-app docker container may not have ``node`` / ``npx`` on
 PATH; in that case the toolset's first ``/tools`` call returns a
 500/502 envelope and the UI surfaces an anomaly banner instead of
 the catalog. We probe the API first and skip-soft if the catalog

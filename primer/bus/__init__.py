@@ -19,7 +19,7 @@ Exports:
   elapsed without a real event firing; publishes the
   ``__yield_timeout__`` marker payload.
 
-See :mod:`matrix.int.event_bus` for the abstract interface and the
+See :mod:`primer.int.event_bus` for the abstract interface and the
 spec at ``docs/superpowers/specs/2026-05-22-yielding-tools-design.md``
 §6 for the design.
 """

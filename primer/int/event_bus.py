@@ -9,8 +9,8 @@ background listener inside each worker pool) react by calling the
 scheduler's :meth:`mark_resumable` for any session parked on that
 key.
 
-Two implementations live in :mod:`matrix.bus.postgres` (production —
-``LISTEN/NOTIFY``) and :mod:`matrix.bus.in_memory` (tests / single-
+Two implementations live in :mod:`primer.bus.postgres` (production —
+``LISTEN/NOTIFY``) and :mod:`primer.bus.in_memory` (tests / single-
 process dev). Both honour the interface here; production callers
 inject the right one via the app lifespan.
 """
@@ -33,10 +33,10 @@ class Event:
         The routing key the parked session is waiting on. Conventional
         prefixes: ``timer:``, ``ask_user:``, ``watch:``, ``mcp_task:``.
     payload
-        Source-supplied payload dict. May include the matrix-internal
+        Source-supplied payload dict. May include the primer-internal
         marker keys (``__yield_timeout__``, ``__yield_cancelled__``);
         the worker's resume classifier strips them per
-        :mod:`matrix.worker.yield_runtime`.
+        :mod:`primer.worker.yield_runtime`.
     published_at
         UTC timestamp the event was published.
     """

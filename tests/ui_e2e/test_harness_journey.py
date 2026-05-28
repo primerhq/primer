@@ -19,7 +19,7 @@ def _bootstrap_bare_repo(tmp_path: Path) -> str:
     subprocess.run(["git", "config", "user.email", "t@t"], cwd=work, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=work, check=True)
     (work / "harness.yaml").write_text(
-        "apiVersion: matrix/v1\n"
+        "apiVersion: primer/v1\n"
         "kind: Harness\n"
         "metadata:\n"
         "  name: e2e-harness\n"

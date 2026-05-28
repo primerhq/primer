@@ -3,7 +3,7 @@
 Caches one ``VectorStoreProvider`` instance per ``SemanticSearchProvider``
 row id, lazy-constructs from the row config, invalidates on demand.
 
-Mirrors :class:`matrix.api.registries.provider_registry.ProviderRegistry`'s
+Mirrors :class:`primer.api.registries.provider_registry.ProviderRegistry`'s
 caching pattern for LLM/Embedding/CrossEncoder providers — same
 ``get`` / ``invalidate`` / ``aclose`` triad, scoped per id.
 """

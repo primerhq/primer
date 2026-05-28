@@ -90,7 +90,7 @@ _STREAM_CLOSED = object()  # signals that the stream has ended normally
 
 
 class RuntimeClient:
-    """Worker-side WebSocket client that speaks the matrix runtime protocol.
+    """Worker-side WebSocket client that speaks the primer runtime protocol.
 
     Parameters
     ----------
@@ -573,7 +573,7 @@ class RuntimeClient:
             op=OpName.HELLO,
             args={
                 "protocol": self._protocol_version,
-                "client": "matrix-worker/0.1.0",
+                "client": "primer-worker/0.1.0",
             },
         )
         from primer.workspace.runtime.protocol import serialize

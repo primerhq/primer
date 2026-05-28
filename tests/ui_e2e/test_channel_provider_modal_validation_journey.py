@@ -16,7 +16,7 @@ Multi-state UI journey on the New-provider modal:
      bot_token, then submit.
   3. Server returns 422 /errors/validation-error with
      loc=("body","app_token") (the Slack field_validator's emission
-     point — see matrix/model/channel.py:SlackChannelProviderConfig).
+     point — see primer/model/channel.py:SlackChannelProviderConfig).
   4. Modal stays OPEN; inline error renders under the App-token
      field (the modal's per-field err lookup matches
      `body.${f.key}` after the loc-prefix correction).

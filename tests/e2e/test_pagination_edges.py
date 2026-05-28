@@ -432,7 +432,7 @@ async def test_t0386_cursor_response_omits_total_offset_includes_it(
 async def test_t0456_find_with_excessive_length_clean_envelope(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0456 — Per matrix/model/storage.py:237/261, OffsetPage.length
+    """T0456 — Per primer/model/storage.py:237/261, OffsetPage.length
     and CursorPage.length both have `ge=1` but NO upper bound on the
     model. T0214 confirmed the GET list endpoints enforce the
     documented max=200 via 422; the find POST endpoints accept the

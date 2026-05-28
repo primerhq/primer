@@ -35,7 +35,7 @@ import pytest
 async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost", port=5432,
-        user="matrix", password="matrix", database="matrix_e2e",
+        user="primer", password="primer", database="matrix_e2e",
     )
 
 
@@ -323,7 +323,7 @@ async def test_t0792_chat_ws_reconnect_with_cursor_replays_missed_messages(
     in seq order (seq 1, 2, 3) before accepting new client messages.
 
     Pin for the M6 cursor-replay contract in
-    matrix/api/routers/chats.py:_replay_since_cursor.
+    primer/api/routers/chats.py:_replay_since_cursor.
     """
     import websockets
 
@@ -410,7 +410,7 @@ async def test_t0793_chat_ws_connect_to_missing_chat_closes_with_4404(
     range), NOT crash with a 500 + dropped connection.
 
     Pin for the connection-time validation in
-    matrix/api/routers/chats.py:chat_ws.
+    primer/api/routers/chats.py:chat_ws.
     """
     import websockets
 

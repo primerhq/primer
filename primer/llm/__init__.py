@@ -1,6 +1,6 @@
 """Concrete LLM adapter implementations.
 
-Each adapter subclasses :class:`matrix.int.LLM` and implements the
+Each adapter subclasses :class:`primer.int.LLM` and implements the
 streaming chat interface against one provider's SDK.
 """
 

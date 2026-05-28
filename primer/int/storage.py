@@ -1,9 +1,9 @@
 """Abstract base class for storage backends.
 
-Sibling of :class:`matrix.int.LLM`, :class:`matrix.int.Embedder`, and
-:class:`matrix.int.ToolsetProvider`. Each :class:`Storage` instance is
+Sibling of :class:`primer.int.LLM`, :class:`primer.int.Embedder`, and
+:class:`primer.int.ToolsetProvider`. Each :class:`Storage` instance is
 bound to one model type (the type parameter ``ModelT`` must inherit from
-:class:`matrix.model.common.Identifiable`) and one backend (in-memory,
+:class:`primer.model.common.Identifiable`) and one backend (in-memory,
 SQLite, Postgres, MongoDB, etc.). One backend instance, one model type:
 applications that store multiple model kinds wire up one
 :class:`Storage` per kind.
@@ -12,24 +12,24 @@ The interface exposes six operations:
 
 * :meth:`Storage.get` -- fetch by id, returns ``None`` if missing.
 * :meth:`Storage.create` -- insert a new entity, raise
-  :class:`matrix.model.except_.ConflictError` on duplicate id.
+  :class:`primer.model.except_.ConflictError` on duplicate id.
 * :meth:`Storage.update` -- replace an existing entity, raise
-  :class:`matrix.model.except_.NotFoundError` if missing.
+  :class:`primer.model.except_.NotFoundError` if missing.
 * :meth:`Storage.delete` -- remove by id, raise
-  :class:`matrix.model.except_.NotFoundError` if missing.
+  :class:`primer.model.except_.NotFoundError` if missing.
 * :meth:`Storage.list` -- paginated enumeration, optionally ordered.
 * :meth:`Storage.find` -- paginated query with predicate filter,
   optionally ordered. ``predicate=None`` is equivalent to ``list``.
 
 Pagination is bidirectional: callers supply either an
-:class:`matrix.model.storage.OffsetPage` or a
-:class:`matrix.model.storage.CursorPage` request and receive the
+:class:`primer.model.storage.OffsetPage` or a
+:class:`primer.model.storage.CursorPage` request and receive the
 matching response shape. Backends MUST support both styles; backends
 that don't natively offer offset (some KV stores) emulate by
 materialising-and-slicing.
 
 The predicate language is a binary expression tree -- see
-:class:`matrix.model.storage.Predicate`. Backends are free to optimise
+:class:`primer.model.storage.Predicate`. Backends are free to optimise
 common operator/operand combinations natively (e.g. compile the tree
 to a SQL ``WHERE`` clause) but MUST always evaluate the same logical
 semantics.
@@ -80,7 +80,7 @@ class Storage(ABC, Generic[ModelT]):
 
         Raises
         ------
-        matrix.model.except_.ConflictError
+        primer.model.except_.ConflictError
             An entity with the same id already exists.
         """
 
@@ -92,7 +92,7 @@ class Storage(ABC, Generic[ModelT]):
 
         Raises
         ------
-        matrix.model.except_.NotFoundError
+        primer.model.except_.NotFoundError
             No entity with this id exists.
         """
 
@@ -102,7 +102,7 @@ class Storage(ABC, Generic[ModelT]):
 
         Raises
         ------
-        matrix.model.except_.NotFoundError
+        primer.model.except_.NotFoundError
             No entity with this id exists. Callers that want
             idempotent semantics should suppress the exception.
         """
@@ -161,7 +161,7 @@ class Storage(ABC, Generic[ModelT]):
 
         Raises
         ------
-        matrix.model.except_.BadRequestError
+        primer.model.except_.BadRequestError
             The predicate references a field the backend cannot
             translate, or uses an operand layout the backend does not
             support (e.g. column-vs-column comparison on a backend

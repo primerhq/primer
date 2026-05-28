@@ -1,7 +1,7 @@
 """Provider-level shared Slack Socket Mode connection.
 
 Slack allows ~2 concurrent Socket Mode connections per app. To
-keep matrix's connection count bounded, every ChannelAdapter for
+keep primer's connection count bounded, every ChannelAdapter for
 the same ChannelProvider shares ONE connection.
 """
 

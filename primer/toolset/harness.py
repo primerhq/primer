@@ -14,7 +14,7 @@ without going through HTTP:
 * ``harness__uninstall``      — enqueue UNINSTALL.
 
 Every handler mirrors the logic in
-:mod:`matrix.api.routers.harness` without the HTTP layer.
+:mod:`primer.api.routers.harness` without the HTTP layer.
 """
 
 from __future__ import annotations

@@ -79,7 +79,7 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
       6. Seed WorkspaceProvider + Template + Workspace ladder.
       7. Seed WorkspaceChannelAssociation bridging workspace ↔ channel.
       8. Seed Agent with the user toolset in its first-class tools list.
-      9. Cascade-block matrix — try each DELETE in the WRONG order
+      9. Cascade-block primer — try each DELETE in the WRONG order
          and assert the 409 envelope carries the blocking row id:
            a. DELETE toolset → 409 (policy blocks)
            b. DELETE channel → 409 (association blocks)
@@ -201,7 +201,7 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
         seeded_urls.append(f"/v1/agents/{agent_id}")
 
         # ===================================================================
-        # 9. Cascade-block matrix — try each DELETE in the WRONG order.
+        # 9. Cascade-block primer — try each DELETE in the WRONG order.
         # ===================================================================
 
         # ----- 9a. Toolset blocked by policy (§2 directive) ---------------

@@ -1,7 +1,7 @@
 """Tests for RuntimeClient (worker-side WS client).
 
 Uses an in-process aiohttp test server (_FakeRuntime) that speaks the
-matrix runtime protocol so no real container is required.
+primer runtime protocol so no real container is required.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from primer.workspace.runtime.runtime_client import ChangeEvent, RuntimeClient, 
 
 
 class _FakeRuntime:
-    """Minimal aiohttp WS handler that speaks the matrix runtime protocol.
+    """Minimal aiohttp WS handler that speaks the primer runtime protocol.
 
     Tests configure the server by assigning to the public attributes
     (e.g. ``server.files``) or registering callbacks.

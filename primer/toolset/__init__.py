@@ -1,6 +1,6 @@
 """Concrete ToolsetProvider implementations.
 
-Each implementation subclasses :class:`matrix.int.ToolsetProvider` and
+Each implementation subclasses :class:`primer.int.ToolsetProvider` and
 exposes one source of tools to the application.
 
 The framework also ships **built-in internal toolsets** assembled from

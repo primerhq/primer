@@ -1,4 +1,4 @@
-"""Tests for matrix.harness.git — uses local bare repos via file:// for cloneable URLs."""
+"""Tests for primer.harness.git — uses local bare repos via file:// for cloneable URLs."""
 
 from __future__ import annotations
 

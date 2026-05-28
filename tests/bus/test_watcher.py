@@ -3,15 +3,15 @@
 Two layers:
 
 * :class:`EventDrivenWatcher` — the unit.  Consumes push events from a
-  :class:`~matrix.bus.ws_watch_probe.WatchProbe` and fires a callback when
+  :class:`~primer.bus.ws_watch_probe.WatchProbe` and fires a callback when
   changes land, coalescing bursts via ``batch_window_ms``.
 * :class:`WatcherManager` — the lifecycle owner.  Periodically scans the
   scheduler for ``watch:*`` parks and starts / stops watchers to match.
   Publishes change bursts on the event bus on behalf of each watcher.
 
 The unit tests use a fake :class:`WatchProbe` that yields injected
-:class:`~matrix.bus.ws_watch_probe.Change` events.  The integration tests
-wire a real :class:`~matrix.bus.host_inotify_probe.HostInotifyProbe` against
+:class:`~primer.bus.ws_watch_probe.Change` events.  The integration tests
+wire a real :class:`~primer.bus.host_inotify_probe.HostInotifyProbe` against
 real on-disk files so that the full push path executes.
 """
 

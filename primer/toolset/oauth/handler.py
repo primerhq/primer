@@ -6,7 +6,7 @@ calls into:
 
 * :meth:`MatrixOAuthHandler.authorize` -- preflight before opening an
   MCP session. Returns an ``Authorization`` header dict OR raises
-  :class:`matrix.model.except_.AuthRequiredError`.
+  :class:`primer.model.except_.AuthRequiredError`.
 * :meth:`MatrixOAuthHandler.complete_oauth` -- called from the
   application's OAuth callback. Exchanges code+state for a token,
   persists it, returns. Subsequent ``authorize(principal)`` calls

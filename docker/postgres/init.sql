@@ -1,4 +1,4 @@
--- Bootstrap extensions required by matrix.
+-- Bootstrap extensions required by primer.
 --
 -- This file is mounted into /docker-entrypoint-initdb.d so it runs
 -- exactly once: the first time the postgres container boots against

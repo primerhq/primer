@@ -2,10 +2,10 @@
 
 A *VectorStore provider* owns the shared vector-database state
 (connection pool, extension setup, per-collection table cache) and
-exposes the single :class:`matrix.int.VectorStore` handle that talks
+exposes the single :class:`primer.int.VectorStore` handle that talks
 to it.
 
-In contrast to :class:`matrix.int.StorageProvider` (which yields one
+In contrast to :class:`primer.int.StorageProvider` (which yields one
 :class:`Storage` per model class), a VectorStore provider yields one
 :class:`VectorStore` -- collections live as separate tables in the
 same database, and the single VectorStore dispatches to the right

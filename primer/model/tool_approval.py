@@ -1,7 +1,7 @@
 """ToolApprovalPolicy entity + discriminated ApprovalConfig union.
 
 Stored entity keyed by ``(toolset_id, tool_name)``. The
-``ApprovalResolver`` (matrix.agent.approval) looks up the policy at
+``ApprovalResolver`` (primer.agent.approval) looks up the policy at
 dispatch time; if one exists and ``enabled=True``, the configured
 evaluator decides whether the call requires operator approval.
 """

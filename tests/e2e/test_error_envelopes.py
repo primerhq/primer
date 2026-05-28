@@ -149,7 +149,7 @@ async def test_t0009_delete_on_missing_returns_404(
     /errors/not-found envelope.
 
     NB: the original backlog wording said DELETE was idempotent (returned
-    204 on missing). The actual CRUD contract in matrix/api/routers/_crud.py
+    204 on missing). The actual CRUD contract in primer/api/routers/_crud.py
     is "delete, 404 on miss". This test asserts the real behaviour and
     catches any future regression that would silently broaden DELETE to
     return 204 for missing rows.

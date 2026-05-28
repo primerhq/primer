@@ -1,6 +1,6 @@
 """SandboxStateRepo -- git-backed state repo inside a Sandbox.
 
-Same contract as :class:`matrix.workspace.local.state.LocalStateRepo`
+Same contract as :class:`primer.workspace.local.state.LocalStateRepo`
 but every git op dispatches via :class:`Sandbox.exec` in argv form
 (no shell). Files are materialised into the sandbox via
 :class:`Sandbox.write_file`.
@@ -85,11 +85,11 @@ class SandboxStateRepo:
             )
         # Local repo author config so commits don't depend on global git.
         await self._sandbox.exec(
-            ["git", "config", "user.email", "matrix@local"],
+            ["git", "config", "user.email", "primer@local"],
             workdir=self._state_path,
         )
         await self._sandbox.exec(
-            ["git", "config", "user.name", "matrix"],
+            ["git", "config", "user.name", "primer"],
             workdir=self._state_path,
         )
         # Initial empty commit so HEAD exists.

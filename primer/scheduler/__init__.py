@@ -1,12 +1,12 @@
 """Scheduler implementations + factory.
 
-See matrix.int.Scheduler for the ABC. Two impls ship:
+See primer.int.Scheduler for the ABC. Two impls ship:
 
 * :class:`InMemoryScheduler` — single-process / tests
 * :class:`PostgresScheduler` — production (lease columns + LISTEN/NOTIFY)
 
 Construct via :class:`SchedulerFactory` from a discriminated
-:class:`matrix.model.scheduler.SchedulerProviderConfig`.
+:class:`primer.model.scheduler.SchedulerProviderConfig`.
 """
 
 from primer.scheduler.factory import SchedulerFactory

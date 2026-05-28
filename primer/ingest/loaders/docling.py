@@ -1,11 +1,11 @@
 """Docling-backed :class:`DocumentLoader`.
 
-The default document loader used throughout :mod:`matrix.ingest`.
+The default document loader used throughout :mod:`primer.ingest`.
 Wraps :class:`docling.document_converter.DocumentConverter` to turn
 PDFs / DOCX / PPTX / HTML / etc. into a :class:`LoadedDocument`. The
 serialised :class:`DoclingDocument` is stored under
 ``LoadedDocument.structure`` so a downstream
-:class:`matrix.ingest.splitters.docling.DoclingSplitter` can use it
+:class:`primer.ingest.splitters.docling.DoclingSplitter` can use it
 without re-parsing.
 
 ``docling`` ships as a core dependency, so this loader is always

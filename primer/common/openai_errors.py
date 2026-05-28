@@ -1,8 +1,8 @@
 """Shared openai SDK exception classifier.
 
-Used by every matrix adapter that wraps the openai.AsyncOpenAI client
+Used by every primer adapter that wraps the openai.AsyncOpenAI client
 (currently OpenResponsesLLM and OpenAIEmbedder). Maps the openai
-exception hierarchy to the matrix exception hierarchy so callers see
+exception hierarchy to the primer exception hierarchy so callers see
 one universal error surface regardless of which adapter raised.
 """
 
@@ -30,11 +30,11 @@ from primer.model.except_ import (
 
 
 def classify_openai_exception(exc: Exception) -> MatrixError:
-    """Map an openai SDK exception to the matrix exception hierarchy.
+    """Map an openai SDK exception to the primer exception hierarchy.
 
     Mapping rules:
 
-    | openai SDK exception | matrix exception |
+    | openai SDK exception | primer exception |
     |---|---|
     | AuthenticationError (401) | AuthenticationError |
     | RateLimitError (429) | RateLimitError |

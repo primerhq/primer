@@ -1,7 +1,7 @@
 """OpenAI embedder adapter — wraps the OpenAI Embeddings API.
 
-Subclasses :class:`matrix.int.Embedder` and translates the universal
-embedding interface (:mod:`matrix.model.embedding`) onto the OpenAI
+Subclasses :class:`primer.int.Embedder` and translates the universal
+embedding interface (:mod:`primer.model.embedding`) onto the OpenAI
 embeddings wire format. Supports both real OpenAI and LM Studio's
 OpenAI-compatible endpoint via the :class:`OpenAIEmbeddingFlavor`
 discriminator on the provider config.
@@ -89,7 +89,7 @@ _POLICY_BY_FLAVOR: dict[OpenAIEmbeddingFlavor, _FlavorPolicy] = {
 
 
 # --------------------------------------------------------------------------- #
-# Input mapping: matrix.model.embedding.EmbeddingPart -> OpenAI input element  #
+# Input mapping: primer.model.embedding.EmbeddingPart -> OpenAI input element  #
 # --------------------------------------------------------------------------- #
 
 
@@ -149,7 +149,7 @@ def _inputs_to_openai_list(
 
 
 # --------------------------------------------------------------------------- #
-# Response translation: OpenAI response -> matrix.model.embedding types        #
+# Response translation: OpenAI response -> primer.model.embedding types        #
 # --------------------------------------------------------------------------- #
 
 

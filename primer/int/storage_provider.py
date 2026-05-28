@@ -2,7 +2,7 @@
 
 A *Storage provider* owns the shared backend state (connection pool,
 schema setup, prepared statements) and spawns model-bound
-:class:`matrix.int.Storage` instances on demand. One application
+:class:`primer.int.Storage` instances on demand. One application
 typically constructs one provider per backend at startup, then asks
 it for a :class:`Storage` whenever it needs to operate on a particular
 model class:

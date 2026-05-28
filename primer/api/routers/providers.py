@@ -1,7 +1,7 @@
 """Provider entity routers: LLM / Embedding / CrossEncoder / Toolset.
 
 Each entity follows the standard CRUD + Find shape from
-:mod:`matrix.api.routers._crud`, plus entity-specific operations:
+:mod:`primer.api.routers._crud`, plus entity-specific operations:
 
 * LLMProvider:           ``GET /v1/llm_providers/{id}/models``
                          ``POST /v1/llm_providers/{id}/invalidate``
@@ -508,7 +508,7 @@ async def list_toolset_tools(
             f"{type(first).__name__}: {first}"
         ) from group
     except Exception as exc:
-        # Re-raise the documented matrix error types so the registry
+        # Re-raise the documented primer error types so the registry
         # mapper produces the correct envelope (NotFoundError → 404,
         # AuthRequiredError → 401, etc.).
         from primer.model.except_ import MatrixError
@@ -528,7 +528,7 @@ async def list_toolset_tools(
 # ---------- Built-in toolsets registry --------------------------------------
 #
 # The five reserved built-in toolset ids live in
-# matrix/api/registries/provider_registry.py. Their operator-facing
+# primer/api/registries/provider_registry.py. Their operator-facing
 # metadata (tagline, icon hint, availability semantics) lives here so
 # the UI can render the built-in cards dynamically from one source of
 # truth instead of hard-coding the list.

@@ -125,7 +125,7 @@ def make_crud_router(
         The persisted Pydantic model. Used as the request/response body type.
     storage_dep
         FastAPI dependency that returns ``Storage[model_cls]``. Typically
-        one of the per-model helpers in :mod:`matrix.api.deps`.
+        one of the per-model helpers in :mod:`primer.api.deps`.
     plural
         URL path segment, e.g. ``llm_providers``.
     tag
@@ -181,9 +181,9 @@ def make_crud_router(
         ``on_pre_delete`` hooks are composed *after* these auto-wired
         guards.
     references
-        Optional list of :class:`~matrix.api.routers._references.ReferenceCheck`
+        Optional list of :class:`~primer.api.routers._references.ReferenceCheck`
         declarations.  When non-empty, the factory calls
-        :func:`~matrix.api.routers._references.build_reference_block_hook`
+        :func:`~primer.api.routers._references.build_reference_block_hook`
         to build a pre-delete hook that enforces all checks in order.  The
         auto-generated reference hook runs **before** any user-supplied
         ``on_pre_delete`` hook.
@@ -192,9 +192,9 @@ def make_crud_router(
 
         * Calls ``register_cdc_kind(cdc_kind, model_cls)`` immediately
           (at factory call time / module import) so the kind appears in
-          :func:`~matrix.api.routers._cdc_hooks.known_cdc_kinds`.
+          :func:`~primer.api.routers._cdc_hooks.known_cdc_kinds`.
         * Auto-wires the three CDC hooks from
-          :func:`~matrix.api.routers._cdc_hooks.make_cdc_hooks` into
+          :func:`~primer.api.routers._cdc_hooks.make_cdc_hooks` into
           ``on_create`` / ``on_update`` / ``on_delete``.  The CDC hooks
           run *before* any user-supplied post-mutate hooks.
     """

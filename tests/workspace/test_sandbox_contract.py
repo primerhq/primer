@@ -1,16 +1,16 @@
 """Sandbox ABC contract test suite.
 
-Parametrized over every concrete :class:`~matrix.int.sandbox.Sandbox` impl so
+Parametrized over every concrete :class:`~primer.int.sandbox.Sandbox` impl so
 that any implementation can be verified against the same set of behavioural
 assertions.
 
 Current fixtures
 ----------------
-* ``fake_sandbox``  — :class:`~matrix.workspace.sandbox.fake.FakeSandbox`
+* ``fake_sandbox``  — :class:`~primer.workspace.sandbox.fake.FakeSandbox`
   backed by a host ``tmp_path``; no network, no containers.
 
-* ``ws_sandbox``    — :class:`~matrix.workspace.runtime.ws_sandbox.WSSandbox`
-  backed by a real :class:`~matrix.workspace.runtime.runtime_client.RuntimeClient`
+* ``ws_sandbox``    — :class:`~primer.workspace.runtime.ws_sandbox.WSSandbox`
+  backed by a real :class:`~primer.workspace.runtime.runtime_client.RuntimeClient`
   that speaks to an in-process ``aiohttp`` test server running the actual
   ``primer_runtime.server`` code against a ``tmp_path``.  No Docker required.
 

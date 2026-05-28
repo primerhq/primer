@@ -1,14 +1,14 @@
 """Central tool-dispatch registry for the agent executors.
 
-Composes any number of :class:`matrix.int.ToolsetProvider`s with an
-optional list of :class:`matrix.workspace.WorkspaceTool`s and presents
+Composes any number of :class:`primer.int.ToolsetProvider`s with an
+optional list of :class:`primer.workspace.WorkspaceTool`s and presents
 a single ``list_tools`` / ``execute`` surface to the agent loop.
 
 Routing rules:
 
 * If ``call.name`` matches a key in the workspace-tool registry,
   dispatch via ``WorkspaceTool.execute`` (after building a
-  :class:`matrix.workspace.tool.ToolCallContext`).
+  :class:`primer.workspace.tool.ToolCallContext`).
 * Otherwise, look up which :class:`ToolsetProvider` owns the tool
   (built lazily on the first ``list_tools`` call) and dispatch via
   ``ToolsetProvider.call``.
@@ -144,7 +144,7 @@ class ToolExecutionManager:
 
         Returned as a shallow copy so callers can iterate or reuse the
         mapping without mutating internal state. Used by composers
-        (e.g. :class:`matrix.graph.WorkspaceGraphExecutor`) that need
+        (e.g. :class:`primer.graph.WorkspaceGraphExecutor`) that need
         to merge a base manager's providers with workspace-bound
         tools into a fresh manager.
         """
@@ -165,7 +165,7 @@ class ToolExecutionManager:
         Pulls the workspace tool list off ``session.workspace_tools``
         and registers it; ``toolset_providers`` are passed through.
         ``tools`` (when supplied) is the agent's scoped tool surface —
-        see :class:`matrix.model.agent.Agent.tools`.
+        see :class:`primer.model.agent.Agent.tools`.
         """
         ws_tools = {t.id: t for t in session.workspace_tools}
         return cls(

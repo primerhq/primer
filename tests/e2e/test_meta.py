@@ -323,7 +323,7 @@ async def test_t0367_vary_header_absent_on_list_endpoint(
 ) -> None:
     """T0367 — Pin no Vary header on a list endpoint. CORS / Accept-
     Encoding negotiation could fragment caches inadvertently;
-    matrix doesn't promise this header so it shouldn't be set by
+    primer doesn't promise this header so it shouldn't be set by
     accident.
     """
     resp = await client.get("/v1/llm_providers")
@@ -345,7 +345,7 @@ async def test_t0368_etag_header_absent_on_instance_get(
 ) -> None:
     """T0368 — Pin no implicit ETag generation by FastAPI/middleware
     on instance GETs. Conditional GET semantics aren't part of the
-    matrix contract; an inadvertent ETag would mislead clients into
+    primer contract; an inadvertent ETag would mislead clients into
     using If-None-Match.
     """
     entity_id = f"llm-t0368-{unique_suffix}"
@@ -1065,7 +1065,7 @@ async def test_t0423_post_internal_collections_config_returns_405(
     handler only lists the verb of the *first matched route* at
     that path — so this 405 returns ``Allow: PUT`` even though GET
     and DELETE are also registered on the same path. That is a
-    framework quirk, not a matrix bug; chasing a custom OPTIONS
+    framework quirk, not a primer bug; chasing a custom OPTIONS
     handler to aggregate the Allow header would be significant
     scope creep. The test pins what the framework actually does
     (405 + non-empty Allow + one of the documented verbs) so a

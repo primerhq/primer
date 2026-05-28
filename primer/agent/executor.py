@@ -2,13 +2,13 @@
 
 The :class:`AgentExecutor` is the chat-on-thread executor. It persists
 thread + message rows via the existing
-:class:`matrix.int.Storage` interface (typically backed by Postgres in
+:class:`primer.int.Storage` interface (typically backed by Postgres in
 production; any in-memory stand-in works for tests).
 
 A thread is the unit of state. The same agent can run many concurrent
 threads; each carries its own history. Threads are not bound to a
 workspace -- for workspace-backed execution, use
-:class:`matrix.agent.WorkspaceAgentExecutor` (sub-project F4).
+:class:`primer.agent.WorkspaceAgentExecutor` (sub-project F4).
 """
 
 from __future__ import annotations
@@ -301,7 +301,7 @@ class AgentExecutor(_BaseAgentExecutor):
                     right=Value(value=self._thread_id),
                 ),
                 # CursorPage.length is capped at 200 by the storage
-                # spec (matrix/model/storage.py:265). Loop until
+                # spec (primer/model/storage.py:265). Loop until
                 # next_cursor is None to cover threads larger than
                 # one page.
                 CursorPage(cursor=cursor, length=200),

@@ -81,7 +81,7 @@ class Chat(Identifiable):
         max_length=200,
         description=(
             "Human-friendly title derived from the first user_message "
-            "text. Stamped once by :class:`matrix.chat.executor.ChatTurnRunner` "
+            "text. Stamped once by :class:`primer.chat.executor.ChatTurnRunner` "
             "on the first turn and never overwritten — the conversation "
             "evolves but the originating intent stays in the list view. "
             "``None`` on chats that haven't had a user turn yet; the UI "
@@ -95,7 +95,7 @@ class Chat(Identifiable):
             "for this chat. Authoritative cursor for cursor-replay on "
             "WS reconnect; the WS endpoint emits messages with "
             "``seq > cursor`` in order. Bumped atomically by the "
-            "message writer (see matrix.chat.executor)."
+            "message writer (see primer.chat.executor)."
         ),
     )
     turn_status: Literal["idle", "claimable", "running"] = Field(

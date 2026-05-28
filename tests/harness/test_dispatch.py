@@ -1,4 +1,4 @@
-"""Tests for matrix.harness.dispatch — worker-side dispatch entrypoint.
+"""Tests for primer.harness.dispatch — worker-side dispatch entrypoint.
 
 Uses a real local git bare repo (file://) so we exercise the actual
 git + render + storage pipeline rather than mocking everything.
@@ -23,7 +23,7 @@ from primer.model.harness import Harness, HarnessOperation, HarnessRendering, Ha
 # ---------------------------------------------------------------------------
 
 _HARNESS_YAML = """\
-apiVersion: matrix/v1
+apiVersion: primer/v1
 kind: Harness
 name: Test Harness
 """

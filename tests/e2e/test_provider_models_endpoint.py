@@ -4,7 +4,7 @@ Covers backlog item T0025 (reframed).
 
 The original backlog entry assumed the endpoint fetches from upstream
 and asserted 502/503 on a refused connection. Reading
-`matrix.llm.{anthropic,gemini,ollama,openresponses}.list_models` shows
+`primer.llm.{anthropic,gemini,ollama,openresponses}.list_models` shows
 the endpoint actually just echoes the configured ``LLMProvider.models``
 list (every adapter's ``list_models`` returns
 ``[m.name for m in self._provider.models]``). The endpoint never
@@ -77,7 +77,7 @@ async def test_t0025_provider_models_endpoint_returns_configured_models(
 def _bad_url_embedding_provider_body(entity_id: str) -> dict:
     """EmbeddingProvider whose config has no reachable upstream. The
     HuggingFace embedder is a row-cached list_models too — see
-    matrix/embedder/huggingface.py:190 — so `list_models()` should never
+    primer/embedder/huggingface.py:190 — so `list_models()` should never
     touch the network."""
     return {
         "id": entity_id,
@@ -251,7 +251,7 @@ async def test_t0450_embedding_model_extra_dim_field_silently_dropped(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0450 — Pin that EmbeddingProvider has NO row-level dim
-    cross-validation. Per matrix/model/provider.py:290-307,
+    cross-validation. Per primer/model/provider.py:290-307,
     EmbeddingModel only carries `name`. Extra fields like `dim`
     sent at create time are silently dropped (Pydantic v2's
     default `extra=ignore` behaviour as documented in spec §7).

@@ -5,7 +5,7 @@ The worker pool's harness claim loop creates these as background tasks;
 each task reads the Harness row, runs the pending operation, releases
 the claim, and publishes a ``harness:{id}:done`` event.
 
-Structure mirrors ``matrix.chat.dispatch`` (heartbeat task, lease_lost
+Structure mirrors ``primer.chat.dispatch`` (heartbeat task, lease_lost
 event, branch on operation, finally cleanup).
 """
 
@@ -58,7 +58,7 @@ def _collect_bundle_files(base: Path) -> list[tuple[str, bytes]]:
 HARNESS_HEARTBEAT_INTERVAL_SECONDS = 10.0
 
 # harness.yaml validation constants
-_EXPECTED_API_VERSION = "matrix/v1"
+_EXPECTED_API_VERSION = "primer/v1"
 _EXPECTED_KIND = "Harness"
 
 

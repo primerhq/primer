@@ -1,4 +1,4 @@
-"""Tests for shared model helpers in matrix.model.common."""
+"""Tests for shared model helpers in primer.model.common."""
 
 from __future__ import annotations
 

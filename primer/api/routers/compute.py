@@ -1,7 +1,7 @@
 """Phase-2 compute entity routers: Agent + Graph.
 
 Each entity follows the standard CRUD + Find shape from
-:mod:`matrix.api.routers._crud`, plus an entity-specific status check
+:mod:`primer.api.routers._crud`, plus an entity-specific status check
 that validates the row's external references resolve.
 
 Streaming ``call`` endpoints (SSE) and Threads sub-resources are

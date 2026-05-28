@@ -3,7 +3,7 @@
 SQL notes
 ---------
 *upsert*: The ``ON CONFLICT (kind, entity_id) DO UPDATE`` target is a
-schema-qualified table (e.g. ``"matrix"."leases"``).  Within the
+schema-qualified table (e.g. ``"primer"."leases"``).  Within the
 ``DO UPDATE SET`` clause Postgres allows referencing the *existing*
 row by the **unqualified** table name (``leases.next_attempt_at``).
 We avoid that ambiguity entirely by aliasing the insert target with
@@ -11,7 +11,7 @@ We avoid that ambiguity entirely by aliasing the insert target with
 ``EXCLUDED.next_attempt_at`` refers to the *proposed* value from the
 INSERT (i.e. ``COALESCE($4, now())``).
 
-*claim_due*: delegates to :func:`matrix.claim.sql.build_claim_query`,
+*claim_due*: delegates to :func:`primer.claim.sql.build_claim_query`,
 which composes one CTE per adapter via UNION ALL and then drives a
 single ``UPDATE … RETURNING``.  The query is built once at engine
 construction time.
@@ -57,7 +57,7 @@ class PostgresClaimEngine(ClaimEngine):
     Parameters
     ----------
     storage_provider:
-        An initialised :class:`~matrix.storage.postgres.PostgresStorageProvider`.
+        An initialised :class:`~primer.storage.postgres.PostgresStorageProvider`.
         Must expose ``.pool`` (asyncpg pool) and ``.leases_table``
         (schema-qualified name) and ``.schema`` (bare schema name).
     adapters:

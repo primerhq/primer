@@ -1,7 +1,7 @@
 """Approval gate: resolver + context + verdict + evaluator.
 
 The :class:`ApprovalResolver` is the cached lookup interface
-threaded into :class:`matrix.agent.tool_manager.ToolExecutionManager`.
+threaded into :class:`primer.agent.tool_manager.ToolExecutionManager`.
 :func:`evaluate_approval_gate` dispatches by ``ApprovalType`` to the
 required / Rego / LLM judge backends.
 

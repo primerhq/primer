@@ -1,8 +1,8 @@
-"""Prometheus metrics registry for Matrix.
+"""Prometheus metrics registry for Primer.
 
 All metrics are declared at module level, bound to a dedicated
 :class:`prometheus_client.CollectorRegistry` instance (``registry``).
-This means GET /metrics returns only Matrix-defined metrics, not the
+This means GET /metrics returns only Primer-defined metrics, not the
 default process/platform metrics that prometheus_client auto-registers
 on the global registry.
 
@@ -30,7 +30,7 @@ from prometheus_client import (
 )
 
 # ---------------------------------------------------------------------------
-# Dedicated registry — isolates Matrix metrics from the default process metrics
+# Dedicated registry — isolates Primer metrics from the default process metrics
 # ---------------------------------------------------------------------------
 registry = CollectorRegistry(auto_describe=True)
 

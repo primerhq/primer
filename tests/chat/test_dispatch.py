@@ -1,4 +1,4 @@
-"""Unit tests for matrix.chat.dispatch.run_one_chat_turn — the
+"""Unit tests for primer.chat.dispatch.run_one_chat_turn — the
 worker-side per-turn task."""
 
 from __future__ import annotations

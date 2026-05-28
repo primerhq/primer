@@ -389,13 +389,13 @@ class TestWorkspaceProviderRouter:
             "config": {
                 "kind": "kubernetes",
                 "in_cluster": False,
-                "namespace": "matrix",
+                "namespace": "primer",
                 "name_prefix": "primer-ws-",
                 "default_pvc_size": "20Gi",
                 "image_pull_secrets": [],
                 "pull_policy": "IfNotPresent",
                 "annotations": {"team": "platform"},
-                "labels": {"app": "matrix"},
+                "labels": {"app": "primer"},
                 "node_selector": {},
             },
         }
@@ -405,7 +405,7 @@ class TestWorkspaceProviderRouter:
         assert get.status_code == 200
         got = get.json()
         assert got["provider"] == "kubernetes"
-        assert got["config"]["namespace"] == "matrix"
+        assert got["config"]["namespace"] == "primer"
         assert got["config"]["default_pvc_size"] == "20Gi"
         assert got["config"]["annotations"] == {"team": "platform"}
         delete = await client.delete("/v1/workspace_providers/k8s-1")

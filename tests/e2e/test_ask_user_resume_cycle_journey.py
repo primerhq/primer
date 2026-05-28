@@ -40,7 +40,7 @@ Multi-subsystem in one test:
   * worker pool (_handle_resume → generic registry path, NOT the
     _approval inline branch)
   * yield_resume_registry.get_resume_hook("ask_user")
-  * matrix.toolset.misc.ask_user_resume (the synthesiser)
+  * primer.toolset.misc.ask_user_resume (the synthesiser)
   * storage (clear_park + complete_turn)
 
 Covers backlog item T0862. Together with T0861 the two flagship
@@ -64,8 +64,8 @@ async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
         port=5432,
-        user="matrix",
-        password="matrix",
+        user="primer",
+        password="primer",
         database="matrix_e2e",
     )
 
@@ -275,7 +275,7 @@ async def test_t0862_ask_user_park_respond_resume_clears_park_and_advances_turn(
 ) -> None:
     """T0862 — End-to-end ask_user resume cycle: park, respond,
     worker pool resumes via the GENERIC registry hook
-    (matrix.toolset.misc.ask_user_resume), parked columns clear,
+    (primer.toolset.misc.ask_user_resume), parked columns clear,
     turn_no advances.
 
     Pinned invariants:

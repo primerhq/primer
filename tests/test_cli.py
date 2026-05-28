@@ -29,7 +29,7 @@ _BASE_YAML = """\
 db:
   provider: sqlite
   config:
-    path: /tmp/test-matrix.sqlite
+    path: /tmp/test-primer.sqlite
 runtime_mode: api
 """
 
@@ -192,7 +192,7 @@ class TestLoadConfig:
 
 
 # ============================================================================
-# `matrix api` — with and without --no-worker
+# `primer api` — with and without --no-worker
 # ============================================================================
 
 
@@ -241,7 +241,7 @@ class TestApiCommand:
 
 
 # ============================================================================
-# `matrix worker`
+# `primer worker`
 # ============================================================================
 
 

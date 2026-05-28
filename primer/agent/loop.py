@@ -95,7 +95,7 @@ async def run_agent_turn(
 
     Raises
     ------
-    matrix.model.except_.AuthRequiredError
+    primer.model.except_.AuthRequiredError
         Propagated from a tool dispatch -- callers handle this
         (chat: terminal stream Error; workspace: WAITING transition;
         graph: per-node FAILED).

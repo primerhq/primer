@@ -1,6 +1,6 @@
 """Concrete embedder adapter implementations.
 
-Each adapter subclasses :class:`matrix.int.Embedder` and implements the
+Each adapter subclasses :class:`primer.int.Embedder` and implements the
 embedding interface against one provider's SDK or local model.
 
 Adapters land here one per file as the per-adapter sub-specs ship.

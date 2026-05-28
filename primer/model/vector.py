@@ -7,8 +7,8 @@ documents; one document is split into many chunks; each chunk
 contributes one embedding row.
 
 Vector storage is intentionally separate from the
-:class:`matrix.model.collection.Collection` /
-:class:`matrix.model.collection.Document` configuration models: the
+:class:`primer.model.collection.Collection` /
+:class:`primer.model.collection.Document` configuration models: the
 collection / document tables describe *what* is being indexed; the
 vector table holds the *embeddings* derived from them. The two layers
 live in different stores and may use different backends.
@@ -39,7 +39,7 @@ class EmbeddingRecord(BaseModel):
 
     The composite key is ``(collection_id, document_id, chunk_id)``;
     backends MUST treat that triple as a uniqueness constraint and use
-    it as the upsert key for :meth:`matrix.int.VectorStore.put`.
+    it as the upsert key for :meth:`primer.int.VectorStore.put`.
 
     There is no synthetic ``id`` field because the natural key is
     composite; a single string id would either lose information (just
@@ -99,7 +99,7 @@ class EmbeddingRecord(BaseModel):
 
 
 class SearchResult(BaseModel):
-    """One hit returned by :meth:`matrix.int.VectorStore.search`.
+    """One hit returned by :meth:`primer.int.VectorStore.search`.
 
     Wraps the matched :class:`EmbeddingRecord` with an optional
     similarity ``score``. Higher scores indicate stronger matches
@@ -139,8 +139,8 @@ class VectorStoreConfig(Identifiable):
     """Single-row "active vector store" configuration (legacy, unused).
 
     This model is retained for reference only. Vector store configuration
-    is now managed via :class:`matrix.model.provider.SemanticSearchProvider`
-    rows, resolved at runtime through :class:`matrix.api.registries.SemanticSearchRegistry`.
+    is now managed via :class:`primer.model.provider.SemanticSearchProvider`
+    rows, resolved at runtime through :class:`primer.api.registries.SemanticSearchRegistry`.
     """
 
     backend: _VectorStoreBackend = Field(
@@ -155,7 +155,7 @@ class VectorStoreConfig(Identifiable):
         description=(
             "Backend-specific connection / configuration settings. "
             "Free-form because each backend's config shape differs; the "
-            "factory in :mod:`matrix.vector.factory` validates the "
+            "factory in :mod:`primer.vector.factory` validates the "
             "shape at construction time."
         ),
     )

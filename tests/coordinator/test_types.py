@@ -1,4 +1,4 @@
-"""Shape tests for matrix.int.coordinator ABCs and enums."""
+"""Shape tests for primer.int.coordinator ABCs and enums."""
 
 from __future__ import annotations
 

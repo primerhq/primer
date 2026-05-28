@@ -1,4 +1,4 @@
-"""Tests for matrix.toolset.mcp.McpToolsetProvider -- stdio transport.
+"""Tests for primer.toolset.mcp.McpToolsetProvider -- stdio transport.
 
 Exercised against an in-memory MCP server (no real subprocess). The
 HTTP-transport tests live in the same file (added in Task 6).
@@ -26,7 +26,7 @@ from primer.toolset.mcp import McpToolsetProvider
 
 def _make_test_server() -> Server:
     """A minimal MCP server exposing two tools: 'echo' and 'fail'."""
-    server = Server("matrix-test-server")
+    server = Server("primer-test-server")
 
     @server.list_tools()
     async def _list() -> list[mcp_types.Tool]:
@@ -180,7 +180,7 @@ class TestCallToolStdio:
                     tool_name="never-defined", arguments={}
                 )
             except (ProviderError, UnsupportedContentError):
-                return  # acceptable: surfaced as a matrix exception
+                return  # acceptable: surfaced as a primer exception
             assert result.is_error is True
             assert "never-defined" in result.output
 
@@ -238,7 +238,7 @@ class TestHttpTransportConstructor:
 class TestHttpTransportRouting:
     """The HTTP success path is exercised by the gated integration smoke
     test. Here we only assert that a request against an unreachable URL
-    surfaces as the right matrix exception.
+    surfaces as the right primer exception.
     """
 
     @pytest.mark.skip(

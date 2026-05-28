@@ -2,7 +2,7 @@
 
 Exposes :func:`evaluate_policy` for one-shot evaluation and
 :class:`RegoEvaluator` for the long-lived in-process cache used by
-:class:`matrix.agent.approval.ApprovalResolver`.
+:class:`primer.agent.approval.ApprovalResolver`.
 
 The cache is keyed by ``(policy_id, hash(policy_text))`` so a policy
 edit invalidates its own entry automatically without an explicit flush.

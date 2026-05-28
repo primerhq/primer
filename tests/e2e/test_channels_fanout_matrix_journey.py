@@ -1,6 +1,6 @@
-"""E2E: multi-channel × multi-workspace association fan-out matrix journey.
+"""E2E: multi-channel × multi-workspace association fan-out primer journey.
 
-Multi-subsystem journey that stands up a 2×2 association matrix
+Multi-subsystem journey that stands up a 2×2 association primer
 (2 ChannelProviders → 2 Channels → 2 Workspaces → 4 cross-product
 WorkspaceChannelAssociations), then exercises the lattice end-to-end:
 
@@ -55,7 +55,7 @@ _FAKE_TELEGRAM_TOKEN = "123456:" + "a" * 30
 
 
 # ===========================================================================
-# T0855 — Multi-channel × multi-workspace fan-out matrix journey
+# T0855 — Multi-channel × multi-workspace fan-out primer journey
 # ===========================================================================
 
 

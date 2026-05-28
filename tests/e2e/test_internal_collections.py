@@ -304,7 +304,7 @@ async def test_t0587_search_with_emoji_only_query_clean_envelope(
 async def test_t0603_ic_config_put_empty_embedding_model_clean_envelope(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0603 — Per matrix/api/routers/internal_collections.py:79-86,
+    """T0603 — Per primer/api/routers/internal_collections.py:79-86,
     `embedding_model` has `min_length=1`. Pin: explicit empty string
     is rejected with 422 /errors/validation-error. The Pydantic
     body validator runs before the embedding-provider lookup, so this

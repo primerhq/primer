@@ -1,4 +1,4 @@
-"""Unit tests for matrix.api.deps — singleton resolvers + principal passthrough."""
+"""Unit tests for primer.api.deps — singleton resolvers + principal passthrough."""
 
 from __future__ import annotations
 

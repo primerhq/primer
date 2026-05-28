@@ -1,8 +1,8 @@
-"""Stdlib logging configuration for matrix.
+"""Stdlib logging configuration for primer.
 
 Single configuration entry point. The library never auto-configures
 logging; the application calls :func:`configure_logging` once at startup.
-Per-file pattern: every code file in ``matrix/`` does
+Per-file pattern: every code file in ``primer/`` does
 ``logger = logging.getLogger(__name__)`` immediately after its imports.
 
 Two output formats:
@@ -16,7 +16,7 @@ Two output formats:
   Intended for local hacking only.
 
 Configuring the *root* logger means every ``logging.getLogger(name)``
-call in matrix code AND in dependencies (openai, anthropic, google.genai,
+call in primer code AND in dependencies (openai, anthropic, google.genai,
 ollama, httpx, etc.) inherits this configuration. The application can
 silence or re-route specific logger names afterwards via stdlib
 ``logging``.

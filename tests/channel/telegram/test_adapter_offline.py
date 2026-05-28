@@ -98,7 +98,7 @@ async def test_post_ask_user_sends_message_with_token(monkeypatch):
         await adapter.aclose()
     sent = [s for s in app.bot.sent if "text" in s]
     assert len(sent) == 1
-    assert "[matrix:" in sent[0]["text"]
+    assert "[primer:" in sent[0]["text"]
     assert sent[0]["chat_id"] == 123456789
 
 

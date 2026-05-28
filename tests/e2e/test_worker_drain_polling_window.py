@@ -7,7 +7,7 @@ Backlog item (reframed):
   ``POST /v1/workers/{id}/drain`` endpoint only flips the scheduler
   row's ``status`` to ``draining``; the worker process keeps serving
   the API. The actual settle-to-dead happens during process shutdown
-  (matrix/worker/pool.py:drain_and_stop) — NOT during the lifetime
+  (primer/worker/pool.py:drain_and_stop) — NOT during the lifetime
   of the drained API process.
 
   Reframed contract: after POST /drain, the worker stays in

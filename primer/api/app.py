@@ -37,7 +37,7 @@ from primer.api.version import API_VERSION, APP_VERSION
 from primer.internal_collections import build_subsystem, load_config_or_none
 
 # Importing these modules registers channel adapter factories with
-# matrix.channel.factory. Safe at module level; defers the
+# primer.channel.factory. Safe at module level; defers the
 # heavyweight platform-SDK imports until the first Channel of
 # that provider type is constructed.
 import primer.channel.slack.factory  # noqa: F401
@@ -615,7 +615,7 @@ def _make_lifespan(config: AppConfig):
         )
 
         logger.info(
-            "matrix API ready",
+            "primer API ready",
             extra={"version": APP_VERSION, "host": config.host, "port": config.port},
         )
         try:
@@ -877,8 +877,8 @@ def _mount_metrics(app: FastAPI, config: AppConfig) -> None:
     """Mount the Prometheus ``/metrics`` endpoint when metrics are enabled.
 
     The endpoint is mounted via :func:`prometheus_client.make_asgi_app`
-    which returns a bare ASGI application wrapping the Matrix-specific
-    :data:`matrix.observability.metrics.registry`.  Mounting happens
+    which returns a bare ASGI application wrapping the Primer-specific
+    :data:`primer.observability.metrics.registry`.  Mounting happens
     *before* error handlers so the mount does not go through FastAPI's
     exception machinery.
 

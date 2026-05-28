@@ -1,4 +1,4 @@
-"""Unit tests for matrix.api.errors — RFC 7807 problem+json mapping."""
+"""Unit tests for primer.api.errors — RFC 7807 problem+json mapping."""
 
 from __future__ import annotations
 

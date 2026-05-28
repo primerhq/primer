@@ -1,4 +1,4 @@
-"""Tests for matrix.workspace.cache."""
+"""Tests for primer.workspace.cache."""
 
 from __future__ import annotations
 

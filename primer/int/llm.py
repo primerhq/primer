@@ -12,9 +12,9 @@ frequency_penalty, reasoning controls, parallel_tool_calls,
 prompt_cache_key, safety_settings, ...) live in an open-ended
 ``extended: dict[str, Any]`` slot the adapter is free to interpret.
 
-See :data:`matrix.model.chat.StreamEvent` for the event union the stream
+See :data:`primer.model.chat.StreamEvent` for the event union the stream
 yields. Adapters MUST wrap exceptions into a terminal
-:class:`matrix.model.chat.Error` event with ``fatal=True`` rather than
+:class:`primer.model.chat.Error` event with ``fatal=True`` rather than
 propagating, so consumers can rely on the iterator always closing
 cleanly.
 """
@@ -113,7 +113,7 @@ class LLM(ABC):
         -------
         AsyncIterator[StreamEvent]
             Async iterator the caller consumes with ``async for``.
-            See :data:`matrix.model.chat.StreamEvent` for the event
+            See :data:`primer.model.chat.StreamEvent` for the event
             union. The iterator always yields exactly one terminal
             event (:class:`Done` for success, :class:`Error` with
             ``fatal=True`` for failure) before closing.
@@ -126,7 +126,7 @@ class LLM(ABC):
         long-lived sessions (HTTP client, websocket, subprocess) MUST
         override and close them. Idempotent: calling twice is safe.
 
-        Called by :class:`matrix.api.registries.ProviderRegistry` when
+        Called by :class:`primer.api.registries.ProviderRegistry` when
         the underlying ``LLMProvider`` row is invalidated and the
         cached adapter is dropped.
         """

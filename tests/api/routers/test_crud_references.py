@@ -1,4 +1,4 @@
-"""Tests for :mod:`matrix.api.routers._references`.
+"""Tests for :mod:`primer.api.routers._references`.
 
 Unit tests exercise ``ReferenceCheck`` and ``build_reference_block_hook``
 in isolation.  Integration tests exercise the ``references=`` parameter on

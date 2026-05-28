@@ -3,15 +3,15 @@
 Three things live here:
 
 * :class:`AgentEventSubscriber` -- Protocol every tap subscriber
-  satisfies. The executor fans :class:`matrix.model.chat.StreamEvent`
+  satisfies. The executor fans :class:`primer.model.chat.StreamEvent`
   events out to every registered subscriber concurrently.
 * :class:`Subscription` -- handle the executor returns from
   ``subscribe``. Calling :meth:`unsubscribe` removes the subscriber
   from the fan-out list.
 * :class:`_ExecutorToolResult` -- re-export of the chat-side synthetic
   event class. The actual definition lives in
-  :mod:`matrix.model.chat` to keep the
-  :data:`matrix.model.chat.ExtendedStreamContent` discriminated union
+  :mod:`primer.model.chat` to keep the
+  :data:`primer.model.chat.ExtendedStreamContent` discriminated union
   self-contained (no chat -> agent module cycle).
 """
 
@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 # Re-export for clarity at the agent-side import site. The actual
-# class lives in matrix.model.chat to keep ExtendedStreamContent
+# class lives in primer.model.chat to keep ExtendedStreamContent
 # self-contained (no chat -> agent import cycle).
 from primer.model.chat import _ExecutorToolResult  # noqa: F401
 
@@ -36,7 +36,7 @@ class AgentEventSubscriber(Protocol):
     """Callback receiver for streaming-tap events.
 
     The executor calls :meth:`on_event` once per
-    :class:`matrix.model.chat.StreamEvent`. Subscriber failures are
+    :class:`primer.model.chat.StreamEvent`. Subscriber failures are
     logged and isolated -- they do NOT abort the agent's turn or
     affect other subscribers.
     """

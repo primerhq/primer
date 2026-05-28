@@ -1,8 +1,8 @@
 """Default prompts used by the agent runtime.
 
 The :data:`DEFAULT_COMPACTION_PROMPT` is consumed by
-:class:`matrix.agent.compaction.CompactionStrategy` (sub-project F2)
-when an :class:`matrix.model.agent.Agent` has no
+:class:`primer.agent.compaction.CompactionStrategy` (sub-project F2)
+when an :class:`primer.model.agent.Agent` has no
 ``compaction_prompt`` of its own. The wording derives from the
 cross-project research distilled in
 ``research/compaction.md``.

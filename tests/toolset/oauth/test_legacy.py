@@ -1,4 +1,4 @@
-"""Tests for matrix.toolset.oauth.legacy (2025-03-26 spec)."""
+"""Tests for primer.toolset.oauth.legacy (2025-03-26 spec)."""
 
 from __future__ import annotations
 

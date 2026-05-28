@@ -1,4 +1,4 @@
-"""Tests for matrix.harness.service — cross-ref rewriting + apply orchestrators."""
+"""Tests for primer.harness.service — cross-ref rewriting + apply orchestrators."""
 
 from __future__ import annotations
 

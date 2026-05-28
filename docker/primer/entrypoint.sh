@@ -1,9 +1,9 @@
 #!/bin/sh
-# Container entrypoint for the matrix service.
+# Container entrypoint for the primer service.
 #
 # Renders /app/config.yaml from PRIMER_* environment variables (set by
 # docker-compose.yml or `podman run -e ...`), then exec's the CMD. The
-# matrix CLI requires --config; this script lets us drive the config
+# primer CLI requires --config; this script lets us drive the config
 # entirely via env vars in compose without baking credentials into the
 # image.
 
@@ -11,9 +11,9 @@ set -e
 
 : "${PRIMER_DB_HOST:=postgres}"
 : "${PRIMER_DB_PORT:=5432}"
-: "${PRIMER_DB_DATABASE:=matrix}"
-: "${PRIMER_DB_USER:=matrix}"
-: "${PRIMER_DB_PASSWORD:=matrix}"
+: "${PRIMER_DB_DATABASE:=primer}"
+: "${PRIMER_DB_USER:=primer}"
+: "${PRIMER_DB_PASSWORD:=primer}"
 : "${PRIMER_HOST:=0.0.0.0}"
 : "${PRIMER_PORT:=8765}"
 : "${PRIMER_LOG_LEVEL:=info}"

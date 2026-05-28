@@ -21,7 +21,7 @@ def test_u0014_mcp_stdio_command_not_in_allowlist_surfaces_warning(
     "first session-open call will raise ConfigError" warning text
     inside the modal (priority 3 — anomaly surface).
 
-    The allowlist is server-side (matrix/api/config.py:AppConfig.
+    The allowlist is server-side (primer/api/config.py:AppConfig.
     mcp_stdio_allowed_commands) and the UI can't probe it; instead
     it always renders the warning whenever stdio is picked + a
     command is typed, deferring the actual rejection to first

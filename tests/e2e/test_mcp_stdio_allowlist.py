@@ -10,7 +10,7 @@ Backlog item:
   ``/errors/service-unavailable`` envelope, never ``/errors/internal``.
 
   Pins the allowlist short-circuit added in
-  [`matrix/toolset/mcp.py`](../../matrix/toolset/mcp.py) (raises
+  [`primer/toolset/mcp.py`](../../primer/toolset/mcp.py) (raises
   ``ConfigError`` → mapped to 503 by the registry error mapper),
   and the bringup knob ``mcp_stdio_allowed_commands: [npx, python,
   uv]`` rendered by ``scripts/e2e/bringup.sh``.
@@ -40,8 +40,8 @@ async def test_t0245_mcp_stdio_command_outside_allowlist_returns_503(
     ``/errors/service-unavailable`` with a detail string referencing
     the allowlist; the envelope MUST NOT be ``/errors/internal``.
 
-    Defense for ``matrix/toolset/mcp.py`` allowlist short-circuit
-    (raises ``ConfigError`` → 503 per ``matrix/api/errors.py``).
+    Defense for ``primer/toolset/mcp.py`` allowlist short-circuit
+    (raises ``ConfigError`` → 503 per ``primer/api/errors.py``).
     """
     toolset_id = f"ts-t245-{unique_suffix}"
 
@@ -88,7 +88,7 @@ async def test_t0245_mcp_stdio_command_outside_allowlist_returns_503(
         assert "internal" not in err_type, (
             f"503 envelope type leaked /errors/internal: {body!r}"
         )
-        # Documented mapping for ConfigError per matrix/api/errors.py.
+        # Documented mapping for ConfigError per primer/api/errors.py.
         assert err_type.endswith("/errors/service-unavailable"), (
             f"Expected /errors/service-unavailable; got type={err_type!r}"
         )

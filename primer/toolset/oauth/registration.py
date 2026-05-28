@@ -1,7 +1,7 @@
 """Dynamic Client Registration + static-credential resolver.
 
 When the operator supplies static credentials on
-:attr:`matrix.model.provider.OAuthConfig.static_client`, DCR is
+:attr:`primer.model.provider.OAuthConfig.static_client`, DCR is
 skipped entirely. Otherwise we POST to the auth server's
 ``registration_endpoint`` (RFC 7591) with a minimum payload, cache
 the response, and return it. The cache key is

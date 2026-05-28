@@ -3,7 +3,7 @@
 Task 19 ships only the nested ``POST /v1/workspaces/{wid}/sessions``
 endpoint; Task 20 appends ``resume`` / ``pause`` / ``cancel`` plus the
 top-level ``GET`` / ``find`` routes onto :data:`top_session_router`.
-Both routers are mounted from ``matrix/api/app.py`` up-front so later
+Both routers are mounted from ``primer/api/app.py`` up-front so later
 additions don't require a follow-up edit to ``app.py``.
 
 Task 10 adds the WS endpoint at
@@ -158,7 +158,7 @@ async def create_session(
     # .state/sessions/<sid>/ directory share the same id (spec §11.4
     # step 5). Both agent and graph bindings get a holder slot —
     # graph bindings use a synthetic agent_id (``graph:<graph_id>``)
-    # so the graph executor in matrix/worker/pool.py can compose the
+    # so the graph executor in primer/worker/pool.py can compose the
     # workspace's tools into every per-node ToolExecutionManager.
     if isinstance(body.binding, AgentSessionBinding):
         assert resolved_agent is not None  # guarded above

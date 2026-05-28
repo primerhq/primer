@@ -1,11 +1,11 @@
 """Shared protocol envelope, op enum, and error codes.
 
 This file is the runtime-side authoritative copy.
-Keep in sync with ``matrix/workspace/runtime/protocol.py`` on the worker side
+Keep in sync with ``primer/workspace/runtime/protocol.py`` on the worker side
 — the two files should have identical definitions.  Changes to ops or error
 codes must be mirrored in both files manually.
 
-The runtime container does NOT depend on the ``matrix`` package; having
+The runtime container does NOT depend on the ``primer`` package; having
 independent copies avoids that import dependency entirely.
 """
 

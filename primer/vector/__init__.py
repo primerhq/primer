@@ -1,7 +1,7 @@
 """Concrete VectorStore implementations.
 
-Each implementation subclasses :class:`matrix.int.VectorStoreProvider`
-and exposes a single :class:`matrix.int.VectorStore` handle that
+Each implementation subclasses :class:`primer.int.VectorStoreProvider`
+and exposes a single :class:`primer.int.VectorStore` handle that
 manages per-collection vector tables. Use the factory to obtain a
 provider:
 

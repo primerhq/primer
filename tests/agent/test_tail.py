@@ -1,4 +1,4 @@
-"""Tests for matrix.agent.tail.tail_split."""
+"""Tests for primer.agent.tail.tail_split."""
 
 from __future__ import annotations
 

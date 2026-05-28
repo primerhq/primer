@@ -53,7 +53,7 @@ from playwright.sync_api import expect
 
 
 # ---------------------------------------------------------------------------
-# Postgres connection (matches ui-bringup default — `matrix` DB).
+# Postgres connection (matches ui-bringup default — `primer` DB).
 # ---------------------------------------------------------------------------
 
 
@@ -69,10 +69,10 @@ async def _inject_chat_approval_park_async(
 
     Mirrors test_chats_approval_journey.py's helper (T0859 caught
     the non-obvious `chat` singular-lowercase table name — see
-    matrix/storage/postgres.py:_table_name_for).
+    primer/storage/postgres.py:_table_name_for).
     """
     import os
-    db = os.environ.get("PRIMER_UI_E2E_DB", "matrix")
+    db = os.environ.get("PRIMER_UI_E2E_DB", "primer")
     now = datetime.now(timezone.utc)
     parked_until = now + timedelta(seconds=600)
     parked_state: dict[str, Any] = {
@@ -117,7 +117,7 @@ async def _inject_chat_approval_park_async(
     """
     conn = await asyncpg.connect(
         host="localhost", port=5432,
-        user="matrix", password="matrix", database=db,
+        user="primer", password="primer", database=db,
     )
     try:
         await conn.execute(

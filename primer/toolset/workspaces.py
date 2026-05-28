@@ -382,7 +382,7 @@ def _tool(
 # See docs/superpowers/specs/2026-05-22-yielding-tools-design.md §8.3.
 #
 # Pauses the agent's turn until one of the watched paths changes on
-# disk. The matching background watcher (matrix/bus/watcher.py) polls
+# disk. The matching background watcher (primer/bus/watcher.py) polls
 # mtimes and publishes a coalesced change burst on the event bus.
 # ===========================================================================
 
@@ -1091,7 +1091,7 @@ def build_workspaces_toolset(
 
     # watch_files — yielding tool (M4). Suspends the agent's turn until
     # one of the watched paths changes on disk. The matching watcher
-    # (matrix/bus/watcher.py) polls mtimes and publishes change bursts.
+    # (primer/bus/watcher.py) polls mtimes and publishes change bursts.
     name, entry = _tool(
         "watch_files",
         (

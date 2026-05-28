@@ -1,4 +1,4 @@
-"""Tests for matrix.agent.tool_manager.ToolExecutionManager."""
+"""Tests for primer.agent.tool_manager.ToolExecutionManager."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-# Importing matrix.workspace ensures ToolCallContext.model_rebuild() runs so
+# Importing primer.workspace ensures ToolCallContext.model_rebuild() runs so
 # the forward reference to AgentSession resolves before the manager
 # constructs a context.
 import primer.workspace  # noqa: F401

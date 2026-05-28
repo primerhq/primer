@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Bring up the matrix UI test environment.
+# Bring up the primer UI test environment.
 #
-# The UI loop runs pytest on the HOST against the matrix-app container
+# The UI loop runs pytest on the HOST against the primer-app container
 # (per the architecture decision in docs/testing/04-ui-test-loop.md).
 # This script:
 #
-#   1. Ensures podman + the compose stack are up (postgres + matrix-app).
+#   1. Ensures podman + the compose stack are up (postgres + primer-app).
 #   2. Verifies /console/ is reachable + serves index.html.
 #   3. Ensures playwright + chromium are installed in the host venv.
 #
@@ -58,7 +58,7 @@ fi
 
 # ---- 1. Compose stack ------------------------------------------------------
 
-echo "[ui-bringup] ensuring matrix-app + postgres are up..." >&2
+echo "[ui-bringup] ensuring primer-app + postgres are up..." >&2
 "${COMPOSE[@]}" up -d >&2
 
 # ---- 2. Wait for /v1/health and /console/ to respond -----------------------
@@ -67,19 +67,19 @@ deadline=$(( $(date +%s) + 60 ))
 until curl -fsS "$BASE_URL/v1/health" > /dev/null 2>&1; do
     if [[ $(date +%s) -ge $deadline ]]; then
         echo "[ui-bringup] FATAL: /v1/health did not respond within 60s" >&2
-        "${COMPOSE[@]}" logs --tail=50 matrix >&2 || true
+        "${COMPOSE[@]}" logs --tail=50 primer >&2 || true
         exit 1
     fi
     sleep 1
 done
 
-if ! curl -fsS "$CONSOLE_URL" | grep -q "<title>Matrix"; then
+if ! curl -fsS "$CONSOLE_URL" | grep -q "<title>Primer"; then
     echo "[ui-bringup] FATAL: /console/ did not serve the expected index.html" >&2
     curl -sSI "$CONSOLE_URL" >&2 || true
     exit 1
 fi
 
-echo "[ui-bringup] matrix server ready at $CONSOLE_URL" >&2
+echo "[ui-bringup] primer server ready at $CONSOLE_URL" >&2
 
 # ---- 3. Ensure playwright + chromium are installed -------------------------
 

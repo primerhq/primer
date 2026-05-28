@@ -247,7 +247,7 @@ class TimeoutSweeper(_BackgroundTask):
 class ChatSweeper(_BackgroundTask):
     """Periodically reclaims chats whose worker died mid-turn.
 
-    Wraps :func:`matrix.chat.dispatch.sweep_chats` in the same
+    Wraps :func:`primer.chat.dispatch.sweep_chats` in the same
     background-task harness used by TimeoutSweeper.
     """
 

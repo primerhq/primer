@@ -1,4 +1,4 @@
-"""Unit tests for the CDC kind registry in :mod:`matrix.api.routers._cdc_hooks`."""
+"""Unit tests for the CDC kind registry in :mod:`primer.api.routers._cdc_hooks`."""
 
 from __future__ import annotations
 

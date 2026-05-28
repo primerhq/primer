@@ -1,4 +1,4 @@
-"""Tests for matrix.model.graph (Graph + nodes + edges + routers)."""
+"""Tests for primer.model.graph (Graph + nodes + edges + routers)."""
 
 from __future__ import annotations
 

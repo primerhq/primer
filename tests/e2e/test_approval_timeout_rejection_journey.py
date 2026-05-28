@@ -5,7 +5,7 @@ T0858 covers the multi-strategy CRUD; T0861 covers the operator-
 driven approve cycle end-to-end; T0859 covers chats respond; this
 test covers the **timeout** path through the same resume wiring:
 
-  * The matrix.bus.scheduler_tasks.TimeoutSweeper periodically
+  * The primer.bus.scheduler_tasks.TimeoutSweeper periodically
     scans for parked rows whose `parked_until <= now()` and
     publishes the `__yield_timeout__` marker onto the bus.
   * The bus listener picks it up, calls scheduler.mark_resumable
@@ -42,7 +42,7 @@ The cycle:
 
 Multi-subsystem in one test:
   * matrix_yield_events bus channel (Postgres NOTIFY)
-  * matrix.bus.listener.YieldEventListener (in-app subscriber)
+  * primer.bus.listener.YieldEventListener (in-app subscriber)
   * scheduler.mark_resumable + claim
   * worker pool _handle_resume → _resume_tool_approval timeout
     branch (yield_runtime.py:348 → decision="rejected",
@@ -68,8 +68,8 @@ async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
         port=5432,
-        user="matrix",
-        password="matrix",
+        user="primer",
+        password="primer",
         database="matrix_e2e",
     )
 
@@ -243,7 +243,7 @@ async def _publish_timeout_marker(event_key: str) -> None:
     """Fire pg_notify('matrix_yield_events', ...) with the
     timeout-marker payload directly from the test process.
 
-    Simulates exactly what matrix.bus.scheduler_tasks.TimeoutSweeper
+    Simulates exactly what primer.bus.scheduler_tasks.TimeoutSweeper
     does (`make_timeout_payload()` returns
     `{"__yield_timeout__": True}`, the bus publish wraps it as
     `{"event_key": ..., "payload": ...}` and runs pg_notify).

@@ -1,4 +1,4 @@
-"""Unit tests for matrix.toolset.web.tools.
+"""Unit tests for primer.toolset.web.tools.
 
 Covers:
 

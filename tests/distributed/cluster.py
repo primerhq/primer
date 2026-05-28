@@ -1,6 +1,6 @@
 """TestCluster — multi-process test harness for distributed-mode scenarios.
 
-Spins up real OS subprocesses (matrix API + worker) against a shared
+Spins up real OS subprocesses (primer API + worker) against a shared
 Postgres database, waits for them to become healthy, and tears them down
 cleanly on stop().
 
@@ -109,7 +109,7 @@ def _pg_env(postgres_url: str, schema: str) -> dict[str, str]:
 
 
 class TestCluster:
-    """Manages a fleet of matrix subprocesses against a shared Postgres.
+    """Manages a fleet of primer subprocesses against a shared Postgres.
 
     Parameters
     ----------
@@ -119,7 +119,7 @@ class TestCluster:
     api_count:
         Number of API-only processes to launch (``primer api --no-worker``).
     worker_count:
-        Number of worker-only processes to launch (``matrix worker``).
+        Number of worker-only processes to launch (``primer worker``).
     start_port:
         First HTTP port assigned to API processes.  API-0 gets
         ``start_port``, API-1 gets ``start_port + 1``, etc.
@@ -200,7 +200,7 @@ class TestCluster:
                 "PRIMER_OWNER_ID_PREFIX": owner_prefix,
             }
             proc = subprocess.Popen(
-                [sys.executable, "-m", "matrix", "api", "--no-worker"],
+                [sys.executable, "-m", "primer", "api", "--no-worker"],
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -227,7 +227,7 @@ class TestCluster:
                 ),
             }
             proc = subprocess.Popen(
-                [sys.executable, "-m", "matrix", "worker"],
+                [sys.executable, "-m", "primer", "worker"],
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

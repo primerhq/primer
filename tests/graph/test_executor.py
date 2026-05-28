@@ -1,4 +1,4 @@
-"""Tests for matrix.graph.executor.GraphExecutor."""
+"""Tests for primer.graph.executor.GraphExecutor."""
 
 from __future__ import annotations
 

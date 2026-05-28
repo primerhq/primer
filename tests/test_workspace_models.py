@@ -1,4 +1,4 @@
-"""Tests for matrix.model.workspace."""
+"""Tests for primer.model.workspace."""
 
 from __future__ import annotations
 
@@ -274,17 +274,17 @@ class TestWorkspaceProvider:
         wp = WorkspaceProvider(
             id="local-1",
             provider=WorkspaceProviderType.LOCAL,
-            config=LocalWorkspaceConfig(path="/tmp/matrix/workspaces"),
+            config=LocalWorkspaceConfig(path="/tmp/primer/workspaces"),
         )
         assert wp.id == "local-1"
         assert wp.provider == WorkspaceProviderType.LOCAL
-        assert wp.config.path == "/tmp/matrix/workspaces"
+        assert wp.config.path == "/tmp/primer/workspaces"
 
     def test_round_trip_through_json(self) -> None:
         wp = WorkspaceProvider(
             id="local-1",
             provider=WorkspaceProviderType.LOCAL,
-            config=LocalWorkspaceConfig(path="/srv/matrix"),
+            config=LocalWorkspaceConfig(path="/srv/primer"),
         )
         parsed = WorkspaceProvider.model_validate_json(wp.model_dump_json())
         assert parsed == wp

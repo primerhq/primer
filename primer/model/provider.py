@@ -224,7 +224,7 @@ class OAuthConfig(BaseModel):
     """OAuth settings for an HTTP MCP server.
 
     Attached to :class:`HttpConfig` via the optional ``oauth`` field.
-    When present, :class:`matrix.toolset.mcp.McpToolsetProvider`
+    When present, :class:`primer.toolset.mcp.McpToolsetProvider`
     performs Authorization Code + PKCE on a 401 from the MCP endpoint
     instead of immediately failing.
     """
@@ -268,7 +268,7 @@ class OAuthConfig(BaseModel):
         ),
     )
     client_name: str = Field(
-        default="matrix",
+        default="primer",
         description="client_name passed during DCR; appears in consent UIs.",
     )
 
@@ -320,9 +320,9 @@ class EmbeddingModel(BaseModel):
 
     Carries only the provider-side model identifier. Vector
     dimensionality is intentionally NOT recorded here -- it is learned
-    by :class:`matrix.ingest.DocumentIngester` at run time from the
+    by :class:`primer.ingest.DocumentIngester` at run time from the
     actual length of the first chunk's embedding vector and propagated
-    to :meth:`matrix.int.VectorStore.create_collection`. Recording the
+    to :meth:`primer.int.VectorStore.create_collection`. Recording the
     dimension twice (registry + actual) was a redundancy that could
     silently drift; deferring the answer to ingestion time keeps the
     registry schema-free.
@@ -834,7 +834,7 @@ class _PgVectorBaseConfig(_PostgresBaseConfig):
         default=None,
         description=(
             "Crontab expression scheduling periodic HNSW maintenance via "
-            ":meth:`matrix.int.VectorStoreProvider.maintain_indexes`. "
+            ":meth:`primer.int.VectorStoreProvider.maintain_indexes`. "
             "None disables scheduling (caller drives maintenance manually)."
         ),
     )
@@ -935,15 +935,15 @@ class LanceConfig(BaseModel):
     Persists every collection's vector table as a Lance dataset under
     ``path``. The directory is created with mode 0o700 on first use.
     Multiple LanceDB SSPs can coexist as long as they use different
-    paths. Single-process write-safe; multi-process matrix-api +
-    matrix-worker against the same path is out of scope (spec §9).
+    paths. Single-process write-safe; multi-process primer-api +
+    primer-worker against the same path is out of scope (spec §9).
     """
 
     path: Path = Field(
         ...,
         description=(
             "Filesystem directory holding the LanceDB datasets. Created "
-            "on initialise if missing. Must be writable by the matrix "
+            "on initialise if missing. Must be writable by the primer "
             "process. Use an absolute path."
         ),
     )

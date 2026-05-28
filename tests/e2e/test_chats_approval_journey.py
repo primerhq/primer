@@ -37,7 +37,7 @@ Subsystems exercised in one test:
   * chats router (POST + DELETE lifecycle)
   * storage layer (asyncpg direct UPDATE on the chats table; the
     JSONB shape is the same as for sessions per
-    matrix/api/routers/tool_approval.py:_approval_blob_or_404)
+    primer/api/routers/tool_approval.py:_approval_blob_or_404)
   * event bus (implicit — _publish_decision publishes the rejected
     decision onto the bus; the test doesn't assert the bus
     subscriber side because T0857 already pins inbox→bus end-to-end
@@ -78,8 +78,8 @@ async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
         port=5432,
-        user="matrix",
-        password="matrix",
+        user="primer",
+        password="primer",
         database="matrix_e2e",
     )
 
@@ -164,7 +164,7 @@ async def _inject_approval_park_on_chat(
         "resume_event_payload": None,
     }
     # Chat model is stored in the singular-lowercase `chat` table via
-    # matrix/storage/postgres.py:_table_name_for (Session is the only
+    # primer/storage/postgres.py:_table_name_for (Session is the only
     # documented historical exception that gets a plural name).
     sql = """
         UPDATE chat

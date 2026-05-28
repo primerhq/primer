@@ -6,7 +6,7 @@ rows all live in storage and are managed via the API itself.
 
 Every field has a default. The zero-config path — no env vars, no
 TOML, no init args — constructs successfully and is interpreted by
-``matrix.api.app._build_storage_provider`` as "embedded SQLite at
+``primer.api.app._build_storage_provider`` as "embedded SQLite at
 ``~/.primer/db/data.sqlite``".
 """
 
@@ -117,7 +117,7 @@ class AppConfig(BaseSettings):
             "If True (default), run the first-boot auto-bootstrap on "
             "lifespan start when system_state.bootstrap_completed_at IS NULL. "
             "Set to False to skip auto-bootstrap and provision providers "
-            "manually via the API or 'matrix init'."
+            "manually via the API or 'primer init'."
         ),
     )
 

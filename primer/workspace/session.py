@@ -60,7 +60,7 @@ _waiting_state_adapter: TypeAdapter[WaitingState] = TypeAdapter(WaitingState)
 
 
 _SYSTEM_PROMPT_TEMPLATE = """\
-You are running inside a matrix Workspace as session `{session_id}`.
+You are running inside a primer Workspace as session `{session_id}`.
 
 You have access to the following workspace tools (file + shell):
 ls, read, write, edit, glob, grep, exec.

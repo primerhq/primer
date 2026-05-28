@@ -59,7 +59,7 @@ from playwright.sync_api import expect
 # ---------------------------------------------------------------------------
 # Container-internal workspace provider path — mirror the U0103 pattern
 # so the host's tmp_path doesn't have to be visible inside the
-# matrix-app container.
+# primer-app container.
 # ---------------------------------------------------------------------------
 
 
@@ -206,14 +206,14 @@ async def _inject_approval_park_async(
             updated_at = now()
         WHERE id = $1
     """
-    # UI bringup uses the docker-compose `matrix` DB; the API e2e
+    # UI bringup uses the docker-compose `primer` DB; the API e2e
     # bringup uses `matrix_e2e`. Honour the env override if present so
     # both contexts work.
     import os
-    db = os.environ.get("PRIMER_UI_E2E_DB", "matrix")
+    db = os.environ.get("PRIMER_UI_E2E_DB", "primer")
     conn = await asyncpg.connect(
         host="localhost", port=5432,
-        user="matrix", password="matrix", database=db,
+        user="primer", password="primer", database=db,
     )
     try:
         await conn.execute(

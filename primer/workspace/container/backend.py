@@ -3,7 +3,7 @@ ContainerRuntimeAdapter.
 
 The runtime adapter (Docker / Podman / containerd) is selected by the
 provider config's ``runtime.kind`` discriminator. Concrete adapters
-land in :mod:`matrix.workspace.runtime.docker` / ``podman`` /
+land in :mod:`primer.workspace.runtime.docker` / ``podman`` /
 ``containerd`` -- imported lazily inside :func:`_adapter_for` so that
 ``ContainerWorkspaceBackend`` is unit-testable with a fake adapter
 without needing those modules.

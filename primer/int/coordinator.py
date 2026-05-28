@@ -9,7 +9,7 @@ Three primitives needed for correct distributed-mode behaviour:
   for background tasks.
 
 Each ABC has a paired in-memory + Postgres implementation under
-``matrix.coordinator``. The :class:`Coordinator` dataclass bundles the
+``primer.coordinator``. The :class:`Coordinator` dataclass bundles the
 trio so call sites depend on one injectable object, not three.
 """
 
@@ -147,7 +147,7 @@ class Coordinator:
     """The three coordinator primitives, bundled.
 
     Constructed once per process by
-    :class:`~matrix.coordinator.factory.CoordinatorFactory` and stashed
+    :class:`~primer.coordinator.factory.CoordinatorFactory` and stashed
     on ``app.state.coordinator``. Adapters and registries take one of
     the three as a constructor arg; tests can inject fakes per-primitive.
     """

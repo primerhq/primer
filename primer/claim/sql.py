@@ -29,7 +29,7 @@ def build_claim_query(
     adapters:
         Mapping of ClaimKind → ClaimAdapter instances.
     leases_table:
-        Schema-qualified table reference, e.g. ``'"matrix"."leases"'``.
+        Schema-qualified table reference, e.g. ``'"primer"."leases"'``.
     schema:
         Optional schema name used to qualify entity tables in JOINs.
         When None, entity tables are referenced without schema prefix

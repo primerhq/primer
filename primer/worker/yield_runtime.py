@@ -4,7 +4,7 @@ Spec: ``docs/superpowers/specs/2026-05-22-yielding-tools-design.md``
 §5 (DB shape), §7 (worker semantics).
 
 This module is the bridge between the pure-protocol primitives in
-:mod:`matrix.model.yield_` and the worker pool's turn-execution loop.
+:mod:`primer.model.yield_` and the worker pool's turn-execution loop.
 It owns three responsibilities:
 
 * **Park-state serialisation** — package a turn's mid-flight LLM
@@ -76,7 +76,7 @@ class ParkedState:
     llm_messages
         LLM message history up to and including the assistant
         message that emitted the yielding tool call. Canonical
-        Matrix message-dict format (per-LLM-family translation
+        Primer message-dict format (per-LLM-family translation
         happens on rehydration).
     turn_no
         Turn number this park was made in. The same turn-no is
@@ -240,7 +240,7 @@ def classify_resume_payload(
             elapsed_seconds=elapsed,
         )
 
-    # Real event payload — strip the matrix-internal control keys if
+    # Real event payload — strip the primer-internal control keys if
     # the publisher happened to include them, then pass through.
     payload = {
         k: v for k, v in raw.items()
@@ -324,7 +324,7 @@ async def _resume_tool_approval(
         Any other type is treated as malformed and synthesises a
         rejection.
     tool_manager
-        A :class:`~matrix.agent.tool_manager.ToolExecutionManager`
+        A :class:`~primer.agent.tool_manager.ToolExecutionManager`
         (or compatible duck-type) that exposes
         ``execute(call, *, bypass_approval=True) -> ToolResultPart``.
         Only called on the approved path.

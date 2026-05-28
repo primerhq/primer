@@ -17,7 +17,7 @@ from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
 from primer.model.workspace_session import AgentBinding
 
 # Import the workspace package up-front so ToolCallContext.model_rebuild()
-# runs before any test constructs one (see matrix/workspace/__init__.py).
+# runs before any test constructs one (see primer/workspace/__init__.py).
 import primer.workspace as _workspace_pkg  # noqa: F401
 
 from primer.workspace.local.cache import LocalTruncationStore as TruncationStore

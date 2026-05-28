@@ -1,4 +1,4 @@
-"""Tests for matrix.coordinator.postgres.PostgresRateLimiter against a
+"""Tests for primer.coordinator.postgres.PostgresRateLimiter against a
 real Postgres test container."""
 
 from __future__ import annotations

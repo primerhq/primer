@@ -11,8 +11,8 @@ Two exports:
 
 * :class:`LocalTruncationStore` -- workspace-scoped store with
   per-session subdirectories. One instance per
-  :class:`matrix.int.Workspace`;
-  :class:`matrix.workspace.session.AgentSession` is a thin wrapper that
+  :class:`primer.int.Workspace`;
+  :class:`primer.workspace.session.AgentSession` is a thin wrapper that
   forwards its session id.
 * :class:`TruncatedOutput` -- the model returned from
   :meth:`LocalTruncationStore.output`.

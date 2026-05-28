@@ -1,4 +1,4 @@
-"""Tests for matrix.observability.metrics."""
+"""Tests for primer.observability.metrics."""
 
 from __future__ import annotations
 

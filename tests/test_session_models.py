@@ -1,4 +1,4 @@
-"""Tests for matrix.model.session."""
+"""Tests for primer.model.session."""
 
 from __future__ import annotations
 

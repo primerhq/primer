@@ -2,8 +2,8 @@
 
 The :class:`_BaseAgentExecutor` is intentionally non-public (leading
 underscore in the name); concrete executors are
-:class:`matrix.agent.AgentExecutor` (chat threads) and
-:class:`matrix.agent.WorkspaceAgentExecutor` (workspace-backed).
+:class:`primer.agent.AgentExecutor` (chat threads) and
+:class:`primer.agent.WorkspaceAgentExecutor` (workspace-backed).
 
 The base class owns:
 
@@ -11,7 +11,7 @@ The base class owns:
   re-send with tool results, repeat.
 * End-of-turn persistence -- materialise the assistant
   :class:`Message` from the streamed events via
-  :func:`matrix.model.chat.output_to_message`, hand off to the
+  :func:`primer.model.chat.output_to_message`, hand off to the
   subclass's ``_persist_turn`` hook.
 * Compaction integration -- call
   :meth:`CompactionStrategy.maybe_compact` before each turn; if it

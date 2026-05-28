@@ -7,7 +7,7 @@ Call ``install_log_correlation()`` once during application lifespan startup,
 while a span is active will have ``otelTraceID`` and ``otelSpanID`` attached
 as plain string attributes.
 
-The existing :class:`matrix.common.log._JsonFormatter` already emits any
+The existing :class:`primer.common.log._JsonFormatter` already emits any
 non-reserved ``LogRecord`` attribute as a top-level JSON field, so no
 further changes to the formatter are required — the IDs appear
 automatically in the JSON output.

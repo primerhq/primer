@@ -81,7 +81,7 @@ async def test_t0766_chat_messages_after_seq_filter(
     """T0766 — GET /v1/chats/{id}/messages ?after_seq=N returns only
     rows with seq > N, ordered ascending. Defends the cursor-style
     filter implemented in
-    [`matrix/api/routers/chats.py`](../../matrix/api/routers/chats.py).
+    [`primer/api/routers/chats.py`](../../primer/api/routers/chats.py).
     """
     pid = f"llm-t766-{unique_suffix}"
     aid = f"ag-t766-{unique_suffix}"
@@ -101,7 +101,7 @@ async def test_t0766_chat_messages_after_seq_filter(
         # is the only public path to append) so we have rows seq=1..3.
         # Then run a second turn for seq=4..6.
         # Drive the chat via WS to append rows. base_url is the http
-        # URL of the live matrix server; swap scheme to ws.
+        # URL of the live primer server; swap scheme to ws.
         import json
         import websockets
 

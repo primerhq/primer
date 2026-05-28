@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 # Tool ids surfaced anywhere outside a ToolsetProvider's internal
 # registry are scoped as ``toolset_id<sep>bare_name``. Mirrors the
-# constant in ``matrix.agent.tool_manager``; duplicated here so the
+# constant in ``primer.agent.tool_manager``; duplicated here so the
 # catalog package has no agent-package dependency.
 _TOOL_SCOPE_SEPARATOR = "__"
 

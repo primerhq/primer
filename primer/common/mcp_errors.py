@@ -1,9 +1,9 @@
 """Shared mcp / httpx exception classifier.
 
-Used by :class:`matrix.toolset.mcp.McpToolsetProvider` (and any future
+Used by :class:`primer.toolset.mcp.McpToolsetProvider` (and any future
 adapter that talks to an MCP server). Maps the mcp SDK's
 :class:`mcp.shared.exceptions.McpError` plus the underlying httpx
-exceptions onto the matrix exception hierarchy so callers see one
+exceptions onto the primer exception hierarchy so callers see one
 universal error surface regardless of which adapter raised.
 """
 
@@ -24,11 +24,11 @@ from primer.model.except_ import (
 
 
 def classify_mcp_exception(exc: Exception) -> MatrixError:
-    """Map an mcp / httpx exception to the matrix exception hierarchy.
+    """Map an mcp / httpx exception to the primer exception hierarchy.
 
     Mapping rules:
 
-    | Source exception | matrix exception |
+    | Source exception | primer exception |
     |---|---|
     | ``httpx.HTTPStatusError`` 401 / 403 | :class:`AuthenticationError` |
     | ``httpx.HTTPStatusError`` 429 | :class:`RateLimitError` |
