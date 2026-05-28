@@ -296,6 +296,11 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
             )}
           </div>
 
+          {/* Live stream — WS-backed message timeline (Task 14) */}
+          {wid && (
+            <SessionLiveStream sid={sid} wid={wid} session={session} pushToast={pushToast} />
+          )}
+
           {/* Last error */}
           {lastError && (
             <div className="panel" style={{ borderColor: "oklch(0.7 0.2 25 / 0.4)" }}>
@@ -551,6 +556,365 @@ function TurnRow({ turn, index }) {
 }
 
 window.SessionDetail = SessionDetail;
+
+// =================================================================
+// SessionLiveStream — WS live-watch panel (Task 14)
+// =================================================================
+//
+// Subscribes to WS /v1/workspaces/{wid}/sessions/{sid}/ws?cursor=0.
+// Dispatches frames into a local messages list and renders them like
+// the ChatDetail conversation view from chats.jsx. Mirrored approach:
+//  • assistant_token rows are coalesced into one bubble
+//  • tool_call / tool_result render as expandable cards
+//  • done / cancelled / yielded / resumed render as event markers
+//  • error renders as an inline error banner
+//  • user_input renders as a user bubble
+//  • "Thinking…" appears when turn_status === "running" | "claimable"
+//  • "Interrupt" button sends {"kind":"interrupt"} down the socket
+//
+// The panel only mounts if wid is known (session row has workspace_id).
+
+// Coalesce consecutive assistant_token rows into a single message.
+function _SLS_coalesceMessages(messages) {
+  const out = [];
+  let buf = null;
+  const flush = () => { if (buf) { out.push(buf); buf = null; } };
+  for (const m of messages) {
+    if (m.kind === "assistant_token") {
+      // Payload may carry `text` (coalesced by backend) or `delta` (raw token).
+      const delta = typeof m.text === "string" ? m.text
+                  : typeof m.delta === "string" ? m.delta : "";
+      if (!buf) {
+        buf = { kind: "_assistant_message", text: delta, startSeq: m.seq, endSeq: m.seq };
+      } else {
+        buf.text += delta;
+        buf.endSeq = m.seq;
+      }
+      continue;
+    }
+    flush();
+    out.push(m);
+  }
+  flush();
+  return out;
+}
+
+// One row in the live-stream timeline.
+function _SLS_Frame({ m }) {
+  const kind = m.kind;
+
+  // Coalesced assistant blob.
+  if (kind === "_assistant_message") {
+    return (
+      <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+        <div style={{
+          width: 52, flexShrink: 0,
+          fontFamily: "IBM Plex Mono, monospace", fontSize: 10.5,
+          textTransform: "uppercase", letterSpacing: "0.06em",
+          color: "var(--accent)", fontWeight: 600, paddingTop: 2,
+        }}>agent</div>
+        <div style={{
+          flex: 1, fontSize: 13, lineHeight: 1.55, color: "var(--text)",
+          borderLeft: "2px solid var(--accent)", paddingLeft: 12,
+          whiteSpace: "pre-wrap",
+        }}>
+          {typeof window.renderMarkdown === "function"
+            ? window.renderMarkdown(m.text)
+            : m.text}
+        </div>
+      </div>
+    );
+  }
+
+  // User input echo.
+  if (kind === "user_input") {
+    const text = m.text || m.content || m.message || "";
+    return (
+      <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+        <div style={{
+          width: 52, flexShrink: 0,
+          fontFamily: "IBM Plex Mono, monospace", fontSize: 10.5,
+          textTransform: "uppercase", letterSpacing: "0.06em",
+          color: "var(--text-2)", fontWeight: 600, paddingTop: 2,
+        }}>user</div>
+        <div style={{
+          flex: 1, fontSize: 13, lineHeight: 1.55, color: "var(--text)",
+          borderLeft: "2px solid var(--border)", paddingLeft: 12,
+          whiteSpace: "pre-wrap",
+        }}>{text}</div>
+      </div>
+    );
+  }
+
+  // Tool call card — expandable if args are large.
+  if (kind === "tool_call") {
+    const name = m.name || m.tool_name || "tool";
+    const args = m.args || m.arguments || {};
+    const argsFull = (() => { try { return JSON.stringify(args, null, 2); } catch { return ""; } })();
+    const argsPreview = (() => { try { return JSON.stringify(args); } catch { return ""; } })();
+    return <_SLS_ExpandableRow
+      icon="play" iconColor="var(--text-3)" borderColor="var(--border)"
+      name={name} separator="(" previewText={argsPreview} fullText={argsFull} />;
+  }
+
+  // Tool result card — expandable.
+  if (kind === "tool_result") {
+    const name = m.name || m.tool_name || "tool";
+    const isErr = !!m.error;
+    const fullStr = typeof m.result === "string" ? m.result
+                  : (m.result != null ? JSON.stringify(m.result, null, 2) : "");
+    const previewStr = typeof m.result === "string" ? m.result
+                     : (m.result != null ? JSON.stringify(m.result) : "");
+    return <_SLS_ExpandableRow
+      icon={isErr ? "x-circle" : "check"}
+      iconColor={isErr ? "var(--red)" : "var(--green)"}
+      borderColor={isErr ? "var(--red)" : "var(--green)"}
+      name={name} separator="→" previewText={previewStr} fullText={fullStr} />;
+  }
+
+  // Error banner.
+  if (kind === "error") {
+    const msg = m.message || m.error || m.detail || "error";
+    return (
+      <div style={{ marginLeft: 64, marginTop: 6, marginBottom: 6 }}>
+        <div className="banner banner-error" style={{ margin: 0, fontSize: 12 }}>
+          <Icon name="x-circle" size={12} className="ico" />
+          <div>{msg}</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Event markers: done, cancelled, yielded, resumed.
+  if (kind === "done" || kind === "cancelled" || kind === "yielded" || kind === "resumed") {
+    const stopReason = m.stop_reason || m.reason || "";
+    return (
+      <div style={{ marginLeft: 64, marginTop: 4, marginBottom: 8 }}>
+        <span
+          className="muted text-sm mono"
+          style={{
+            color: kind === "cancelled" ? "var(--red)"
+                 : kind === "done" ? "var(--green)"
+                 : "var(--amber)",
+          }}
+        >· {kind}{stopReason ? ` (${stopReason})` : ""}</span>
+      </div>
+    );
+  }
+
+  // Unknown / future frame kinds — render a dim mono line.
+  return (
+    <div style={{ marginLeft: 64, marginTop: 2, marginBottom: 2 }}>
+      <span className="muted text-sm mono">· {kind}</span>
+    </div>
+  );
+}
+
+const _SLS_PREVIEW_CHARS = 80;
+
+function _SLS_ExpandableRow({ icon, iconColor, borderColor, name, separator, previewText, fullText }) {
+  const [open, setOpen] = React.useState(false);
+  const preview = (previewText || "").replace(/\s+/g, " ");
+  const truncated = preview.length > _SLS_PREVIEW_CHARS;
+  const previewShown = truncated ? preview.slice(0, _SLS_PREVIEW_CHARS) + "…" : preview;
+  const hasExpand = (fullText || "").length > _SLS_PREVIEW_CHARS;
+  const toggle = () => { if (hasExpand) setOpen((o) => !o); };
+  return (
+    <div style={{ marginLeft: 64, marginTop: 2, marginBottom: 6 }}>
+      <div
+        className="tool-call"
+        style={{ borderLeft: `2px solid ${borderColor}`, cursor: hasExpand ? "pointer" : "default" }}
+        onClick={toggle}
+      >
+        {hasExpand && <Icon name={open ? "chevron-down" : "chevron-right"} size={10} style={{ color: "var(--text-3)" }} />}
+        <Icon name={icon} size={10} style={{ color: iconColor }} />
+        <span className="name">{name}</span>
+        <span className="arrow">{separator}</span>
+        <span className="muted" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>{previewShown}</span>
+      </div>
+      {open && (
+        <pre style={{
+          marginTop: 6, padding: "10px 12px",
+          background: "var(--bg-0)", border: "1px solid var(--border)",
+          borderRadius: 6, fontSize: 11.5, lineHeight: 1.5,
+          fontFamily: "IBM Plex Mono, monospace", color: "var(--text-2)",
+          whiteSpace: "pre-wrap", wordBreak: "break-all",
+          maxHeight: 300, overflow: "auto",
+        }}>{fullText}</pre>
+      )}
+    </div>
+  );
+}
+
+function SessionLiveStream({ sid, wid, session, pushToast }) {
+  const [messages, setMessages] = React.useState([]);
+  const [wsState, setWsState] = React.useState("connecting");
+  const wsRef = React.useRef(null);
+  const scrollRef = React.useRef(null);
+
+  const isRunning = session?.turn_status === "running" || session?.turn_status === "claimable";
+
+  // WS lifecycle — reconnects on wid/sid change.
+  // Sends cursor=0 so the server replays the full session history then
+  // tails live. De-duplication handles overlap with prior replays.
+  React.useEffect(() => {
+    if (!wid || !sid) return;
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${proto}//${window.location.host}/v1/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}/ws?cursor=0`;
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      setWsState("closed");
+      return;
+    }
+    wsRef.current = ws;
+    setWsState("connecting");
+
+    ws.onopen = () => setWsState("open");
+
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (!msg || typeof msg !== "object") return;
+
+      // Protocol-level error (no seq) — toast and bail.
+      if (msg.kind === "error" && typeof msg.seq !== "number") {
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "error", title: msg.code || "Session WS error", detail: msg.message || "" });
+        }
+        return;
+      }
+      if (msg.kind === "pong") return;
+
+      // Persisted frame — deduplicate and append.
+      if (typeof msg.seq === "number") {
+        // Flatten payload into top-level (mirrors chats.jsx approach).
+        const payload = msg.payload && typeof msg.payload === "object" ? msg.payload : {};
+        const frame = { ...payload, ...msg };
+        setMessages((prev) => {
+          if (prev.some((p) => p.seq === frame.seq)) return prev;
+          return [...prev, frame];
+        });
+      }
+    };
+
+    ws.onclose = (ev) => {
+      setWsState("closed");
+      if (ev.code === 4404 && typeof pushToast === "function") {
+        pushToast({ kind: "error", title: "Session not found via WS", detail: ev.reason || sid });
+      }
+    };
+
+    ws.onerror = () => { /* onclose handles user-facing messaging */ };
+
+    return () => {
+      try { ws.close(); } catch { /* no-op */ }
+      wsRef.current = null;
+    };
+  }, [wid, sid]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Stick-to-bottom auto-scroll.
+  const stickRef = React.useRef(true);
+  const onScroll = React.useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickRef.current = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;
+  }, []);
+  React.useEffect(() => {
+    if (!scrollRef.current || !stickRef.current) return;
+    const el = scrollRef.current;
+    const raf = requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    return () => cancelAnimationFrame(raf);
+  }, [messages, isRunning]);
+
+  const sendInterrupt = () => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== 1) {
+      if (typeof pushToast === "function") {
+        pushToast({ kind: "error", title: "Not connected", detail: "WebSocket is not open" });
+      }
+      return;
+    }
+    ws.send(JSON.stringify({ kind: "interrupt" }));
+    if (typeof pushToast === "function") {
+      pushToast({ kind: "warning", title: "Interrupt sent", detail: "Session will cancel after current step." });
+    }
+  };
+
+  const wsBadge = wsState === "open"
+    ? <span className="pill pill-running" title="WebSocket open"><span className="dot"></span>live</span>
+    : wsState === "connecting"
+      ? <span className="pill pill-paused" title="WebSocket connecting"><span className="dot"></span>connecting</span>
+      : <span className="pill pill-ended" title="WebSocket closed"><span className="dot"></span>offline</span>;
+
+  const coalesced = _SLS_coalesceMessages(messages);
+  const isTerminalSession = session && SESSION_TERMINAL.has(session.status);
+
+  return (
+    <div className="panel" style={{ display: "flex", flexDirection: "column" }}>
+      <div className="panel-h">
+        <Icon name="zap" size={13} style={{ color: "var(--blue)" }} />
+        <span>Live stream</span>
+        <span className="sub">· {messages.length} frame{messages.length === 1 ? "" : "s"}</span>
+        <div className="right" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {wsBadge}
+          {!isTerminalSession && (
+            <Btn
+              size="sm"
+              kind="danger"
+              icon="stop"
+              disabled={wsState !== "open"}
+              onClick={sendInterrupt}
+              title="Send interrupt frame to cancel the running turn"
+            >Interrupt</Btn>
+          )}
+        </div>
+      </div>
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        style={{ flex: 1, overflow: "auto", padding: "14px 18px", minHeight: 120, maxHeight: 480 }}
+      >
+        {coalesced.length === 0 && (
+          <div className="muted text-sm" style={{ textAlign: "center", padding: 20 }}>
+            {wsState === "connecting"
+              ? "Connecting to session stream…"
+              : wsState === "closed"
+                ? "Stream offline. No frames received or connection dropped."
+                : "No frames yet — session has not started a turn."}
+          </div>
+        )}
+        {coalesced.map((m, i) =>
+          m.kind === "_assistant_message"
+            ? <_SLS_Frame key={`am-${m.startSeq}-${m.endSeq}`} m={m} />
+            : <_SLS_Frame key={`${m.seq != null ? m.seq : i}-${m.kind}`} m={m} />
+        )}
+        {isRunning && (
+          <div style={{ display: "flex", gap: 12, marginBottom: 14 }} aria-live="polite">
+            <div style={{
+              width: 52, flexShrink: 0,
+              fontFamily: "IBM Plex Mono, monospace", fontSize: 10.5,
+              textTransform: "uppercase", letterSpacing: "0.06em",
+              color: "var(--accent)", fontWeight: 600, paddingTop: 2,
+            }}>agent</div>
+            <div style={{
+              flex: 1, fontSize: 13, lineHeight: 1.55, color: "var(--text-2)",
+              borderLeft: "2px solid var(--accent)", paddingLeft: 12, fontStyle: "italic",
+            }}>
+              Thinking
+              <span className="thinking-dots" style={{ marginLeft: 2 }}>
+                <span>.</span><span>.</span><span>.</span>
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+window.SessionLiveStream = SessionLiveStream;
 
 // =================================================================
 // Yielding-tools UI surfaces
