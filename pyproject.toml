@@ -62,9 +62,9 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "runtime/tests"]
 asyncio_mode = "auto"
-pythonpath = ["."]
+pythonpath = [".", "runtime"]
 # tests/e2e/ is skipped unless MATRIX_RUN_E2E=1 is set in the environment
 # (see tests/e2e/conftest.py). The harness sets the env var; default unit
 # runs do not, so contributors running `uv run pytest` aren't bothered by
