@@ -259,6 +259,30 @@ class Workspace(ABC):
         materialising backend ('local', 'container', 'kubernetes').
         """
 
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        """Append ``line`` to the session's ``messages.jsonl``.
+
+        The file lives at ``<state_path>/sessions/<session_id>/messages.jsonl``
+        inside the workspace.  The method ensures ``line`` ends with a
+        newline byte before writing.
+
+        Called by :class:`matrix.session.persistence.WorkspaceMessageWriter`
+        (via the ``WorkspaceIO`` protocol) on every buffer flush.  Multiple
+        workers may hold leases on *different* sessions of the same workspace
+        concurrently, so implementations must be safe for concurrent callers
+        **with distinct session_ids**.  Writes for the *same* session_id from
+        a single worker are always sequential (the writer flushes synchronously
+        before the next append).
+
+        Default implementation raises :class:`NotImplementedError`.  Concrete
+        backends override this method; the default is intentionally not
+        ``@abstractmethod`` so pre-existing backends that predate this method
+        continue to be instantiable while the implementation is rolled out.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement append_message_line"
+        )
+
     @abstractmethod
     async def aclose(self) -> None:
         """Tear down the workspace.

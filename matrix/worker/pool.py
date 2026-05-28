@@ -1596,75 +1596,61 @@ class _GraphTurnDriver:
 
 
 class _WorkspaceIOShim:
-    """Provisional ``WorkspaceIO`` adapter for the worker pool.
+    """``WorkspaceIO`` adapter that delegates to the workspace runtime.
 
     Satisfies the :class:`matrix.session.persistence.WorkspaceIO` protocol
     used by :class:`WorkspaceMessageWriter`.
 
-    Dispatch strategy (in priority order):
+    Dispatch: resolves the workspace from the registry and calls
+    ``workspace.append_message_line(session_id, line)`` directly.  Every
+    concrete :class:`matrix.int.workspace.Workspace` backend now implements
+    this method (added in Task 9).
 
-    1. If the workspace returned by the registry exposes an
-       ``append_message_line(session_id, line)`` method (added in Task 9),
-       delegate to it — the workspace runtime owns the actual storage.
-
-    2. Otherwise, fall back to an in-memory buffer keyed by
-       ``(workspace_id, session_id)``.  This provisional path is used
-       until Task 9 wires the runtime method on every backend.  Data in
-       the buffer is NOT flushed to disk and will be lost on process
-       restart — acceptable for the interim (flagged in task report as
-       DONE_WITH_CONCERNS).
-
-    The shim is stateless with respect to workspace identity; it calls
-    ``_workspace_registry.get_workspace(workspace_id)`` on each flush to
-    pick up hot-reloaded workspace instances during long-lived workers.
-    Because the session_id alone is enough to identify the session slot
-    inside the workspace, but the workspace_id is needed to locate the
-    workspace, the shim tracks the mapping via a lightweight
-    ``_session_to_workspace`` dict populated lazily on first use.
+    The shim calls ``_workspace_registry.get_workspace(workspace_id)`` on
+    each flush so hot-reloaded workspace instances are picked up during
+    long-lived workers.  Because the session_id alone is enough to identify
+    the session slot inside the workspace, but the workspace_id is needed to
+    locate the workspace, the shim tracks the mapping via a lightweight
+    ``_session_to_workspace`` dict populated via :meth:`register_session`
+    before the first write.
     """
 
     def __init__(self, workspace_registry) -> None:
         self._registry = workspace_registry
-        # session_id -> workspace_id mapping; populated lazily via
-        # register_session() calls from _build_session_executor path.
+        # session_id -> workspace_id mapping; populated via register_session()
+        # from the _build_session_executor path before any append is called.
         self._session_to_workspace: dict[str, str] = {}
-        # Provisional in-memory fallback buffer (Task 9 removes the need
-        # for this once append_message_line is on the workspace runtime).
-        self._fallback_buffer: dict[str, list[bytes]] = {}
 
     def register_session(self, session_id: str, workspace_id: str) -> None:
         """Pre-register the workspace_id for a session (called by the pool)."""
         self._session_to_workspace[session_id] = workspace_id
 
     async def append_message_line(self, session_id: str, line: bytes) -> None:
-        """Append ``line`` to the session's ``messages.jsonl``.
+        """Append ``line`` to the session's ``messages.jsonl`` via the workspace runtime."""
+        if self._registry is None:
+            logger.warning(
+                "_WorkspaceIOShim: no workspace_registry configured; "
+                "dropping %d bytes for session %s",
+                len(line), session_id,
+            )
+            return
 
-        Prefers the workspace runtime's own ``append_message_line`` if it
-        exists; falls back to an in-memory buffer otherwise.
-        """
-        # Try to resolve the workspace and use its native method.
-        if self._registry is not None:
-            workspace_id = self._session_to_workspace.get(session_id)
-            if workspace_id is not None:
-                try:
-                    workspace = await self._registry.get_workspace(workspace_id)
-                    native = getattr(workspace, "append_message_line", None)
-                    if native is not None:
-                        await native(session_id, line)
-                        return
-                except Exception:
-                    logger.debug(
-                        "_WorkspaceIOShim: workspace %r unavailable for "
-                        "session %s; using fallback buffer",
-                        workspace_id, session_id,
-                    )
+        workspace_id = self._session_to_workspace.get(session_id)
+        if workspace_id is None:
+            logger.warning(
+                "_WorkspaceIOShim: no workspace_id registered for session %s; "
+                "dropping %d bytes",
+                session_id, len(line),
+            )
+            return
 
-        # Provisional fallback: buffer in-memory (Task 9 will make this
-        # path unreachable once the workspace runtime exposes the method).
-        buf = self._fallback_buffer.setdefault(session_id, [])
-        buf.append(line)
-        logger.debug(
-            "_WorkspaceIOShim: buffering %d bytes for session %s "
-            "(workspace runtime append_message_line not yet available)",
-            len(line), session_id,
-        )
+        workspace = await self._registry.get_workspace(workspace_id)
+        if workspace is None:
+            logger.warning(
+                "_WorkspaceIOShim: workspace %r not found for session %s; "
+                "dropping %d bytes",
+                workspace_id, session_id, len(line),
+            )
+            return
+
+        await workspace.append_message_line(session_id, line)

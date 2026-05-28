@@ -86,6 +86,30 @@ class Sandbox(ABC):
         self, path: str, content: bytes, *, mode: int | None = None,
     ) -> None: ...
 
+    async def append_file(self, path: str, content: bytes) -> None:
+        """Atomically append ``content`` to the file at ``path``.
+
+        Creates the file (and parent directories) if they do not exist.
+        Implementations MUST NOT interleave partial writes from concurrent
+        callers — each :meth:`append_file` call must land as a single
+        contiguous chunk.
+
+        Default implementation performs a read-modify-write via
+        :meth:`read_file` + :meth:`write_file`.  This is correct but
+        race-prone under concurrent writers.  Override with a proper
+        atomic-append in runtimes where performance matters.
+
+        .. TODO(Cluster-5): Replace with a persistent WS runtime that
+           exposes a native ``append_line`` op — eliminating the
+           read-modify-write overhead for container/k8s backends.
+        """
+        existing: bytes
+        try:
+            existing = await self.read_file(path)
+        except (FileNotFoundError, OSError):
+            existing = b""
+        await self.write_file(path, existing + content)
+
     @abstractmethod
     async def list_dir(self, path: str) -> list[FileStat]: ...
 

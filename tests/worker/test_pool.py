@@ -981,3 +981,59 @@ async def test_build_session_executor_returns_callable(scheduler, engine, monkey
 
     result = await pool._build_session_executor(fake_session)
     assert result is fake_driver
+
+
+# ===========================================================================
+# _WorkspaceIOShim
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_workspace_io_shim_delegates_to_workspace():
+    """_WorkspaceIOShim.append_message_line forwards to workspace.append_message_line."""
+    from matrix.worker.pool import _WorkspaceIOShim
+
+    received: list[tuple[str, bytes]] = []
+
+    class _FakeWorkspace:
+        async def append_message_line(self, session_id: str, line: bytes) -> None:
+            received.append((session_id, line))
+
+    class _FakeRegistry:
+        async def get_workspace(self, workspace_id: str):
+            return _FakeWorkspace()
+
+    shim = _WorkspaceIOShim(workspace_registry=_FakeRegistry())
+    shim.register_session("sess-1", "ws-1")
+
+    await shim.append_message_line("sess-1", b'{"seq":1}\n')
+    assert len(received) == 1
+    assert received[0] == ("sess-1", b'{"seq":1}\n')
+
+
+@pytest.mark.asyncio
+async def test_workspace_io_shim_warns_when_no_registry():
+    """_WorkspaceIOShim drops the line and logs a warning when no registry."""
+    import logging
+    from matrix.worker.pool import _WorkspaceIOShim
+
+    shim = _WorkspaceIOShim(workspace_registry=None)
+    shim.register_session("sess-1", "ws-1")
+
+    # Should not raise; the line is silently dropped.
+    await shim.append_message_line("sess-1", b'{"seq":1}\n')
+
+
+@pytest.mark.asyncio
+async def test_workspace_io_shim_warns_when_no_mapping():
+    """_WorkspaceIOShim drops the line when session has no workspace mapping."""
+    from matrix.worker.pool import _WorkspaceIOShim
+
+    class _FakeRegistry:
+        async def get_workspace(self, workspace_id: str):
+            return None
+
+    shim = _WorkspaceIOShim(workspace_registry=_FakeRegistry())
+    # No register_session() call — the shim has no workspace_id mapping.
+    await shim.append_message_line("sess-orphan", b'{"seq":1}\n')
+    # Should complete without error.

@@ -319,6 +319,37 @@ class LocalWorkspace(Workspace):
             return WorkspaceStatus(state="ready", backend="local")
         return WorkspaceStatus(state="destroyed", backend="local")
 
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        """Append ``line`` to the session's ``messages.jsonl``.
+
+        Path: ``<root>/<template.state_path>/sessions/<session_id>/messages.jsonl``
+
+        Uses ``open(path, 'ab')`` for an O_APPEND write, which is atomically
+        safe at the OS level for all callers within this process (different
+        sessions write to different files) and for single-session sequential
+        writers. The trailing newline is enforced here so callers don't need
+        to track it.
+        """
+        if not line:
+            return
+        if not line.endswith(b"\n"):
+            line = line + b"\n"
+
+        target = (
+            self._root
+            / self._template.state_path
+            / "sessions"
+            / session_id
+            / "messages.jsonl"
+        )
+
+        def _append() -> None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("ab") as fh:
+                fh.write(line)
+
+        await asyncio.to_thread(_append)
+
     async def aclose(self) -> None:
         """End any non-ENDED sessions, then release backend resources."""
         async with self._lock:

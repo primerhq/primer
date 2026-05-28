@@ -599,3 +599,75 @@ class TestFactory:
         ws = await backend.create(_template())
         assert (tmp_path / "factory_root" / ws.id).is_dir()
         await backend.aclose()
+
+
+# ===========================================================================
+# LocalWorkspace.append_message_line
+# ===========================================================================
+
+
+class TestAppendMessageLine:
+    """append_message_line writes session records to the right path."""
+
+    async def test_creates_messages_jsonl_on_first_call(
+        self, provider: LocalWorkspaceBackend, tmp_path: Path
+    ) -> None:
+        ws = await provider.create(_template())
+        sid = "sess-aml-1"
+        await ws.append_message_line(sid, b'{"seq":1,"kind":"done"}\n')
+
+        # Path: <root>/<state_path>/sessions/<sid>/messages.jsonl
+        expected = ws.root / ws.template.state_path / "sessions" / sid / "messages.jsonl"
+        assert expected.exists()
+        assert expected.read_bytes() == b'{"seq":1,"kind":"done"}\n'
+
+    async def test_appends_across_multiple_calls(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        sid = "sess-aml-2"
+        line1 = b'{"seq":1,"kind":"user_input"}\n'
+        line2 = b'{"seq":2,"kind":"assistant_token"}\n'
+        line3 = b'{"seq":3,"kind":"done"}\n'
+
+        await ws.append_message_line(sid, line1)
+        await ws.append_message_line(sid, line2)
+        await ws.append_message_line(sid, line3)
+
+        path = ws.root / ws.template.state_path / "sessions" / sid / "messages.jsonl"
+        content = path.read_bytes()
+        assert content == line1 + line2 + line3
+
+    async def test_ensures_trailing_newline(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        sid = "sess-aml-3"
+        # Pass a line WITHOUT a trailing newline — the method must add one.
+        await ws.append_message_line(sid, b'{"seq":1,"kind":"done"}')
+
+        path = ws.root / ws.template.state_path / "sessions" / sid / "messages.jsonl"
+        content = path.read_bytes()
+        assert content.endswith(b"\n")
+
+    async def test_no_op_for_empty_line(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        sid = "sess-aml-4"
+        # Appending empty bytes should be a no-op; no file created.
+        await ws.append_message_line(sid, b"")
+        path = ws.root / ws.template.state_path / "sessions" / sid / "messages.jsonl"
+        assert not path.exists()
+
+    async def test_batched_flush_appends_all_lines(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """Simulate WorkspaceMessageWriter flushing multiple lines at once."""
+        ws = await provider.create(_template())
+        sid = "sess-aml-5"
+        batch = b'{"seq":1}\n{"seq":2}\n{"seq":3}\n'
+        await ws.append_message_line(sid, batch)
+
+        path = ws.root / ws.template.state_path / "sessions" / sid / "messages.jsonl"
+        assert path.read_bytes() == batch

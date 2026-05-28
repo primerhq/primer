@@ -186,6 +186,17 @@ class FakeSandbox(Sandbox):
             except (OSError, NotImplementedError):
                 pass
 
+    async def append_file(self, path: str, content: bytes) -> None:
+        """Atomically append ``content`` to ``path`` (fast O_APPEND path)."""
+        target = self._host_path(path)
+        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+
+        def _append() -> None:
+            with target.open("ab") as fh:
+                fh.write(content)
+
+        await asyncio.to_thread(_append)
+
     async def list_dir(self, path: str) -> list[FileStat]:
         host = self._host_path(path)
         if not await asyncio.to_thread(host.is_dir):

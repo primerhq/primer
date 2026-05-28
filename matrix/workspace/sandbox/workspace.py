@@ -326,6 +326,33 @@ class SandboxWorkspace(Workspace):
             detail=info.detail,
         )
 
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        """Append ``line`` to the session's ``messages.jsonl``.
+
+        Path inside the sandbox:
+        ``<workspace_root>/<template.state_path>/sessions/<session_id>/messages.jsonl``
+
+        Delegates to :meth:`Sandbox.append_file`, which uses read-modify-write
+        by default.  The ``FakeSandbox`` (used in tests) overrides with a
+        fast O_APPEND path.
+
+        .. TODO(Cluster-5): The container/k8s Sandbox impls still use the
+           default read-modify-write ``append_file``.  Cluster 5 will replace
+           the exec-per-call runtime with a persistent WS runtime that
+           exposes a native ``append_line`` op — at that point each backend's
+           ``append_file`` override will be the thin shim.
+        """
+        if not line:
+            return
+        if not line.endswith(b"\n"):
+            line = line + b"\n"
+
+        path = (
+            f"{self._workspace_root}/{self._template.state_path}"
+            f"/sessions/{session_id}/messages.jsonl"
+        )
+        await self._sandbox.append_file(path, line)
+
     async def aclose(self) -> None:
         """Tear down every live session. Errors from any one session must
         not skip the rest -- log and continue, mirroring
