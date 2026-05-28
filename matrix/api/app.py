@@ -404,6 +404,43 @@ def _make_lifespan(config: AppConfig):
             chat_tick_task = None
             app.state.chat_tick_forwarder_task = None
 
+        # Process-local router for session tick events. One bus subscription
+        # per process feeds it; WS handlers subscribe per-session.
+        from matrix.session.tick_router import SessionTickRouter
+        from matrix.session.tick_router import Tick as SessionTick
+
+        session_tick_router = SessionTickRouter()
+        app.state.session_tick_router = session_tick_router
+
+        async def _forward_session_ticks_from_bus() -> None:
+            sub = event_bus.subscribe()
+            try:
+                async for event in sub:
+                    key = event.event_key
+                    if not key.startswith("session:") or not key.endswith(":tick"):
+                        continue
+                    sid = key[len("session:"):-len(":tick")]
+                    if not sid:
+                        continue
+                    seq = event.payload.get("seq") if event.payload else None
+                    if not isinstance(seq, int):
+                        continue
+                    session_tick_router._publish(sid, SessionTick(seq=seq))
+            except asyncio.CancelledError:
+                pass
+            finally:
+                await sub.aclose()
+
+        if event_bus is not None:
+            session_tick_task = asyncio.create_task(
+                _forward_session_ticks_from_bus(),
+                name="session-tick-forwarder",
+            )
+            app.state.session_tick_forwarder_task = session_tick_task
+        else:
+            session_tick_task = None
+            app.state.session_tick_forwarder_task = None
+
         worker_pool = None
         if config.runtime_mode in (
             RuntimeMode.WORKER, RuntimeMode.API_PLUS_WORKER,
@@ -506,6 +543,15 @@ def _make_lifespan(config: AppConfig):
                         pass
                 except Exception:
                     logger.exception("chat_tick_task teardown failed")
+            if session_tick_task is not None:
+                try:
+                    session_tick_task.cancel()
+                    try:
+                        await session_tick_task
+                    except asyncio.CancelledError:
+                        pass
+                except Exception:
+                    logger.exception("session_tick_task teardown failed")
             if event_bus is not None:
                 try:
                     await event_bus.aclose()
@@ -975,6 +1021,38 @@ def create_test_app(
 
     app.state.start_chat_tick_forwarder = _start_chat_tick_forwarder
 
+    from matrix.session.tick_router import SessionTickRouter as _STR
+    from matrix.session.tick_router import Tick as _SessionTick
+
+    _session_tick_router = _STR()
+    app.state.session_tick_router = _session_tick_router
+
+    async def _start_session_tick_forwarder() -> asyncio.Task:
+        """Async helper for the test fixture — spin the session tick
+        forwarder task within an active event loop."""
+        sub = app.state.event_bus.subscribe()
+
+        async def _session_loop() -> None:
+            try:
+                async for event in sub:
+                    key = event.event_key
+                    if not key.startswith("session:") or not key.endswith(":tick"):
+                        continue
+                    sid = key[len("session:"):-len(":tick")]
+                    if not sid:
+                        continue
+                    seq = event.payload.get("seq") if event.payload else None
+                    if isinstance(seq, int):
+                        _session_tick_router._publish(sid, _SessionTick(seq=seq))
+            except asyncio.CancelledError:
+                pass
+            finally:
+                await sub.aclose()
+
+        return asyncio.create_task(_session_loop(), name="session-tick-forwarder")
+
+    app.state.start_session_tick_forwarder = _start_session_tick_forwarder
+
     # Optional worker pool for integration tests that need the chat
     # claim loop (start_chat_worker=True).
     if start_chat_worker:
@@ -1051,6 +1129,7 @@ def create_test_app(
         @asynccontextmanager
         async def _test_lifespan(_a: FastAPI) -> AsyncIterator[None]:
             fwd_task = await _a.state.start_chat_tick_forwarder()
+            sess_fwd_task = await _a.state.start_session_tick_forwarder()
             await _a.state.start_worker_pool()
             try:
                 yield
@@ -1062,6 +1141,11 @@ def create_test_app(
                 fwd_task.cancel()
                 try:
                     await fwd_task
+                except asyncio.CancelledError:
+                    pass
+                sess_fwd_task.cancel()
+                try:
+                    await sess_fwd_task
                 except asyncio.CancelledError:
                     pass
 

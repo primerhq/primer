@@ -565,7 +565,7 @@ async def session_ws(
     3. Accept the WebSocket upgrade.
     4. Replay ``messages.jsonl`` records with ``seq > cursor`` in order.
     5. Subscribe to ``app.state.session_tick_router`` for the session
-       (Task 12 wires this; for now falls back gracefully if absent).
+       (wired in lifespan; guaranteed present).
     6. Run two concurrent loops:
        - ``_session_recv_loop``: reads client frames.  Handles
          ``interrupt`` (sets ``cancel_requested_at`` + publishes cancel
@@ -625,15 +625,8 @@ async def session_ws(
     else:
         last_seq = cursor
 
-    # 5. Subscribe to tick router (may be None until Task 12).
-    if session_tick_router is not None:
-        tick_sub = session_tick_router.subscribe(session_id)
-    else:
-        # Construct a local one as a temporary measure so the endpoint is
-        # functional; Task 12 wires the real one on app.state.
-        from matrix.session.tick_router import SessionTickRouter as _STR
-        _local_router = _STR()
-        tick_sub = _local_router.subscribe(session_id)
+    # 5. Subscribe to tick router (guaranteed present — wired in lifespan).
+    tick_sub = session_tick_router.subscribe(session_id)
 
     try:
         recv_task = asyncio.ensure_future(
