@@ -47,6 +47,8 @@ from matrix.model.except_ import (
     UnsupportedContentError,
 )
 from matrix.model.yield_ import Yielded, YieldToWorker
+from matrix.observability import tracing as _tracing
+import matrix.observability.metrics as _metrics
 
 
 if TYPE_CHECKING:
@@ -248,6 +250,34 @@ class ToolExecutionManager:
         when a resolver is configured. The worker's resume path sets this
         after the operator has approved the call.
         """
+        import time as _time
+        _tracer = _tracing.get_tracer("matrix.tool")
+        _t0 = _time.monotonic()
+        with _tracer.start_as_current_span("tool.exec") as _span:
+            _span.set_attribute("tool.name", call.name)
+            try:
+                result = await self._execute_inner(
+                    call, principal=principal, bypass_approval=bypass_approval,
+                )
+                _metrics.tool_calls_total.labels(call.name, "ok").inc()
+                return result
+            except Exception as _exc:
+                _span.record_exception(_exc)
+                _metrics.tool_calls_total.labels(call.name, "fail").inc()
+                raise
+            finally:
+                _metrics.tool_duration_seconds.labels(call.name).observe(
+                    _time.monotonic() - _t0
+                )
+
+    async def _execute_inner(
+        self,
+        call: ToolCallPart,
+        *,
+        principal: str | None = None,
+        bypass_approval: bool = False,
+    ) -> ToolResultPart:
+        """Internal dispatch — routes to workspace or toolset provider."""
         # Lazy-build the index if list_tools wasn't called yet.
         if self._catalogue is None:
             await self.list_tools(principal=principal)
