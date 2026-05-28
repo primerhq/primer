@@ -29,7 +29,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Body, Depends, Header, Path, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from matrix.api.deps import (
@@ -44,6 +44,11 @@ from matrix.api.deps import (
 from matrix.api.errors import common_responses
 from matrix.model.except_ import BadRequestError, ConflictError
 from matrix.api.registries import ProviderRegistry
+from matrix.api.registries.provider_registry import (
+    RESERVED_CROSS_ENCODER_IDS,
+    RESERVED_EMBEDDER_IDS,
+    RESERVED_LLM_IDS,
+)
 from matrix.api.routers._crud import make_crud_router
 from matrix.api.routers._managed import (
     on_pre_update_reject_if_managed,
@@ -58,6 +63,48 @@ from matrix.model.provider import (
 )
 from matrix.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from matrix.model.tool_approval import ToolApprovalPolicy
+
+
+# ---- Reserved-id protection helpers ---------------------------------------
+
+
+def _make_reserved_create_guard(reserved_ids: frozenset[str], kind: str):
+    """Return an ``on_pre_create`` hook that rejects POST with a reserved id."""
+    async def _guard(entity, request: Request) -> None:
+        if entity.id in reserved_ids:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "reserved_id",
+                    "kind": kind,
+                    "reserved": sorted(reserved_ids),
+                    "message": (
+                        f"id {entity.id!r} is reserved and cannot be "
+                        "created via the API"
+                    ),
+                },
+            )
+    _guard.__name__ = f"_reject_reserved_{kind}_create"
+    return _guard
+
+
+def _make_reserved_delete_guard(reserved_ids: frozenset[str], kind: str):
+    """Return an ``on_pre_delete_id`` hook that rejects DELETE of a reserved id."""
+    async def _guard(entity_id: str, request: Request) -> None:
+        if entity_id in reserved_ids:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "reserved_id_protected",
+                    "kind": kind,
+                    "message": (
+                        f"id {entity_id!r} is a reserved {kind} and "
+                        "cannot be deleted"
+                    ),
+                },
+            )
+    _guard.__name__ = f"_reject_reserved_{kind}_delete"
+    return _guard
 
 
 # ---- Discovery body shapes -------------------------------------------------
@@ -134,6 +181,8 @@ llm_provider_router = make_crud_router(
     tag="llm-providers",
     on_update=_invalidate_llm,
     on_delete=_invalidate_llm,
+    on_pre_create=_make_reserved_create_guard(RESERVED_LLM_IDS, "llm_provider"),
+    on_pre_delete_id=_make_reserved_delete_guard(RESERVED_LLM_IDS, "llm_provider"),
 )
 
 
@@ -214,6 +263,8 @@ embedding_provider_router = make_crud_router(
     tag="embedding-providers",
     on_update=_invalidate_embedder,
     on_delete=_invalidate_embedder,
+    on_pre_create=_make_reserved_create_guard(RESERVED_EMBEDDER_IDS, "embedding_provider"),
+    on_pre_delete_id=_make_reserved_delete_guard(RESERVED_EMBEDDER_IDS, "embedding_provider"),
 )
 
 
@@ -342,6 +393,8 @@ cross_encoder_provider_router = make_crud_router(
     tag="cross-encoder-providers",
     on_update=_invalidate_cross_encoder,
     on_delete=_invalidate_cross_encoder,
+    on_pre_create=_make_reserved_create_guard(RESERVED_CROSS_ENCODER_IDS, "cross_encoder_provider"),
+    on_pre_delete_id=_make_reserved_delete_guard(RESERVED_CROSS_ENCODER_IDS, "cross_encoder_provider"),
 )
 
 

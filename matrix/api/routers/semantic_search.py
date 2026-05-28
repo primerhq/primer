@@ -11,14 +11,52 @@ Cascade-block (§5 reference-integrity):
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 
 from matrix.api.deps import get_semantic_search_registry, get_semantic_search_storage
 from matrix.api.errors import common_responses
+from matrix.api.registries.provider_registry import RESERVED_SSP_IDS
 from matrix.api.routers._crud import make_crud_router
 from matrix.model.except_ import ConflictError
 from matrix.model.provider import SemanticSearchProvider
 from matrix.model.storage import FieldRef, Op, OffsetPage, Predicate, Value
+
+
+# ---------------------------------------------------------------------------
+# Reserved-id protection hooks
+# ---------------------------------------------------------------------------
+
+
+async def _reject_reserved_ssp_create(entity, request: Request) -> None:
+    """Reject POST /v1/ssp with a reserved SSP id (409)."""
+    if entity.id in RESERVED_SSP_IDS:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reserved_id",
+                "kind": "ssp",
+                "reserved": sorted(RESERVED_SSP_IDS),
+                "message": (
+                    f"id {entity.id!r} is reserved and cannot be "
+                    "created via the API"
+                ),
+            },
+        )
+
+
+async def _reject_reserved_ssp_delete(entity_id: str, request: Request) -> None:
+    """Reject DELETE /v1/ssp/<reserved-id> (403)."""
+    if entity_id in RESERVED_SSP_IDS:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "reserved_id_protected",
+                "kind": "ssp",
+                "message": (
+                    f"id {entity_id!r} is a reserved SSP and cannot be deleted"
+                ),
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +133,8 @@ semantic_search_router = make_crud_router(
     on_create=_on_create,
     on_update=_on_update,
     on_delete=_on_delete,
+    on_pre_create=_reject_reserved_ssp_create,
+    on_pre_delete_id=_reject_reserved_ssp_delete,
 )
 
 

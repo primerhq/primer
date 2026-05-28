@@ -67,6 +67,12 @@ _OnPreUpdateHook = (
 # entity guard).
 _OnPreDeleteHook = Callable[[Any, Request], Awaitable[None]] | None
 
+# Pre-delete-id hook signature: ``(entity_id, request) -> None``.
+# Called BEFORE the storage lookup on DELETE, so the hook fires even
+# when the row does not exist in storage. Use for reserved-id guards
+# that must return 403 regardless of storage state.
+_OnPreDeleteIdHook = Callable[[str, Request], Awaitable[None]] | None
+
 
 def make_crud_router(
     *,
@@ -80,6 +86,7 @@ def make_crud_router(
     on_pre_create: _OnPreWriteHook = None,
     on_pre_update: _OnPreUpdateHook = None,
     on_pre_delete: _OnPreDeleteHook = None,
+    on_pre_delete_id: _OnPreDeleteIdHook = None,
     extra_get_responses: dict[int, dict[str, Any]] | None = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
@@ -114,6 +121,11 @@ def make_crud_router(
         invoked BEFORE ``storage.delete()`` with the stored row that is
         about to be removed. Raise :class:`HTTPException` to abort the
         delete (e.g. harness-managed entity guard).
+    on_pre_delete_id
+        Async callable ``async def(entity_id: str, request: Request) -> None``
+        invoked BEFORE the storage lookup on DELETE. Fires even when the
+        row does not exist in storage. Use for reserved-id guards that must
+        return 403 regardless of storage state (e.g. bootstrap protections).
     extra_get_responses
         Extra response codes documented for the GET-by-id route (in
         addition to the standard 404).
@@ -217,6 +229,8 @@ def make_crud_router(
         entity_id: str = Path(..., description="Entity id."),
         storage=Depends(storage_dep),
     ) -> None:
+        if on_pre_delete_id is not None:
+            await on_pre_delete_id(entity_id, request)
         existing = await storage.get(entity_id)
         if existing is None:
             raise NotFoundError(

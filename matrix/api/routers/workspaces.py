@@ -23,7 +23,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Body, Depends, Path, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,7 @@ from matrix.api.deps import (
 from matrix.api.errors import common_responses
 from matrix.api.pagination import FindRequest, parse_order_by, parse_page
 from matrix.api.registries import WorkspaceRegistry
+from matrix.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
 from matrix.api.routers._crud import make_crud_router
 from matrix.model.except_ import (
     BadRequestError,
@@ -142,12 +143,51 @@ async def _invalidate_workspace_backend(
     await registry.invalidate(entity_id)
 
 
+async def _reject_reserved_workspace_provider_create(
+    entity, request: Request
+) -> None:
+    """Reject POST /v1/workspace_providers with a reserved id (409)."""
+    if entity.id in RESERVED_WORKSPACE_PROVIDER_IDS:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reserved_id",
+                "kind": "workspace_provider",
+                "reserved": sorted(RESERVED_WORKSPACE_PROVIDER_IDS),
+                "message": (
+                    f"id {entity.id!r} is reserved and cannot be "
+                    "created via the API"
+                ),
+            },
+        )
+
+
+async def _reject_reserved_workspace_provider_delete(
+    entity_id: str, request: Request
+) -> None:
+    """Reject DELETE /v1/workspace_providers/<reserved-id> (403)."""
+    if entity_id in RESERVED_WORKSPACE_PROVIDER_IDS:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "reserved_id_protected",
+                "kind": "workspace_provider",
+                "message": (
+                    f"id {entity_id!r} is a reserved workspace provider "
+                    "and cannot be deleted"
+                ),
+            },
+        )
+
+
 _provider_crud = make_crud_router(
     model_cls=WorkspaceProvider,
     storage_dep=get_workspace_provider_storage,
     plural="workspace_providers",
     tag="workspace-providers",
     on_delete=_invalidate_workspace_backend,
+    on_pre_create=_reject_reserved_workspace_provider_create,
+    on_pre_delete_id=_reject_reserved_workspace_provider_delete,
 )
 
 
