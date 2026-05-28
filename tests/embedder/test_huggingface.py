@@ -167,7 +167,7 @@ class TestEncodeSync:
             ["hi"],
             output_value="sentence_embedding",
             convert_to_numpy=True,
-            normalize_embeddings=False,
+            normalize_embeddings=True,
         )
         assert out is model.encode.return_value
 

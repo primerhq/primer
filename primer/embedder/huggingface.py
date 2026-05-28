@@ -98,12 +98,23 @@ def _part_to_text(part: EmbeddingPart) -> str:
 
 def _encode_sync(model, texts: list[str], output_value: str):
     """Sync wrapper around SentenceTransformer.encode — runs in
-    asyncio.to_thread."""
+    asyncio.to_thread.
+
+    ``normalize_embeddings`` is True so the produced vectors land on
+    the unit hypersphere. Every vector store we ship (LanceDB,
+    pgvector) ranks by cosine similarity, which is only well-defined
+    after L2 normalisation — without it short queries (e.g. "web
+    search") would land far from long passages ("web-search: Perform
+    a web search and return…") simply because of magnitude, not
+    semantics. Affects every model SentenceTransformer wraps,
+    including BGE / E5 / GTE / MiniLM. Operators who relied on raw
+    magnitudes for custom rerank will need to scale their thresholds.
+    """
     return model.encode(
         texts,
         output_value=output_value,
         convert_to_numpy=True,
-        normalize_embeddings=False,
+        normalize_embeddings=True,
     )
 
 
