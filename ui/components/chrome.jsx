@@ -5,15 +5,16 @@ const NAV = [
     group: null,
     items: [
       { id: "dashboard", label: "Dashboard", icon: "home" },
-      { id: "sessions", label: "Sessions", icon: "zap", countKey: "sessions" },
     ],
   },
   {
     group: "Compute",
     items: [
+      { id: "sessions", label: "Sessions", icon: "zap", countKey: "sessions" },
       { id: "agents", label: "Agents", icon: "agent" },
       { id: "graphs", label: "Graphs", icon: "graph" },
       { id: "chats", label: "Chats", icon: "send", countKey: "chats" },
+      { id: "approvals", label: "Approvals", icon: "check-circle", countKey: "approvals_pending" },
     ],
   },
   {
@@ -21,6 +22,7 @@ const NAV = [
     items: [
       { id: "collections", label: "Collections", icon: "collection" },
       { id: "documents", label: "Documents", icon: "doc" },
+      { id: "internal-collections", label: "Internal Collections", icon: "subsystem", subsystem: true },
     ],
   },
   {
@@ -45,26 +47,14 @@ const NAV = [
       { id: "embedding", label: "Embedding", icon: "emb" },
       { id: "rerank", label: "Cross-Encoder", icon: "emb" },
       { id: "semantic-search", label: "Semantic Search", icon: "subsystem", countKey: "ssps" },
-    ],
-  },
-  {
-    group: "Channels",
-    items: [
-      { id: "channel-providers", label: "Providers", icon: "bell" },
+      { id: "channel-providers", label: "Channels under Providers", icon: "bell" },
       { id: "channels", label: "Channels", icon: "bell", countKey: "channels" },
-      { id: "channel-associations", label: "Associations", icon: "fork" },
+      { id: "channel-associations", label: "Channel Associations", icon: "fork" },
     ],
   },
   {
     group: "Distributions",
     items: [{ id: "harnesses", label: "Harnesses", icon: "box" }],
-  },
-  {
-    group: "Subsystems",
-    items: [
-      { id: "internal-collections", label: "Internal Collections", icon: "subsystem", subsystem: true },
-      { id: "approvals", label: "Approvals", icon: "check-circle", countKey: "approvals_pending" },
-    ],
   },
   {
     group: "Operations",
