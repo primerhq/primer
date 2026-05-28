@@ -675,6 +675,8 @@ def _build_storage_provider(config: AppConfig) -> "StorageProvider":
     )
     from matrix.storage.factory import StorageProviderFactory
 
+    from matrix.model.provider import PostgresConfig as _PostgresConfig
+
     sp_config = config.db
     if sp_config is None:
         default_path = Path.home() / ".matrix" / "db" / "data.sqlite"
@@ -682,6 +684,17 @@ def _build_storage_provider(config: AppConfig) -> "StorageProvider":
             provider=_StorageProviderType.SQLITE,
             config=_SqliteConfig(path=default_path),
         )
+
+    # MATRIX_DB_SCHEMA overrides the Postgres schema for test isolation.
+    # SQLite has no schema concept, so the override is silently ignored
+    # when the backend is SQLite.
+    if config.db_schema is not None and isinstance(sp_config.config, _PostgresConfig):
+        sp_config = sp_config.model_copy(
+            update={"config": sp_config.config.model_copy(
+                update={"db_schema": config.db_schema}
+            )}
+        )
+
     return StorageProviderFactory.create(sp_config)
 
 

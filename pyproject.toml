@@ -59,6 +59,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-playwright>=0.6.2",
     "respx>=0.21.1",
+    "testcontainers[postgres]>=4.0",
 ]
 
 [tool.pytest.ini_options]
@@ -69,6 +70,12 @@ pythonpath = [".", "runtime"]
 # (see tests/e2e/conftest.py). The harness sets the env var; default unit
 # runs do not, so contributors running `uv run pytest` aren't bothered by
 # the e2e tests' need for a live server.
+# tests/distributed/ requires testcontainers + Docker; opt in with
+# `uv run pytest tests/distributed/ -m distributed`. Default runs skip them.
+addopts = "-m 'not distributed'"
+markers = [
+    "distributed: requires testcontainers + multiprocess (deselect with -m 'not distributed')",
+]
 
 [tool.coverage.run]
 source = ["matrix"]

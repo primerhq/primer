@@ -51,6 +51,16 @@ class AppConfig(BaseSettings):
             "with a custom path) to override."
         ),
     )
+    db_schema: str | None = Field(
+        default=None,
+        description=(
+            "Override the Postgres schema used by the storage provider. "
+            "Applies only when the backend is Postgres; has no effect on "
+            "SQLite (which has no schema concept). Intended for test "
+            "isolation: set MATRIX_DB_SCHEMA=<name> to place all tables "
+            "in a dedicated schema so concurrent test runs don't collide."
+        ),
+    )
 
     # --- HTTP server -----------------------------------------------------
     host: str = Field(default="0.0.0.0", description="Bind host for uvicorn.")
