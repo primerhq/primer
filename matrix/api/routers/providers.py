@@ -49,6 +49,7 @@ from matrix.api.registries.provider_registry import (
     RESERVED_EMBEDDER_IDS,
     RESERVED_LLM_IDS,
 )
+from matrix.api.routers._cdc_hooks import register_cdc_kind
 from matrix.api.routers._crud import make_crud_router
 from matrix.model.provider import (
     CrossEncoderProvider,
@@ -418,6 +419,12 @@ async def get_cross_encoder_provider_models(
     adapter = await registry.get_cross_encoder(provider_id)
     models = await adapter.list_models()
     return {"models": list(models)}
+
+
+# Register Toolset in the CDC kinds registry so the harness service can
+# resolve it via known_cdc_kinds().  Toolset is harness-managed but has no
+# internal-collections vector index entry, so no CDC event hooks are wired.
+register_cdc_kind("toolset", Toolset)
 
 
 # ---- Toolset delete: cascade-block + invalidate ----------------------------

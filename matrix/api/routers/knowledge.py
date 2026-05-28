@@ -32,7 +32,7 @@ from matrix.api.deps import (
 )
 from matrix.api.errors import common_responses
 from matrix.api.registries import ProviderRegistry, SemanticSearchRegistry
-from matrix.api.routers._cdc_hooks import make_cdc_hooks
+from matrix.api.routers._cdc_hooks import register_cdc_kind
 from matrix.api.routers._crud import make_crud_router
 from matrix.model.chat import TextPart
 from matrix.model.collection import Collection, Document
@@ -51,9 +51,10 @@ from matrix.model.storage import (
 )
 
 
-_collection_create, _collection_update, _collection_delete = make_cdc_hooks(
-    "collection", Collection,
-)
+# Register Document in the CDC kinds registry so the harness service can
+# resolve it via known_cdc_kinds().  Document is harness-managed but has no
+# internal-collections vector index, so no CDC event hooks are wired here.
+register_cdc_kind("document", Document)
 
 
 class _CollectionSearchBody(BaseModel):
@@ -120,9 +121,7 @@ collection_router = make_crud_router(
     storage_dep=get_collection_storage,
     plural="collections",
     tag="collections",
-    on_create=_collection_create,
-    on_update=_collection_update,
-    on_delete=_collection_delete,
+    cdc_kind="collection",
     managed_by_field="harness_id",
     on_pre_create=_collection_pre_create,
     on_pre_update=_collection_pre_update,

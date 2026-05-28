@@ -545,6 +545,24 @@ def _make_lifespan(config: AppConfig):
             app.state.internal_collections = ic_subsystem
             app.state.search_toolset = search_toolset
             ic_subsystem.start_worker()
+        # Startup invariant: every kind the harness service manages must
+        # appear in the CDC kinds registry.  _harness_kind_models() ensures
+        # the registry is fully populated (handles test-reset and lazy-import
+        # cases), then we assert no required kind is missing.
+        # Note: EntityType (agent/graph/collection/tool) intentionally
+        # omits "document" and "toolset" (no IC vector index for those),
+        # so we check harness-managed storage kinds rather than EntityType.
+        from matrix.harness.service import _harness_kind_models  # noqa: PLC0415
+        _required_harness_kinds = frozenset(
+            {"agent", "graph", "collection", "document", "toolset"}
+        )
+        _registered = frozenset(_harness_kind_models().keys())
+        _missing = _required_harness_kinds - _registered
+        assert not _missing, (
+            f"CDC kinds registry is missing harness-managed kinds: {_missing!r}. "
+            "Ensure the corresponding router modules register their kinds."
+        )
+
         logger.info(
             "matrix API ready",
             extra={"version": APP_VERSION, "host": config.host, "port": config.port},

@@ -183,27 +183,43 @@ def _rewrite_payload(
 # Pydantic validation per kind
 # ---------------------------------------------------------------------------
 
-def _kind_models() -> dict[str, type]:
-    """Return a dict mapping kind names to Pydantic model classes.
+def _harness_kind_models() -> dict[str, type]:
+    """Return a mapping of harness-managed kind names to Pydantic model classes.
 
-    Loaded lazily to avoid circular imports: graph.py → session.py → graph.py.
-    The workaround is to import session.py before graph.py so that the
-    _rebuild_models() call in session.py completes before graph.py tries to
-    satisfy its own session import.
+    Uses the CDC kinds registry as the single source of truth.  Populates
+    the registry on first call (and after any test-reset) by doing the same
+    lazy imports that the old _kind_models() function used — so this function
+    is safe to call even before router modules have been imported, and is
+    idempotent when the registry is already fully populated.
+
+    The lazy imports here avoid circular-import issues:
+    graph.py → session.py → graph.py.  Importing workspace_session before
+    graph ensures the _rebuild_models() call completes first.
     """
-    from matrix.model.agent import Agent  # noqa: PLC0415
-    from matrix.model.collection import Collection, Document  # noqa: PLC0415
-    import matrix.model.workspace_session  # noqa: PLC0415, F401 — must be imported before graph
-    from matrix.model.graph import Graph  # noqa: PLC0415
-    from matrix.model.provider import Toolset  # noqa: PLC0415
-
-    return {
-        "agent": Agent,
-        "graph": Graph,
-        "collection": Collection,
-        "document": Document,
-        "toolset": Toolset,
-    }
+    from matrix.api.routers._cdc_hooks import (  # noqa: PLC0415
+        known_cdc_kinds,
+        register_cdc_kind,
+    )
+    kinds = known_cdc_kinds()
+    _required = frozenset({"agent", "graph", "collection", "document", "toolset"})
+    if not _required.issubset(kinds.keys()):
+        # Registry incomplete (first call, or cleared by a test reset).
+        # Import models and re-register to rebuild the mapping.
+        from matrix.model.agent import Agent  # noqa: PLC0415
+        from matrix.model.collection import Collection, Document  # noqa: PLC0415
+        import matrix.model.workspace_session  # noqa: PLC0415, F401 — must precede graph
+        from matrix.model.graph import Graph  # noqa: PLC0415
+        from matrix.model.provider import Toolset  # noqa: PLC0415
+        for _kind, _cls in (
+            ("agent", Agent),
+            ("graph", Graph),
+            ("collection", Collection),
+            ("document", Document),
+            ("toolset", Toolset),
+        ):
+            register_cdc_kind(_kind, _cls)
+        kinds = known_cdc_kinds()
+    return kinds
 
 
 def _validate_payload(
@@ -215,7 +231,7 @@ def _validate_payload(
 
     Returns (validated_entity, []) on success, or (None, [error_dict]) on failure.
     """
-    model_cls = _kind_models()[kind]
+    model_cls = _harness_kind_models()[kind]
     data = {"id": resolved_entity_id, **payload}
     try:
         entity = model_cls.model_validate(data)
@@ -296,7 +312,7 @@ def _entity_from_entry(
     harness_id: str,
 ) -> Any:
     """Reconstruct the entity model from a RenderedEntry with harness_id stamped."""
-    model_cls = _kind_models()[entry.kind]
+    model_cls = _harness_kind_models()[entry.kind]
     # harness_id MUST be last so a template accidentally (or maliciously)
     # carrying a harness_id field in the rendered payload can never override
     # the dispatch's own value.
@@ -310,7 +326,7 @@ def _entity_from_entry(
 
 def _storage_for_kind(storage_provider: Any, kind: str) -> Any:
     """Return the storage bucket for a given entity kind string."""
-    model_cls = _kind_models()[kind]
+    model_cls = _harness_kind_models()[kind]
     return storage_provider.get_storage(model_cls)
 
 
