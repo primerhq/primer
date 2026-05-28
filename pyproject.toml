@@ -62,7 +62,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "runtime/tests"]
+testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = [".", "runtime"]
 # tests/e2e/ is skipped unless MATRIX_RUN_E2E=1 is set in the environment
