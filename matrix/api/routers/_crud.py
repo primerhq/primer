@@ -19,13 +19,14 @@ provider routers to invalidate cached adapters).
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request, status
 
 from matrix.api.errors import common_responses
 from matrix.api.routers import _managed as _managed_mod
+from matrix.api.routers._references import ReferenceCheck, build_reference_block_hook
 from matrix.api.pagination import FindRequest, parse_order_by, parse_page
 from matrix.model.common import Identifiable
 from matrix.model.except_ import ConflictError, NotFoundError
@@ -96,6 +97,7 @@ def make_crud_router(
     scope_field: str | None = None,
     parent_path_segment: str | None = None,
     managed_by_field: str | None = None,
+    references: Sequence[ReferenceCheck] = (),
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
 
@@ -160,6 +162,13 @@ def make_crud_router(
         User-supplied ``on_pre_create`` / ``on_pre_update`` /
         ``on_pre_delete`` hooks are composed *after* these auto-wired
         guards.
+    references
+        Optional list of :class:`~matrix.api.routers._references.ReferenceCheck`
+        declarations.  When non-empty, the factory calls
+        :func:`~matrix.api.routers._references.build_reference_block_hook`
+        to build a pre-delete hook that enforces all checks in order.  The
+        auto-generated reference hook runs **before** any user-supplied
+        ``on_pre_delete`` hook.
     """
 
     # Validate scope params: both must be set together or not at all.
@@ -207,6 +216,19 @@ def make_crud_router(
         on_pre_create = _chained_pre_create
         on_pre_update = _chained_pre_update
         on_pre_delete = _chained_pre_delete
+
+    # Auto-wire reference-block hook. The generated hook runs BEFORE the
+    # user-supplied on_pre_delete so reference checks always fire first.
+    if references:
+        _ref_hook = build_reference_block_hook(references)
+        _user_pre_delete_ref = on_pre_delete
+
+        async def _pre_delete_with_refs(existing: Any, request: Request) -> None:
+            await _ref_hook(existing, request)
+            if _user_pre_delete_ref is not None:
+                await _user_pre_delete_ref(existing, request)
+
+        on_pre_delete = _pre_delete_with_refs
 
     router = APIRouter(tags=[tag])
 

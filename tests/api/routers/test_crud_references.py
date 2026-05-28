@@ -1,22 +1,27 @@
-"""Unit tests for :mod:`matrix.api.routers._references`.
+"""Tests for :mod:`matrix.api.routers._references`.
 
-These tests exercise ``ReferenceCheck`` and ``build_reference_block_hook``
-in isolation — no router, no app, no HTTP client required.  The fake
-storage and fake request stubs are declared locally so the tests remain
-self-contained.
+Unit tests exercise ``ReferenceCheck`` and ``build_reference_block_hook``
+in isolation.  Integration tests exercise the ``references=`` parameter on
+:func:`make_crud_router` end-to-end via an in-memory ASGI client.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
-from fastapi import HTTPException
+import pytest_asyncio
+from fastapi import FastAPI, HTTPException
+from httpx import ASGITransport
 from pydantic import BaseModel
 
+from matrix.api.errors import register_error_handlers
+from matrix.api.routers._crud import make_crud_router
 from matrix.api.routers._references import ReferenceCheck, build_reference_block_hook
-from matrix.model.storage import OffsetPage, OffsetPageResponse
+from matrix.model.storage import FieldRef, OffsetPage, OffsetPageResponse, Op, Predicate, Value
 
 
 # ---------------------------------------------------------------------------
@@ -250,3 +255,239 @@ async def test_child_of_different_parent_does_not_block() -> None:
 
     # No exception — the child belongs to a different parent.
     await hook(parent, _fake_request())
+
+
+# ===========================================================================
+# Integration tests: make_crud_router references= parameter
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Minimal models for integration tests
+# ---------------------------------------------------------------------------
+
+
+class _IParent(BaseModel):
+    id: str
+
+
+class _IChild(BaseModel):
+    id: str
+    parent_id: str
+
+
+# ---------------------------------------------------------------------------
+# In-memory storages for integration tests
+# ---------------------------------------------------------------------------
+
+
+class _IParentStorage:
+    def __init__(self, items: list[_IParent] | None = None) -> None:
+        self._data: dict[str, _IParent] = {item.id: item for item in (items or [])}
+
+    async def get(self, id: str) -> _IParent | None:
+        return self._data.get(id)
+
+    async def create(self, entity: _IParent) -> _IParent:
+        self._data[entity.id] = entity
+        return entity
+
+    async def update(self, entity: _IParent) -> _IParent:
+        self._data[entity.id] = entity
+        return entity
+
+    async def delete(self, id: str) -> None:
+        self._data.pop(id, None)
+
+    async def list(self, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_IParent]:
+        items = list(self._data.values())
+        return OffsetPageResponse(offset=0, length=len(items), total=len(items), items=items)
+
+    async def find(self, predicate: Any, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_IParent]:
+        return await self.list(page, order_by=order_by)
+
+
+class _IChildStorage:
+    def __init__(self, items: list[_IChild] | None = None) -> None:
+        self._data: dict[str, _IChild] = {item.id: item for item in (items or [])}
+
+    async def get(self, id: str) -> _IChild | None:
+        return self._data.get(id)
+
+    async def create(self, entity: _IChild) -> _IChild:
+        self._data[entity.id] = entity
+        return entity
+
+    async def update(self, entity: _IChild) -> _IChild:
+        self._data[entity.id] = entity
+        return entity
+
+    async def delete(self, id: str) -> None:
+        self._data.pop(id, None)
+
+    async def list(self, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_IChild]:
+        items = list(self._data.values())
+        return OffsetPageResponse(offset=0, length=len(items), total=len(items), items=items)
+
+    async def find(self, predicate: Any, page: Any, *, order_by: Any = None) -> OffsetPageResponse[_IChild]:
+        """Filter by a simple EQ predicate on parent_id."""
+        matched: list[_IChild] = []
+        if isinstance(predicate, Predicate) and predicate.op == Op.EQ:
+            left = predicate.left
+            right = predicate.right
+            if isinstance(left, FieldRef) and isinstance(right, Value):
+                for item in self._data.values():
+                    if getattr(item, left.name, None) == right.value:
+                        matched.append(item)
+        else:
+            matched = list(self._data.values())
+
+        if isinstance(page, OffsetPage):
+            sliced = matched[page.offset : page.offset + page.length]
+            return OffsetPageResponse(
+                offset=page.offset,
+                length=len(sliced),
+                total=len(matched),
+                items=sliced,
+            )
+        return OffsetPageResponse(offset=0, length=len(matched), total=len(matched), items=matched)
+
+
+# ---------------------------------------------------------------------------
+# Shared storage singletons + dependency factories
+# ---------------------------------------------------------------------------
+
+_PARENT_STORAGE: _IParentStorage | None = None
+_CHILD_STORAGE: _IChildStorage | None = None
+
+
+def _get_parent_storage() -> _IParentStorage:
+    assert _PARENT_STORAGE is not None
+    return _PARENT_STORAGE
+
+
+def _get_child_storage() -> _IChildStorage:
+    assert _CHILD_STORAGE is not None
+    return _CHILD_STORAGE
+
+
+# ---------------------------------------------------------------------------
+# Fixture: references_client
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def references_client() -> AsyncIterator[httpx.AsyncClient]:
+    global _PARENT_STORAGE, _CHILD_STORAGE  # noqa: PLW0603
+
+    # Seed: two parents p1, p2; one child of p1 only.
+    _PARENT_STORAGE = _IParentStorage(
+        items=[_IParent(id="p1"), _IParent(id="p2")]
+    )
+    _CHILD_STORAGE = _IChildStorage(
+        items=[_IChild(id="c1", parent_id="p1")]
+    )
+
+    parent_router = make_crud_router(
+        model_cls=_IParent,
+        storage_dep=_get_parent_storage,
+        plural="parents",
+        tag="parents",
+        references=[
+            ReferenceCheck(
+                child_kind="child",
+                child_storage=lambda req: _get_child_storage(),
+                child_field="parent_id",
+            )
+        ],
+    )
+    child_router = make_crud_router(
+        model_cls=_IChild,
+        storage_dep=_get_child_storage,
+        plural="children",
+        tag="children",
+    )
+
+    app = FastAPI()
+    register_error_handlers(app)
+    app.include_router(parent_router, prefix="/v1")
+    app.include_router(child_router, prefix="/v1")
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        yield client
+
+    _PARENT_STORAGE = None
+    _CHILD_STORAGE = None
+
+
+# ---------------------------------------------------------------------------
+# Integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reference_check_blocks_delete_when_child_exists(
+    references_client: httpx.AsyncClient,
+) -> None:
+    """DELETE /v1/parents/p1 should return 409 because child c1 references p1."""
+    resp = await references_client.delete("/v1/parents/p1")
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "in_use_by"
+    assert resp.json()["detail"]["child_kind"] == "child"
+
+
+@pytest.mark.asyncio
+async def test_reference_check_allows_delete_when_no_child(
+    references_client: httpx.AsyncClient,
+) -> None:
+    """DELETE /v1/parents/p2 should succeed because p2 has no children."""
+    resp = await references_client.delete("/v1/parents/p2")
+    assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_references_composes_with_user_on_pre_delete(
+) -> None:
+    """When both references= and on_pre_delete are set, the reference check
+    fires first; on_pre_delete fires afterwards on success."""
+    global _PARENT_STORAGE, _CHILD_STORAGE  # noqa: PLW0603
+
+    _PARENT_STORAGE = _IParentStorage(items=[_IParent(id="solo")])
+    _CHILD_STORAGE = _IChildStorage(items=[])
+
+    hook_called: list[str] = []
+
+    async def _user_hook(entity: Any, request: Any) -> None:
+        hook_called.append(entity.id)
+
+    parent_router = make_crud_router(
+        model_cls=_IParent,
+        storage_dep=_get_parent_storage,
+        plural="parents2",
+        tag="parents2",
+        references=[
+            ReferenceCheck(
+                child_kind="child",
+                child_storage=lambda req: _get_child_storage(),
+                child_field="parent_id",
+            )
+        ],
+        on_pre_delete=_user_hook,
+    )
+
+    app = FastAPI()
+    register_error_handlers(app)
+    app.include_router(parent_router, prefix="/v1")
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.delete("/v1/parents2/solo")
+
+    assert resp.status_code == 204
+    assert hook_called == ["solo"]
+
+    _PARENT_STORAGE = None
+    _CHILD_STORAGE = None
