@@ -42,7 +42,7 @@ from matrix.api.deps import (
     get_toolset_storage,
 )
 from matrix.api.errors import common_responses
-from matrix.model.except_ import BadRequestError, ConflictError
+from matrix.model.except_ import BadRequestError
 from matrix.api.registries import ProviderRegistry
 from matrix.api.registries.provider_registry import (
     RESERVED_CROSS_ENCODER_IDS,
@@ -57,7 +57,8 @@ from matrix.model.provider import (
     LLMProvider,
     Toolset,
 )
-from matrix.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from matrix.api.routers._references import ReferenceCheck
+from matrix.model.storage import OffsetPage
 from matrix.model.tool_approval import ToolApprovalPolicy
 
 
@@ -427,28 +428,11 @@ async def get_cross_encoder_provider_models(
 register_cdc_kind("toolset", Toolset)
 
 
-# ---- Toolset delete: cascade-block + invalidate ----------------------------
+# ---- Toolset storage helper (for reference check) --------------------------
 
 
-async def _toolset_on_delete(entity_id: str, request: Request) -> None:
-    """Block delete when a ToolApprovalPolicy references this toolset; then invalidate."""
-    storage_provider = request.app.state.storage_provider
-    policy_storage = storage_provider.get_storage(ToolApprovalPolicy)
-    page = await policy_storage.find(
-        Predicate(
-            left=FieldRef(name="toolset_id"),
-            op=Op.EQ,
-            right=Value(value=entity_id),
-        ),
-        OffsetPage(offset=0, length=1),
-    )
-    if page.items:
-        raise ConflictError(
-            f"Toolset {entity_id!r} cannot be deleted while "
-            f"ToolApprovalPolicy {page.items[0].id!r} still "
-            "references it"
-        )
-    await _invalidate_toolset(entity_id, request)
+def _get_tool_approval_policy_storage(request: Request):
+    return request.app.state.storage_provider.get_storage(ToolApprovalPolicy)
 
 
 # ---- Toolset router --------------------------------------------------------
@@ -459,8 +443,15 @@ toolset_router = make_crud_router(
     plural="toolsets",
     tag="toolsets",
     on_update=_invalidate_toolset,
-    on_delete=_toolset_on_delete,
+    on_delete=_invalidate_toolset,
     managed_by_field="harness_id",
+    references=[
+        ReferenceCheck(
+            child_kind="tool_approval_policy",
+            child_storage=_get_tool_approval_policy_storage,
+            child_field="toolset_id",
+        ),
+    ],
 )
 
 

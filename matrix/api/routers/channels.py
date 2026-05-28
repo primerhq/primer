@@ -7,15 +7,16 @@ import logging
 from fastapi import APIRouter, Request
 
 from matrix.api.deps import get_storage_provider
-from matrix.api.errors import common_responses
 from matrix.api.routers._crud import make_crud_router
+from matrix.api.routers._references import ReferenceCheck
 from matrix.model.channel import (
     Channel,
     ChannelProvider,
     WorkspaceChannelAssociation,
 )
 from matrix.model.except_ import ConflictError
-from matrix.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from matrix.model.storage import OffsetPage
+from matrix.storage.q import Q
 
 
 logger = logging.getLogger(__name__)
@@ -43,32 +44,19 @@ def _get_association_storage(request: Request):
 # ---------------------------------------------------------------------------
 
 
-async def _channel_provider_on_delete(entity_id: str, request: Request) -> None:
-    """Block delete when any Channel still references this provider."""
-    sp = get_storage_provider(request)
-    channel_storage = sp.get_storage(Channel)
-    page = await channel_storage.find(
-        Predicate(
-            left=FieldRef(name="provider_id"),
-            op=Op.EQ,
-            right=Value(value=entity_id),
-        ),
-        OffsetPage(offset=0, length=1),
-    )
-    if page.items:
-        raise ConflictError(
-            f"ChannelProvider {entity_id!r} cannot be deleted while "
-            f"Channel {page.items[0].id!r} still references it"
-        )
-
-
 def make_channel_provider_router() -> APIRouter:
     return make_crud_router(
         model_cls=ChannelProvider,
         storage_dep=_get_channel_provider_storage,
         plural="channel_providers",
         tag="channel_providers",
-        on_delete=_channel_provider_on_delete,
+        references=[
+            ReferenceCheck(
+                child_kind="channel",
+                child_storage=_get_channel_storage,
+                child_field="provider_id",
+            ),
+        ],
     )
 
 
@@ -92,19 +80,10 @@ async def _channel_on_pre_create(entity: Channel, request: Request) -> None:
     # Check (provider_id, external_id) uniqueness.
     channel_storage = sp.get_storage(Channel)
     page = await channel_storage.find(
-        Predicate(
-            left=Predicate(
-                left=FieldRef(name="provider_id"),
-                op=Op.EQ,
-                right=Value(value=entity.provider_id),
-            ),
-            op=Op.AND,
-            right=Predicate(
-                left=FieldRef(name="external_id"),
-                op=Op.EQ,
-                right=Value(value=entity.external_id),
-            ),
-        ),
+        Q(Channel)
+        .where("provider_id", entity.provider_id)
+        .where("external_id", entity.external_id)
+        .build(),
         OffsetPage(offset=0, length=1),
     )
     if page.items:
@@ -115,26 +94,6 @@ async def _channel_on_pre_create(entity: Channel, request: Request) -> None:
         )
 
 
-async def _channel_on_delete(entity_id: str, request: Request) -> None:
-    """Block delete when any WorkspaceChannelAssociation references this channel."""
-    sp = get_storage_provider(request)
-    assoc_storage = sp.get_storage(WorkspaceChannelAssociation)
-    page = await assoc_storage.find(
-        Predicate(
-            left=FieldRef(name="channel_id"),
-            op=Op.EQ,
-            right=Value(value=entity_id),
-        ),
-        OffsetPage(offset=0, length=1),
-    )
-    if page.items:
-        raise ConflictError(
-            f"Channel {entity_id!r} cannot be deleted while "
-            f"WorkspaceChannelAssociation {page.items[0].id!r} still "
-            "references it"
-        )
-
-
 def make_channel_router() -> APIRouter:
     return make_crud_router(
         model_cls=Channel,
@@ -142,7 +101,13 @@ def make_channel_router() -> APIRouter:
         plural="channels",
         tag="channels",
         on_pre_create=_channel_on_pre_create,
-        on_delete=_channel_on_delete,
+        references=[
+            ReferenceCheck(
+                child_kind="workspace_channel_association",
+                child_storage=_get_association_storage,
+                child_field="channel_id",
+            ),
+        ],
     )
 
 
@@ -161,19 +126,10 @@ async def _association_on_pre_create(
     sp = get_storage_provider(request)
     assoc_storage = sp.get_storage(WorkspaceChannelAssociation)
     page = await assoc_storage.find(
-        Predicate(
-            left=Predicate(
-                left=FieldRef(name="workspace_id"),
-                op=Op.EQ,
-                right=Value(value=entity.workspace_id),
-            ),
-            op=Op.AND,
-            right=Predicate(
-                left=FieldRef(name="channel_id"),
-                op=Op.EQ,
-                right=Value(value=entity.channel_id),
-            ),
-        ),
+        Q(WorkspaceChannelAssociation)
+        .where("workspace_id", entity.workspace_id)
+        .where("channel_id", entity.channel_id)
+        .build(),
         OffsetPage(offset=0, length=1),
     )
     if page.items:

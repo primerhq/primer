@@ -24,7 +24,8 @@ from matrix.int.event_bus import EventBus
 from matrix.model.chats import Chat
 from matrix.model.except_ import ConflictError, NotFoundError
 from matrix.model.workspace_session import WorkspaceSession
-from matrix.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from matrix.model.storage import OffsetPage
+from matrix.storage.q import Q
 from matrix.model.tool_approval import (
     LlmApprovalConfig,
     PolicyApprovalConfig,
@@ -51,18 +52,11 @@ async def _validate_uniqueness(
     storage,
     skip_id: str | None = None,
 ) -> None:
-    predicate = Predicate(
-        left=Predicate(
-            left=FieldRef(name="toolset_id"),
-            op=Op.EQ,
-            right=Value(value=entity.toolset_id),
-        ),
-        op=Op.AND,
-        right=Predicate(
-            left=FieldRef(name="tool_name"),
-            op=Op.EQ,
-            right=Value(value=entity.tool_name),
-        ),
+    predicate = (
+        Q(ToolApprovalPolicy)
+        .where("toolset_id", entity.toolset_id)
+        .where("tool_name", entity.tool_name)
+        .build()
     )
     page = await storage.find(predicate, OffsetPage(offset=0, length=10))
     for existing in page.items:

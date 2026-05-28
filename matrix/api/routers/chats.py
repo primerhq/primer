@@ -47,13 +47,11 @@ from matrix.model.agent import Agent
 from matrix.model.chats import Chat, ChatMessage
 from matrix.model.except_ import ConflictError, NotFoundError
 from matrix.model.storage import (
-    FieldRef,
     Op,
     OrderBy,
     PageRequest,
-    Predicate,
-    Value,
 )
+from matrix.storage.q import Q
 
 
 logger = logging.getLogger(__name__)
@@ -118,11 +116,7 @@ async def list_chats(
     storage = sp.get_storage(Chat)
     if agent_id is not None:
         return await storage.find(
-            Predicate(
-                left=FieldRef(name="agent_id"),
-                op=Op.EQ,
-                right=Value(value=agent_id),
-            ),
+            Q(Chat).where("agent_id", agent_id).build(),
             page,
         )
     return await storage.list(page)
@@ -184,11 +178,7 @@ async def end_chat(
         cursor: str | None = None
         while True:
             page = await message_storage.find(
-                Predicate(
-                    left=FieldRef(name="chat_id"),
-                    op=Op.EQ,
-                    right=Value(value=chat_id),
-                ),
+                Q(ChatMessage).where("chat_id", chat_id).build(),
                 CursorPage(cursor=cursor, length=200),
                 order_by=[OrderBy(field="seq", direction="asc")],
             )
@@ -244,26 +234,11 @@ async def list_chat_messages(
     if await chats_storage.get(chat_id) is None:
         raise NotFoundError(f"Chat {chat_id!r} does not exist")
     messages = sp.get_storage(ChatMessage)
-    predicates: list[Predicate] = [
-        Predicate(
-            left=FieldRef(name="chat_id"),
-            op=Op.EQ,
-            right=Value(value=chat_id),
-        ),
-    ]
+    q = Q(ChatMessage).where("chat_id", chat_id)
     if after_seq is not None:
-        predicates.append(
-            Predicate(
-                left=FieldRef(name="seq"),
-                op=Op.GT,
-                right=Value(value=after_seq),
-            )
-        )
-    pred = predicates[0]
-    for p in predicates[1:]:
-        pred = Predicate(left=pred, op=Op.AND, right=p)
+        q = q.where_op("seq", Op.GT, after_seq)
     return await messages.find(
-        pred, page, order_by=[OrderBy(field="seq", direction="asc")],
+        q.build(), page, order_by=[OrderBy(field="seq", direction="asc")],
     )
 
 
@@ -291,18 +266,11 @@ async def _replay_since_cursor(
     PAGE = 200
     last_emitted = cur
     while True:
-        pred = Predicate(
-            left=Predicate(
-                left=FieldRef(name="chat_id"),
-                op=Op.EQ,
-                right=Value(value=chat_id),
-            ),
-            op=Op.AND,
-            right=Predicate(
-                left=FieldRef(name="seq"),
-                op=Op.GT,
-                right=Value(value=cur),
-            ),
+        pred = (
+            Q(ChatMessage)
+            .where("chat_id", chat_id)
+            .where_op("seq", Op.GT, cur)
+            .build()
         )
         page = OffsetPage(offset=0, length=PAGE)
         result = await messages_storage.find(
@@ -577,23 +545,12 @@ async def _send_loop(
     async for tick in tick_sub:
         if tick.seq <= last_sent_seq:
             continue
-        pred = Predicate(
-            left=Predicate(
-                left=FieldRef(name="chat_id"),
-                op=Op.EQ, right=Value(value=chat_id),
-            ),
-            op=Op.AND,
-            right=Predicate(
-                left=Predicate(
-                    left=FieldRef(name="seq"),
-                    op=Op.GT, right=Value(value=last_sent_seq),
-                ),
-                op=Op.AND,
-                right=Predicate(
-                    left=FieldRef(name="seq"),
-                    op=Op.LE, right=Value(value=tick.seq),
-                ),
-            ),
+        pred = (
+            Q(ChatMessage)
+            .where("chat_id", chat_id)
+            .where_op("seq", Op.GT, last_sent_seq)
+            .where_op("seq", Op.LE, tick.seq)
+            .build()
         )
         page = await messages_storage.find(
             pred, OffsetPage(offset=0, length=200),

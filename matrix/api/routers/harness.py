@@ -29,13 +29,10 @@ from matrix.harness.hashes import hash_overrides
 from matrix.model.except_ import ConflictError, NotFoundError
 from matrix.model.harness import Harness, HarnessOperation, HarnessStatus, HarnessRendering
 from matrix.model.storage import (
-    FieldRef,
-    Op,
     OffsetPage,
     PageRequest,
-    Predicate,
-    Value,
 )
+from matrix.storage.q import Q
 
 
 harness_router = APIRouter(prefix="/v1/harnesses", tags=["harnesses"])
@@ -92,11 +89,7 @@ async def create_harness(
     storage = _get_harness_storage(sp)
 
     # Enforce slug uniqueness
-    slug_pred = Predicate(
-        left=FieldRef(name="slug"),
-        op=Op.EQ,
-        right=Value(value=body.slug),
-    )
+    slug_pred = Q(Harness).where("slug", body.slug).build()
     existing_page = await storage.find(slug_pred, OffsetPage(offset=0, length=1))
     items = list(getattr(existing_page, "items", []))
     if items:
@@ -143,27 +136,15 @@ async def list_harnesses(
 ):
     storage = _get_harness_storage(sp)
 
-    predicates: list[Predicate] = []
-    if slug is not None:
-        predicates.append(
-            Predicate(left=FieldRef(name="slug"), op=Op.EQ, right=Value(value=slug))
-        )
-    if status_filter is not None:
-        predicates.append(
-            Predicate(
-                left=FieldRef(name="status"),
-                op=Op.EQ,
-                right=Value(value=status_filter.value),
-            )
-        )
-
-    if not predicates:
+    if slug is None and status_filter is None:
         return await storage.list(page)
 
-    pred = predicates[0]
-    for p in predicates[1:]:
-        pred = Predicate(left=pred, op=Op.AND, right=p)
-    return await storage.find(pred, page)
+    q = Q(Harness)
+    if slug is not None:
+        q = q.where("slug", slug)
+    if status_filter is not None:
+        q = q.where("status", status_filter.value)
+    return await storage.find(q.build(), page)
 
 
 # ---------------------------------------------------------------------------

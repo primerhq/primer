@@ -42,13 +42,10 @@ from matrix.model.provider import SemanticSearchProvider
 
 from matrix.model.storage import (
     CursorPageResponse,
-    FieldRef,
-    Op,
     OffsetPage,
     OffsetPageResponse,
-    Predicate,
-    Value,
 )
+from matrix.storage.q import Q
 
 
 # Register Document in the CDC kinds registry so the harness service can
@@ -144,11 +141,7 @@ async def list_collection_documents(
     if await collections.get(collection_id) is None:
         raise NotFoundError(f"Collection {collection_id!r} does not exist")
 
-    predicate = Predicate(
-        left=FieldRef(name="collection_id"),
-        op=Op.EQ,
-        right=Value(value=collection_id),
-    )
+    predicate = Q(Document).where("collection_id", collection_id).build()
     page = OffsetPage(offset=offset, length=limit)
     return await documents.find(predicate, page)
 

@@ -17,9 +17,8 @@ from matrix.api.deps import get_semantic_search_registry, get_semantic_search_st
 from matrix.api.errors import common_responses
 from matrix.api.registries.provider_registry import RESERVED_SSP_IDS
 from matrix.api.routers._crud import make_crud_router
-from matrix.model.except_ import ConflictError
+from matrix.api.routers._references import ReferenceCheck
 from matrix.model.provider import SemanticSearchProvider
-from matrix.model.storage import FieldRef, Op, OffsetPage, Predicate, Value
 
 
 # ---------------------------------------------------------------------------
@@ -86,38 +85,13 @@ async def _on_update(entity_id: str, request: Request) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CRUD hook: on_delete — cascade-block + invalidate
+# Storage helper for Collection reference check
 # ---------------------------------------------------------------------------
 
 
-async def _on_delete(entity_id: str, request: Request) -> None:
-    """Block delete when a Collection references this SSP; then invalidate."""
+def _get_collection_storage(request: Request):
     from matrix.model.collection import Collection
-
-    storage_provider = request.app.state.storage_provider
-    collection_storage = storage_provider.get_storage(Collection)
-
-    predicate = Predicate(
-        left=FieldRef(name="search_provider_id"),
-        op=Op.EQ,
-        right=Value(value=entity_id),
-    )
-    page = OffsetPage(offset=0, length=1)
-
-    result = await collection_storage.find(predicate, page)
-    collisions = result.items if hasattr(result, "items") else []
-
-    if collisions:
-        collection_ids = [c.id for c in collisions]
-        raise ConflictError(
-            f"Cannot delete SemanticSearchProvider {entity_id!r}: "
-            f"referenced by Collection(s): {collection_ids}"
-        )
-
-    # No collisions — invalidate the cached adapter.
-    registry = getattr(request.app.state, "semantic_search_registry", None)
-    if registry is not None:
-        await registry.invalidate(entity_id)
+    return request.app.state.storage_provider.get_storage(Collection)
 
 
 # ---------------------------------------------------------------------------
@@ -132,9 +106,16 @@ semantic_search_router = make_crud_router(
     tag="semantic-search-providers",
     on_create=_on_create,
     on_update=_on_update,
-    on_delete=_on_delete,
+    on_delete=_on_update,
     on_pre_create=_reject_reserved_ssp_create,
     on_pre_delete_id=_reject_reserved_ssp_delete,
+    references=[
+        ReferenceCheck(
+            child_kind="collection",
+            child_storage=_get_collection_storage,
+            child_field="search_provider_id",
+        ),
+    ],
 )
 
 
