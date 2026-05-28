@@ -183,12 +183,13 @@ class InMemoryScheduler(Scheduler):
             session.turn_no += 1
             session.status = new_status
             session.last_worker_id = worker_id
-            if record_failure is not None:
-                session.attempt_count = record_failure.attempt_count
-                session.last_error = record_failure.error_text
-            else:
-                session.attempt_count = 0
-                session.last_error = None
+            if isinstance(session, _SessionState):
+                if record_failure is not None:
+                    session.attempt_count = record_failure.attempt_count
+                    session.last_error = record_failure.error_text
+                else:
+                    session.attempt_count = 0
+                    session.last_error = None
 
             lease.worker_id = None
             lease.expires_at = None

@@ -994,9 +994,6 @@ class TestChatLifecycleFields:
             created_at=datetime.now(timezone.utc),
         )
         assert chat.turn_status == "idle"
-        assert chat.claimed_by is None
-        assert chat.claimed_at is None
-        assert chat.last_heartbeat_at is None
         assert chat.cancel_requested_at is None
 
     def test_round_trip_through_json_with_lifecycle_fields(self) -> None:
@@ -1006,9 +1003,6 @@ class TestChatLifecycleFields:
             agent_id="ag",
             created_at=now,
             turn_status="running",
-            claimed_by="worker-1",
-            claimed_at=now,
-            last_heartbeat_at=now,
             cancel_requested_at=now,
         )
         parsed = Chat.model_validate_json(original.model_dump_json())

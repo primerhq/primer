@@ -90,9 +90,9 @@ async def run_one_harness_operation(
 ) -> None:
     """Dispatch entrypoint. Branches on harness.pending_operation.
 
-    The harness row MUST already be claimed (``claimed_by=worker_id``)
-    when this is called — the worker pool's claim loop has already done
-    that atomically.
+    The harness row MUST already have ``pending_operation`` set and the
+    engine lease must be held by the worker pool — the pool's claim loop
+    has already done that atomically via the ClaimEngine.
 
     Publishes ``harness:{id}:done`` on completion (success or error).
     """
@@ -188,49 +188,14 @@ async def sweep_harnesses(
     *,
     heartbeat_stale_after: timedelta = timedelta(seconds=90),
 ) -> int:
-    """Reclaim harnesses with stale heartbeats.
+    """Legacy sweeper — now a no-op.
 
-    For each harness with ``claimed_by != None`` and
-    ``last_heartbeat_at`` older than ``heartbeat_stale_after``:
-    - clear claim columns
-    - set ``status=ERROR``
-    - set ``last_operation_error='{"code":"worker_died","message":"..."}'``
-    - set ``pending_operation=None``
-
-    Returns count reclaimed.
+    Lease-based heartbeating is handled by the ClaimEngine; the pool's
+    heartbeat loop detects lost leases and signals the dispatch task
+    directly. This function is retained for API compatibility but no
+    longer inspects or mutates harness rows.
     """
-    harness_storage = deps.storage_provider.get_storage(Harness)
-    now = datetime.now(timezone.utc)
-    cutoff = now - heartbeat_stale_after
-
-    page = await harness_storage.list(OffsetPage(offset=0, length=200))
-    reclaimed = 0
-    for harness in page.items:
-        if harness.claimed_by is None:
-            continue
-        if harness.last_heartbeat_at is None or harness.last_heartbeat_at >= cutoff:
-            continue
-
-        updated = harness.model_copy(update={
-            "status": HarnessStatus.ERROR,
-            "pending_operation": None,
-            "claimed_by": None,
-            "claimed_at": None,
-            "last_heartbeat_at": None,
-            "last_operation_error": json.dumps({
-                "code": "worker_died",
-                "message": "worker died mid-operation",
-            }),
-        })
-        try:
-            await harness_storage.update(updated)
-        except Exception:
-            logger.exception(
-                "sweeper failed to update harness %s", harness.id
-            )
-            continue
-        reclaimed += 1
-    return reclaimed
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -246,37 +211,21 @@ async def _release_harness(
     next_status: HarnessStatus,
     last_operation_error: str | None = None,
 ) -> None:
-    """Release the harness claim by updating storage directly.
+    """Release the harness operation by updating storage directly.
 
-    Sets ``status=next_status``, clears ``pending_operation``,
-    ``claimed_by``, ``claimed_at``, ``last_heartbeat_at`` where
-    ``claimed_by=worker_id``. Silently no-ops if we don't own the claim.
+    Sets ``status=next_status``, clears ``pending_operation``.
+    Silently no-ops if the harness row is missing.
     """
     harness = await harness_storage.get(harness_id)
-    if harness is None or harness.claimed_by != worker_id:
+    if harness is None:
         return
     updated = harness.model_copy(update={
         "status": next_status,
         "pending_operation": None,
-        "claimed_by": None,
-        "claimed_at": None,
-        "last_heartbeat_at": None,
         "last_operation_error": last_operation_error,
         "last_operation_at": datetime.now(timezone.utc),
     })
     await harness_storage.update(updated)
-
-
-async def _heartbeat_harness(harness_storage, harness_id: str, worker_id: str) -> bool:
-    """Bump ``last_heartbeat_at``. Returns True if we still hold the claim."""
-    harness = await harness_storage.get(harness_id)
-    if harness is None or harness.claimed_by != worker_id:
-        return False
-    updated = harness.model_copy(update={
-        "last_heartbeat_at": datetime.now(timezone.utc),
-    })
-    await harness_storage.update(updated)
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -290,14 +239,13 @@ async def _heartbeat_loop(
     worker_id: str,
     lease_lost: asyncio.Event,
 ) -> None:
-    harness_storage = deps.storage_provider.get_storage(Harness)
+    """Heartbeat placeholder — actual lease heartbeating is done by the pool's
+    engine heartbeat loop, which sets ``lease_lost`` via the WorkerPool when
+    the engine no longer confirms the lease. This coroutine exists so the
+    ``run_one_harness_operation`` interface is unchanged; it simply waits to
+    be cancelled when the operation completes."""
     try:
-        while True:
-            await asyncio.sleep(HARNESS_HEARTBEAT_INTERVAL_SECONDS)
-            ok = await _heartbeat_harness(harness_storage, harness_id, worker_id)
-            if not ok:
-                lease_lost.set()
-                return
+        await asyncio.Event().wait()  # wait forever until cancelled
     except asyncio.CancelledError:
         return
 

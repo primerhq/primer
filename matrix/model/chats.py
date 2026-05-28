@@ -112,26 +112,6 @@ class Chat(Identifiable):
             "where it is while ``parked_status`` flips."
         ),
     )
-    claimed_by: str | None = Field(
-        default=None,
-        description=(
-            "Worker id holding the active claim. Cleared when the "
-            "worker releases the lease (turn completed, parked, or "
-            "swept due to stale heartbeat)."
-        ),
-    )
-    claimed_at: datetime | None = Field(
-        default=None,
-        description="UTC timestamp the current claim was acquired.",
-    )
-    last_heartbeat_at: datetime | None = Field(
-        default=None,
-        description=(
-            "Most recent worker heartbeat. The sweeper reclaims "
-            "claims where this is older than the heartbeat staleness "
-            "threshold (90s)."
-        ),
-    )
     cancel_requested_at: datetime | None = Field(
         default=None,
         description=(

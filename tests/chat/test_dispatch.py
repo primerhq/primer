@@ -106,8 +106,6 @@ async def _seed_chat_with_one_message(deps, chat_id="c1") -> Chat:
     chat = Chat(
         id=chat_id, agent_id="ag", created_at=now,
         turn_status="running",
-        claimed_by="w1",
-        claimed_at=now, last_heartbeat_at=now,
     )
     await deps.storage_provider.get_storage(Chat).create(chat)
     msg = ChatMessage(
@@ -139,7 +137,6 @@ class TestDrainLoop:
         chats = deps.storage_provider.get_storage(Chat)
         row = await chats.get(chat.id)
         assert row.turn_status == "idle"
-        assert row.claimed_by is None
         all_rows = await _list_all_messages(deps, chat.id)
         kinds = [r.kind for r in all_rows]
         assert kinds[0] == "user_message"
@@ -170,7 +167,6 @@ class TestDrainLoop:
         assert len(done_rows) == 3
         row = await chats.get(chat.id)
         assert row.turn_status == "idle"
-        assert row.claimed_by is None
 
     async def test_queued_user_messages_do_not_contaminate_earlier_prompts(self, deps):
         """Turn N's LLM prompt must NOT carry queued user_messages from

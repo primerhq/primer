@@ -57,15 +57,15 @@ async def run_one_chat_turn(
 ) -> None:
     """Drain the chat's user_message queue until empty / park / cancel.
 
-    The chat row MUST already be in ``turn_status='running'`` with
-    ``claimed_by=worker_id`` when this is called — the caller (the
-    worker pool's claim loop) has already done that atomically.
+    The chat row MUST already be in ``turn_status='running'`` when this
+    is called — the caller (the worker pool's claim loop) has already
+    done that atomically via the ClaimEngine.
 
     On clean drain: leaves the chat ``turn_status='idle'``.
     On park (YieldToWorker): releases the lease; ``turn_status``
     stays in place (the claim predicate gates on ``parked_status``).
     On cancel: persists a ``cancelled`` row, releases to idle.
-    On lease loss (sweeper reclaim): exits without further writes.
+    On lease loss (engine heartbeat): exits without further writes.
     """
     chat_storage = deps.storage_provider.get_storage(Chat)
     msg_storage = deps.storage_provider.get_storage(ChatMessage)
@@ -97,7 +97,7 @@ async def run_one_chat_turn(
             if lease_lost.is_set():
                 return
             chat = await chat_storage.get(chat_id)
-            if chat is None or chat.claimed_by != worker_id:
+            if chat is None:
                 return
             if chat.cancel_requested_at is not None:
                 cancel_event.set()
@@ -238,14 +238,13 @@ async def _heartbeat_loop(
     worker_id: str,
     lease_lost: asyncio.Event,
 ) -> None:
-    chat_storage = deps.storage_provider.get_storage(Chat)
+    """Heartbeat placeholder — actual lease heartbeating is done by the pool's
+    engine heartbeat loop, which sets ``lease_lost`` via the WorkerPool when
+    the engine no longer confirms the lease. This coroutine exists so the
+    ``run_one_chat_turn`` interface is unchanged; it simply waits to be
+    cancelled when the turn completes."""
     try:
-        while True:
-            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
-            ok = await _heartbeat_chat(chat_storage, chat_id, worker_id)
-            if not ok:
-                lease_lost.set()
-                return
+        await asyncio.Event().wait()  # wait forever until cancelled
     except asyncio.CancelledError:
         return
 
@@ -257,34 +256,18 @@ async def _release_chat(
     *,
     next_turn_status: str,
 ) -> None:
-    """Release the chat claim by updating storage directly.
+    """Release the chat claim by setting turn_status on the chat row.
 
-    Sets ``turn_status=next_turn_status`` and clears ``claimed_by``,
-    ``claimed_at``, ``last_heartbeat_at`` where ``claimed_by=worker_id``.
-    Silently no-ops if the caller no longer holds the claim.
+    Only acts when ``turn_status='running'`` so we don't clobber a row
+    that has already been released or reclaimed by another path.
     """
     chat = await chat_storage.get(chat_id)
-    if chat is None or chat.claimed_by != worker_id:
+    if chat is None or chat.turn_status != "running":
         return
     updated = chat.model_copy(update={
         "turn_status": next_turn_status,
-        "claimed_by": None,
-        "claimed_at": None,
-        "last_heartbeat_at": None,
     })
     await chat_storage.update(updated)
-
-
-async def _heartbeat_chat(chat_storage, chat_id: str, worker_id: str) -> bool:
-    """Bump ``last_heartbeat_at``. Returns True if we still hold the claim."""
-    chat = await chat_storage.get(chat_id)
-    if chat is None or chat.claimed_by != worker_id:
-        return False
-    updated = chat.model_copy(update={
-        "last_heartbeat_at": datetime.now(timezone.utc),
-    })
-    await chat_storage.update(updated)
-    return True
 
 
 async def _cancel_watcher(
@@ -358,55 +341,18 @@ async def _find_next_user_message(
 async def sweep_chats(
     *,
     storage_provider: StorageProvider,
-    scheduler: Scheduler,
+    scheduler: Any,
     event_bus: EventBus,
     heartbeat_stale_after: timedelta = timedelta(seconds=90),
 ) -> int:
-    """Reclaim chats whose worker died mid-turn.
+    """Legacy sweeper — now a no-op.
 
-    For each chat with ``turn_status='running'`` and
-    ``last_heartbeat_at < now - heartbeat_stale_after``:
-      1. Persist a synthetic 'error' ChatMessage row marking the
-         in-flight user_message as terminated.
-      2. Clear claim columns; set ``turn_status='claimable'``.
-      3. Publish ``chat-claimable`` on the bus to wake workers.
-    Returns the number of chats reclaimed.
+    Lease-based heartbeating is handled by the ClaimEngine; the pool's
+    heartbeat loop detects lost leases and signals the dispatch task
+    directly. This function is retained for API compatibility but no
+    longer inspects or mutates chat rows.
     """
-    chats = storage_provider.get_storage(Chat)
-    msgs = storage_provider.get_storage(ChatMessage)
-    now = datetime.now(timezone.utc)
-    cutoff = now - heartbeat_stale_after
-
-    page = await chats.list(OffsetPage(offset=0, length=200))
-    reclaimed = 0
-    for chat in page.items:
-        if chat.turn_status != "running":
-            continue
-        if chat.last_heartbeat_at is None or chat.last_heartbeat_at >= cutoff:
-            continue
-        new_seq = chat.last_seq + 1
-        try:
-            await msgs.create(ChatMessage(
-                id=ChatMessage.make_id(chat.id, new_seq),
-                chat_id=chat.id, seq=new_seq, kind="error",
-                payload={"message": "turn interrupted — worker reclaim",
-                         "code": "worker_reclaim"},
-                created_at=now,
-            ))
-        except Exception:
-            logger.exception(
-                "sweeper failed to write error row for chat %s", chat.id,
-            )
-            continue
-        chat.last_seq = new_seq
-        chat.turn_status = "claimable"
-        chat.claimed_by = None
-        chat.claimed_at = None
-        chat.last_heartbeat_at = None
-        await chats.update(chat)
-        await event_bus.publish("chat-claimable", {"chat_id": chat.id})
-        reclaimed += 1
-    return reclaimed
+    return 0
 
 
 def _parts_from(user_message_row: ChatMessage) -> list:

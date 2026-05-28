@@ -118,9 +118,6 @@ def _make_harness(
         overrides=overrides or {"model_name": "gpt-4"},
         status=status,
         pending_operation=pending_operation,
-        claimed_by=worker_id,
-        claimed_at=now,
-        last_heartbeat_at=now,
         created_at=now,
     )
 
@@ -148,8 +145,6 @@ async def test_fetch_happy_path(fake_storage_provider, bare_repo):
     assert updated.available_bundle_hash is not None
     assert updated.schema_hash is not None
     assert updated.overrides_schema is not None
-    # Claim cleared
-    assert updated.claimed_by is None
     assert updated.pending_operation is None
 
 
@@ -207,9 +202,6 @@ async def test_install_happy_path(fake_storage_provider, bare_repo):
 
     fetched = fetched.model_copy(update={
         "pending_operation": HarnessOperation.INSTALL,
-        "claimed_by": "w1",
-        "claimed_at": datetime.now(timezone.utc),
-        "last_heartbeat_at": datetime.now(timezone.utc),
     })
     await harness_storage.update(fetched)
 
@@ -220,7 +212,6 @@ async def test_install_happy_path(fake_storage_provider, bare_repo):
     assert updated.status == HarnessStatus.INSTALLED
     assert updated.resolved_commit == updated.available_commit
     assert updated.bundle_hash == updated.available_bundle_hash
-    assert updated.claimed_by is None
 
     # Agent row must be present with harness_id set
     agent_storage = fake_storage_provider.get_storage(Agent)
@@ -260,9 +251,6 @@ async def test_install_invalid_overrides(fake_storage_provider, bare_repo):
     fetched = fetched.model_copy(update={
         "overrides": {},  # missing required model_name
         "pending_operation": HarnessOperation.INSTALL,
-        "claimed_by": "w1",
-        "claimed_at": datetime.now(timezone.utc),
-        "last_heartbeat_at": datetime.now(timezone.utc),
     })
     await harness_storage.update(fetched)
 
@@ -295,9 +283,6 @@ async def test_sync_noop_fast_path(fake_storage_provider, bare_repo):
     fetched = await harness_storage.get("h5")
     fetched = fetched.model_copy(update={
         "pending_operation": HarnessOperation.INSTALL,
-        "claimed_by": "w1",
-        "claimed_at": datetime.now(timezone.utc),
-        "last_heartbeat_at": datetime.now(timezone.utc),
     })
     await harness_storage.update(fetched)
     await run_one_harness_operation(deps, harness_id="h5", worker_id="w1")
@@ -308,9 +293,6 @@ async def test_sync_noop_fast_path(fake_storage_provider, bare_repo):
 
     installed = installed.model_copy(update={
         "pending_operation": HarnessOperation.SYNC,
-        "claimed_by": "w1",
-        "claimed_at": datetime.now(timezone.utc),
-        "last_heartbeat_at": datetime.now(timezone.utc),
     })
     await harness_storage.update(installed)
 
@@ -366,9 +348,6 @@ async def test_uninstall_cleans_up(fake_storage_provider, bare_repo):
     fetched = await harness_storage.get("h6")
     fetched = fetched.model_copy(update={
         "pending_operation": HarnessOperation.INSTALL,
-        "claimed_by": "w1",
-        "claimed_at": datetime.now(timezone.utc),
-        "last_heartbeat_at": datetime.now(timezone.utc),
     })
     await harness_storage.update(fetched)
     await run_one_harness_operation(deps, harness_id="h6", worker_id="w1")
@@ -381,9 +360,6 @@ async def test_uninstall_cleans_up(fake_storage_provider, bare_repo):
     installed = await harness_storage.get("h6")
     installed = installed.model_copy(update={
         "pending_operation": HarnessOperation.UNINSTALL,
-        "claimed_by": "w1",
-        "claimed_at": datetime.now(timezone.utc),
-        "last_heartbeat_at": datetime.now(timezone.utc),
     })
     await harness_storage.update(installed)
 
@@ -403,78 +379,17 @@ async def test_uninstall_cleans_up(fake_storage_provider, bare_repo):
 
 
 # ---------------------------------------------------------------------------
-# 7. sweep_harnesses reclaims stale heartbeat — sets status=ERROR, clears claim
+# 7. sweep_harnesses is a no-op (lease expiry handled by ClaimEngine)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_sweep_reclaims_stale_heartbeat(fake_storage_provider):
+async def test_sweep_is_noop(fake_storage_provider):
+    """sweep_harnesses is a legacy shim that always returns 0.
+
+    Claim expiry and worker-death reclaim are now handled by the
+    ClaimEngine heartbeat loop in the worker pool.
+    """
     deps = _make_deps(fake_storage_provider)
-    harness_storage = fake_storage_provider.get_storage(Harness)
-
-    stale_time = datetime.now(timezone.utc) - timedelta(seconds=200)
-    harness = Harness(
-        id="hs1",
-        slug="stale",
-        name="Stale",
-        git_url="https://example.com/repo",
-        ref="main",
-        overrides={},
-        status=HarnessStatus.DRAFT,
-        pending_operation=HarnessOperation.FETCH,
-        claimed_by="dead-worker",
-        claimed_at=stale_time,
-        last_heartbeat_at=stale_time,
-        created_at=stale_time,
-    )
-    await harness_storage.create(harness)
-
     count = await sweep_harnesses(deps, heartbeat_stale_after=timedelta(seconds=90))
-
-    assert count == 1
-
-    updated = await harness_storage.get("hs1")
-    assert updated.status == HarnessStatus.ERROR
-    assert updated.claimed_by is None
-    assert updated.claimed_at is None
-    assert updated.last_heartbeat_at is None
-    assert updated.pending_operation is None
-    err = json.loads(updated.last_operation_error)
-    assert err["code"] == "worker_died"
-
-
-# ---------------------------------------------------------------------------
-# 8. sweep_harnesses skips fresh heartbeat — no-op
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_sweep_skips_fresh_heartbeat(fake_storage_provider):
-    deps = _make_deps(fake_storage_provider)
-    harness_storage = fake_storage_provider.get_storage(Harness)
-
-    fresh_time = datetime.now(timezone.utc)
-    harness = Harness(
-        id="hf1",
-        slug="fresh",
-        name="Fresh",
-        git_url="https://example.com/repo",
-        ref="main",
-        overrides={},
-        status=HarnessStatus.DRAFT,
-        pending_operation=HarnessOperation.FETCH,
-        claimed_by="live-worker",
-        claimed_at=fresh_time,
-        last_heartbeat_at=fresh_time,
-        created_at=fresh_time,
-    )
-    await harness_storage.create(harness)
-
-    count = await sweep_harnesses(deps, heartbeat_stale_after=timedelta(seconds=90))
-
     assert count == 0
-
-    # Row unchanged
-    still = await harness_storage.get("hf1")
-    assert still.claimed_by == "live-worker"
-    assert still.status == HarnessStatus.DRAFT

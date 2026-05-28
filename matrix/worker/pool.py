@@ -443,7 +443,6 @@ class WorkerPool:
         # but this read is cheap and avoids plumbing turn_no through Lease.
         session = await self._load_session(sid)
         turn_no = session.turn_no if session is not None else 0
-        from datetime import datetime, timezone
         sched_lease = Lease(
             session_id=sid,
             worker_id=self._worker_id,
@@ -480,7 +479,7 @@ class WorkerPool:
             "WorkerPool._run_engine_chat requires a chat_tick_router"
         )
 
-        # Stamp claim on the chat row so run_one_chat_turn's guard passes.
+        # Transition turn_status to 'running' before dispatching.
         chat_storage = self._storage.get_storage(Chat)
         chat = await chat_storage.get(engine_lease.entity_id)
         if chat is None or chat.turn_status not in ("claimable", "resumable"):
@@ -489,12 +488,8 @@ class WorkerPool:
                 outcome=ReleaseOutcome(success=False, drop_lease=True),
             )
             return
-        now = datetime.now(timezone.utc)
         await chat_storage.update(chat.model_copy(update={
             "turn_status": "running",
-            "claimed_by": self._worker_id,
-            "claimed_at": now,
-            "last_heartbeat_at": now,
         }))
 
         deps = ChatDispatchDeps(
@@ -533,7 +528,7 @@ class WorkerPool:
         from matrix.int.claim import ReleaseOutcome
         from matrix.model.harness import Harness
 
-        # Stamp claim on the harness row so heartbeat checks work correctly.
+        # Verify the harness still has a pending operation before dispatching.
         harness_storage = self._storage.get_storage(Harness)
         harness = await harness_storage.get(engine_lease.entity_id)
         if harness is None or harness.pending_operation is None:
@@ -542,12 +537,6 @@ class WorkerPool:
                 outcome=ReleaseOutcome(success=False, drop_lease=True),
             )
             return
-        now = datetime.now(timezone.utc)
-        await harness_storage.update(harness.model_copy(update={
-            "claimed_by": self._worker_id,
-            "claimed_at": now,
-            "last_heartbeat_at": now,
-        }))
 
         deps = HarnessDispatchDeps(
             storage_provider=self._storage,
@@ -1084,7 +1073,7 @@ class WorkerPool:
     ) -> None:
         """Retryable failure path: classify, bump attempt_count, re-enqueue
         with exponential backoff. Past ``max_attempts``, end as failed."""
-        new_attempt = (session.attempt_count or 0) + 1
+        new_attempt = (lease.attempt_count or 0) + 1
         failure = FailureRecord(error_text=str(exc), attempt_count=new_attempt)
         if new_attempt >= self.config.max_attempts:
             await self._scheduler.complete_turn(
@@ -1117,7 +1106,7 @@ class WorkerPool:
         logger.exception("session %s failed fatally", lease.session_id)
         failure = FailureRecord(
             error_text=f"{type(exc).__name__}: {exc}",
-            attempt_count=(session.attempt_count or 0) + 1,
+            attempt_count=(lease.attempt_count or 0) + 1,
         )
         await self._scheduler.complete_turn(
             self._worker_id, lease.session_id,

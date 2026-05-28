@@ -97,7 +97,6 @@ async def test_claim_loop_picks_up_pending_harness(
         )
         assert row.overrides_schema is not None
         assert row.pending_operation is None
-        assert row.claimed_by is None
     finally:
         await pool.drain_and_stop(timeout=5)
         await bus.aclose()

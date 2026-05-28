@@ -313,7 +313,6 @@ class TestSessionEntity:
         again = Session.model_validate(s.model_dump(mode="json"))
         assert again.binding.kind == "agent"
         assert again.turn_no == 0
-        assert again.attempt_count == 0
         assert again.cancel_requested is False
         assert again.pause_requested is False
 

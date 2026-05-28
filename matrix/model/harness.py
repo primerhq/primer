@@ -51,9 +51,6 @@ class Harness(Identifiable):
     overrides_dirty: bool = False
     schema_missing_input: bool = False
     pending_operation: HarnessOperation | None = None
-    claimed_by: str | None = None
-    claimed_at: datetime | None = None
-    last_heartbeat_at: datetime | None = None
     last_operation_at: datetime | None = None
     last_operation_error: str | None = None
     created_at: datetime

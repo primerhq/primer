@@ -19,13 +19,15 @@ from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
 from matrix.worker.pool import WorkerPool
 
 
-def _make_lease(session_id: str, worker_id: str, turn_no: int = 0) -> SchedLease:
+def _make_lease(
+    session_id: str, worker_id: str, turn_no: int = 0, attempt_count: int = 0,
+) -> SchedLease:
     from datetime import datetime, timezone
     return SchedLease(
         session_id=session_id,
         worker_id=worker_id,
         expires_at=datetime.now(timezone.utc),
-        attempt_count=0,
+        attempt_count=attempt_count,
         turn_no=turn_no,
     )
 
@@ -75,14 +77,14 @@ async def _setup(scheduler, sid, monkeypatch, exc, *,
     )
     await scheduler.enqueue(sid)
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
-    lease = _make_lease(sid, "wrk-test")
+    # Pass attempt_count via the lease so _handle_transient/_handle_fatal read it.
+    lease = _make_lease(sid, "wrk-test", attempt_count=attempt_count)
     fake_session = Session(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
         created_at=datetime.now(timezone.utc),
         turn_no=lease.turn_no,
-        attempt_count=attempt_count,
     )
     monkeypatch.setattr(pool, "_load_session",
                         lambda _sid: _async_return(fake_session))

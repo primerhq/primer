@@ -66,7 +66,5 @@ async def test_worker_pool_claims_and_processes_chat(
             break
         await asyncio.sleep(0.05)
     assert row.turn_status == "idle", (
-        f"worker did not drain the chat: turn_status={row.turn_status!r}, "
-        f"claimed_by={row.claimed_by!r}"
+        f"worker did not drain the chat: turn_status={row.turn_status!r}"
     )
-    assert row.claimed_by is None

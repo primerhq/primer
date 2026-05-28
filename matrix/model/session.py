@@ -356,8 +356,6 @@ class Session(Identifiable):
     # Fence + scheduler-visible columns
     turn_no: int = Field(default=0, ge=0)
     last_worker_id: str | None = Field(default=None)
-    attempt_count: int = Field(default=0, ge=0)
-    last_error: str | None = Field(default=None)
 
     # Cancel/pause request flags (set by API, read by worker)
     pause_requested: bool = Field(default=False)
