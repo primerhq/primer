@@ -8,6 +8,7 @@ use it without duplication.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Any, Generic, TypeVar
 
 import pytest
@@ -153,6 +154,7 @@ class _FakeStorageProvider:
 
     def __init__(self) -> None:
         self._stores: dict[type, _InMemoryStorage[Any]] = {}
+        self._bootstrap_completed_at: datetime | None = None
 
     def get_storage(self, model_class: type[_T]) -> _InMemoryStorage[_T]:
         return self._stores.setdefault(model_class, _InMemoryStorage(model_class))
@@ -162,6 +164,13 @@ class _FakeStorageProvider:
 
     async def aclose(self) -> None:
         return
+
+    async def get_system_state(self) -> Any:
+        from matrix.model.system_state import SystemState
+        return SystemState(bootstrap_completed_at=self._bootstrap_completed_at)
+
+    async def set_bootstrap_completed(self, ts: datetime) -> None:
+        self._bootstrap_completed_at = ts
 
 
 @pytest.fixture

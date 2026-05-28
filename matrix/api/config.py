@@ -87,6 +87,17 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    # --- Bootstrap -------------------------------------------------------
+    auto_bootstrap: bool = Field(
+        default=True,
+        description=(
+            "If True (default), run the first-boot auto-bootstrap on "
+            "lifespan start when system_state.bootstrap_completed_at IS NULL. "
+            "Set to False to skip auto-bootstrap and provision providers "
+            "manually via the API or 'matrix init'."
+        ),
+    )
+
     # --- Misc ------------------------------------------------------------
     log_level: Literal["debug", "info", "warning", "error"] = Field(
         default="info",

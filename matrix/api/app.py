@@ -81,6 +81,56 @@ def _make_lifespan(config: AppConfig):
 
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
+
+        # --- First-boot auto-bootstrap -----------------------------------
+        # Run synchronously before serving so the reserved-id providers
+        # are available by the time any request arrives. Cost <2s on
+        # warm disk (models download lazily, not here).
+        if config.auto_bootstrap:
+            from matrix.bootstrap.runner import BootstrapRunner
+            from matrix.model.provider import (
+                CrossEncoderProvider,
+                EmbeddingProvider,
+                SemanticSearchProvider as _SSP,
+            )
+            from matrix.model.workspace import WorkspaceProvider
+            _runner = BootstrapRunner(
+                storage=storage_provider,
+                embedder_storage=storage_provider.get_storage(EmbeddingProvider),
+                ssp_storage=storage_provider.get_storage(_SSP),
+                cross_encoder_storage=storage_provider.get_storage(
+                    CrossEncoderProvider
+                ),
+                workspace_provider_storage=storage_provider.get_storage(
+                    WorkspaceProvider
+                ),
+                root_dir=Path("~/.matrix").expanduser(),
+            )
+            if await _runner.needs_bootstrap():
+                logger.info("first boot detected; running auto-bootstrap")
+                _result = await _runner.run()
+                logger.info(
+                    "auto-bootstrap complete",
+                    extra={
+                        "bootstrap_created": _result.created,
+                        "bootstrap_skipped": _result.skipped,
+                        "error_count": len(_result.errors),
+                    },
+                )
+                if _result.errors:
+                    logger.warning(
+                        "auto-bootstrap partial failure",
+                        extra={"bootstrap_errors": _result.errors},
+                    )
+        else:
+            # Warn on first boot only (marker still null).
+            _state = await storage_provider.get_system_state()
+            if _state.bootstrap_completed_at is None:
+                logger.warning(
+                    "first boot detected; auto_bootstrap=False — "
+                    "manual provisioning required"
+                )
+
         semantic_search_registry = SemanticSearchRegistry(
             storage=storage_provider.get_storage(SemanticSearchProvider),
         )
