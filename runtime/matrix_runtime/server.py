@@ -24,6 +24,7 @@ from aiohttp import WSMsgType
 from matrix_runtime.exec import run_exec
 from matrix_runtime.ops import HANDLERS, OpError
 from matrix_runtime.protocol import ErrorCode, Event, OpName, Response, serialize
+from matrix_runtime.watch import WatchRegistry, cancel_watch, start_watch
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +140,9 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     # --- Post-handshake message loop -----------------------------------------
     workspace_root: str = request.app[_KEY_WORKSPACE_ROOT]
 
+    # Per-connection watch registry — tracks active subscription tasks.
+    watch_registry = WatchRegistry()
+
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
             try:
@@ -149,6 +153,23 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
             frame_req_id = frame.get("req_id", 0)
             op_name: str = frame.get("op", "")
             args: dict = frame.get("args") or {}
+
+            # --- Watch ops -----------------------------------------------
+            if op_name == OpName.WATCH_START:
+                start_watch(
+                    req_id=frame_req_id,
+                    args=args,
+                    workspace_root=workspace_root,
+                    send=ws.send_str,
+                    registry=watch_registry,
+                )
+                continue
+
+            if op_name == OpName.WATCH_CANCEL:
+                target_req_id: int = (args or {}).get("target_req_id", -1)
+                cancel_watch(target_req_id, watch_registry)
+                # watch_closed is emitted by the subscription task itself
+                continue
 
             # --- Streaming exec op ----------------------------------------
             if op_name == OpName.EXEC:
@@ -204,6 +225,9 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                 await ws.send_str(serialize(err_resp))
         elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
             break
+
+    # Cancel any lingering watch subscriptions when the client disconnects.
+    watch_registry.cancel_all()
 
     return ws
 
