@@ -9,8 +9,8 @@ from matrix.harness.template import (
 )
 
 
-def test_render_simple_substitution():
-    out = render_template(
+async def test_render_simple_substitution():
+    out = await render_template(
         "name: {{ overrides.x }}",
         overrides={"x": "hi"},
         harness_ctx={"slug": "s"},
@@ -18,8 +18,8 @@ def test_render_simple_substitution():
     assert out == "name: hi"
 
 
-def test_render_with_filter():
-    out = render_template(
+async def test_render_with_filter():
+    out = await render_template(
         "name: {{ overrides.x|upper }}",
         overrides={"x": "hi"},
         harness_ctx={"slug": "s"},
@@ -27,9 +27,9 @@ def test_render_with_filter():
     assert out == "name: HI"
 
 
-def test_render_missing_key_strict():
+async def test_render_missing_key_strict():
     with pytest.raises(HarnessTemplateError) as ei:
-        render_template(
+        await render_template(
             "name: {{ overrides.missing }}",
             overrides={},
             harness_ctx={"slug": "s"},
@@ -37,17 +37,17 @@ def test_render_missing_key_strict():
     assert ei.value.code == "template_render_failed"
 
 
-def test_render_sandbox_blocks_class_access():
+async def test_render_sandbox_blocks_class_access():
     # SandboxedEnvironment blocks unsafe attribute access.
     with pytest.raises(HarnessTemplateError):
-        render_template(
+        await render_template(
             "{{ ''.__class__.__bases__ }}",
             overrides={},
             harness_ctx={"slug": "s"},
         )
 
 
-def test_render_bundle_walks_templates_dir(tmp_path):
+async def test_render_bundle_walks_templates_dir(tmp_path):
     sub = tmp_path / "sub"
     (sub / "templates").mkdir(parents=True)
     (sub / "templates" / "agent_a.yaml").write_text(
@@ -56,7 +56,7 @@ def test_render_bundle_walks_templates_dir(tmp_path):
     (sub / "templates" / "graph_a.yaml").write_text(
         "kind: graph\nname: g\nspec: {description: hello}\n"
     )
-    result = render_bundle(
+    result = await render_bundle(
         checkout_dir=str(tmp_path),
         subpath="sub",
         overrides={"x": "hello"},
@@ -68,31 +68,31 @@ def test_render_bundle_walks_templates_dir(tmp_path):
     assert by_name["a"].rendered["spec"]["description"] == "hello"
 
 
-def test_render_bundle_rejects_bad_yaml(tmp_path):
+async def test_render_bundle_rejects_bad_yaml(tmp_path):
     sub = tmp_path / "s"
     (sub / "templates").mkdir(parents=True)
     (sub / "templates" / "bad.yaml").write_text("kind: agent\nname: x\nspec: [unclosed")
     with pytest.raises(HarnessTemplateError) as ei:
-        render_bundle(
+        await render_bundle(
             checkout_dir=str(tmp_path), subpath="s",
             overrides={}, harness_ctx={"slug": "s"},
         )
     assert ei.value.code == "template_yaml_invalid"
 
 
-def test_render_bundle_rejects_unknown_kind(tmp_path):
+async def test_render_bundle_rejects_unknown_kind(tmp_path):
     sub = tmp_path / "s"
     (sub / "templates").mkdir(parents=True)
     (sub / "templates" / "x.yaml").write_text("kind: pickle\nname: x\nspec: {}\n")
     with pytest.raises(HarnessTemplateError) as ei:
-        render_bundle(
+        await render_bundle(
             checkout_dir=str(tmp_path), subpath="s",
             overrides={}, harness_ctx={"slug": "s"},
         )
     assert ei.value.code == "template_kind_unknown"
 
 
-def test_render_bundle_reads_content_path(tmp_path):
+async def test_render_bundle_reads_content_path(tmp_path):
     sub = tmp_path / "s"
     (sub / "templates").mkdir(parents=True)
     (sub / "files").mkdir()
@@ -101,7 +101,7 @@ def test_render_bundle_reads_content_path(tmp_path):
         "kind: document\nname: d\nspec:\n  collection_id: c\n  name: d\n"
         "  meta: {}\ncontent_path: files/doc.md\n"
     )
-    result = render_bundle(
+    result = await render_bundle(
         checkout_dir=str(tmp_path), subpath="s",
         overrides={}, harness_ctx={"slug": "s"},
     )

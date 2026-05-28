@@ -268,10 +268,7 @@ async def _do_fetch(
     token = harness.git_token.get_secret_value() if harness.git_token else None
 
     try:
-        available_commit = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: ls_remote(harness.git_url, token=token, ref=harness.ref),
-        )
+        available_commit = await ls_remote(harness.git_url, token=token, ref=harness.ref)
     except HarnessGitError as exc:
         return HarnessStatus.ERROR, json.dumps(
             {"code": exc.code, "message": exc.message}
@@ -285,14 +282,11 @@ async def _do_fetch(
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = str(Path(tmpdir) / "checkout")
             try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: clone_at_ref(
-                        harness.git_url,
-                        token=token,
-                        ref=available_commit,
-                        dest=dest,
-                    ),
+                await clone_at_ref(
+                    harness.git_url,
+                    token=token,
+                    ref=available_commit,
+                    dest=dest,
                 )
             except HarnessGitError as exc:
                 return HarnessStatus.ERROR, json.dumps(
@@ -317,7 +311,8 @@ async def _do_fetch(
                 )
             try:
                 import yaml
-                harness_meta = yaml.safe_load(harness_yaml_path.read_text())
+                _yaml_text = await asyncio.to_thread(harness_yaml_path.read_text)
+                harness_meta = await asyncio.to_thread(yaml.safe_load, _yaml_text)
             except Exception as exc:
                 return HarnessStatus.ERROR, json.dumps(
                     {"code": "harness_yaml_invalid", "message": _safe_error_message(exc, token)}
@@ -346,7 +341,8 @@ async def _do_fetch(
             if schema_path.is_file():
                 try:
                     import json as _json
-                    overrides_schema = _json.loads(schema_path.read_text())
+                    _schema_text = await asyncio.to_thread(schema_path.read_text)
+                    overrides_schema = await asyncio.to_thread(_json.loads, _schema_text)
                     new_schema_hash = hash_schema(overrides_schema)
                 except Exception as exc:
                     return HarnessStatus.ERROR, json.dumps(
@@ -355,7 +351,7 @@ async def _do_fetch(
                     )
 
             # Compute bundle_hash over entire subpath (excluding .git)
-            bundle_files = _collect_bundle_files(base)
+            bundle_files = await asyncio.to_thread(_collect_bundle_files, base)
             new_available_bundle_hash = hash_bundle(bundle_files)
 
             # Re-validate current overrides against new schema
@@ -456,14 +452,11 @@ async def _do_install(
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = str(Path(tmpdir) / "checkout")
             try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: clone_at_ref(
-                        harness.git_url,
-                        token=token,
-                        ref=harness.available_commit,
-                        dest=dest,
-                    ),
+                await clone_at_ref(
+                    harness.git_url,
+                    token=token,
+                    ref=harness.available_commit,
+                    dest=dest,
                 )
             except HarnessGitError as exc:
                 return HarnessStatus.ERROR, json.dumps(
@@ -474,7 +467,7 @@ async def _do_install(
             base = Path(dest)
             if harness.subpath:
                 base = base / harness.subpath
-            current_bundle_hash = hash_bundle(_collect_bundle_files(base))
+            current_bundle_hash = hash_bundle(await asyncio.to_thread(_collect_bundle_files, base))
             if (
                 harness.available_bundle_hash is not None
                 and current_bundle_hash != harness.available_bundle_hash
@@ -488,7 +481,7 @@ async def _do_install(
             harness_ctx = {"slug": harness.slug, "name": harness.name,
                            "description": harness.description}
             try:
-                rendered = render_bundle(
+                rendered = await render_bundle(
                     checkout_dir=dest,
                     subpath=harness.subpath,
                     overrides=harness.overrides,
@@ -602,14 +595,11 @@ async def _do_sync(
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = str(Path(tmpdir) / "checkout")
             try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: clone_at_ref(
-                        harness.git_url,
-                        token=token,
-                        ref=harness.available_commit,
-                        dest=dest,
-                    ),
+                await clone_at_ref(
+                    harness.git_url,
+                    token=token,
+                    ref=harness.available_commit,
+                    dest=dest,
                 )
             except HarnessGitError as exc:
                 return HarnessStatus.ERROR, json.dumps(
@@ -620,13 +610,13 @@ async def _do_sync(
             base = Path(dest)
             if harness.subpath:
                 base = base / harness.subpath
-            current_bundle_hash = hash_bundle(_collect_bundle_files(base))
+            current_bundle_hash = hash_bundle(await asyncio.to_thread(_collect_bundle_files, base))
 
             # Render the bundle
             harness_ctx = {"slug": harness.slug, "name": harness.name,
                            "description": harness.description}
             try:
-                rendered = render_bundle(
+                rendered = await render_bundle(
                     checkout_dir=dest,
                     subpath=harness.subpath,
                     overrides=harness.overrides,

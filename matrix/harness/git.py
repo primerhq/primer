@@ -6,9 +6,9 @@ shelling is universal. Token redaction is done before any error surface.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
-import subprocess
 from typing import Final
 from urllib.parse import urlparse, urlunparse
 
@@ -57,25 +57,40 @@ def _redact(text: str, token: str | None = None) -> str:
     return out
 
 
-def _run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+async def _run(args: list[str], **kwargs) -> tuple[int, str, str]:
+    """Run a git command asynchronously.
+
+    Returns (returncode, stdout, stderr).  Raises HarnessGitError on
+    timeout or if the git binary is not found.
+    """
+    cwd = kwargs.pop("cwd", None)
     try:
-        return subprocess.run(
-            args,
-            check=False,
-            timeout=_GIT_TIMEOUT_SECONDS,
-            capture_output=True,
-            text=True,
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
             **kwargs,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise HarnessGitError("subprocess_error", "git command timed out") from exc
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=_GIT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            proc.kill()
+            await proc.communicate()
+            raise HarnessGitError("subprocess_error", "git command timed out") from exc
+        return proc.returncode, stdout_b.decode("utf-8", errors="replace"), stderr_b.decode("utf-8", errors="replace")
+    except HarnessGitError:
+        raise
     except FileNotFoundError as exc:
         raise HarnessGitError(
             "subprocess_error", "git binary not found on PATH",
         ) from exc
 
 
-def ls_remote(url: str, *, token: str | None, ref: str) -> str:
+async def ls_remote(url: str, *, token: str | None, ref: str) -> str:
     """Return the commit SHA pointed to by ``ref`` on the remote.
 
     Accepts branches, tags, and full SHAs (the SHA case skips network
@@ -85,13 +100,13 @@ def ls_remote(url: str, *, token: str | None, ref: str) -> str:
         # full SHA — no need to ls-remote
         return ref
     effective = _inject_token(url, token)
-    proc = _run(["git", "ls-remote", effective, ref])
-    if proc.returncode != 0:
+    returncode, stdout, stderr = await _run(["git", "ls-remote", effective, ref])
+    if returncode != 0:
         raise HarnessGitError(
-            "git_clone_failed" if "Authentication" in (proc.stderr or "") else "ref_not_found",
-            _redact((proc.stderr or "").strip() or "ls-remote failed", token),
+            "git_clone_failed" if "Authentication" in (stderr or "") else "ref_not_found",
+            _redact((stderr or "").strip() or "ls-remote failed", token),
         )
-    lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+    lines = [ln for ln in (stdout or "").splitlines() if ln.strip()]
     if not lines:
         raise HarnessGitError(
             "ref_not_found", f"ref {ref!r} not found on remote",
@@ -102,7 +117,7 @@ def ls_remote(url: str, *, token: str | None, ref: str) -> str:
     return sha
 
 
-def clone_at_ref(
+async def clone_at_ref(
     url: str,
     *,
     token: str | None,
@@ -118,37 +133,36 @@ def clone_at_ref(
     is_sha = len(ref) == 40 and all(c in "0123456789abcdef" for c in ref)
     if is_sha:
         # SHA path: init empty, fetch the specific SHA, checkout.
-        proc = _run(["git", "init", "-q", dest])
-        if proc.returncode != 0:
+        returncode, _, stderr = await _run(["git", "init", "-q", dest])
+        if returncode != 0:
             raise HarnessGitError(
                 "git_clone_failed",
-                _redact((proc.stderr or "git init failed").strip(), token),
+                _redact((stderr or "git init failed").strip(), token),
             )
-        proc = _run(
+        returncode, _, stderr = await _run(
             ["git", "fetch", "--depth=1", effective, ref],
             cwd=dest,
         )
-        if proc.returncode != 0:
+        if returncode != 0:
             shutil.rmtree(dest, ignore_errors=True)
             raise HarnessGitError(
                 "git_clone_failed",
-                _redact((proc.stderr or "git fetch failed").strip(), token),
+                _redact((stderr or "git fetch failed").strip(), token),
             )
-        proc = _run(["git", "checkout", "-q", "FETCH_HEAD"], cwd=dest)
-        if proc.returncode != 0:
+        returncode, _, stderr = await _run(["git", "checkout", "-q", "FETCH_HEAD"], cwd=dest)
+        if returncode != 0:
             shutil.rmtree(dest, ignore_errors=True)
             raise HarnessGitError(
                 "git_clone_failed",
-                _redact((proc.stderr or "git checkout failed").strip(), token),
+                _redact((stderr or "git checkout failed").strip(), token),
             )
         return
     # Symbolic ref path.
-    proc = _run(
+    returncode, _, stderr = await _run(
         ["git", "clone", "-q", "--depth=1", "--branch", ref, effective, dest],
     )
-    if proc.returncode != 0:
+    if returncode != 0:
         shutil.rmtree(dest, ignore_errors=True)
-        stderr = proc.stderr or ""
         if "Authentication" in stderr or "could not read" in stderr.lower():
             code = "git_auth_failed"
         elif "Remote branch" in stderr or "not found" in stderr.lower():

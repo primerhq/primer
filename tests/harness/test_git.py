@@ -53,34 +53,34 @@ def test_redact_strips_token():
     assert "oauth2:***" in out
 
 
-def test_ls_remote_resolves_branch(local_bare_repo):
-    sha = ls_remote(local_bare_repo, token=None, ref="main")
+async def test_ls_remote_resolves_branch(local_bare_repo):
+    sha = await ls_remote(local_bare_repo, token=None, ref="main")
     assert len(sha) == 40
     assert all(c in "0123456789abcdef" for c in sha)
 
 
-def test_ls_remote_missing_ref(local_bare_repo):
+async def test_ls_remote_missing_ref(local_bare_repo):
     with pytest.raises(HarnessGitError) as ei:
-        ls_remote(local_bare_repo, token=None, ref="does-not-exist")
+        await ls_remote(local_bare_repo, token=None, ref="does-not-exist")
     assert ei.value.code == "ref_not_found"
 
 
-def test_clone_at_ref(local_bare_repo, tmp_path):
+async def test_clone_at_ref(local_bare_repo, tmp_path):
     dest = tmp_path / "clone"
-    clone_at_ref(local_bare_repo, token=None, ref="main", dest=str(dest))
+    await clone_at_ref(local_bare_repo, token=None, ref="main", dest=str(dest))
     assert (dest / "README.md").read_text() == "hello"
 
 
-def test_clone_at_sha(local_bare_repo, tmp_path):
-    sha = ls_remote(local_bare_repo, token=None, ref="main")
+async def test_clone_at_sha(local_bare_repo, tmp_path):
+    sha = await ls_remote(local_bare_repo, token=None, ref="main")
     dest = tmp_path / "clone"
-    clone_at_ref(local_bare_repo, token=None, ref=sha, dest=str(dest))
+    await clone_at_ref(local_bare_repo, token=None, ref=sha, dest=str(dest))
     assert (dest / "README.md").exists()
 
 
-def test_clone_unreachable_url_fails_safely(tmp_path):
+async def test_clone_unreachable_url_fails_safely(tmp_path):
     with pytest.raises(HarnessGitError) as ei:
-        clone_at_ref(
+        await clone_at_ref(
             "https://nonexistent.example.invalid/foo",
             token="should-not-leak",
             ref="main",

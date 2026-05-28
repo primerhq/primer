@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,26 +63,30 @@ def _env() -> SandboxedEnvironment:
     return env
 
 
-def render_template(
+async def render_template(
     source: str,
     *,
     overrides: dict[str, Any],
     harness_ctx: dict[str, Any],
 ) -> str:
-    """Render one template string to text."""
+    """Render one template string to text (offloaded to a thread pool)."""
     env = _env()
-    try:
-        tmpl = env.from_string(source)
-        return tmpl.render(overrides=overrides, harness=harness_ctx)
-    except UndefinedError as exc:
-        raise HarnessTemplateError("template_render_failed", str(exc)) from exc
-    except JinjaTemplateError as exc:
-        raise HarnessTemplateError("template_render_failed", str(exc)) from exc
-    except Exception as exc:
-        raise HarnessTemplateError("template_render_failed", str(exc)) from exc
+
+    def _do_render() -> str:
+        try:
+            tmpl = env.from_string(source)
+            return tmpl.render(overrides=overrides, harness=harness_ctx)
+        except UndefinedError as exc:
+            raise HarnessTemplateError("template_render_failed", str(exc)) from exc
+        except JinjaTemplateError as exc:
+            raise HarnessTemplateError("template_render_failed", str(exc)) from exc
+        except Exception as exc:
+            raise HarnessTemplateError("template_render_failed", str(exc)) from exc
+
+    return await asyncio.to_thread(_do_render)
 
 
-def render_bundle(
+async def render_bundle(
     *,
     checkout_dir: str,
     subpath: str | None,
@@ -112,7 +117,7 @@ def render_bundle(
                 template=rel,
             ) from exc
         try:
-            rendered_text = render_template(
+            rendered_text = await render_template(
                 source_text,
                 overrides=overrides,
                 harness_ctx=harness_ctx,
