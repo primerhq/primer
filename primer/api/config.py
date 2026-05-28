@@ -164,7 +164,7 @@ class AppConfig(BaseSettings):
 
     # --- Misc ------------------------------------------------------------
     log_level: Literal["debug", "info", "warning", "error"] = Field(
-        default="info",
+        default="debug",
         description="Log level for application + uvicorn access logs.",
     )
     log_file: Path | None = Field(

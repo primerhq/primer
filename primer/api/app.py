@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from primer.api.config import AppConfig
 from primer.api.errors import register_error_handlers
+from primer.api._jsx_bundle import build_jsx_bundle
 from primer.api.registries import (
     ProviderRegistry,
     SemanticSearchRegistry,
@@ -592,6 +595,36 @@ def _make_lifespan(config: AppConfig):
         logger.info("lifespan: loading IC config")
         ic_config = await load_config_or_none(storage_provider)
         logger.info("lifespan: IC config loaded (present=%s)", ic_config is not None)
+
+        # IC bootstrap recovery: if a bootstrap was in flight when the
+        # previous API process exited, its asyncio task is gone but the
+        # status row still says "running". Mark it as failed so the
+        # UI surfaces the interruption and the operator can re-trigger.
+        from primer.model.internal import (
+            INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID,
+            InternalCollectionsBootstrapStatus,
+        )
+        from datetime import datetime, timezone as _tz
+        _status_storage = storage_provider.get_storage(
+            InternalCollectionsBootstrapStatus
+        )
+        _stale = await _status_storage.get(
+            INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID
+        )
+        if _stale is not None and _stale.status == "running":
+            logger.warning(
+                "ic bootstrap recovery: marking stale 'running' row as "
+                "failed (attempt_id=%s)", _stale.attempt_id,
+            )
+            await _status_storage.update(_stale.model_copy(update={
+                "status": "failed",
+                "phase": None,
+                "finished_at": datetime.now(_tz.utc),
+                "error": (
+                    "bootstrap was interrupted by an API process "
+                    "restart; re-trigger when ready."
+                ),
+            }))
         if ic_config is not None:
             ic_subsystem = build_subsystem(
                 config=ic_config,
@@ -884,11 +917,20 @@ def create_app(config: AppConfig) -> FastAPI:
         docs_url=f"/{API_VERSION}/docs",
         redoc_url=f"/{API_VERSION}/redoc",
     )
+    # Gzip body for >=1KB responses. Negligible CPU for static UI
+    # assets (~700 KB total → ~120 KB on the wire), bypasses tiny
+    # JSON envelopes, and skips WebSockets entirely (different ASGI
+    # scope). Binary downloads (application/octet-stream) pass through
+    # with a small CPU hit but no corruption.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     _install_security_headers(app)
     _install_console_csp(app)
     _install_request_id(app)
     _install_auth_middleware(app)
     _mount_routers(app, runtime_mode=config.runtime_mode)
+    # JSX bundle route MUST be registered before the /console static
+    # mount so it wins the route match for /console/_app.js.
+    _install_jsx_bundle(app)
     _mount_console(app)
     _mount_metrics(app, config)
     _install_root_redirect(app)
@@ -1007,9 +1049,9 @@ def _install_security_headers(app: FastAPI) -> None:
 # Documented in docs/superpowers/specs/2026-05-15-web-console-implementation-design.md §2.2.
 _CONSOLE_CSP = (
     "default-src 'none'; "
-    "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://unpkg.com; "
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-    "font-src https://fonts.gstatic.com; "
+    "script-src 'self' 'unsafe-eval' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "font-src 'self'; "
     "img-src 'self' data:; "
     "connect-src 'self'; "
     "frame-ancestors 'none'; "
@@ -1033,15 +1075,10 @@ def _install_console_csp(app: FastAPI) -> None:
             # Direct assignment, not setdefault — the policy is strict
             # by intent; no downstream handler should be loosening it.
             response.headers["Content-Security-Policy"] = _CONSOLE_CSP
-            # Force revalidation on every request. The static-file
-            # mount sends ETags so the browser usually gets a cheap
-            # 304; this header makes it actually ask. Prevents the
-            # classic "I edited styles.css / *.jsx and the browser
-            # is still serving last week's copy" trap. Spec §13 open
-            # question #8 (static-asset versioning) is addressed here
-            # for the dev/operator surface; production CDN caching
-            # would need a separate strategy.
-            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            # Cache-Control is set per-file inside _CachingStaticFiles
+            # (immutable for ui/vendor/*, no-cache for index.html,
+            # short-lived public for everything else). Don't blanket
+            # it here or the StaticFiles values get clobbered.
         return response
 
 
@@ -1090,6 +1127,86 @@ def _install_request_id(app: FastAPI) -> None:
         return response
 
 
+def _install_jsx_bundle(app: FastAPI) -> None:
+    """Precompile every text/babel script at startup, register a route
+    that serves the concatenated bundle at ``/console/_app.js``.
+
+    Why a Route instead of writing the bundle to disk: keeps the
+    repo's ``ui/`` tree clean (no build artefacts), and the in-memory
+    body is what every subsequent request reads anyway.
+
+    Cache strategy: short max-age + strong ETag, so reloads after a
+    backend redeploy revalidate quickly (304 when nothing changed,
+    fresh bytes when bundle hash flipped) without needing the URL
+    to embed the hash.
+    """
+    from starlette.responses import Response
+
+    etag, body = build_jsx_bundle(_UI_DIR)
+    if not body:
+        # No UI dir or no Babel — leave route unregistered; the
+        # console will 404 on /_app.js and the static mount handles
+        # the rest as before.
+        return
+
+    @app.get("/console/_app.js", include_in_schema=False)
+    async def _serve_jsx_bundle(request: Request) -> Response:
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={
+                "ETag": etag,
+                "Cache-Control": "public, max-age=300, must-revalidate",
+            })
+        return Response(
+            content=body,
+            media_type="application/javascript",
+            headers={
+                "ETag": etag,
+                "Cache-Control": "public, max-age=300, must-revalidate",
+            },
+        )
+
+
+class _CachingStaticFiles(StaticFiles):
+    """StaticFiles + path-aware Cache-Control.
+
+    Caching strategy:
+
+    * ``index.html``  → ``no-cache`` so any deploy is picked up on
+      next navigation. Sub-resources it references are still subject
+      to their own per-file policy below.
+    * ``vendor/*``    → ``public, max-age=1y, immutable``. These are
+      pinned third-party builds (see ui/vendor/MANIFEST.md); when we
+      bump a version the filename will change anyway.
+    * everything else → ``public, max-age=300, must-revalidate``.
+      Short enough that an edited .jsx/.css shows up in the browser
+      within five minutes without a hard refresh, long enough that
+      asset-heavy panels don't hit the network on every navigation.
+
+    Starlette's StaticFiles already emits Last-Modified, so the
+    must-revalidate path is a cheap 304 round-trip rather than a
+    full re-download.
+    """
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        if response.status_code != 200:
+            return response
+        # Starlette normalises bare ``/console/`` to ``"."`` via
+        # os.path.normpath(""), and html=True maps that to
+        # ``index.html`` internally — so cover both spellings.
+        if path in ("", ".", "index.html"):
+            response.headers["Cache-Control"] = "no-cache"
+        elif path.startswith("vendor/") or path.startswith("vendor" + os.sep):
+            response.headers["Cache-Control"] = (
+                "public, max-age=31536000, immutable"
+            )
+        else:
+            response.headers["Cache-Control"] = (
+                "public, max-age=300, must-revalidate"
+            )
+        return response
+
+
 def _mount_console(app: FastAPI) -> None:
     """Mount the operator console at ``/console`` if the ui/ dir is present.
 
@@ -1101,7 +1218,7 @@ def _mount_console(app: FastAPI) -> None:
     if _UI_DIR.is_dir():
         app.mount(
             "/console",
-            StaticFiles(directory=str(_UI_DIR), html=True),
+            _CachingStaticFiles(directory=str(_UI_DIR), html=True),
             name="console",
         )
     else:

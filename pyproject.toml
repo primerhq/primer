@@ -32,6 +32,7 @@ dependencies = [
     "opentelemetry-instrumentation-asyncpg>=0.41b0",
     "opentelemetry-instrumentation-httpx>=0.41b0",
     "prometheus-client>=0.20.0",
+    "mini-racer>=0.12",
     "pgvector>=0.3.6",
     "pydantic>=2.13.3",
     "pydantic-settings>=2.6",

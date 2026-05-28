@@ -5,17 +5,55 @@
 (function () {
   const T0103A_DETAIL = /pg_type_typname_nsp_index|relation .* does not exist/i;
 
+  // Strip the leading "body."/"query."/"path." segment Pydantic adds
+  // and convert the remaining loc into a readable dotted path.
+  function _humanizeFieldPath(loc) {
+    if (!Array.isArray(loc) || loc.length === 0) return "field";
+    const parts = loc.slice();
+    if (parts.length > 1 && (parts[0] === "body" || parts[0] === "query" || parts[0] === "path")) {
+      parts.shift();
+    }
+    return parts.map(String).join(".") || "field";
+  }
+
+  // Build the friendly 422 summary: "Missing or invalid: a, b (max 4)".
+  function _friendlyValidationDetail(fieldErrors) {
+    if (!Array.isArray(fieldErrors) || fieldErrors.length === 0) {
+      return "Some required fields are missing or invalid.";
+    }
+    const seen = new Set();
+    const labels = [];
+    for (const fe of fieldErrors) {
+      const path = _humanizeFieldPath(fe?.loc);
+      if (seen.has(path)) continue;
+      seen.add(path);
+      labels.push(path);
+    }
+    const head = labels.slice(0, 4).join(", ");
+    const overflow = labels.length > 4 ? ` (+${labels.length - 4} more)` : "";
+    return `Missing or invalid: ${head}${overflow}.`;
+  }
+
   class ApiError extends Error {
     constructor(envelope) {
       super(envelope.title || `HTTP ${envelope.status}`);
       this.name = "ApiError";
       this.type = envelope.type;
-      this.title = envelope.title;
-      this.detail = envelope.detail;
       this.status = envelope.status;
       this.requestId = envelope.extensions?.request_id ?? null;
       this.fieldErrors = envelope.extensions?.errors ?? null;
       this.envelope = envelope;
+      // Holistic 422 friendliness: any schema-violation response is
+      // presented as "Data is incomplete" + a humanized field list, so
+      // form toasts/inline errors that fall back on title/detail show
+      // something useful instead of "Validation Error".
+      if (envelope.status === 422) {
+        this.title = "Data is incomplete";
+        this.detail = _friendlyValidationDetail(this.fieldErrors);
+      } else {
+        this.title = envelope.title;
+        this.detail = envelope.detail;
+      }
     }
   }
 
