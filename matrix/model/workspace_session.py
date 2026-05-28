@@ -27,7 +27,7 @@ full design.
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field
@@ -457,6 +457,45 @@ class WorkspaceSession(Identifiable):
 
 
 # ===========================================================================
+# Session message record
+# ===========================================================================
+
+
+class SessionMessageKind(StrEnum):
+    """Wire-level message kinds emitted by the session executor.
+
+    Mirrors :data:`matrix.model.chats.ChatMessageKind` for the workspace
+    session streaming surface.  Each record in the per-session message
+    log carries the kind plus a kind-specific ``payload`` JSON blob.
+    """
+
+    USER_INPUT = "user_input"
+    ASSISTANT_TOKEN = "assistant_token"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
+    YIELDED = "yielded"
+    RESUMED = "resumed"
+    DONE = "done"
+    CANCELLED = "cancelled"
+    ERROR = "error"
+
+
+class SessionMessageRecord(BaseModel):
+    """One row in the per-session append-only message log.
+
+    Mirrors :class:`matrix.model.chats.ChatMessage` for the workspace
+    session streaming surface.  ``seq`` is monotonically increasing per
+    session; the composite ``(session_id, seq)`` is the natural primary
+    key (the storage layer composes an ``id`` from these two).
+    """
+
+    seq: int = Field(..., ge=1)
+    kind: SessionMessageKind
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+# ===========================================================================
 # Forward-reference resolution
 # ===========================================================================
 #
@@ -489,6 +528,8 @@ __all__ = [
     "AgentSessionBinding",
     "GraphSessionBinding",
     "Instruction",
+    "SessionMessageKind",
+    "SessionMessageRecord",
     "WorkspaceSession",
     "SessionBinding",
     "SessionInfo",

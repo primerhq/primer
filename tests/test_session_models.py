@@ -338,6 +338,44 @@ class TestSessionEntity:
             })
 
 
+class TestSessionMessageKind:
+    """Verify SessionMessageKind enum variants (Task 3)."""
+
+    def test_session_message_kind_variants(self):
+        from matrix.model.workspace_session import SessionMessageKind
+
+        expected = {
+            "user_input",
+            "assistant_token",
+            "tool_call",
+            "tool_result",
+            "yielded",
+            "resumed",
+            "done",
+            "cancelled",
+            "error",
+        }
+        actual = {k.value for k in SessionMessageKind}
+        assert actual == expected
+
+
+class TestSessionMessageRecord:
+    """Verify SessionMessageRecord round-trip serialisation (Task 3)."""
+
+    def test_session_message_record_round_trip(self):
+        from matrix.model.workspace_session import SessionMessageKind, SessionMessageRecord
+
+        rec = SessionMessageRecord(
+            seq=1,
+            kind=SessionMessageKind.ASSISTANT_TOKEN,
+            payload={"delta": "hi"},
+            created_at=datetime.now(timezone.utc),
+        )
+        j = rec.model_dump_json()
+        parsed = SessionMessageRecord.model_validate_json(j)
+        assert parsed == rec
+
+
 class TestWorkspaceSessionStreamingFields:
     """Verify streaming lifecycle fields default correctly (Task 2)."""
 
