@@ -52,6 +52,8 @@ from matrix.model.storage import (
     PageRequest,
 )
 from matrix.storage.q import Q
+from matrix.observability import tracing as _tracing
+import matrix.observability.metrics as _metrics
 
 
 logger = logging.getLogger(__name__)
@@ -328,6 +330,7 @@ async def chat_ws(
     The event_bus is required for this handler — if not available the
     connection is closed with code 4500.
     """
+    import time as _time
     sp = websocket.app.state.storage_provider
     chats_storage = sp.get_storage(Chat)
     messages_storage = sp.get_storage(ChatMessage)
@@ -351,55 +354,68 @@ async def chat_ws(
         await websocket.close(code=4500, reason="event_bus_not_available")
         return
 
-    try:
-        last_seq = await _replay_since_cursor(
-            websocket, chat_id, cursor, sp,
-        )
-    except WebSocketDisconnect:
-        return
-
-    tick_sub = chat_tick_router.subscribe(chat_id)
-    try:
-        recv_task = asyncio.ensure_future(
-            _recv_loop(
-                websocket, chat_id, chats_storage, messages_storage, event_bus,
-                claim_engine=claim_engine,
-            )
-        )
-        send_task = asyncio.ensure_future(
-            _send_loop(
-                websocket, chat_id, messages_storage, tick_sub, last_seq,
-            )
-        )
+    _tracer = _tracing.get_tracer("matrix.ws")
+    _t0 = _time.monotonic()
+    with _tracer.start_as_current_span("ws.chat") as _span:
+        _metrics.ws_connections_active.labels("chat").inc()
+        _frames_sent = 0
         try:
-            done, pending = await asyncio.wait(
-                [recv_task, send_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, WebSocketDisconnect, Exception):
-                    pass
-            # Propagate exceptions from completed tasks (ignore
-            # WebSocketDisconnect which is the normal disconnect path).
-            for task in done:
-                exc = task.exception()
-                if exc is not None and not isinstance(exc, WebSocketDisconnect):
-                    logger.debug(
-                        "chat %s WS task raised: %s", chat_id, exc,
+            try:
+                last_seq = await _replay_since_cursor(
+                    websocket, chat_id, cursor, sp,
+                )
+            except WebSocketDisconnect:
+                return
+
+            tick_sub = chat_tick_router.subscribe(chat_id)
+            try:
+                recv_task = asyncio.ensure_future(
+                    _recv_loop(
+                        websocket, chat_id, chats_storage, messages_storage, event_bus,
+                        claim_engine=claim_engine,
                     )
-        except WebSocketDisconnect:
-            recv_task.cancel()
-            send_task.cancel()
-            for t in (recv_task, send_task):
+                )
+                send_task = asyncio.ensure_future(
+                    _send_loop_instrumented(
+                        websocket, chat_id, messages_storage, tick_sub, last_seq,
+                        kind="chat",
+                    )
+                )
                 try:
-                    await t
-                except (asyncio.CancelledError, Exception):
-                    pass
-    finally:
-        await tick_sub.aclose()
+                    done, pending = await asyncio.wait(
+                        [recv_task, send_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except (asyncio.CancelledError, WebSocketDisconnect, Exception):
+                            pass
+                    # Propagate exceptions from completed tasks (ignore
+                    # WebSocketDisconnect which is the normal disconnect path).
+                    for task in done:
+                        exc = task.exception()
+                        if exc is not None and not isinstance(exc, WebSocketDisconnect):
+                            logger.debug(
+                                "chat %s WS task raised: %s", chat_id, exc,
+                            )
+                except WebSocketDisconnect:
+                    recv_task.cancel()
+                    send_task.cancel()
+                    for t in (recv_task, send_task):
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
+            finally:
+                await tick_sub.aclose()
+        finally:
+            _metrics.ws_connections_active.labels("chat").dec()
+            _metrics.ws_session_duration_seconds.labels("chat").observe(
+                _time.monotonic() - _t0
+            )
+            _span.set_attribute("ws.frames_sent", _frames_sent)
 
 
 async def _recv_loop(
@@ -559,6 +575,41 @@ async def _send_loop(
         for row in page.items:
             try:
                 await websocket.send_json(_message_to_wire(row))
+            except WebSocketDisconnect:
+                return
+            last_sent_seq = row.seq
+
+
+async def _send_loop_instrumented(
+    websocket: WebSocket,
+    chat_id: str,
+    messages_storage,
+    tick_sub,
+    last_sent_seq: int,
+    *,
+    kind: str,
+) -> None:
+    """Wrapper around :func:`_send_loop` that increments the frames-sent counter."""
+    from matrix.model.storage import OffsetPage
+
+    async for tick in tick_sub:
+        if tick.seq <= last_sent_seq:
+            continue
+        pred = (
+            Q(ChatMessage)
+            .where("chat_id", chat_id)
+            .where_op("seq", Op.GT, last_sent_seq)
+            .where_op("seq", Op.LE, tick.seq)
+            .build()
+        )
+        page = await messages_storage.find(
+            pred, OffsetPage(offset=0, length=200),
+            order_by=[OrderBy(field="seq", direction="asc")],
+        )
+        for row in page.items:
+            try:
+                await websocket.send_json(_message_to_wire(row))
+                _metrics.ws_frames_sent_total.labels(kind).inc()
             except WebSocketDisconnect:
                 return
             last_sent_seq = row.seq

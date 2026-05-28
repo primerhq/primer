@@ -36,6 +36,8 @@ from matrix.api.deps import (
     get_workspace_storage,
 )
 from matrix.api.errors import common_responses
+from matrix.observability import tracing as _tracing
+import matrix.observability.metrics as _metrics
 from matrix.api.pagination import FindRequest, parse_order_by, parse_page
 from matrix.model.except_ import (
     ConflictError,
@@ -575,6 +577,7 @@ async def session_ws(
          lines since ``last_sent_seq`` and sends them.
     7. On disconnect: closes the tick subscription.
     """
+    import time as _time
     sp = websocket.app.state.storage_provider
     sessions_storage = sp.get_storage(WorkspaceSession)
     event_bus = getattr(websocket.app.state, "event_bus", None)
@@ -603,69 +606,80 @@ async def session_ws(
         await websocket.close(code=4500, reason="event_bus_not_available")
         return
 
-    # 4. Replay history since cursor.
-    workspace_registry = getattr(websocket.app.state, "workspace_registry", None)
-    workspace = None
-    if workspace_registry is not None:
+    _tracer = _tracing.get_tracer("matrix.ws")
+    _t0 = _time.monotonic()
+    with _tracer.start_as_current_span("ws.session") as _span:
+        _metrics.ws_connections_active.labels("session").inc()
         try:
-            workspace = await workspace_registry.get_workspace(workspace_id)
-        except Exception as exc:
-            logger.warning(
-                "session_ws: could not resolve workspace %s: %r",
-                workspace_id, exc,
-            )
-
-    if workspace is not None:
-        try:
-            last_seq = await _session_replay_since_cursor(
-                websocket, workspace, session_id, cursor,
-            )
-        except WebSocketDisconnect:
-            return
-    else:
-        last_seq = cursor
-
-    # 5. Subscribe to tick router (guaranteed present — wired in lifespan).
-    tick_sub = session_tick_router.subscribe(session_id)
-
-    try:
-        recv_task = asyncio.ensure_future(
-            _session_recv_loop(
-                websocket, session_id, sessions_storage, event_bus,
-            )
-        )
-        send_task = asyncio.ensure_future(
-            _session_send_loop(
-                websocket, session_id, workspace, tick_sub, last_seq,
-            )
-        )
-        try:
-            done, pending = await asyncio.wait(
-                [recv_task, send_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
+            # 4. Replay history since cursor.
+            workspace_registry = getattr(websocket.app.state, "workspace_registry", None)
+            workspace = None
+            if workspace_registry is not None:
                 try:
-                    await task
-                except (asyncio.CancelledError, WebSocketDisconnect, Exception):
-                    pass
-            for task in done:
-                exc = task.exception()
-                if exc is not None and not isinstance(exc, WebSocketDisconnect):
-                    logger.debug(
-                        "session %s WS task raised: %s", session_id, exc,
+                    workspace = await workspace_registry.get_workspace(workspace_id)
+                except Exception as exc:
+                    logger.warning(
+                        "session_ws: could not resolve workspace %s: %r",
+                        workspace_id, exc,
                     )
-        except WebSocketDisconnect:
-            recv_task.cancel()
-            send_task.cancel()
-            for t in (recv_task, send_task):
+
+            if workspace is not None:
                 try:
-                    await t
-                except (asyncio.CancelledError, Exception):
-                    pass
-    finally:
-        await tick_sub.aclose()
+                    last_seq = await _session_replay_since_cursor(
+                        websocket, workspace, session_id, cursor,
+                    )
+                except WebSocketDisconnect:
+                    return
+            else:
+                last_seq = cursor
+
+            # 5. Subscribe to tick router (guaranteed present — wired in lifespan).
+            tick_sub = session_tick_router.subscribe(session_id)
+
+            try:
+                recv_task = asyncio.ensure_future(
+                    _session_recv_loop(
+                        websocket, session_id, sessions_storage, event_bus,
+                    )
+                )
+                send_task = asyncio.ensure_future(
+                    _session_send_loop_instrumented(
+                        websocket, session_id, workspace, tick_sub, last_seq,
+                    )
+                )
+                try:
+                    done, pending = await asyncio.wait(
+                        [recv_task, send_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except (asyncio.CancelledError, WebSocketDisconnect, Exception):
+                            pass
+                    for task in done:
+                        exc = task.exception()
+                        if exc is not None and not isinstance(exc, WebSocketDisconnect):
+                            logger.debug(
+                                "session %s WS task raised: %s", session_id, exc,
+                            )
+                except WebSocketDisconnect:
+                    recv_task.cancel()
+                    send_task.cancel()
+                    for t in (recv_task, send_task):
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
+            finally:
+                await tick_sub.aclose()
+        finally:
+            _metrics.ws_connections_active.labels("session").dec()
+            _metrics.ws_session_duration_seconds.labels("session").observe(
+                _time.monotonic() - _t0
+            )
+            _span.set_attribute("ws.frames_sent", 0)  # session loop tracks own frames
 
 
 async def _session_recv_loop(
@@ -794,6 +808,53 @@ async def _session_send_loop(
                 continue
             try:
                 await websocket.send_json(record)
+            except WebSocketDisconnect:
+                return
+            last_sent_seq = seq
+
+
+async def _session_send_loop_instrumented(
+    websocket: WebSocket,
+    session_id: str,
+    workspace,
+    tick_sub,
+    last_sent_seq: int,
+) -> None:
+    """Instrumented variant of :func:`_session_send_loop` — increments frame counter."""
+    from matrix.model.except_ import NotFoundError as _NotFoundError
+
+    async for tick in tick_sub:
+        if tick.seq <= last_sent_seq:
+            continue
+        if workspace is None:
+            last_sent_seq = tick.seq
+            continue
+        state_path = getattr(
+            getattr(workspace, "_template", None), "state_path", ".state"
+        )
+        jsonl_path = (
+            f"{state_path}/sessions/{session_id}/messages.jsonl"
+        )
+        try:
+            raw = await workspace.read_file(jsonl_path)
+        except (_NotFoundError, Exception):
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            seq = record.get("seq")
+            if not isinstance(seq, int):
+                continue
+            if seq <= last_sent_seq or seq > tick.seq:
+                continue
+            try:
+                await websocket.send_json(record)
+                _metrics.ws_frames_sent_total.labels("session").inc()
             except WebSocketDisconnect:
                 return
             last_sent_seq = seq
