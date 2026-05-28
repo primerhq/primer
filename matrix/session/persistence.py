@@ -22,9 +22,20 @@ so the stored value is authoritative.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Protocol
 
-from matrix.model.workspace_session import SessionMessageRecord
+from matrix.model.chat import (
+    Done,
+    Error,
+    ExtendedEvent,
+    StreamEvent,
+    TextDelta,
+    ToolCallEnd,
+    _ExecutorToolResult,
+)
+from matrix.model.workspace_session import SessionMessageKind, SessionMessageRecord
 
 # 16 KB flush threshold
 _FLUSH_BYTES = 16 * 1024
@@ -129,4 +140,114 @@ class WorkspaceMessageWriter:
         await self._io.append_message_line(self._session_id, combined)
 
 
-__all__ = ["WorkspaceMessageWriter", "WorkspaceIO"]
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@dataclass
+class _CoalesceState:
+    """Holds the in-progress TextDelta buffer so consecutive deltas
+    coalesce into a single assistant_token record on Done/ToolCallEnd."""
+
+    text_buffer: str = field(default="")
+
+
+def translate_stream_event(
+    event: StreamEvent,
+    state: _CoalesceState,
+) -> "SessionMessageRecord | list[SessionMessageRecord] | None":
+    """Per-event translation following the chat-selective persistence cadence.
+
+    | Event                | Output                                          |
+    |----------------------|-------------------------------------------------|
+    | TextDelta            | None (coalesces into state.text_buffer)         |
+    | ToolCallEnd          | flush text_buffer (if any), then TOOL_CALL      |
+    | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
+    | Done                 | flush text_buffer (if any), then DONE           |
+    | Error                | ERROR                                           |
+    | (others)             | None — silently dropped                         |
+
+    Worker code is responsible for synthetic kinds (USER_INPUT, CANCELLED,
+    YIELDED, RESUMED) — not produced by this translator from LLM events.
+    """
+    now = _now_utc()
+
+    if isinstance(event, TextDelta):
+        state.text_buffer += event.text
+        return None
+
+    if isinstance(event, ToolCallEnd):
+        records: list[SessionMessageRecord] = []
+        if state.text_buffer:
+            records.append(
+                SessionMessageRecord(
+                    seq=1,
+                    kind=SessionMessageKind.ASSISTANT_TOKEN,
+                    payload={"text": state.text_buffer},
+                    created_at=now,
+                )
+            )
+            state.text_buffer = ""
+        records.append(
+            SessionMessageRecord(
+                seq=1,
+                kind=SessionMessageKind.TOOL_CALL,
+                payload={"id": event.id, "arguments": event.arguments},
+                created_at=now,
+            )
+        )
+        if len(records) == 1:
+            return records[0]
+        return records
+
+    if isinstance(event, ExtendedEvent) and isinstance(
+        event.extended, _ExecutorToolResult
+    ):
+        return SessionMessageRecord(
+            seq=1,
+            kind=SessionMessageKind.TOOL_RESULT,
+            payload={
+                "call_id": event.extended.call_id,
+                "output": event.extended.output,
+                "error": event.extended.error,
+            },
+            created_at=now,
+        )
+
+    if isinstance(event, Done):
+        records = []
+        if state.text_buffer:
+            records.append(
+                SessionMessageRecord(
+                    seq=1,
+                    kind=SessionMessageKind.ASSISTANT_TOKEN,
+                    payload={"text": state.text_buffer},
+                    created_at=now,
+                )
+            )
+            state.text_buffer = ""
+        done_record = SessionMessageRecord(
+            seq=1,
+            kind=SessionMessageKind.DONE,
+            payload={"stop_reason": event.stop_reason, "raw_reason": event.raw_reason},
+            created_at=now,
+        )
+        if records:
+            records.append(done_record)
+            return records
+        return done_record
+
+    if isinstance(event, Error):
+        return SessionMessageRecord(
+            seq=1,
+            kind=SessionMessageKind.ERROR,
+            payload={"message": event.message, "code": event.code, "fatal": event.fatal},
+            created_at=now,
+        )
+
+    # All other events (StreamStart, ReasoningDelta, ToolCallStart, ToolCallDelta,
+    # MediaDelta, Usage, ExtendedEvent without _ExecutorToolResult) — silently dropped.
+    return None
+
+
+__all__ = ["WorkspaceMessageWriter", "WorkspaceIO", "_CoalesceState", "translate_stream_event"]

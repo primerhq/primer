@@ -175,3 +175,117 @@ async def test_seq_written_into_persisted_record(
     await w.flush()
     lines = fake_workspace_io.read_lines("s1", "messages.jsonl")
     assert json.loads(lines[0])["seq"] == 1
+
+
+# ---------------------------------------------------------------------------
+# translate_stream_event tests
+# ---------------------------------------------------------------------------
+
+
+def test_translate_text_delta_coalesces() -> None:
+    """Multiple TextDeltas in a row coalesce; Done flushes them as one assistant_token."""
+    from matrix.model.chat import Done, TextDelta
+    from matrix.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    rec1 = translate_stream_event(TextDelta(text="hello ", index=0), state)
+    rec2 = translate_stream_event(TextDelta(text="world", index=0), state)
+    rec3 = translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state)
+
+    assert rec1 is None
+    assert rec2 is None
+    # Done flushes the coalesced text then emits a done record
+    assert isinstance(rec3, list)
+    assert len(rec3) == 2
+    assert rec3[0].kind == SessionMessageKind.ASSISTANT_TOKEN
+    assert rec3[0].payload == {"text": "hello world"}
+    assert rec3[1].kind == SessionMessageKind.DONE
+
+
+def test_translate_done_no_text_emits_only_done() -> None:
+    """Done with no buffered text emits a single DONE record (not a list)."""
+    from matrix.model.chat import Done
+    from matrix.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    result = translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state)
+    # No coalesced text → single record, not a list
+    assert isinstance(result, SessionMessageRecord)
+    assert result.kind == SessionMessageKind.DONE
+    assert result.payload.get("stop_reason") == "stop"
+
+
+def test_translate_tool_call_end() -> None:
+    """ToolCallEnd emits a TOOL_CALL record."""
+    from matrix.model.chat import ToolCallEnd
+    from matrix.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    rec = translate_stream_event(
+        ToolCallEnd(id="tc1", arguments={"x": 1}, index=0), state
+    )
+    assert isinstance(rec, SessionMessageRecord)
+    assert rec.kind == SessionMessageKind.TOOL_CALL
+    assert rec.payload.get("id") == "tc1"
+
+
+def test_translate_tool_call_end_flushes_text_buffer() -> None:
+    """ToolCallEnd flushes any coalesced text first, then emits TOOL_CALL."""
+    from matrix.model.chat import TextDelta, ToolCallEnd
+    from matrix.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(TextDelta(text="thinking", index=0), state)
+    result = translate_stream_event(
+        ToolCallEnd(id="tc2", arguments={}, index=1), state
+    )
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert result[0].kind == SessionMessageKind.ASSISTANT_TOKEN
+    assert result[0].payload["text"] == "thinking"
+    assert result[1].kind == SessionMessageKind.TOOL_CALL
+
+
+def test_translate_executor_tool_result() -> None:
+    """ExtendedEvent wrapping _ExecutorToolResult emits a TOOL_RESULT record."""
+    from matrix.model.chat import ExtendedEvent, _ExecutorToolResult
+    from matrix.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    event = ExtendedEvent(
+        extended=_ExecutorToolResult(call_id="tc1", output="result text", error=False)
+    )
+    rec = translate_stream_event(event, state)
+    assert isinstance(rec, SessionMessageRecord)
+    assert rec.kind == SessionMessageKind.TOOL_RESULT
+    assert rec.payload.get("call_id") == "tc1"
+
+
+def test_translate_error() -> None:
+    """Error emits an ERROR record."""
+    from matrix.model.chat import Error
+    from matrix.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    rec = translate_stream_event(Error(message="boom", code="x", fatal=True), state)
+    assert isinstance(rec, SessionMessageRecord)
+    assert rec.kind == SessionMessageKind.ERROR
+    assert rec.payload.get("message") == "boom"
+
+
+def test_translate_dropped_events_return_none() -> None:
+    """StreamStart, Usage, ReasoningDelta etc. are silently dropped (return None)."""
+    from matrix.model.chat import ReasoningDelta, StreamStart, Usage
+    from matrix.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    assert translate_stream_event(StreamStart(model="x", request_id=None), state) is None
+    assert (
+        translate_stream_event(
+            Usage(input_tokens=10, output_tokens=5, cumulative=True), state
+        )
+        is None
+    )
+    assert (
+        translate_stream_event(ReasoningDelta(text="think", index=0), state) is None
+    )
