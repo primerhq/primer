@@ -72,6 +72,8 @@ from matrix.model.provider import (
     OpenResponsesConfig,
     OpenResponsesFlavor,
 )
+from matrix.observability import tracing as _tracing
+import matrix.observability.metrics as _metrics
 
 
 logger = logging.getLogger(__name__)
@@ -913,42 +915,67 @@ class OpenResponsesLLM(LLM):
             },
         )
 
-        async with await self._rate_limiter.acquire(
-            self._rate_limit_key, max_concurrency=self._max_concurrency,
-        ):
-            client = self._get_client()
+        import time
+        _provider_kind = self._provider.provider.value
+        _tracer = _tracing.get_tracer("matrix.llm")
+        _t0 = time.monotonic()
+        with _tracer.start_as_current_span("llm.stream") as _span:
+            _span.set_attribute("llm.provider", _provider_kind)
+            _span.set_attribute("llm.model", model)
+            if max_output_tokens is not None:
+                _span.set_attribute("llm.request.max_tokens", max_output_tokens)
             try:
-                sdk_stream = await client.responses.create(**request)
-            except Exception as exc:
-                err = classify_openai_exception(exc)
-                logger.error(
-                    "OpenResponses request failed before stream opened",
-                    extra={
-                        "provider_id": self._provider.id,
-                        "model": model,
-                        "exception": type(exc).__name__,
-                    },
-                )
-                raise err from exc
+                async with await self._rate_limiter.acquire(
+                    self._rate_limit_key, max_concurrency=self._max_concurrency,
+                ):
+                    client = self._get_client()
+                    try:
+                        sdk_stream = await client.responses.create(**request)
+                    except Exception as exc:
+                        err = classify_openai_exception(exc)
+                        logger.error(
+                            "OpenResponses request failed before stream opened",
+                            extra={
+                                "provider_id": self._provider.id,
+                                "model": model,
+                                "exception": type(exc).__name__,
+                            },
+                        )
+                        raise err from exc
 
-            state = _StreamState()
-            try:
-                async for raw in sdk_stream:
-                    for event in _translate_event(raw, state):
-                        yield event
-            except Exception as exc:
-                err = classify_openai_exception(exc)
-                logger.error(
-                    "OpenResponses stream aborted",
-                    extra={
-                        "provider_id": self._provider.id,
-                        "model": model,
-                        "exception": type(exc).__name__,
-                    },
-                )
-                yield ChatError(
-                    fatal=True,
-                    code=err.code,
-                    message=err.message,
-                )
-                return
+                    tokens_in = 0
+                    tokens_out = 0
+                    state = _StreamState()
+                    try:
+                        async for raw in sdk_stream:
+                            for event in _translate_event(raw, state):
+                                if isinstance(event, Usage):
+                                    tokens_in = event.input_tokens
+                                    tokens_out = event.output_tokens
+                                yield event
+                    except Exception as exc:
+                        err = classify_openai_exception(exc)
+                        logger.error(
+                            "OpenResponses stream aborted",
+                            extra={
+                                "provider_id": self._provider.id,
+                                "model": model,
+                                "exception": type(exc).__name__,
+                            },
+                        )
+                        yield ChatError(
+                            fatal=True,
+                            code=err.code,
+                            message=err.message,
+                        )
+                        return
+                    _span.set_attribute("llm.usage.tokens_in", tokens_in)
+                    _span.set_attribute("llm.usage.tokens_out", tokens_out)
+                    _metrics.llm_tokens_total.labels(_provider_kind, "in").inc(tokens_in)
+                    _metrics.llm_tokens_total.labels(_provider_kind, "out").inc(tokens_out)
+            except Exception as _exc:
+                _span.record_exception(_exc)
+                _metrics.llm_failure_total.labels(_provider_kind, type(_exc).__name__).inc()
+                raise
+            finally:
+                _metrics.llm_duration_seconds.labels(_provider_kind).observe(time.monotonic() - _t0)
