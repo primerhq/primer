@@ -32,6 +32,7 @@ from primer.api.routers import (
     workspaces as workspaces_router,
     yields as yields_router,
 )
+from primer.api.routers.auth import auth_router
 from primer.api.routers.semantic_search import semantic_search_router
 from primer.api.version import API_VERSION, APP_VERSION
 from primer.internal_collections import build_subsystem, load_config_or_none
@@ -226,6 +227,24 @@ def _make_lifespan(config: AppConfig):
         app.state.web_toolset = web_toolset
         app.state.internal_collections = None
         app.state.search_toolset = None
+        app.state.config = config
+
+        # Resolve the cookie-signing secret (env var > db > auto-generate).
+        # Stashed on app.state so the auth router + middleware can sign /
+        # verify session cookies without re-reading from storage on every
+        # request.
+        if config.auth.enabled:
+            from primer.auth.secret import resolve_session_secret
+
+            session_secret = await resolve_session_secret(
+                storage=storage_provider,
+                auth_config=config.auth,
+            )
+            app.state.session_secret = session_secret
+            logger.info("auth: session secret resolved")
+        else:
+            app.state.session_secret = None
+            logger.warning("auth: disabled via config; running unauthenticated")
 
         # Graph router registry — singleton consumed by the worker
         # pool's _build_graph_executor when a graph has callable-router
@@ -774,6 +793,9 @@ def _mount_routers(
     # Always-on routers — health probes + worker observability/drain.
     app.include_router(health.router, prefix=prefix)
     app.include_router(workers_router.router, prefix=prefix)
+    # Auth router — mounted unconditionally so login/register work in
+    # all runtime modes. The router itself enforces single-user-v1.
+    app.include_router(auth_router, prefix=prefix)
     if runtime_mode == RuntimeMode.WORKER:
         return
     # Phase 1 — providers + tools
@@ -1145,6 +1167,11 @@ def create_test_app(
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
     app.state.search_toolset = None
+    # Auth: tests get a fixed test secret so cookies are deterministic
+    # across the suite. Real lifespan uses resolve_session_secret().
+    from primer.api.config import AppConfig
+    app.state.config = AppConfig()
+    app.state.session_secret = "test-session-secret-32-bytes-aaaaaaa"
     # Attach an in-memory scheduler so the /workers router has something
     # to depend on.
     from primer.scheduler.in_memory import InMemoryScheduler
