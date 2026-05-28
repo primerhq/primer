@@ -50,6 +50,23 @@ _ModelT = TypeVar("_ModelT", bound=Identifiable)
 _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
 
 
+def _compose(
+    first: _OnMutateHook,
+    second: _OnMutateHook,
+) -> _OnMutateHook:
+    """Return a hook that calls *first* then *second* (if both non-None)."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+
+    async def _composed(entity_id: str, request: Any) -> None:
+        await first(entity_id, request)  # type: ignore[misc]
+        await second(entity_id, request)  # type: ignore[misc]
+
+    return _composed
+
+
 # Callback signature: ``(entity_id, request) -> None``. The Request is
 # threaded through so callbacks can reach ``request.app.state`` for
 # the per-request ProviderRegistry / SemanticSearchRegistry.
@@ -98,6 +115,7 @@ def make_crud_router(
     parent_path_segment: str | None = None,
     managed_by_field: str | None = None,
     references: Sequence[ReferenceCheck] = (),
+    cdc_kind: str | None = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
 
@@ -169,6 +187,16 @@ def make_crud_router(
         to build a pre-delete hook that enforces all checks in order.  The
         auto-generated reference hook runs **before** any user-supplied
         ``on_pre_delete`` hook.
+    cdc_kind
+        When set, the factory:
+
+        * Calls ``register_cdc_kind(cdc_kind, model_cls)`` immediately
+          (at factory call time / module import) so the kind appears in
+          :func:`~matrix.api.routers._cdc_hooks.known_cdc_kinds`.
+        * Auto-wires the three CDC hooks from
+          :func:`~matrix.api.routers._cdc_hooks.make_cdc_hooks` into
+          ``on_create`` / ``on_update`` / ``on_delete``.  The CDC hooks
+          run *before* any user-supplied post-mutate hooks.
     """
 
     # Validate scope params: both must be set together or not at all.
@@ -229,6 +257,24 @@ def make_crud_router(
                 await _user_pre_delete_ref(existing, request)
 
         on_pre_delete = _pre_delete_with_refs
+
+    # Auto-wire CDC hooks. Register the kind in the global registry at
+    # factory call time (i.e. when the router module is imported), then
+    # compose the three CDC hooks ahead of any user-supplied post-mutate
+    # hooks so CDC events always fire.
+    if cdc_kind is not None:
+        from matrix.api.routers._cdc_hooks import (  # noqa: PLC0415
+            make_cdc_hooks,
+            register_cdc_kind,
+        )
+
+        register_cdc_kind(cdc_kind, model_cls)
+        cdc_create_hook, cdc_update_hook, cdc_delete_hook = make_cdc_hooks(
+            cdc_kind, model_cls  # type: ignore[arg-type]
+        )
+        on_create = _compose(cdc_create_hook, on_create)
+        on_update = _compose(cdc_update_hook, on_update)
+        on_delete = _compose(cdc_delete_hook, on_delete)
 
     router = APIRouter(tags=[tag])
 
