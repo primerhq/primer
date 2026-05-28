@@ -409,6 +409,52 @@ class WorkspaceSession(Identifiable):
         ),
     )
 
+    # ------------------------------------------------------------------
+    # Streaming lifecycle fields (mirrors Chat model in matrix.model.chats).
+    # See docs/superpowers/specs/2026-05-27-workspace-session-streaming-design.md.
+    # ------------------------------------------------------------------
+    last_seq: int = Field(
+        default=0,
+        description=(
+            "Highest sequence number assigned to a session message record "
+            "for this session.  Authoritative cursor for cursor-replay on "
+            "WS reconnect; the WS endpoint emits records with "
+            "``seq > cursor`` in order.  Bumped atomically by the "
+            "message writer (see matrix.session.persistence)."
+        ),
+    )
+    turn_status: Literal["idle", "claimable", "running"] = Field(
+        default="idle",
+        description=(
+            "Lifecycle state of the FIFO queue + worker claim. "
+            "``idle`` means no pending work.  ``claimable`` means a "
+            "user instruction has landed (or a parked session just became "
+            "resumable) and a worker should pick the session up. "
+            "``running`` means a worker holds the claim and is actively "
+            "processing.  Orthogonal to :attr:`parked_status` — a claimed "
+            "session that parks on a yielding tool keeps ``turn_status`` "
+            "where it is while ``parked_status`` flips."
+        ),
+    )
+    cancel_requested_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Set by the API when an ``interrupt`` WS frame arrives. "
+            "The owning worker polls the field via heartbeat reads "
+            "AND subscribes to a ``session:{id}:cancel`` bus event for "
+            "faster wake-up.  Cleared by the worker after honouring "
+            "the cancellation."
+        ),
+    )
+    pause_requested_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Set by the API when a pause request arrives.  The owning "
+            "worker drains the current event and then releases the claim "
+            "without advancing to the next turn.  Cleared on resume."
+        ),
+    )
+
 
 # ===========================================================================
 # Forward-reference resolution

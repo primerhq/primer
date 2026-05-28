@@ -336,3 +336,20 @@ class TestSessionEntity:
                 "status": "created",
                 "created_at": "2026-05-10T00:00:00+00:00",
             })
+
+
+class TestWorkspaceSessionStreamingFields:
+    """Verify streaming lifecycle fields default correctly (Task 2)."""
+
+    def test_workspace_session_streaming_fields_default(self):
+        sess = WorkspaceSession(
+            id="s1",
+            workspace_id="w1",
+            binding=AgentSessionBinding(agent_id="ag"),
+            status=SessionStatus.CREATED,
+            created_at=datetime(2026, 5, 28, tzinfo=timezone.utc),
+        )
+        assert sess.turn_status == "idle"
+        assert sess.cancel_requested_at is None
+        assert sess.pause_requested_at is None
+        assert sess.last_seq == 0
