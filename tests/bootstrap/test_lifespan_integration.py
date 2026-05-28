@@ -75,6 +75,20 @@ async def _boot_app(
         async with httpx.AsyncClient(
             transport=transport, base_url="http://testserver"
         ) as client:
+            # Auto-register (first boot) or login (subsequent) so
+            # auth-protected endpoints respond.
+            try:
+                r = await client.post(
+                    "/v1/auth/register",
+                    json={"username": "testuser", "password": "testpassword"},
+                )
+                if r.status_code == 409:
+                    await client.post(
+                        "/v1/auth/login",
+                        json={"username": "testuser", "password": "testpassword"},
+                    )
+            except Exception:
+                pass
             yield _AppHandle(client=client)
 
 
