@@ -157,6 +157,37 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _HARNESS_TOOLSET_ID,
 })
 
+# ---------------------------------------------------------------------------
+# Reserved ids for auto-bootstrap provider kinds
+#
+# These ids are protected at the API layer (POST → 409, DELETE → 403).
+# The factory specs that describe how to create these rows live in
+# :mod:`matrix.bootstrap.defaults`; the rows are upserted idempotently
+# by :class:`matrix.bootstrap.runner.BootstrapRunner` at first boot.
+#
+# Design: factories are NOT consulted at lookup time.  After bootstrap
+# the row exists in storage like any other.  The reserved-id sets below
+# are used exclusively by the router guards (Task 3).
+# ---------------------------------------------------------------------------
+
+# Embedding providers: id "huggingface" is the local sentence-transformers
+# provider and must not be overwritten by operator POST.
+RESERVED_EMBEDDER_IDS: frozenset[str] = frozenset({"huggingface"})
+
+# Semantic-search providers: id "lance" is the local LanceDB backend.
+RESERVED_SSP_IDS: frozenset[str] = frozenset({"lance"})
+
+# Cross-encoder providers: id "huggingface-ce" is the local reranker.
+RESERVED_CROSS_ENCODER_IDS: frozenset[str] = frozenset({"huggingface-ce"})
+
+# LLM providers: no reserved ids — LLMs always require explicit operator
+# provisioning (API keys); the set is defined here for symmetry so
+# router guards can import a uniform name.
+RESERVED_LLM_IDS: frozenset[str] = frozenset()
+
+# Workspace providers: id "local" is the local-filesystem backend.
+RESERVED_WORKSPACE_PROVIDER_IDS: frozenset[str] = frozenset({"local"})
+
 # Backward-compat: the four `_*` ids shipped before the underscore-
 # prefix convention was retired. Agents persisted before the rename
 # may still reference them, so the registry maps the old ids to the
@@ -566,4 +597,12 @@ class ProviderRegistry:
                 )
 
 
-__all__ = ["ProviderRegistry"]
+__all__ = [
+    "ProviderRegistry",
+    "RESERVED_CROSS_ENCODER_IDS",
+    "RESERVED_EMBEDDER_IDS",
+    "RESERVED_LLM_IDS",
+    "RESERVED_SSP_IDS",
+    "RESERVED_TOOLSET_IDS",
+    "RESERVED_WORKSPACE_PROVIDER_IDS",
+]
