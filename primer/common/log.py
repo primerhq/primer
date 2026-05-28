@@ -131,3 +131,12 @@ def configure_logging(
     handler.setFormatter(_JsonFormatter() if json_format else _DevFormatter())
     root.addHandler(handler)
     root.setLevel(level)
+
+    # Per-library noise floors: even at DEBUG, these libraries produce
+    # one log line per SQL statement / per HTTP frame which drowns out
+    # the primer-level signal that operators actually use. Pin them at
+    # INFO regardless of the application level. Override by setting the
+    # logger explicitly elsewhere if you really want the firehose.
+    _noisy_loggers = ("aiosqlite", "asyncio", "httpcore", "httpx")
+    for name in _noisy_loggers:
+        logging.getLogger(name).setLevel(max(level, logging.INFO))

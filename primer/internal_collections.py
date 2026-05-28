@@ -387,9 +387,11 @@ class InternalCollectionsSubsystem:
                 counts=dict(counts),
             ))
 
+        logger.info("ic bootstrap: phase=drain_queue")
         await _emit("drain_queue", 0, None)
         await self._drain_queue()
 
+        logger.info("ic bootstrap: phase=materialise_collections")
         await _emit("materialise_collections", 0, len(INTERNAL_COLLECTION_IDS))
         await self._materialise_collection_rows()
         await _emit("materialise_collections", len(INTERNAL_COLLECTION_IDS), len(INTERNAL_COLLECTION_IDS))
@@ -399,24 +401,36 @@ class InternalCollectionsSubsystem:
         )
         embed_dim = await self._probe_embedding_dim()
         for entity_type in INTERNAL_COLLECTION_IDS:
-            await store.create_collection(
-                INTERNAL_COLLECTION_IDS[entity_type],
-                dimensions=embed_dim,
-            )
+            # Idempotent: re-bootstrap reuses the collection if it
+            # already exists. If the store doesn't support exists_ok,
+            # we catch + swallow the "already exists" path.
+            await self._ensure_collection(store, INTERNAL_COLLECTION_IDS[entity_type], embed_dim)
 
+        logger.info("ic bootstrap: phase=ingest_agents")
         counts["agents"] = await self._ingest_persisted_with_progress(
             "agent", Agent, "ingest_agents", _emit, counts,
         )
+        logger.info("ic bootstrap: agents=%d", counts["agents"])
+
+        logger.info("ic bootstrap: phase=ingest_graphs")
         counts["graphs"] = await self._ingest_persisted_with_progress(
             "graph", Graph, "ingest_graphs", _emit, counts,
         )
+        logger.info("ic bootstrap: graphs=%d", counts["graphs"])
+
+        logger.info("ic bootstrap: phase=ingest_collections")
         counts["collections"] = await self._ingest_persisted_with_progress(
             "collection", Collection, "ingest_collections", _emit, counts,
         )
+        logger.info("ic bootstrap: collections=%d", counts["collections"])
+
+        logger.info("ic bootstrap: phase=ingest_tools")
         counts["tools"] = await self._ingest_tools_with_progress(
             "ingest_tools", _emit, counts,
         )
+        logger.info("ic bootstrap: tools=%d", counts["tools"])
 
+        logger.info("ic bootstrap: phase=finalize")
         await _emit("finalize", 0, None)
         self._config = self._config.model_copy(
             update={"activated_at": _now()}
@@ -424,11 +438,42 @@ class InternalCollectionsSubsystem:
         await self._upsert_config_row(self._config)
         self.start_worker()
 
+        logger.info("ic bootstrap: complete counts=%s", counts)
         return {
             "ok": True,
             "counts": counts,
             "activated_at": self._config.activated_at,
         }
+
+    async def _ensure_collection(
+        self, store, collection_id: str, dimensions: int,
+    ) -> None:
+        """Create the vector-store collection if it doesn't already
+        exist, otherwise leave it intact.
+
+        Some backends (lance) raise on create when the collection
+        already exists — for re-bootstrap we need this call to be
+        idempotent so the operator can re-run any time without first
+        dropping anything. The "exists" check is store-specific; we
+        try the create then suppress the typical existence-error
+        signatures rather than introspecting each store's API.
+        """
+        try:
+            await store.create_collection(collection_id, dimensions=dimensions)
+            return
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc).lower()
+            if (
+                "already exist" in msg
+                or "duplicate" in msg
+                or "exists" in msg
+            ):
+                logger.debug(
+                    "ic bootstrap: collection %s already exists, reusing",
+                    collection_id,
+                )
+                return
+            raise
 
     async def _ingest_persisted_with_progress(
         self,
