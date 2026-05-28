@@ -45,6 +45,7 @@ dependencies = [
     "typer>=0.12",
     "tzdata>=2026.2",
     "uvicorn[standard]>=0.32",
+    "opentelemetry-instrumentation-logging>=0.41b0",
 ]
 
 [project.scripts]

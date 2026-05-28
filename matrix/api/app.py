@@ -68,6 +68,10 @@ def _make_lifespan(config: AppConfig):
         from matrix.observability import tracing as _tracing
         _tracing.setup(config.observability)
 
+        if config.observability.enabled:
+            from matrix.observability import logging_integration as _log_integration
+            _log_integration.install_log_correlation()
+
         # When scheduler is unset, default to an in-memory scheduler
         # so the zero-config path boots. Operators running worker mode
         # in production should explicitly set a Postgres scheduler.
