@@ -1119,7 +1119,7 @@ def build_workspaces_toolset(
         (
             "Fetch up to ``limit`` recent commits from the workspace's "
             "``.state`` git repo. Newest first. Each commit carries the "
-            "parsed ``X-Matrix-*`` trailers (workspace, session, agent, "
+            "parsed ``X-Primer-*`` trailers (workspace, session, agent, "
             "op, tool, call) for structured rendering."
         ),
         _LogArgs,

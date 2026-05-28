@@ -245,7 +245,7 @@ class Workspace(ABC):
         """Return up to ``limit`` recent commits from the ``.state`` repo.
 
         Newest commits first. Each commit carries the parsed
-        ``X-Matrix-*`` trailers (workspace, session, agent, op, tool,
+        ``X-Primer-*`` trailers (workspace, session, agent, op, tool,
         call) so callers can render structured history without
         re-parsing the message body.
         """

@@ -430,7 +430,7 @@ class TestGitVersioning:
         out = subprocess.check_output(
             [
                 "git", "-C", str(repo.path), "log",
-                "--grep=^X-Matrix-Graph: gsid-grep$",
+                "--grep=^X-Primer-Graph: gsid-grep$",
                 "--format=%s",
             ],
             text=True,

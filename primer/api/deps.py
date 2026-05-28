@@ -7,7 +7,7 @@ Three layers:
 2. Per-model ``Storage[T]`` resolvers that use the
    :class:`StorageProvider` to fetch the right typed handle.
 3. Principal passthrough that pulls the optional
-   ``X-Matrix-Principal`` request header.
+   ``X-Primer-Principal`` request header.
 
 The lifespan handler (or test factory) MUST stash two attributes on
 ``app.state`` before the first request: ``storage_provider`` and
@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from primer.worker.pool import WorkerPool
 
 
-PRINCIPAL_HEADER = "X-Matrix-Principal"
+PRINCIPAL_HEADER = "X-Primer-Principal"
 
 
 def _assert_app_state_initialized(request: Request) -> None:

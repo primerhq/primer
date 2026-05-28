@@ -8,7 +8,7 @@ state to the workspace's ``.state/`` repo via
 with standard git tooling::
 
     git -C .state log -- graphs/<gsid>/
-    git -C .state log --grep='X-Matrix-Graph: <gsid>'
+    git -C .state log --grep='X-Primer-Graph: <gsid>'
 
 Per-node message histories live at::
 
@@ -61,9 +61,9 @@ logger = logging.getLogger(__name__)
 
 
 # Trailer prefix used for graph-state commits so callers can grep for
-# "this graph's history" via ``git log --grep='X-Matrix-Graph: <gsid>'``.
-_TRAILER_GRAPH = "X-Matrix-Graph"
-_TRAILER_OP = "X-Matrix-Op"
+# "this graph's history" via ``git log --grep='X-Primer-Graph: <gsid>'``.
+_TRAILER_GRAPH = "X-Primer-Graph"
+_TRAILER_OP = "X-Primer-Op"
 
 
 class WorkspaceGraphExecutor(_BaseGraphExecutor):
@@ -243,8 +243,8 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             trailers={
                 _TRAILER_GRAPH: self._graph_session_id,
                 _TRAILER_OP: "node_turn",
-                "X-Matrix-Graph-Node": node_id,
-                "X-Matrix-Graph-Iteration": str(iteration),
+                "X-Primer-Graph-Node": node_id,
+                "X-Primer-Graph-Iteration": str(iteration),
             },
         )
 
@@ -278,10 +278,10 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         trailers = {
             _TRAILER_GRAPH: self._graph_session_id,
             _TRAILER_OP: "state",
-            "X-Matrix-Graph-Status": status.value,
+            "X-Primer-Graph-Status": status.value,
         }
         if ended_reason:
-            trailers["X-Matrix-Graph-Ended-Reason"] = ended_reason
+            trailers["X-Primer-Graph-Ended-Reason"] = ended_reason
         await self._state_repo.commit_arbitrary(
             summary=(
                 f"graph {self._graph_session_id}: state @ iter {iteration} "

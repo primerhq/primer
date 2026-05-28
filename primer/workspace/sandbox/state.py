@@ -23,12 +23,12 @@ from primer.model.workspace import CommitInfo, Op
 logger = logging.getLogger(__name__)
 
 
-_TRAILER_WORKSPACE = "X-Matrix-Workspace"
-_TRAILER_SESSION = "X-Matrix-Session"
-_TRAILER_AGENT = "X-Matrix-Agent"
-_TRAILER_OP = "X-Matrix-Op"
-_TRAILER_TOOL = "X-Matrix-Tool"
-_TRAILER_CALL = "X-Matrix-Call"
+_TRAILER_WORKSPACE = "X-Primer-Workspace"
+_TRAILER_SESSION = "X-Primer-Session"
+_TRAILER_AGENT = "X-Primer-Agent"
+_TRAILER_OP = "X-Primer-Op"
+_TRAILER_TOOL = "X-Primer-Tool"
+_TRAILER_CALL = "X-Primer-Call"
 
 
 class SandboxStateRepo:

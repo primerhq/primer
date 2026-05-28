@@ -249,27 +249,27 @@ class CommitInfo(BaseModel):
     committed_at: datetime = Field(..., description="Committer timestamp (UTC).")
     workspace_id: str | None = Field(
         default=None,
-        description="Value of the X-Matrix-Workspace trailer, if present.",
+        description="Value of the X-Primer-Workspace trailer, if present.",
     )
     session_id: str | None = Field(
         default=None,
-        description="Value of the X-Matrix-Session trailer, if present.",
+        description="Value of the X-Primer-Session trailer, if present.",
     )
     agent_id: str | None = Field(
         default=None,
-        description="Value of the X-Matrix-Agent trailer, if present.",
+        description="Value of the X-Primer-Agent trailer, if present.",
     )
     op: str | None = Field(
         default=None,
-        description="Value of the X-Matrix-Op trailer, if present.",
+        description="Value of the X-Primer-Op trailer, if present.",
     )
     tool: str | None = Field(
         default=None,
-        description="Value of the X-Matrix-Tool trailer, if present.",
+        description="Value of the X-Primer-Tool trailer, if present.",
     )
     call_id: str | None = Field(
         default=None,
-        description="Value of the X-Matrix-Call trailer, if present.",
+        description="Value of the X-Primer-Call trailer, if present.",
     )
 
 

@@ -161,12 +161,12 @@ class TestCreateSession:
         await repo.initialize()
         sha = await repo.create_session(_make_session_info(), _make_binding())
         body = _git_log_body(tmp_path / ".state", sha)
-        assert "X-Matrix-Workspace: ws-1" in body
-        assert "X-Matrix-Session: sess-1" in body
-        assert "X-Matrix-Agent: agent-foo" in body
-        assert "X-Matrix-Op: attach" in body
-        assert "X-Matrix-Tool" not in body
-        assert "X-Matrix-Call" not in body
+        assert "X-Primer-Workspace: ws-1" in body
+        assert "X-Primer-Session: sess-1" in body
+        assert "X-Primer-Agent: agent-foo" in body
+        assert "X-Primer-Op: attach" in body
+        assert "X-Primer-Tool" not in body
+        assert "X-Primer-Call" not in body
 
     async def test_returns_full_sha(self, tmp_path: Path) -> None:
         repo = StateRepo(tmp_path / ".state", workspace_id="ws-1")
@@ -243,8 +243,8 @@ class TestCommit:
             call_id="call-42",
         )
         body = _git_log_body(tmp_path / ".state", sha)
-        assert "X-Matrix-Tool: exec" in body
-        assert "X-Matrix-Call: call-42" in body
+        assert "X-Primer-Tool: exec" in body
+        assert "X-Primer-Call: call-42" in body
 
     async def test_omits_optional_trailers_when_absent(self, tmp_path: Path) -> None:
         repo = StateRepo(tmp_path / ".state", workspace_id="ws-1")
@@ -256,8 +256,8 @@ class TestCommit:
             op="status_change",
         )
         body = _git_log_body(tmp_path / ".state", sha)
-        assert "X-Matrix-Tool" not in body
-        assert "X-Matrix-Call" not in body
+        assert "X-Primer-Tool" not in body
+        assert "X-Primer-Call" not in body
 
     async def test_delete_files_removes_in_same_commit(self, tmp_path: Path) -> None:
         repo = StateRepo(tmp_path / ".state", workspace_id="ws-1")

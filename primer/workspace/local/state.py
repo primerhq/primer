@@ -11,9 +11,9 @@ Commit messages carry trailers identifying workspace, session, agent,
 op, and (when applicable) tool and call id, so the history is greppable
 via standard git tooling::
 
-    git log --grep='X-Matrix-Session: sess-abc'
-    git log --grep='X-Matrix-Agent: agent-foo'
-    git log --grep='X-Matrix-Op: user_instruction'
+    git log --grep='X-Primer-Session: sess-abc'
+    git log --grep='X-Primer-Agent: agent-foo'
+    git log --grep='X-Primer-Op: user_instruction'
 
 Concurrency: a workspace-wide :class:`asyncio.Lock` serialises commits
 so concurrent sessions don't fight over ``.git/index.lock``.
@@ -51,12 +51,12 @@ _AUTHOR_NAME = "matrix"
 _AUTHOR_EMAIL = "matrix@local"
 
 # Trailer keys -- machine-readable identifiers in the commit body.
-_TRAILER_WORKSPACE = "X-Matrix-Workspace"
-_TRAILER_SESSION = "X-Matrix-Session"
-_TRAILER_AGENT = "X-Matrix-Agent"
-_TRAILER_OP = "X-Matrix-Op"
-_TRAILER_TOOL = "X-Matrix-Tool"
-_TRAILER_CALL = "X-Matrix-Call"
+_TRAILER_WORKSPACE = "X-Primer-Workspace"
+_TRAILER_SESSION = "X-Primer-Session"
+_TRAILER_AGENT = "X-Primer-Agent"
+_TRAILER_OP = "X-Primer-Op"
+_TRAILER_TOOL = "X-Primer-Tool"
+_TRAILER_CALL = "X-Primer-Call"
 
 # Allowed values of the ``op`` trailer (canonical type lives in
 # ``matrix.model.workspace.Op``; this set is the runtime validator).
@@ -289,7 +289,7 @@ class LocalStateRepo:
 
         ``trailers`` is a free-form ``key -> value`` mapping appended
         to the commit message; the standard
-        ``X-Matrix-Workspace: <id>`` trailer is added automatically.
+        ``X-Primer-Workspace: <id>`` trailer is added automatically.
 
         Acquires the same commit lock as :meth:`commit` so concurrent
         graph + agent commits serialise safely on ``.git/index.lock``.
