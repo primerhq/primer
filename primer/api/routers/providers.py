@@ -104,6 +104,12 @@ def _make_reserved_delete_guard(reserved_ids: frozenset[str], kind: str):
     return _guard
 
 
+# Default seeded when a discovery probe cannot reveal a model's true
+# context window (the OpenAI /v1/models and Ollama /api/tags endpoints
+# do not include it). The form lets operators override per-model.
+_DEFAULT_LLM_CONTEXT_LENGTH = 32000
+
+
 # ---- Discovery body shapes -------------------------------------------------
 
 
@@ -241,14 +247,21 @@ async def discover_llm_models(
         models=[{"name": "_probe", "context_length": 1}],
     )
     if body.provider == "ollama":
-        return await _probe_ollama_models(body.config)
-    if body.provider == "openresponses":
-        return await _probe_openai_compatible_models(body.config)
-    raise BadRequestError(
-        f"live model discovery is not supported for provider "
-        f"{body.provider!r}; populate the models list manually or "
-        f"use the UI's 'Suggest models' fallback.",
-    )
+        result = await _probe_ollama_models(body.config)
+    elif body.provider == "openresponses":
+        result = await _probe_openai_compatible_models(body.config)
+    else:
+        raise BadRequestError(
+            f"live model discovery is not supported for provider "
+            f"{body.provider!r}; populate the models list manually or "
+            f"use the UI's 'Suggest models' fallback.",
+        )
+    # Neither Ollama's /api/tags nor OpenAI's /v1/models exposes a
+    # per-model context window. LLMModel requires context_length, so
+    # seed a sane default the operator can override in the form.
+    for m in result.get("models", []):
+        m.setdefault("context_length", _DEFAULT_LLM_CONTEXT_LENGTH)
+    return result
 
 
 # ---- EmbeddingProvider router ----------------------------------------------
