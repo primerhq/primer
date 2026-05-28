@@ -25,6 +25,7 @@ from typing import Any, TypeVar
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request, status
 
 from matrix.api.errors import common_responses
+from matrix.api.routers import _managed as _managed_mod
 from matrix.api.pagination import FindRequest, parse_order_by, parse_page
 from matrix.model.common import Identifiable
 from matrix.model.except_ import ConflictError, NotFoundError
@@ -94,6 +95,7 @@ def make_crud_router(
     extra_get_responses: dict[int, dict[str, Any]] | None = None,
     scope_field: str | None = None,
     parent_path_segment: str | None = None,
+    managed_by_field: str | None = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
 
@@ -145,6 +147,19 @@ def make_crud_router(
     parent_path_segment
         URL segment for the parent resource, e.g. ``"workspaces"``.
         See ``scope_field`` above.
+    managed_by_field
+        When set, automatically wires three guards keyed on *field_name*:
+
+        * **CREATE** – rejects the request with 422 if the body sets
+          ``managed_by_field`` to a non-null value.
+        * **UPDATE** – rejects with 409 if the *existing* row has a
+          non-null ``managed_by_field`` (the row is owned by an external
+          system).
+        * **DELETE** – same 409 guard as UPDATE.
+
+        User-supplied ``on_pre_create`` / ``on_pre_update`` /
+        ``on_pre_delete`` hooks are composed *after* these auto-wired
+        guards.
     """
 
     # Validate scope params: both must be set together or not at all.
@@ -158,6 +173,40 @@ def make_crud_router(
             raise ValueError(
                 "parent_path_segment must be provided when scope_field is set"
             )
+
+    # Auto-wire managed_by_field guards. User-supplied hooks are appended
+    # after so they compose on top of the built-in protections.
+    if managed_by_field is not None:
+        _auto_pre_create = _managed_mod.reject_if_body_sets_field(managed_by_field)
+        _auto_pre_update = _managed_mod.on_pre_update_reject_if_managed_factory(
+            managed_by_field
+        )
+        _auto_pre_delete = _managed_mod.reject_if_managed_factory(
+            managed_by_field, for_action="delete"
+        )
+
+        _user_pre_create = on_pre_create
+        _user_pre_update = on_pre_update
+        _user_pre_delete = on_pre_delete
+
+        async def _chained_pre_create(entity, request: Request) -> None:
+            await _auto_pre_create(entity, request)
+            if _user_pre_create is not None:
+                await _user_pre_create(entity, request)
+
+        async def _chained_pre_update(entity, existing, request: Request) -> None:
+            await _auto_pre_update(entity, existing, request)
+            if _user_pre_update is not None:
+                await _user_pre_update(entity, existing, request)
+
+        async def _chained_pre_delete(existing, request: Request) -> None:
+            await _auto_pre_delete(existing, request)
+            if _user_pre_delete is not None:
+                await _user_pre_delete(existing, request)
+
+        on_pre_create = _chained_pre_create
+        on_pre_update = _chained_pre_update
+        on_pre_delete = _chained_pre_delete
 
     router = APIRouter(tags=[tag])
 
