@@ -82,11 +82,11 @@ def _required_policy_body(
 
 
 _VALID_REGO = (
-    # Package name MUST be matrix.tool_approval — the validator
-    # queries data.matrix.tool_approval, so any other package
+    # Package name MUST be primer.tool_approval — the validator
+    # queries data.primer.tool_approval, so any other package
     # returns empty output and the regopy-JSON parse fails (a
     # subtle gotcha — see matrix/agent/rego.py:_PACKAGE_QUERY).
-    "package matrix.tool_approval\n"
+    "package primer.tool_approval\n"
     "\n"
     "default required := false\n"
     "\n"
@@ -212,7 +212,7 @@ async def test_t0858_tool_approval_policy_multi_strategy_journey(
         assert r.status_code == 201, r.text
         created_pids.append(valid_rego_pid)
         assert r.json()["approval"]["type"] == "policy"
-        assert "package matrix.tool_approval" in r.json()["approval"]["policy"]
+        assert "package primer.tool_approval" in r.json()["approval"]["policy"]
 
         # ----- 3. policy strategy — malformed Rego rejected --------
         # T0827. Loc tuple is ("body", "approval", "policy") because

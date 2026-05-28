@@ -23,12 +23,12 @@ from primer.storage.sqlite import SqliteStorageProvider
 def test_build_storage_provider_defaults_to_sqlite_home_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Redirect HOME so we don't touch the real ~/.matrix.
+    # Redirect HOME so we don't touch the real ~/.primer.
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg = AppConfig()  # db is None
     provider = _build_storage_provider(cfg)
     assert isinstance(provider, SqliteStorageProvider)
-    expected_path = tmp_path / ".matrix" / "db" / "data.sqlite"
+    expected_path = tmp_path / ".primer" / "db" / "data.sqlite"
     assert provider._config.path == expected_path  # noqa: SLF001
 
 

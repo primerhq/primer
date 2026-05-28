@@ -8,13 +8,13 @@ from primer.agent.rego import RegoCompileError, RegoEvaluator, evaluate_policy
 
 
 _PASS = """
-package matrix.tool_approval
+package primer.tool_approval
 default required := false
 required if input.tool_name == "shell_exec"
 """
 
 _REASONED = """
-package matrix.tool_approval
+package primer.tool_approval
 default required := false
 default reason := ""
 required if input.tool_name == "delete"
@@ -22,7 +22,7 @@ reason := "deletion is sensitive" if input.tool_name == "delete"
 """
 
 _INVALID = """
-package matrix.tool_approval
+package primer.tool_approval
 default required = false  syntax-broken
 """
 

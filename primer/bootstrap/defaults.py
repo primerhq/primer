@@ -66,7 +66,7 @@ RESERVED_WORKSPACE_PROVIDERS: dict[str, dict] = {
         "config": {
             "kind": "local",
             # Tilde is resolved by BootstrapRunner at creation time.
-            "path": "~/.matrix/workspaces",
+            "path": "~/.primer/workspaces",
         },
     },
 }
@@ -99,7 +99,7 @@ RESERVED_EMBEDDERS: dict[str, dict] = {
 # ---- LanceDB semantic-search provider -----------------------------------
 #
 # ``path`` uses a tilde prefix — BootstrapRunner expands it via
-# Path("~/.matrix/vector").expanduser() before constructing the model.
+# Path("~/.primer/vector").expanduser() before constructing the model.
 
 RESERVED_SSPS: dict[str, dict] = {
     RESERVED_LANCE_SSP: {
@@ -107,7 +107,7 @@ RESERVED_SSPS: dict[str, dict] = {
         "provider": "lance",
         "config": {
             # Tilde is resolved by BootstrapRunner at creation time.
-            "path": "~/.matrix/vector",
+            "path": "~/.primer/vector",
             "hnsw_m": 16,
             "hnsw_ef_construction": 64,
             "hnsw_ef_search": 40,

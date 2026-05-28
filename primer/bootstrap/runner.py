@@ -18,7 +18,7 @@ Usage example (from the lifespan)::
         ssp_storage=storage_provider.get_storage(SemanticSearchProvider),
         cross_encoder_storage=storage_provider.get_storage(CrossEncoderProvider),
         workspace_provider_storage=storage_provider.get_storage(WorkspaceProvider),
-        root_dir=Path("~/.matrix").expanduser(),
+        root_dir=Path("~/.primer").expanduser(),
     )
     if await runner.needs_bootstrap():
         result = await runner.run()
@@ -101,7 +101,7 @@ class BootstrapRunner:
         :class:`~matrix.model.workspace.WorkspaceProvider`.
     root_dir:
         Filesystem root used for resolving tilde paths in the factory
-        specs (e.g. ``~/.matrix/workspaces`` → ``root_dir / "workspaces"``).
+        specs (e.g. ``~/.primer/workspaces`` → ``root_dir / "workspaces"``).
         The directory is NOT created here; providers create sub-dirs on
         first use.
     """
@@ -272,8 +272,8 @@ class BootstrapRunner:
     def _resolve_wp_paths(self, spec: dict[str, Any]) -> dict[str, Any]:
         """Replace tilde paths in the workspace-provider config dict.
 
-        ``spec["config"]["path"]`` may be ``"~/.matrix/workspaces"`` —
-        replace the ``~/.matrix`` prefix with ``self._root_dir``.
+        ``spec["config"]["path"]`` may be ``"~/.primer/workspaces"`` —
+        replace the ``~/.primer`` prefix with ``self._root_dir``.
         """
         cfg = spec.get("config", {})
         if isinstance(cfg, dict) and "path" in cfg:
@@ -284,7 +284,7 @@ class BootstrapRunner:
     def _resolve_ssp_paths(self, spec: dict[str, Any]) -> dict[str, Any]:
         """Replace tilde paths in the SSP config dict.
 
-        ``spec["config"]["path"]`` may be ``"~/.matrix/vector"``.
+        ``spec["config"]["path"]`` may be ``"~/.primer/vector"``.
         """
         cfg = spec.get("config", {})
         if isinstance(cfg, dict) and "path" in cfg:
@@ -293,14 +293,14 @@ class BootstrapRunner:
         return spec
 
     def _resolve_path(self, raw: str) -> Path:
-        """Resolve a ``~/.matrix/...`` template against ``root_dir``.
+        """Resolve a ``~/.primer/...`` template against ``root_dir``.
 
-        If the path starts with ``~/.matrix/`` the ``~/.matrix`` prefix
+        If the path starts with ``~/.primer/`` the ``~/.primer`` prefix
         is replaced with ``self._root_dir``.  Any remaining ``~``-only
         path is expanded via :func:`Path.expanduser`.  Absolute or
         relative paths without ``~`` are returned unchanged.
         """
-        _tilde_matrix = "~/.matrix"
+        _tilde_matrix = "~/.primer"
         if raw.startswith(_tilde_matrix):
             suffix = raw[len(_tilde_matrix):]  # e.g. "/workspaces"
             return self._root_dir / suffix.lstrip("/")

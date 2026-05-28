@@ -31,7 +31,7 @@ This journey:
      to toast).
   9. Modal stays OPEN — operator can fix and retry.
   10. Replace the broken Rego with the canonical valid form
-      (package matrix.tool_approval; default required := false).
+      (package primer.tool_approval; default required := false).
   11. Click "Create policy" → modal closes, "Policy created"
       toast appears, policies table contains the new row.
 
@@ -52,11 +52,11 @@ from playwright.sync_api import expect
 
 
 _BAD_REGO = "this is not rego {\n  unclosed"
-# Package name MUST be matrix.tool_approval — the validator queries
-# data.matrix.tool_approval, so any other package returns empty
+# Package name MUST be primer.tool_approval — the validator queries
+# data.primer.tool_approval, so any other package returns empty
 # regopy output and surfaces as a 422 even when the syntax is OK.
 _VALID_REGO = (
-    "package matrix.tool_approval\n"
+    "package primer.tool_approval\n"
     "\n"
     "default required := false\n"
 )

@@ -114,7 +114,7 @@ def _make_lifespan(config: AppConfig):
                 workspace_provider_storage=storage_provider.get_storage(
                     WorkspaceProvider
                 ),
-                root_dir=Path("~/.matrix").expanduser(),
+                root_dir=Path("~/.primer").expanduser(),
             )
             if await _runner.needs_bootstrap():
                 logger.info("first boot detected; running auto-bootstrap")
@@ -725,7 +725,7 @@ def _build_storage_provider(config: AppConfig) -> "StorageProvider":
     """Construct the storage provider from the AppConfig.
 
     When ``config.db`` is None, default to embedded SQLite at
-    ``~/.matrix/db/data.sqlite``. The parent directory is created
+    ``~/.primer/db/data.sqlite``. The parent directory is created
     on demand inside :meth:`SqliteStorageProvider.initialize`.
     """
     from primer.model.provider import (
@@ -739,7 +739,7 @@ def _build_storage_provider(config: AppConfig) -> "StorageProvider":
 
     sp_config = config.db
     if sp_config is None:
-        default_path = Path.home() / ".matrix" / "db" / "data.sqlite"
+        default_path = Path.home() / ".primer" / "db" / "data.sqlite"
         sp_config = _StorageProviderConfig(
             provider=_StorageProviderType.SQLITE,
             config=_SqliteConfig(path=default_path),

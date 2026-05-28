@@ -3,7 +3,7 @@
 The §1 spec adds embedded SQLite as a first-class storage backend
 alongside Postgres. tests/api/test_app_factory.py already pins the
 zero-config startup path (AppConfig() → SqliteStorageProvider at
-~/.matrix/db/data.sqlite) at the lifespan layer. What this test
+~/.primer/db/data.sqlite) at the lifespan layer. What this test
 adds: a single pytest function that drives the FULL entity-router
 surface against SQLite via the in-process ASGI transport, so every
 major router proves it actually works against the SQLite Storage

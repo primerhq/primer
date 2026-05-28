@@ -175,14 +175,14 @@ class TestWorkspaceTemplate:
             ],
             env={"OPENAI_API_KEY": "redacted-secret"},
             init_commands=["python --version"],
-            state_path=".matrix/state",
-            tmp_path=".matrix/tmp",
+            state_path=".primer/state",
+            tmp_path=".primer/tmp",
             resources=ResourceLimits(cpu_cores=4, memory_bytes=8 * 1024**3),
         )
         assert len(tpl.packages) == 2
         assert tpl.files[0].source.kind == "inline"
         assert tpl.env["OPENAI_API_KEY"].get_secret_value() == "redacted-secret"
-        assert tpl.state_path == ".matrix/state"
+        assert tpl.state_path == ".primer/state"
         assert tpl.resources.cpu_cores == 4
 
     def test_empty_id_rejected(self) -> None:

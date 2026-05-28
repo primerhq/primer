@@ -7,7 +7,7 @@ rows all live in storage and are managed via the API itself.
 Every field has a default. The zero-config path — no env vars, no
 TOML, no init args — constructs successfully and is interpreted by
 ``matrix.api.app._build_storage_provider`` as "embedded SQLite at
-``~/.matrix/db/data.sqlite``".
+``~/.primer/db/data.sqlite``".
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ class AppConfig(BaseSettings):
         default=None,
         description=(
             "Entity-storage backend. None (default) means 'use embedded "
-            "SQLite at ~/.matrix/db/data.sqlite'. Set to a "
+            "SQLite at ~/.primer/db/data.sqlite'. Set to a "
             "StorageProviderConfig with provider='postgres' (or 'sqlite' "
             "with a custom path) to override."
         ),

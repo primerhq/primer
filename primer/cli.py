@@ -8,9 +8,9 @@ touches it.
 Layout
 ------
 * ``matrix api`` — serve the HTTP API AND start an in-process worker
-  pool. With no flags, auto-loads ``~/.matrix/config.yaml`` if
+  pool. With no flags, auto-loads ``~/.primer/config.yaml`` if
   present, otherwise runs with built-in defaults (embedded SQLite at
-  ``~/.matrix/db/data.sqlite``).
+  ``~/.primer/db/data.sqlite``).
 * ``matrix api --config path/to/config.yaml`` — explicit config.
 * ``matrix api --no-worker`` — serve the API only; the worker pool is
   expected to run in a separate ``matrix worker`` process.
@@ -24,7 +24,7 @@ omit ``db`` entirely for the zero-config SQLite default. Example::
     db:
       provider: sqlite
       config:
-        path: ~/.matrix/db/data.sqlite
+        path: ~/.primer/db/data.sqlite
 
     scheduler:
       provider: in_memory
@@ -67,13 +67,13 @@ _LEVEL_MAP = {
 }
 
 
-_DEFAULT_HOME_YAML = Path("~/.matrix/config.yaml")
+_DEFAULT_HOME_YAML = Path("~/.primer/config.yaml")
 
 
 def _resolve_config_path(explicit: Path | None) -> Path | None:
     """Pick the YAML to load.
 
-    Priority: explicit ``--config`` > ``~/.matrix/config.yaml`` if
+    Priority: explicit ``--config`` > ``~/.primer/config.yaml`` if
     it exists > None (use built-in defaults).
     """
     if explicit is not None:
@@ -135,9 +135,9 @@ def run_api(
         "--config", "-c",
         help=(
             "Path to a YAML config file. When omitted, "
-            "~/.matrix/config.yaml is auto-loaded if it exists; "
+            "~/.primer/config.yaml is auto-loaded if it exists; "
             "otherwise built-in defaults apply (embedded SQLite "
-            "at ~/.matrix/db/data.sqlite)."
+            "at ~/.primer/db/data.sqlite)."
         ),
         dir_okay=False, readable=True,
     ),
@@ -163,7 +163,7 @@ def run_worker(
         None, "--config", "-c",
         help=(
             "Path to a YAML config file. When omitted, "
-            "~/.matrix/config.yaml is auto-loaded if it exists; "
+            "~/.primer/config.yaml is auto-loaded if it exists; "
             "otherwise built-in defaults apply."
         ),
         dir_okay=False, readable=True,
@@ -182,7 +182,7 @@ def run_init(
         "--config", "-c",
         help=(
             "Path to a YAML config file. When omitted, "
-            "~/.matrix/config.yaml is auto-loaded if it exists; "
+            "~/.primer/config.yaml is auto-loaded if it exists; "
             "otherwise built-in defaults apply."
         ),
         dir_okay=False, readable=True,
@@ -212,7 +212,7 @@ def run_init(
         storage_provider = _build_storage_provider(cfg)
         await storage_provider.initialize()
         try:
-            root_dir = Path("~/.matrix").expanduser()
+            root_dir = Path("~/.primer").expanduser()
             runner = BootstrapRunner(
                 storage=storage_provider,
                 embedder_storage=storage_provider.get_storage(EmbeddingProvider),

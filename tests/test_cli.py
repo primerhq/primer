@@ -121,7 +121,7 @@ class TestLoadConfig:
         monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.setenv("HOME", str(tmp_path))
-        # No --config, no ~/.matrix/config.yaml on disk
+        # No --config, no ~/.primer/config.yaml on disk
         cfg = cli_mod._load_config(None, RuntimeMode.API)
         assert cfg.db is None
         assert cfg.runtime_mode == RuntimeMode.API
@@ -132,7 +132,7 @@ class TestLoadConfig:
         monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.setenv("HOME", str(tmp_path))
-        yaml_dir = tmp_path / ".matrix"
+        yaml_dir = tmp_path / ".primer"
         yaml_dir.mkdir()
         (yaml_dir / "config.yaml").write_text(
             textwrap.dedent(
@@ -155,7 +155,7 @@ class TestLoadConfig:
         monkeypatch: pytest.MonkeyPatch,
     ):
         monkeypatch.setenv("HOME", str(tmp_path))
-        home_dir = tmp_path / ".matrix"
+        home_dir = tmp_path / ".primer"
         home_dir.mkdir()
         (home_dir / "config.yaml").write_text(
             textwrap.dedent(
@@ -230,7 +230,7 @@ class TestApiCommand:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        # No ~/.matrix/config.yaml — should succeed with all-defaults
+        # No ~/.primer/config.yaml — should succeed with all-defaults
         # AppConfig. Default runtime_mode is now api+worker; the lifespan
         # will auto-resolve the scheduler to in_memory at boot.
         monkeypatch.setenv("HOME", str(tmp_path))

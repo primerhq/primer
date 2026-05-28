@@ -50,7 +50,7 @@ async def test_policy_returns_required_with_reason():
         id="p", toolset_id="system", tool_name="shell_exec",
         approval=PolicyApprovalConfig(
             policy=(
-                "package matrix.tool_approval\n"
+                "package primer.tool_approval\n"
                 "default required := false\n"
                 "default reason := \"\"\n"
                 "required if input.arguments.cmd == \"rm -rf /tmp/x\"\n"
@@ -72,7 +72,7 @@ async def test_policy_returns_not_required():
         id="p", toolset_id="system", tool_name="shell_exec",
         approval=PolicyApprovalConfig(
             policy=(
-                "package matrix.tool_approval\n"
+                "package primer.tool_approval\n"
                 "default required := false\n"
             ),
         ),

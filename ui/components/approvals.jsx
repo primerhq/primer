@@ -488,7 +488,7 @@ function AP_NewPolicyModal({ onClose, pushToast }) {
   const [toolName, setToolName] = React.useState("");
   const [timeoutSec, setTimeoutSec] = React.useState("");
   const [policyRego, setPolicyRego] = React.useState(
-    "package matrix.approval\n\ndefault required := false\n\n# Set `required = true` when the tool call must wait for a human.\nrequired { input.arguments.amount > 10000 }\n",
+    "package primer.approval\n\ndefault required := false\n\n# Set `required = true` when the tool call must wait for a human.\nrequired { input.arguments.amount > 10000 }\n",
   );
   const [providerId, setProviderId] = React.useState("");
   const [model, setModel] = React.useState("");

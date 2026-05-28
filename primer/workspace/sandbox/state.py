@@ -65,7 +65,7 @@ class SandboxStateRepo:
         """Create the state directory and git-init it (idempotent)."""
         # Ensure the state dir exists. write_file auto-creates parents;
         # we then delete the sentinel.
-        sentinel = f"{self._state_path}/.matrix-init"
+        sentinel = f"{self._state_path}/.primer-init"
         await self._sandbox.write_file(sentinel, b"")
         await self._sandbox.delete(sentinel)
 

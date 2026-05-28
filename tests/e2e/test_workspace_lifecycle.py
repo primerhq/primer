@@ -4273,13 +4273,13 @@ async def test_t0395_workspace_template_state_path_override_works(
 ) -> None:
     """T0395 — WorkspaceTemplate.state_path defaults to `.state` (per
     matrix/model/workspace.py). Pin that overriding it to a custom
-    path (e.g. `.matrix-state`) still produces a working workspace:
+    path (e.g. `.primer-state`) still produces a working workspace:
     materialise succeeds, /log finds the repo at the new location,
     and the file ops surface still works.
     """
     provider_id = f"wp-t0395-{unique_suffix}"
     template_id = f"wt-t0395-{unique_suffix}"
-    custom_state = ".matrix-state"
+    custom_state = ".primer-state"
 
     pr = await client.post(
         "/v1/workspace_providers",

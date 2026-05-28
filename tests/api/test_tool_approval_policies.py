@@ -6,7 +6,7 @@ import pytest
 
 
 _REGO_OK = (
-    "package matrix.tool_approval\n"
+    "package primer.tool_approval\n"
     "default required := false\n"
     "required if input.tool_name == \"x\"\n"
 )

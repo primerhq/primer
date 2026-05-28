@@ -397,7 +397,7 @@ function SSPCreateModal({ onClose, pushToast }) {
                 data-testid="ssp-lance-path"
                 value={form.path}
                 onChange={(e) => update("path", e.target.value)}
-                placeholder={`~/.matrix/lance/${form.id || "<id>"}/`}
+                placeholder={`~/.primer/lance/${form.id || "<id>"}/`}
                 style={{ width: "100%" }}
               />
             </FieldRow>

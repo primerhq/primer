@@ -110,7 +110,7 @@ class TestInitCommand:
         """When no --config is given, the command uses defaults successfully.
 
         We redirect HOME to tmp_path so the default SQLite path
-        (~/.matrix/db/data.sqlite) lands under tmp_path rather than the
+        (~/.primer/db/data.sqlite) lands under tmp_path rather than the
         real home directory.
         """
         monkeypatch.setenv("HOME", str(tmp_path))

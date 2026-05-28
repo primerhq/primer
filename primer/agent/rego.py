@@ -34,7 +34,7 @@ class RegoVerdict:
     reason: str | None = None
 
 
-_PACKAGE_QUERY = "data.matrix.tool_approval"
+_PACKAGE_QUERY = "data.primer.tool_approval"
 
 
 def _coerce_verdict(raw: Any) -> RegoVerdict:
