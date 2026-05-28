@@ -38,6 +38,7 @@ import base64
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any, TypeVar
 
 import asyncpg
@@ -46,6 +47,7 @@ from pydantic import BaseModel
 from matrix.int.storage import Storage
 from matrix.int.storage_provider import StorageProvider
 from matrix.model.common import Identifiable, dump_for_storage
+from matrix.model.system_state import SystemState
 from matrix.model.except_ import (
     BadRequestError,
     ConfigError,
@@ -171,6 +173,11 @@ class PostgresStorageProvider(StorageProvider):
         """Schema-qualified table name for claim-engine leases."""
         return f'"{self._schema}"."leases"'
 
+    @property
+    def system_state_table(self) -> str:
+        """Schema-qualified table name for the system-state singleton."""
+        return f'"{self._schema}"."system_state"'
+
     async def initialize(self) -> None:
         if self._pool is not None:
             return
@@ -247,6 +254,18 @@ class PostgresStorageProvider(StorageProvider):
                 f'ON "{self._schema}"."leases" (priority_score, next_attempt_at) '
                 f'WHERE claimed_by IS NULL'
             )
+            await conn.execute(
+                f'CREATE TABLE IF NOT EXISTS "{self._schema}"."system_state" ('
+                f'  id                     TEXT PRIMARY KEY DEFAULT \'singleton\','
+                f'  bootstrap_completed_at TIMESTAMPTZ,'
+                f'  schema_version         INTEGER NOT NULL DEFAULT 1,'
+                f'  last_migration_at      TIMESTAMPTZ'
+                f')'
+            )
+            await conn.execute(
+                f'INSERT INTO "{self._schema}"."system_state" (id) '
+                f"VALUES ('singleton') ON CONFLICT DO NOTHING"
+            )
         logger.info(
             "PostgresStorageProvider initialised (schema=%r, host=%s:%d)",
             self._schema,
@@ -272,6 +291,33 @@ class PostgresStorageProvider(StorageProvider):
         )
         self._handles[model_class] = handle
         return handle
+
+    async def get_system_state(self) -> SystemState:
+        """Return the singleton ``system_state`` row."""
+        sql = (
+            f'SELECT id, bootstrap_completed_at, schema_version, last_migration_at '
+            f'FROM {self.system_state_table} WHERE id = $1'
+        )
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(sql, "singleton")
+        if row is None:
+            # Shouldn't happen after initialize(), but return a safe default.
+            return SystemState()
+        return SystemState(
+            id=row["id"],
+            bootstrap_completed_at=row["bootstrap_completed_at"],
+            schema_version=row["schema_version"],
+            last_migration_at=row["last_migration_at"],
+        )
+
+    async def set_bootstrap_completed(self, ts: datetime) -> None:
+        """Stamp ``bootstrap_completed_at`` on the singleton row."""
+        sql = (
+            f'UPDATE {self.system_state_table} '
+            f'SET bootstrap_completed_at = $1 WHERE id = $2'
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute(sql, ts, "singleton")
 
 
 # ===========================================================================

@@ -27,10 +27,12 @@ class so calls for the same class return the same instance.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import TypeVar
 
 from matrix.int.storage import Storage
 from matrix.model.common import Identifiable
+from matrix.model.system_state import SystemState
 
 
 ModelT = TypeVar("ModelT", bound=Identifiable)
@@ -75,4 +77,20 @@ class StorageProvider(ABC):
         defer DDL to the first write. To force eager setup, call a
         method on the returned handle (e.g. ``await
         handle.list(OffsetPage(length=1))``) inside ``initialize``.
+        """
+
+    @abstractmethod
+    async def get_system_state(self) -> SystemState:
+        """Return the singleton ``system_state`` row.
+
+        Guaranteed to return a row (the ``singleton`` row is inserted
+        during :meth:`initialize`).  Never raises :class:`NotFoundError`.
+        """
+
+    @abstractmethod
+    async def set_bootstrap_completed(self, ts: datetime) -> None:
+        """Stamp ``bootstrap_completed_at`` on the singleton row.
+
+        Idempotent: re-calling with a later timestamp simply overwrites
+        the existing value.
         """

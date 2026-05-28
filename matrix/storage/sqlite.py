@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 import aiosqlite
@@ -32,6 +33,7 @@ from pydantic import BaseModel
 from matrix.int.storage import Storage
 from matrix.int.storage_provider import StorageProvider
 from matrix.model.common import Identifiable, dump_for_storage
+from matrix.model.system_state import SystemState
 from matrix.model.except_ import BadRequestError, ConfigError, ConflictError, NotFoundError, ProviderError, ServerError
 from matrix.model.provider import SqliteConfig
 from matrix.model.storage import (
@@ -134,6 +136,18 @@ class SqliteStorageProvider(StorageProvider):
                 "ON leases (priority_score, next_attempt_at) "
                 "WHERE claimed_by IS NULL"
             )
+            await self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS system_state ("
+                "  id                     TEXT PRIMARY KEY DEFAULT 'singleton',"
+                "  bootstrap_completed_at TEXT,"
+                "  schema_version         INTEGER NOT NULL DEFAULT 1,"
+                "  last_migration_at      TEXT"
+                ")"
+            )
+            await self._conn.execute(
+                "INSERT INTO system_state (id) VALUES ('singleton') "
+                "ON CONFLICT DO NOTHING"
+            )
             await self._conn.commit()
         except Exception as exc:
             # Roll back partial open on failure.
@@ -169,6 +183,44 @@ class SqliteStorageProvider(StorageProvider):
         handle = SqliteStorage[ModelT](provider=self, model_class=model_class)
         self._handles[model_class] = handle
         return handle
+
+    async def get_system_state(self) -> SystemState:
+        """Return the singleton ``system_state`` row."""
+        sql = (
+            "SELECT id, bootstrap_completed_at, schema_version, last_migration_at "
+            "FROM system_state WHERE id = ?"
+        )
+        cur = await self.connection.execute(sql, ("singleton",))
+        row = await cur.fetchone()
+        if row is None:
+            return SystemState()
+        id_, bca_text, schema_version, lma_text = row
+
+        def _parse_ts(s: str | None) -> datetime | None:
+            if s is None:
+                return None
+            # SQLite stores ISO-8601 UTC strings; ensure timezone-aware.
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+
+        return SystemState(
+            id=id_,
+            bootstrap_completed_at=_parse_ts(bca_text),
+            schema_version=schema_version,
+            last_migration_at=_parse_ts(lma_text),
+        )
+
+    async def set_bootstrap_completed(self, ts: datetime) -> None:
+        """Stamp ``bootstrap_completed_at`` on the singleton row."""
+        # Store as ISO-8601 UTC string.
+        ts_str = ts.isoformat()
+        sql = (
+            "UPDATE system_state SET bootstrap_completed_at = ? WHERE id = ?"
+        )
+        await self.connection.execute(sql, (ts_str, "singleton"))
+        await self.connection.commit()
 
 
 class SqliteStorage(Storage[ModelT]):
