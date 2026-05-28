@@ -777,6 +777,12 @@ def _mount_routers(
     # Harness REST router (Task 10).
     from matrix.api.routers.harness import harness_router
     app.include_router(harness_router)
+    # Instrumentation endpoints — only mounted when the env var is set.
+    # The import is deferred so the module never loads in production.
+    import os as _os
+    if _os.environ.get("MATRIX_ENABLE_TEST_ENDPOINTS") == "1":
+        from matrix.api.routers._test_endpoints import router as _test_router
+        app.include_router(_test_router, prefix=prefix)
 
 
 def create_app(config: AppConfig) -> FastAPI:
