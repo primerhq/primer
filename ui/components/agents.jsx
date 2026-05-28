@@ -237,7 +237,11 @@ function AgentsPage({ onOpen, pushToast }) {
 // New agent modal
 // ============================================================================
 
-function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
+function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
+  // Same modal serves both create (existing == null) and edit
+  // (existing == agent row). In edit mode the id field is locked,
+  // submit PUT-replaces, and the success callback is just close().
+  const isEdit = !!existing;
   const { useResource, useMutation, apiFetch } = window.primerApi;
   const providers = useResource(
     "agents:llm-providers",
@@ -255,16 +259,28 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
     { pollMs: null }
   );
 
-  const [id, setId] = React.useState("");
-  const [description, setDescription] = React.useState("");
-  const [providerId, setProviderId] = React.useState("");
-  const [modelName, setModelName] = React.useState("");
-  const [systemPrompt, setSystemPrompt] = React.useState("");
-  const [compactionPrompt, setCompactionPrompt] = React.useState("");
+  // Initial values come from the existing agent in edit mode, else
+  // blanks. system_prompt and compaction_prompt are stored as arrays
+  // server-side; the form only handles a single line, so we collapse
+  // ["a", "b"] → "a\n\nb" on read and emit one entry on save.
+  const _joinPrompt = (p) => Array.isArray(p) ? p.join("\n\n") : (p || "");
+  const _initialTools = () => {
+    const t = existing?.tools;
+    return new Set(Array.isArray(t) ? t : []);
+  };
+
+  const [id, setId] = React.useState(existing?.id || "");
+  const [description, setDescription] = React.useState(existing?.description || "");
+  const [providerId, setProviderId] = React.useState(existing?.model?.provider_id || "");
+  const [modelName, setModelName] = React.useState(existing?.model?.model_name || "");
+  const [systemPrompt, setSystemPrompt] = React.useState(_joinPrompt(existing?.system_prompt));
+  const [compactionPrompt, setCompactionPrompt] = React.useState(_joinPrompt(existing?.compaction_prompt));
   // selectedScopedIds is a Set so toggles are O(1); persisted as a
   // sorted list at submit time for stable JSON.
-  const [selectedScopedIds, setSelectedScopedIds] = React.useState(() => new Set());
-  const [temperature, setTemperature] = React.useState("");
+  const [selectedScopedIds, setSelectedScopedIds] = React.useState(_initialTools);
+  const [temperature, setTemperature] = React.useState(
+    existing?.temperature != null ? String(existing.temperature) : ""
+  );
   const [fieldErrors, setFieldErrors] = React.useState({});
   const [activeTab, setActiveTab] = React.useState("basic");
   const [toolFilter, setToolFilter] = React.useState("");
@@ -365,9 +381,13 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
   };
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/agents", body),
+    (body) => isEdit
+      ? apiFetch("PUT", "/agents/" + encodeURIComponent(existing.id), body)
+      : apiFetch("POST", "/agents", body),
     {
-      invalidates: ["agents:list"],
+      invalidates: isEdit
+        ? ["agents:list", "agent-detail:" + (existing?.id || ""), "agent-status:" + (existing?.id || "")]
+        : ["agents:list"],
       onSuccess: (row) => onCreate(row),
       onError: (err) => {
         if (err.status === 422 && Array.isArray(err.fieldErrors)) {
@@ -377,7 +397,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
         } else if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
-            title: err.title || "Create failed",
+            title: err.title || (isEdit ? "Save failed" : "Create failed"),
             detail: err.detail || err.message,
             requestId: err.requestId,
           });
@@ -392,7 +412,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
     // allowlist field; an empty list means no tools registered.
     const tools = [...selectedScopedIds].sort();
     const body = {
-      ...(id ? { id } : {}),
+      // On edit the id is locked but still sent (PUT-replace contract).
+      ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       description: description || "(no description)",
       model: { provider_id: providerId, model_name: modelName },
       tools,
@@ -409,18 +430,18 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
 
   return (
     <Modal
-      title="New agent"
+      title={isEdit ? `Edit agent · ${existing.id}` : "New agent"}
       onClose={onClose}
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
           <Btn
             kind="primary"
-            icon="plus"
+            icon={isEdit ? "check" : "plus"}
             onClick={submit}
             disabled={!providerId || !modelName || create.loading}
           >
-            {create.loading ? "Creating…" : "Create"}
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
           </Btn>
         </>
       }
@@ -453,7 +474,9 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
         <>
           <div className="field">
             <label className="field-label" htmlFor="na-id">
-              ID <span className="hint">optional — backend assigns if blank</span>
+              ID {isEdit
+                ? <span className="hint">locked — id cannot change after create</span>
+                : <span className="hint">optional — backend assigns if blank</span>}
             </label>
             <input
               id="na-id"
@@ -461,6 +484,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast }) {
               value={id}
               onChange={(e) => setId(e.target.value)}
               placeholder="auto-generated"
+              disabled={isEdit}
               style={{ width: "100%" }}
             />
           </div>
@@ -797,12 +821,34 @@ function AgentDetail({ agentId, pushToast }) {
   );
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
-  const [newSessionOpen, setNewSessionOpen] = React.useState(false);
+
+  // New "Chat" button: skip the workspace-session ceremony and just
+  // open an interactive chat with this agent — POST /chats then
+  // navigate to /chats/{id}. The chat detail page handles initial
+  // message + streaming.
+  const startChatMut = useMutation(
+    () => apiFetch("POST", "/chats", { agent_id: id }),
+    {
+      invalidates: ["chats:list"],
+      onSuccess: (row) => navigate("/chats/" + row.id),
+      onError: (err) => {
+        if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err?.title || "Couldn't start chat",
+            detail: err?.detail || err?.message,
+            requestId: err?.requestId,
+          });
+        }
+      },
+    }
+  );
+  const startChat = () => { if (!startChatMut.loading) startChatMut.mutate(); };
 
   if (detail.loading && !detail.data) {
     return (
       <div className="col" style={{ gap: 14 }}>
-        <AG_DetailActions onTest={() => setNewSessionOpen(true)} onDelete={() => { setDeleteError(null); setConfirmDelete(true); }} onBack={() => navigate("/agents")} />
+        <AG_DetailActions onChat={startChat} chatLoading={startChatMut.loading} onDelete={() => { setDeleteError(null); setConfirmDelete(true); }} onBack={() => navigate("/agents")} />
         <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>
       </div>
     );
@@ -810,7 +856,7 @@ function AgentDetail({ agentId, pushToast }) {
   if (detail.error && !detail.data) {
     return (
       <div className="col" style={{ gap: 14 }}>
-        <AG_DetailActions onTest={() => setNewSessionOpen(true)} onDelete={() => { setDeleteError(null); setConfirmDelete(true); }} onBack={() => navigate("/agents")} />
+        <AG_DetailActions onChat={startChat} chatLoading={startChatMut.loading} onDelete={() => { setDeleteError(null); setConfirmDelete(true); }} onBack={() => navigate("/agents")} />
         <Banner
           kind="error"
           title={detail.error.title || "Couldn't load agent"}
@@ -826,7 +872,7 @@ function AgentDetail({ agentId, pushToast }) {
   return (
     <div className="col" style={{ gap: 14 }}>
       <AG_DetailActions
-        onTest={() => setNewSessionOpen(true)}
+        onChat={startChat} chatLoading={startChatMut.loading}
         onDelete={() => { setDeleteError(null); setConfirmDelete(true); }}
         onBack={() => navigate("/agents")}
       />
@@ -904,13 +950,6 @@ function AgentDetail({ agentId, pushToast }) {
         </Modal>
       )}
 
-      {newSessionOpen && (
-        <AG_NewSessionModal
-          onClose={() => setNewSessionOpen(false)}
-          defaultAgentId={id}
-          pushToast={pushToast}
-        />
-      )}
     </div>
   );
 }
@@ -918,11 +957,13 @@ function AgentDetail({ agentId, pushToast }) {
 // Internal action bar — rendered INSIDE the page body so the
 // .page-header .page-actions selector resolves to the buttons even
 // though app.jsx renders its own outer page-header.
-function AG_DetailActions({ onTest, onDelete, onBack }) {
+function AG_DetailActions({ onChat, chatLoading, onDelete, onBack }) {
   return (
     <div className="page-header" style={{ marginBottom: 0, justifyContent: "flex-end" }}>
       <div className="page-actions">
-        <Btn icon="play" kind="primary" onClick={onTest}>Test agent</Btn>
+        <Btn icon="send" kind="primary" onClick={onChat} disabled={chatLoading}>
+          {chatLoading ? "Opening chat…" : "Chat"}
+        </Btn>
         <Btn icon="trash" kind="danger" onClick={onDelete}>Delete</Btn>
         <Btn icon="chevron-left" kind="ghost" onClick={onBack}>Back</Btn>
       </div>
@@ -994,64 +1035,12 @@ function AG_StatusPanel({ id, status }) {
 // ============================================================================
 
 function AG_ConfigTab({ agent, pushToast }) {
-  const { useMutation, apiFetch } = window.primerApi;
   const hl = window.primerVendor?.highlightJson;
   const isManaged = !!agent.harness_id;
 
   const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState("");
-  const [jsonError, setJsonError] = React.useState(null);
 
   const pretty = React.useMemo(() => JSON.stringify(agent, null, 2), [agent]);
-
-  const startEdit = () => {
-    setDraft(pretty);
-    setJsonError(null);
-    setEditing(true);
-  };
-  const cancelEdit = () => {
-    setEditing(false);
-    setJsonError(null);
-  };
-
-  const saveMut = useMutation(
-    (body) => apiFetch("PUT", "/agents/" + encodeURIComponent(agent.id), body),
-    {
-      invalidates: ["agent-detail:" + agent.id, "agent-status:" + agent.id, "agents:list"],
-      onSuccess: () => {
-        if (typeof pushToast === "function") {
-          pushToast({ kind: "info", title: "Agent updated", detail: agent.id });
-        }
-        setEditing(false);
-      },
-      onError: (err) => {
-        if (typeof pushToast === "function") {
-          pushToast({
-            kind: "error",
-            title: err.title || "Save failed",
-            detail: err.detail || err.message,
-            requestId: err.requestId,
-          });
-        }
-      },
-    },
-  );
-
-  const onSave = async () => {
-    setJsonError(null);
-    let parsed;
-    try {
-      parsed = JSON.parse(draft);
-    } catch (e) {
-      setJsonError(e.message || "Invalid JSON");
-      return;
-    }
-    if (parsed && typeof parsed === "object" && parsed.id !== agent.id) {
-      setJsonError(`id must remain "${agent.id}"`);
-      return;
-    }
-    try { await saveMut.mutate(parsed); } catch (_e) { /* toast via onError */ }
-  };
 
   return (
     <div style={{ padding: 14 }}>
@@ -1059,47 +1048,39 @@ function AG_ConfigTab({ agent, pushToast }) {
         <div className="muted text-sm">
           {isManaged ? (
             <>This agent is managed by harness <span className="mono">{agent.harness_id}</span>. Direct edits are blocked — update the harness instead.</>
-          ) : editing ? (
-            <>Edit the JSON below. <span className="mono">id</span> may not change. References resolve after save.</>
           ) : (
-            <>PUT-replace edit. The body is the full Agent JSON; <span className="mono">id</span> must match the row. References panel below cross-checks the bound provider + toolsets.</>
+            <>PUT-replace edit via the form. References panel below cross-checks the bound provider + toolsets after save.</>
           )}
         </div>
         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-          {!editing && !isManaged && (
-            <Btn size="sm" icon="edit" kind="secondary" onClick={startEdit}>Edit</Btn>
-          )}
-          {editing && (
-            <>
-              <Btn size="sm" kind="ghost" onClick={cancelEdit} disabled={saveMut.loading}>Cancel</Btn>
-              <Btn size="sm" icon="check" kind="primary" onClick={onSave} disabled={saveMut.loading}>
-                {saveMut.loading ? "Saving…" : "Save"}
-              </Btn>
-            </>
+          {!isManaged && (
+            <Btn size="sm" icon="edit" kind="secondary" onClick={() => setEditing(true)}>Edit</Btn>
           )}
         </div>
       </div>
-      {jsonError && (
-        <Banner kind="error" title="Couldn't parse JSON" detail={jsonError} />
+      {editing && (
+        <AG_NewAgentModal
+          existing={agent}
+          pushToast={pushToast}
+          onClose={() => setEditing(false)}
+          onCreate={() => {
+            setEditing(false);
+            if (typeof pushToast === "function") {
+              pushToast({ kind: "info", title: "Agent updated", detail: agent.id });
+            }
+          }}
+        />
       )}
-      {editing ? (
+      {false ? (
         <textarea
-          className="code-block"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          spellCheck={false}
+          readOnly
+          value={pretty}
           style={{
-            width: "100%",
-            minHeight: 360,
-            fontFamily: "IBM Plex Mono, monospace",
-            fontSize: 12,
-            lineHeight: 1.5,
-            padding: 12,
-            background: "var(--bg-0)",
-            color: "var(--text)",
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            resize: "vertical",
+            // unreachable — kept so the closing `: hl ? ... : <pre>`
+            // branches below stay valid JSX without a deeper rewrite
+            // of this tab; the actual rendered output is the highlighted
+            // / pre block.
+            display: "none",
           }}
         />
       ) : hl
