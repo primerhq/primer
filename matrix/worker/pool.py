@@ -33,7 +33,7 @@ from matrix.int.scheduler import (
 )
 from matrix.model.except_ import TransientError
 from matrix.model.scheduler import WorkerConfig
-from matrix.model.session import Session, SessionStatus
+from matrix.model.workspace_session import WorkspaceSession, SessionStatus
 from matrix.model.yield_ import YieldToWorker
 from matrix.worker.turn import _CancelScope, compute_backoff
 from matrix.worker.yield_resume_registry import get_resume_hook
@@ -617,9 +617,9 @@ class WorkerPool:
 
     # ---- per-turn execution -----------------------------------------------
 
-    async def _load_session(self, sid: str) -> Session | None:
-        """Fetch the persisted Session row. Override in tests via monkeypatch."""
-        sp_storage = self._storage.get_storage(Session)
+    async def _load_session(self, sid: str) -> WorkspaceSession | None:
+        """Fetch the persisted WorkspaceSession row. Override in tests via monkeypatch."""
+        sp_storage = self._storage.get_storage(WorkspaceSession)
         return await sp_storage.get(sid)
 
     async def _load_workspace_for_persist(self, workspace_id: str):
@@ -630,7 +630,7 @@ class WorkerPool:
         """
         return await self._workspace_registry.get_workspace(workspace_id)
 
-    async def _build_executor(self, session: Session, workspace):
+    async def _build_executor(self, session: WorkspaceSession, workspace):
         """Construct an executor for ``session`` against ``workspace``.
 
         Dispatches on ``session.binding.kind``:
@@ -651,7 +651,7 @@ class WorkerPool:
             f"unknown session binding kind: {session.binding.kind!r}"
         )
 
-    async def _build_agent_executor(self, session: Session, workspace):
+    async def _build_agent_executor(self, session: WorkspaceSession, workspace):
         """Build a turn-driver around :class:`WorkspaceAgentExecutor`.
 
         Resolves the agent definition (snapshot first, falls back to
@@ -734,7 +734,7 @@ class WorkerPool:
         )
         return _TurnDriver(executor)
 
-    async def _build_graph_executor(self, session: Session, workspace):
+    async def _build_graph_executor(self, session: WorkspaceSession, workspace):
         """Build a turn-driver around :class:`WorkspaceGraphExecutor`.
 
         Resolves the graph (snapshot first, falls back to storage),
@@ -1069,7 +1069,7 @@ class WorkerPool:
             self._wake.set()
 
     async def _handle_transient(
-        self, lease: Lease, session: Session, exc: BaseException,
+        self, lease: Lease, session: WorkspaceSession, exc: BaseException,
     ) -> None:
         """Retryable failure path: classify, bump attempt_count, re-enqueue
         with exponential backoff. Past ``max_attempts``, end as failed."""
@@ -1100,7 +1100,7 @@ class WorkerPool:
         )
 
     async def _handle_fatal(
-        self, lease: Lease, session: Session, exc: BaseException,
+        self, lease: Lease, session: WorkspaceSession, exc: BaseException,
     ) -> None:
         """Non-retryable failure path: end the session as failed."""
         logger.exception("session %s failed fatally", lease.session_id)
@@ -1120,7 +1120,7 @@ class WorkerPool:
     async def _handle_yield(
         self,
         lease: Lease,
-        session: Session,
+        session: WorkspaceSession,
         yield_exc: YieldToWorker,
     ) -> None:
         """Park the in-flight turn (yielding-tools §7.2).
@@ -1226,7 +1226,7 @@ class WorkerPool:
             )
 
     async def _handle_resume(
-        self, lease: Lease, session: Session,
+        self, lease: Lease, session: WorkspaceSession,
     ) -> None:
         """Drive a resumable park to its conclusion (spec §7.3).
 
@@ -1454,7 +1454,7 @@ class WorkerPool:
         )
 
     async def _handle_cancel(
-        self, lease: Lease, session: Session,
+        self, lease: Lease, session: WorkspaceSession,
     ) -> None:
         """Mid-turn cancel arrived. ``session.cancel_requested`` -> ENDED;
         otherwise (``pause_requested`` OR scope.cancel without a flag)

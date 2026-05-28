@@ -26,7 +26,7 @@ from pydantic import (
 
 from matrix.model.chat import Message
 from matrix.model.common import Describeable, Identifiable
-from matrix.model.session import SessionStatus
+from matrix.model.workspace_session import SessionStatus
 
 
 # ===========================================================================

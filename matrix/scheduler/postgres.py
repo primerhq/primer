@@ -23,7 +23,7 @@ from matrix.int.scheduler import (
 )
 from matrix.model.except_ import ProviderError
 from matrix.model.scheduler import PostgresSchedulerConfig
-from matrix.model.session import SessionStatus
+from matrix.model.workspace_session import SessionStatus
 
 if TYPE_CHECKING:
     import asyncpg

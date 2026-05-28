@@ -15,7 +15,7 @@ import pytest_asyncio
 from matrix.int.claim import ClaimKind, ReleaseOutcome
 from matrix.model.harness import Harness, HarnessOperation, HarnessStatus
 from matrix.model.chats import Chat
-from matrix.model.session import Session, SessionStatus, AgentSessionBinding
+from matrix.model.workspace_session import WorkspaceSession, SessionStatus, AgentSessionBinding
 from matrix.model.provider import SqliteConfig
 from matrix.storage.sqlite import SqliteStorageProvider
 from matrix.claim.adapters.sessions import SessionClaimAdapter
@@ -42,8 +42,8 @@ async def sqlite_provider(tmp_path: Path):
 # SessionClaimAdapter.on_release
 # ---------------------------------------------------------------------------
 
-def _make_session(id: str = "sess-1") -> Session:
-    return Session(
+def _make_session(id: str = "sess-1") -> WorkspaceSession:
+    return WorkspaceSession(
         id=id,
         workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="agent-1"),
@@ -61,7 +61,7 @@ def _make_session(id: str = "sess-1") -> Session:
 
 @pytest.mark.asyncio
 async def test_session_on_release_success_bumps_turn_no_and_clears_park(sqlite_provider):
-    storage = sqlite_provider.get_storage(Session)
+    storage = sqlite_provider.get_storage(WorkspaceSession)
     sess = _make_session()
     await storage.create(sess)
 
@@ -81,7 +81,7 @@ async def test_session_on_release_success_bumps_turn_no_and_clears_park(sqlite_p
 
 @pytest.mark.asyncio
 async def test_session_on_release_failure_still_clears_park(sqlite_provider):
-    storage = sqlite_provider.get_storage(Session)
+    storage = sqlite_provider.get_storage(WorkspaceSession)
     sess = _make_session()
     await storage.create(sess)
 
@@ -99,7 +99,7 @@ async def test_session_on_release_failure_still_clears_park(sqlite_provider):
 
 @pytest.mark.asyncio
 async def test_session_on_release_missing_entity_returns_silently(sqlite_provider):
-    storage = sqlite_provider.get_storage(Session)
+    storage = sqlite_provider.get_storage(WorkspaceSession)
     adapter = SessionClaimAdapter(session_storage=storage)
     # Should not raise — entity does not exist
     outcome = ReleaseOutcome(success=True, drop_lease=True)

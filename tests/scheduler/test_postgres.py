@@ -26,7 +26,7 @@ from matrix.int.scheduler import CompleteTurnResult, FailureRecord
 from matrix.model.except_ import ConfigError
 from matrix.model.provider import PoolConfig, PostgresConfig
 from matrix.model.scheduler import PostgresSchedulerConfig
-from matrix.model.session import Session, SessionStatus
+from matrix.model.workspace_session import WorkspaceSession, SessionStatus
 from matrix.scheduler.postgres import PostgresScheduler
 from matrix.storage.postgres import PostgresStorageProvider
 
@@ -163,9 +163,9 @@ async def test_register_worker_is_upsert(sched):
 async def _insert_session(storage_provider, sid: str, *,
                           turn_no: int = 0, status: str = "running"):
     """Force-create the sessions table and insert a synthetic row.
-    Bypasses Storage[Session] to keep these tests focused on scheduler
+    Bypasses Storage[WorkspaceSession] to keep these tests focused on scheduler
     behaviour."""
-    sp_storage = storage_provider.get_storage(Session)
+    sp_storage = storage_provider.get_storage(WorkspaceSession)
     await sp_storage._ensure_table()  # noqa: SLF001
     async with storage_provider.pool.acquire() as conn:
         await conn.execute(

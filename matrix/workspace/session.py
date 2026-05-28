@@ -30,7 +30,7 @@ from pydantic import TypeAdapter
 
 from matrix.model.chat import Message, TextPart
 from matrix.model.except_ import ConflictError
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentBinding,
     Instruction,
     SessionInfo,

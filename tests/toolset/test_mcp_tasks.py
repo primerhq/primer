@@ -17,9 +17,9 @@ import pytest
 
 from matrix.bus.in_memory import InMemoryEventBus
 from matrix.bus.mcp_tasks import McpTaskBridge
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentSessionBinding,
-    Session,
+    WorkspaceSession,
     SessionStatus,
 )
 from matrix.model.yield_ import (
@@ -340,9 +340,9 @@ def _make_mcp_task_parked_session(
     tool_call_id: str,
     toolset_id: str,
     task_id: str,
-) -> Session:
+) -> WorkspaceSession:
     now = datetime.now(timezone.utc)
-    sess = Session(
+    sess = WorkspaceSession(
         id=session_id,
         workspace_id="ws-x",
         binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),
@@ -455,7 +455,7 @@ class TestMcpTaskBridge:
             worker_id="w", host="h", pid=1, capacity=1,
         )
         # ask_user park — bridge must ignore.
-        sess = Session(
+        sess = WorkspaceSession(
             id="sess-A",
             workspace_id="ws",
             binding=AgentSessionBinding(kind="agent", agent_id="ag"),

@@ -87,7 +87,7 @@ def test_agent_carries_harness_id():
 
 def test_graph_carries_harness_id():
     # Imports inside the function to avoid circular-import issues at module level
-    import matrix.model.session  # noqa: F401 — ensure session is fully initialised first
+    import matrix.model.workspace_session  # noqa: F401 — ensure workspace_session is fully initialised first
     from matrix.model.graph import Graph, _AgentNodeRef
     # Graph requires at least one node; provide a minimal valid graph
     node = _AgentNodeRef(id="n1", agent_id="a1")

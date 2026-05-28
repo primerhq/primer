@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentBinding,
     SessionStatus,
     _ToolApprovalWaiting,  # type: ignore[attr-defined]

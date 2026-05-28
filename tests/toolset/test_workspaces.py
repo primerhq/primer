@@ -95,14 +95,14 @@ class _LiveSession:
 
     def __init__(self, session_id="sess-1") -> None:
         from datetime import datetime, timezone
-        from matrix.model.session import SessionStatus
+        from matrix.model.workspace_session import SessionStatus
 
         self.session_id = session_id
         self._status = SessionStatus.RUNNING
 
     async def info(self):
         from datetime import datetime, timezone
-        from matrix.model.session import SessionInfo
+        from matrix.model.workspace_session import SessionInfo
 
         return SessionInfo(
             session_id=self.session_id,
@@ -118,18 +118,18 @@ class _LiveSession:
         return self._status
 
     async def request_pause(self):
-        from matrix.model.session import SessionStatus
+        from matrix.model.workspace_session import SessionStatus
 
         self._status = SessionStatus.PAUSED
 
     async def request_resume(self):
-        from matrix.model.session import SessionStatus
+        from matrix.model.workspace_session import SessionStatus
 
         self._status = SessionStatus.RUNNING
 
     async def append_instruction(self, content):
         from datetime import datetime, timezone
-        from matrix.model.session import Instruction
+        from matrix.model.workspace_session import Instruction
 
         return Instruction(
             instruction_id="i-1",

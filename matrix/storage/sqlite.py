@@ -69,7 +69,7 @@ def _table_name_for(model_class: type[BaseModel]) -> str:
     operator can swap providers without renaming anything.
     """
     name = model_class.__name__.lower()
-    if name == "session":
+    if name in ("session", "workspacesession"):
         return "sessions"
     return name
 

@@ -23,9 +23,9 @@ import pytest
 from matrix.bus.in_memory import InMemoryEventBus
 from matrix.bus.listener import YieldEventListener
 from matrix.bus.scheduler_tasks import TimeoutSweeper, TimerScheduler
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentSessionBinding,
-    Session,
+    WorkspaceSession,
     SessionStatus,
 )
 from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
@@ -36,8 +36,8 @@ def _make_parked_session(
     session_id: str,
     event_key: str,
     parked_until: datetime,
-) -> Session:
-    sess = Session(
+) -> WorkspaceSession:
+    sess = WorkspaceSession(
         id=session_id,
         workspace_id="ws-x",
         binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),

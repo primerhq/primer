@@ -14,7 +14,7 @@ needs a real synthetic row inserted via the helper in
 from __future__ import annotations
 
 from matrix.int.scheduler import CompleteTurnResult
-from matrix.model.session import SessionStatus
+from matrix.model.workspace_session import SessionStatus
 
 
 async def _seed_session(scheduler, pg_storage_or_none, sid: str,

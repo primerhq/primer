@@ -46,7 +46,7 @@ from matrix.graph.base import _BaseGraphExecutor
 from matrix.graph.router import RouterRegistry
 from matrix.model.chat import Message
 from matrix.model.graph import Graph, NodeRuntimeState, _GraphNodeRef
-from matrix.model.session import SessionStatus
+from matrix.model.workspace_session import SessionStatus
 
 
 if TYPE_CHECKING:

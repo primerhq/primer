@@ -23,7 +23,7 @@ from matrix.api.routers._crud import make_crud_router
 from matrix.int.event_bus import EventBus
 from matrix.model.chats import Chat
 from matrix.model.except_ import ConflictError, NotFoundError
-from matrix.model.session import Session
+from matrix.model.workspace_session import WorkspaceSession
 from matrix.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from matrix.model.tool_approval import (
     LlmApprovalConfig,

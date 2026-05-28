@@ -21,9 +21,9 @@ from httpx import ASGITransport, AsyncClient
 from matrix.api.app import create_test_app
 from matrix.bus.in_memory import InMemoryEventBus
 from matrix.bus.listener import YieldEventListener
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentSessionBinding,
-    Session,
+    WorkspaceSession,
     SessionStatus,
 )
 from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
@@ -77,8 +77,8 @@ def _make_parked_session(
     prompt: str = "What is your name?",
     response_schema: dict | None = None,
     parked_until: datetime | None = None,
-) -> Session:
-    sess = Session(
+) -> WorkspaceSession:
+    sess = WorkspaceSession(
         id=session_id,
         workspace_id="ws-x",
         binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),
@@ -112,14 +112,14 @@ def _make_parked_session(
     return sess
 
 
-async def _seed_session(app, sess: Session) -> None:
+async def _seed_session(app, sess: WorkspaceSession) -> None:
     """Insert into both the storage row AND the in-memory scheduler dict.
 
     Storage is what the GET endpoint reads; the scheduler dict is what
     mark_resumable mutates. Production keeps them in sync via the
     scheduler writing through to storage; tests inject directly.
     """
-    storage = app.state.storage_provider.get_storage(Session)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(sess)
     scheduler: InMemoryScheduler = app.state.scheduler
     scheduler._sessions[sess.id] = sess
@@ -172,7 +172,7 @@ class TestAskUserPending:
     async def test_pending_404_when_session_has_no_park(
         self, app, client,
     ):
-        sess = Session(
+        sess = WorkspaceSession(
             id="sess-np",
             workspace_id="ws-x",
             binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),
@@ -189,7 +189,7 @@ class TestAskUserPending:
 
     async def test_pending_404_when_park_is_not_ask_user(self, app, client):
         # A sleep park has no prompt — the endpoint must not leak it.
-        sess = Session(
+        sess = WorkspaceSession(
             id="sess-sl",
             workspace_id="ws-x",
             binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),
@@ -279,7 +279,7 @@ class TestAskUserRespond:
         assert sess.parked_status == "parked"
 
     async def test_respond_404_when_session_has_no_park(self, app, client):
-        sess = Session(
+        sess = WorkspaceSession(
             id="sess-nopark",
             workspace_id="ws-x",
             binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),
@@ -395,7 +395,7 @@ class TestCancelYieldedTool:
         assert resp.status_code == 404
 
     async def test_cancel_404_when_session_has_no_park(self, app, client):
-        sess = Session(
+        sess = WorkspaceSession(
             id="sess-np2",
             workspace_id="ws-x",
             binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),
@@ -426,7 +426,7 @@ class TestCancelYieldedTool:
     async def test_cancel_works_for_sleep_yield_too(self, app, client):
         # Cancel-yielded-tool must be tool-agnostic — works for sleep
         # parks the same as ask_user parks.
-        sess = Session(
+        sess = WorkspaceSession(
             id="sess-slc",
             workspace_id="ws-x",
             binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),

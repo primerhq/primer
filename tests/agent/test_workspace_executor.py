@@ -21,7 +21,7 @@ from matrix.model.chat import (
 )
 from matrix.model.except_ import ConflictError
 from matrix.model.provider import LLMModel
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentBinding,
     SessionStatus,
 )

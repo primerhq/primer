@@ -8,9 +8,9 @@ from datetime import datetime, timezone
 import pytest
 
 from matrix.model.scheduler import WorkerConfig
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentSessionBinding,
-    Session,
+    WorkspaceSession,
     SessionStatus,
 )
 from matrix.claim.in_memory import InMemoryClaimEngine
@@ -148,7 +148,7 @@ async def test_run_one_turn_marks_complete(scheduler, engine, monkeypatch):
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     lease = _make_sched_lease(sid, "wrk-test")
 
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
@@ -202,7 +202,7 @@ async def test_run_one_turn_skips_when_session_already_ended(scheduler, engine, 
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     lease = _make_sched_lease(sid, "wrk-test")
 
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.ENDED,
@@ -246,7 +246,7 @@ async def test_run_one_turn_honours_cancel_requested_flag(scheduler, engine, mon
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     lease = _make_sched_lease(sid, "wrk-test")
 
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
@@ -290,7 +290,7 @@ async def test_run_one_turn_honours_pause_requested_flag(scheduler, engine, monk
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     lease = _make_sched_lease(sid, "wrk-test")
 
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
@@ -334,7 +334,7 @@ async def test_claim_loop_runs_runnable_session(scheduler, engine, monkeypatch):
     class _OneTurnExecutor:
         async def invoke(self, _messages): return None
 
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
@@ -399,7 +399,7 @@ async def test_run_one_turn_now_helper_executes_one_turn(scheduler, engine, monk
         worker_id="wrk-test", host="h", pid=1, capacity=1,
     )
 
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
@@ -474,7 +474,7 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
         tools=[],
         system_prompt=["sys"],
     )
-    session = Session(
+    session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(
             agent_id="ag-1", agent_snapshot=agent,
@@ -534,7 +534,7 @@ async def test_build_executor_raises_for_graph_binding_without_state_repo(monkey
     legacy fakes get the helpful error."""
     from matrix.model.except_ import ConfigError
     from matrix.model.graph import Graph, _AgentNodeRef, _TerminalNode, _StaticEdge
-    from matrix.model.session import GraphSessionBinding
+    from matrix.model.workspace_session import GraphSessionBinding
 
     sid = "sess-graph-1"
     graph_snapshot = Graph(
@@ -546,7 +546,7 @@ async def test_build_executor_raises_for_graph_binding_without_state_repo(monkey
         edges=[_StaticEdge(from_node="start", to_node="end")],
         entry_node_id="start",
     )
-    session = Session(
+    session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=GraphSessionBinding(graph_id="g-1", graph_snapshot=graph_snapshot),
         status=SessionStatus.RUNNING,
@@ -579,7 +579,7 @@ async def test_build_graph_executor_returns_graph_turn_driver(monkeypatch, tmp_p
         _StaticEdge,
         _TerminalNode,
     )
-    from matrix.model.session import GraphSessionBinding
+    from matrix.model.workspace_session import GraphSessionBinding
     from matrix.worker.pool import _GraphTurnDriver
     from matrix.workspace.local.state import LocalStateRepo
 
@@ -593,7 +593,7 @@ async def test_build_graph_executor_returns_graph_turn_driver(monkeypatch, tmp_p
         edges=[_StaticEdge(from_node="start", to_node="end")],
         entry_node_id="start",
     )
-    session = Session(
+    session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=GraphSessionBinding(graph_id="g-ok-1", graph_snapshot=graph_snapshot),
         status=SessionStatus.RUNNING,
@@ -647,9 +647,9 @@ async def test_infer_post_turn_status_maps_graph_ended_to_ended():
     class _Driver:
         last_done_reason = "graph_ended"
 
-    # Session value is unused by the agent-flavor mapper today, but
+    # WorkspaceSession value is unused by the agent-flavor mapper today, but
     # we pass a stub to satisfy the signature.
-    sess = Session(
+    sess = WorkspaceSession(
         id="s", workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="a"),  # type: ignore[arg-type]
         status=SessionStatus.RUNNING,
@@ -670,7 +670,7 @@ async def test_infer_post_turn_status_reads_last_done_reason():
         provider_registry=None,         # type: ignore[arg-type]
         engine=InMemoryClaimEngine(adapters={}),
     )
-    session = Session(
+    session = WorkspaceSession(
         id="s", workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
@@ -745,7 +745,7 @@ async def test_metrics_records_turn_outcome_after_run_one_turn(
     await scheduler.enqueue(sid)
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-metrics", runnable=True)
     lease = _make_sched_lease(sid, "wrk-metrics")
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
@@ -818,7 +818,7 @@ async def test_cancel_loop_routes_to_active_scope(scheduler, engine, monkeypatch
     class _SleepingExecutor:
         async def invoke(self, _m): await asyncio.sleep(60)
 
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,

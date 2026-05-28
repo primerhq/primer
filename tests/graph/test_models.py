@@ -34,7 +34,7 @@ from matrix.model.graph import (
     _StaticEdge,
     _TerminalNode,
 )
-from matrix.model.session import SessionStatus
+from matrix.model.workspace_session import SessionStatus
 
 
 # ===========================================================================

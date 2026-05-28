@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentBinding,
     Instruction,
     SessionInfo,
@@ -283,13 +283,13 @@ class TestWaitingStateDiscriminatedUnion:
             )
 
 
-# ---- Session entity (scheduler-visible) ----------------------------------
+# ---- WorkspaceSession entity (scheduler-visible) ----------------------------------
 
 
-from matrix.model.session import (  # noqa: E402
+from matrix.model.workspace_session import (  # noqa: E402
     AgentSessionBinding,
     GraphSessionBinding,
-    Session,
+    WorkspaceSession,
 )
 
 
@@ -303,33 +303,33 @@ class TestSessionEntity:
         assert b.kind == "graph"
 
     def test_round_trip_with_agent_binding(self):
-        s = Session(
+        s = WorkspaceSession(
             id="sess-1",
             workspace_id="ws-1",
             binding=AgentSessionBinding(agent_id="ag-1"),
             status=SessionStatus.CREATED,
             created_at=datetime(2026, 5, 10, tzinfo=timezone.utc),
         )
-        again = Session.model_validate(s.model_dump(mode="json"))
+        again = WorkspaceSession.model_validate(s.model_dump(mode="json"))
         assert again.binding.kind == "agent"
         assert again.turn_no == 0
         assert again.cancel_requested is False
         assert again.pause_requested is False
 
     def test_round_trip_with_graph_binding(self):
-        s = Session(
+        s = WorkspaceSession(
             id="sess-2",
             workspace_id="ws-1",
             binding=GraphSessionBinding(graph_id="gr-1"),
             status=SessionStatus.CREATED,
             created_at=datetime(2026, 5, 10, tzinfo=timezone.utc),
         )
-        again = Session.model_validate(s.model_dump(mode="json"))
+        again = WorkspaceSession.model_validate(s.model_dump(mode="json"))
         assert again.binding.kind == "graph"
 
     def test_binding_discriminator_rejects_unknown_kind(self):
         with pytest.raises(ValidationError):
-            Session.model_validate({
+            WorkspaceSession.model_validate({
                 "id": "sess-3",
                 "workspace_id": "ws-1",
                 "binding": {"kind": "mystery"},

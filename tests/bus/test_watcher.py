@@ -30,9 +30,9 @@ from matrix.bus.watcher import (
     WatcherManager,
     WorkspaceFilesWatcher,
 )
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentSessionBinding,
-    Session,
+    WorkspaceSession,
     SessionStatus,
 )
 from matrix.scheduler.in_memory import InMemoryScheduler, _LeaseState
@@ -203,9 +203,9 @@ def _make_watch_parked_session(
     tool_call_id: str,
     workspace_id: str,
     paths: list[str],
-) -> Session:
+) -> WorkspaceSession:
     now = datetime.now(timezone.utc)
-    sess = Session(
+    sess = WorkspaceSession(
         id=session_id,
         workspace_id=workspace_id,
         binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),
@@ -373,7 +373,7 @@ class TestWatcherManager:
             worker_id="wrk-1", host="h", pid=1, capacity=1,
         )
         # An ask_user park — must NOT spawn a file watcher.
-        sess = Session(
+        sess = WorkspaceSession(
             id="sess-C",
             workspace_id="ws-C",
             binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),

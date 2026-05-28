@@ -33,7 +33,7 @@ import pytest
 
 from matrix.model.chat import Message, ToolCallPart, ToolResultPart
 from matrix.model.scheduler import WorkerConfig
-from matrix.model.session import AgentSessionBinding, Session, SessionStatus
+from matrix.model.workspace_session import AgentSessionBinding, WorkspaceSession, SessionStatus
 from matrix.model.yield_ import Yielded
 from matrix.claim.in_memory import InMemoryClaimEngine
 from matrix.int.scheduler import Lease as SchedLease
@@ -111,8 +111,8 @@ def _make_resumable_session(
     resume_metadata: dict | None = None,
     llm_messages: list | None = None,
     turn_no: int = 0,
-) -> Session:
-    """Build a Session row pre-stamped with a resumable park.
+) -> WorkspaceSession:
+    """Build a WorkspaceSession row pre-stamped with a resumable park.
 
     Mirrors what the scheduler's mark_resumable + park_turn leave
     behind: parked_status='resumable', parked_state populated, and
@@ -142,7 +142,7 @@ def _make_resumable_session(
         resume_event_payload=dict(resume_event_payload),
     )
 
-    return Session(
+    return WorkspaceSession(
         id=sid,
         workspace_id=f"ws-{sid}",
         binding=AgentSessionBinding(agent_id="ag-1"),
@@ -522,7 +522,7 @@ async def test_resume_branch_does_not_fire_when_cancel_requested(
 
     await pool._run_one_turn(lease)
 
-    # Session ENDED; parked columns cleared. (InMemoryScheduler's
+    # WorkspaceSession ENDED; parked columns cleared. (InMemoryScheduler's
     # complete_turn doesn't persist ended_reason today — that's a
     # pre-existing gap; the postgres impl does. We assert on status
     # only here.)

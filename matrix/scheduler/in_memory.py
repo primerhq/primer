@@ -24,7 +24,7 @@ from matrix.int.scheduler import (
     Scheduler,
     WorkerInfo,
 )
-from matrix.model.session import SessionStatus
+from matrix.model.workspace_session import SessionStatus
 
 if TYPE_CHECKING:
     from matrix.int.storage_provider import StorageProvider

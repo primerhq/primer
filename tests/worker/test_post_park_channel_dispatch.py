@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from matrix.channel.adapter import PromptEnvelope
-from matrix.model.session import Session, AgentSessionBinding, SessionStatus
+from matrix.model.workspace_session import WorkspaceSession, AgentSessionBinding, SessionStatus
 from matrix.model.yield_ import Yielded
 from matrix.worker.yield_runtime import _dispatch_to_channels
 from datetime import datetime, timezone
@@ -51,9 +51,9 @@ def _approval_yielded() -> Yielded:
     )
 
 
-def _session() -> Session:
-    """Build a minimal Session row."""
-    return Session(
+def _session() -> WorkspaceSession:
+    """Build a minimal WorkspaceSession row."""
+    return WorkspaceSession(
         id="sess",
         workspace_id="ws-1",
         binding=AgentSessionBinding(kind="agent", agent_id="agt"),

@@ -43,13 +43,13 @@ class ClaimEngineFactory:
         individual adapter constructors.  Each adapter receives the
         ``Storage[T]`` handle from *storage_provider*.
         """
-        from matrix.model.session import Session
+        from matrix.model.workspace_session import WorkspaceSession
         from matrix.model.chats import Chat
         from matrix.model.harness import Harness
 
         adapters = {
             ClaimKind.SESSION: SessionClaimAdapter(
-                session_storage=storage_provider.get_storage(Session),
+                session_storage=storage_provider.get_storage(WorkspaceSession),
             ),
             ClaimKind.CHAT: ChatClaimAdapter(
                 chat_storage=storage_provider.get_storage(Chat),

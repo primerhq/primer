@@ -193,7 +193,7 @@ def _kind_models() -> dict[str, type]:
     """
     from matrix.model.agent import Agent  # noqa: PLC0415
     from matrix.model.collection import Collection, Document  # noqa: PLC0415
-    import matrix.model.session  # noqa: PLC0415, F401 — must be imported before graph
+    import matrix.model.workspace_session  # noqa: PLC0415, F401 — must be imported before graph
     from matrix.model.graph import Graph  # noqa: PLC0415
     from matrix.model.provider import Toolset  # noqa: PLC0415
 

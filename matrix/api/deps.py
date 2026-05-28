@@ -36,7 +36,7 @@ from matrix.model.provider import (
     LLMProvider,
     Toolset,
 )
-from matrix.model.session import Session
+from matrix.model.workspace_session import WorkspaceSession
 from matrix.model.workspace import (
     Workspace,
     WorkspaceProvider,
@@ -194,8 +194,8 @@ def get_workspace_storage(
 
 def get_session_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
-) -> "Storage[Session]":
-    return sp.get_storage(Session)
+) -> "Storage[WorkspaceSession]":
+    return sp.get_storage(WorkspaceSession)
 
 
 def get_chat_storage(

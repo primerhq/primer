@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from matrix.model.except_ import BadRequestError, ConflictError, NotFoundError
-from matrix.model.session import AgentBinding
+from matrix.model.workspace_session import AgentBinding
 
 # Import the workspace package up-front so ToolCallContext.model_rebuild()
 # runs before any test constructs one (see matrix/workspace/__init__.py).

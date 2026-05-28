@@ -10,7 +10,7 @@ from matrix.int.scheduler import (
     CompleteTurnResult,
     FailureRecord,
 )
-from matrix.model.session import SessionStatus
+from matrix.model.workspace_session import SessionStatus
 from matrix.scheduler.in_memory import InMemoryScheduler
 
 

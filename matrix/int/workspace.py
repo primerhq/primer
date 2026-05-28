@@ -31,7 +31,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any, TYPE_CHECKING
 
-from matrix.model.session import AgentBinding, SessionInfo, SessionStatus
+from matrix.model.workspace_session import AgentBinding, SessionInfo, SessionStatus
 from matrix.model.workspace import (
     FileEntry,
     WorkspaceStatus,

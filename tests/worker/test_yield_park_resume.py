@@ -4,10 +4,10 @@ Exercises the full vertical slice using the InMemoryScheduler:
 
 1. Worker claims a session, agent invokes the yielding ``sleep`` tool.
 2. Worker observes ``YieldToWorker`` and calls
-   :meth:`Scheduler.park_turn`. Session row carries park fields;
+   :meth:`Scheduler.park_turn`. WorkspaceSession row carries park fields;
    lease released.
 3. External party (event bus, in M2 — simulated here) calls
-   :meth:`Scheduler.mark_resumable` with a payload. Session row
+   :meth:`Scheduler.mark_resumable` with a payload. WorkspaceSession row
    flips to ``resumable``; lease re-armed.
 4. Worker re-claims the session, rehydrates park state, calls the
    sleep tool's resume hook with the synthesised payload, produces
@@ -28,9 +28,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from matrix.int.scheduler import CompleteTurnResult
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentSessionBinding,
-    Session,
+    WorkspaceSession,
     SessionStatus,
 )
 from matrix.model.yield_ import (
@@ -63,8 +63,8 @@ async def scheduler():
     await s.aclose()
 
 
-def _make_session(session_id: str) -> Session:
-    return Session(
+def _make_session(session_id: str) -> WorkspaceSession:
+    return WorkspaceSession(
         id=session_id,
         workspace_id="ws-x",
         binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),
@@ -79,7 +79,7 @@ async def _register_worker_and_inject(
     *,
     worker_id: str | None,
     lease_runnable: bool,
-) -> Session:
+) -> WorkspaceSession:
     """Set up a session + lease pair in the in-memory scheduler.
 
     Convenience helper for the park/resume tests so each one can
@@ -148,7 +148,7 @@ class TestParkFlow:
         )
         assert result is CompleteTurnResult.SUCCESS
 
-        # Session row has park fields.
+        # WorkspaceSession row has park fields.
         assert sess.parked_status == "parked"
         assert sess.parked_event_key == yielded.event_key
         assert sess.parked_at is not None
@@ -184,7 +184,7 @@ class TestParkFlow:
             parked_state={},
         )
         assert result is CompleteTurnResult.TURN_CONFLICT
-        # Session NOT parked.
+        # WorkspaceSession NOT parked.
         assert sess.parked_status is None
 
 

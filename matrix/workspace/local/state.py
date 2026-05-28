@@ -31,7 +31,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentBinding,
     SessionInfo,
     WaitingState,

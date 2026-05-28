@@ -9,7 +9,7 @@ import pytest
 
 from matrix.model.chat import Message, TextPart
 from matrix.model.except_ import ConflictError
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentBinding,
     SessionStatus,
 )
@@ -115,7 +115,7 @@ class TestStart:
     ) -> None:
         from datetime import datetime, timezone
 
-        from matrix.model.session import SessionInfo
+        from matrix.model.workspace_session import SessionInfo
 
         info = SessionInfo(
             session_id="sess-x",
@@ -203,7 +203,7 @@ class TestAppendInstruction:
     ) -> None:
         from datetime import datetime, timezone
 
-        from matrix.model.session import _UserInputWaiting  # type: ignore[attr-defined]
+        from matrix.model.workspace_session import _UserInputWaiting  # type: ignore[attr-defined]
 
         session = await _start_session(state_repo, truncation_store)
         await session.set_status(
@@ -375,7 +375,7 @@ class TestSetStatus:
     ) -> None:
         from datetime import datetime, timezone
 
-        from matrix.model.session import _UserInputWaiting  # type: ignore[attr-defined]
+        from matrix.model.workspace_session import _UserInputWaiting  # type: ignore[attr-defined]
 
         session = await _start_session(state_repo, truncation_store)
         await session.set_status(
@@ -398,7 +398,7 @@ class TestSetStatus:
     ) -> None:
         from datetime import datetime, timezone
 
-        from matrix.model.session import _UserInputWaiting  # type: ignore[attr-defined]
+        from matrix.model.workspace_session import _UserInputWaiting  # type: ignore[attr-defined]
 
         session = await _start_session(state_repo, truncation_store)
         await session.set_status(

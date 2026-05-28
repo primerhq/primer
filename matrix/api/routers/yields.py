@@ -39,7 +39,7 @@ from matrix.model.except_ import (
     NotFoundError,
     ValidationError,
 )
-from matrix.model.session import Session
+from matrix.model.workspace_session import WorkspaceSession
 from matrix.worker.yield_runtime import make_cancelled_payload
 
 
@@ -53,14 +53,14 @@ yields_router = APIRouter(tags=["yields"])
 # ===========================================================================
 
 
-async def _load_session_or_404(session_storage, session_id: str) -> Session:
+async def _load_session_or_404(session_storage, session_id: str) -> WorkspaceSession:
     sess = await session_storage.get(session_id)
     if sess is None:
         raise NotFoundError(f"Session {session_id!r} does not exist")
     return sess
 
 
-def _parked_blob(sess: Session) -> dict[str, Any] | None:
+def _parked_blob(sess: WorkspaceSession) -> dict[str, Any] | None:
     """Return the parked_state blob if the session is parked or
     resumable, else None.
 

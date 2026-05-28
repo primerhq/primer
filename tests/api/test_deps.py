@@ -25,7 +25,7 @@ from matrix.api.deps import (
 from matrix.api.errors import register_error_handlers
 from matrix.api.registries import ProviderRegistry
 from matrix.model.except_ import ConfigError
-from matrix.model.session import Session
+from matrix.model.workspace_session import WorkspaceSession
 
 
 def _mount_state_echo(app: FastAPI) -> None:
@@ -145,9 +145,9 @@ def _fake_request(app: FastAPI):
 
 
 def test_get_session_storage_returns_storage(app, fake_storage_provider):
-    """`get_session_storage` resolves to the Session-typed handle."""
+    """`get_session_storage` resolves to the WorkspaceSession-typed handle."""
     helper_storage = get_session_storage(sp=fake_storage_provider)
-    assert helper_storage is fake_storage_provider.get_storage(Session)
+    assert helper_storage is fake_storage_provider.get_storage(WorkspaceSession)
 
 
 def test_get_scheduler_returns_scheduler_when_present(app):

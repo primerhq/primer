@@ -32,7 +32,7 @@ from matrix.model.graph import (
     NodeRuntimeState,
     _GraphNodeRef,
 )
-from matrix.model.session import SessionStatus
+from matrix.model.workspace_session import SessionStatus
 from matrix.model.storage import (
     CursorPage,
     FieldRef,

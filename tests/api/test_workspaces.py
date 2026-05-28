@@ -26,7 +26,7 @@ from matrix.model.except_ import (
     ConflictError,
     NotFoundError,
 )
-from matrix.model.session import SessionInfo, SessionStatus
+from matrix.model.workspace_session import SessionInfo, SessionStatus
 from matrix.model.storage import OffsetPage, OffsetPageResponse
 from matrix.model.workspace import (
     FileEntry,
@@ -134,7 +134,7 @@ class _FakeAgentSession:
 
     async def append_instruction(self, content: str):
         self.appended.append(content)
-        from matrix.model.session import Instruction
+        from matrix.model.workspace_session import Instruction
 
         return Instruction(
             instruction_id=f"inst-{len(self.appended)}",
@@ -633,16 +633,16 @@ class TestSessionsSubResource:
     async def test_pause_then_resume(self, client, wsr, app, sp) -> None:
         # Pause/resume moved off the workspace sub-resource onto
         # /v1/workspaces/{wid}/sessions/{sid}/{pause,resume} backed by
-        # the persisted Session row (Task 20). Seed a Session row so the
+        # the persisted WorkspaceSession row (Task 20). Seed a WorkspaceSession row so the
         # new endpoints have something to look up.
-        from matrix.model.session import (
+        from matrix.model.workspace_session import (
             AgentSessionBinding,
-            Session,
+            WorkspaceSession,
             SessionStatus,
         )
 
         wid = await self._setup(client, wsr)
-        session = Session(
+        session = WorkspaceSession(
             id="sess-1",
             workspace_id=wid,
             binding=AgentSessionBinding(agent_id="agt-1"),
@@ -650,7 +650,7 @@ class TestSessionsSubResource:
             created_at=datetime.now(timezone.utc),
             started_at=datetime.now(timezone.utc),
         )
-        await sp.get_storage(Session).create(session)
+        await sp.get_storage(WorkspaceSession).create(session)
         pause = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/pause")
         assert pause.status_code == 204
         resume = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/resume")

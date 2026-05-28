@@ -8,9 +8,9 @@ from datetime import datetime, timezone
 import pytest
 
 from matrix.model.scheduler import WorkerConfig
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentSessionBinding,
-    Session,
+    WorkspaceSession,
     SessionStatus,
 )
 from matrix.claim.in_memory import InMemoryClaimEngine
@@ -76,7 +76,7 @@ async def test_cancel_during_turn_transitions_to_ended_when_cancel_requested(
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     lease = _make_lease(sid, "wrk-test")
 
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
@@ -122,7 +122,7 @@ async def test_mid_turn_cancellation_via_scope(scheduler, monkeypatch):
 
     # Note: cancel_requested STARTS False; we'll flip it after the
     # executor has been entered, then trigger the scope cancel.
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
@@ -179,7 +179,7 @@ async def test_mid_turn_pause_via_scope(scheduler, monkeypatch):
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     lease = _make_lease(sid, "wrk-test")
 
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,

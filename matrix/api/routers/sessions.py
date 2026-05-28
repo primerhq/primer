@@ -33,13 +33,13 @@ from matrix.model.except_ import (
     NotFoundError,
     ValidationError,
 )
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentBinding as OnDiskAgentBinding,
 )
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentSessionBinding,
     GraphSessionBinding,
-    Session,
+    WorkspaceSession,
     SessionBinding,
     SessionStatus,
 )
@@ -78,7 +78,7 @@ class SessionCreateBody(BaseModel):
 
 @nested_session_router.post(
     "/workspaces/{workspace_id}/sessions",
-    response_model=Session,
+    response_model=WorkspaceSession,
     status_code=201,
     summary="Create a new session attached to an agent or graph",
     responses=common_responses(404, 409, 422, 500),
@@ -93,7 +93,7 @@ async def create_session(
     scheduler=Depends(get_scheduler),
     workspace_registry=Depends(get_workspace_registry),
     engine=Depends(get_claim_engine),
-) -> Session:
+) -> WorkspaceSession:
     """Create a session bound to an agent or graph on this workspace.
 
     Steps (per spec §11.4):
@@ -130,7 +130,7 @@ async def create_session(
 
     sid = f"sess-{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
-    session = Session(
+    session = WorkspaceSession(
         id=sid,
         workspace_id=workspace_id,
         binding=body.binding,
@@ -207,7 +207,7 @@ _RESUMABLE = {SessionStatus.CREATED, SessionStatus.PAUSED, SessionStatus.WAITING
 
 @nested_session_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/resume",
-    response_model=Session,
+    response_model=WorkspaceSession,
     summary="Idempotent start-or-resume",
     responses=common_responses(404, 409, 500),
 )
@@ -217,7 +217,7 @@ async def resume_session(
     sessions=Depends(get_session_storage),
     scheduler=Depends(get_scheduler),
     engine=Depends(get_claim_engine),
-) -> Session:
+) -> WorkspaceSession:
     """Idempotent start-or-resume.
 
     * No-op (200) when the session is already RUNNING.
@@ -291,7 +291,7 @@ async def pause_session(
 
 @nested_session_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/cancel",
-    response_model=Session,
+    response_model=WorkspaceSession,
     summary="Hard cancel — transitions to ENDED/cancelled",
     responses=common_responses(404, 409, 500),
 )
@@ -301,7 +301,7 @@ async def cancel_session(
     sessions=Depends(get_session_storage),
     scheduler=Depends(get_scheduler),
     engine=Depends(get_claim_engine),
-) -> Session:
+) -> WorkspaceSession:
     """Hard cancel.
 
     * For sessions no worker is leasing (CREATED / WAITING / PAUSED) we
@@ -464,14 +464,14 @@ async def find_sessions(
 
 @top_session_router.get(
     "/sessions/{session_id}",
-    response_model=Session,
+    response_model=WorkspaceSession,
     summary="Get session by id (no workspace context required)",
     responses=common_responses(404, 500),
 )
 async def get_session_by_id(
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
-) -> Session:
+) -> WorkspaceSession:
     s = await sessions.get(session_id)
     if s is None:
         raise NotFoundError(f"Session {session_id!r} does not exist")

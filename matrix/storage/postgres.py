@@ -116,7 +116,7 @@ def _table_name_for(model_class: type[BaseModel]) -> str:
     sides in sync without rewriting every SQL string in the scheduler.
     """
     name = model_class.__name__.lower()
-    if name == "session":
+    if name in ("session", "workspacesession"):
         return "sessions"
     return name
 

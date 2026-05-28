@@ -329,7 +329,7 @@ SessionBinding = Annotated[
 ]
 
 
-class Session(Identifiable):
+class WorkspaceSession(Identifiable):
     """Persisted session row — scheduler's source of truth.
 
     Distinct from :class:`SessionInfo`, which is the on-disk projection
@@ -427,7 +427,7 @@ def _rebuild_models() -> None:
 
     AgentSessionBinding.model_rebuild()
     GraphSessionBinding.model_rebuild()
-    Session.model_rebuild()
+    WorkspaceSession.model_rebuild()
 
 
 _rebuild_models()
@@ -443,7 +443,7 @@ __all__ = [
     "AgentSessionBinding",
     "GraphSessionBinding",
     "Instruction",
-    "Session",
+    "WorkspaceSession",
     "SessionBinding",
     "SessionInfo",
     "SessionStatus",

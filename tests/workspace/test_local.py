@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from matrix.model.except_ import BadRequestError, NotFoundError
-from matrix.model.session import AgentBinding, SessionStatus
+from matrix.model.workspace_session import AgentBinding, SessionStatus
 from matrix.model.workspace import (
     FileMount,
     PackageSpec,

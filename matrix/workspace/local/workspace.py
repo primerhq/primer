@@ -21,7 +21,7 @@ from pathlib import Path
 
 from matrix.int.workspace import Workspace
 from matrix.model.except_ import BadRequestError, ConflictError, NotFoundError
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentBinding,
     SessionInfo,
     SessionStatus,

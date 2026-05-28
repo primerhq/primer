@@ -322,13 +322,13 @@ async def test_resume_already_running_is_idempotent_200(
 async def test_resume_ended_session_is_409(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
-    from matrix.model.session import Session
+    from matrix.model.workspace_session import WorkspaceSession
     create = await sessions_client.post(
         f"/v1/workspaces/{seeded_workspace.id}/sessions",
         json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
     )
     sid = create.json()["id"]
-    storage = app.state.storage_provider.get_storage(Session)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
     s = await storage.get(sid)
     s.status = "ended"
     await storage.update(s)
@@ -358,7 +358,7 @@ async def test_cancel_from_created_ends_immediately(
 async def test_pause_running_sets_pause_requested_flag(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
-    from matrix.model.session import Session
+    from matrix.model.workspace_session import WorkspaceSession
     create = await sessions_client.post(
         f"/v1/workspaces/{seeded_workspace.id}/sessions",
         json={
@@ -371,7 +371,7 @@ async def test_pause_running_sets_pause_requested_flag(
         f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}/pause"
     )
     assert resp.status_code == 204
-    storage = app.state.storage_provider.get_storage(Session)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
     s = await storage.get(sid)
     assert s.pause_requested is True
 
@@ -412,7 +412,7 @@ async def test_create_session_allocates_on_disk_slot(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
     """The create handler must call ``Workspace.start_session(..., id=sid)``
-    so the persisted Session row and the on-disk slot share the same id
+    so the persisted WorkspaceSession row and the on-disk slot share the same id
     (spec §11.4 step 5).
     """
     resp = await sessions_client.post(
@@ -467,7 +467,7 @@ async def test_top_level_list_sessions_filtered_by_status(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
     """Top-level GET /v1/sessions must honour ``?status=`` from §11.2."""
-    from matrix.model.session import Session, SessionStatus
+    from matrix.model.workspace_session import WorkspaceSession, SessionStatus
 
     # Two sessions: one CREATED (default), one auto-started → RUNNING.
     r1 = await sessions_client.post(
@@ -501,7 +501,7 @@ async def test_top_level_list_sessions_filtered_by_status(
 
     # Make sure storage.find() is what's responding to the filter — verify
     # the session row's status is what the API claimed.
-    storage = app.state.storage_provider.get_storage(Session)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
     s = await storage.get(sid_running)
     assert s.status == SessionStatus.RUNNING
 

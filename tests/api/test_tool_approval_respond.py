@@ -6,13 +6,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from matrix.model.session import Session
+from matrix.model.workspace_session import WorkspaceSession
 
 
-def _make_approval_parked_session(*, session_id: str, tool_call_id: str) -> Session:
+def _make_approval_parked_session(*, session_id: str, tool_call_id: str) -> WorkspaceSession:
     """Helper: a session row parked on _approval."""
     now = datetime.now(UTC)
-    return Session(
+    return WorkspaceSession(
         id=session_id,
         workspace_id="ws",
         binding={"kind": "agent", "agent_id": "agt"},
@@ -47,7 +47,7 @@ async def test_get_session_pending_returns_payload(client, app):
     sess = _make_approval_parked_session(
         session_id="sess-pending", tool_call_id="call-1",
     )
-    storage = app.state.storage_provider.get_storage(Session)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(sess)
     r = await client.get("/v1/sessions/sess-pending/tool_approval/pending")
     assert r.status_code == 200, r.text
@@ -70,7 +70,7 @@ async def test_post_session_respond_publishes_approval(client, app):
     sess = _make_approval_parked_session(
         session_id="sess-resp", tool_call_id="call-2",
     )
-    storage = app.state.storage_provider.get_storage(Session)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(sess)
     seen: list = []
     original_publish = app.state.event_bus.publish
@@ -104,7 +104,7 @@ async def test_post_session_respond_rejected_with_reason(client, app):
     sess = _make_approval_parked_session(
         session_id="sess-reject", tool_call_id="call-3",
     )
-    storage = app.state.storage_provider.get_storage(Session)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(sess)
     seen: list = []
     original_publish = app.state.event_bus.publish
@@ -134,7 +134,7 @@ async def test_post_session_respond_mismatched_tool_call_id_404(client, app):
     sess = _make_approval_parked_session(
         session_id="sess-mm", tool_call_id="call-4",
     )
-    storage = app.state.storage_provider.get_storage(Session)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(sess)
     r = await client.post(
         "/v1/sessions/sess-mm/tool_approval/respond",
@@ -148,7 +148,7 @@ async def test_post_session_respond_bad_decision_422(client, app):
     sess = _make_approval_parked_session(
         session_id="sess-bad", tool_call_id="call-5",
     )
-    storage = app.state.storage_provider.get_storage(Session)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(sess)
     r = await client.post(
         "/v1/sessions/sess-bad/tool_approval/respond",

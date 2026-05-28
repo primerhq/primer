@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from matrix.model.session import SessionStatus
+from matrix.model.workspace_session import SessionStatus
 
 
 class Lease(BaseModel):

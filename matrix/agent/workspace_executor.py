@@ -25,7 +25,7 @@ from matrix.agent.compaction import CompactionStrategy
 from matrix.agent.tool_manager import ToolExecutionManager
 from matrix.model.chat import Message
 from matrix.model.except_ import ConflictError
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     SessionStatus,
     _UserInputWaiting,
 )

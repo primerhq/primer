@@ -37,7 +37,7 @@ from matrix.model.graph import (
     _TerminalNode,
 )
 from matrix.model.provider import LLMModel
-from matrix.model.session import SessionStatus
+from matrix.model.workspace_session import SessionStatus
 from matrix.model.storage import (
     CursorPage,
     CursorPageResponse,

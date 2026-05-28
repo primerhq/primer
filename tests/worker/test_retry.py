@@ -8,9 +8,9 @@ import pytest
 
 from matrix.model.except_ import TransientError
 from matrix.model.scheduler import WorkerConfig
-from matrix.model.session import (
+from matrix.model.workspace_session import (
     AgentSessionBinding,
-    Session,
+    WorkspaceSession,
     SessionStatus,
 )
 from matrix.claim.in_memory import InMemoryClaimEngine
@@ -79,7 +79,7 @@ async def _setup(scheduler, sid, monkeypatch, exc, *,
     scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
     # Pass attempt_count via the lease so _handle_transient/_handle_fatal read it.
     lease = _make_lease(sid, "wrk-test", attempt_count=attempt_count)
-    fake_session = Session(
+    fake_session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=SessionStatus.RUNNING,
