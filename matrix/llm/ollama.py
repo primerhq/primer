@@ -393,6 +393,20 @@ def _translate_chunk(
 # --------------------------------------------------------------------------- #
 
 
+def _serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:
+    """Serialize a list of universal Messages to a JSON-safe structure."""
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        parts: list[dict[str, Any]] = []
+        for part in msg.parts:
+            if isinstance(part, TextPart):
+                parts.append({"type": "text", "text": part.text})
+            else:
+                parts.append({"type": type(part).__name__})
+        out.append({"role": msg.role, "parts": parts})
+    return out
+
+
 class OllamaLLM(LLM):
     """Streaming LLM adapter for the Ollama HTTP API."""
 
@@ -401,6 +415,7 @@ class OllamaLLM(LLM):
         provider: LLMProvider,
         *,
         rate_limiter: RateLimiter | None = None,
+        trace_llm_io: bool = False,
     ) -> None:
         if provider.provider != LLMProviderType.OLLAMA:
             raise ConfigError(
@@ -421,6 +436,7 @@ class OllamaLLM(LLM):
         self._rate_limiter = rate_limiter
         self._rate_limit_key = f"llm:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
+        self._trace_llm_io = trace_llm_io
 
         logger.info(
             "Ollama adapter initialized",
@@ -513,6 +529,11 @@ class OllamaLLM(LLM):
             _span.set_attribute("llm.model", model)
             if max_output_tokens is not None:
                 _span.set_attribute("llm.request.max_tokens", max_output_tokens)
+            if self._trace_llm_io:
+                _span.set_attribute(
+                    "llm.request.messages",
+                    json.dumps(_serialize_messages(messages)),
+                )
             try:
                 async with await self._rate_limiter.acquire(
                     self._rate_limit_key, max_concurrency=self._max_concurrency,

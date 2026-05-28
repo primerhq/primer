@@ -194,6 +194,7 @@ def _make_lifespan(config: AppConfig):
             toolset_factory=_build_default_toolset_factory(
                 allowed_stdio_commands=allowlist,
             ),
+            trace_llm_io=config.observability.trace_llm_io,
         )
         system_toolset = build_system_toolset(
             storage_provider=storage_provider,

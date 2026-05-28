@@ -40,27 +40,37 @@ logger = logging.getLogger(__name__)
 def _build_default_llm_factory(
     *,
     rate_limiter: "RateLimiter | None" = None,
+    trace_llm_io: bool = False,
 ) -> Callable[[LLMProvider], LLM]:
     """Build the default ``llm_factory`` closure.
 
     ``rate_limiter`` is forwarded to every LLM adapter so all providers
     participate in the global concurrency limiter. ``None`` causes each
     adapter to fall back to a local :class:`~matrix.coordinator.in_memory.InMemoryRateLimiter`.
+    ``trace_llm_io`` controls whether prompt messages are included in spans.
     """
     def _factory(provider: LLMProvider) -> LLM:  # pragma: no cover
         match provider.provider:
             case LLMProviderType.OPENRESPONSES:
                 from matrix.llm.openresponses import OpenResponsesLLM
-                return OpenResponsesLLM(provider, rate_limiter=rate_limiter)
+                return OpenResponsesLLM(
+                    provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
+                )
             case LLMProviderType.ANTHROPIC:
                 from matrix.llm.anthropic import AnthropicLLM
-                return AnthropicLLM(provider, rate_limiter=rate_limiter)
+                return AnthropicLLM(
+                    provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
+                )
             case LLMProviderType.GEMINI:
                 from matrix.llm.gemini import GeminiLLM
-                return GeminiLLM(provider, rate_limiter=rate_limiter)
+                return GeminiLLM(
+                    provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
+                )
             case LLMProviderType.OLLAMA:
                 from matrix.llm.ollama import OllamaLLM
-                return OllamaLLM(provider, rate_limiter=rate_limiter)
+                return OllamaLLM(
+                    provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
+                )
             case _:
                 raise ConfigError(
                     f"unknown LLM provider type {provider.provider!r}"
@@ -263,11 +273,14 @@ class ProviderRegistry:
         web_toolset_provider: ToolsetProvider | None = None,
         harness_toolset_provider: ToolsetProvider | None = None,
         rate_limiter: RateLimiter | None = None,
+        trace_llm_io: bool = False,
     ) -> None:
         self._sp = storage_provider
         self._rate_limiter: RateLimiter | None = rate_limiter
+        self._trace_llm_io = trace_llm_io
         self._llm_factory = llm_factory or _build_default_llm_factory(
             rate_limiter=rate_limiter,
+            trace_llm_io=trace_llm_io,
         )
         self._embedder_factory = embedder_factory or _build_default_embedder_factory(
             rate_limiter=rate_limiter,
@@ -528,7 +541,9 @@ class ProviderRegistry:
         """Wire the registry's adapter construction to the rate limiter.
         Idempotent."""
         self._rate_limiter = rate_limiter
-        self._llm_factory = _build_default_llm_factory(rate_limiter=rate_limiter)
+        self._llm_factory = _build_default_llm_factory(
+            rate_limiter=rate_limiter, trace_llm_io=self._trace_llm_io,
+        )
         self._embedder_factory = _build_default_embedder_factory(rate_limiter=rate_limiter)
         self._cross_encoder_factory = _build_default_cross_encoder_factory(rate_limiter=rate_limiter)
 
