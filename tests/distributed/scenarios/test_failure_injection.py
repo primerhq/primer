@@ -223,7 +223,7 @@ async def test_worker_sigterm_reclaims_chat_turn(
         # Phase 3: identify and SIGTERM the claiming worker.
         # ------------------------------------------------------------------
         # The owner_id set on each worker is
-        # "worker-<schema>-<i>" (the MATRIX_OWNER_ID_PREFIX env var).
+        # "worker-<schema>-<i>" (the PRIMER_OWNER_ID_PREFIX env var).
         # The lease's ``claimed_by`` field should contain this prefix.
 
         killed_name: str | None = None

@@ -1,7 +1,7 @@
 """Tests for PostgresClaimEngine — upsert + delete_lease + claim_due +
 heartbeat + release + mark_resumable + watch_ready.
 
-Live Postgres tests require MATRIX_TEST_POSTGRES_URL and are skipped otherwise.
+Live Postgres tests require PRIMER_TEST_POSTGRES_URL and are skipped otherwise.
 Pure SQL-builder unit tests (``test_build_claim_query_*``) run without any
 database and are never skipped.
 
@@ -28,7 +28,7 @@ from primer.model.provider import PoolConfig, PostgresConfig
 from primer.storage.postgres import PostgresStorageProvider
 
 
-_URL_ENV = "MATRIX_TEST_POSTGRES_URL"
+_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
 
 POSTGRES_AVAILABLE = bool(os.environ.get(_URL_ENV))
 

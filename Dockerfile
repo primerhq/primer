@@ -76,7 +76,7 @@ EXPOSE 8765
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 \
     CMD curl -fsS http://127.0.0.1:8765/v1/health || exit 1
 
-# Entrypoint renders /app/config.yaml from MATRIX_* env vars, then
+# Entrypoint renders /app/config.yaml from PRIMER_* env vars, then
 # exec's CMD. The matrix CLI requires --config; the rendered file is
 # always used.
 ENTRYPOINT ["/usr/local/bin/matrix-entrypoint.sh"]

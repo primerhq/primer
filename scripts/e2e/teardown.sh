@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
 # Container-runtime autodetect (mirror of bringup.sh).
-RUNTIME="${MATRIX_E2E_CONTAINER_RUNTIME:-}"
+RUNTIME="${PRIMER_E2E_CONTAINER_RUNTIME:-}"
 if [[ -z "$RUNTIME" ]]; then
     if command -v podman >/dev/null 2>&1; then
         RUNTIME="podman"

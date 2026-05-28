@@ -130,7 +130,7 @@ async def test_create_sandbox_returns_ws_sandbox() -> None:
 
 @pytest.mark.asyncio
 async def test_create_sandbox_injects_token() -> None:
-    """Container should have MATRIX_RUNTIME_TOKEN in its environment."""
+    """Container should have PRIMER_RUNTIME_TOKEN in its environment."""
     import aiodocker as _aiodocker
     from primer.workspace.runtime.docker import DockerRuntimeAdapter
 
@@ -156,8 +156,8 @@ async def test_create_sandbox_injects_token() -> None:
         container = await docker.containers.get(sandbox.id[:12])
         info = await container.show()
         env_list = info.get("Config", {}).get("Env") or []
-        assert any(e.startswith("MATRIX_RUNTIME_TOKEN=") for e in env_list), (
-            f"MATRIX_RUNTIME_TOKEN not found in container env: {env_list}"
+        assert any(e.startswith("PRIMER_RUNTIME_TOKEN=") for e in env_list), (
+            f"PRIMER_RUNTIME_TOKEN not found in container env: {env_list}"
         )
     finally:
         await _teardown(sandbox, "test-ws-vol-token", adapter)

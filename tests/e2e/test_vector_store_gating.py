@@ -5,7 +5,7 @@ Covers backlog items T0017, T0018 (reframed).
 The original backlog entries claimed `GET /v1/collections` and
 `POST /v1/documents` return 503 with `/errors/service-unavailable`
 when `AppConfig.vector_store` is null. That's wrong: probing a server
-brought up via ``MATRIX_E2E_NO_VECTOR=1 bash scripts/e2e/bringup.sh``
+brought up via ``PRIMER_E2E_NO_VECTOR=1 bash scripts/e2e/bringup.sh``
 shows both routes operate against storage rows and respond normally.
 The 503 gating only applies to the search / ingestion paths that
 actually consult the vector store (covered separately by T0019).

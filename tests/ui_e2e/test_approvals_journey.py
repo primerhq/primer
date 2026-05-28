@@ -210,7 +210,7 @@ async def _inject_approval_park_async(
     # bringup uses `matrix_e2e`. Honour the env override if present so
     # both contexts work.
     import os
-    db = os.environ.get("MATRIX_UI_E2E_DB", "matrix")
+    db = os.environ.get("PRIMER_UI_E2E_DB", "matrix")
     conn = await asyncpg.connect(
         host="localhost", port=5432,
         user="matrix", password="matrix", database=db,

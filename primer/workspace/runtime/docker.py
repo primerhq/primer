@@ -205,7 +205,7 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
 
         # Merge caller env with runtime-required vars.
         merged_env = dict(env)
-        merged_env["MATRIX_RUNTIME_TOKEN"] = token
+        merged_env["PRIMER_RUNTIME_TOKEN"] = token
 
         host_config: dict[str, Any] = {
             "Mounts": mounts,

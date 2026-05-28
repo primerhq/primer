@@ -20,11 +20,11 @@ import pytest
 import pytest_asyncio
 
 
-# Default-skip mechanism: unless MATRIX_RUN_E2E=1 is set, all e2e test
+# Default-skip mechanism: unless PRIMER_RUN_E2E=1 is set, all e2e test
 # modules in this directory are collected-then-ignored. The harness in
 # scripts/e2e/ sets the env var; contributors running `uv run pytest` from
 # the root do not, so they never see e2e collection failures.
-if os.environ.get("MATRIX_RUN_E2E") != "1":
+if os.environ.get("PRIMER_RUN_E2E") != "1":
     collect_ignore_glob = ["test_*.py"]
 
 
@@ -32,12 +32,12 @@ def _base_url() -> str:
     """Resolve the base URL of the running matrix server.
 
     Defaults match ``scripts/e2e/bringup.sh``. Override via
-    ``MATRIX_E2E_BASE_URL`` for unusual setups (different host, port, etc.).
+    ``PRIMER_E2E_BASE_URL`` for unusual setups (different host, port, etc.).
     """
-    explicit = os.environ.get("MATRIX_E2E_BASE_URL")
+    explicit = os.environ.get("PRIMER_E2E_BASE_URL")
     if explicit:
         return explicit.rstrip("/")
-    port = os.environ.get("MATRIX_E2E_PORT", "8765")
+    port = os.environ.get("PRIMER_E2E_PORT", "8765")
     return f"http://127.0.0.1:{port}"
 
 

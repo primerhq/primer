@@ -3,7 +3,7 @@
 #
 # Container runtime: Podman or Docker. The script auto-detects which one
 # is on $PATH (podman first, then docker) and uses its `compose`
-# subcommand. Override with MATRIX_E2E_CONTAINER_RUNTIME=podman|docker
+# subcommand. Override with PRIMER_E2E_CONTAINER_RUNTIME=podman|docker
 # if both are installed and you need to pin one explicitly.
 #
 # Steps:
@@ -42,11 +42,11 @@ case "${OS:-}${OSTYPE:-}" in
         ;;
 esac
 
-# Container-runtime autodetect. MATRIX_E2E_CONTAINER_RUNTIME pins it
+# Container-runtime autodetect. PRIMER_E2E_CONTAINER_RUNTIME pins it
 # explicitly; otherwise we prefer podman (the documented default) and
 # fall back to docker. Either way the variable expands to the binary
 # name; both have a `compose` subcommand against the same compose file.
-RUNTIME="${MATRIX_E2E_CONTAINER_RUNTIME:-}"
+RUNTIME="${PRIMER_E2E_CONTAINER_RUNTIME:-}"
 if [[ -z "$RUNTIME" ]]; then
     if command -v podman >/dev/null 2>&1; then
         RUNTIME="podman"
@@ -65,14 +65,14 @@ CONFIG="$E2E_DIR/config.yaml"
 PID_FILE="$E2E_DIR/server.pid"
 STDOUT_FILE="$E2E_DIR/server.stdout"
 
-PORT="${MATRIX_E2E_PORT:-8765}"
-DB_USER="${MATRIX_DB_USER:-matrix}"
-DB_PASSWORD="${MATRIX_DB_PASSWORD:-matrix}"
+PORT="${PRIMER_E2E_PORT:-8765}"
+DB_USER="${PRIMER_DB_USER:-matrix}"
+DB_PASSWORD="${PRIMER_DB_PASSWORD:-matrix}"
 DB_NAME="matrix_e2e"
-# Set MATRIX_E2E_NO_VECTOR=1 to render an AppConfig without a vector_store
+# Set PRIMER_E2E_NO_VECTOR=1 to render an AppConfig without a vector_store
 # block. Used by gating tests that need to assert 503 behaviour on the
 # collection / document / search routes when the subsystem is disabled.
-NO_VECTOR="${MATRIX_E2E_NO_VECTOR:-0}"
+NO_VECTOR="${PRIMER_E2E_NO_VECTOR:-0}"
 
 mkdir -p "$E2E_DIR" "$LOG_DIR"
 
@@ -150,7 +150,7 @@ vector_store:
 
 EOF
 else
-    echo "[bringup] MATRIX_E2E_NO_VECTOR=1 — omitting vector_store block from config" >&2
+    echo "[bringup] PRIMER_E2E_NO_VECTOR=1 — omitting vector_store block from config" >&2
 fi
 
 cat >> "$CONFIG" <<EOF
@@ -233,10 +233,10 @@ while true; do
         echo "READY"
         echo "[bringup] healthy after $((30 - (deadline - $(date +%s))))s" >&2
         # Hint to anything that sources this script: e2e tests are
-        # opt-in via MATRIX_RUN_E2E=1. The runbook tells pytest about it
+        # opt-in via PRIMER_RUN_E2E=1. The runbook tells pytest about it
         # via the inline env-var prefix, but exporting it here is
         # harmless and saves a step for ad-hoc debugging.
-        echo "export MATRIX_RUN_E2E=1" > "$E2E_DIR/env.sh"
+        echo "export PRIMER_RUN_E2E=1" > "$E2E_DIR/env.sh"
         exit 0
     fi
     if [[ $(date +%s) -ge $deadline ]]; then

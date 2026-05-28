@@ -32,7 +32,7 @@ omit ``db`` entirely for the zero-config SQLite default. Example::
 
     log_level: info
 
-Env vars (``MATRIX_*``) override missing fields; CLI YAML wins
+Env vars (``PRIMER_*``) override missing fields; CLI YAML wins
 over env vars (init args > env in pydantic-settings priority).
 """
 

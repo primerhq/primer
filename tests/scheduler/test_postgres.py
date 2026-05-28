@@ -1,7 +1,7 @@
 """Tests for matrix.scheduler.postgres.PostgresScheduler.
 
 Real-Postgres tests. They are skipped automatically when the
-``MATRIX_PG_TEST_DSN`` environment variable isn't set — no other
+``PRIMER_PG_TEST_DSN`` environment variable isn't set — no other
 test in this repo currently uses a live Postgres, so this file
 defines the fixture inline rather than relying on shared infra.
 
@@ -31,7 +31,7 @@ from primer.scheduler.postgres import PostgresScheduler
 from primer.storage.postgres import PostgresStorageProvider
 
 
-_DSN_ENV = "MATRIX_PG_TEST_DSN"
+_DSN_ENV = "PRIMER_PG_TEST_DSN"
 
 pytestmark = pytest.mark.skipif(
     os.getenv(_DSN_ENV) is None,

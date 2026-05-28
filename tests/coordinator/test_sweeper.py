@@ -14,8 +14,8 @@ import pytest
 
 
 pytestmark_pg = pytest.mark.skipif(
-    not os.environ.get("MATRIX_TEST_POSTGRES_URL"),
-    reason="needs MATRIX_TEST_POSTGRES_URL set",
+    not os.environ.get("PRIMER_TEST_POSTGRES_URL"),
+    reason="needs PRIMER_TEST_POSTGRES_URL set",
 )
 
 

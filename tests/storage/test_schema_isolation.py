@@ -1,10 +1,10 @@
-"""Tests for MATRIX_DB_SCHEMA / per-test schema isolation.
+"""Tests for PRIMER_DB_SCHEMA / per-test schema isolation.
 
 SQLite test: setting db_schema on AppConfig has no effect (SQLite has no
 schema concept) — the provider still boots and stores data normally.
 
 Postgres test: two providers pointing at different schemas don't see each
-other's data.  Skipped unless MATRIX_TEST_POSTGRES_URL is set.
+other's data.  Skipped unless PRIMER_TEST_POSTGRES_URL is set.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from primer.model.provider import (
 from primer.storage.postgres import PostgresStorageProvider
 from primer.storage.sqlite import SqliteStorageProvider
 
-_POSTGRES_URL_ENV = "MATRIX_TEST_POSTGRES_URL"
+_POSTGRES_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ async def test_postgres_two_schemas_are_isolated() -> None:
     """Providers using different Postgres schemas don't see each other's rows.
 
     One widget is written via schema_a; schema_b must return None for the
-    same id.  Skipped unless MATRIX_TEST_POSTGRES_URL is set.
+    same id.  Skipped unless PRIMER_TEST_POSTGRES_URL is set.
     """
     url = os.environ.get(_POSTGRES_URL_ENV)
     if not url:
@@ -156,9 +156,9 @@ async def test_postgres_two_schemas_are_isolated() -> None:
 
 @pytest.mark.asyncio
 async def test_postgres_db_schema_env_override() -> None:
-    """MATRIX_DB_SCHEMA env var flows through AppConfig into the Postgres provider.
+    """PRIMER_DB_SCHEMA env var flows through AppConfig into the Postgres provider.
 
-    Skipped unless MATRIX_TEST_POSTGRES_URL is set.
+    Skipped unless PRIMER_TEST_POSTGRES_URL is set.
     """
     url = os.environ.get(_POSTGRES_URL_ENV)
     if not url:

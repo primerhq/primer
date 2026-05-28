@@ -8,10 +8,10 @@ import pytest
 
 pytestmark = pytest.mark.skipif(
     not all(os.environ.get(v) for v in (
-        "MATRIX_TELEGRAM_BOT_TOKEN",
-        "MATRIX_TELEGRAM_TEST_CHAT_ID",
+        "PRIMER_TELEGRAM_BOT_TOKEN",
+        "PRIMER_TELEGRAM_TEST_CHAT_ID",
     )),
-    reason="set MATRIX_TELEGRAM_BOT_TOKEN + MATRIX_TELEGRAM_TEST_CHAT_ID",
+    reason="set PRIMER_TELEGRAM_BOT_TOKEN + PRIMER_TELEGRAM_TEST_CHAT_ID",
 )
 
 

@@ -49,7 +49,7 @@ class AppConfig(BaseSettings):
     """Lightweight app-level configuration."""
 
     model_config = SettingsConfigDict(
-        env_prefix="MATRIX_",
+        env_prefix="PRIMER_",
         env_nested_delimiter="__",
         extra="ignore",
     )
@@ -70,7 +70,7 @@ class AppConfig(BaseSettings):
             "Override the Postgres schema used by the storage provider. "
             "Applies only when the backend is Postgres; has no effect on "
             "SQLite (which has no schema concept). Intended for test "
-            "isolation: set MATRIX_DB_SCHEMA=<name> to place all tables "
+            "isolation: set PRIMER_DB_SCHEMA=<name> to place all tables "
             "in a dedicated schema so concurrent test runs don't collide."
         ),
     )
@@ -161,11 +161,11 @@ class AppConfig(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         """Source priority: init args > env > TOML > .env > secrets file.
 
-        TOML path is read from ``$MATRIX_CONFIG_PATH`` at instantiation
+        TOML path is read from ``$PRIMER_CONFIG_PATH`` at instantiation
         time. The CLI's YAML loader feeds its parsed dict through
         ``init_settings`` so a CLI-supplied YAML wins over env vars.
         """
-        toml_path = os.environ.get("MATRIX_CONFIG_PATH") or None
+        toml_path = os.environ.get("PRIMER_CONFIG_PATH") or None
         sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings]
         if toml_path is not None:
             sources.append(TomlConfigSettingsSource(settings_cls, toml_file=toml_path))

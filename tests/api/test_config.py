@@ -28,9 +28,9 @@ class TestZeroConfigDefaults:
     def test_all_defaults_construct_without_any_input(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # No MATRIX_* env vars, no TOML, no init args.
+        # No PRIMER_* env vars, no TOML, no init args.
         for var in (
-            "MATRIX_DB__PROVIDER", "MATRIX_CONFIG_PATH",
+            "PRIMER_DB__PROVIDER", "PRIMER_CONFIG_PATH",
         ):
             monkeypatch.delenv(var, raising=False)
         cfg = AppConfig()
@@ -72,9 +72,9 @@ class TestDbField:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("MATRIX_DB__PROVIDER", "sqlite")
+        monkeypatch.setenv("PRIMER_DB__PROVIDER", "sqlite")
         monkeypatch.setenv(
-            "MATRIX_DB__CONFIG__PATH", str(tmp_path / "x.sqlite"),
+            "PRIMER_DB__CONFIG__PATH", str(tmp_path / "x.sqlite"),
         )
         cfg = AppConfig()
         assert cfg.db is not None
@@ -126,9 +126,9 @@ class TestTomlConfigPath:
             ),
             encoding="utf-8",
         )
-        for var in ("MATRIX_DB__PROVIDER",):
+        for var in ("PRIMER_DB__PROVIDER",):
             monkeypatch.delenv(var, raising=False)
-        monkeypatch.setenv("MATRIX_CONFIG_PATH", str(toml_path))
+        monkeypatch.setenv("PRIMER_CONFIG_PATH", str(toml_path))
         cfg = AppConfig()
         assert cfg.log_level == "debug"
         assert cfg.db is not None
@@ -143,6 +143,6 @@ class TestTomlConfigPath:
         toml_path.write_text(
             'log_level = "debug"\n', encoding="utf-8",
         )
-        monkeypatch.setenv("MATRIX_CONFIG_PATH", str(toml_path))
+        monkeypatch.setenv("PRIMER_CONFIG_PATH", str(toml_path))
         cfg = AppConfig(log_level="info")
         assert cfg.log_level == "info"

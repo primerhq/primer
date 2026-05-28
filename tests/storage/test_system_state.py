@@ -1,6 +1,6 @@
 """Tests for the ``system_state`` singleton table on both storage backends.
 
-Postgres tests are skipped unless ``MATRIX_TEST_POSTGRES_URL`` is set.
+Postgres tests are skipped unless ``PRIMER_TEST_POSTGRES_URL`` is set.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from primer.storage.sqlite import SqliteStorageProvider
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
-_POSTGRES_URL_ENV = "MATRIX_TEST_POSTGRES_URL"
+_POSTGRES_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
 
 
 def _parse_postgres_url(url: str) -> PostgresConfig:

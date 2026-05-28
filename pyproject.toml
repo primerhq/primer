@@ -74,7 +74,7 @@ dev = [
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = [".", "runtime"]
-# tests/e2e/ is skipped unless MATRIX_RUN_E2E=1 is set in the environment
+# tests/e2e/ is skipped unless PRIMER_RUN_E2E=1 is set in the environment
 # (see tests/e2e/conftest.py). The harness sets the env var; default unit
 # runs do not, so contributors running `uv run pytest` aren't bothered by
 # the e2e tests' need for a live server.
@@ -103,7 +103,7 @@ omit = [
     # functions are exercised by tests/test_cli.py via a CliRunner with
     # uvicorn patched out.
     # Postgres scheduler — exercised by tests/scheduler/test_postgres.py
-    # which gates on MATRIX_PG_TEST_DSN. Without a live Postgres the
+    # which gates on PRIMER_PG_TEST_DSN. Without a live Postgres the
     # tests skip and this file shows ~25% coverage; same treatment as
     # the primer/storage/postgres.py family in CI-with-DSN runs.
     "primer/scheduler/postgres.py",

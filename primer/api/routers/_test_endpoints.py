@@ -1,6 +1,6 @@
 """Instrumentation endpoints for distributed-mode test scenarios.
 
-These routes are mounted ONLY when the ``MATRIX_ENABLE_TEST_ENDPOINTS``
+These routes are mounted ONLY when the ``PRIMER_ENABLE_TEST_ENDPOINTS``
 environment variable is set to ``1``.  They are never included in the
 production OpenAPI schema and must not be relied upon by application
 code outside of ``tests/``.

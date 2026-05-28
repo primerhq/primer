@@ -8,7 +8,7 @@ against a Postgres-backed pool of 20 leases (mixed kinds). Verifies:
 * No permanently stuck locks — after the test, no lease has
   ``claimed_by IS NOT NULL AND expires_at > now()``.
 
-Skipped unless MATRIX_TEST_POSTGRES_URL is set (same gate as the other
+Skipped unless PRIMER_TEST_POSTGRES_URL is set (same gate as the other
 Postgres live tests in ``tests/claim/test_postgres_engine.py``).
 
 The test uses the ``_NoJoinAdapter`` trick (eligibility SQL references only
@@ -33,7 +33,7 @@ from primer.model.provider import PoolConfig, PostgresConfig
 from primer.storage.postgres import PostgresStorageProvider
 
 
-_URL_ENV = "MATRIX_TEST_POSTGRES_URL"
+_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
 
 POSTGRES_AVAILABLE = bool(os.environ.get(_URL_ENV))
 

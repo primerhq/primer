@@ -113,7 +113,7 @@ uvicorn src.main:app --reload
 ## Environment
 
 See \`.env.example\` for required variables. The session runtime injects
-\`MATRIX_SESSION_ID\` automatically — do not hardcode it.
+\`PRIMER_SESSION_ID\` automatically — do not hardcode it.
 `,
   "/pyproject.toml": `[project]
 name = "webhook-svc"

@@ -4,7 +4,7 @@
 #   docker build -t matrix/workspace-runtime:1.0 runtime/
 #
 # Run (minimal):
-#   docker run --rm -e MATRIX_RUNTIME_TOKEN=<secret> \
+#   docker run --rm -e PRIMER_RUNTIME_TOKEN=<secret> \
 #              -p 5959:5959 matrix/workspace-runtime:1.0
 #
 # Workspace templates extend this image with:

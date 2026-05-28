@@ -8,11 +8,11 @@ import pytest
 
 pytestmark = pytest.mark.skipif(
     not all(os.environ.get(v) for v in (
-        "MATRIX_SLACK_APP_TOKEN",
-        "MATRIX_SLACK_BOT_TOKEN",
-        "MATRIX_SLACK_TEST_CHANNEL",
+        "PRIMER_SLACK_APP_TOKEN",
+        "PRIMER_SLACK_BOT_TOKEN",
+        "PRIMER_SLACK_TEST_CHANNEL",
     )),
-    reason="set MATRIX_SLACK_APP_TOKEN/BOT_TOKEN/TEST_CHANNEL to enable",
+    reason="set PRIMER_SLACK_APP_TOKEN/BOT_TOKEN/TEST_CHANNEL to enable",
 )
 
 

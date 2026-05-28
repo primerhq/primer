@@ -12,7 +12,7 @@ from primer.model.provider import PoolConfig, PostgresConfig
 from primer.storage.postgres import PostgresStorageProvider
 
 
-_URL_ENV = "MATRIX_TEST_POSTGRES_URL"
+_URL_ENV = "PRIMER_TEST_POSTGRES_URL"
 
 
 def _parse_url(url: str) -> PostgresConfig:
@@ -35,7 +35,7 @@ def _parse_url(url: str) -> PostgresConfig:
 @pytest_asyncio.fixture
 async def postgres_storage_provider():
     """An initialised :class:`PostgresStorageProvider` against the URL in
-    ``MATRIX_TEST_POSTGRES_URL``. Skips when the variable is unset.
+    ``PRIMER_TEST_POSTGRES_URL``. Skips when the variable is unset.
 
     Drops and recreates the ``rate_limit_lease`` table on entry so each
     test starts clean.

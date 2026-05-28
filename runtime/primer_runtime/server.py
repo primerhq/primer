@@ -3,7 +3,7 @@
 Entry point: ``python -m primer_runtime.server``
 
 Environment variables:
-    MATRIX_RUNTIME_TOKEN  — required shared secret; auth every WS connection.
+    PRIMER_RUNTIME_TOKEN  — required shared secret; auth every WS connection.
     WORKSPACE_ROOT        — path to write ``.runtime.ready``; default ``/workspace``.
     RUNTIME_HOST          — bind host; default ``0.0.0.0``.
     RUNTIME_PORT          — bind port; default ``5959``.
@@ -243,13 +243,13 @@ def build_app(*, token: str | None = None, workspace_root: str | None = None) ->
     Parameters
     ----------
     token:
-        Override the ``MATRIX_RUNTIME_TOKEN`` env var (useful in tests).
+        Override the ``PRIMER_RUNTIME_TOKEN`` env var (useful in tests).
     workspace_root:
         Override the ``WORKSPACE_ROOT`` env var (useful in tests).
     """
-    resolved_token = token or os.environ.get("MATRIX_RUNTIME_TOKEN", "")
+    resolved_token = token or os.environ.get("PRIMER_RUNTIME_TOKEN", "")
     if not resolved_token:
-        raise RuntimeError("MATRIX_RUNTIME_TOKEN must be set (or pass token= to build_app)")
+        raise RuntimeError("PRIMER_RUNTIME_TOKEN must be set (or pass token= to build_app)")
 
     resolved_root = workspace_root or os.environ.get("WORKSPACE_ROOT", "/workspace")
 

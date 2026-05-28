@@ -67,7 +67,7 @@ async def _inject_chat_approval_park_async(
 ) -> None:
     """Stamp parked_status=parked + _approval parked_state onto the chat row."""
     import os
-    db = os.environ.get("MATRIX_UI_E2E_DB", "matrix")
+    db = os.environ.get("PRIMER_UI_E2E_DB", "matrix")
     now = datetime.now(timezone.utc)
     parked_until = now + timedelta(seconds=600)
     parked_state: dict[str, Any] = {

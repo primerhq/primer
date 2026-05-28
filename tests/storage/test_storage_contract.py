@@ -1,6 +1,6 @@
 """Parametrised :class:`Storage` contract — runs against every backend.
 
-Each scenario is asserted on both Postgres (when ``MATRIX_TEST_PG_DSN``
+Each scenario is asserted on both Postgres (when ``PRIMER_TEST_PG_DSN``
 is set) and SQLite. The point is to catch a semantic divergence the
 moment it appears, not to re-test the per-backend translator.
 """
@@ -40,7 +40,7 @@ class _Thing(Identifiable):
 
 
 _BACKENDS: list[str] = ["sqlite"]
-if os.environ.get("MATRIX_TEST_PG_DSN"):
+if os.environ.get("PRIMER_TEST_PG_DSN"):
     _BACKENDS.append("postgres")
 
 
@@ -55,7 +55,7 @@ async def provider(
             config=SqliteConfig(path=tmp_path / "contract.sqlite"),
         )
     else:
-        pytest.skip("postgres contract path requires MATRIX_TEST_PG_DSN")
+        pytest.skip("postgres contract path requires PRIMER_TEST_PG_DSN")
     p = StorageProviderFactory.create(cfg)
     await p.initialize()
     try:

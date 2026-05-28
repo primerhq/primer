@@ -77,29 +77,29 @@ def _parse_postgres_url(url: str) -> dict[str, Any]:
 
 
 def _pg_env(postgres_url: str, schema: str) -> dict[str, str]:
-    """Build the MATRIX_DB__* env-var dict for a Postgres connection.
+    """Build the PRIMER_DB__* env-var dict for a Postgres connection.
 
     ``pydantic-settings`` uses ``__`` as the nested delimiter, so
-    ``MATRIX_DB__PROVIDER=postgres`` maps to ``AppConfig.db.provider``.
+    ``PRIMER_DB__PROVIDER=postgres`` maps to ``AppConfig.db.provider``.
     """
     parts = _parse_postgres_url(postgres_url)
     return {
-        "MATRIX_DB__PROVIDER": "postgres",
-        "MATRIX_DB__CONFIG__HOSTNAME": parts["hostname"],
-        "MATRIX_DB__CONFIG__PORT": str(parts["port"]),
-        "MATRIX_DB__CONFIG__USERNAME": parts["username"],
-        "MATRIX_DB__CONFIG__PASSWORD": parts["password"],
-        "MATRIX_DB__CONFIG__DATABASE": parts["database"],
+        "PRIMER_DB__PROVIDER": "postgres",
+        "PRIMER_DB__CONFIG__HOSTNAME": parts["hostname"],
+        "PRIMER_DB__CONFIG__PORT": str(parts["port"]),
+        "PRIMER_DB__CONFIG__USERNAME": parts["username"],
+        "PRIMER_DB__CONFIG__PASSWORD": parts["password"],
+        "PRIMER_DB__CONFIG__DATABASE": parts["database"],
         # Schema isolation — each cluster uses its own schema.
-        "MATRIX_DB_SCHEMA": schema,
+        "PRIMER_DB_SCHEMA": schema,
         # Use Postgres scheduler for cross-process event bus.
-        "MATRIX_SCHEDULER__PROVIDER": "postgres",
-        "MATRIX_SCHEDULER__CONFIG__HOSTNAME": parts["hostname"],
-        "MATRIX_SCHEDULER__CONFIG__PORT": str(parts["port"]),
-        "MATRIX_SCHEDULER__CONFIG__USERNAME": parts["username"],
-        "MATRIX_SCHEDULER__CONFIG__PASSWORD": parts["password"],
-        "MATRIX_SCHEDULER__CONFIG__DATABASE": parts["database"],
-        "MATRIX_SCHEDULER__CONFIG__DB_SCHEMA": schema,
+        "PRIMER_SCHEDULER__PROVIDER": "postgres",
+        "PRIMER_SCHEDULER__CONFIG__HOSTNAME": parts["hostname"],
+        "PRIMER_SCHEDULER__CONFIG__PORT": str(parts["port"]),
+        "PRIMER_SCHEDULER__CONFIG__USERNAME": parts["username"],
+        "PRIMER_SCHEDULER__CONFIG__PASSWORD": parts["password"],
+        "PRIMER_SCHEDULER__CONFIG__DATABASE": parts["database"],
+        "PRIMER_SCHEDULER__CONFIG__DB_SCHEMA": schema,
     }
 
 
@@ -185,8 +185,8 @@ class TestCluster:
         self._started = True
 
         base_env = {**os.environ, **_pg_env(self._postgres_url, self._schema)}
-        base_env["MATRIX_LOG_JSON"] = "false"
-        base_env["MATRIX_AUTO_BOOTSTRAP"] = "false"
+        base_env["PRIMER_LOG_JSON"] = "false"
+        base_env["PRIMER_AUTO_BOOTSTRAP"] = "false"
         base_env.update(self._env_overrides)
 
         # Launch API processes.
@@ -195,9 +195,9 @@ class TestCluster:
             owner_prefix = f"api-{self._schema}-{i}"
             env = {
                 **base_env,
-                "MATRIX_PORT": str(port),
-                "MATRIX_RUNTIME_MODE": "api",
-                "MATRIX_OWNER_ID_PREFIX": owner_prefix,
+                "PRIMER_PORT": str(port),
+                "PRIMER_RUNTIME_MODE": "api",
+                "PRIMER_OWNER_ID_PREFIX": owner_prefix,
             }
             proc = subprocess.Popen(
                 [sys.executable, "-m", "matrix", "api", "--no-worker"],
@@ -218,11 +218,11 @@ class TestCluster:
             owner_prefix = f"worker-{self._schema}-{i}"
             env = {
                 **base_env,
-                "MATRIX_RUNTIME_MODE": "worker",
-                "MATRIX_OWNER_ID_PREFIX": owner_prefix,
+                "PRIMER_RUNTIME_MODE": "worker",
+                "PRIMER_OWNER_ID_PREFIX": owner_prefix,
                 # Workers still need a port for /v1/health; give them
                 # ports beyond the API range to avoid collisions.
-                "MATRIX_PORT": str(
+                "PRIMER_PORT": str(
                     self._start_port + self._api_count + i
                 ),
             }

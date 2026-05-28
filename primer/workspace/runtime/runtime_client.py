@@ -98,7 +98,7 @@ class RuntimeClient:
         Full WebSocket URL of the runtime server,
         e.g. ``"ws://127.0.0.1:32100/"``.
     token:
-        Bearer token injected as ``MATRIX_RUNTIME_TOKEN`` inside the container.
+        Bearer token injected as ``PRIMER_RUNTIME_TOKEN`` inside the container.
     protocol_version:
         Protocol major.minor to advertise during the ``hello`` handshake.
     """

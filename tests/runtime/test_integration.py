@@ -107,7 +107,7 @@ async def _runtime_container(
         container = await docker.containers.create(
             config={
                 "Image": _RUNTIME_IMAGE,
-                "Env": [f"MATRIX_RUNTIME_TOKEN={token}"],
+                "Env": [f"PRIMER_RUNTIME_TOKEN={token}"],
                 "HostConfig": {
                     "Binds": [f"{workspace_dir}:/workspace"],
                     "PortBindings": {

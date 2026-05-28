@@ -3,7 +3,7 @@
 This suite is parametrised across :class:`InMemoryScheduler` and
 :class:`PostgresScheduler` via the ``scheduler`` fixture in
 ``conftest.py``. The Postgres parametrisation is skipped automatically
-when ``MATRIX_PG_TEST_DSN`` is unset.
+when ``PRIMER_PG_TEST_DSN`` is unset.
 
 The helper :func:`_seed_session` papers over the per-impl seeding
 difference (in-memory exposes ``register_session_for_test``; Postgres

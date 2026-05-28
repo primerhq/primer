@@ -72,7 +72,7 @@ class ProblemDetails(BaseModel):
 # Order matters: handlers are checked most-specific first. We list the
 # more-derived classes BEFORE their bases so a MatrixError-base lookup
 # falls through to the most specific match.
-_MATRIX_ERROR_MAP: list[tuple[type[MatrixError], int, str, str]] = [
+_PRIMER_ERROR_MAP: list[tuple[type[MatrixError], int, str, str]] = [
     (BadRequestError, 400, "/errors/bad-request", "Bad Request"),
     (AuthenticationError, 401, "/errors/authentication-failed", "Authentication Failed"),
     (AuthRequiredError, 401, "/errors/auth-required", "Authentication Required"),
@@ -91,7 +91,7 @@ _MATRIX_ERROR_MAP: list[tuple[type[MatrixError], int, str, str]] = [
 
 
 _RESPONSES_BY_CODE: dict[int, dict[str, Any]] = {}
-for _exc, _status, _uri, _title in _MATRIX_ERROR_MAP:
+for _exc, _status, _uri, _title in _PRIMER_ERROR_MAP:
     _RESPONSES_BY_CODE.setdefault(
         _status,
         {
@@ -236,7 +236,7 @@ def register_error_handlers(app: FastAPI) -> None:
     only consults the status-code registry, not the class registry,
     for unhandled exceptions.
     """
-    for exc_cls, status, type_uri, title in _MATRIX_ERROR_MAP:
+    for exc_cls, status, type_uri, title in _PRIMER_ERROR_MAP:
         app.add_exception_handler(
             exc_cls, _make_matrix_error_handler(status, type_uri, title)
         )

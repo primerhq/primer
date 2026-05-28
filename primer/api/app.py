@@ -745,7 +745,7 @@ def _build_storage_provider(config: AppConfig) -> "StorageProvider":
             config=_SqliteConfig(path=default_path),
         )
 
-    # MATRIX_DB_SCHEMA overrides the Postgres schema for test isolation.
+    # PRIMER_DB_SCHEMA overrides the Postgres schema for test isolation.
     # SQLite has no schema concept, so the override is silently ignored
     # when the backend is SQLite.
     if config.db_schema is not None and isinstance(sp_config.config, _PostgresConfig):
@@ -840,7 +840,7 @@ def _mount_routers(
     # Instrumentation endpoints — only mounted when the env var is set.
     # The import is deferred so the module never loads in production.
     import os as _os
-    if _os.environ.get("MATRIX_ENABLE_TEST_ENDPOINTS") == "1":
+    if _os.environ.get("PRIMER_ENABLE_TEST_ENDPOINTS") == "1":
         from primer.api.routers._test_endpoints import router as _test_router
         app.include_router(_test_router, prefix=prefix)
 

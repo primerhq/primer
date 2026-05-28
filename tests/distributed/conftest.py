@@ -184,7 +184,7 @@ async def fresh_cluster_2x2(postgres_container: str) -> TestCluster:
         worker_count=2,
         start_port=8220,
         schema=schema,
-        env_overrides={"MATRIX_AUTO_BOOTSTRAP": "true"},
+        env_overrides={"PRIMER_AUTO_BOOTSTRAP": "true"},
     )
     await cluster.start()
     try:

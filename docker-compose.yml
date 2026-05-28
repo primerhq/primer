@@ -19,7 +19,7 @@
 #   podman compose down -v            # also wipes the matrix-pgdata volume
 #
 # AppConfig is driven entirely by environment variables here (the
-# matrix service reads MATRIX_* env, no config.yaml needed). To
+# matrix service reads PRIMER_* env, no config.yaml needed). To
 # override defaults, create a .env file next to this compose file.
 
 services:
@@ -28,11 +28,11 @@ services:
     container_name: matrix-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${MATRIX_DB_USER:-matrix}
-      POSTGRES_PASSWORD: ${MATRIX_DB_PASSWORD:-matrix}
-      POSTGRES_DB: ${MATRIX_DB_DATABASE:-matrix}
+      POSTGRES_USER: ${PRIMER_DB_USER:-matrix}
+      POSTGRES_PASSWORD: ${PRIMER_DB_PASSWORD:-matrix}
+      POSTGRES_DB: ${PRIMER_DB_DATABASE:-matrix}
     ports:
-      - "${MATRIX_DB_PORT:-5432}:5432"
+      - "${PRIMER_DB_PORT:-5432}:5432"
     volumes:
       # Named volume — lives inside the podman-machine VM's filesystem.
       # A host bind-mount (./.data/postgres) was attempted first but
@@ -46,7 +46,7 @@ services:
       # vector store registry and the internal collections subsystem.
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${MATRIX_DB_USER:-matrix} -d ${MATRIX_DB_DATABASE:-matrix}"]
+      test: ["CMD-SHELL", "pg_isready -U ${PRIMER_DB_USER:-matrix} -d ${PRIMER_DB_DATABASE:-matrix}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -63,24 +63,24 @@ services:
     environment:
       # Database: connect by compose-network DNS, NOT localhost.
       # AppConfig after the §1 SQLite refactor expects nested db.*
-      # via env_nested_delimiter="__"; the legacy flat MATRIX_DB_HOST
+      # via env_nested_delimiter="__"; the legacy flat PRIMER_DB_HOST
       # etc. keys are silently ignored. Without this, storage defaults
       # to embedded SQLite at ~/.primer/db/data.sqlite and the
       # PostgresScheduler crashes on .pool attribute access.
-      MATRIX_DB__PROVIDER: postgres
-      MATRIX_DB__CONFIG__HOSTNAME: postgres
-      MATRIX_DB__CONFIG__PORT: 5432
-      MATRIX_DB__CONFIG__DATABASE: ${MATRIX_DB_DATABASE:-matrix}
-      MATRIX_DB__CONFIG__USERNAME: ${MATRIX_DB_USER:-matrix}
-      MATRIX_DB__CONFIG__PASSWORD: ${MATRIX_DB_PASSWORD:-matrix}
+      PRIMER_DB__PROVIDER: postgres
+      PRIMER_DB__CONFIG__HOSTNAME: postgres
+      PRIMER_DB__CONFIG__PORT: 5432
+      PRIMER_DB__CONFIG__DATABASE: ${PRIMER_DB_DATABASE:-matrix}
+      PRIMER_DB__CONFIG__USERNAME: ${PRIMER_DB_USER:-matrix}
+      PRIMER_DB__CONFIG__PASSWORD: ${PRIMER_DB_PASSWORD:-matrix}
       # Scheduler: in-process Postgres (default for production).
-      MATRIX_SCHEDULER__PROVIDER: postgres
+      PRIMER_SCHEDULER__PROVIDER: postgres
       # Bind to all interfaces inside the container so the host port
       # mapping can reach the server.
-      MATRIX_HOST: 0.0.0.0
-      MATRIX_PORT: 8765
+      PRIMER_HOST: 0.0.0.0
+      PRIMER_PORT: 8765
     ports:
-      - "${MATRIX_PORT:-8765}:8765"
+      - "${PRIMER_PORT:-8765}:8765"
     volumes:
       # Live-mount ui/ so JSX/CSS edits are picked up by Babel-in-browser
       # without rebuilding the image. The FastAPI static mount serves

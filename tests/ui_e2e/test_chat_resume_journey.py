@@ -28,13 +28,13 @@ from playwright.sync_api import expect
 
 
 _LMSTUDIO_URL = os.environ.get(
-    "MATRIX_E2E_LMSTUDIO_URL", "http://127.0.0.1:8080",
+    "PRIMER_E2E_LMSTUDIO_URL", "http://127.0.0.1:8080",
 )
 _LMSTUDIO_TOKEN = os.environ.get(
-    "MATRIX_E2E_LMSTUDIO_TOKEN", "***REMOVED***",
+    "PRIMER_E2E_LMSTUDIO_TOKEN", "***REMOVED***",
 )
 _LMSTUDIO_MODEL = os.environ.get(
-    "MATRIX_E2E_LMSTUDIO_MODEL", "google/gemma-4-e4b",
+    "PRIMER_E2E_LMSTUDIO_MODEL", "google/gemma-4-e4b",
 )
 
 

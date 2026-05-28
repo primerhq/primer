@@ -27,7 +27,7 @@ After both APIs are healthy (cluster ready):
    the exclusivity guard.
 
 The ``fresh_cluster_2x2`` fixture (defined in ``conftest.py``) starts
-both API processes with ``MATRIX_AUTO_BOOTSTRAP=true`` on a brand-new
+both API processes with ``PRIMER_AUTO_BOOTSTRAP=true`` on a brand-new
 schema, making this an end-to-end exclusivity test.
 
 Requires:
@@ -99,7 +99,7 @@ async def test_only_one_bootstrap_runs_on_fresh_db(
     try:
         # ------------------------------------------------------------------
         # Phase 1: wait for bootstrap_completed_at to be stamped.
-        # Both APIs boot with MATRIX_AUTO_BOOTSTRAP=true; one of them
+        # Both APIs boot with PRIMER_AUTO_BOOTSTRAP=true; one of them
         # will win the race and stamp the marker.  Allow up to 60s.
         # ------------------------------------------------------------------
         deadline = time.monotonic() + 60.0

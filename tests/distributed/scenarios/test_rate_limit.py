@@ -6,7 +6,7 @@ Throughout the burst we poll the ``rate_limit_lease`` table and assert
 that the peak observed concurrent count never exceeds 3.
 
 Requires:
-- ``MATRIX_ENABLE_TEST_ENDPOINTS=1`` (set by the cluster fixture via
+- ``PRIMER_ENABLE_TEST_ENDPOINTS=1`` (set by the cluster fixture via
   env_overrides).
 - A live Postgres container (session-scoped ``postgres_container``
   fixture).
@@ -82,7 +82,7 @@ async def cluster_2x2_with_test_endpoints(postgres_container: str, db_schema: st
         worker_count=2,
         start_port=8300,
         schema=db_schema,
-        env_overrides={"MATRIX_ENABLE_TEST_ENDPOINTS": "1"},
+        env_overrides={"PRIMER_ENABLE_TEST_ENDPOINTS": "1"},
     )
     await cluster.start()
     try:

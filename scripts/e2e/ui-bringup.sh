@@ -23,7 +23,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-PORT="${MATRIX_E2E_PORT:-8765}"
+PORT="${PRIMER_E2E_PORT:-8765}"
 BASE_URL="http://127.0.0.1:$PORT"
 CONSOLE_URL="$BASE_URL/console/"
 

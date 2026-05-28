@@ -20,7 +20,7 @@ Three fixture families:
   screenshot + console log + network log here automatically.
 
 Default-skip mechanism mirrors ``tests/e2e/conftest.py``: unless
-``MATRIX_RUN_UI_E2E=1`` is set, every test module in this directory is
+``PRIMER_RUN_UI_E2E=1`` is set, every test module in this directory is
 collected-then-ignored so a casual ``uv run pytest`` from the root
 doesn't drag the browser stack in.
 """
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-if os.environ.get("MATRIX_RUN_UI_E2E") != "1":
+if os.environ.get("PRIMER_RUN_UI_E2E") != "1":
     collect_ignore_glob = ["test_*.py"]
 
 
@@ -60,13 +60,13 @@ def _base_url() -> str:
     """Where the matrix server is listening.
 
     Defaults match ``scripts/e2e/ui-bringup.sh`` (and the production
-    docker-compose). Override with ``MATRIX_UI_E2E_BASE_URL`` for
+    docker-compose). Override with ``PRIMER_UI_E2E_BASE_URL`` for
     non-standard setups.
     """
-    explicit = os.environ.get("MATRIX_UI_E2E_BASE_URL")
+    explicit = os.environ.get("PRIMER_UI_E2E_BASE_URL")
     if explicit:
         return explicit.rstrip("/")
-    port = os.environ.get("MATRIX_E2E_PORT", "8765")
+    port = os.environ.get("PRIMER_E2E_PORT", "8765")
     return f"http://127.0.0.1:{port}"
 
 

@@ -3,7 +3,7 @@
 Exposes a parametric ``scheduler`` fixture that runs each consuming
 test against both :class:`InMemoryScheduler` and
 :class:`PostgresScheduler`. The Postgres parametrisation is skipped
-automatically when ``MATRIX_PG_TEST_DSN`` is unset, so the suite stays
+automatically when ``PRIMER_PG_TEST_DSN`` is unset, so the suite stays
 green on machines without a live database.
 
 A companion ``pg_storage_or_none`` fixture yields a real
@@ -34,7 +34,7 @@ from primer.scheduler.postgres import PostgresScheduler
 from primer.storage.postgres import PostgresStorageProvider
 
 
-_DSN_ENV = "MATRIX_PG_TEST_DSN"
+_DSN_ENV = "PRIMER_PG_TEST_DSN"
 
 
 def _parse_dsn(dsn: str) -> PostgresConfig:
@@ -58,7 +58,7 @@ def _parse_dsn(dsn: str) -> PostgresConfig:
 
 @pytest.fixture
 async def pg_storage_or_none():
-    """Yield a :class:`PostgresStorageProvider` when ``MATRIX_PG_TEST_DSN``
+    """Yield a :class:`PostgresStorageProvider` when ``PRIMER_PG_TEST_DSN``
     is set, otherwise ``None``.
 
     Mirrors the table-cleanup pattern from ``test_postgres.py``: drops
@@ -89,7 +89,7 @@ async def pg_storage_or_none():
 @pytest.fixture(params=["in_memory", "postgres"])
 async def scheduler(request, pg_storage_or_none):
     """Yield an initialised Scheduler. The ``postgres`` param is
-    skipped when ``MATRIX_PG_TEST_DSN`` is unset."""
+    skipped when ``PRIMER_PG_TEST_DSN`` is unset."""
     if request.param == "in_memory":
         s = InMemoryScheduler()
         await s.initialize()

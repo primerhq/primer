@@ -1,6 +1,6 @@
 """Tests for the /v1/_test/* instrumentation endpoints.
 
-These endpoints are only mounted when ``MATRIX_ENABLE_TEST_ENDPOINTS=1``
+These endpoints are only mounted when ``PRIMER_ENABLE_TEST_ENDPOINTS=1``
 and must return 404 when that env var is absent.
 """
 
@@ -36,9 +36,9 @@ def _make_app_with_env(
 ) -> FastAPI:
     """Build a test app with the env var optionally set."""
     if enable_test_endpoints:
-        monkeypatch.setenv("MATRIX_ENABLE_TEST_ENDPOINTS", "1")
+        monkeypatch.setenv("PRIMER_ENABLE_TEST_ENDPOINTS", "1")
     else:
-        monkeypatch.delenv("MATRIX_ENABLE_TEST_ENDPOINTS", raising=False)
+        monkeypatch.delenv("PRIMER_ENABLE_TEST_ENDPOINTS", raising=False)
 
     app = create_test_app(
         storage_provider=storage_provider,  # type: ignore[arg-type]
@@ -95,7 +95,7 @@ async def test_acquire_rate_limit_returns_200_when_env_set(
     fake_provider_registry: ProviderRegistry,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When MATRIX_ENABLE_TEST_ENDPOINTS=1, the endpoint mounts and returns 200."""
+    """When PRIMER_ENABLE_TEST_ENDPOINTS=1, the endpoint mounts and returns 200."""
     app = _make_app_with_env(
         storage_provider=fake_storage_provider,
         provider_registry=fake_provider_registry,
@@ -122,7 +122,7 @@ async def test_acquire_rate_limit_returns_404_when_env_unset(
     fake_provider_registry: ProviderRegistry,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When MATRIX_ENABLE_TEST_ENDPOINTS is unset, the endpoint returns 404."""
+    """When PRIMER_ENABLE_TEST_ENDPOINTS is unset, the endpoint returns 404."""
     app = _make_app_with_env(
         storage_provider=fake_storage_provider,
         provider_registry=fake_provider_registry,
