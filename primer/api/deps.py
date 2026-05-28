@@ -210,6 +210,13 @@ def get_internal_collections_config_storage(
     return sp.get_storage(InternalCollectionsConfig)
 
 
+def get_internal_collections_bootstrap_status_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+):
+    from primer.model.internal import InternalCollectionsBootstrapStatus
+    return sp.get_storage(InternalCollectionsBootstrapStatus)
+
+
 def get_ingest_failure_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
 ) -> "Storage[IngestFailure]":
@@ -396,6 +403,7 @@ __all__ = [
     "get_event_bus",
     "get_graph_storage",
     "get_ingest_failure_storage",
+    "get_internal_collections_bootstrap_status_storage",
     "get_internal_collections_config_storage",
     "get_internal_collections_subsystem",
     "get_llm_provider_storage",

@@ -27,6 +27,20 @@ const IC_CACHE_CONFIG = "ic:config";
 const IC_CACHE_EMBED = "ic:embedding-providers";
 const IC_CACHE_RERANK = "ic:rerank-providers";
 const IC_CACHE_SSP = "ic:ssp";
+const IC_CACHE_BOOTSTRAP = "ic:bootstrap-status";
+
+// Six steps in order — keeps the UI's per-phase rendering in sync with
+// the backend's phase enum. Used to compute the global progress bar
+// (current_phase_index + within_phase_fraction) / total_phases.
+const IC_BOOTSTRAP_PHASES = [
+  { id: "drain_queue", label: "Draining CDC queue" },
+  { id: "materialise_collections", label: "Materialising collections" },
+  { id: "ingest_agents", label: "Ingesting agents" },
+  { id: "ingest_graphs", label: "Ingesting graphs" },
+  { id: "ingest_collections", label: "Ingesting collections" },
+  { id: "ingest_tools", label: "Ingesting tools" },
+  { id: "finalize", label: "Finalising" },
+];
 
 // 404 → null suppression for the IC config probe.
 async function _icFetchConfig(signal) {
@@ -37,6 +51,28 @@ async function _icFetchConfig(signal) {
     if (err && err.status === 404) return null;
     throw err;
   }
+}
+
+// Poll the bootstrap-status row. Fast cadence (1s) while a bootstrap
+// is actively running so the progress bar feels alive; slow cadence
+// (5s) otherwise so the page doesn't churn the network when idle.
+//
+// Returns the same shape as useResource: {data, error, loading, refetch}.
+function _useBootstrapStatus() {
+  const { useResource } = window.primerApi;
+  const [pollMs, setPollMs] = React.useState(5000);
+  const res = useResource(
+    IC_CACHE_BOOTSTRAP,
+    (signal) => window.primerApi.apiFetch(
+      "GET", "/internal_collections/bootstrap/status", null, { signal },
+    ),
+    { pollMs },
+  );
+  React.useEffect(() => {
+    const next = res.data?.status === "running" ? 1000 : 5000;
+    if (next !== pollMs) setPollMs(next);
+  }, [res.data?.status, pollMs]);
+  return res;
 }
 
 function _icToastErr(pushToast, fallbackTitle) {
@@ -141,29 +177,69 @@ function InactiveCard({ onRefresh, pushToast }) {
 
 function ConfiguredCard({ config, onRefresh, pushToast }) {
   const { apiFetch, useMutation } = window.primerApi;
-  const [bootstrapResult, setBootstrapResult] = React.useState(null);
   const [updateOpen, setUpdateOpen] = React.useState(false);
+  const bootstrapStatus = _useBootstrapStatus();
 
   const bootstrap = useMutation(
     () => apiFetch("POST", "/internal_collections/bootstrap"),
     {
-      invalidates: [IC_CACHE_CONFIG],
-      onSuccess: (resp) => {
-        setBootstrapResult(resp);
-        pushToast({ kind: "success", title: "Bootstrap complete", detail: "Subsystem is now active." });
-        onRefresh();
+      invalidates: [IC_CACHE_CONFIG, IC_CACHE_BOOTSTRAP],
+      onSuccess: () => {
+        pushToast({ kind: "info", title: "Bootstrap started", detail: "Running in the background — leave this page if you like." });
+        bootstrapStatus.refetch();
       },
-      onError: _icToastErr(pushToast, "Bootstrap failed"),
+      onError: (err) => {
+        if (err?.status === 409) {
+          // Already running — just sync the status and let the UI render.
+          bootstrapStatus.refetch();
+          return;
+        }
+        _icToastErr(pushToast, "Bootstrap failed")(err);
+      },
     }
   );
 
+  // When a running bootstrap finishes, sync the config (which now has
+  // activated_at set). The page-level useResource flips us from
+  // ConfiguredCard to ActiveCard on the next render.
+  const prevStatusRef = React.useRef(null);
+  React.useEffect(() => {
+    const prev = prevStatusRef.current;
+    const curr = bootstrapStatus.data?.status;
+    if (prev === "running" && curr === "succeeded") {
+      pushToast({ kind: "success", title: "Bootstrap complete", detail: "Subsystem is now active." });
+      onRefresh();
+    } else if (prev === "running" && curr === "failed") {
+      pushToast({
+        kind: "error",
+        title: "Bootstrap failed",
+        detail: bootstrapStatus.data?.error || "See server logs for details.",
+      });
+    }
+    prevStatusRef.current = curr;
+  }, [bootstrapStatus.data?.status]);
+
+  const status = bootstrapStatus.data;
+  const isRunning = status?.status === "running";
+
   return (
     <>
-      <Banner
-        kind="warning"
-        title="Subsystem configured — bootstrap required"
-        detail="Bootstrap ingests existing entities (agents / graphs / collections / tools) into internal vector collections. First run can take 30–60s; the CDC worker keeps them in sync afterwards."
-      />
+      {!isRunning && (
+        <Banner
+          kind="warning"
+          title="Subsystem configured — bootstrap required"
+          detail="Bootstrap ingests existing entities (agents / graphs / collections / tools) into internal vector collections. First run can take 30–60s; the CDC worker keeps them in sync afterwards."
+        />
+      )}
+
+      {status?.status === "failed" && (
+        <Banner
+          kind="error"
+          title="Last bootstrap failed"
+          detail={status.error || "See server logs for details."}
+          actions={<Btn size="sm" icon="refresh" onClick={() => bootstrap.mutate()}>Retry bootstrap</Btn>}
+        />
+      )}
 
       <div className="panel">
         <div className="panel-h">
@@ -173,13 +249,13 @@ function ConfiguredCard({ config, onRefresh, pushToast }) {
         <div className="panel-body">
           <ConfigKV config={config} />
           <div className="mt-3" style={{ display: "flex", gap: 6 }}>
-            <Btn kind="primary" icon="play" onClick={() => bootstrap.mutate()} disabled={bootstrap.loading}>
-              {bootstrap.loading ? "Bootstrapping…" : "Bootstrap now"}
+            <Btn kind="primary" icon="play" onClick={() => bootstrap.mutate()} disabled={isRunning || bootstrap.loading}>
+              {isRunning ? "Bootstrapping…" : "Bootstrap now"}
             </Btn>
-            <Btn kind="ghost" icon="settings" onClick={() => setUpdateOpen(true)}>Update config</Btn>
-            <DeactivateButton onRefresh={onRefresh} pushToast={pushToast} />
+            <Btn kind="ghost" icon="settings" onClick={() => setUpdateOpen(true)} disabled={isRunning}>Update config</Btn>
+            <DeactivateButton onRefresh={onRefresh} pushToast={pushToast} disabled={isRunning} />
           </div>
-          {bootstrapResult && <BootstrapResultPanel result={bootstrapResult} />}
+          {isRunning && <BootstrapProgressPanel status={status} />}
         </div>
       </div>
 
@@ -202,21 +278,46 @@ function ConfiguredCard({ config, onRefresh, pushToast }) {
 function ActiveCard({ config, onRefresh, pushToast }) {
   const { apiFetch, useMutation, useRouter } = window.primerApi;
   const { navigate } = useRouter();
-  const [bootstrapResult, setBootstrapResult] = React.useState(null);
   const [updateOpen, setUpdateOpen] = React.useState(false);
+  const bootstrapStatus = _useBootstrapStatus();
 
   const bootstrap = useMutation(
     () => apiFetch("POST", "/internal_collections/bootstrap"),
     {
-      invalidates: [IC_CACHE_CONFIG],
-      onSuccess: (resp) => {
-        setBootstrapResult(resp);
-        pushToast({ kind: "success", title: "Re-bootstrap complete" });
-        onRefresh();
+      invalidates: [IC_CACHE_CONFIG, IC_CACHE_BOOTSTRAP],
+      onSuccess: () => {
+        pushToast({ kind: "info", title: "Re-bootstrap started", detail: "Running in the background — leave this page if you like." });
+        bootstrapStatus.refetch();
       },
-      onError: _icToastErr(pushToast, "Re-bootstrap failed"),
+      onError: (err) => {
+        if (err?.status === 409) {
+          bootstrapStatus.refetch();
+          return;
+        }
+        _icToastErr(pushToast, "Re-bootstrap failed")(err);
+      },
     }
   );
+
+  const prevStatusRef = React.useRef(null);
+  React.useEffect(() => {
+    const prev = prevStatusRef.current;
+    const curr = bootstrapStatus.data?.status;
+    if (prev === "running" && curr === "succeeded") {
+      pushToast({ kind: "success", title: "Re-bootstrap complete" });
+      onRefresh();
+    } else if (prev === "running" && curr === "failed") {
+      pushToast({
+        kind: "error",
+        title: "Re-bootstrap failed",
+        detail: bootstrapStatus.data?.error || "See server logs for details.",
+      });
+    }
+    prevStatusRef.current = curr;
+  }, [bootstrapStatus.data?.status]);
+
+  const status = bootstrapStatus.data;
+  const isRunning = status?.status === "running";
 
   const bootstrapAgo = config.activated_at
     ? relativeTime((Date.now() - new Date(config.activated_at).getTime()) / 1000)
@@ -255,15 +356,24 @@ function ActiveCard({ config, onRefresh, pushToast }) {
         <div className="panel-body">
           <ConfigKV config={config} />
           <div className="mt-3" style={{ display: "flex", gap: 6 }}>
-            <Btn kind="primary" icon="refresh" onClick={() => bootstrap.mutate()} disabled={bootstrap.loading}>
-              {bootstrap.loading ? "Re-bootstrapping…" : "Re-bootstrap"}
+            <Btn kind="primary" icon="refresh" onClick={() => bootstrap.mutate()} disabled={isRunning || bootstrap.loading}>
+              {isRunning ? "Re-bootstrapping…" : "Re-bootstrap"}
             </Btn>
-            <Btn kind="ghost" icon="settings" onClick={() => setUpdateOpen(true)}>Update config</Btn>
-            <DeactivateButton onRefresh={onRefresh} pushToast={pushToast} />
+            <Btn kind="ghost" icon="settings" onClick={() => setUpdateOpen(true)} disabled={isRunning}>Update config</Btn>
+            <DeactivateButton onRefresh={onRefresh} pushToast={pushToast} disabled={isRunning} />
           </div>
-          {bootstrapResult && <BootstrapResultPanel result={bootstrapResult} />}
+          {isRunning && <BootstrapProgressPanel status={status} />}
         </div>
       </div>
+
+      {status?.status === "failed" && (
+        <Banner
+          kind="error"
+          title="Last re-bootstrap failed"
+          detail={status.error || "See server logs for details."}
+          actions={<Btn size="sm" icon="refresh" onClick={() => bootstrap.mutate()}>Retry</Btn>}
+        />
+      )}
 
       <Banner
         kind="info"
@@ -288,7 +398,7 @@ function ActiveCard({ config, onRefresh, pushToast }) {
 // Deactivate button (confirm modal → DELETE /internal_collections/config)
 // ============================================================================
 
-function DeactivateButton({ onRefresh, pushToast }) {
+function DeactivateButton({ onRefresh, pushToast, disabled }) {
   const { apiFetch, useMutation } = window.primerApi;
   const [open, setOpen] = React.useState(false);
   const deactivate = useMutation(
@@ -304,7 +414,7 @@ function DeactivateButton({ onRefresh, pushToast }) {
   );
   return (
     <>
-      <Btn kind="danger" icon="trash" onClick={() => setOpen(true)} disabled={deactivate.loading}>
+      <Btn kind="danger" icon="trash" onClick={() => setOpen(true)} disabled={disabled || deactivate.loading}>
         {deactivate.loading ? "Deactivating…" : "Deactivate"}
       </Btn>
       {open && (
@@ -542,19 +652,92 @@ function ConfigKV({ config }) {
   );
 }
 
-function BootstrapResultPanel({ result }) {
-  const highlight = window.primerVendor?.highlightJson;
-  const text = JSON.stringify(result, null, 2);
+function BootstrapProgressPanel({ status }) {
+  // Compute a single global progress fraction by reading where we are
+  // in the phase sequence + how far into the current phase. Each phase
+  // contributes 1/N to the bar; within-phase progress prorates the
+  // current phase's contribution.
+  const phaseIndex = Math.max(0, IC_BOOTSTRAP_PHASES.findIndex(p => p.id === status.phase));
+  const within = status.phase_total && status.phase_total > 0
+    ? Math.min(1, status.phase_done / status.phase_total)
+    : 0;
+  const total = IC_BOOTSTRAP_PHASES.length;
+  const fraction = (phaseIndex + within) / total;
+  const percent = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+
+  const currentLabel = IC_BOOTSTRAP_PHASES[phaseIndex]?.label || "Working…";
+  const counts = status.counts || {};
+  const elapsedS = status.started_at
+    ? Math.max(0, Math.round((Date.now() - new Date(status.started_at).getTime()) / 1000))
+    : 0;
+
   return (
     <div className="mt-3 panel" style={{ background: "var(--bg-2)" }}>
       <div className="panel-h">
-        <Icon name="check-circle" size={13} style={{ color: "var(--green)" }} />
-        <span>Bootstrap result</span>
+        <Icon name="refresh" size={13} className="muted" style={{ animation: "ic-bootstrap-spin 1s linear infinite" }} />
+        <span>Bootstrap in progress</span>
+        <span className="muted text-sm" style={{ marginLeft: "auto", fontVariantNumeric: "tabular-nums" }}>
+          {percent}% · {elapsedS}s
+        </span>
       </div>
       <div className="panel-body" style={{ padding: 12 }}>
-        {highlight
-          ? <div className="code-block" dangerouslySetInnerHTML={{ __html: highlight(text) }} />
-          : <pre className="code-block mono" style={{ margin: 0 }}>{text}</pre>}
+        {/* progress bar */}
+        <div style={{
+          height: 6,
+          background: "var(--bg)",
+          border: "1px solid var(--border)",
+          borderRadius: 3,
+          overflow: "hidden",
+        }}>
+          <div style={{
+            width: `${percent}%`,
+            height: "100%",
+            background: "var(--accent)",
+            transition: "width 0.3s ease-out",
+          }} />
+        </div>
+
+        {/* current phase + per-phase count */}
+        <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <span style={{ fontWeight: 500 }}>{currentLabel}</span>
+          {status.phase_total != null && status.phase_total > 0 && (
+            <span className="mono muted text-sm" style={{ fontVariantNumeric: "tabular-nums" }}>
+              {status.phase_done} / {status.phase_total}
+            </span>
+          )}
+          {status.phase_total == null && status.phase_done > 0 && (
+            <span className="mono muted text-sm" style={{ fontVariantNumeric: "tabular-nums" }}>
+              {status.phase_done}
+            </span>
+          )}
+        </div>
+
+        {/* running totals */}
+        <div className="mt-3" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+          {[
+            { key: "agents", label: "Agents" },
+            { key: "graphs", label: "Graphs" },
+            { key: "collections", label: "Collections" },
+            { key: "tools", label: "Tools" },
+          ].map(({ key, label }) => (
+            <div key={key} style={{
+              padding: "6px 8px",
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+            }}>
+              <div className="muted text-sm" style={{ fontSize: 11 }}>{label}</div>
+              <div className="mono" style={{ fontSize: 15, fontVariantNumeric: "tabular-nums" }}>
+                {counts[key] ?? 0}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="muted text-sm mt-3" style={{ fontSize: 11 }}>
+          Bootstrap runs in a background task on the server. You can navigate
+          away from this page — progress will resume here when you return.
+        </div>
       </div>
     </div>
   );

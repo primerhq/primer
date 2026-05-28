@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
@@ -44,6 +44,7 @@ from primer.model.collection import Collection, CollectionEmbedder
 from primer.model.except_ import ConfigError, PrimerError, NotFoundError
 from primer.model.graph import Graph
 from primer.model.internal import (
+    BootstrapPhase,
     INTERNAL_COLLECTION_IDS,
     INTERNAL_COLLECTIONS_CONFIG_ID,
     IngestFailure,
@@ -69,6 +70,30 @@ EntityType = Literal["agent", "graph", "collection", "tool"]
 # Order matters when building tool document ids: keep the separator
 # distinct enough that it can't collide with toolset ids or tool ids.
 TOOL_DOC_ID_SEP = "::"
+
+
+# Phase -> Bootstrap callback contract. Implemented by the router as
+# "write the new phase into the singleton status row"; passed in by
+# default as a no-op so unit tests can call bootstrap() without
+# wiring storage.
+BootstrapProgressCallback = Callable[
+    ["BootstrapProgress"], Awaitable[None]
+]
+
+
+@dataclass(frozen=True)
+class BootstrapProgress:
+    """A single tick the orchestrator emits while bootstrapping.
+
+    Either a phase transition (``phase_done == 0``, ``counts`` unchanged
+    or extended) or per-item progress within a phase (same ``phase``
+    with growing ``phase_done`` / ``counts``).
+    """
+
+    phase: BootstrapPhase
+    phase_done: int
+    phase_total: int | None
+    counts: dict[str, int]
 
 
 # ===========================================================================
@@ -337,10 +362,37 @@ class InternalCollectionsSubsystem:
 
     # ---- Bootstrap ----------------------------------------------------
 
-    async def bootstrap(self) -> dict[str, Any]:
-        """Materialise collections + ingest every existing entity + tool."""
+    async def bootstrap(
+        self,
+        *,
+        progress_callback: BootstrapProgressCallback | None = None,
+    ) -> dict[str, Any]:
+        """Materialise collections + ingest every existing entity + tool.
+
+        When ``progress_callback`` is supplied, it's awaited at every
+        phase transition and after every N (currently 10) ingested
+        entities. Used by the async router to surface progress in the
+        ``bootstrap_status`` row without coupling this module to
+        storage.
+        """
+        counts: dict[str, int] = {
+            "agents": 0, "graphs": 0, "collections": 0, "tools": 0,
+        }
+
+        async def _emit(phase: BootstrapPhase, done: int, total: int | None) -> None:
+            if progress_callback is None:
+                return
+            await progress_callback(BootstrapProgress(
+                phase=phase, phase_done=done, phase_total=total,
+                counts=dict(counts),
+            ))
+
+        await _emit("drain_queue", 0, None)
         await self._drain_queue()
+
+        await _emit("materialise_collections", 0, len(INTERNAL_COLLECTION_IDS))
         await self._materialise_collection_rows()
+        await _emit("materialise_collections", len(INTERNAL_COLLECTION_IDS), len(INTERNAL_COLLECTION_IDS))
 
         store = await self._semantic_search_registry.get_store(
             self._config.search_provider_id
@@ -352,11 +404,20 @@ class InternalCollectionsSubsystem:
                 dimensions=embed_dim,
             )
 
-        agent_count = await self._ingest_persisted("agent", Agent)
-        graph_count = await self._ingest_persisted("graph", Graph)
-        collection_count = await self._ingest_persisted("collection", Collection)
-        tool_count = await self._ingest_tools()
+        counts["agents"] = await self._ingest_persisted_with_progress(
+            "agent", Agent, "ingest_agents", _emit, counts,
+        )
+        counts["graphs"] = await self._ingest_persisted_with_progress(
+            "graph", Graph, "ingest_graphs", _emit, counts,
+        )
+        counts["collections"] = await self._ingest_persisted_with_progress(
+            "collection", Collection, "ingest_collections", _emit, counts,
+        )
+        counts["tools"] = await self._ingest_tools_with_progress(
+            "ingest_tools", _emit, counts,
+        )
 
+        await _emit("finalize", 0, None)
         self._config = self._config.model_copy(
             update={"activated_at": _now()}
         )
@@ -365,14 +426,103 @@ class InternalCollectionsSubsystem:
 
         return {
             "ok": True,
-            "counts": {
-                "agents": agent_count,
-                "graphs": graph_count,
-                "collections": collection_count,
-                "tools": tool_count,
-            },
+            "counts": counts,
             "activated_at": self._config.activated_at,
         }
+
+    async def _ingest_persisted_with_progress(
+        self,
+        entity_type: EntityType,
+        model_cls: type,
+        phase: BootstrapPhase,
+        emit: Callable[[BootstrapPhase, int, int | None], Awaitable[None]],
+        counts: dict[str, int],
+    ) -> int:
+        """Variant of :meth:`_ingest_persisted` that updates the running
+        counts dict in place and emits per-page progress ticks. The
+        per-entity tick rate is intentionally page-grained, not item-
+        grained — keeps the status-row writes proportional to actual
+        work, not network chatter."""
+        counts_key = entity_type + "s"
+        storage = self._sp.get_storage(model_cls)
+        # Cheap total estimate via list(length=0) — most backends return
+        # the total alongside the empty page. SQLite/Postgres do; the
+        # in-memory fake does too. If a backend can't, we fall through
+        # to phase_total=None and the UI shows an indeterminate bar.
+        try:
+            head = await storage.list(OffsetPage(offset=0, length=0))
+            total: int | None = getattr(head, "total", None)
+        except Exception:  # pragma: no cover — defensive
+            total = None
+
+        await emit(phase, 0, total)
+        page_size = 200
+        offset = 0
+        count = 0
+        while True:
+            page = await storage.list(
+                OffsetPage(offset=offset, length=page_size)
+            )
+            for entity in page.items:
+                payload = entity.model_dump(mode="json")
+                event = IngestEvent(
+                    op="upsert",
+                    entity_type=entity_type,
+                    entity_id=entity.id,
+                    payload=payload,
+                )
+                try:
+                    await self._apply_event(event)
+                    count += 1
+                except Exception as exc:  # noqa: BLE001
+                    await self._log_failure(event, exc)
+            counts[counts_key] = count
+            await emit(phase, count, total)
+            if len(page.items) < page_size:
+                break
+            offset += page_size
+        return count
+
+    async def _ingest_tools_with_progress(
+        self,
+        phase: BootstrapPhase,
+        emit: Callable[[BootstrapPhase, int, int | None], Awaitable[None]],
+        counts: dict[str, int],
+    ) -> int:
+        """Variant of :meth:`_ingest_tools` that ticks counts as
+        toolsets are processed. Tool totals aren't known up-front (tool
+        lists are pulled lazily from each provider), so we emit
+        ``phase_total=None`` and let the UI render an indeterminate
+        progress bar."""
+        count = 0
+        seen_toolset_ids: set[str] = set()
+        await emit(phase, 0, None)
+
+        ts_storage = self._sp.get_storage(Toolset)
+        offset = 0
+        page_size = 200
+        while True:
+            page = await ts_storage.list(
+                OffsetPage(offset=offset, length=page_size)
+            )
+            for ts in page.items:
+                seen_toolset_ids.add(ts.id)
+                provider = await self._safe_get_toolset(ts.id)
+                count += await self._ingest_one_toolset(ts.id, provider)
+                counts["tools"] = count
+                await emit(phase, count, None)
+            if len(page.items) < page_size:
+                break
+            offset += page_size
+
+        for ts_id, provider in self._toolset_providers.items():
+            if ts_id in seen_toolset_ids:
+                continue
+            count += await self._ingest_one_toolset(ts_id, provider)
+            counts["tools"] = count
+            await emit(phase, count, None)
+
+        return count
 
     async def _drain_queue(self) -> None:
         while not self._queue.empty():

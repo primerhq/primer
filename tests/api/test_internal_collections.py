@@ -13,11 +13,37 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 import httpx
 import pytest
 from httpx import ASGITransport
+
+
+async def _bootstrap_and_wait(
+    client: httpx.AsyncClient, *, timeout_s: float = 30.0,
+) -> dict:
+    """POST /bootstrap (async now) + poll /bootstrap/status until done.
+
+    Returns the final status row dict. Asserts the POST succeeded with
+    202 or 409 (409 if a previous test left one running — surfaces as a
+    racy test, not a silently-broken assertion). Raises TimeoutError if
+    bootstrap doesn't reach a terminal state in the budget.
+    """
+    resp = await client.post("/v1/internal_collections/bootstrap")
+    assert resp.status_code in (202, 409), resp.text
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        s = await client.get("/v1/internal_collections/bootstrap/status")
+        body = s.json()
+        if body["status"] in ("succeeded", "failed"):
+            return body
+        await asyncio.sleep(0.05)
+    raise TimeoutError(
+        f"bootstrap did not complete within {timeout_s}s; last status={body}"
+    )
 
 from pydantic import SecretStr
 
@@ -283,7 +309,7 @@ class TestConfigCRUD:
     @pytest.mark.asyncio
     async def test_put_preserves_activated_at_on_update(self, client) -> None:
         await client.put("/v1/internal_collections/config", json=_config_body())
-        await client.post("/v1/internal_collections/bootstrap")
+        await _bootstrap_and_wait(client)
         body2 = {**_config_body(), "embedding_model": "different-model"}
         await client.put("/v1/internal_collections/config", json=body2)
         get = await client.get("/v1/internal_collections/config")
@@ -294,7 +320,7 @@ class TestConfigCRUD:
         self, client, app
     ) -> None:
         await client.put("/v1/internal_collections/config", json=_config_body())
-        await client.post("/v1/internal_collections/bootstrap")
+        await _bootstrap_and_wait(client)
         assert app.state.internal_collections is not None
 
         delete = await client.delete("/v1/internal_collections/config")
@@ -325,13 +351,69 @@ class TestBootstrap:
         await sp.get_storage(Agent).create(_agent("agt-2"))
         await client.put("/v1/internal_collections/config", json=_config_body())
 
+        # POST returns 202 + the freshly-claimed status row, then the
+        # background task runs to completion.
         resp = await client.post("/v1/internal_collections/bootstrap")
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["ok"] is True
-        assert body["counts"]["agents"] == 2
+        assert resp.status_code == 202, resp.text
+        initial = resp.json()
+        assert initial["status"] == "running"
+        assert initial["attempt_id"]
+
+        final = await _bootstrap_and_wait(client)
+        assert final["status"] == "succeeded"
+        assert final["counts"]["agents"] == 2
         assert app.state.internal_collections is not None
         assert app.state.search_toolset is not None
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_409_when_already_running(
+        self, client, sp
+    ) -> None:
+        """A second POST while the first is in-flight returns 409 with
+        the in-flight status row so the UI can render it without
+        re-claiming."""
+        await client.put("/v1/internal_collections/config", json=_config_body())
+
+        # Kick off the first bootstrap. Don't await completion yet —
+        # but the in-memory backend can finish fast, so race.
+        r1 = await client.post("/v1/internal_collections/bootstrap")
+        assert r1.status_code == 202
+
+        # The conflict either fires (still running) or we win the race
+        # and get another fresh 202. Either is fine — what we're
+        # asserting is that 409 *is* the response when running is True.
+        r2 = await client.post("/v1/internal_collections/bootstrap")
+        assert r2.status_code in (202, 409)
+        if r2.status_code == 409:
+            detail = r2.json()["detail"]
+            assert detail["error"] == "bootstrap_already_running"
+            assert detail["status"]["status"] == "running"
+
+        # Settle so other tests don't inherit a half-baked state.
+        await _bootstrap_and_wait(client)
+
+    @pytest.mark.asyncio
+    async def test_status_returns_idle_before_any_bootstrap(
+        self, client,
+    ) -> None:
+        resp = await client.get("/v1/internal_collections/bootstrap/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "idle"
+        assert body["started_at"] is None
+        assert body["finished_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_status_reflects_terminal_state(
+        self, client,
+    ) -> None:
+        await client.put("/v1/internal_collections/config", json=_config_body())
+        await _bootstrap_and_wait(client)
+        resp = await client.get("/v1/internal_collections/bootstrap/status")
+        body = resp.json()
+        assert body["status"] == "succeeded"
+        assert body["finished_at"] is not None
+        assert body["error"] is None
 
 
 # ===========================================================================
@@ -353,7 +435,7 @@ class TestSearchEndpoints:
     async def test_search_returns_hits_when_active(self, client, sp) -> None:
         await sp.get_storage(Agent).create(_agent("agt-1"))
         await client.put("/v1/internal_collections/config", json=_config_body())
-        await client.post("/v1/internal_collections/bootstrap")
+        await _bootstrap_and_wait(client)
 
         resp = await client.post(
             "/v1/agents/search", json={"query": "research"}
@@ -376,7 +458,7 @@ class TestSearchToolset:
     ) -> None:
         await sp.get_storage(Agent).create(_agent("agt-1"))
         await client.put("/v1/internal_collections/config", json=_config_body())
-        await client.post("/v1/internal_collections/bootstrap")
+        await _bootstrap_and_wait(client)
 
         provider = await pr.get_toolset("search")
         names = [t.id async for t in provider.list_tools()]

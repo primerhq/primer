@@ -32,6 +32,12 @@ from primer.model.search import CollectionCrossEncoder, MmrConfig
 # caller having to know the convention.
 INTERNAL_COLLECTIONS_CONFIG_ID = "_internal_collections_config"
 
+# Reserved row id for the singleton bootstrap-progress row.
+# A separate row from the config so progress writes during a long
+# ingest don't churn the config's updated_at / cause version conflicts
+# with config edits from the UI.
+INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID = "_internal_collections_bootstrap_status"
+
 # Conventional internal collection ids (one per Describeable entity).
 # The bootstrap orchestrator materialises these as :class:`Collection`
 # rows with ``system=True``.
@@ -108,6 +114,104 @@ class InternalCollectionsConfig(Identifiable):
     )
 
 
+BootstrapPhase = Literal[
+    "drain_queue",
+    "materialise_collections",
+    "ingest_agents",
+    "ingest_graphs",
+    "ingest_collections",
+    "ingest_tools",
+    "finalize",
+]
+
+
+class InternalCollectionsBootstrapStatus(Identifiable):
+    """Singleton progress + lifecycle row for the bootstrap pipeline.
+
+    Holds the latest bootstrap attempt's state so the UI can render a
+    durable progress card that survives navigation, browser refreshes,
+    and (via recovery in the lifespan handler) API process restarts.
+
+    Persisted as id :data:`INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID`.
+    The router refuses to start a new bootstrap while ``status ==
+    'running'`` — combined with the lifespan handler clearing stale
+    'running' rows at boot, this gives us "exactly one active bootstrap
+    at a time" without an in-memory mutex.
+    """
+
+    status: Literal["idle", "running", "succeeded", "failed"] = Field(
+        default="idle",
+        description=(
+            "High-level lifecycle. ``idle`` means no bootstrap has run "
+            "yet (or the row was reset). ``running`` means a background "
+            "task is actively materialising collections / ingesting "
+            "entities. ``succeeded`` / ``failed`` are terminal."
+        ),
+    )
+    phase: BootstrapPhase | None = Field(
+        default=None,
+        description=(
+            "Current step inside a running bootstrap. ``None`` for "
+            "idle/succeeded/failed unless a phase was in flight at "
+            "failure time."
+        ),
+    )
+    phase_done: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Items completed in the current phase. Resets at every "
+            "phase transition. Used together with ``phase_total`` to "
+            "render a progress bar."
+        ),
+    )
+    phase_total: int | None = Field(
+        default=None,
+        description=(
+            "Best-known item count for the current phase, when one "
+            "exists. ``None`` for phases where the total is unknown up "
+            "front (e.g. tools enumerated lazily from providers)."
+        ),
+    )
+    counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Running totals carried through every phase: "
+            "``{'agents': N, 'graphs': N, 'collections': N, 'tools': N}``. "
+            "Filled progressively so the UI can show a partial summary "
+            "even mid-flight."
+        ),
+    )
+    started_at: datetime | None = Field(
+        default=None,
+        description="UTC instant the current attempt began.",
+    )
+    finished_at: datetime | None = Field(
+        default=None,
+        description=(
+            "UTC instant the latest attempt resolved (succeeded or "
+            "failed). ``None`` while ``status == 'running'``."
+        ),
+    )
+    error: str | None = Field(
+        default=None,
+        description=(
+            "Single-line error message captured when ``status == "
+            "'failed'``. Stored as a plain string so the UI can render "
+            "it directly; the full traceback goes to the server log."
+        ),
+    )
+    attempt_id: str | None = Field(
+        default=None,
+        description=(
+            "Per-run UUID. Lets a slow background task detect that its "
+            "row was overwritten by a newer attempt (rare; would only "
+            "happen if a stale 'running' row got cleared and a new "
+            "POST raced in) and abort its writes."
+        ),
+    )
+
+
 class IngestFailure(Identifiable):
     """One CDC ingest attempt that failed.
 
@@ -158,8 +262,11 @@ class IngestFailure(Identifiable):
 
 
 __all__ = [
+    "BootstrapPhase",
     "INTERNAL_COLLECTION_IDS",
+    "INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID",
     "INTERNAL_COLLECTIONS_CONFIG_ID",
     "IngestFailure",
+    "InternalCollectionsBootstrapStatus",
     "InternalCollectionsConfig",
 ]
