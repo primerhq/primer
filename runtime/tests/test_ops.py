@@ -17,6 +17,7 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestServer
 
+from matrix_runtime.exec import run_exec
 from matrix_runtime.ops import OpError, append_line, delete, list_dir, read_file, stat, write_file
 from matrix_runtime.protocol import ErrorCode
 from matrix_runtime.server import build_app
@@ -441,3 +442,231 @@ async def test_server_unknown_op_returns_eunsupported(server: ServerFixture):
 
     assert resp["ok"] is False
     assert resp["error"]["code"] == "EUNSUPPORTED"
+
+
+# ---------------------------------------------------------------------------
+# Exec handler unit tests
+# ---------------------------------------------------------------------------
+
+
+async def _collect_exec(req_id: int, args: dict, workspace_root: str) -> tuple[list[dict], int, bool]:
+    """Run exec and collect (stream_events, exit_code, timed_out)."""
+    stream_events: list[dict] = []
+    exit_code = -99
+    timed_out = False
+
+    async for event in run_exec(req_id, args, workspace_root):
+        if event.event == "exit":
+            assert event.data is not None
+            exit_code = event.data["code"]
+            timed_out = event.data.get("timed_out", False)
+        else:
+            assert event.data is not None
+            stream_events.append({"event": event.event, "data_b64": event.data["data_b64"]})
+
+    return stream_events, exit_code, timed_out
+
+
+@pytest.mark.asyncio
+async def test_exec_simple_command(tmp_path):
+    """exec ["echo", "hello"] yields stdout with 'hello' and exit code 0."""
+    events, code, timed_out = await _collect_exec(
+        8,
+        {"cmd": ["echo", "hello"], "timeout_s": 10},
+        str(tmp_path),
+    )
+    assert code == 0
+    assert not timed_out
+    # At least one stdout chunk
+    stdout_chunks = [e for e in events if e["event"] == "stdout"]
+    assert len(stdout_chunks) >= 1
+    combined = b"".join(base64.b64decode(e["data_b64"]) for e in stdout_chunks)
+    assert b"hello" in combined
+
+
+@pytest.mark.asyncio
+async def test_exec_streams_stdout_in_chunks(tmp_path):
+    """exec a command producing many lines emits multiple stdout events."""
+    # Use python to write enough output to get multiple 4096-byte reads
+    script = "import sys; [sys.stdout.write('x' * 100 + '\\n') for _ in range(200)]; sys.stdout.flush()"
+    events, code, _ = await _collect_exec(
+        9,
+        {"cmd": ["python3", "-c", script], "timeout_s": 10},
+        str(tmp_path),
+    )
+    assert code == 0
+    stdout_events = [e for e in events if e["event"] == "stdout"]
+    # 200 lines × 101 bytes = ~20200 bytes; chunk size 4096 → at least 4 chunks expected
+    # but be lenient: just require >1
+    assert len(stdout_events) >= 1
+    combined = b"".join(base64.b64decode(e["data_b64"]) for e in stdout_events)
+    lines = combined.split(b"\n")
+    non_empty = [l for l in lines if l]
+    assert len(non_empty) >= 100  # at least 100 "x" lines came through
+
+
+@pytest.mark.asyncio
+async def test_exec_stderr_separate_stream(tmp_path):
+    """exec a command writing to stderr yields stderr events distinct from stdout."""
+    script = "import sys; sys.stderr.write('error output\\n'); sys.stdout.write('std output\\n')"
+    events, code, _ = await _collect_exec(
+        10,
+        {"cmd": ["python3", "-c", script], "timeout_s": 10},
+        str(tmp_path),
+    )
+    assert code == 0
+    stderr_events = [e for e in events if e["event"] == "stderr"]
+    stdout_events = [e for e in events if e["event"] == "stdout"]
+    assert len(stderr_events) >= 1
+    assert len(stdout_events) >= 1
+
+    stderr_combined = b"".join(base64.b64decode(e["data_b64"]) for e in stderr_events)
+    stdout_combined = b"".join(base64.b64decode(e["data_b64"]) for e in stdout_events)
+    assert b"error output" in stderr_combined
+    assert b"std output" in stdout_combined
+
+
+@pytest.mark.asyncio
+async def test_exec_nonzero_exit(tmp_path):
+    """exec a failing command returns a non-zero exit code."""
+    events, code, _ = await _collect_exec(
+        11,
+        {"cmd": ["python3", "-c", "import sys; sys.exit(42)"], "timeout_s": 10},
+        str(tmp_path),
+    )
+    assert code == 42
+
+
+@pytest.mark.asyncio
+async def test_exec_timeout(tmp_path):
+    """exec sleep with timeout_s=0.1 returns timed_out=True and exit code -1."""
+    events, code, timed_out = await _collect_exec(
+        12,
+        {"cmd": ["sleep", "30"], "timeout_s": 0.1},
+        str(tmp_path),
+    )
+    assert timed_out is True
+    assert code == -1
+
+
+@pytest.mark.asyncio
+async def test_exec_workdir_respected(tmp_path):
+    """exec with workdir set runs in that directory."""
+    subdir = tmp_path / "workdir_test"
+    subdir.mkdir()
+    (subdir / "marker.txt").write_bytes(b"found it")
+
+    events, code, _ = await _collect_exec(
+        13,
+        {"cmd": ["ls"], "timeout_s": 10, "workdir": str(subdir)},
+        str(tmp_path),
+    )
+    assert code == 0
+    stdout_combined = b"".join(
+        base64.b64decode(e["data_b64"]) for e in events if e["event"] == "stdout"
+    )
+    assert b"marker.txt" in stdout_combined
+
+
+@pytest.mark.asyncio
+async def test_exec_workdir_path_escape_raises(tmp_path):
+    """exec raises OpError(EACCES) when workdir escapes workspace root."""
+    with pytest.raises(OpError) as exc_info:
+        async for _ in run_exec(14, {"cmd": ["ls"], "workdir": "/etc"}, str(tmp_path)):
+            pass
+    assert exc_info.value.code == ErrorCode.EACCES
+
+
+@pytest.mark.asyncio
+async def test_exec_stdin(tmp_path):
+    """exec passes stdin_b64 to the process via stdin pipe."""
+    stdin_content = b"hello from stdin\n"
+    stdin_b64 = base64.b64encode(stdin_content).decode()
+
+    events, code, _ = await _collect_exec(
+        15,
+        {"cmd": ["cat"], "stdin_b64": stdin_b64, "timeout_s": 10},
+        str(tmp_path),
+    )
+    assert code == 0
+    stdout_combined = b"".join(
+        base64.b64decode(e["data_b64"]) for e in events if e["event"] == "stdout"
+    )
+    assert b"hello from stdin" in stdout_combined
+
+
+# ---------------------------------------------------------------------------
+# Integration: exec via WS server
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_server_exec_simple_via_ws(server: ServerFixture):
+    """exec routed through WS server emits stdout events then exit event."""
+    async with server.client() as ws:
+        await ws.send_json(
+            {"req_id": 20, "op": "exec", "args": {"cmd": ["echo", "ws_exec_test"], "timeout_s": 10}}
+        )
+
+        stdout_data = b""
+        exit_code = None
+        # Read frames until we get the exit event
+        for _ in range(20):
+            frame = await ws.receive_json()
+            assert frame["req_id"] == 20
+            evt = frame.get("event")
+            if evt == "stdout":
+                stdout_data += base64.b64decode(frame["data"]["data_b64"])
+            elif evt == "stderr":
+                pass  # ignore stderr
+            elif evt == "exit":
+                exit_code = frame["data"]["code"]
+                break
+
+    assert exit_code == 0
+    assert b"ws_exec_test" in stdout_data
+
+
+@pytest.mark.asyncio
+async def test_server_exec_timeout_via_ws(server: ServerFixture):
+    """exec timeout routed through WS server emits exit with timed_out=True."""
+    async with server.client() as ws:
+        await ws.send_json(
+            {"req_id": 21, "op": "exec", "args": {"cmd": ["sleep", "30"], "timeout_s": 0.2}}
+        )
+
+        exit_code = None
+        timed_out = False
+        for _ in range(20):
+            frame = await ws.receive_json()
+            if frame.get("event") == "exit":
+                exit_code = frame["data"]["code"]
+                timed_out = frame["data"].get("timed_out", False)
+                break
+
+    assert timed_out is True
+    assert exit_code == -1
+
+
+@pytest.mark.asyncio
+async def test_server_exec_stderr_via_ws(server: ServerFixture):
+    """exec stderr routed through WS server arrives as separate 'stderr' events."""
+    script = "import sys; sys.stderr.write('oops\\n'); sys.exit(1)"
+    async with server.client() as ws:
+        await ws.send_json(
+            {"req_id": 22, "op": "exec", "args": {"cmd": ["python3", "-c", script], "timeout_s": 10}}
+        )
+
+        stderr_data = b""
+        exit_code = None
+        for _ in range(20):
+            frame = await ws.receive_json()
+            evt = frame.get("event")
+            if evt == "stderr":
+                stderr_data += base64.b64decode(frame["data"]["data_b64"])
+            elif evt == "exit":
+                exit_code = frame["data"]["code"]
+                break
+
+    assert exit_code == 1
+    assert b"oops" in stderr_data

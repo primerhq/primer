@@ -21,8 +21,9 @@ import tempfile
 from aiohttp import web
 from aiohttp import WSMsgType
 
+from matrix_runtime.exec import run_exec
 from matrix_runtime.ops import HANDLERS, OpError
-from matrix_runtime.protocol import ErrorCode, OpName, Response, serialize
+from matrix_runtime.protocol import ErrorCode, Event, OpName, Response, serialize
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +150,29 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
             op_name: str = frame.get("op", "")
             args: dict = frame.get("args") or {}
 
+            # --- Streaming exec op ----------------------------------------
+            if op_name == OpName.EXEC:
+                try:
+                    async for event in run_exec(frame_req_id, args, workspace_root):
+                        await ws.send_str(serialize(event))
+                except OpError as exc:
+                    err_resp = Response(
+                        req_id=frame_req_id,
+                        ok=False,
+                        error={"code": exc.code, "message": exc.message},
+                    )
+                    await ws.send_str(serialize(err_resp))
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("Unexpected error handling exec op")
+                    err_resp = Response(
+                        req_id=frame_req_id,
+                        ok=False,
+                        error={"code": ErrorCode.EINTERNAL, "message": str(exc)},
+                    )
+                    await ws.send_str(serialize(err_resp))
+                continue
+
+            # --- Single-shot ops ------------------------------------------
             handler = HANDLERS.get(op_name)
             if handler is None:
                 err_resp = Response(
