@@ -11,7 +11,7 @@
 //   GET    /internal_collections/config       (404 → OFF, 200 → configured/active)
 //   PUT    /internal_collections/config       (activate / re-configure)
 //   POST   /internal_collections/bootstrap    (populate vector store, idempotent)
-//   DELETE /internal_collections/config       (deactivate; data preserved)
+//   DELETE /internal_collections/config       (deactivate; drops the 4 reserved IC collections)
 //
 // Cache keys:
 //   ic:config                — main probe
@@ -406,7 +406,7 @@ function DeactivateButton({ onRefresh, pushToast, disabled }) {
     {
       invalidates: [IC_CACHE_CONFIG],
       onSuccess: () => {
-        pushToast({ kind: "warning", title: "Subsystem deactivated", detail: "Search routes will return 503 until reconfigured." });
+        pushToast({ kind: "warning", title: "Subsystem deactivated", detail: "Config row removed and reserved collections dropped. Re-PUT + bootstrap to rebuild." });
         onRefresh();
       },
       onError: _icToastErr(pushToast, "Deactivate failed"),
@@ -433,7 +433,8 @@ function DeactivateButton({ onRefresh, pushToast, disabled }) {
             <li>Removes the <span className="mono">InternalCollectionsConfig</span> row.</li>
             <li>All four <span className="mono">/v1/{`{kind}`}/search</span> routes immediately return 503 <span className="mono">/errors/subsystem-inactive</span>.</li>
             <li>The CDC worker stops; new entities will <strong>not</strong> be indexed.</li>
-            <li>Indexed data is NOT deleted by this call — it remains in the vector store; re-activation reuses it (cheap re-bootstrap).</li>
+            <li><strong>Drops</strong> the four reserved collections (<span className="mono">_internal_agents</span>, <span className="mono">_internal_graphs</span>, <span className="mono">_internal_collections</span>, <span className="mono">_internal_tools</span>) and all their embeddings from the backing SSP — this is what lets you switch embedding models cleanly. Re-PUT + re-bootstrap rebuilds from scratch.</li>
+            <li>Custom (non-IC) collections in the same SSP are <strong>not</strong> touched.</li>
           </ul>
         </Modal>
       )}
@@ -546,9 +547,9 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
   const disabled = !searchProviderId || !providerId || !model || save.loading;
   // Vector-space-defining fields are frozen once activated_at is set.
   // Changing them post-bootstrap would mix vectors from incompatible
-  // spaces; the operator must deactivate (which preserves the data
-  // but tears down the live subsystem) before swapping. cross_encoder
-  // and mmr are reranking concerns and remain editable.
+  // spaces; the operator must deactivate (which drops the reserved
+  // collections and removes the config row) before swapping.
+  // cross_encoder and mmr are reranking concerns and remain editable.
   const vectorSpaceLocked = !!existing?.activated_at;
   const lockedHint = "Locked — deactivate the subsystem to change this. Existing embeddings are tied to this provider/model and can't be searched with a different one.";
 
@@ -577,7 +578,7 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
           kind="info"
           icon="info"
           title="Vector-space fields are locked while active"
-          detail="The SSP, embedding provider, and embedding model can't change while the subsystem is active — existing embeddings are tied to them. Deactivate (config + data preserved on disk) to swap, then re-bootstrap."
+          detail="The SSP, embedding provider, and embedding model can't change while the subsystem is active — existing embeddings are tied to them. Deactivate to swap: the config row is removed and the four reserved IC collections are dropped, so you'll re-bootstrap from scratch."
         />
       )}
       <div className="field">

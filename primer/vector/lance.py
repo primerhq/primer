@@ -307,6 +307,13 @@ class LanceVectorStoreProvider(VectorStoreProvider):
             where=f"collection_id = '{_escape_sql_string(collection_id)}'",
         )
 
+    async def _catalogue_delete(self, collection_id: str) -> None:
+        """Remove a catalogue row by collection_id. Idempotent."""
+        tbl = await self._open_catalogue()
+        await tbl.delete(
+            f"collection_id = '{_escape_sql_string(collection_id)}'"
+        )
+
     async def maintain_indexes(self) -> list[MaintenanceReport]:
         if self._db is None:
             raise ConfigError(
@@ -615,6 +622,28 @@ class LanceVectorStore(VectorStore):
             score = _similarity(distance_metric, raw) if raw is not None else None
             results.append(SearchResult(record=record, score=score))
         return results
+
+    async def drop_collection(self, collection_id: str) -> None:
+        # Look up the catalogue row to find the underlying Lance table.
+        # Missing catalogue row → already dropped (idempotent no-op).
+        cat = await self._provider._catalogue_get(collection_id)
+        if cat is None:
+            return
+        table_name = cat["table_name"]
+        # Drop the table first so a half-broken state has no catalogue
+        # row pointing to a missing table. ignore_missing=True for
+        # idempotency in case the table was already removed manually.
+        try:
+            await self._provider.db.drop_table(
+                table_name, ignore_missing=True,
+            )
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to drop Lance table {table_name!r}: {exc}",
+                cause=exc,
+            ) from exc
+        # Now clear the catalogue row.
+        await self._provider._catalogue_delete(collection_id)
 
     async def search_by_meta(
         self,

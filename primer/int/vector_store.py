@@ -210,3 +210,13 @@ class VectorStore(ABC):
         index before re-indexing or after the document is removed
         from its collection.
         """
+
+    @abstractmethod
+    async def drop_collection(self, collection_id: str) -> None:
+        """Drop the collection and all its vectors.
+
+        Idempotent: dropping a non-existent collection is a successful
+        no-op. Used by callers that need to wipe and recreate (e.g. when
+        switching embedding models, since vectors from a different model
+        can't be searched against a new query embedding).
+        """

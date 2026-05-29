@@ -775,6 +775,34 @@ class PgVectorStore(VectorStore):
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 
+    async def drop_collection(self, collection_id: str) -> None:
+        # Resolve via the catalogue (in-memory cache first, then row).
+        # If the collection has no catalogue row, it was already dropped
+        # — idempotent no-op.
+        try:
+            meta = await self._resolve(collection_id)
+        except BadRequestError:
+            return
+        # DROP TABLE cascades to indexes on that table (HNSW, doc index,
+        # meta GIN); IF EXISTS makes the SQL idempotent even if a prior
+        # partial drop already removed the table. Then remove the
+        # catalogue row, then evict the in-memory cache entry.
+        try:
+            async with self._provider.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        f'DROP TABLE IF EXISTS '
+                        f'"{self._schema}"."{meta.table_name}"'
+                    )
+                    await conn.execute(
+                        f'DELETE FROM "{self._schema}".primer_collections '
+                        f'WHERE collection_id = $1',
+                        collection_id,
+                    )
+        except Exception as exc:
+            raise self._wrap_db_error(exc) from exc
+        self._collections.pop(collection_id, None)
+
     # ---------- helpers ---------------------------------------------------
 
     def _wrap_db_error(self, exc: Exception) -> Exception:

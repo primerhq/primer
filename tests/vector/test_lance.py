@@ -204,6 +204,44 @@ async def test_delete_is_idempotent(lance_provider):
     await store.delete("col-a", "never-existed")  # no error
 
 
+# ---------- drop_collection ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_drop_collection_removes_table_and_catalogue_row(lance_provider):
+    """drop_collection wipes the per-collection Lance table AND clears
+    the catalogue row so a subsequent create_collection with a different
+    dimensionality succeeds without a ConflictError."""
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=4)
+    await store.put(_record(doc="d1", chunk="c1", vec=[0.1, 0.2, 0.3, 0.4]))
+    assert await lance_provider._catalogue_get("col-a") is not None
+
+    await store.drop_collection("col-a")
+
+    # Catalogue row is gone.
+    assert await lance_provider._catalogue_get("col-a") is None
+    # And the create+different-dimensions path that used to ConflictError
+    # now succeeds, which is the whole point of dropping on deactivate.
+    await store.create_collection("col-a", dimensions=8)
+    row = await lance_provider._catalogue_get("col-a")
+    assert row is not None
+    assert row["dimensions"] == 8
+
+
+@pytest.mark.asyncio
+async def test_drop_collection_idempotent_when_missing(lance_provider):
+    """Dropping a collection that was never created (or already dropped)
+    is a successful no-op — the deactivate path relies on this so a
+    partial prior drop can be safely retried."""
+    store = lance_provider.get_vector_store()
+    await store.drop_collection("never-existed")  # no error
+    # Drop twice in a row also a no-op.
+    await store.create_collection("col-a", dimensions=3)
+    await store.drop_collection("col-a")
+    await store.drop_collection("col-a")  # second drop: no error
+
+
 # ---------- search --------------------------------------------------------
 
 

@@ -10,9 +10,11 @@ Config (singleton row at id ``_internal_collections_config``):
   embedding provider + model and optional cross-encoder + MMR knobs.
 * ``GET    /v1/internal_collections/config`` — read the row; 404 if
   absent.
-* ``DELETE /v1/internal_collections/config`` — clear the row and
-  detach the live subsystem (vector tables + collection rows are
-  preserved so data is not lost).
+* ``DELETE /v1/internal_collections/config`` — clear the row, detach
+  the live subsystem, and drop the four reserved collections from the
+  backing SSP so a subsequent re-PUT with a different embedding model
+  can rebuild cleanly. Custom (non-IC) collections in the same SSP
+  are not touched.
 
 Bootstrap:
 
@@ -53,6 +55,7 @@ from primer.api.errors import (
 )
 from primer.model.except_ import ConfigError, NotFoundError
 from primer.model.internal import (
+    INTERNAL_COLLECTION_IDS,
     INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID,
     INTERNAL_COLLECTIONS_CONFIG_ID,
     InternalCollectionsBootstrapStatus,
@@ -279,13 +282,53 @@ async def delete_config(
             "internal collections subsystem is not configured; nothing "
             "to delete."
         )
-    await storage.delete(INTERNAL_COLLECTIONS_CONFIG_ID)
-    # Detach the live subsystem (vector data preserved). Stop the worker.
+    # Detach the live subsystem first so the CDC worker stops writing
+    # and so the search routes flip to 503 before we touch the vectors.
     subsystem = _get_subsystem_or_none(request)
     if subsystem is not None:
         await subsystem.aclose()
+    # Drop the four reserved internal collections from the SSP's
+    # backing store. Without this, a subsequent re-PUT with a
+    # different embedding model would surface a dimension mismatch on
+    # the orphaned vectors. Drops are idempotent — a missing
+    # collection is a no-op, and a per-collection failure logs and
+    # moves on so a single bad drop doesn't strand the config row.
+    semantic_search_registry = getattr(
+        request.app.state, "semantic_search_registry", None,
+    )
+    if semantic_search_registry is not None:
+        try:
+            store = await semantic_search_registry.get_store(
+                row.search_provider_id
+            )
+        except Exception as exc:  # noqa: BLE001 - tolerate registry errors
+            logger.warning(
+                "ic deactivate: cannot resolve store for ssp %r: %s; "
+                "skipping collection drops (operator must wipe manually)",
+                row.search_provider_id, exc,
+            )
+            store = None
+        if store is not None:
+            for coll_id in INTERNAL_COLLECTION_IDS.values():
+                try:
+                    await store.drop_collection(coll_id)
+                    logger.info(
+                        "ic deactivate: dropped collection %r from ssp %r",
+                        coll_id, row.search_provider_id,
+                    )
+                except Exception as exc:  # noqa: BLE001 - best-effort
+                    logger.warning(
+                        "ic deactivate: drop_collection(%r) on ssp %r failed: %s",
+                        coll_id, row.search_provider_id, exc,
+                    )
+    # Clear in-memory subsystem state.
+    if subsystem is not None:
         request.app.state.internal_collections = None
         request.app.state.provider_registry._search_toolset_provider = None  # noqa: SLF001
+    # Finally, remove the config row. Doing this last means a partial
+    # failure leaves the config in place so the operator can retry the
+    # DELETE (drop_collection is idempotent, so retry is safe).
+    await storage.delete(INTERNAL_COLLECTIONS_CONFIG_ID)
 
 
 # ===========================================================================

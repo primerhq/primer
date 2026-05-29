@@ -128,6 +128,7 @@ class _FakeStore:
     def __init__(self) -> None:
         self.collections: dict = {}
         self.records: dict = {}
+        self.dropped: list[str] = []
 
     async def create_collection(self, cid, *, dimensions, distance="cosine"):
         self.collections[cid] = {"dimensions": dimensions, "distance": distance}
@@ -140,6 +141,13 @@ class _FakeStore:
     async def delete(self, cid, doc_id):
         for key in list(self.records.keys()):
             if key[0] == cid and key[1] == doc_id:
+                del self.records[key]
+
+    async def drop_collection(self, cid):
+        self.dropped.append(cid)
+        self.collections.pop(cid, None)
+        for key in list(self.records.keys()):
+            if key[0] == cid:
                 del self.records[key]
 
     async def search(self, cid, vector, k):
@@ -339,11 +347,17 @@ class TestConfigCRUD:
 
     @pytest.mark.asyncio
     async def test_delete_clears_config_and_detaches_subsystem(
-        self, client, app
+        self, client, app, store
     ) -> None:
+        from primer.model.internal import INTERNAL_COLLECTION_IDS
+
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
         assert app.state.internal_collections is not None
+        # Sanity: bootstrap should have materialised the four reserved
+        # collections on the fake store.
+        for coll_id in INTERNAL_COLLECTION_IDS.values():
+            assert coll_id in store.collections
 
         delete = await client.delete("/v1/internal_collections/config")
         assert delete.status_code == 204
@@ -352,6 +366,48 @@ class TestConfigCRUD:
             "/v1/agents/search", json={"query": "anything"}
         )
         assert search.status_code == 503
+
+        # The four reserved collections were dropped from the SSP's
+        # backing store — not just detached. Without this, a subsequent
+        # re-activation with a different embedding model would surface
+        # dimension-mismatched stale vectors.
+        for coll_id in INTERNAL_COLLECTION_IDS.values():
+            assert coll_id in store.dropped, (
+                f"collection {coll_id!r} was not dropped on deactivate"
+            )
+            assert coll_id not in store.collections
+
+    @pytest.mark.asyncio
+    async def test_delete_then_reput_with_different_dimensions_succeeds(
+        self, client, app, store
+    ) -> None:
+        """The deactivate-then-reactivate path is the only sane way to
+        switch embedding models. Confirm that after DELETE, the four
+        reserved collections are gone so a re-PUT + bootstrap rebuilds
+        from scratch without colliding with stale vectors of a
+        different dimensionality."""
+        from primer.model.internal import INTERNAL_COLLECTION_IDS
+
+        await client.put("/v1/internal_collections/config", json=_config_body())
+        await _bootstrap_and_wait(client)
+        for coll_id in INTERNAL_COLLECTION_IDS.values():
+            assert coll_id in store.collections
+
+        delete = await client.delete("/v1/internal_collections/config")
+        assert delete.status_code == 204
+        for coll_id in INTERNAL_COLLECTION_IDS.values():
+            assert coll_id not in store.collections
+
+        # Re-PUT + re-bootstrap — same fake (so dimensions don't actually
+        # mismatch here, but the surface contract is that the second
+        # bootstrap doesn't see the prior collections).
+        put2 = await client.put(
+            "/v1/internal_collections/config", json=_config_body()
+        )
+        assert put2.status_code == 200, put2.text
+        await _bootstrap_and_wait(client)
+        for coll_id in INTERNAL_COLLECTION_IDS.values():
+            assert coll_id in store.collections
 
 
 # ===========================================================================
