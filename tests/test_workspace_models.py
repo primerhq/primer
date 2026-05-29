@@ -8,8 +8,18 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from primer.model.workspace import (
+    ContainerConnectionSocket,
+    ContainerReachabilityBridge,
+    ContainerReachabilityHostPort,
+    ContainerWorkspaceConfig,
     FileEntry,
     FileMount,
+    K8sConnectionInCluster,
+    K8sConnectionKubeconfig,
+    K8sConnectionServiceAccountToken,
+    K8sReachabilityIngress,
+    K8sReachabilityInCluster,
+    KubernetesWorkspaceConfig,
     LocalWorkspaceConfig,
     PackageSpec,
     ResourceLimits,
@@ -361,14 +371,6 @@ class TestFileEntry:
 # ---- ContainerWorkspaceConfig (minimal: connection + reachability) -------
 
 
-from primer.model.workspace import (  # noqa: E402
-    ContainerConnectionSocket,
-    ContainerReachabilityBridge,
-    ContainerReachabilityHostPort,
-    ContainerWorkspaceConfig,
-)
-
-
 def test_container_config_host_port_reachability():
     cfg = ContainerWorkspaceConfig(
         runtime="docker",
@@ -411,3 +413,65 @@ def test_container_config_rejects_template_fields():
             ),
             image="ghcr.io/example/img:1",  # type: ignore[call-arg]
         )
+
+
+# ---- KubernetesWorkspaceConfig (minimal: connection + reachability) ------
+
+
+class TestKubernetesWorkspaceConfig:
+    def test_in_cluster_minimal(self):
+        cfg = KubernetesWorkspaceConfig(
+            connection=K8sConnectionInCluster(),
+            namespace="primer",
+            reachability=K8sReachabilityInCluster(),
+        )
+        assert cfg.connection.kind == "in_cluster"
+        assert cfg.reachability.kind == "in_cluster"
+        assert cfg.variant == "system"  # default
+
+    def test_kubeconfig_and_ingress(self):
+        cfg = KubernetesWorkspaceConfig(
+            connection=K8sConnectionKubeconfig(path="~/.kube/config", context="prod"),
+            namespace="primer",
+            reachability=K8sReachabilityIngress(
+                url_template="wss://workspaces.example.com/{workspace_id}/"
+            ),
+        )
+        assert cfg.connection.path == "~/.kube/config"
+        assert cfg.connection.context == "prod"
+        assert cfg.reachability.url_template.startswith("wss://")
+
+    def test_service_account_token_with_secret(self):
+        cfg = KubernetesWorkspaceConfig(
+            connection=K8sConnectionServiceAccountToken(
+                apiserver_url="https://1.2.3.4:6443",
+                ca_data="-----BEGIN CERTIFICATE-----\n...",
+                token="bearer-token-here",  # SecretStr coerced
+                namespace="default",
+            ),
+            namespace="primer",
+            reachability=K8sReachabilityInCluster(),
+        )
+        assert cfg.connection.kind == "service_account_token"
+        assert cfg.connection.apiserver_url == "https://1.2.3.4:6443"
+        # Token should be SecretStr — its repr shouldn't leak
+        assert "bearer-token-here" not in repr(cfg.connection)
+
+    def test_agent_sandbox_variant_reserved(self):
+        cfg = KubernetesWorkspaceConfig(
+            variant="agent_sandbox",
+            connection=K8sConnectionInCluster(),
+            namespace="primer",
+            reachability=K8sReachabilityInCluster(),
+        )
+        assert cfg.variant == "agent_sandbox"
+
+    def test_rejects_template_fields(self):
+        # storage_class / image_pull_policy / security_context defaults moved to template
+        with pytest.raises(ValidationError):
+            KubernetesWorkspaceConfig(
+                connection=K8sConnectionInCluster(),
+                namespace="primer",
+                reachability=K8sReachabilityInCluster(),
+                storage_class="fast-ssd",  # type: ignore[call-arg]
+            )

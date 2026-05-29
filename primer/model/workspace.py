@@ -679,73 +679,119 @@ class ContainerWorkspaceConfig(BaseModel):
     )
 
 
-class KubernetesWorkspaceConfig(BaseModel):
-    """Settings for KubernetesWorkspaceBackend."""
+class K8sConnectionInCluster(BaseModel):
+    """In-cluster service-account auth — no extra fields needed."""
 
-    kind: Literal["kubernetes"] = "kubernetes"
-    in_cluster: bool = Field(
-        default=False,
-        description="If True, use in-cluster kubeconfig.",
+    kind: Literal["in_cluster"] = Field(
+        default="in_cluster",
+        description="Discriminator tag identifying this as in-cluster auth.",
     )
-    kubeconfig_path: str | None = Field(
-        default=None,
-        description="Path to a kubeconfig file. Ignored when in_cluster=True.",
+
+
+class K8sConnectionKubeconfig(BaseModel):
+    """Kubeconfig-based auth — path + optional context."""
+
+    kind: Literal["kubeconfig"] = Field(
+        default="kubeconfig",
+        description="Discriminator tag identifying this as kubeconfig auth.",
     )
+    path: str = Field(..., description="Path to the kubeconfig file (tilde-expanded).")
     context: str | None = Field(
         default=None,
-        description="kubeconfig context name. None = current context.",
+        description="Named context to select; null uses the file's current-context.",
     )
+
+
+class K8sConnectionServiceAccountToken(BaseModel):
+    """Direct service-account-token auth for out-of-cluster setups."""
+
+    kind: Literal["service_account_token"] = Field(
+        default="service_account_token",
+        description="Discriminator tag identifying this as service-account-token auth.",
+    )
+    apiserver_url: str = Field(..., description="https://<host>:<port> apiserver URL.")
+    ca_data: str = Field(..., description="PEM cluster CA cert (multi-line string).")
+    token: SecretStr = Field(..., description="Bearer token for the service account.")
     namespace: str = Field(
         default="default",
-        description="Kubernetes namespace for all resources.",
+        description="Namespace claimed by the token; informational.",
     )
-    name_prefix: str = Field(
-        default="primer-ws-",
-        description="StatefulSet/PVC name prefix.",
+
+
+K8sConnectionConfig = Annotated[
+    Union[K8sConnectionInCluster, K8sConnectionKubeconfig, K8sConnectionServiceAccountToken],
+    Field(discriminator="kind"),
+]
+
+
+class K8sReachabilityInCluster(BaseModel):
+    """Platform IS in the same cluster — use headless-service DNS."""
+
+    kind: Literal["in_cluster"] = Field(
+        default="in_cluster",
+        description="Discriminator tag identifying this as in-cluster reachability.",
     )
-    storage_class: str | None = Field(
-        default=None,
-        description="StorageClass for PVCs. None = cluster default.",
+
+
+class K8sReachabilityIngress(BaseModel):
+    """Platform OUT of cluster — operator-supplied ingress URL pattern."""
+
+    kind: Literal["ingress"] = Field(
+        default="ingress",
+        description="Discriminator tag identifying this as ingress reachability.",
     )
-    default_pvc_size: str = Field(
-        default="10Gi",
-        description="Default PVC size when template does not override.",
+    url_template: str = Field(
+        ...,
+        description=(
+            "wss:// URL template with {workspace_id} placeholder. "
+            "The platform substitutes the id at attach-time."
+        ),
     )
-    service_account: str | None = Field(
-        default=None,
-        description="ServiceAccount for the workspace pods.",
+
+
+K8sReachabilityConfig = Annotated[
+    Union[K8sReachabilityInCluster, K8sReachabilityIngress],
+    Field(discriminator="kind"),
+]
+
+
+class KubernetesWorkspaceConfig(BaseModel):
+    """Kubernetes provider — connection + reachability + variant slot.
+
+    The ``variant`` field reserves space for an ``agent_sandbox`` variant that
+    materialises workspaces as Sandbox CRDs instead of StatefulSets.
+    Only ``system`` (StatefulSet+PVC+Headless Service+Secret) is implemented
+    in v1; ``agent_sandbox`` is accepted on provider create but workspace
+    create returns 501.
+
+    Image, resources, storage class, security context, network policies,
+    pod overrides etc. moved to the template (see :class:`KubernetesTemplateConfig`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["kubernetes"] = Field(
+        default="kubernetes",
+        description="Substrate discriminator (matches WorkspaceProviderConfig union).",
+    )
+    variant: Literal["system", "agent_sandbox"] = Field(
+        default="system",
+        description=(
+            "Which k8s materialisation strategy to use. `system` creates a "
+            "StatefulSet+PVC; `agent_sandbox` (reserved) will create a Sandbox CRD."
+        ),
+    )
+    connection: K8sConnectionConfig = Field(
+        ..., description="How the platform reaches the kube apiserver.",
+    )
+    namespace: str = Field(
+        ..., description="Namespace where workspaces are created.",
+    )
+    reachability: K8sReachabilityConfig = Field(
+        ..., description="How the platform reaches primer-runtime inside workspace pods.",
     )
     image_pull_secrets: list[str] = Field(
         default_factory=list,
-        description="Image pull secret names.",
-    )
-    pull_policy: Literal["Always", "IfNotPresent", "Never"] = Field(
-        default="IfNotPresent",
-        description="K8s container imagePullPolicy.",
-    )
-    pod_security_context: dict[str, Any] | None = Field(
-        default=None,
-        description="Passthrough to PodSpec.securityContext.",
-    )
-    container_security_context: dict[str, Any] | None = Field(
-        default=None,
-        description="Passthrough to Container.securityContext.",
-    )
-    node_selector: dict[str, str] = Field(
-        default_factory=dict,
-        description="Passthrough to PodSpec.nodeSelector.",
-    )
-    tolerations: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Passthrough to PodSpec.tolerations.",
-    )
-    annotations: dict[str, str] = Field(
-        default_factory=dict,
-        description="Annotations applied to StatefulSet + Pod.",
-    )
-    labels: dict[str, str] = Field(
-        default_factory=dict,
-        description="Labels applied to StatefulSet + Pod.",
+        description="Names of pre-created imagePullSecrets in the namespace.",
     )
 
 
@@ -869,6 +915,13 @@ __all__ = [
     "FileEntry",
     "FileMount",
     "FileSource",
+    "K8sConnectionConfig",
+    "K8sConnectionInCluster",
+    "K8sConnectionKubeconfig",
+    "K8sConnectionServiceAccountToken",
+    "K8sReachabilityConfig",
+    "K8sReachabilityIngress",
+    "K8sReachabilityInCluster",
     "KubernetesTemplateConfig",
     "KubernetesWorkspaceConfig",
     "LocalTemplateConfig",
