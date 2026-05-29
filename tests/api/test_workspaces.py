@@ -327,7 +327,7 @@ def _provider() -> WorkspaceProvider:
     return WorkspaceProvider(
         id="local-1",
         provider=WorkspaceProviderType.LOCAL,
-        config=LocalWorkspaceConfig(path="/tmp/primer-ws-tests"),
+        config=LocalWorkspaceConfig(root_path="/tmp/primer-ws-tests"),
     )
 
 
@@ -601,6 +601,58 @@ class TestWorkspaceRouter:
             "/v1/workspaces", json={"template_id": "no-such-template"}
         )
         assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_workspace_get_includes_phase_fields(self, client) -> None:
+        """GET /v1/workspaces/{id} returns phase, last_probe_at,
+        last_probe_ok, failure_reason, runtime_meta."""
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        post = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        wid = post.json()["id"]
+
+        get = await client.get(f"/v1/workspaces/{wid}")
+        assert get.status_code == 200
+        body = get.json()
+        assert "phase" in body
+        assert "last_probe_at" in body
+        assert "last_probe_ok" in body
+        assert "failure_reason" in body
+        assert "runtime_meta" in body
+        # Fresh row defaults driven by primer/workspace/probe.py.
+        assert body["phase"] == "pending"
+        assert body["last_probe_at"] is None
+        assert body["last_probe_ok"] is False
+        assert body["failure_reason"] is None
+
+    @pytest.mark.asyncio
+    async def test_workspace_list_includes_phase(self, client) -> None:
+        """GET /v1/workspaces lists each workspace with its phase + probe
+        fields (no stripped DTO in the way)."""
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+
+        resp = await client.get("/v1/workspaces")
+        assert resp.status_code == 200
+        page = resp.json()
+        assert page["total"] == 2
+        for item in page["items"]:
+            assert "phase" in item
+            assert "last_probe_at" in item
+            assert "last_probe_ok" in item
+            assert "failure_reason" in item
+            assert "runtime_meta" in item
+            assert item["phase"] == "pending"
 
 
 # ===========================================================================

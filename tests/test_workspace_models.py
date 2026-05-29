@@ -621,3 +621,31 @@ class TestWorkspaceLifecycleFields:
             phase="terminating",
         )
         assert w.phase == "terminating"
+
+    def test_workspace_model_dump_includes_phase_fields(self):
+        """Locks the GET /v1/workspaces/{id} response contract: phase +
+        probe fields ship in the JSON payload (the router uses the bare
+        Workspace model as response_model, so model_dump shape is the
+        wire shape)."""
+        from datetime import datetime, timezone
+        from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+
+        w = Workspace(
+            id="ws-1",
+            template_id="tpl",
+            provider_id="prov",
+            created_at=datetime(2026, 5, 29, tzinfo=timezone.utc),
+            runtime_meta=WorkspaceRuntimeMeta(
+                url="ws://x:5959/", token=SecretStr("s"),
+            ),
+        )
+        dumped = w.model_dump(mode="json")
+        assert "phase" in dumped
+        assert "last_probe_at" in dumped
+        assert "last_probe_ok" in dumped
+        assert "failure_reason" in dumped
+        assert "runtime_meta" in dumped
+        assert dumped["phase"] == "pending"
+        assert dumped["last_probe_at"] is None
+        assert dumped["last_probe_ok"] is False
+        assert dumped["failure_reason"] is None
