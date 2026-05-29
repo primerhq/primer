@@ -601,6 +601,29 @@ class FileEntry(BaseModel):
 # ===========================================================================
 
 
+class WorkspaceDiagnosticResult(BaseModel):
+    """Result of one :meth:`primer.int.workspace.Workspace.diagnostic_exec` call.
+
+    Used by the diagnostic endpoint
+    (``POST /v1/workspaces/{id}/diagnostic``) to confirm a workspace is
+    reachable end-to-end ("hello-world" smoke). Mirrors the shape of
+    :class:`primer.int.sandbox.ExecResult` but lives in the model
+    package so the API surface doesn't pull in the sandbox ABC.
+    """
+
+    stdout: str = Field(default="", description="UTF-8 decoded stdout.")
+    stderr: str = Field(default="", description="UTF-8 decoded stderr.")
+    exit_code: int = Field(
+        ...,
+        description="Process exit code (-1 if killed by timeout).",
+    )
+    duration_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Wall-clock time the command took, in seconds.",
+    )
+
+
 class WorkspaceStatus(BaseModel):
     """Backend-agnostic workspace health snapshot.
 
@@ -1064,6 +1087,7 @@ __all__ = [
     "ResourceLimits",
     "VolumeMount",
     "Workspace",
+    "WorkspaceDiagnosticResult",
     "WorkspaceProvider",
     "WorkspaceProviderConfig",
     "WorkspaceProviderType",

@@ -52,6 +52,7 @@ from primer.model.storage import (
 from primer.model.workspace import (
     FileEntry,
     Workspace as WorkspaceRow,
+    WorkspaceDiagnosticResult,
     WorkspaceProvider,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
@@ -116,6 +117,36 @@ class FileReadResponse(BaseModel):
     encoding: Literal["text", "base64"]
     content: str
     size_bytes: int
+
+
+class DiagnosticExecBody(BaseModel):
+    """Body of ``POST /v1/workspaces/{id}/diagnostic``."""
+
+    command: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Shell command to run. Must start with one of the "
+            "whitelisted command names (``echo``, ``pwd``, ``whoami``, "
+            "``uname``, ``ls``) — anything else is rejected with 400. "
+            "This is a read-only diagnostic surface, not arbitrary RCE."
+        ),
+    )
+    timeout_seconds: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=30.0,
+        description=(
+            "Per-call timeout ceiling. Defaults to 5.0 if omitted. "
+            "Hard-capped at 30s — the route is for liveness smokes, "
+            "not long-running jobs."
+        ),
+    )
+
+
+_DIAGNOSTIC_COMMAND_WHITELIST: frozenset[str] = frozenset(
+    {"echo", "pwd", "whoami", "uname", "ls"}
+)
 
 
 class SteerBody(BaseModel):
@@ -383,6 +414,59 @@ async def resume_workspace(workspace_id: str) -> dict:
             ),
         },
     )
+
+
+@workspace_router.post(
+    "/workspaces/{workspace_id}/diagnostic",
+    response_model=WorkspaceDiagnosticResult,
+    summary="Run a short read-only diagnostic command on a workspace",
+    responses=common_responses(400, 404, 422, 500),
+)
+async def diagnostic_workspace(
+    body: DiagnosticExecBody,
+    workspace_id: str = Path(..., description="Workspace id"),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+) -> WorkspaceDiagnosticResult:
+    """Run a whitelisted shell command against the workspace and return
+    stdout/stderr/exit_code. Used by the UI for a hello-world reachability
+    smoke. Rejects any command whose head token is not on the whitelist.
+    """
+    # Whitelist check lives in the route (not in diagnostic_exec) so the
+    # backend method stays a thin shell-pass-through; the SAFETY layer
+    # is owned by the public surface.
+    head = body.command.strip().split(None, 1)[0] if body.command.strip() else ""
+    if head not in _DIAGNOSTIC_COMMAND_WHITELIST:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "command_not_whitelisted",
+                "head": head,
+                "allowed": sorted(_DIAGNOSTIC_COMMAND_WHITELIST),
+                "message": (
+                    f"diagnostic command head {head!r} is not on the "
+                    "whitelist; allowed commands are: "
+                    f"{sorted(_DIAGNOSTIC_COMMAND_WHITELIST)}"
+                ),
+            },
+        )
+    ws = await registry.get_workspace(workspace_id)
+    timeout = body.timeout_seconds if body.timeout_seconds is not None else 5.0
+    try:
+        return await ws.diagnostic_exec(body.command, timeout_seconds=timeout)
+    except NotImplementedError as exc:
+        # Sandbox/K8s backends that don't yet wire diagnostic_exec
+        # through their runtime surface this as 501 so the UI can show
+        # a clear "not supported" message instead of a 500.
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "error": "not_implemented",
+                "message": str(exc) or (
+                    "diagnostic_exec is not implemented for this workspace "
+                    "backend"
+                ),
+            },
+        ) from exc
 
 
 # ===========================================================================

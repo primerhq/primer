@@ -23,6 +23,7 @@ from primer.model.workspace_session import (
 )
 from primer.model.workspace import (
     FileEntry,
+    WorkspaceDiagnosticResult,
     WorkspaceRuntimeMeta,
     WorkspaceStatus,
     WorkspaceTemplate,
@@ -351,6 +352,44 @@ class SandboxWorkspace(Workspace):
             return await ping()
         except Exception:  # noqa: BLE001
             return False
+
+    async def diagnostic_exec(
+        self,
+        command: str,
+        *,
+        timeout_seconds: float = 5.0,
+    ) -> WorkspaceDiagnosticResult:
+        """Delegate to the underlying :meth:`Sandbox.exec`.
+
+        The Sandbox ABC already exposes a generic ``exec`` primitive
+        with ``timeout_seconds``; we forward verbatim and re-wrap the
+        :class:`primer.int.sandbox.ExecResult` into a
+        :class:`WorkspaceDiagnosticResult` (same shape, different package
+        — the model lives next to the other workspace models so the API
+        surface doesn't import the sandbox ABC). A timeout from
+        :meth:`Sandbox.exec` (which raises :class:`TimeoutError`) is
+        caught and returned as ``exit_code=-1``.
+        """
+        start = asyncio.get_event_loop().time()
+        try:
+            result = await self._sandbox.exec(
+                command,
+                workdir=self._workspace_root,
+                timeout_seconds=timeout_seconds,
+            )
+        except TimeoutError:
+            return WorkspaceDiagnosticResult(
+                stdout="",
+                stderr=f"command timed out after {timeout_seconds}s",
+                exit_code=-1,
+                duration_seconds=asyncio.get_event_loop().time() - start,
+            )
+        return WorkspaceDiagnosticResult(
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.exit_code,
+            duration_seconds=result.duration_seconds,
+        )
 
     async def append_message_line(self, session_id: str, line: bytes) -> None:
         """Append ``line`` to the session's ``messages.jsonl``.

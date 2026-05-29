@@ -681,3 +681,53 @@ class TestAppendMessageLine:
 
         path = ws.root / ws.template.state_path / "sessions" / sid / "messages.jsonl"
         assert path.read_bytes() == batch
+
+
+class TestDiagnosticExec:
+    """LocalWorkspace.diagnostic_exec runs a shell command rooted at the
+    workspace path and returns stdout/stderr/exit_code/duration."""
+
+    async def test_echo_returns_stdout(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+        result = await ws.diagnostic_exec("echo hello")
+        assert result.exit_code == 0
+        assert result.stdout == "hello\n"
+        assert result.stderr == ""
+        assert result.duration_seconds >= 0.0
+
+    async def test_pwd_runs_in_workspace_root(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+        result = await ws.diagnostic_exec("pwd")
+        assert result.exit_code == 0
+        # `pwd` prints the cwd; the workspace root is the cwd. Use
+        # resolve() to handle macOS /tmp -> /private/tmp symlinks.
+        assert result.stdout.strip() == str(ws.root.resolve())
+
+    async def test_nonzero_exit_propagates(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+        # `ls` on a missing path exits non-zero on POSIX.
+        result = await ws.diagnostic_exec("ls definitely-not-a-real-path-xyz")
+        assert result.exit_code != 0
+        assert result.stderr != ""
+
+    async def test_timeout_kills_process(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+        # `sleep 5` should be killed at 0.2s. `sleep` isn't on the
+        # whitelist (the route filters that) but diagnostic_exec runs
+        # whatever it's told — timeout enforcement is the contract we
+        # care about here.
+        result = await ws.diagnostic_exec("sleep 5", timeout_seconds=0.2)
+        assert result.exit_code == -1
+        assert result.duration_seconds < 5.0

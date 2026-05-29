@@ -196,3 +196,75 @@ async def test_append_message_line_noop_for_empty(tmp_path: Path) -> None:
 
     path = tmp_path / ".state" / "sessions" / sid / "messages.jsonl"
     assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_exec_delegates_to_sandbox(tmp_path: Path) -> None:
+    """SandboxWorkspace.diagnostic_exec forwards to Sandbox.exec and
+    re-wraps the ExecResult into a WorkspaceDiagnosticResult."""
+    from primer.int.sandbox import ExecResult
+
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-diag", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+
+    # Swap the sandbox's exec out AFTER materialise (which runs `git init`
+    # via the real FakeSandbox.exec for the state repo). The diagnostic
+    # call must then hit our recording stub.
+    captured: dict = {}
+
+    async def _recording_exec(
+        command, *, workdir="/workspace", env=None,
+        timeout_seconds=None, stdin=None, abort=None,
+    ):
+        captured["command"] = command
+        captured["workdir"] = workdir
+        captured["timeout_seconds"] = timeout_seconds
+        return ExecResult(
+            exit_code=0,
+            stdout="hello\n",
+            stderr="",
+            duration_seconds=0.02,
+        )
+
+    sb.exec = _recording_exec  # type: ignore[assignment]
+
+    result = await ws.diagnostic_exec("echo hello", timeout_seconds=3.0)
+    assert result.stdout == "hello\n"
+    assert result.exit_code == 0
+    assert result.duration_seconds == 0.02
+    assert captured["command"] == "echo hello"
+    assert captured["timeout_seconds"] == 3.0
+    # workdir should be the workspace root inside the sandbox
+    # (default "/workspace").
+    assert captured["workdir"] == "/workspace"
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_exec_timeout_returns_minus_one(
+    tmp_path: Path,
+) -> None:
+    """If Sandbox.exec raises TimeoutError, diagnostic_exec maps it to
+    a result with exit_code=-1 rather than propagating the exception."""
+
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-diag-to", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+
+    async def _timeout_exec(
+        command, *, workdir="/workspace", env=None,
+        timeout_seconds=None, stdin=None, abort=None,
+    ):
+        raise TimeoutError("sandbox exec timed out")
+
+    sb.exec = _timeout_exec  # type: ignore[assignment]
+
+    result = await ws.diagnostic_exec("sleep 99", timeout_seconds=0.1)
+    assert result.exit_code == -1
+    assert "timed out" in result.stderr.lower()

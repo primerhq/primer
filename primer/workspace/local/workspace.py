@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import io
 import tarfile
+import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from pydantic import SecretStr
 from primer.model.workspace import (
     CommitInfo,
     FileEntry,
+    WorkspaceDiagnosticResult,
     WorkspaceRuntimeMeta,
     WorkspaceStatus,
     WorkspaceTemplate,
@@ -345,6 +347,78 @@ class LocalWorkspace(Workspace):
         on disk, so root existence is the only meaningful health signal.
         """
         return await asyncio.to_thread(self._root.exists)
+
+    async def diagnostic_exec(
+        self,
+        command: str,
+        *,
+        timeout_seconds: float = 5.0,
+    ) -> WorkspaceDiagnosticResult:
+        """Run ``command`` via ``asyncio.create_subprocess_shell`` rooted
+        at the workspace path.
+
+        The command runs through the host shell (``/bin/sh -c`` on POSIX)
+        with the workspace root as cwd. The route layer is responsible
+        for restricting ``command`` to a whitelist — this method runs
+        whatever it's told. On timeout the process is killed and the
+        result is returned with ``exit_code=-1``.
+        """
+        import os
+        import signal
+
+        start = time.perf_counter()
+        # Place the shell + its descendants in a new process group so we
+        # can kill the whole tree on timeout (otherwise `sh -c 'sleep'`
+        # leaves the `sleep` child holding the pipes open).
+        kwargs: dict = {}
+        if os.name == "posix":
+            kwargs["start_new_session"] = True
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(self._root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **kwargs,
+        )
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_seconds,
+            )
+            exit_code = proc.returncode if proc.returncode is not None else -1
+            duration = time.perf_counter() - start
+        except asyncio.TimeoutError:
+            # Capture the timeout boundary BEFORE we wait on the kill —
+            # the duration field reports the deadline, not the cleanup.
+            duration = time.perf_counter() - start
+            if os.name == "posix":
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+            else:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+            # Best-effort drain of whatever was already in the pipes so
+            # the asyncio transport can be cleaned up. Cap at 1s so we
+            # don't block on a misbehaving child.
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    proc.communicate(), timeout=1.0,
+                )
+            except Exception:  # noqa: BLE001
+                stdout_b, stderr_b = b"", b""
+            exit_code = -1
+        return WorkspaceDiagnosticResult(
+            stdout=stdout_b.decode("utf-8", errors="replace"),
+            stderr=stderr_b.decode("utf-8", errors="replace"),
+            exit_code=exit_code,
+            duration_seconds=duration,
+        )
 
     async def append_message_line(self, session_id: str, line: bytes) -> None:
         """Append ``line`` to the session's ``messages.jsonl``.

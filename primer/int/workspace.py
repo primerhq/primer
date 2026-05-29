@@ -34,6 +34,7 @@ from typing import Any, TYPE_CHECKING
 from primer.model.workspace_session import AgentBinding, SessionInfo, SessionStatus
 from primer.model.workspace import (
     FileEntry,
+    WorkspaceDiagnosticResult,
     WorkspaceRuntimeMeta,
     WorkspaceStatus,
     WorkspaceTemplate,
@@ -286,6 +287,36 @@ class Workspace(ABC):
         phase transitions. Must be fast — implementations should not
         retry or wait beyond the connection's natural timeout.
         """
+
+    async def diagnostic_exec(
+        self,
+        command: str,
+        *,
+        timeout_seconds: float = 5.0,
+    ) -> WorkspaceDiagnosticResult:
+        """Run a short, read-only ``command`` against the workspace.
+
+        Used by the diagnostic endpoint
+        (``POST /v1/workspaces/{id}/diagnostic``) to confirm a workspace
+        is reachable end-to-end. The route is responsible for restricting
+        ``command`` to a small whitelist — the backend method itself runs
+        whatever it's told, so this is NOT a safe surface to expose
+        directly to untrusted callers.
+
+        Returns a :class:`WorkspaceDiagnosticResult` with stdout / stderr
+        / exit_code / duration_seconds. Backends MUST enforce the
+        ``timeout_seconds`` ceiling (kill the process and surface
+        ``exit_code=-1`` on overrun) rather than blocking the caller.
+
+        Default implementation raises :class:`NotImplementedError`;
+        concrete backends override. The default is intentionally not
+        ``@abstractmethod`` so pre-existing backends + duck-typed test
+        fakes that predate this method continue to be instantiable while
+        the implementation is rolled out.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement diagnostic_exec"
+        )
 
     async def append_message_line(self, session_id: str, line: bytes) -> None:
         """Append ``line`` to the session's ``messages.jsonl``.

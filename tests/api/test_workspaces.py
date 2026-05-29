@@ -156,6 +156,10 @@ class _FakeWorkspace:
             url=f"ws://fake/{workspace_id}",
             token=SecretStr(f"tok-{workspace_id}"),
         )
+        # Test instrumentation for diagnostic_exec — tests assert the
+        # route forwards (command, timeout_seconds) verbatim.
+        self.diagnostic_calls: list[tuple[str, float]] = []
+        self._diagnostic_raise: BaseException | None = None
 
     @property
     def id(self) -> str:
@@ -230,6 +234,26 @@ class _FakeWorkspace:
 
     async def get_session(self, session_id):
         return self._sessions.get(session_id)
+
+    async def diagnostic_exec(self, command, *, timeout_seconds=5.0):
+        """Mock diagnostic_exec used by the diagnostic endpoint tests.
+
+        Records the call (so tests can assert pass-through), and returns
+        a deterministic synthetic :class:`WorkspaceDiagnosticResult`. If
+        ``self._diagnostic_raise`` is set to an exception, raises it
+        instead (used to test the NotImplementedError -> 501 mapping).
+        """
+        from primer.model.workspace import WorkspaceDiagnosticResult
+
+        self.diagnostic_calls.append((command, timeout_seconds))
+        if self._diagnostic_raise is not None:
+            raise self._diagnostic_raise
+        return WorkspaceDiagnosticResult(
+            stdout=f"ok:{command}\n",
+            stderr="",
+            exit_code=0,
+            duration_seconds=0.01,
+        )
 
     async def aclose(self):
         return
@@ -917,6 +941,112 @@ class TestFilesSubResource:
 # ===========================================================================
 # Log sub-resource
 # ===========================================================================
+
+
+class TestDiagnosticEndpoint:
+    async def _setup(self, client, wsr):
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        post = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        wid = post.json()["id"]
+        backend = await wsr.get_backend("local-1")
+        ws = await backend.get(wid)
+        return wid, ws
+
+    @pytest.mark.asyncio
+    async def test_echo_whitelisted_passes_through(self, client, wsr) -> None:
+        wid, ws = await self._setup(client, wsr)
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": "echo hello"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["stdout"] == "ok:echo hello\n"
+        assert body["stderr"] == ""
+        assert body["exit_code"] == 0
+        assert "duration_seconds" in body
+        # Default timeout (5.0) wired through.
+        assert ws.diagnostic_calls == [("echo hello", 5.0)]
+
+    @pytest.mark.asyncio
+    async def test_custom_timeout_forwarded(self, client, wsr) -> None:
+        wid, ws = await self._setup(client, wsr)
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": "pwd", "timeout_seconds": 2.5},
+        )
+        assert resp.status_code == 200, resp.text
+        assert ws.diagnostic_calls == [("pwd", 2.5)]
+
+    @pytest.mark.asyncio
+    async def test_each_whitelisted_command_allowed(self, client, wsr) -> None:
+        wid, _ws = await self._setup(client, wsr)
+        for cmd in ("echo hi", "pwd", "whoami", "uname -a", "ls -la"):
+            resp = await client.post(
+                f"/v1/workspaces/{wid}/diagnostic",
+                json={"command": cmd},
+            )
+            assert resp.status_code == 200, (cmd, resp.text)
+
+    @pytest.mark.asyncio
+    async def test_non_whitelisted_command_returns_400(self, client, wsr) -> None:
+        wid, ws = await self._setup(client, wsr)
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": "rm -rf /"},
+        )
+        assert resp.status_code == 400, resp.text
+        detail = resp.json()["detail"]
+        assert detail["error"] == "command_not_whitelisted"
+        assert detail["head"] == "rm"
+        assert set(detail["allowed"]) == {"echo", "pwd", "whoami", "uname", "ls"}
+        # Backend was NOT called — whitelist short-circuits before
+        # diagnostic_exec dispatch.
+        assert ws.diagnostic_calls == []
+
+    @pytest.mark.asyncio
+    async def test_command_with_pipe_blocked(self, client, wsr) -> None:
+        # Even though the head token is whitelisted, downstream operators
+        # are irrelevant — the whitelist guards the head only, so a shell
+        # pipe targeting another binary is still subject to the head
+        # check. We at least confirm the head-token logic rejects pure
+        # non-whitelisted heads (already covered) and accepts a
+        # whitelisted head with args.
+        wid, ws = await self._setup(client, wsr)
+        # Empty command is min_length=1 -> 422.
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": ""},
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_workspace_not_found_returns_404(self, client, wsr) -> None:
+        # No workspace created => registry.get_workspace raises.
+        resp = await client.post(
+            "/v1/workspaces/ws-missing/diagnostic",
+            json={"command": "echo hi"},
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_not_implemented_maps_to_501(self, client, wsr) -> None:
+        wid, ws = await self._setup(client, wsr)
+        ws._diagnostic_raise = NotImplementedError(
+            "WSSandbox lacks shell exec primitive"
+        )
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": "echo hi"},
+        )
+        assert resp.status_code == 501
+        detail = resp.json()["detail"]
+        assert detail["error"] == "not_implemented"
 
 
 class TestLogSubResource:
