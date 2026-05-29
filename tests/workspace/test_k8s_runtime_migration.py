@@ -107,3 +107,35 @@ async def test_create_secret_generates_unique_tokens():
     t1 = await backend._create_secret("ws-a", "primer-ws-ws-a")
     t2 = await backend._create_secret("ws-b", "primer-ws-ws-b")
     assert t1 != t2
+
+
+@pytest.mark.asyncio
+async def test_create_namespaced_service_creates_headless_service():
+    """Headless Service manifest: clusterIP=None, selector matches workspace-id."""
+    from primer.workspace.k8s.backend import KubernetesWorkspaceBackend
+    from primer.model.workspace import (
+        KubernetesWorkspaceConfig, K8sConnectionInCluster, K8sReachabilityInCluster,
+    )
+
+    cfg = KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer-ns",
+        reachability=K8sReachabilityInCluster(),
+    )
+    backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
+    backend._config = cfg
+    backend._core_v1 = AsyncMock()
+    backend._core_v1.create_namespaced_service = AsyncMock()
+
+    await backend._create_service("ws-1", "primer-ws-ws-1")
+    backend._core_v1.create_namespaced_service.assert_awaited_once()
+    call_kwargs = backend._core_v1.create_namespaced_service.call_args.kwargs
+    body = call_kwargs.get("body", backend._core_v1.create_namespaced_service.call_args.args[1] if len(backend._core_v1.create_namespaced_service.call_args.args) > 1 else None)
+    assert body["metadata"]["name"] == "primer-ws-ws-1"
+    assert body["metadata"]["namespace"] == "primer-ns"
+    assert body["metadata"]["labels"]["workspace-id"] == "ws-1"
+    assert body["spec"]["clusterIP"] == "None"
+    assert body["spec"]["selector"] == {"workspace-id": "ws-1"}
+    assert body["spec"]["ports"][0]["port"] == 5959
+    assert body["spec"]["ports"][0]["targetPort"] == 5959
+    assert body["spec"]["ports"][0]["name"] == "runtime"

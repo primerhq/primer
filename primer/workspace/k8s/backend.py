@@ -403,6 +403,45 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         )
         return token
 
+    async def _create_service(
+        self, workspace_id: str, obj_name: str,
+    ) -> None:
+        """Create a Headless Service (``clusterIP: None``) selecting the
+        workspace's Pod via ``workspace-id=<id>``.
+
+        Gives each Pod a stable DNS name of the form
+        ``<obj_name>-0.<obj_name>.<ns>.svc.cluster.local`` -- required by
+        the in-cluster reachability mode so the platform can reach the
+        workspace-runtime without relying on Pod IPs.
+
+        Idempotent enough for retry: assumes the caller catches
+        ``Conflict`` (409) on re-create.
+        """
+        assert self._core_v1 is not None
+        body = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": obj_name,
+                "namespace": self._config.namespace,
+                "labels": {
+                    "workspace-id": workspace_id,
+                    "app.kubernetes.io/managed-by": "primer",
+                },
+            },
+            "spec": {
+                "clusterIP": "None",  # headless
+                "selector": {"workspace-id": workspace_id},
+                "ports": [
+                    {"name": "runtime", "port": 5959, "targetPort": 5959},
+                ],
+            },
+        }
+        await self._core_v1.create_namespaced_service(
+            namespace=self._config.namespace,
+            body=body,
+        )
+
     async def _wait_for_pod_running(
         self, pod_name: str, *, timeout_seconds: float = 120.0,
     ) -> None:
