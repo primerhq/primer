@@ -144,6 +144,7 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
           <KN_CollectionDetail
             c={sel}
             pushToast={pushToast}
+            embedProviders={embedProviders.data?.items ?? []}
             onOpenDocs={() => {
               if (typeof onOpen === "function") onOpen(sel.id);
               else navigate("/knowledge/documents", { collection: sel.id });
@@ -172,11 +173,13 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
   );
 }
 
-function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onNavigate }) {
+function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onNavigate, embedProviders }) {
   const { useResource, apiFetch } = window.primerApi;
   const isSystem = !!c.system;
+  const isManaged = !!c.harness_id;
   const [listOpen, setListOpen] = React.useState(false);
   const [searchOpen, setSearchOpen] = React.useState(false);
+  const [editOpen, setEditOpen] = React.useState(false);
 
   // For the docs count: system collections live in the vector store
   // only — Document storage rows are always empty, so probing them
@@ -225,6 +228,9 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onN
           <div className="mt-3" style={{ display: "flex", gap: 6 }}>
             <Btn size="sm" kind="primary" icon="doc" onClick={() => setListOpen(true)}>List documents</Btn>
             <Btn size="sm" kind="ghost" icon="search" onClick={() => setSearchOpen(true)}>Search</Btn>
+            {!isSystem && !isManaged && (
+              <Btn size="sm" kind="secondary" icon="edit" onClick={() => setEditOpen(true)}>Edit</Btn>
+            )}
           </div>
         </div>
       </div>
@@ -241,6 +247,20 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onN
           collection={c}
           pushToast={pushToast}
           onClose={() => setSearchOpen(false)}
+        />
+      )}
+      {editOpen && (
+        <KN_NewCollectionModal
+          existing={c}
+          embedProviders={embedProviders || []}
+          pushToast={pushToast}
+          onClose={() => setEditOpen(false)}
+          onCreate={() => {
+            setEditOpen(false);
+            if (typeof pushToast === "function") {
+              pushToast({ kind: "info", title: "Collection updated", detail: c.id });
+            }
+          }}
         />
       )}
     </div>
@@ -512,12 +532,13 @@ function KN_CollectionSearchModal({ collection, pushToast, onClose }) {
   );
 }
 
-function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate }) {
+function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate, existing }) {
+  const isEdit = !!existing;
   const { useMutation, apiFetch } = window.primerApi;
-  const [id, setId] = React.useState("");
-  const [description, setDescription] = React.useState("");
-  const [providerId, setProviderId] = React.useState("");
-  const [model, setModel] = React.useState("");
+  const [id, setId] = React.useState(existing?.id || "");
+  const [description, setDescription] = React.useState(existing?.description || "");
+  const [providerId, setProviderId] = React.useState(existing?.embedder?.provider_id || "");
+  const [model, setModel] = React.useState(existing?.embedder?.model || "");
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   React.useEffect(() => {
@@ -535,9 +556,13 @@ function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate })
   }, [modelOptions]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/collections", body),
+    (body) => isEdit
+      ? apiFetch("PUT", "/collections/" + encodeURIComponent(existing.id), body)
+      : apiFetch("POST", "/collections", body),
     {
-      invalidates: ["collections:list"],
+      invalidates: isEdit
+        ? ["collections:list", "collection-detail:" + (existing?.id || "")]
+        : ["collections:list"],
       onSuccess: (c) => onCreate(c),
       onError: (err) => {
         if (err && err.status === 422 && Array.isArray(err.fieldErrors)) {
@@ -549,7 +574,7 @@ function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate })
         } else if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
-            title: err?.title || "Create failed",
+            title: err?.title || (isEdit ? "Save failed" : "Create failed"),
             detail: err?.detail || err?.message,
             requestId: err?.requestId,
           });
@@ -561,7 +586,7 @@ function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate })
   const submit = async () => {
     setFieldErrors({});
     const body = {
-      ...(id ? { id } : {}),
+      ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       description: description || null,
       embedder: { provider_id: providerId, model },
     };
@@ -570,24 +595,28 @@ function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate })
 
   return (
     <Modal
-      title="New collection"
+      title={isEdit ? `Edit collection · ${existing.id}` : "New collection"}
       onClose={onClose}
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={!providerId || !model || create.loading}>
-            {create.loading ? "Creating…" : "Create"}
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!providerId || !model || create.loading}>
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
           </Btn>
         </>
       }
     >
       <div className="field">
-        <label className="field-label">ID <span className="hint">optional — backend assigns if blank</span></label>
+        <label className="field-label">ID {isEdit
+          ? <span className="hint">locked — id cannot change after create</span>
+          : <span className="hint">optional — backend assigns if blank</span>}
+        </label>
         <input
           className="input"
           value={id}
           onChange={(e) => setId(e.target.value)}
           placeholder="auto-generated"
+          disabled={isEdit}
           style={{ width: "100%" }}
         />
         {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
@@ -700,6 +729,7 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
 
   const [textFilter, setTextFilter] = React.useState("");
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState(null);
 
   // Normalise to a single row shape. /documents returns Document
   // storage rows {id, collection_id, name, meta}; /indexed_documents
@@ -775,19 +805,20 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
               <th>Collection</th>
               <th>Name</th>
               <th>Meta keys</th>
+              <th style={{ width: 60, textAlign: "right" }}></th>
             </tr>
           </thead>
           <tbody>
             {list.loading && items.length === 0 ? (
-              <tr><td colSpan={4} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
+              <tr><td colSpan={5} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
             ) : list.error && items.length === 0 ? (
-              <tr><td colSpan={4} style={{ padding: 20, textAlign: "center" }}>
+              <tr><td colSpan={5} style={{ padding: 20, textAlign: "center" }}>
                 <span style={{ color: "var(--red)" }}>{list.error.title || list.error.message}</span>
                 {" · "}<a onClick={list.refetch} style={{ cursor: "pointer" }}>Retry</a>
               </td></tr>
             ) : filtered.length === 0 ? (
               items.length === 0 ? (
-                <tr><td colSpan={4}>
+                <tr><td colSpan={5}>
                   <KN_EmptyState
                     ico="doc"
                     head="No documents yet"
@@ -796,7 +827,7 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
                   />
                 </td></tr>
               ) : (
-                <tr><td colSpan={4} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+                <tr><td colSpan={5} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
                   No documents match.
                 </td></tr>
               )
@@ -819,6 +850,11 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
                     {Object.keys(d.meta || {}).length === 0
                       ? <span style={{ color: "var(--text-4)" }}>—</span>
                       : Object.keys(d.meta).join(", ")}
+                  </td>
+                  <td style={{ textAlign: "right", paddingRight: 12 }}>
+                    {!d._indexed && (
+                      <Btn size="sm" kind="ghost" icon="edit" onClick={() => setEditing(d)} title="Edit document" />
+                    )}
                   </td>
                 </tr>
               );
@@ -873,16 +909,41 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
           }}
         />
       )}
+      {editing && (
+        <KN_NewDocumentModal
+          collections={collections.data?.items ?? []}
+          existing={editing}
+          pushToast={pushToast}
+          onClose={() => setEditing(null)}
+          onCreate={(d) => {
+            setEditing(null);
+            if (typeof pushToast === "function") {
+              pushToast({ kind: "info", title: "Document updated", detail: d.id });
+            }
+            list.refetch();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClose, onCreate }) {
+function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClose, onCreate, existing }) {
+  const isEdit = !!existing;
   const { useMutation, apiFetch } = window.primerApi;
-  const [collectionId, setCollectionId] = React.useState(defaultCollection || "");
-  const [name, setName] = React.useState("");
-  const [text, setText] = React.useState("");
-  const [metaJson, setMetaJson] = React.useState("");
+  const _initialMeta = () => {
+    if (!isEdit) return "";
+    const { text: _t, ...rest } = existing.meta || {};
+    return Object.keys(rest).length > 0 ? JSON.stringify(rest, null, 2) : "";
+  };
+  const _initialText = () => isEdit ? (existing.meta?.text || "") : "";
+
+  const [collectionId, setCollectionId] = React.useState(
+    existing?.collection_id || defaultCollection || ""
+  );
+  const [name, setName] = React.useState(existing?.name || "");
+  const [text, setText] = React.useState(_initialText);
+  const [metaJson, setMetaJson] = React.useState(_initialMeta);
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   React.useEffect(() => {
@@ -890,7 +951,9 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
   }, [collections, collectionId]);
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/documents", body),
+    (body) => isEdit
+      ? apiFetch("PUT", "/documents/" + encodeURIComponent(existing.id), body)
+      : apiFetch("POST", "/documents", body),
     {
       onSuccess: (d) => onCreate(d),
       onError: (err) => {
@@ -903,7 +966,7 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
         } else if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
-            title: err?.title || "Create failed",
+            title: err?.title || (isEdit ? "Save failed" : "Create failed"),
             detail: err?.detail || err?.message,
             requestId: err?.requestId,
           });
@@ -919,9 +982,8 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
       try { meta = JSON.parse(metaJson); }
       catch (e) { setFieldErrors({ "body.meta": "Invalid JSON: " + e.message }); return; }
     }
-    // Document.id is required by the backend (unlike most Identifiable
-    // entities which auto-generate). Mint a short-form id if blank.
-    const docId = "doc-" + Math.random().toString(16).slice(2, 10);
+    // Document.id is required; preserve on edit, mint short-form on create.
+    const docId = isEdit ? existing.id : ("doc-" + Math.random().toString(16).slice(2, 10));
     const body = {
       id: docId,
       collection_id: collectionId,
@@ -935,23 +997,24 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
 
   return (
     <Modal
-      title="Ingest document"
+      title={isEdit ? `Edit document · ${existing.id}` : "Ingest document"}
       onClose={onClose}
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={!collectionId || create.loading}>
-            {create.loading ? "Creating…" : "Create"}
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!collectionId || create.loading}>
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
           </Btn>
         </>
       }
     >
       <div className="field">
-        <label className="field-label">Collection</label>
+        <label className="field-label">Collection {isEdit && <span className="hint">locked — cannot move documents between collections</span>}</label>
         <select
           className="select"
           value={collectionId}
           onChange={(e) => setCollectionId(e.target.value)}
+          disabled={isEdit}
           style={{ width: "100%" }}
         >
           <option value="">-- pick a collection --</option>
