@@ -215,6 +215,28 @@
           cache.delete(effectiveKey);
         }
       };
+      // pollMs intentionally excluded — it's applied in the separate
+      // effect below. Including it would tear down + recreate the cache
+      // entry on every cadence change, losing the cached data and firing
+      // an immediate refetch. Callers that adapt pollMs to the response
+      // (e.g. fast cadence while a long task runs) would then loop:
+      // pollMs change → entry rebuild → data=undefined emitted → caller
+      // resets pollMs → another rebuild → flood.
+    }, [effectiveKey]);
+
+    // Apply pollMs changes in-place without rebuilding the cache entry.
+    // If a poll timer is pending, reschedule it under the new cadence so
+    // the new interval takes effect immediately rather than after the
+    // next fetch settles.
+    useEffect(() => {
+      const entry = cache.get(effectiveKey);
+      if (!entry) return;
+      if (entry.pollMs === pollMs) return;
+      entry.pollMs = pollMs;
+      if (entry.timer != null) {
+        clearTimer(entry);
+        schedule(entry, effectiveKey);
+      }
     }, [effectiveKey, pollMs]);
 
     const refetch = useCallback(() => {
