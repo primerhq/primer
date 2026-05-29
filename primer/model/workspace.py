@@ -543,25 +543,21 @@ class WorkspaceProviderType(str, Enum):
 
 
 class LocalWorkspaceConfig(BaseModel):
-    """Connection settings for the local-FS workspace backend.
+    """Local provider — host-filesystem workspaces under a single root.
 
-    Used by :class:`primer.workspace.local.LocalWorkspaceBackend`. The
-    only knob is the directory under which every workspace is
-    materialised; each workspace gets its own subdirectory beneath it.
+    Workdir / exec timeouts / package management etc. moved off this
+    config; local templates own materialisation. The only thing the
+    provider needs to know is where to put workspace directories.
     """
 
+    model_config = ConfigDict(extra="forbid")
     kind: Literal["local"] = Field(
         default="local",
-        description="Discriminator tag for the provider-config union.",
+        description="Discriminator tag identifying this as local-workspace config.",
     )
-    path: str = Field(
-        ...,
-        min_length=1,
-        description=(
-            "Absolute filesystem path under which workspaces will be "
-            "materialised. One subdirectory per workspace is created "
-            "underneath."
-        ),
+    root_path: str = Field(
+        default="~/.primer/workspaces",
+        description="Root directory under which each workspace gets its own subdirectory. Tilde-expanded.",
     )
 
 

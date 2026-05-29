@@ -270,13 +270,20 @@ class TestWorkspaceTemplateOverrides:
 
 
 class TestLocalWorkspaceConfig:
-    def test_construction(self) -> None:
-        cfg = LocalWorkspaceConfig(path="/var/lib/primer/workspaces")
-        assert cfg.path == "/var/lib/primer/workspaces"
+    def test_minimal(self):
+        cfg = LocalWorkspaceConfig(root_path="~/.primer/workspaces")
+        assert cfg.root_path == "~/.primer/workspaces"
 
-    def test_empty_path_rejected(self) -> None:
+    def test_default_root_path(self):
+        cfg = LocalWorkspaceConfig()
+        assert cfg.root_path == "~/.primer/workspaces"
+
+    def test_rejects_template_fields(self):
         with pytest.raises(ValidationError):
-            LocalWorkspaceConfig(path="")
+            LocalWorkspaceConfig(
+                root_path="~/.primer/workspaces",
+                workdir_default="/tmp/x",  # type: ignore[call-arg]
+            )
 
 
 class TestWorkspaceProvider:
@@ -284,17 +291,17 @@ class TestWorkspaceProvider:
         wp = WorkspaceProvider(
             id="local-1",
             provider=WorkspaceProviderType.LOCAL,
-            config=LocalWorkspaceConfig(path="/tmp/primer/workspaces"),
+            config=LocalWorkspaceConfig(root_path="/tmp/primer/workspaces"),
         )
         assert wp.id == "local-1"
         assert wp.provider == WorkspaceProviderType.LOCAL
-        assert wp.config.path == "/tmp/primer/workspaces"
+        assert wp.config.root_path == "/tmp/primer/workspaces"
 
     def test_round_trip_through_json(self) -> None:
         wp = WorkspaceProvider(
             id="local-1",
             provider=WorkspaceProviderType.LOCAL,
-            config=LocalWorkspaceConfig(path="/srv/primer"),
+            config=LocalWorkspaceConfig(root_path="/srv/primer"),
         )
         parsed = WorkspaceProvider.model_validate_json(wp.model_dump_json())
         assert parsed == wp
@@ -304,7 +311,7 @@ class TestWorkspaceProvider:
             WorkspaceProvider(
                 id="x",
                 provider="kubernetes",  # type: ignore[arg-type]
-                config=LocalWorkspaceConfig(path="/x"),
+                config=LocalWorkspaceConfig(root_path="/x"),
             )
 
     def test_provider_type_enum_values(self) -> None:
@@ -320,7 +327,7 @@ class TestWorkspaceProvider:
             WorkspaceProvider(
                 id="",
                 provider=WorkspaceProviderType.LOCAL,
-                config=LocalWorkspaceConfig(path="/x"),
+                config=LocalWorkspaceConfig(root_path="/x"),
             )
 
 
