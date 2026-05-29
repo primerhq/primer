@@ -2,6 +2,42 @@
 
 const WT_LIST_KEY = "ws:templates";
 
+// ---- ContainerMountEditor: list of {host, container, readonly} rows.
+// Matches the ContainerMount pydantic model used by ContainerTemplateConfig
+// (host path → container mount point, optional read-only flag).
+function ContainerMountEditor({ value, onChange }) {
+  const arr = Array.isArray(value) ? value : [];
+  const setAt = (i, patch) => {
+    const next = arr.slice();
+    next[i] = { ...next[i], ...patch };
+    onChange(next);
+  };
+  const remove = (i) => {
+    const next = arr.slice();
+    next.splice(i, 1);
+    onChange(next);
+  };
+  const add = () => onChange([...arr, { host: "", container: "", readonly: false }]);
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      {arr.map((m, i) => (
+        <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 6, alignItems: "center" }}>
+          <input className="input mono" placeholder="/host/path" value={m.host || ""} onChange={(e) => setAt(i, { host: e.target.value })} />
+          <input className="input mono" placeholder="/container/path" value={m.container || ""} onChange={(e) => setAt(i, { container: e.target.value })} />
+          <label className="mono text-sm" style={{ display: "inline-flex", gap: 4, alignItems: "center", color: "var(--text-3)" }}>
+            <input type="checkbox" checked={!!m.readonly} onChange={(e) => setAt(i, { readonly: e.target.checked })} />
+            ro
+          </label>
+          <button className="icon-btn" style={{ width: 26, height: 26 }} onClick={() => remove(i)} title="Remove"><Icon name="x" size={10} /></button>
+        </div>
+      ))}
+      <button className="btn" style={{ alignSelf: "flex-start", padding: "4px 10px" }} onClick={add}>
+        <Icon name="plus" size={11} /> Add mount
+      </button>
+    </div>
+  );
+}
+
 function _wtToastErr(pushToast, fallback) {
   return (err) => {
     if (typeof pushToast !== "function") return;
@@ -41,7 +77,7 @@ function WorkspaceTemplatesPage({ pushToast }) {
             <div className="ico-wrap"><Icon name="tools" size={22} /></div>
             <div className="head">No workspace templates</div>
             <div className="sub">
-              A WorkspaceTemplate is the declarative recipe — packages, files, env, init commands — that materialises into a workspace. Each template targets a previously-registered WorkspaceProvider.
+              A WorkspaceTemplate is the declarative recipe — files, env, init commands — that materialises into a workspace. Each template targets a previously-registered WorkspaceProvider.
             </div>
             <div className="actions">
               <Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New workspace template</Btn>
@@ -104,64 +140,90 @@ function _emptyForm(provider) {
     description: "",
     provider_id: provider?.id || "",
     backend_kind: provider?.provider || "local",
-    image: "",
-    entrypoint: [],
-    workdir: "/workspace",
-    user: "",
-    extra_mounts: [],
-    extra_volume_size: "",
-    args: [],
-    pvc_size: "10Gi",
-    pvc_access_modes: ["ReadWriteOnce"],
-    extra_volume_mounts: null,
-    extra_volumes: null,
-    container_overrides: null,
-    pod_overrides: null,
-    packages: [],
+
+    // ---- container variant fields ----
+    c_image: "",
+    c_entrypoint: [],
+    c_user: "",
+    c_workdir: "/workspace",
+    c_cpu_cores: "",
+    c_memory_bytes: "",
+    c_extra_mounts: [],
+    c_network_egress: "",  // "" = runtime default (null), "allow_all", "deny_all"
+
+    // ---- kubernetes variant fields ----
+    k_image: "",
+    k_entrypoint: [],
+    k_args: [],
+    k_workdir: "/workspace",
+    k_cpu_request: "",
+    k_cpu_limit: "",
+    k_memory_request: "",
+    k_memory_limit: "",
+    k_pvc_size: "10Gi",
+    k_pvc_access_modes: ["ReadWriteOnce"],
+    k_storage_class: "",
+    k_extra_volumes: null,
+    k_extra_volume_mounts: null,
+    k_network_policy_name: "",
+    k_pod_overrides: null,
+    k_container_security_context_overrides: null,
+
+    // ---- shared recipe ----
     files: [],
     env: {},
     init_commands: "",
     state_path: ".state",
     tmp_path: ".tmp",
-    cpu_limit: "",
-    memory_limit: "",
-    disk_limit: "",
-    network_egress: "deny",
   };
 }
 
 function _fromTemplate(t, providers) {
   const provider = (providers || []).find((p) => p.id === t.provider_id);
   const backend = t.backend || { kind: "local" };
-  const r = t.resources || {};
+  const kind = backend.kind || (provider?.provider) || "local";
+  const isC = kind === "container";
+  const isK = kind === "kubernetes";
   return {
     id: t.id,
     description: t.description || "",
     provider_id: t.provider_id,
-    backend_kind: backend.kind || (provider?.provider) || "local",
-    image: backend.image || "",
-    entrypoint: backend.entrypoint || [],
-    workdir: backend.workdir || "/workspace",
-    user: backend.user || "",
-    extra_mounts: backend.extra_mounts || [],
-    extra_volume_size: backend.extra_volume_size || "",
-    args: backend.args || [],
-    pvc_size: backend.pvc_size || "10Gi",
-    pvc_access_modes: backend.pvc_access_modes || ["ReadWriteOnce"],
-    extra_volume_mounts: backend.extra_volume_mounts || null,
-    extra_volumes: backend.extra_volumes || null,
-    container_overrides: backend.container_overrides || null,
-    pod_overrides: backend.pod_overrides || null,
-    packages: t.packages || [],
+    backend_kind: kind,
+
+    // ---- container variant fields ----
+    c_image: isC ? (backend.image || "") : "",
+    c_entrypoint: isC ? (backend.entrypoint || []) : [],
+    c_user: isC ? (backend.user || "") : "",
+    c_workdir: isC ? (backend.workdir || "/workspace") : "/workspace",
+    c_cpu_cores: isC && backend.cpu_cores != null ? String(backend.cpu_cores) : "",
+    c_memory_bytes: isC && backend.memory_bytes != null ? String(backend.memory_bytes) : "",
+    c_extra_mounts: isC ? (backend.extra_mounts || []) : [],
+    c_network_egress: isC ? ((backend.network && backend.network.egress) || "") : "",
+
+    // ---- kubernetes variant fields ----
+    k_image: isK ? (backend.image || "") : "",
+    k_entrypoint: isK ? (backend.entrypoint || []) : [],
+    k_args: isK ? (backend.args || []) : [],
+    k_workdir: isK ? (backend.workdir || "/workspace") : "/workspace",
+    k_cpu_request: isK ? (backend.cpu_request || "") : "",
+    k_cpu_limit: isK ? (backend.cpu_limit || "") : "",
+    k_memory_request: isK ? (backend.memory_request || "") : "",
+    k_memory_limit: isK ? (backend.memory_limit || "") : "",
+    k_pvc_size: isK ? (backend.pvc_size || "10Gi") : "10Gi",
+    k_pvc_access_modes: isK ? (backend.pvc_access_modes || ["ReadWriteOnce"]) : ["ReadWriteOnce"],
+    k_storage_class: isK ? (backend.storage_class || "") : "",
+    k_extra_volumes: isK ? (backend.extra_volumes && backend.extra_volumes.length ? backend.extra_volumes : null) : null,
+    k_extra_volume_mounts: isK ? (backend.extra_volume_mounts && backend.extra_volume_mounts.length ? backend.extra_volume_mounts : null) : null,
+    k_network_policy_name: isK ? (backend.network_policy_name || "") : "",
+    k_pod_overrides: isK ? (backend.pod_overrides || null) : null,
+    k_container_security_context_overrides: isK ? (backend.container_security_context_overrides || null) : null,
+
+    // ---- shared recipe ----
     files: t.files || [],
     env: t.env || {},
     init_commands: (t.init_commands || []).join("\n"),
     state_path: t.state_path || ".state",
     tmp_path: t.tmp_path || ".tmp",
-    cpu_limit: r.cpu_limit || "",
-    memory_limit: r.memory_limit || "",
-    disk_limit: r.disk_limit || "",
-    network_egress: r.network_egress || "deny",
   };
 }
 
@@ -223,7 +285,8 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
   const submit = () => {
     const errs = {};
     if (!form.provider_id) errs.provider_id = "value is required";
-    if (form.backend_kind !== "local" && !form.image) errs.image = "value is required";
+    if (form.backend_kind === "container" && !form.c_image) errs.c_image = "value is required";
+    if (form.backend_kind === "kubernetes" && !form.k_image) errs.k_image = "value is required";
     if (Object.keys(errs).length > 0) {
       setFieldErrors(errs);
       return;
@@ -236,49 +299,59 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
     } else if (form.backend_kind === "container") {
       backend = {
         kind: "container",
-        image: form.image,
-        workdir: form.workdir || "/workspace",
-        extra_mounts: form.extra_mounts || [],
+        image: form.c_image,
+        workdir: form.c_workdir || "/workspace",
+        extra_mounts: form.c_extra_mounts || [],
       };
-      if ((form.entrypoint || []).length > 0) backend.entrypoint = form.entrypoint;
-      if (form.user) backend.user = form.user;
-      if (form.extra_volume_size) backend.extra_volume_size = form.extra_volume_size;
+      if ((form.c_entrypoint || []).length > 0) backend.entrypoint = form.c_entrypoint;
+      if (form.c_user) backend.user = form.c_user;
+      if (form.c_cpu_cores !== "" && form.c_cpu_cores != null) {
+        const n = Number(form.c_cpu_cores);
+        if (!Number.isNaN(n)) backend.cpu_cores = n;
+      }
+      if (form.c_memory_bytes !== "" && form.c_memory_bytes != null) {
+        const n = Number(form.c_memory_bytes);
+        if (!Number.isNaN(n)) backend.memory_bytes = Math.trunc(n);
+      }
+      if (form.c_network_egress) {
+        backend.network = { egress: form.c_network_egress };
+      }
     } else {
       backend = {
         kind: "kubernetes",
-        image: form.image,
-        workdir: form.workdir || "/workspace",
-        pvc_size: form.pvc_size || "10Gi",
-        pvc_access_modes: form.pvc_access_modes || ["ReadWriteOnce"],
+        image: form.k_image,
+        workdir: form.k_workdir || "/workspace",
+        pvc_size: form.k_pvc_size || "10Gi",
+        pvc_access_modes: form.k_pvc_access_modes || ["ReadWriteOnce"],
       };
-      if ((form.entrypoint || []).length > 0) backend.entrypoint = form.entrypoint;
-      if ((form.args || []).length > 0) backend.args = form.args;
-      if (form.extra_volume_mounts) backend.extra_volume_mounts = form.extra_volume_mounts;
-      if (form.extra_volumes) backend.extra_volumes = form.extra_volumes;
-      if (form.container_overrides) backend.container_overrides = form.container_overrides;
-      if (form.pod_overrides) backend.pod_overrides = form.pod_overrides;
+      if ((form.k_entrypoint || []).length > 0) backend.entrypoint = form.k_entrypoint;
+      if ((form.k_args || []).length > 0) backend.args = form.k_args;
+      if (form.k_cpu_request) backend.cpu_request = form.k_cpu_request;
+      if (form.k_cpu_limit) backend.cpu_limit = form.k_cpu_limit;
+      if (form.k_memory_request) backend.memory_request = form.k_memory_request;
+      if (form.k_memory_limit) backend.memory_limit = form.k_memory_limit;
+      if (form.k_storage_class) backend.storage_class = form.k_storage_class;
+      if (Array.isArray(form.k_extra_volumes) && form.k_extra_volumes.length > 0) backend.extra_volumes = form.k_extra_volumes;
+      if (Array.isArray(form.k_extra_volume_mounts) && form.k_extra_volume_mounts.length > 0) backend.extra_volume_mounts = form.k_extra_volume_mounts;
+      if (form.k_network_policy_name) backend.network_policy_name = form.k_network_policy_name;
+      if (form.k_pod_overrides != null) backend.pod_overrides = form.k_pod_overrides;
+      if (form.k_container_security_context_overrides != null) {
+        backend.container_security_context_overrides = form.k_container_security_context_overrides;
+      }
     }
 
     const initCmds = (form.init_commands || "").split("\n").map((s) => s.trim()).filter(Boolean);
-    const resources = {
-      cpu_limit: form.cpu_limit || null,
-      memory_limit: form.memory_limit || null,
-      disk_limit: form.disk_limit || null,
-      network_egress: form.network_egress || "deny",
-    };
 
     const body = {
       ...(form.id ? { id: form.id } : {}),
       description: form.description || null,
       provider_id: form.provider_id,
       backend,
-      packages: form.packages || [],
       files: form.files || [],
       env: form.env || {},
       init_commands: initCmds,
       state_path: form.state_path || ".state",
       tmp_path: form.tmp_path || ".tmp",
-      resources,
     };
     mutation.mutate(body).catch(() => { /* onError handled */ });
   };
@@ -328,71 +401,107 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
         )}
       </WS_FieldRow>
 
+      {isLocal && (
+        <Banner kind="info" title="Local backend" detail="Local templates have no backend-specific fields beyond the shared recipe (files, env, init_commands)." />
+      )}
+
       {isContainer && (<>
-        <WS_Section label="Container template" />
-        <WS_FieldRow label="image" err={fieldErrors.image}>
-          <input className="input mono" value={form.image} onChange={(e) => update("image", e.target.value)} placeholder="ubuntu:24.04" style={{ width: "100%" }} data-testid="ws-template-image" />
+        <WS_Section label="Container template" sub="image, resources, mounts, network" />
+        <WS_FieldRow label="image" err={fieldErrors.c_image}>
+          <input className="input mono" value={form.c_image} onChange={(e) => update("c_image", e.target.value)} placeholder="ghcr.io/primer/runtime:latest" style={{ width: "100%" }} data-testid="ws-template-image" />
         </WS_FieldRow>
-        <WS_FieldRow label="entrypoint" hint='optional · default ["sleep", "infinity"]'>
-          <window.WorkspaceStringListEditor value={form.entrypoint} onChange={(v) => update("entrypoint", v)} placeholder="bash" />
+        <WS_FieldRow label="entrypoint" hint="optional · overrides image ENTRYPOINT">
+          <window.WorkspaceStringListEditor value={form.c_entrypoint} onChange={(v) => update("c_entrypoint", v)} placeholder="bash" />
         </WS_FieldRow>
         <WS_FieldRow label="user" hint="optional · uid:gid or username">
-          <input className="input mono" value={form.user} onChange={(e) => update("user", e.target.value)} placeholder="1000:1000" style={{ width: "100%" }} />
+          <input className="input mono" value={form.c_user} onChange={(e) => update("c_user", e.target.value)} placeholder="1000:1000" style={{ width: "100%" }} />
         </WS_FieldRow>
         <WS_FieldRow label="workdir">
-          <input className="input mono" value={form.workdir} onChange={(e) => update("workdir", e.target.value)} style={{ width: "100%" }} />
+          <input className="input mono" value={form.c_workdir} onChange={(e) => update("c_workdir", e.target.value)} style={{ width: "100%" }} />
         </WS_FieldRow>
-        <WS_FieldRow label="extra_volume_size" hint="optional · advisory">
-          <input className="input mono" value={form.extra_volume_size} onChange={(e) => update("extra_volume_size", e.target.value)} placeholder="10Gi" style={{ width: "100%" }} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <WS_FieldRow label="cpu_cores" hint="optional · docker --cpus value" err={fieldErrors.cpu_cores}>
+            <input className="input mono" type="number" step="0.1" min="0" value={form.c_cpu_cores} onChange={(e) => update("c_cpu_cores", e.target.value)} placeholder="2" style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="memory_bytes" hint="optional · integer bytes" err={fieldErrors.memory_bytes}>
+            <input className="input mono" type="number" step="1" min="0" value={form.c_memory_bytes} onChange={(e) => update("c_memory_bytes", e.target.value)} placeholder="2147483648" style={{ width: "100%" }} />
+          </WS_FieldRow>
+        </div>
+        <WS_FieldRow label="extra_mounts" hint="host → container mounts">
+          <ContainerMountEditor value={form.c_extra_mounts} onChange={(v) => update("c_extra_mounts", v)} />
+        </WS_FieldRow>
+        <WS_FieldRow label="network.egress" hint="null = runtime default · deny_all = --internal network">
+          <select className="select mono" value={form.c_network_egress} onChange={(e) => update("c_network_egress", e.target.value)} style={{ width: "100%" }}>
+            <option value="">(runtime default)</option>
+            <option value="allow_all">allow_all</option>
+            <option value="deny_all">deny_all</option>
+          </select>
         </WS_FieldRow>
       </>)}
 
       {isK8s && (<>
-        <WS_Section label="Kubernetes template" />
-        <WS_FieldRow label="image" err={fieldErrors.image}>
-          <input className="input mono" value={form.image} onChange={(e) => update("image", e.target.value)} placeholder="ubuntu:24.04" style={{ width: "100%" }} data-testid="ws-template-image" />
+        <WS_Section label="Kubernetes template" sub="image, resources, PVC, overrides" />
+        <WS_FieldRow label="image" err={fieldErrors.k_image}>
+          <input className="input mono" value={form.k_image} onChange={(e) => update("k_image", e.target.value)} placeholder="ghcr.io/primer/runtime:latest" style={{ width: "100%" }} data-testid="ws-template-image" />
         </WS_FieldRow>
         <WS_FieldRow label="entrypoint" hint="optional">
-          <window.WorkspaceStringListEditor value={form.entrypoint} onChange={(v) => update("entrypoint", v)} placeholder="bash" />
+          <window.WorkspaceStringListEditor value={form.k_entrypoint} onChange={(v) => update("k_entrypoint", v)} placeholder="bash" />
         </WS_FieldRow>
         <WS_FieldRow label="args" hint="optional">
-          <window.WorkspaceStringListEditor value={form.args} onChange={(v) => update("args", v)} placeholder="-c" />
+          <window.WorkspaceStringListEditor value={form.k_args} onChange={(v) => update("k_args", v)} placeholder="-c" />
         </WS_FieldRow>
         <WS_FieldRow label="workdir">
-          <input className="input mono" value={form.workdir} onChange={(e) => update("workdir", e.target.value)} style={{ width: "100%" }} />
+          <input className="input mono" value={form.k_workdir} onChange={(e) => update("k_workdir", e.target.value)} style={{ width: "100%" }} />
         </WS_FieldRow>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <WS_FieldRow label="cpu_request" hint="e.g. 500m">
+            <input className="input mono" value={form.k_cpu_request} onChange={(e) => update("k_cpu_request", e.target.value)} placeholder="500m" style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="cpu_limit" hint="e.g. 2">
+            <input className="input mono" value={form.k_cpu_limit} onChange={(e) => update("k_cpu_limit", e.target.value)} placeholder="2" style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="memory_request" hint="e.g. 1Gi">
+            <input className="input mono" value={form.k_memory_request} onChange={(e) => update("k_memory_request", e.target.value)} placeholder="1Gi" style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="memory_limit" hint="e.g. 4Gi">
+            <input className="input mono" value={form.k_memory_limit} onChange={(e) => update("k_memory_limit", e.target.value)} placeholder="4Gi" style={{ width: "100%" }} />
+          </WS_FieldRow>
+        </div>
         <WS_FieldRow label="pvc_size">
-          <input className="input mono" value={form.pvc_size} onChange={(e) => update("pvc_size", e.target.value)} style={{ width: "100%" }} />
+          <input className="input mono" value={form.k_pvc_size} onChange={(e) => update("k_pvc_size", e.target.value)} placeholder="10Gi" style={{ width: "100%" }} />
         </WS_FieldRow>
         <WS_FieldRow label="pvc_access_modes">
-          <window.WorkspaceStringListEditor value={form.pvc_access_modes} onChange={(v) => update("pvc_access_modes", v)} placeholder="ReadWriteOnce" />
+          <window.WorkspaceStringListEditor value={form.k_pvc_access_modes} onChange={(v) => update("k_pvc_access_modes", v)} placeholder="ReadWriteOnce" />
+        </WS_FieldRow>
+        <WS_FieldRow label="storage_class" hint="optional · null = cluster default">
+          <input className="input mono" value={form.k_storage_class} onChange={(e) => update("k_storage_class", e.target.value)} placeholder="" style={{ width: "100%" }} />
+        </WS_FieldRow>
+        <WS_FieldRow label="network_policy_name" hint="optional · pre-existing NetworkPolicy in the namespace">
+          <input className="input mono" value={form.k_network_policy_name} onChange={(e) => update("k_network_policy_name", e.target.value)} placeholder="" style={{ width: "100%" }} />
         </WS_FieldRow>
         <div style={{ marginTop: 12 }}>
           <button className="btn" style={{ padding: "4px 10px" }} onClick={() => setAdvancedOpen(!advancedOpen)}>
             <Icon name={advancedOpen ? "chevron-down" : "chevron-right"} size={11} />
-            <span>Advanced (extra volumes, container/pod overrides)</span>
+            <span>Advanced (extra volumes, pod / container overrides)</span>
           </button>
         </div>
         {advancedOpen && (<>
-          <WS_FieldRow label="extra_volume_mounts" hint="JSON array of volumeMount objects">
-            <window.WorkspaceJsonTextareaField value={form.extra_volume_mounts} onChange={(v) => update("extra_volume_mounts", v)} placeholder='[{"name": "cache", "mountPath": "/cache"}]' rows={4} />
+          <WS_FieldRow label="extra_volumes" hint="JSON array of Volume objects (passthrough)">
+            <window.WorkspaceJsonTextareaField value={form.k_extra_volumes} onChange={(v) => update("k_extra_volumes", v)} placeholder='[{"name": "cache", "emptyDir": {}}]' rows={4} />
           </WS_FieldRow>
-          <WS_FieldRow label="extra_volumes" hint="JSON array of volume objects">
-            <window.WorkspaceJsonTextareaField value={form.extra_volumes} onChange={(v) => update("extra_volumes", v)} placeholder='[{"name": "cache", "emptyDir": {}}]' rows={4} />
+          <WS_FieldRow label="extra_volume_mounts" hint="JSON array of VolumeMount objects (passthrough)">
+            <window.WorkspaceJsonTextareaField value={form.k_extra_volume_mounts} onChange={(v) => update("k_extra_volume_mounts", v)} placeholder='[{"name": "cache", "mountPath": "/cache"}]' rows={4} />
           </WS_FieldRow>
-          <WS_FieldRow label="container_overrides" hint="JSON object · passthrough to Container">
-            <window.WorkspaceJsonTextareaField value={form.container_overrides} onChange={(v) => update("container_overrides", v)} placeholder='{"resources": {"limits": {"cpu": "2"}}}' rows={4} />
+          <WS_FieldRow label="pod_overrides" hint="JSON object · deep-merged into PodSpec">
+            <window.WorkspaceJsonTextareaField value={form.k_pod_overrides} onChange={(v) => update("k_pod_overrides", v)} placeholder='{"restartPolicy": "Always"}' rows={4} />
           </WS_FieldRow>
-          <WS_FieldRow label="pod_overrides" hint="JSON object · passthrough to PodSpec">
-            <window.WorkspaceJsonTextareaField value={form.pod_overrides} onChange={(v) => update("pod_overrides", v)} placeholder='{"restartPolicy": "Always"}' rows={4} />
+          <WS_FieldRow label="container_security_context_overrides" hint="JSON object · merged into Container.securityContext">
+            <window.WorkspaceJsonTextareaField value={form.k_container_security_context_overrides} onChange={(v) => update("k_container_security_context_overrides", v)} placeholder='{"runAsNonRoot": true}' rows={4} />
           </WS_FieldRow>
         </>)}
       </>)}
 
-      <WS_Section label="Recipe" />
-      <WS_FieldRow label="packages" hint="system / language packages installed at materialise time">
-        <window.WorkspaceJsonTextareaField value={form.packages.length ? form.packages : null} onChange={(v) => update("packages", Array.isArray(v) ? v : [])} placeholder='[{"name": "git"}, {"name": "python3", "version": "3.13"}]' rows={4} />
-      </WS_FieldRow>
+      <WS_Section label="Recipe" sub="files, env, init commands — shared across backends" />
       <WS_FieldRow label="files" hint="inline-text only · git/http sources via API">
         <window.WorkspaceFileRowEditor value={form.files} onChange={(v) => update("files", v)} />
       </WS_FieldRow>
@@ -412,29 +521,6 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
           <input className="input mono" value={form.tmp_path} onChange={(e) => update("tmp_path", e.target.value)} style={{ width: "100%" }} />
         </WS_FieldRow>
       </div>
-
-      <WS_Section label="Resources" />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-        <WS_FieldRow label="cpu_limit" hint="optional">
-          <input className="input mono" value={form.cpu_limit} onChange={(e) => update("cpu_limit", e.target.value)} placeholder="2" style={{ width: "100%" }} />
-        </WS_FieldRow>
-        <WS_FieldRow label="memory_limit" hint="optional">
-          <input className="input mono" value={form.memory_limit} onChange={(e) => update("memory_limit", e.target.value)} placeholder="2Gi" style={{ width: "100%" }} />
-        </WS_FieldRow>
-        <WS_FieldRow label="disk_limit" hint="optional">
-          <input className="input mono" value={form.disk_limit} onChange={(e) => update("disk_limit", e.target.value)} placeholder="10Gi" style={{ width: "100%" }} />
-        </WS_FieldRow>
-      </div>
-      <WS_FieldRow label="network_egress">
-        <select className="select mono" value={form.network_egress} onChange={(e) => update("network_egress", e.target.value)} style={{ width: "100%" }}>
-          <option value="deny">deny</option>
-          <option value="allow">allow</option>
-        </select>
-      </WS_FieldRow>
-
-      {isLocal && (
-        <Banner kind="info" title="Local backend" detail="Local templates have no backend-specific fields beyond the shared recipe." />
-      )}
     </Modal>
   );
 }
@@ -540,7 +626,6 @@ function WorkspaceTemplateDetail({ templateId, pushToast }) {
               <dt>provider</dt><dd className="mono"><a style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => navigate(`/workspaces/providers/${encodeURIComponent(t.provider_id)}`)}>{t.provider_id}</a></dd>
               <dt>backend</dt><dd><window.WorkspaceBackendBadge kind={t.backend?.kind || "local"} /></dd>
               <dt>files</dt><dd className="mono">{(t.files || []).length}</dd>
-              <dt>packages</dt><dd className="mono">{(t.packages || []).length}</dd>
               <dt>env keys</dt><dd className="mono">{Object.keys(t.env || {}).length}</dd>
               <dt>init_commands</dt><dd className="mono">{(t.init_commands || []).length}</dd>
               <dt>state_path</dt><dd className="mono">{t.state_path}</dd>
