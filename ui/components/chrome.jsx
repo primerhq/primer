@@ -47,9 +47,14 @@ const NAV = [
       { id: "embedding", label: "Embedding", icon: "emb" },
       { id: "rerank", label: "Cross-Encoder", icon: "emb" },
       { id: "semantic-search", label: "Semantic Search", icon: "subsystem", countKey: "ssps" },
-      { id: "channel-providers", label: "Channels under Providers", icon: "bell" },
+      { id: "channel-providers", label: "Channels", icon: "bell" },
+    ],
+  },
+  {
+    group: "Communication",
+    items: [
       { id: "channels", label: "Channels", icon: "bell", countKey: "channels" },
-      { id: "channel-associations", label: "Channel Associations", icon: "fork" },
+      { id: "channel-associations", label: "Associations", icon: "fork" },
     ],
   },
   {
