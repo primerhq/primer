@@ -12,6 +12,7 @@ const VENDOR_COLORS = {
   gemini: "var(--blue)",
   huggingface: "var(--amber)",
   openresponses: "var(--green)",
+  openchat: "var(--green)",
 };
 
 // kind prop ("llm" / "embedding" / "rerank") -> URL segment + REST plural +
@@ -59,6 +60,24 @@ const PROVIDER_KINDS_FIELDS = {
         { name: "gpt-4o", context_length: 128000 },
         { name: "gpt-4o-mini", context_length: 128000 },
         { name: "gpt-4-turbo", context_length: 128000 },
+      ],
+      modelFields: [
+        { key: "name", label: "Model name", type: "text", flex: 2 },
+        { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
+      ],
+    },
+    openchat: {
+      label: "OpenAI-compatible Chat Completions (openchat)",
+      config: [
+        { key: "url", label: "Base URL", type: "url", placeholder: "https://api.openai.com/v1", required: true },
+        { key: "api_key", label: "API key (optional)", type: "password", help: "Required for real OpenAI / OpenRouter / Together; leave blank for LM Studio / Ollama / vLLM / unauthenticated proxies." },
+        { key: "flavor", label: "Flavor", type: "enum", options: ["openai", "lmstudio", "ollama", "vllm", "other"], default: "other" },
+      ],
+      discoverable: true,
+      suggestedModels: [
+        { name: "gpt-4o-mini", context_length: 128000 },
+        { name: "gpt-4o", context_length: 128000 },
+        { name: "local-model", context_length: 8192 },
       ],
       modelFields: [
         { key: "name", label: "Model name", type: "text", flex: 2 },
