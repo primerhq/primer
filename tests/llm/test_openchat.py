@@ -1172,3 +1172,48 @@ class TestExceptionWrapping:
         assert isinstance(events[0], StreamStart)
         assert isinstance(events[-1], ChatError)
         assert events[-1].fatal is True
+
+
+import asyncio
+
+
+class TestConcurrency:
+    async def test_semaphore_serialises_calls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider(max_concurrency=1))
+        client = _patched_client(monkeypatch)
+
+        in_flight = 0
+        peak = 0
+
+        async def slow_iter() -> AsyncIterator:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            yield NS(
+                id="x",
+                model="gpt-4o-mini",
+                choices=[
+                    NS(
+                        index=0,
+                        delta=NS(role="assistant", content="hi", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=NS(prompt_tokens=1, completion_tokens=1),
+            )
+            in_flight -= 1
+
+        client.chat.completions.create.side_effect = lambda **_: slow_iter()
+
+        async def consume() -> None:
+            async for _ in llm.stream(
+                model="gpt-4o-mini",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            ):
+                pass
+
+        await asyncio.gather(consume(), consume(), consume())
+        assert peak == 1

@@ -23,6 +23,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from primer.common.openai_errors import classify_openai_exception
+from primer.int.coordinator import RateLimiter
 from primer.int.llm import LLM
 from primer.llm._openai_common import (
     build_sampling_params as _build_sampling_params_impl,
@@ -498,7 +499,13 @@ def _translate_chunk(  # noqa: C901
 class OpenChatLLM(LLM):
     """Streaming LLM adapter for the OpenAI Chat Completions API."""
 
-    def __init__(self, provider: LLMProvider) -> None:
+    def __init__(
+        self,
+        provider: LLMProvider,
+        *,
+        rate_limiter: RateLimiter | None = None,
+        trace_llm_io: bool = False,
+    ) -> None:
         if provider.provider != LLMProviderType.OPENCHAT:
             raise ConfigError(
                 f"OpenChatLLM requires provider type OPENCHAT; "
@@ -523,7 +530,13 @@ class OpenChatLLM(LLM):
             )
 
         self._client: AsyncOpenAI | None = None
+        if rate_limiter is None:
+            from primer.coordinator.in_memory import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter()
+        self._rate_limiter = rate_limiter
+        self._rate_limit_key = f"llm:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
+        self._trace_llm_io = trace_llm_io
 
         logger.info(
             "OpenChat adapter initialized",
@@ -607,39 +620,42 @@ class OpenChatLLM(LLM):
             },
         )
 
-        client = self._get_client()
-        try:
-            sdk_stream = await client.chat.completions.create(**request)
-        except Exception as exc:
-            err = classify_openai_exception(exc)
-            logger.error(
-                "OpenChat request failed before stream opened",
-                extra={
-                    "provider_id": self._provider.id,
-                    "model": model,
-                    "exception": type(exc).__name__,
-                },
-            )
-            raise err from exc
+        async with await self._rate_limiter.acquire(
+            self._rate_limit_key, max_concurrency=self._max_concurrency,
+        ):
+            client = self._get_client()
+            try:
+                sdk_stream = await client.chat.completions.create(**request)
+            except Exception as exc:
+                err = classify_openai_exception(exc)
+                logger.error(
+                    "OpenChat request failed before stream opened",
+                    extra={
+                        "provider_id": self._provider.id,
+                        "model": model,
+                        "exception": type(exc).__name__,
+                    },
+                )
+                raise err from exc
 
-        state = _StreamState()
-        try:
-            async for raw in sdk_stream:
-                for event in _translate_chunk(raw, state):
-                    yield event
-        except Exception as exc:
-            err = classify_openai_exception(exc)
-            logger.error(
-                "OpenChat stream aborted",
-                extra={
-                    "provider_id": self._provider.id,
-                    "model": model,
-                    "exception": type(exc).__name__,
-                },
-            )
-            yield ChatError(
-                fatal=True,
-                code=err.code,
-                message=err.message,
-            )
-            return
+            state = _StreamState()
+            try:
+                async for raw in sdk_stream:
+                    for event in _translate_chunk(raw, state):
+                        yield event
+            except Exception as exc:
+                err = classify_openai_exception(exc)
+                logger.error(
+                    "OpenChat stream aborted",
+                    extra={
+                        "provider_id": self._provider.id,
+                        "model": model,
+                        "exception": type(exc).__name__,
+                    },
+                )
+                yield ChatError(
+                    fatal=True,
+                    code=err.code,
+                    message=err.message,
+                )
+                return
