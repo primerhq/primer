@@ -16,7 +16,7 @@ async def _seed_provider_channel_workspace(client, tmp_path=None):
                       json={"id": "ch-a", "provider_id": "cp-a", "external_id": "Ca"})
     await client.post("/v1/workspace_providers",
                       json={"id": "wp-a", "provider": "local",
-                            "config": {"kind": "local", "path": ws_path}})
+                            "config": {"kind": "local", "root_path": ws_path}})
     await client.post("/v1/workspace_templates",
                       json={"id": "tpl-a", "description": "t", "provider_id": "wp-a",
                             "backend": {"kind": "local"}})

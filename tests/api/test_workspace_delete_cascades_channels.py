@@ -14,7 +14,7 @@ async def test_workspace_delete_cascades(client, tmp_path):
                       json={"id": "ch", "provider_id": "cp", "external_id": "Cz"})
     await client.post("/v1/workspace_providers",
                       json={"id": "wp", "provider": "local",
-                            "config": {"kind": "local", "path": str(tmp_path)}})
+                            "config": {"kind": "local", "root_path": str(tmp_path)}})
     await client.post("/v1/workspace_templates",
                       json={"id": "tpl", "description": "t", "provider_id": "wp",
                             "backend": {"kind": "local"}})
