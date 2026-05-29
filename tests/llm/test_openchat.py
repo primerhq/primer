@@ -908,3 +908,267 @@ class TestStreamMapping:
         out = _translate_chunk(chunk, state)
         assert isinstance(out[-1], Done)
         assert out[-1].stop_reason == "content_filter"
+
+
+from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock, MagicMock
+
+import openai
+
+from primer.model.chat import Error as ChatError
+from primer.model.except_ import (
+    AuthenticationError,
+    ModelNotFoundError,
+)
+
+
+async def _aiter(items: list) -> AsyncIterator:
+    for item in items:
+        yield item
+
+
+def _make_openai_error(cls: type, *, status_code: int = 400, code: str | None = None):
+    exc = cls.__new__(cls)
+    exc.status_code = status_code
+    exc.code = code
+    exc.message = f"test {cls.__name__}"
+    Exception.__init__(exc, exc.message)
+    return exc
+
+
+def _patched_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    mock_instance = MagicMock()
+    mock_instance.chat = MagicMock()
+    mock_instance.chat.completions = MagicMock()
+    mock_instance.chat.completions.create = AsyncMock()
+    cls_mock = MagicMock(return_value=mock_instance)
+    monkeypatch.setattr("primer.llm.openchat.AsyncOpenAI", cls_mock)
+    return mock_instance
+
+
+def _simple_text_chunk_seq(model: str = "gpt-4o-mini") -> list[Any]:
+    return [
+        NS(
+            id="chatcmpl-1",
+            model=model,
+            choices=[
+                NS(
+                    index=0,
+                    delta=NS(role="assistant", content=None, tool_calls=None),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+        NS(
+            id="chatcmpl-1",
+            model=model,
+            choices=[
+                NS(
+                    index=0,
+                    delta=NS(role=None, content="hello", tool_calls=None),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+        NS(
+            id="chatcmpl-1",
+            model=model,
+            choices=[
+                NS(
+                    index=0,
+                    delta=NS(role=None, content=None, tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=NS(prompt_tokens=4, completion_tokens=2),
+        ),
+    ]
+
+
+class TestStream:
+    async def test_unknown_model_raises_model_not_found(self) -> None:
+        llm = OpenChatLLM(_make_provider(models=["gpt-4o-mini"]))
+        with pytest.raises(ModelNotFoundError, match="not-a-real-model"):
+            async for _ in llm.stream(
+                model="not-a-real-model",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            ):
+                pass
+
+    async def test_full_stream_emits_start_text_usage_done(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        events = [
+            ev
+            async for ev in llm.stream(
+                model="gpt-4o-mini",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            )
+        ]
+        kinds = [type(e).__name__ for e in events]
+        assert kinds == ["StreamStart", "TextDelta", "Usage", "Done"]
+
+    async def test_request_payload_sets_stream_and_include_usage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        async for _ in llm.stream(
+            model="gpt-4o-mini",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["stream"] is True
+        assert kwargs["stream_options"] == {"include_usage": True}
+        assert kwargs["model"] == "gpt-4o-mini"
+        assert kwargs["messages"][0]["role"] == "user"
+
+    async def test_request_payload_omits_optional_keys_when_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        async for _ in llm.stream(
+            model="gpt-4o-mini",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        for omitted in (
+            "temperature", "top_p", "max_tokens", "stop",
+            "tools", "tool_choice", "response_format",
+        ):
+            assert omitted not in kwargs
+
+    async def test_request_payload_includes_tools_when_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        tool = Tool(
+            id="search",
+            description="Search",
+            toolset_id="default",
+            args_schema={"type": "object", "properties": {}, "required": []},
+        )
+        async for _ in llm.stream(
+            model="gpt-4o-mini",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            tools=[tool],
+            tool_choice="auto",
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert len(kwargs["tools"]) == 1
+        assert kwargs["tools"][0]["function"]["name"] == "search"
+        assert kwargs["tool_choice"] == "auto"
+
+    async def test_request_payload_routes_response_format(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        class Out(PydanticBaseModel):
+            value: int
+
+        async for _ in llm.stream(
+            model="gpt-4o-mini",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            response_format=Out,
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["response_format"]["type"] == "json_schema"
+        assert kwargs["response_format"]["json_schema"]["name"] == "Out"
+
+    async def test_extended_kwargs_forwarded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        async for _ in llm.stream(
+            model="gpt-4o-mini",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            extended={
+                "parallel_tool_calls": False,
+                "seed": 42,
+                "frobnicate": True,
+            },
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["parallel_tool_calls"] is False
+        assert kwargs["seed"] == 42
+        assert "frobnicate" not in kwargs
+
+
+class TestExceptionWrapping:
+    async def test_pre_stream_auth_error_reraised_as_matrix(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.side_effect = _make_openai_error(
+            openai.AuthenticationError, status_code=401
+        )
+        with pytest.raises(AuthenticationError):
+            async for _ in llm.stream(
+                model="gpt-4o-mini",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            ):
+                pass
+
+    async def test_mid_stream_exception_yields_terminal_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+
+        async def failing_iter() -> AsyncIterator:
+            yield NS(
+                id="x",
+                model="gpt-4o-mini",
+                choices=[
+                    NS(
+                        index=0,
+                        delta=NS(role="assistant", content=None, tool_calls=None),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            )
+            raise _make_openai_error(openai.RateLimitError, status_code=429)
+
+        client.chat.completions.create.return_value = failing_iter()
+        events = [
+            ev
+            async for ev in llm.stream(
+                model="gpt-4o-mini",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            )
+        ]
+        assert isinstance(events[0], StreamStart)
+        assert isinstance(events[-1], ChatError)
+        assert events[-1].fatal is True

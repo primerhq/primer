@@ -22,6 +22,7 @@ from typing import Any
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+from primer.common.openai_errors import classify_openai_exception
 from primer.int.llm import LLM
 from primer.llm._openai_common import (
     build_sampling_params as _build_sampling_params_impl,
@@ -30,6 +31,7 @@ from primer.model.chat import (
     AudioPart,
     DocumentPart,
     Done,
+    Error as ChatError,
     ExtendedPart,
     ImagePart,
     Message,
@@ -49,7 +51,7 @@ from primer.model.chat import (
     Usage,
     VideoPart,
 )
-from primer.model.except_ import ConfigError, UnsupportedContentError
+from primer.model.except_ import ConfigError, ModelNotFoundError, UnsupportedContentError
 from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
@@ -550,11 +552,94 @@ class OpenChatLLM(LLM):
             )
         return self._client
 
-    async def stream(self, **kwargs: Any):  # type: ignore[override]
-        """Streaming entrypoint. Filled in across Phases 4-9.
+    async def stream(  # type: ignore[override]
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_output_tokens: int | None = None,
+        stop: list[str] | None = None,
+        response_format: type[BaseModel] | dict[str, Any] | None = None,
+        tools: list[Tool] | None = None,
+        tool_choice: ToolChoice | None = None,
+        extended: dict[str, Any] | None = None,
+    ):
+        allowed = {m.name for m in self._provider.models}
+        if model not in allowed:
+            raise ModelNotFoundError(
+                f"model {model!r} is not configured for provider "
+                f"{self._provider.id!r}; configured models: {sorted(allowed)}"
+            )
 
-        Yields exactly one :class:`Done` sentinel so the adapter is
-        instantiable and an end-to-end smoke can confirm the dispatch
-        path is wired. Real translation lands in Phase 8/9.
-        """
-        yield Done(stop_reason="stop", raw_reason="stub")
+        request: dict[str, Any] = {
+            "model": model,
+            "messages": _messages_to_chat(messages),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        request.update(
+            _build_sampling_params(
+                temperature=temperature,
+                top_p=top_p,
+                max_output_tokens=max_output_tokens,
+                stop=stop,
+            )
+        )
+        if tools:
+            request["tools"] = [_tool_to_chat(t) for t in tools]
+        choice_value = _tool_choice_to_chat(tool_choice)
+        if choice_value is not None:
+            request["tool_choice"] = choice_value
+        rf_param = _response_format_to_param(response_format)
+        if rf_param is not None:
+            request["response_format"] = rf_param
+        request.update(_extract_extended_kwargs(extended))
+
+        logger.info(
+            "OpenChat stream starting",
+            extra={
+                "provider_id": self._provider.id,
+                "model": model,
+                "message_count": len(messages),
+                "tool_count": len(tools) if tools else 0,
+            },
+        )
+
+        client = self._get_client()
+        try:
+            sdk_stream = await client.chat.completions.create(**request)
+        except Exception as exc:
+            err = classify_openai_exception(exc)
+            logger.error(
+                "OpenChat request failed before stream opened",
+                extra={
+                    "provider_id": self._provider.id,
+                    "model": model,
+                    "exception": type(exc).__name__,
+                },
+            )
+            raise err from exc
+
+        state = _StreamState()
+        try:
+            async for raw in sdk_stream:
+                for event in _translate_chunk(raw, state):
+                    yield event
+        except Exception as exc:
+            err = classify_openai_exception(exc)
+            logger.error(
+                "OpenChat stream aborted",
+                extra={
+                    "provider_id": self._provider.id,
+                    "model": model,
+                    "exception": type(exc).__name__,
+                },
+            )
+            yield ChatError(
+                fatal=True,
+                code=err.code,
+                message=err.message,
+            )
+            return
