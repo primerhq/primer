@@ -220,30 +220,49 @@ function BackendBadge({ kind }) {
 // Create modal
 // ----------------------------------------------------------------------
 
-function SSPCreateModal({ onClose, pushToast }) {
+function SSPCreateModal({ onClose, pushToast, existing }) {
+  // Same modal handles create + edit. In edit mode: locked id +
+  // provider, password blanked so the "**********" redaction never
+  // round-trips, PUT-replaces.
+  const isEdit = !!existing;
   const { useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
-  const [form, setForm] = React.useState({
-    // SSP ids are operator-meaningful; the user must pick one.
-    id: "",
-    provider: "pgvector",
-    hostname: "",
-    port: 5432,
-    database: "primer",
-    username: "",
-    password: "",
-    db_schema: "public",
-    // Lance-specific field — only used when provider="lance"
-    path: "",
-    hnsw_m: 16,
-    hnsw_ef_construction: 64,
-    enable_diskann: false,
-    diskann_num_neighbors: 50,
-    diskann_search_list_size: 100,
-    // Lance-only knob; ignored when provider is pgvector/pgvectorscale
-    index_min_rows: 1000,
-  });
+  const _initialForm = () => {
+    if (!isEdit) {
+      return {
+        id: "", provider: "pgvector",
+        hostname: "", port: 5432, database: "primer",
+        username: "", password: "", db_schema: "public",
+        path: "",
+        hnsw_m: 16, hnsw_ef_construction: 64,
+        enable_diskann: false, diskann_num_neighbors: 50, diskann_search_list_size: 100,
+        index_min_rows: 1000,
+      };
+    }
+    const c = existing.config || {};
+    const rawPassword = c.password;
+    return {
+      id: existing.id,
+      provider: existing.provider,
+      hostname: c.hostname || "",
+      port: c.port ?? 5432,
+      database: c.database || "primer",
+      username: c.username || "",
+      // Blank-on-prefill: rawPassword is the "**********" redaction;
+      // operator must re-enter to save (validated below).
+      password: typeof rawPassword === "string" && /^\*{6,}$/.test(rawPassword) ? "" : (rawPassword || ""),
+      db_schema: c.db_schema || "public",
+      path: c.path || "",
+      hnsw_m: c.hnsw_m ?? 16,
+      hnsw_ef_construction: c.hnsw_ef_construction ?? 64,
+      enable_diskann: !!c.enable_diskann,
+      diskann_num_neighbors: c.diskann_num_neighbors ?? 50,
+      diskann_search_list_size: c.diskann_search_list_size ?? 100,
+      index_min_rows: c.index_min_rows ?? 1000,
+    };
+  };
+  const [form, setForm] = React.useState(_initialForm);
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -252,19 +271,23 @@ function SSPCreateModal({ onClose, pushToast }) {
   const isPostgresFamily = form.provider === "pgvector" || form.provider === "pgvectorscale";
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/ssp", body),
+    (body) => isEdit
+      ? apiFetch("PUT", `/ssp/${encodeURIComponent(existing.id)}`, body)
+      : apiFetch("POST", "/ssp", body),
     {
-      invalidates: [SSP_CACHE_LIST],
+      invalidates: isEdit
+        ? [SSP_CACHE_LIST, `ssp-detail:${existing?.id}`]
+        : [SSP_CACHE_LIST],
       onSuccess: (row) => {
         onClose();
         if (pushToast) {
           pushToast({
-            kind: "success",
-            title: "Provider created",
-            detail: `${row.id} (${row.provider}) · POST /v1/ssp → 201`,
+            kind: isEdit ? "info" : "success",
+            title: isEdit ? "Provider updated" : "Provider created",
+            detail: `${row?.id || existing?.id} (${row?.provider || existing?.provider})`,
           });
         }
-        navigate(`/ssp/${encodeURIComponent(row.id)}`);
+        if (!isEdit) navigate(`/ssp/${encodeURIComponent(row.id)}`);
       },
       onError: (err) => {
         if (err?.status === 422 && Array.isArray(err.fieldErrors)) {
@@ -344,21 +367,22 @@ function SSPCreateModal({ onClose, pushToast }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-h">
-          <span className="title">New Semantic Search provider</span>
+          <span className="title">{isEdit ? `Edit SSP · ${existing.id}` : "New Semantic Search provider"}</span>
           <button className="close" onClick={onClose}><Icon name="x" size={14} /></button>
         </div>
         <div className="modal-b">
-          <FieldRow label="id" hint="must be unique" err={fieldErrors.id}>
+          <FieldRow label="id" hint={isEdit ? "locked — id cannot change after create" : "must be unique"} err={fieldErrors.id}>
             <input
               className="input mono"
               value={form.id}
               onChange={(e) => update("id", e.target.value)}
               placeholder="pg-prod-main"
+              disabled={isEdit}
               style={{ width: "100%" }}
             />
           </FieldRow>
-          <FieldRow label="backend">
-            <select className="select mono" value={form.provider} onChange={(e) => update("provider", e.target.value)} style={{ width: "100%" }}>
+          <FieldRow label="backend" hint={isEdit ? "locked — recreate to change backend" : undefined}>
+            <select className="select mono" value={form.provider} onChange={(e) => update("provider", e.target.value)} disabled={isEdit} style={{ width: "100%" }}>
               <option value="pgvector">pgvector</option>
               <option value="pgvectorscale">pgvectorscale</option>
               <option value="lance">lance (embedded)</option>
@@ -439,8 +463,8 @@ function SSPCreateModal({ onClose, pushToast }) {
         </div>
         <div className="modal-f">
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={create.loading}>
-            {create.loading ? "Creating…" : "Create"}
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={create.loading}>
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
           </Btn>
         </div>
       </div>
@@ -484,6 +508,7 @@ function SSPDetail({ sspId, pushToast }) {
   const [tab, setTab] = React.useState("overview");
   const [showDelete, setShowDelete] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
+  const [editing, setEditing] = React.useState(false);
 
   const detailKey = SSP_CACHE_DETAIL_PREFIX + sspId;
   const detail = useResource(
@@ -599,6 +624,7 @@ function SSPDetail({ sspId, pushToast }) {
           >
             {invalidate.loading ? "Invalidating…" : "Invalidate"}
           </Btn>
+          <Btn size="sm" kind="secondary" icon="edit" onClick={() => setEditing(true)}>Edit</Btn>
           <Btn size="sm" kind="danger" icon="trash" onClick={() => { setDeleteError(null); setShowDelete(true); }}>Delete</Btn>
         </div>
 
@@ -681,6 +707,13 @@ function SSPDetail({ sspId, pushToast }) {
             </>
           )}
         </Modal>
+      )}
+      {editing && (
+        <SSPCreateModal
+          existing={p}
+          pushToast={pushToast}
+          onClose={() => setEditing(false)}
+        />
       )}
     </div>
   );
