@@ -35,6 +35,7 @@ RESERVED_LOCAL_WORKSPACE_PROVIDER: str = "local"
 RESERVED_HUGGINGFACE_EMBEDDER: str = "huggingface"
 RESERVED_LANCE_SSP: str = "lance"
 RESERVED_HUGGINGFACE_CROSS_ENCODER: str = "huggingface-ce"
+RESERVED_LOCAL_WORKSPACE_TEMPLATE: str = "local-default"
 
 # Convenience set of all reserved ids — for quick membership tests in
 # router guards (Task 3) and BootstrapRunner (Task 4).
@@ -43,6 +44,7 @@ ALL_RESERVED_IDS: frozenset[str] = frozenset({
     RESERVED_HUGGINGFACE_EMBEDDER,
     RESERVED_LANCE_SSP,
     RESERVED_HUGGINGFACE_CROSS_ENCODER,
+    RESERVED_LOCAL_WORKSPACE_TEMPLATE,
 })
 
 # ---------------------------------------------------------------------------
@@ -140,6 +142,22 @@ RESERVED_CROSS_ENCODERS: dict[str, dict] = {
     },
 }
 
+# ---- Local workspace template -------------------------------------------
+#
+# Minimal Local-backed template that references the reserved ``local``
+# workspace provider. Lets a fresh install materialise a workspace via
+# ``POST /v1/workspaces {"template_id": "local-default"}`` without any
+# operator setup.
+
+RESERVED_WORKSPACE_TEMPLATES: dict[str, dict] = {
+    RESERVED_LOCAL_WORKSPACE_TEMPLATE: {
+        "id": RESERVED_LOCAL_WORKSPACE_TEMPLATE,
+        "description": "Default minimal local workspace template (auto-bootstrapped).",
+        "provider_id": RESERVED_LOCAL_WORKSPACE_PROVIDER,
+        "backend": {"kind": "local"},
+    },
+}
+
 
 __all__ = [
     "ALL_RESERVED_IDS",
@@ -149,6 +167,8 @@ __all__ = [
     "RESERVED_HUGGINGFACE_EMBEDDER",
     "RESERVED_LANCE_SSP",
     "RESERVED_LOCAL_WORKSPACE_PROVIDER",
+    "RESERVED_LOCAL_WORKSPACE_TEMPLATE",
     "RESERVED_SSPS",
     "RESERVED_WORKSPACE_PROVIDERS",
+    "RESERVED_WORKSPACE_TEMPLATES",
 ]

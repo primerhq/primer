@@ -637,6 +637,74 @@ class TestWorkspaceTemplateRouter:
         await client.delete("/v1/workspace_templates/tpl-bad")
         await client.delete("/v1/workspace_providers/local-mismatch")
 
+    @pytest.mark.asyncio
+    async def test_workspace_template_create_rejects_reserved_id(
+        self, client
+    ) -> None:
+        """POST /v1/workspace_templates with id=local-default returns 409."""
+        body = {
+            "id": "local-default",
+            "description": "attacker-supplied",
+            "provider_id": "local",
+            "backend": {"kind": "local"},
+        }
+        post = await client.post("/v1/workspace_templates", json=body)
+        assert post.status_code == 409, post.text
+        detail = post.json()["detail"]
+        assert detail["error"] == "reserved_id"
+        assert detail["kind"] == "workspace_template"
+
+    @pytest.mark.asyncio
+    async def test_workspace_template_delete_rejects_reserved_id(
+        self, client, sp
+    ) -> None:
+        """DELETE /v1/workspace_templates/local-default returns 403."""
+        # Seed the reserved template directly through storage so the DELETE
+        # can reach the pre-delete guard (POST is blocked above).
+        reserved = WorkspaceTemplate(
+            id="local-default",
+            description="reserved",
+            provider_id="local",
+        )
+        await sp.get_storage(WorkspaceTemplate).create(reserved)
+
+        delete = await client.delete("/v1/workspace_templates/local-default")
+        assert delete.status_code == 403, delete.text
+        detail = delete.json()["detail"]
+        assert detail["error"] == "reserved_id_protected"
+        assert detail["kind"] == "workspace_template"
+
+        # Row preserved.
+        got = await client.get("/v1/workspace_templates/local-default")
+        assert got.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_workspace_template_update_rejects_reserved_id(
+        self, client, sp
+    ) -> None:
+        """PUT /v1/workspace_templates/local-default returns 403."""
+        reserved = WorkspaceTemplate(
+            id="local-default",
+            description="reserved",
+            provider_id="local",
+        )
+        await sp.get_storage(WorkspaceTemplate).create(reserved)
+
+        body = reserved.model_dump(mode="json")
+        body["description"] = "attacker-edit"
+        put = await client.put(
+            "/v1/workspace_templates/local-default", json=body
+        )
+        assert put.status_code == 403, put.text
+        detail = put.json()["detail"]
+        assert detail["error"] == "reserved_id_protected"
+        assert detail["kind"] == "workspace_template"
+
+        # Row unchanged.
+        got = await client.get("/v1/workspace_templates/local-default")
+        assert got.status_code == 200
+        assert got.json()["description"] == "reserved"
+
 
 # ===========================================================================
 # Workspace CRUD + sub-resources

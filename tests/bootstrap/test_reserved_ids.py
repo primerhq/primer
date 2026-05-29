@@ -22,8 +22,10 @@ from primer.bootstrap.defaults import (
     RESERVED_HUGGINGFACE_EMBEDDER,
     RESERVED_LANCE_SSP,
     RESERVED_LOCAL_WORKSPACE_PROVIDER,
+    RESERVED_LOCAL_WORKSPACE_TEMPLATE,
     RESERVED_SSPS,
     RESERVED_WORKSPACE_PROVIDERS,
+    RESERVED_WORKSPACE_TEMPLATES,
 )
 from primer.api.registries.provider_registry import (
     RESERVED_CROSS_ENCODER_IDS,
@@ -45,6 +47,7 @@ def test_reserved_ids_constants():
     assert RESERVED_HUGGINGFACE_EMBEDDER == "huggingface"
     assert RESERVED_LANCE_SSP == "lance"
     assert RESERVED_HUGGINGFACE_CROSS_ENCODER == "huggingface-ce"
+    assert RESERVED_LOCAL_WORKSPACE_TEMPLATE == "local-default"
 
 
 def test_all_reserved_ids_contains_all_four():
@@ -52,7 +55,8 @@ def test_all_reserved_ids_contains_all_four():
     assert RESERVED_HUGGINGFACE_EMBEDDER in ALL_RESERVED_IDS
     assert RESERVED_LANCE_SSP in ALL_RESERVED_IDS
     assert RESERVED_HUGGINGFACE_CROSS_ENCODER in ALL_RESERVED_IDS
-    assert len(ALL_RESERVED_IDS) == 4
+    assert RESERVED_LOCAL_WORKSPACE_TEMPLATE in ALL_RESERVED_IDS
+    assert len(ALL_RESERVED_IDS) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +69,7 @@ def test_factory_specs_present():
     assert RESERVED_LANCE_SSP in RESERVED_SSPS
     assert RESERVED_HUGGINGFACE_CROSS_ENCODER in RESERVED_CROSS_ENCODERS
     assert RESERVED_LOCAL_WORKSPACE_PROVIDER in RESERVED_WORKSPACE_PROVIDERS
+    assert RESERVED_LOCAL_WORKSPACE_TEMPLATE in RESERVED_WORKSPACE_TEMPLATES
 
 
 # ---------------------------------------------------------------------------
@@ -175,3 +180,5 @@ def test_spec_ids_match_keys():
         assert spec["id"] == key, f"RESERVED_CROSS_ENCODERS key {key!r} != spec id {spec['id']!r}"
     for key, spec in RESERVED_WORKSPACE_PROVIDERS.items():
         assert spec["id"] == key, f"RESERVED_WORKSPACE_PROVIDERS key {key!r} != spec id {spec['id']!r}"
+    for key, spec in RESERVED_WORKSPACE_TEMPLATES.items():
+        assert spec["id"] == key, f"RESERVED_WORKSPACE_TEMPLATES key {key!r} != spec id {spec['id']!r}"

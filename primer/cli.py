@@ -207,7 +207,7 @@ def run_init(
             EmbeddingProvider,
             SemanticSearchProvider,
         )
-        from primer.model.workspace import WorkspaceProvider
+        from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
 
         storage_provider = _build_storage_provider(cfg)
         await storage_provider.initialize()
@@ -222,6 +222,9 @@ def run_init(
                 ),
                 workspace_provider_storage=storage_provider.get_storage(
                     WorkspaceProvider
+                ),
+                workspace_template_storage=storage_provider.get_storage(
+                    WorkspaceTemplate
                 ),
                 root_dir=root_dir,
             )

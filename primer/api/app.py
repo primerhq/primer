@@ -108,7 +108,7 @@ def _make_lifespan(config: AppConfig):
                 EmbeddingProvider,
                 SemanticSearchProvider as _SSP,
             )
-            from primer.model.workspace import WorkspaceProvider
+            from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
             _runner = BootstrapRunner(
                 storage=storage_provider,
                 embedder_storage=storage_provider.get_storage(EmbeddingProvider),
@@ -118,6 +118,9 @@ def _make_lifespan(config: AppConfig):
                 ),
                 workspace_provider_storage=storage_provider.get_storage(
                     WorkspaceProvider
+                ),
+                workspace_template_storage=storage_provider.get_storage(
+                    WorkspaceTemplate
                 ),
                 root_dir=Path("~/.primer").expanduser(),
             )

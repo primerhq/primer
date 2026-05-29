@@ -18,6 +18,7 @@ from primer.bootstrap.defaults import (
     RESERVED_HUGGINGFACE_EMBEDDER,
     RESERVED_LANCE_SSP,
     RESERVED_LOCAL_WORKSPACE_PROVIDER,
+    RESERVED_LOCAL_WORKSPACE_TEMPLATE,
 )
 from primer.bootstrap.runner import BootstrapResult, BootstrapRunner
 from primer.int.storage import Storage
@@ -84,6 +85,11 @@ def _make_runner(
                 "primer.model.workspace", fromlist=["WorkspaceProvider"]
             ).WorkspaceProvider
         ),
+        workspace_template_storage=storage.get_storage(
+            __import__(
+                "primer.model.workspace", fromlist=["WorkspaceTemplate"]
+            ).WorkspaceTemplate
+        ),
         root_dir=root,
     )
 
@@ -123,12 +129,13 @@ async def test_run_creates_all_four_providers(
     storage_provider: SqliteStorageProvider,
     root_dir: Path,
 ) -> None:
-    """First run must create all four reserved providers and stamp the marker."""
+    """First run must create all reserved entities and stamp the marker."""
     runner = _make_runner(storage_provider, root_dir)
     result = await runner.run()
 
     assert set(result.created) == {
         RESERVED_LOCAL_WORKSPACE_PROVIDER,
+        RESERVED_LOCAL_WORKSPACE_TEMPLATE,
         RESERVED_HUGGINGFACE_EMBEDDER,
         RESERVED_LANCE_SSP,
         RESERVED_HUGGINGFACE_CROSS_ENCODER,
@@ -145,7 +152,7 @@ async def test_run_idempotent_skips_existing(
     storage_provider: SqliteStorageProvider,
     root_dir: Path,
 ) -> None:
-    """Second run after a successful first run must skip all four providers."""
+    """Second run after a successful first run must skip all reserved entities."""
     runner = _make_runner(storage_provider, root_dir)
 
     first = await runner.run()
@@ -155,6 +162,7 @@ async def test_run_idempotent_skips_existing(
     assert second.created == []
     assert set(second.skipped) == {
         RESERVED_LOCAL_WORKSPACE_PROVIDER,
+        RESERVED_LOCAL_WORKSPACE_TEMPLATE,
         RESERVED_HUGGINGFACE_EMBEDDER,
         RESERVED_LANCE_SSP,
         RESERVED_HUGGINGFACE_CROSS_ENCODER,
@@ -232,11 +240,12 @@ async def test_run_with_force_reruns_after_completion(
     assert await runner.needs_bootstrap() is False
 
     # Second run with force — marker is set but force=True re-runs.
-    # All four already exist, so they should all be skipped (not re-created).
+    # All already exist, so they should all be skipped (not re-created).
     second = await runner.run(force=True)
     assert second.created == []
     assert set(second.skipped) == {
         RESERVED_LOCAL_WORKSPACE_PROVIDER,
+        RESERVED_LOCAL_WORKSPACE_TEMPLATE,
         RESERVED_HUGGINGFACE_EMBEDDER,
         RESERVED_LANCE_SSP,
         RESERVED_HUGGINGFACE_CROSS_ENCODER,
@@ -267,3 +276,58 @@ async def test_bootstrap_result_dataclass() -> None:
     assert r.created == ["a"]
     assert r.skipped == ["b"]
     assert r.errors == [("c", "reason")]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_creates_default_local_workspace_template(
+    storage_provider: SqliteStorageProvider,
+    root_dir: Path,
+) -> None:
+    """After run(), the workspace_template storage holds the reserved row."""
+    from primer.model.workspace import WorkspaceTemplate
+
+    runner = _make_runner(storage_provider, root_dir)
+    result = await runner.run()
+
+    assert RESERVED_LOCAL_WORKSPACE_TEMPLATE in result.created
+    assert result.errors == []
+
+    tpl_storage = storage_provider.get_storage(WorkspaceTemplate)
+    tpl = await tpl_storage.get(RESERVED_LOCAL_WORKSPACE_TEMPLATE)
+    assert tpl is not None
+    assert tpl.provider_id == RESERVED_LOCAL_WORKSPACE_PROVIDER
+    assert tpl.backend.kind == "local"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_skips_existing_local_workspace_template(
+    storage_provider: SqliteStorageProvider,
+    root_dir: Path,
+) -> None:
+    """If the reserved template already exists, runner adds it to skipped
+    rather than created, and the existing row is preserved untouched.
+    """
+    from primer.model.workspace import (
+        LocalTemplateConfig,
+        WorkspaceTemplate,
+    )
+
+    tpl_storage = storage_provider.get_storage(WorkspaceTemplate)
+    pre_existing = WorkspaceTemplate(
+        id=RESERVED_LOCAL_WORKSPACE_TEMPLATE,
+        description="operator-pre-seeded description",
+        provider_id=RESERVED_LOCAL_WORKSPACE_PROVIDER,
+        backend=LocalTemplateConfig(),
+    )
+    await tpl_storage.create(pre_existing)
+
+    runner = _make_runner(storage_provider, root_dir)
+    result = await runner.run()
+
+    assert RESERVED_LOCAL_WORKSPACE_TEMPLATE in result.skipped
+    assert RESERVED_LOCAL_WORKSPACE_TEMPLATE not in result.created
+
+    # Existing row preserved verbatim.
+    got = await tpl_storage.get(RESERVED_LOCAL_WORKSPACE_TEMPLATE)
+    assert got is not None
+    assert got.description == "operator-pre-seeded description"

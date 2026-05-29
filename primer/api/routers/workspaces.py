@@ -41,6 +41,7 @@ from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.api.registries import WorkspaceRegistry
 from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
 from primer.api.routers._crud import make_crud_router
+from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
@@ -253,11 +254,82 @@ provider_router = make_crud_router(
 # Template router (full CRUD)
 # ===========================================================================
 
+# Reserved template ids — bootstrapped by BootstrapRunner on first boot
+# and protected against API mutation/deletion to keep runtime state in
+# sync with the bootstrap defaults.
+RESERVED_WORKSPACE_TEMPLATE_IDS: frozenset[str] = frozenset(
+    RESERVED_WORKSPACE_TEMPLATES.keys()
+)
+
+
+async def _reject_reserved_workspace_template_create(
+    entity, request: Request
+) -> None:
+    """Reject POST /v1/workspace_templates with a reserved id (409)."""
+    if entity.id in RESERVED_WORKSPACE_TEMPLATE_IDS:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reserved_id",
+                "kind": "workspace_template",
+                "reserved": sorted(RESERVED_WORKSPACE_TEMPLATE_IDS),
+                "message": (
+                    f"id {entity.id!r} is reserved and cannot be "
+                    "created via the API"
+                ),
+            },
+        )
+
+
+async def _reject_reserved_workspace_template_delete(
+    entity_id: str, request: Request
+) -> None:
+    """Reject DELETE /v1/workspace_templates/<reserved-id> (403)."""
+    if entity_id in RESERVED_WORKSPACE_TEMPLATE_IDS:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "reserved_id_protected",
+                "kind": "workspace_template",
+                "message": (
+                    f"id {entity_id!r} is a reserved workspace template "
+                    "and cannot be deleted"
+                ),
+            },
+        )
+
+
+async def _reject_reserved_workspace_template_update(
+    entity, existing, request: Request
+) -> None:
+    """Reject PUT /v1/workspace_templates/<reserved-id> (403).
+
+    Reserved templates (see ``RESERVED_WORKSPACE_TEMPLATE_IDS``) are
+    auto-recreated from config on boot; mutating them via the API would
+    desync the runtime state from the bootstrap defaults.
+    """
+    if existing is not None and existing.id in RESERVED_WORKSPACE_TEMPLATE_IDS:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "reserved_id_protected",
+                "kind": "workspace_template",
+                "message": (
+                    f"id {existing.id!r} is a reserved workspace template "
+                    "and cannot be updated"
+                ),
+            },
+        )
+
+
 template_router = make_crud_router(
     model_cls=WorkspaceTemplate,
     storage_dep=get_workspace_template_storage,
     plural="workspace_templates",
     tag="workspace-templates",
+    on_pre_create=_reject_reserved_workspace_template_create,
+    on_pre_update=_reject_reserved_workspace_template_update,
+    on_pre_delete_id=_reject_reserved_workspace_template_delete,
 )
 
 

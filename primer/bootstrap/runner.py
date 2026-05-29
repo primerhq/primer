@@ -18,6 +18,7 @@ Usage example (from the lifespan)::
         ssp_storage=storage_provider.get_storage(SemanticSearchProvider),
         cross_encoder_storage=storage_provider.get_storage(CrossEncoderProvider),
         workspace_provider_storage=storage_provider.get_storage(WorkspaceProvider),
+        workspace_template_storage=storage_provider.get_storage(WorkspaceTemplate),
         root_dir=Path("~/.primer").expanduser(),
     )
     if await runner.needs_bootstrap():
@@ -40,15 +41,17 @@ from primer.bootstrap.defaults import (
     RESERVED_HUGGINGFACE_EMBEDDER,
     RESERVED_LANCE_SSP,
     RESERVED_LOCAL_WORKSPACE_PROVIDER,
+    RESERVED_LOCAL_WORKSPACE_TEMPLATE,
     RESERVED_SSPS,
     RESERVED_WORKSPACE_PROVIDERS,
+    RESERVED_WORKSPACE_TEMPLATES,
 )
 from primer.model.provider import (
     CrossEncoderProvider,
     EmbeddingProvider,
     SemanticSearchProvider,
 )
-from primer.model.workspace import WorkspaceProvider
+from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
 
 if TYPE_CHECKING:
     from primer.int.storage import Storage
@@ -99,6 +102,9 @@ class BootstrapRunner:
     workspace_provider_storage:
         :class:`~primer.int.storage.Storage` bound to
         :class:`~primer.model.workspace.WorkspaceProvider`.
+    workspace_template_storage:
+        :class:`~primer.int.storage.Storage` bound to
+        :class:`~primer.model.workspace.WorkspaceTemplate`.
     root_dir:
         Filesystem root used for resolving tilde paths in the factory
         specs (e.g. ``~/.primer/workspaces`` → ``root_dir / "workspaces"``).
@@ -114,6 +120,7 @@ class BootstrapRunner:
         ssp_storage: "Storage[SemanticSearchProvider]",
         cross_encoder_storage: "Storage[CrossEncoderProvider]",
         workspace_provider_storage: "Storage[WorkspaceProvider]",
+        workspace_template_storage: "Storage[WorkspaceTemplate]",
         root_dir: Path,
     ) -> None:
         self._storage = storage
@@ -121,6 +128,7 @@ class BootstrapRunner:
         self._ssp_storage = ssp_storage
         self._cross_encoder_storage = cross_encoder_storage
         self._wp_storage = workspace_provider_storage
+        self._wt_storage = workspace_template_storage
         self._root_dir = root_dir
 
     # ------------------------------------------------------------------
@@ -155,6 +163,7 @@ class BootstrapRunner:
 
         result = BootstrapResult()
         await self._ensure_local_workspace_provider(result)
+        await self._ensure_local_workspace_template(result)
         await self._ensure_huggingface_embedder(result)
         await self._ensure_lance_ssp(result)
         await self._ensure_huggingface_cross_encoder(result)
@@ -198,6 +207,27 @@ class BootstrapRunner:
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "bootstrap: _ensure_local_workspace_provider failed: %s", exc
+            )
+            result.errors.append((reserved_id, repr(exc)))
+
+    async def _ensure_local_workspace_template(
+        self, result: BootstrapResult
+    ) -> None:
+        reserved_id = RESERVED_LOCAL_WORKSPACE_TEMPLATE
+        try:
+            existing = await self._wt_storage.get(reserved_id)
+            if existing is not None:
+                result.skipped.append(reserved_id)
+                return
+
+            spec = copy.deepcopy(RESERVED_WORKSPACE_TEMPLATES[reserved_id])
+            entity = WorkspaceTemplate(**spec)
+            await self._wt_storage.create(entity)
+            result.created.append(reserved_id)
+            logger.debug("bootstrap: created workspace template %r", reserved_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "bootstrap: _ensure_local_workspace_template failed: %s", exc
             )
             result.errors.append((reserved_id, repr(exc)))
 
@@ -319,6 +349,7 @@ class BootstrapRunner:
         """
         result.skipped.extend([
             RESERVED_LOCAL_WORKSPACE_PROVIDER,
+            RESERVED_LOCAL_WORKSPACE_TEMPLATE,
             RESERVED_HUGGINGFACE_EMBEDDER,
             RESERVED_LANCE_SSP,
             RESERVED_HUGGINGFACE_CROSS_ENCODER,
