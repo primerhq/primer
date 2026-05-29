@@ -21,6 +21,9 @@ from primer.model.workspace import (
     K8sConnectionServiceAccountToken,
     K8sReachabilityIngress,
     K8sReachabilityInCluster,
+    K8sVolume,
+    K8sVolumeMount,
+    KubernetesTemplateConfig,
     KubernetesWorkspaceConfig,
     LocalWorkspaceConfig,
     PackageSpec,
@@ -510,3 +513,36 @@ class TestContainerTemplateConfig:
         assert tpl.network is None
         assert tpl.cpu_cores is None
         assert tpl.memory_bytes is None
+
+
+# ---- KubernetesTemplateConfig -------------------------------------------
+
+
+class TestKubernetesTemplateConfig:
+    def test_minimum_image_required(self):
+        with pytest.raises(ValidationError):
+            KubernetesTemplateConfig()
+
+    def test_resource_requests_and_limits(self):
+        tpl = KubernetesTemplateConfig(
+            image="ghcr.io/example/primer-runtime:1",
+            cpu_request="500m", cpu_limit="2",
+            memory_request="1Gi", memory_limit="4Gi",
+        )
+        assert tpl.cpu_request == "500m"
+        assert tpl.cpu_limit == "2"
+        assert tpl.memory_request == "1Gi"
+        assert tpl.memory_limit == "4Gi"
+
+    def test_storage_defaults(self):
+        tpl = KubernetesTemplateConfig(image="x:1")
+        assert tpl.pvc_size == "10Gi"
+        assert tpl.pvc_access_modes == ["ReadWriteOnce"]
+        assert tpl.storage_class is None
+
+    def test_pod_overrides_freeform(self):
+        tpl = KubernetesTemplateConfig(
+            image="x:1",
+            pod_overrides={"nodeSelector": {"role": "agent"}},
+        )
+        assert tpl.pod_overrides == {"nodeSelector": {"role": "agent"}}

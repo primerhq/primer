@@ -359,22 +359,83 @@ class ContainerTemplateConfig(BaseModel):
     )
 
 
-class KubernetesTemplateConfig(BaseModel):
-    """Kubernetes-backend template config."""
+class K8sVolume(BaseModel):
+    """K8s Volume spec; passthrough to k8s. Forbidden 'name' must be present;
+    other fields (configMap/secret/emptyDir/etc.) are validated by k8s itself."""
+    model_config = ConfigDict(extra="allow")
+    name: str
 
-    kind: Literal["kubernetes"] = "kubernetes"
-    image: str = Field(..., min_length=1)
-    entrypoint: list[str] | None = None
-    args: list[str] | None = None
-    workdir: str = Field(default="/workspace")
-    pvc_size: str = Field(default="10Gi")
-    pvc_access_modes: list[str] = Field(
-        default_factory=lambda: ["ReadWriteOnce"]
+
+class K8sVolumeMount(BaseModel):
+    """K8s VolumeMount spec; passthrough. `name` + `mountPath` required."""
+    model_config = ConfigDict(extra="allow")
+    name: str
+    mountPath: str
+    readOnly: bool | None = None
+
+
+class KubernetesTemplateConfig(BaseModel):
+    """K8s template variant — system variant. agent_sandbox variant is reserved.
+
+    Image is expected to derive from a primer-runtime base; runtime
+    reachability is configured on the workspace *provider*, not the
+    template (see KubernetesWorkspaceConfig.reachability).
+    """
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["kubernetes"] = Field(
+        default="kubernetes",
+        description="Discriminator tag identifying this as k8s-template config.",
     )
-    extra_volume_mounts: list[dict[str, Any]] = Field(default_factory=list)
-    extra_volumes: list[dict[str, Any]] = Field(default_factory=list)
-    container_overrides: dict[str, Any] = Field(default_factory=dict)
-    pod_overrides: dict[str, Any] = Field(default_factory=dict)
+    image: str = Field(
+        ...,
+        description="OCI image; primer-runtime derivative.",
+    )
+    entrypoint: list[str] | None = Field(default=None)
+    args: list[str] | None = Field(default=None)
+    workdir: str = Field(default="/workspace")
+
+    cpu_request: str | None = Field(
+        default=None,
+        description="K8s resource request, e.g. '500m'.",
+    )
+    cpu_limit: str | None = Field(
+        default=None,
+        description="K8s resource limit, e.g. '2'.",
+    )
+    memory_request: str | None = Field(
+        default=None,
+        description="e.g. '1Gi'.",
+    )
+    memory_limit: str | None = Field(
+        default=None,
+        description="e.g. '4Gi'.",
+    )
+
+    pvc_size: str = Field(
+        default="10Gi",
+        description="PVC size declared on the StatefulSet's volumeClaimTemplates.",
+    )
+    pvc_access_modes: list[Literal["ReadWriteOnce", "ReadWriteMany"]] = Field(
+        default_factory=lambda: ["ReadWriteOnce"],
+    )
+    storage_class: str | None = Field(
+        default=None,
+        description="StorageClass name; null = cluster default.",
+    )
+
+    extra_volumes: list[K8sVolume] = Field(default_factory=list)
+    extra_volume_mounts: list[K8sVolumeMount] = Field(default_factory=list)
+
+    network_policy_name: str | None = Field(
+        default=None,
+        description="Name of a NetworkPolicy operators pre-create in the namespace.",
+    )
+
+    pod_overrides: dict | None = Field(
+        default=None,
+        description="Deep-merged into PodSpec at manifest build time.",
+    )
+    container_security_context_overrides: dict | None = Field(default=None)
 
 
 WorkspaceTemplateBackendConfig = Annotated[
@@ -969,6 +1030,8 @@ __all__ = [
     "K8sReachabilityConfig",
     "K8sReachabilityIngress",
     "K8sReachabilityInCluster",
+    "K8sVolume",
+    "K8sVolumeMount",
     "KubernetesTemplateConfig",
     "KubernetesWorkspaceConfig",
     "LocalTemplateConfig",
