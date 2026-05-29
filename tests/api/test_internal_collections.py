@@ -307,13 +307,35 @@ class TestConfigCRUD:
         assert get.json()["activated_at"] is None
 
     @pytest.mark.asyncio
-    async def test_put_preserves_activated_at_on_update(self, client) -> None:
+    async def test_put_preserves_activated_at_when_editing_reranker(self, client) -> None:
+        """Reranker / MMR don't define the vector space, so editing them
+        post-activation succeeds and preserves activated_at."""
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
-        body2 = {**_config_body(), "embedding_model": "different-model"}
-        await client.put("/v1/internal_collections/config", json=body2)
+        body2 = {**_config_body(), "mmr": {"lambda_mult": 0.7}}
+        resp = await client.put("/v1/internal_collections/config", json=body2)
+        assert resp.status_code == 200, resp.text
         get = await client.get("/v1/internal_collections/config")
         assert get.json()["activated_at"] is not None
+        assert get.json()["mmr"]["lambda_mult"] == 0.7
+
+    @pytest.mark.asyncio
+    async def test_put_rejects_vector_space_change_after_activation(self, client) -> None:
+        """Changing embedding_model, embedding_provider_id, or
+        search_provider_id post-activation would invalidate existing
+        embeddings (different vector space) — reject 409."""
+        await client.put("/v1/internal_collections/config", json=_config_body())
+        await _bootstrap_and_wait(client)
+        # Try to swap the embedding model — should be rejected.
+        body2 = {**_config_body(), "embedding_model": "different-model"}
+        resp = await client.put("/v1/internal_collections/config", json=body2)
+        assert resp.status_code == 409, resp.text
+        detail = resp.json()["detail"]
+        assert detail["error"] == "subsystem_active"
+        assert "embedding_model" in detail["frozen_fields"]
+        # Confirm the row was not mutated.
+        get = await client.get("/v1/internal_collections/config")
+        assert get.json()["embedding_model"] == _config_body()["embedding_model"]
 
     @pytest.mark.asyncio
     async def test_delete_clears_config_and_detaches_subsystem(

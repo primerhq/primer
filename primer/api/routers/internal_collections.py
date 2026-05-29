@@ -191,6 +191,41 @@ async def put_config(
             "to a known SemanticSearchProvider."
         )
 
+    existing = await storage.get(INTERNAL_COLLECTIONS_CONFIG_ID)
+
+    # Vector-space-defining fields are frozen once embeddings exist.
+    # Changing the embedding model (or the provider that backs it, or
+    # the SSP that holds the vectors) post-activation would mix vectors
+    # from incompatible spaces — the new query embeddings can't be
+    # compared meaningfully against the old stored ones. The only sane
+    # mutation path is DELETE + PUT + bootstrap, which the deactivate
+    # button does. cross_encoder/mmr are reranking concerns that don't
+    # touch the vector space, so they stay editable.
+    if existing is not None and existing.activated_at is not None:
+        frozen_diffs = []
+        if body.embedding_provider_id != existing.embedding_provider_id:
+            frozen_diffs.append("embedding_provider_id")
+        if body.embedding_model != existing.embedding_model:
+            frozen_diffs.append("embedding_model")
+        if body.search_provider_id != existing.search_provider_id:
+            frozen_diffs.append("search_provider_id")
+        if frozen_diffs:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "subsystem_active",
+                    "message": (
+                        f"Cannot change {', '.join(frozen_diffs)} while the "
+                        "subsystem is active — these fields define the vector "
+                        "space and mixing them would corrupt search results. "
+                        "Deactivate the subsystem first (DELETE "
+                        "/v1/internal_collections/config), then re-configure "
+                        "and re-bootstrap."
+                    ),
+                    "frozen_fields": frozen_diffs,
+                },
+            )
+
     cfg = InternalCollectionsConfig(
         id=INTERNAL_COLLECTIONS_CONFIG_ID,
         embedding_provider_id=body.embedding_provider_id,
@@ -200,7 +235,6 @@ async def put_config(
         mmr=body.mmr,
         activated_at=None,
     )
-    existing = await storage.get(INTERNAL_COLLECTIONS_CONFIG_ID)
     if existing is None:
         await storage.create(cfg)
     else:

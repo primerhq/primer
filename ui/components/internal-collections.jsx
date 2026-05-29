@@ -544,6 +544,13 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
   const noSSPs = !ssps.loading && (ssps.data?.items ?? []).length === 0;
   const noEmbed = !embedProviders.loading && (embedProviders.data?.items ?? []).length === 0;
   const disabled = !searchProviderId || !providerId || !model || save.loading;
+  // Vector-space-defining fields are frozen once activated_at is set.
+  // Changing them post-bootstrap would mix vectors from incompatible
+  // spaces; the operator must deactivate (which preserves the data
+  // but tears down the live subsystem) before swapping. cross_encoder
+  // and mmr are reranking concerns and remain editable.
+  const vectorSpaceLocked = !!existing?.activated_at;
+  const lockedHint = "Locked — deactivate the subsystem to change this. Existing embeddings are tied to this provider/model and can't be searched with a different one.";
 
   return (
     <Modal
@@ -565,17 +572,26 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
           detail="The internal collections subsystem needs an SSP to back its four reserved collections. Create one at /ssp first."
         />
       )}
+      {vectorSpaceLocked && (
+        <Banner
+          kind="info"
+          icon="info"
+          title="Vector-space fields are locked while active"
+          detail="The SSP, embedding provider, and embedding model can't change while the subsystem is active — existing embeddings are tied to them. Deactivate (config + data preserved on disk) to swap, then re-bootstrap."
+        />
+      )}
       <div className="field">
         <label className="field-label">Semantic Search provider <span className="hint">required — backs the 4 reserved internal collections</span></label>
-        <select className="select mono" value={searchProviderId} onChange={(e) => setSearchProviderId(e.target.value)} style={{ width: "100%" }}>
+        <select className="select mono" value={searchProviderId} onChange={(e) => setSearchProviderId(e.target.value)} disabled={vectorSpaceLocked} style={{ width: "100%" }}>
           <option value="">-- pick a provider --</option>
           {(ssps.data?.items ?? []).map((p) => <option key={p.id} value={p.id}>{p.id}{p.provider ? ` · ${p.provider}` : ""}</option>)}
         </select>
+        {vectorSpaceLocked && <div className="field-help muted">{lockedHint}</div>}
         {fieldErrors["body.search_provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.search_provider_id"]}</div>}
       </div>
       <div className="field">
         <label className="field-label">Embedding provider</label>
-        <select className="select" value={providerId} onChange={(e) => setProviderId(e.target.value)} style={{ width: "100%" }}>
+        <select className="select" value={providerId} onChange={(e) => setProviderId(e.target.value)} disabled={vectorSpaceLocked} style={{ width: "100%" }}>
           <option value="">-- pick a provider --</option>
           {(embedProviders.data?.items ?? []).map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
         </select>
@@ -584,14 +600,16 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
             No embedding providers configured. Create one at <span className="mono">/providers/embedding</span> first.
           </div>
         )}
+        {vectorSpaceLocked && !noEmbed && <div className="field-help muted">{lockedHint}</div>}
         {fieldErrors["body.embedding_provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.embedding_provider_id"]}</div>}
       </div>
       <div className="field">
         <label className="field-label">Embedding model</label>
-        <select className="select" value={model} onChange={(e) => setModel(e.target.value)} style={{ width: "100%" }}>
+        <select className="select" value={model} onChange={(e) => setModel(e.target.value)} disabled={vectorSpaceLocked} style={{ width: "100%" }}>
           <option value="">-- pick a model --</option>
           {modelOptions.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
         </select>
+        {vectorSpaceLocked && <div className="field-help muted">{lockedHint}</div>}
         {fieldErrors["body.embedding_model"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.embedding_model"]}</div>}
       </div>
       <div className="field" style={{ display: "flex", alignItems: "center", gap: 8 }}>
