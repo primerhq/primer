@@ -18,14 +18,16 @@ function _wpSummary(p) {
   if (!p || !p.config) return "";
   if (p.provider === "local") return p.config.path || "";
   if (p.provider === "container") {
-    const rt = p.config.runtime?.kind || "?";
-    const img = p.config.default_image || "(no default image)";
-    return `${rt} · ${img}`;
+    const rt = p.config.runtime || "?";
+    const conn = p.config.connection?.kind || "?";
+    const reach = p.config.reachability?.kind || "?";
+    return `${rt} · ${conn} · ${reach}`;
   }
   if (p.provider === "kubernetes") {
+    const variant = p.config.variant || "system";
     const ns = p.config.namespace || "default";
-    const ctx = p.config.in_cluster ? "(in-cluster)" : (p.config.context || "current-context");
-    return `${ns} · ${ctx}`;
+    const conn = p.config.connection?.kind || "?";
+    return `${variant} · ${ns} · ${conn}`;
   }
   return "";
 }
@@ -117,34 +119,35 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
   const [form, setForm] = React.useState({
     id: "",
     backend: "local",
+    // local
     path: "",
-    runtime_kind: "docker",
-    runtime_socket: "",
-    runtime_api_version: "",
-    runtime_namespace: "default",
-    default_image: "",
-    name_prefix_container: "primer-ws-",
-    volume_driver: "",
-    pull_policy_container: "if_missing",
-    in_cluster: false,
-    kubeconfig_path: "",
-    context: "",
-    namespace: "default",
-    name_prefix_k8s: "primer-ws-",
-    storage_class: "",
-    default_pvc_size: "10Gi",
-    service_account: "",
-    image_pull_secrets: [],
-    pull_policy_k8s: "IfNotPresent",
-    annotations: {},
-    labels: {},
-    node_selector: {},
-    pod_security_context: null,
-    container_security_context: null,
-    tolerations: null,
+    // container
+    c_runtime: "docker",
+    c_conn_kind: "socket",
+    c_socket_path: "/var/run/docker.sock",
+    c_remote_url: "",
+    c_remote_tls_ca: "",
+    c_remote_tls_cert: "",
+    c_remote_tls_key: "",
+    c_reach_kind: "host_port",
+    c_bind_host: "127.0.0.1",
+    c_network_name: "",
+    c_image_pull_secrets: [],
+    // kubernetes
+    k_variant: "system",
+    k_conn_kind: "in_cluster",
+    k_kubeconfig_path: "",
+    k_kubeconfig_context: "",
+    k_sat_apiserver_url: "",
+    k_sat_ca_data: "",
+    k_sat_token: "",
+    k_sat_namespace: "default",
+    k_namespace: "primer",
+    k_reach_kind: "in_cluster",
+    k_ingress_url_template: "",
+    k_image_pull_secrets: [],
   });
   const [fieldErrors, setFieldErrors] = React.useState({});
-  const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   const create = useMutation(
@@ -176,6 +179,21 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
     const errs = {};
     if (!form.id) errs.id = "value is required";
     if (form.backend === "local" && !form.path) errs.path = "value is required";
+    if (form.backend === "container") {
+      if (form.c_conn_kind === "socket" && !form.c_socket_path) errs.c_socket_path = "value is required";
+      if (form.c_conn_kind === "remote" && !form.c_remote_url) errs.c_remote_url = "value is required";
+      if (form.c_reach_kind === "bridge_network" && !form.c_network_name) errs.c_network_name = "value is required";
+    }
+    if (form.backend === "kubernetes") {
+      if (form.k_conn_kind === "kubeconfig" && !form.k_kubeconfig_path) errs.k_kubeconfig_path = "value is required";
+      if (form.k_conn_kind === "service_account_token") {
+        if (!form.k_sat_apiserver_url) errs.k_sat_apiserver_url = "value is required";
+        if (!form.k_sat_ca_data) errs.k_sat_ca_data = "value is required";
+        if (!form.k_sat_token) errs.k_sat_token = "value is required";
+      }
+      if (!form.k_namespace) errs.k_namespace = "value is required";
+      if (form.k_reach_kind === "ingress" && !form.k_ingress_url_template) errs.k_ingress_url_template = "value is required";
+    }
     if (Object.keys(errs).length > 0) {
       setFieldErrors(errs);
       return;
@@ -186,46 +204,58 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
     if (form.backend === "local") {
       config = { kind: "local", path: form.path };
     } else if (form.backend === "container") {
-      const rt = { kind: form.runtime_kind };
-      if (form.runtime_kind === "docker") {
-        if (form.runtime_socket) rt.socket = form.runtime_socket;
-        if (form.runtime_api_version) rt.api_version = form.runtime_api_version;
-      } else if (form.runtime_kind === "podman") {
-        if (form.runtime_socket) rt.socket = form.runtime_socket;
-      } else if (form.runtime_kind === "containerd") {
-        rt.socket = form.runtime_socket || "/run/containerd/containerd.sock";
-        rt.namespace = form.runtime_namespace || "default";
+      let connection;
+      if (form.c_conn_kind === "socket") {
+        connection = { kind: "socket", socket_path: form.c_socket_path };
+      } else {
+        connection = { kind: "remote", url: form.c_remote_url };
+        if (form.c_remote_tls_ca) connection.tls_ca = form.c_remote_tls_ca;
+        if (form.c_remote_tls_cert) connection.tls_cert = form.c_remote_tls_cert;
+        if (form.c_remote_tls_key) connection.tls_key = form.c_remote_tls_key;
+      }
+      let reachability;
+      if (form.c_reach_kind === "host_port") {
+        reachability = { kind: "host_port", bind_host: form.c_bind_host || "127.0.0.1" };
+      } else {
+        reachability = { kind: "bridge_network", network_name: form.c_network_name };
       }
       config = {
         kind: "container",
-        runtime: rt,
-        name_prefix: form.name_prefix_container || "primer-ws-",
-        pull_policy: form.pull_policy_container || "if_missing",
+        runtime: form.c_runtime,
+        connection,
+        reachability,
+        image_pull_secrets: form.c_image_pull_secrets || [],
       };
-      if (form.default_image) config.default_image = form.default_image;
-      if (form.volume_driver) config.volume_driver = form.volume_driver;
     } else {
+      let connection;
+      if (form.k_conn_kind === "in_cluster") {
+        connection = { kind: "in_cluster" };
+      } else if (form.k_conn_kind === "kubeconfig") {
+        connection = { kind: "kubeconfig", path: form.k_kubeconfig_path };
+        if (form.k_kubeconfig_context) connection.context = form.k_kubeconfig_context;
+      } else {
+        connection = {
+          kind: "service_account_token",
+          apiserver_url: form.k_sat_apiserver_url,
+          ca_data: form.k_sat_ca_data,
+          token: form.k_sat_token,
+        };
+        if (form.k_sat_namespace) connection.namespace = form.k_sat_namespace;
+      }
+      let reachability;
+      if (form.k_reach_kind === "in_cluster") {
+        reachability = { kind: "in_cluster" };
+      } else {
+        reachability = { kind: "ingress", url_template: form.k_ingress_url_template };
+      }
       config = {
         kind: "kubernetes",
-        in_cluster: !!form.in_cluster,
-        namespace: form.namespace || "default",
-        name_prefix: form.name_prefix_k8s || "primer-ws-",
-        default_pvc_size: form.default_pvc_size || "10Gi",
-        image_pull_secrets: form.image_pull_secrets || [],
-        pull_policy: form.pull_policy_k8s || "IfNotPresent",
-        annotations: form.annotations || {},
-        labels: form.labels || {},
-        node_selector: form.node_selector || {},
+        variant: form.k_variant,
+        connection,
+        namespace: form.k_namespace,
+        reachability,
+        image_pull_secrets: form.k_image_pull_secrets || [],
       };
-      if (!form.in_cluster) {
-        if (form.kubeconfig_path) config.kubeconfig_path = form.kubeconfig_path;
-        if (form.context) config.context = form.context;
-      }
-      if (form.storage_class) config.storage_class = form.storage_class;
-      if (form.service_account) config.service_account = form.service_account;
-      if (form.pod_security_context) config.pod_security_context = form.pod_security_context;
-      if (form.container_security_context) config.container_security_context = form.container_security_context;
-      if (form.tolerations) config.tolerations = form.tolerations;
     }
     const body = { id: form.id, provider: form.backend, config };
     create.mutate(body).catch(() => { /* onError handled */ });
@@ -267,117 +297,121 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
       </>)}
 
       {isContainer && (<>
-        <WS_Section label="Container runtime" />
+        <WS_Section label="Runtime" />
         <WS_FieldRow label="runtime">
-          <select className="select mono" value={form.runtime_kind} onChange={(e) => update("runtime_kind", e.target.value)} style={{ width: "100%" }}>
+          <select className="select mono" value={form.c_runtime} onChange={(e) => update("c_runtime", e.target.value)} style={{ width: "100%" }}>
             <option value="docker">docker</option>
             <option value="podman">podman</option>
             <option value="containerd">containerd</option>
           </select>
         </WS_FieldRow>
-        {form.runtime_kind !== "containerd" && (
-          <WS_FieldRow label="socket" hint="optional · default = env or platform default">
-            <input className="input mono" value={form.runtime_socket} onChange={(e) => update("runtime_socket", e.target.value)} placeholder="/var/run/docker.sock" style={{ width: "100%" }} />
+        <WS_Section label="Connection" />
+        <WS_FieldRow label="connection" hint="how the platform reaches the runtime API">
+          <select className="select mono" value={form.c_conn_kind} onChange={(e) => update("c_conn_kind", e.target.value)} style={{ width: "100%" }}>
+            <option value="socket">socket (local unix socket)</option>
+            <option value="remote">remote (tcp endpoint, optional mTLS)</option>
+          </select>
+        </WS_FieldRow>
+        {form.c_conn_kind === "socket" && (
+          <WS_FieldRow label="socket_path" err={fieldErrors.c_socket_path}>
+            <input className="input mono" value={form.c_socket_path} onChange={(e) => update("c_socket_path", e.target.value)} placeholder="/var/run/docker.sock" style={{ width: "100%" }} />
           </WS_FieldRow>
         )}
-        {form.runtime_kind === "docker" && (
-          <WS_FieldRow label="api_version" hint="optional · client default">
-            <input className="input mono" value={form.runtime_api_version} onChange={(e) => update("runtime_api_version", e.target.value)} style={{ width: "100%" }} />
+        {form.c_conn_kind === "remote" && (<>
+          <WS_FieldRow label="url" err={fieldErrors.c_remote_url}>
+            <input className="input mono" value={form.c_remote_url} onChange={(e) => update("c_remote_url", e.target.value)} placeholder="tcp://docker:2375" style={{ width: "100%" }} />
           </WS_FieldRow>
-        )}
-        {form.runtime_kind === "containerd" && (<>
-          <WS_FieldRow label="socket">
-            <input className="input mono" value={form.runtime_socket} onChange={(e) => update("runtime_socket", e.target.value)} placeholder="/run/containerd/containerd.sock" style={{ width: "100%" }} />
+          <WS_FieldRow label="tls_ca" hint="optional · PEM CA cert for mTLS">
+            <textarea className="input mono" value={form.c_remote_tls_ca} onChange={(e) => update("c_remote_tls_ca", e.target.value)} rows={3} placeholder="-----BEGIN CERTIFICATE-----" style={{ width: "100%" }} />
           </WS_FieldRow>
-          <WS_FieldRow label="namespace" hint="containerd namespace (NOT k8s namespace)">
-            <input className="input mono" value={form.runtime_namespace} onChange={(e) => update("runtime_namespace", e.target.value)} style={{ width: "100%" }} />
+          <WS_FieldRow label="tls_cert" hint="optional · PEM client cert for mTLS">
+            <textarea className="input mono" value={form.c_remote_tls_cert} onChange={(e) => update("c_remote_tls_cert", e.target.value)} rows={3} placeholder="-----BEGIN CERTIFICATE-----" style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="tls_key" hint="optional · PEM client key for mTLS (secret)">
+            <textarea className="input mono" value={form.c_remote_tls_key} onChange={(e) => update("c_remote_tls_key", e.target.value)} rows={3} placeholder="-----BEGIN PRIVATE KEY-----" style={{ width: "100%" }} />
           </WS_FieldRow>
         </>)}
-        <WS_Section label="Defaults" />
-        <WS_FieldRow label="default_image" hint="optional · used when template has no image">
-          <input className="input mono" value={form.default_image} onChange={(e) => update("default_image", e.target.value)} placeholder="ubuntu:24.04" style={{ width: "100%" }} />
-        </WS_FieldRow>
-        <WS_FieldRow label="name_prefix">
-          <input className="input mono" value={form.name_prefix_container} onChange={(e) => update("name_prefix_container", e.target.value)} style={{ width: "100%" }} />
-        </WS_FieldRow>
-        <WS_FieldRow label="volume_driver" hint="optional · runtime default">
-          <input className="input mono" value={form.volume_driver} onChange={(e) => update("volume_driver", e.target.value)} style={{ width: "100%" }} />
-        </WS_FieldRow>
-        <WS_FieldRow label="pull_policy">
-          <select className="select mono" value={form.pull_policy_container} onChange={(e) => update("pull_policy_container", e.target.value)} style={{ width: "100%" }}>
-            <option value="always">always</option>
-            <option value="if_missing">if_missing</option>
-            <option value="never">never</option>
+        <WS_Section label="Reachability" />
+        <WS_FieldRow label="reachability" hint="how the platform reaches primer-runtime inside each workspace">
+          <select className="select mono" value={form.c_reach_kind} onChange={(e) => update("c_reach_kind", e.target.value)} style={{ width: "100%" }}>
+            <option value="host_port">host_port (publish to host interface)</option>
+            <option value="bridge_network">bridge_network (shared docker network)</option>
           </select>
+        </WS_FieldRow>
+        {form.c_reach_kind === "host_port" && (
+          <WS_FieldRow label="bind_host" hint="host interface · 127.0.0.1 keeps it loopback-only">
+            <input className="input mono" value={form.c_bind_host} onChange={(e) => update("c_bind_host", e.target.value)} placeholder="127.0.0.1" style={{ width: "100%" }} />
+          </WS_FieldRow>
+        )}
+        {form.c_reach_kind === "bridge_network" && (
+          <WS_FieldRow label="network_name" err={fieldErrors.c_network_name} hint="docker network shared by primer and workspace containers">
+            <input className="input mono" value={form.c_network_name} onChange={(e) => update("c_network_name", e.target.value)} placeholder="primer-net" style={{ width: "100%" }} />
+          </WS_FieldRow>
+        )}
+        <WS_Section label="Registry auth" />
+        <WS_FieldRow label="image_pull_secrets" hint="optional · names of registry-auth secret refs">
+          <window.WorkspaceStringListEditor value={form.c_image_pull_secrets} onChange={(v) => update("c_image_pull_secrets", v)} placeholder="my-registry-secret" />
         </WS_FieldRow>
       </>)}
 
       {isK8s && (<>
-        <WS_Section label="Cluster" />
-        <WS_FieldRow label="in_cluster" hint="check when running primer inside the target cluster">
-          <input type="checkbox" checked={!!form.in_cluster} onChange={(e) => update("in_cluster", e.target.checked)} />
-        </WS_FieldRow>
-        {!form.in_cluster && (<>
-          <WS_FieldRow label="kubeconfig_path" hint="optional · ~/.kube/config if blank">
-            <input className="input mono" value={form.kubeconfig_path} onChange={(e) => update("kubeconfig_path", e.target.value)} placeholder="/etc/kubernetes/admin.conf" style={{ width: "100%" }} />
-          </WS_FieldRow>
-          <WS_FieldRow label="context" hint="optional · current-context if blank">
-            <input className="input mono" value={form.context} onChange={(e) => update("context", e.target.value)} style={{ width: "100%" }} />
-          </WS_FieldRow>
-        </>)}
-        <WS_FieldRow label="namespace">
-          <input className="input mono" value={form.namespace} onChange={(e) => update("namespace", e.target.value)} style={{ width: "100%" }} />
-        </WS_FieldRow>
-        <WS_FieldRow label="name_prefix">
-          <input className="input mono" value={form.name_prefix_k8s} onChange={(e) => update("name_prefix_k8s", e.target.value)} style={{ width: "100%" }} />
-        </WS_FieldRow>
-        <WS_Section label="Storage" />
-        <WS_FieldRow label="storage_class" hint="optional · cluster default">
-          <input className="input mono" value={form.storage_class} onChange={(e) => update("storage_class", e.target.value)} style={{ width: "100%" }} />
-        </WS_FieldRow>
-        <WS_FieldRow label="default_pvc_size">
-          <input className="input mono" value={form.default_pvc_size} onChange={(e) => update("default_pvc_size", e.target.value)} style={{ width: "100%" }} />
-        </WS_FieldRow>
-        <WS_Section label="Pods" />
-        <WS_FieldRow label="service_account" hint="optional">
-          <input className="input mono" value={form.service_account} onChange={(e) => update("service_account", e.target.value)} style={{ width: "100%" }} />
-        </WS_FieldRow>
-        <WS_FieldRow label="image_pull_secrets" hint="optional · one per row">
-          <window.WorkspaceStringListEditor value={form.image_pull_secrets} onChange={(v) => update("image_pull_secrets", v)} placeholder="my-registry-secret" />
-        </WS_FieldRow>
-        <WS_FieldRow label="pull_policy">
-          <select className="select mono" value={form.pull_policy_k8s} onChange={(e) => update("pull_policy_k8s", e.target.value)} style={{ width: "100%" }}>
-            <option value="Always">Always</option>
-            <option value="IfNotPresent">IfNotPresent</option>
-            <option value="Never">Never</option>
+        <WS_Section label="Variant" />
+        <WS_FieldRow label="variant" hint="materialisation strategy">
+          <select className="select mono" value={form.k_variant} onChange={(e) => update("k_variant", e.target.value)} style={{ width: "100%" }}>
+            <option value="system">system (StatefulSet + PVC)</option>
+            <option value="agent_sandbox" disabled>agent_sandbox (coming soon)</option>
           </select>
         </WS_FieldRow>
-        <div style={{ marginTop: 12 }}>
-          <button className="btn" style={{ padding: "4px 10px" }} onClick={() => setAdvancedOpen(!advancedOpen)}>
-            <Icon name={advancedOpen ? "chevron-down" : "chevron-right"} size={11} />
-            <span>Advanced (annotations, labels, security context, tolerations)</span>
-          </button>
-        </div>
-        {advancedOpen && (<>
-          <WS_FieldRow label="annotations" hint="key/value pairs">
-            <window.WorkspacePairListEditor value={form.annotations} onChange={(v) => update("annotations", v)} keyPlaceholder="prometheus.io/scrape" valuePlaceholder="true" />
+        <WS_Section label="Connection" />
+        <WS_FieldRow label="connection" hint="how the platform reaches the kube apiserver">
+          <select className="select mono" value={form.k_conn_kind} onChange={(e) => update("k_conn_kind", e.target.value)} style={{ width: "100%" }}>
+            <option value="in_cluster">in_cluster (service-account auth)</option>
+            <option value="kubeconfig">kubeconfig (file path + context)</option>
+            <option value="service_account_token">service_account_token (out-of-cluster)</option>
+          </select>
+        </WS_FieldRow>
+        {form.k_conn_kind === "kubeconfig" && (<>
+          <WS_FieldRow label="path" err={fieldErrors.k_kubeconfig_path} hint="path to kubeconfig file">
+            <input className="input mono" value={form.k_kubeconfig_path} onChange={(e) => update("k_kubeconfig_path", e.target.value)} placeholder="/etc/kubernetes/admin.conf" style={{ width: "100%" }} />
           </WS_FieldRow>
-          <WS_FieldRow label="labels" hint="key/value pairs">
-            <window.WorkspacePairListEditor value={form.labels} onChange={(v) => update("labels", v)} keyPlaceholder="app.kubernetes.io/name" valuePlaceholder="primer" />
-          </WS_FieldRow>
-          <WS_FieldRow label="node_selector" hint="key/value pairs">
-            <window.WorkspacePairListEditor value={form.node_selector} onChange={(v) => update("node_selector", v)} keyPlaceholder="disktype" valuePlaceholder="ssd" />
-          </WS_FieldRow>
-          <WS_FieldRow label="pod_security_context" hint="JSON object · passthrough to PodSpec.securityContext">
-            <window.WorkspaceJsonTextareaField value={form.pod_security_context} onChange={(v) => update("pod_security_context", v)} placeholder='{"runAsNonRoot": true, "fsGroup": 1000}' rows={4} />
-          </WS_FieldRow>
-          <WS_FieldRow label="container_security_context" hint="JSON object · passthrough to Container.securityContext">
-            <window.WorkspaceJsonTextareaField value={form.container_security_context} onChange={(v) => update("container_security_context", v)} placeholder='{"allowPrivilegeEscalation": false}' rows={4} />
-          </WS_FieldRow>
-          <WS_FieldRow label="tolerations" hint="JSON array of toleration objects">
-            <window.WorkspaceJsonTextareaField value={form.tolerations} onChange={(v) => update("tolerations", v)} placeholder='[{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}]' rows={4} />
+          <WS_FieldRow label="context" hint="optional · current-context if blank">
+            <input className="input mono" value={form.k_kubeconfig_context} onChange={(e) => update("k_kubeconfig_context", e.target.value)} style={{ width: "100%" }} />
           </WS_FieldRow>
         </>)}
+        {form.k_conn_kind === "service_account_token" && (<>
+          <WS_FieldRow label="apiserver_url" err={fieldErrors.k_sat_apiserver_url}>
+            <input className="input mono" value={form.k_sat_apiserver_url} onChange={(e) => update("k_sat_apiserver_url", e.target.value)} placeholder="https://kube.example.com:6443" style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="ca_data" err={fieldErrors.k_sat_ca_data} hint="PEM cluster CA cert">
+            <textarea className="input mono" value={form.k_sat_ca_data} onChange={(e) => update("k_sat_ca_data", e.target.value)} rows={3} placeholder="-----BEGIN CERTIFICATE-----" style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="token" err={fieldErrors.k_sat_token} hint="bearer token (secret)">
+            <input className="input mono" type="password" value={form.k_sat_token} onChange={(e) => update("k_sat_token", e.target.value)} style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="namespace" hint="namespace claimed by the token (informational)">
+            <input className="input mono" value={form.k_sat_namespace} onChange={(e) => update("k_sat_namespace", e.target.value)} style={{ width: "100%" }} />
+          </WS_FieldRow>
+        </>)}
+        <WS_Section label="Workspace placement" />
+        <WS_FieldRow label="namespace" err={fieldErrors.k_namespace} hint="namespace where workspaces are created">
+          <input className="input mono" value={form.k_namespace} onChange={(e) => update("k_namespace", e.target.value)} placeholder="primer" style={{ width: "100%" }} />
+        </WS_FieldRow>
+        <WS_Section label="Reachability" />
+        <WS_FieldRow label="reachability" hint="how the platform reaches primer-runtime inside workspace pods">
+          <select className="select mono" value={form.k_reach_kind} onChange={(e) => update("k_reach_kind", e.target.value)} style={{ width: "100%" }}>
+            <option value="in_cluster">in_cluster (headless-service DNS)</option>
+            <option value="ingress">ingress (operator URL pattern)</option>
+          </select>
+        </WS_FieldRow>
+        {form.k_reach_kind === "ingress" && (
+          <WS_FieldRow label="url_template" err={fieldErrors.k_ingress_url_template} hint="wss:// URL with {workspace_id} placeholder">
+            <input className="input mono" value={form.k_ingress_url_template} onChange={(e) => update("k_ingress_url_template", e.target.value)} placeholder="wss://{workspace_id}.ws.example.com" style={{ width: "100%" }} />
+          </WS_FieldRow>
+        )}
+        <WS_Section label="Registry auth" />
+        <WS_FieldRow label="image_pull_secrets" hint="optional · names of pre-created imagePullSecrets in the namespace">
+          <window.WorkspaceStringListEditor value={form.k_image_pull_secrets} onChange={(v) => update("k_image_pull_secrets", v)} placeholder="my-registry-secret" />
+        </WS_FieldRow>
       </>)}
     </Modal>
   );
