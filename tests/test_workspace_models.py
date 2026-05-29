@@ -591,3 +591,33 @@ class TestWorkspaceRuntimeMeta:
             k8s_object_name="primer-ws-abc",
         )
         assert m.k8s_object_name == "primer-ws-abc"
+
+
+class TestWorkspaceLifecycleFields:
+    def test_phase_defaults_to_pending(self):
+        from datetime import datetime, timezone
+        from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+        w = Workspace(
+            id="ws-1", description=None, template_id="tpl-1", provider_id="prov-1",
+            created_at=datetime(2026, 5, 29, tzinfo=timezone.utc),
+            runtime_meta=WorkspaceRuntimeMeta(
+                url="ws://x:5959/", token=SecretStr("s"),
+            ),
+        )
+        assert w.phase == "pending"
+        assert w.last_probe_at is None
+        assert w.last_probe_ok is False
+        assert w.failure_reason is None
+
+    def test_phase_terminating(self):
+        from datetime import datetime, timezone
+        from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+        w = Workspace(
+            id="ws-1", description=None, template_id="tpl-1", provider_id="prov-1",
+            created_at=datetime(2026, 5, 29, tzinfo=timezone.utc),
+            runtime_meta=WorkspaceRuntimeMeta(
+                url="ws://x:5959/", token=SecretStr("s"),
+            ),
+            phase="terminating",
+        )
+        assert w.phase == "terminating"

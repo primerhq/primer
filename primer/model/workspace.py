@@ -1007,6 +1007,20 @@ class Workspace(Identifiable):
         ...,
         description="UTC instant the workspace was materialised.",
     )
+    phase: Literal["pending", "running", "failed", "terminating"] = Field(
+        default="pending",
+        description="Lifecycle state driven by the probe task in primer/workspace/probe.py.",
+    )
+    last_probe_at: datetime | None = Field(default=None)
+    last_probe_ok: bool = Field(default=False)
+    failure_reason: str | None = Field(
+        default=None,
+        description="Populated when phase=failed; one-line cause.",
+    )
+    runtime_meta: WorkspaceRuntimeMeta = Field(
+        ...,
+        description="Connection coordinates for the runtime inside this workspace.",
+    )
 
 
 # ===========================================================================
