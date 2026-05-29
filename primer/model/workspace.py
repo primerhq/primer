@@ -940,6 +940,27 @@ class WorkspaceProvider(Identifiable):
 # ===========================================================================
 
 
+class WorkspaceRuntimeMeta(BaseModel):
+    """Per-workspace runtime connection metadata.
+
+    Carries the WS URL + bearer token + (optional) discovered fields the
+    platform needs to reach the workspace's primer-runtime instance.
+
+    Persisted alongside the Workspace row; secret-redacted on GET.
+    """
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(..., description="ws[s]:// URL the platform connects to.")
+    token: SecretStr = Field(..., description="Bearer for RuntimeClient.")
+    mapped_host_port: int | None = Field(
+        default=None,
+        description="Container/host_port reachability only: host port mapped to container's 5959.",
+    )
+    k8s_object_name: str | None = Field(
+        default=None,
+        description="K8s only: hashed-if-needed object name used for service/sts/secret.",
+    )
+
+
 class Workspace(Identifiable):
     """Persisted record of a materialised workspace.
 
@@ -1032,6 +1053,7 @@ __all__ = [
     "WorkspaceProvider",
     "WorkspaceProviderConfig",
     "WorkspaceProviderType",
+    "WorkspaceRuntimeMeta",
     "WorkspaceStatus",
     "WorkspaceTemplate",
     "WorkspaceTemplateBackendConfig",

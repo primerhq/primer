@@ -564,3 +564,30 @@ class TestWorkspaceTemplateLegacyMigration:
         assert "packages" in caplog.text.lower()
         # Template otherwise validates fine.
         assert tpl.id == "legacy-1"
+
+
+class TestWorkspaceRuntimeMeta:
+    def test_minimal(self):
+        from primer.model.workspace import WorkspaceRuntimeMeta
+        m = WorkspaceRuntimeMeta(url="ws://workspace-x:5959/", token=SecretStr("s"))
+        assert m.url.startswith("ws://")
+        assert m.mapped_host_port is None
+        assert m.k8s_object_name is None
+
+    def test_host_port(self):
+        from primer.model.workspace import WorkspaceRuntimeMeta
+        m = WorkspaceRuntimeMeta(
+            url="ws://127.0.0.1:32100/",
+            token=SecretStr("s"),
+            mapped_host_port=32100,
+        )
+        assert m.mapped_host_port == 32100
+
+    def test_k8s_object_name(self):
+        from primer.model.workspace import WorkspaceRuntimeMeta
+        m = WorkspaceRuntimeMeta(
+            url="ws://primer-ws-abc-0.primer-ws-abc.ns.svc.cluster.local:5959/",
+            token=SecretStr("s"),
+            k8s_object_name="primer-ws-abc",
+        )
+        assert m.k8s_object_name == "primer-ws-abc"
