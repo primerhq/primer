@@ -69,10 +69,10 @@ function App() {
       return "collections";
     }
     if (root === "toolsets") {
-      if (path.startsWith("/toolsets/builtin")) return "toolsets-builtin";
       if (params.id) return "toolset-detail";
-      return "toolsets-user";
+      return "toolsets";
     }
+    if (root === "tools") return "tools";
     if (root === "providers") {
       if (path.startsWith("/providers/llm")) return "llm";
       if (path.startsWith("/providers/embedding")) return "embedding";
@@ -319,9 +319,9 @@ function App() {
       collections: "/knowledge/collections",
       documents: (e) => e ? `/knowledge/documents?collection=${encodeURIComponent(e)}` : "/knowledge/documents",
       "collection-search": (e) => e ? `/knowledge/search?collection=${encodeURIComponent(e)}` : "/knowledge/search",
-      "toolsets-user": "/toolsets",
-      "toolsets-builtin": "/toolsets/builtin",
+      toolsets: "/toolsets",
       "toolset-detail": (e) => `/toolsets/${e}`,
+      tools: "/tools",
       llm: "/providers/llm",
       embedding: "/providers/embedding",
       rerank: "/providers/cross_encoder",
@@ -572,45 +572,45 @@ function App() {
       );
     }
     pageBody = <ProvidersPage kind={page} sessions={sessions} pushToast={pushToast} />;
-  } else if (page === "toolsets-user") {
+  } else if (page === "toolsets") {
     pageHeader = (
       <>
         <div>
           <div className="crumb">
-            <a onClick={() => navigate("dashboard")}>Toolsets</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>User toolsets</span>
+            <a onClick={() => navigate("dashboard")}>Toolsets</a>
           </div>
-          <h1 className="page-title">User toolsets</h1>
-          <div className="page-sub">MCP servers, HTTP-based tools, OpenAPI imports</div>
+          <h1 className="page-title">Toolsets</h1>
+          <div className="page-sub">Built-in primitives and user-registered MCP servers</div>
         </div>
       </>
     );
-    pageBody = <ToolsetsPage kind="user" pushToast={pushToast} />;
-  } else if (page === "toolsets-builtin") {
+    pageBody = <ToolsetsPage pushToast={pushToast} />;
+  } else if (page === "tools") {
     pageHeader = (
       <>
         <div>
           <div className="crumb">
-            <a onClick={() => navigate("dashboard")}>Toolsets</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Built-in</span>
+            <a onClick={() => navigate("dashboard")}>Tools</a>
           </div>
-          <h1 className="page-title">Built-in toolsets</h1>
-          <div className="page-sub">Runtime-provided primitives</div>
+          <h1 className="page-title">Tools</h1>
+          <div className="page-sub">Every tool exposed by every toolset · approval policy editable per tool</div>
         </div>
       </>
     );
-    pageBody = <ToolsetsPage kind="builtin" pushToast={pushToast} />;
+    pageBody = <ToolsPage pushToast={pushToast} />;
   } else if (page === "toolset-detail" && currentToolsetId) {
     pageHeader = (
       <>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="crumb">
-            <a onClick={() => navigate("toolsets-user")}>Toolsets</a>
+            <a onClick={() => navigate("toolsets")}>Toolsets</a>
             <span className="sep">/</span>
             <span className="mono" style={{ color: "var(--text)" }}>{currentToolsetId}</span>
           </div>
           <h1 className="page-title mono">{currentToolsetId}</h1>
         </div>
         <div className="page-actions">
-          <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("toolsets-user")}>Back</Btn>
+          <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("toolsets")}>Back</Btn>
         </div>
       </>
     );
@@ -1020,7 +1020,7 @@ function App() {
           : page === "collection-search" ? "collections"
           : page === "chat-detail" ? "chats"
           : page === "channel-provider-detail" ? "channel-providers"
-          : page === "toolset-detail" ? "toolsets-user"
+          : page === "toolset-detail" ? "toolsets"
           : page
         }
         onNavigate={navigate}
@@ -1198,8 +1198,8 @@ function prettyPage(p) {
     collections: "Collections",
     documents: "Documents",
     search: "Search test bench",
-    "toolsets-user": "User toolsets",
-    "toolsets-builtin": "Built-in toolsets",
+    toolsets: "Toolsets",
+    tools: "Tools",
     llm: "LLM providers",
     embedding: "Embedding providers",
     rerank: "Cross-Encoder providers",

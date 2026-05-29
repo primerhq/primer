@@ -44,26 +44,20 @@ function _tsToastErr(pushToast, fallbackTitle) {
 }
 
 // ============================================================================
-// Page dispatcher (kind = "user" | "builtin")
+// Unified toolsets list (built-in + user)
 // ============================================================================
 
-function ToolsetsPage({ kind, pushToast }) {
-  return kind === "builtin"
-    ? <TS_BuiltinToolsets pushToast={pushToast} />
-    : <TS_UserToolsets pushToast={pushToast} />;
-}
-
-// ============================================================================
-// User toolsets list
-// ============================================================================
-
-function TS_UserToolsets({ pushToast }) {
+function ToolsetsPage({ pushToast }) {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
-  const list = useResource(
-    "toolsets:list",
-    (signal) => apiFetch("GET", "/toolsets?limit=200", null, { signal }),
+  // /v1/tools is the merged catalogue: each entry has {id, builtin,
+  // tagline, available, tools[]}. Cheaper than fetching /toolsets and
+  // /toolsets/builtin separately, and gives us the same row shape for
+  // both kinds.
+  const catalogue = useResource(
+    "toolsets:catalogue",
+    (signal) => apiFetch("GET", "/tools", null, { signal }),
     { pollMs: null }
   );
 
@@ -71,23 +65,17 @@ function TS_UserToolsets({ pushToast }) {
   const [textFilter, setTextFilter] = React.useState("");
   const [kindFilter, setKindFilter] = React.useState("");
 
-  const rawItems = list.data?.items ?? [];
-  // Built-in toolsets live on a separate page; the user list should never
-  // surface them (they're returned by /toolsets too because the endpoint
-  // is the union — filter by reserved ids + the leading-underscore
-  // convention to be safe).
-  const items = rawItems.filter(
-    (t) => !TS_BUILTIN_RESERVED_IDS.includes(t.id) && !(t.id || "").startsWith("_"),
-  );
+  const items = catalogue.data?.items ?? [];
   const filtered = React.useMemo(() => {
     let arr = items;
     if (textFilter) {
       const q = textFilter.toLowerCase();
-      arr = arr.filter((t) => (t.id || "").toLowerCase().includes(q));
+      arr = arr.filter((t) => (t.id || "").toLowerCase().includes(q)
+        || (t.label || "").toLowerCase().includes(q));
     }
-    if (kindFilter) {
-      arr = arr.filter((t) => _tsTransport(t) === kindFilter);
-    }
+    if (kindFilter === "builtin") arr = arr.filter((t) => t.builtin);
+    if (kindFilter === "user") arr = arr.filter((t) => !t.builtin);
+    if (kindFilter === "available") arr = arr.filter((t) => t.available);
     return arr;
   }, [items, textFilter, kindFilter]);
 
@@ -110,11 +98,12 @@ function TS_UserToolsets({ pushToast }) {
           onChange={(e) => setKindFilter(e.target.value)}
         >
           <option value="">all kinds</option>
-          <option value="stdio">mcp_stdio</option>
-          <option value="http">mcp_http</option>
+          <option value="builtin">built-in</option>
+          <option value="user">user</option>
+          <option value="available">available only</option>
         </select>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={catalogue.refetch}>Refresh</Btn>
           <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New toolset</Btn>
         </div>
       </div>
@@ -124,42 +113,47 @@ function TS_UserToolsets({ pushToast }) {
           <thead>
             <tr>
               <th>ID</th>
-              <th>Provider</th>
-              <th>Transport</th>
-              <th>Target</th>
+              <th>Kind</th>
+              <th>Status</th>
+              <th>Tools</th>
+              <th>Tagline</th>
             </tr>
           </thead>
           <tbody>
-            {list.loading && rawItems.length === 0 ? (
-              <tr><td colSpan={4} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
-            ) : list.error && rawItems.length === 0 ? (
-              <tr><td colSpan={4} style={{ padding: 20, textAlign: "center" }}>
-                <span style={{ color: "var(--red)" }}>{list.error.title || list.error.message}</span>
-                {" · "}<a onClick={list.refetch} style={{ cursor: "pointer" }}>Retry</a>
+            {catalogue.loading && items.length === 0 ? (
+              <tr><td colSpan={5} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
+            ) : catalogue.error && items.length === 0 ? (
+              <tr><td colSpan={5} style={{ padding: 20, textAlign: "center" }}>
+                <span style={{ color: "var(--red)" }}>{catalogue.error.title || catalogue.error.message}</span>
+                {" · "}<a onClick={catalogue.refetch} style={{ cursor: "pointer" }}>Retry</a>
               </td></tr>
             ) : filtered.length === 0 ? (
-              items.length === 0 ? (
-                <tr><td colSpan={4}>
-                  <div className="empty" style={{ padding: "40px 20px" }}>
-                    <div className="ico-wrap"><Icon name="tools" size={22} /></div>
-                    <div className="head">No user toolsets yet</div>
-                    <div className="sub">User toolsets are MCP servers (stdio or http). Built-in toolsets (system, workspaces, search, web) live on a separate page.</div>
-                    <div className="actions"><Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>New toolset</Btn></div>
-                  </div>
-                </td></tr>
-              ) : (
-                <tr><td colSpan={4} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>No toolsets match.</td></tr>
-              )
+              <tr><td colSpan={5} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>No toolsets match.</td></tr>
             ) : filtered.map((t) => {
-              const transport = _tsTransport(t);
-              const target = _tsTarget(t);
+              const kindLabel = t.builtin ? "built-in" : "user";
+              const kindColor = t.builtin ? "var(--blue)" : "var(--accent)";
               return (
                 <tr key={t.id} onClick={() => navigate("/toolsets/" + t.id)} style={{ cursor: "pointer" }}>
                   <td className="mono">{t.id}</td>
-                  <td className="mono muted text-sm">{t.provider || "—"}</td>
-                  <td className="mono muted text-sm">{transport || "—"}</td>
-                  <td className="mono muted text-sm" style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {target || "—"}
+                  <td>
+                    <span className="pill" style={{ color: kindColor, borderColor: "var(--border)", background: "var(--bg-2)" }}>
+                      <span className="dot" style={{ background: kindColor }}></span>
+                      {kindLabel}
+                    </span>
+                  </td>
+                  <td>
+                    {t.available ? (
+                      <span className="pill pill-ended"><span className="dot"></span>available</span>
+                    ) : (
+                      <span
+                        className="pill pill-cancelled"
+                        title={t.unavailable_reason || ""}
+                      ><span className="dot"></span>unavailable</span>
+                    )}
+                  </td>
+                  <td className="mono muted text-sm tabular num">{(t.tools || []).length}</td>
+                  <td className="muted text-sm" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {t.tagline || ""}
                   </td>
                 </tr>
               );
@@ -176,7 +170,7 @@ function TS_UserToolsets({ pushToast }) {
             if (typeof pushToast === "function") {
               pushToast({ kind: "success", title: "Toolset created", detail: row.id });
             }
-            list.refetch();
+            catalogue.refetch();
             navigate("/toolsets/" + row.id);
           }}
           pushToast={pushToast}
@@ -888,119 +882,202 @@ function _tsPillCls(status) {
 }
 
 // ============================================================================
-// Built-in toolsets — read-only cards
+// Tools page — every tool, with editable approval config per row
 // ============================================================================
+//
+// Flat table over /v1/tools (which fans out every toolset's tools into one
+// flat list with `builtin: true|false`). Joined with /v1/tool_approval_policies
+// so each row shows its current policy (or "—") and an Edit/Add button that
+// opens the AP_NewPolicyModal pre-seeded with the row's (toolset_id, tool_id).
+//
+// Approval policy edits apply to every tool — built-in and user — so an
+// operator can require human approval on `system.fs_delete` the same way they
+// can on a custom MCP tool.
 
-function TS_BuiltinToolsets({ pushToast }) {
+function ToolsPage({ pushToast }) {
   const { useResource, apiFetch } = window.primerApi;
-  // Fetch the live built-in catalogue from the server. The server decides
-  // availability (e.g. search is gated on IC subsystem), so the UI never
-  // needs to probe a second endpoint.
-  const builtins = useResource(
-    "toolsets:builtin",
-    (signal) => apiFetch("GET", "/toolsets/builtin", null, { signal }),
-    { pollMs: 30000 }
+  const catalogue = useResource(
+    "tools:catalogue",
+    (signal) => apiFetch("GET", "/tools", null, { signal }),
+    { pollMs: null }
   );
-  const items = builtins.data?.items ?? [];
+  const policies = useResource(
+    "tools:policies",
+    (signal) => apiFetch("GET", "/tool_approval_policies?limit=200", null, { signal }),
+    { pollMs: null }
+  );
+
+  const [textFilter, setTextFilter] = React.useState("");
+  const [policyFilter, setPolicyFilter] = React.useState("");
+  const [editing, setEditing] = React.useState(null); // {tool_id, toolset_id, builtin, policy?}
+
+  // (toolset_id, tool_name) → policy row.
+  const policyIndex = React.useMemo(() => {
+    const ix = {};
+    for (const p of policies.data?.items ?? []) {
+      ix[`${p.toolset_id}::${p.tool_name}`] = p;
+    }
+    return ix;
+  }, [policies.data]);
+
+  // Flatten the catalogue into one row per tool.
+  const rows = React.useMemo(() => {
+    const out = [];
+    for (const ts of catalogue.data?.items ?? []) {
+      for (const t of ts.tools || []) {
+        out.push({
+          tool_id: t.id,
+          scoped_id: t.scoped_id || `${ts.id}__${t.id}`,
+          toolset_id: ts.id,
+          builtin: !!ts.builtin,
+          available: !!ts.available,
+          description: t.description || "",
+          policy: policyIndex[`${ts.id}::${t.id}`] || null,
+        });
+      }
+    }
+    return out;
+  }, [catalogue.data, policyIndex]);
+
+  const filtered = React.useMemo(() => {
+    let arr = rows;
+    if (textFilter) {
+      const q = textFilter.toLowerCase();
+      arr = arr.filter((r) =>
+        r.tool_id.toLowerCase().includes(q)
+        || r.toolset_id.toLowerCase().includes(q)
+        || r.description.toLowerCase().includes(q));
+    }
+    if (policyFilter === "with") arr = arr.filter((r) => r.policy);
+    if (policyFilter === "without") arr = arr.filter((r) => !r.policy);
+    return arr;
+  }, [rows, textFilter, policyFilter]);
+
   return (
     <div className="col" style={{ gap: 14 }}>
-      <Banner
-        kind="info"
-        title="Built-in toolsets are read-only"
-        detail="These are wired by the runtime — you can't create, edit, or delete them. `search` becomes available once Internal Collections is bootstrapped."
-      />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        {items.length === 0 && builtins.loading ? (
-          <div className="muted text-sm">Loading…</div>
-        ) : items.map((it) => (
-          <TS_BuiltinCard
-            key={it.id}
-            id={it.id}
-            tagline={it.tagline}
-            icon={it.icon}
-            available={it.available}
+      <div className="filter-bar">
+        <div className="input-icon">
+          <Icon name="search" size={13} className="icon" />
+          <input
+            className="input"
+            placeholder="Filter tools…"
+            value={textFilter}
+            onChange={(e) => setTextFilter(e.target.value)}
           />
-        ))}
+        </div>
+        <div className="sep-v" />
+        <select
+          className="select"
+          value={policyFilter}
+          onChange={(e) => setPolicyFilter(e.target.value)}
+        >
+          <option value="">all tools</option>
+          <option value="with">with approval policy</option>
+          <option value="without">without approval policy</option>
+        </select>
+        <div style={{ marginLeft: "auto" }}>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={() => {
+            catalogue.refetch();
+            policies.refetch();
+          }}>Refresh</Btn>
+        </div>
       </div>
+
+      <div className="tbl-wrap">
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>Tool</th>
+              <th>Toolset</th>
+              <th>Kind</th>
+              <th>Approval</th>
+              <th>Description</th>
+              <th style={{ width: 100, textAlign: "right" }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {catalogue.loading && rows.length === 0 ? (
+              <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
+            ) : catalogue.error && rows.length === 0 ? (
+              <tr><td colSpan={6} style={{ padding: 20, textAlign: "center" }}>
+                <span style={{ color: "var(--red)" }}>{catalogue.error.title || catalogue.error.message}</span>
+                {" · "}<a onClick={catalogue.refetch} style={{ cursor: "pointer" }}>Retry</a>
+              </td></tr>
+            ) : filtered.length === 0 ? (
+              <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>No tools match.</td></tr>
+            ) : filtered.map((r) => {
+              const type = r.policy?.approval?.type;
+              const typeColor = type === "required" ? "var(--amber)"
+                : type === "policy" ? "var(--blue)"
+                : type === "llm" ? "var(--violet)"
+                : "var(--text-4)";
+              return (
+                <tr key={r.scoped_id}>
+                  <td className="mono">{r.tool_id}</td>
+                  <td className="mono muted text-sm">{r.toolset_id}</td>
+                  <td>
+                    <span className="pill" style={{
+                      color: r.builtin ? "var(--blue)" : "var(--accent)",
+                      borderColor: "var(--border)", background: "var(--bg-2)",
+                    }}>
+                      <span className="dot" style={{ background: r.builtin ? "var(--blue)" : "var(--accent)" }}></span>
+                      {r.builtin ? "built-in" : "user"}
+                    </span>
+                  </td>
+                  <td>
+                    {r.policy ? (
+                      <span className="pill" style={{ color: typeColor, borderColor: "var(--border)", background: "var(--bg-2)" }}>
+                        <span className="dot" style={{ background: typeColor }}></span>
+                        {type}{!r.policy.enabled && " · off"}
+                      </span>
+                    ) : (
+                      <span className="muted text-sm">—</span>
+                    )}
+                  </td>
+                  <td className="muted text-sm" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {r.description}
+                  </td>
+                  <td style={{ textAlign: "right", paddingRight: 12 }}>
+                    <Btn size="sm" kind={r.policy ? "ghost" : "secondary"} icon={r.policy ? "edit" : "plus"} onClick={() => setEditing(r)}>
+                      {r.policy ? "Edit" : "Add"}
+                    </Btn>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {editing && (
+        <AP_NewPolicyModal
+          existing={editing.policy || _seedPolicy(editing)}
+          pushToast={pushToast}
+          onClose={() => {
+            setEditing(null);
+            policies.refetch();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function TS_BuiltinCard({ id, tagline, icon, available }) {
-  const { useResource, apiFetch } = window.primerApi;
-  const [open, setOpen] = React.useState(false);
-  const tools = useResource(
-    "toolset-tools:" + id,
-    (signal) => open
-      ? apiFetch("GET", "/toolsets/" + encodeURIComponent(id) + "/tools", null, { signal })
-      : Promise.resolve(null),
-    { pollMs: null, deps: [id, open] }
-  );
-  return (
-    <div className="panel" style={{ opacity: available ? 1 : 0.55 }}>
-      <div className="panel-h">
-        <Icon name={icon} size={13} style={{ color: available ? "var(--accent)" : "var(--text-3)" }} />
-        <span className="mono">{id}</span>
-        <div className="right">
-          {available ? (
-            <span className="pill pill-ended"><span className="dot"></span>available</span>
-          ) : (
-            <span className="pill pill-cancelled"><span className="dot"></span>unavailable</span>
-          )}
-        </div>
-      </div>
-      <div className="panel-body">
-        <div className="muted text-sm mb-2">{tagline}</div>
-        {available && (
-          <Btn size="sm" kind="ghost" onClick={() => setOpen(!open)}>
-            {open ? "Hide tools" : "Show tools"} <Icon name={open ? "chevron-up" : "chevron-down"} size={10} />
-          </Btn>
-        )}
-        {open && available && (
-          <div className="mt-3">
-            {tools.loading && !tools.data ? (
-              <div className="muted text-sm">Loading…</div>
-            ) : tools.error ? (
-              <div style={{ color: "var(--red)", fontSize: 12 }}>{tools.error.title || tools.error.message}</div>
-            ) : (tools.data?.tools ?? []).length === 0 ? (
-              <div className="muted text-sm">No tools exposed.</div>
-            ) : (
-              tools.data.tools.map((t) => (
-                <div
-                  key={t.id || t.name}
-                  style={{
-                    padding: "4px 0",
-                    display: "flex",
-                    gap: 8,
-                    alignItems: "center",
-                    fontSize: 12,
-                    borderBottom: "1px solid var(--border)",
-                  }}
-                >
-                  <Icon name="tools" size={11} className="muted" />
-                  <span className="mono">{t.id || t.name}</span>
-                  {(t.description || t.desc) && (
-                    <span
-                      className="muted text-sm"
-                      style={{
-                        marginLeft: "auto",
-                        textAlign: "right",
-                        maxWidth: 240,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >{t.description || t.desc}</span>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+// Construct a partial policy row from a tool entry — used to pre-seed
+// AP_NewPolicyModal in "Add" mode so the toolset_id and tool_name are
+// already filled. Modal is still in create-mode (no `existing` row yet);
+// we just inject defaults via the `existing` prop.
+function _seedPolicy(toolRow) {
+  return {
+    // No `id` — modal will treat this as create (id field stays editable).
+    id: "",
+    toolset_id: toolRow.toolset_id,
+    tool_name: toolRow.tool_id,
+    enabled: true,
+    approval: { type: "required" },
+  };
 }
 
 window.ToolsetsPage = ToolsetsPage;
+window.ToolsPage = ToolsPage;
 window.ToolsetDetail = ToolsetDetail;

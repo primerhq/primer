@@ -36,8 +36,8 @@ const NAV = [
   {
     group: "Toolsets",
     items: [
-      { id: "toolsets-user", label: "User toolsets", icon: "tools" },
-      { id: "toolsets-builtin", label: "Built-in", icon: "tools" },
+      { id: "toolsets", label: "Toolsets", icon: "tools" },
+      { id: "tools", label: "Tools", icon: "tools" },
     ],
   },
   {

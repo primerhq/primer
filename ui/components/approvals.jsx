@@ -497,9 +497,11 @@ function AP_PoliciesTable({ policies, loading, error, pushToast }) {
 // =============================================================
 
 function AP_NewPolicyModal({ onClose, pushToast, existing }) {
-  // Same modal: create (existing == null) and edit. In edit mode the
-  // id field locks and submit PUT-replaces.
-  const isEdit = !!existing;
+  // Same modal: create (no existing, or existing with empty id) and
+  // edit (existing.id set). The Tools page passes a seed row with
+  // {toolset_id, tool_name, ...} but no id so the modal stays in
+  // create mode while pre-filling the (toolset, tool) pair.
+  const isEdit = !!(existing && existing.id);
   const { useResource, useMutation, apiFetch } = window.primerApi;
   const [type, setType] = React.useState(existing?.approval?.type || "required");
   const [id, setId] = React.useState(existing?.id || "");
