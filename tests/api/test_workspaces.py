@@ -364,7 +364,7 @@ def _template() -> WorkspaceTemplate:
 
 
 # ===========================================================================
-# WorkspaceProvider CRUD (no PUT)
+# WorkspaceProvider CRUD (reserved ids are read-only via PUT/DELETE)
 # ===========================================================================
 
 
@@ -380,11 +380,60 @@ class TestWorkspaceProviderRouter:
         assert delete.status_code == 204
 
     @pytest.mark.asyncio
-    async def test_no_put_route(self, client) -> None:
+    async def test_workspace_provider_update_succeeds_for_non_reserved(
+        self, client
+    ) -> None:
         body = _provider().model_dump(mode="json")
-        await client.post("/v1/workspace_providers", json=body)
-        put = await client.put("/v1/workspace_providers/local-1", json=body)
-        assert put.status_code == 405
+        post = await client.post("/v1/workspace_providers", json=body)
+        assert post.status_code == 201, post.text
+
+        updated = dict(body)
+        updated["config"] = {
+            "kind": "local",
+            "root_path": "/tmp/primer-ws-updated",
+        }
+        put = await client.put(
+            "/v1/workspace_providers/local-1", json=updated
+        )
+        assert put.status_code == 200, put.text
+
+        get = await client.get("/v1/workspace_providers/local-1")
+        assert get.status_code == 200
+        got = get.json()
+        assert got["config"]["root_path"] == "/tmp/primer-ws-updated"
+
+    @pytest.mark.asyncio
+    async def test_workspace_provider_update_rejects_reserved_id(
+        self, client, sp
+    ) -> None:
+        # Seed the reserved 'local' provider directly through storage
+        # (POST is also blocked for reserved ids) so the PUT can hit the
+        # pre-update guard.
+        reserved = WorkspaceProvider(
+            id="local",
+            provider=WorkspaceProviderType.LOCAL,
+            config=LocalWorkspaceConfig(root_path="/tmp/primer-reserved"),
+        )
+        await sp.get_storage(WorkspaceProvider).create(reserved)
+
+        body = reserved.model_dump(mode="json")
+        body["config"] = {
+            "kind": "local",
+            "root_path": "/tmp/primer-reserved-attacker",
+        }
+        put = await client.put(
+            "/v1/workspace_providers/local",
+            json=body,
+        )
+        assert put.status_code == 403, put.text
+        detail = put.json()["detail"]
+        assert detail["error"] == "reserved_id_protected"
+        assert detail["kind"] == "workspace_provider"
+
+        # Verify the row is unchanged.
+        get = await client.get("/v1/workspace_providers/local")
+        assert get.status_code == 200
+        assert get.json()["config"]["root_path"] == "/tmp/primer-reserved"
 
     @pytest.mark.asyncio
     async def test_list_paginates(self, client) -> None:

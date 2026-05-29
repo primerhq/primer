@@ -2,6 +2,15 @@
 
 const WP_LIST_KEY = "ws:providers";
 
+// Reserved bootstrap-managed provider ids — mirrors
+// RESERVED_WORKSPACE_PROVIDER_IDS in primer/api/registries/provider_registry.py.
+// These are auto-recreated on boot from config and are read-only via the API.
+const RESERVED_WORKSPACE_PROVIDER_IDS = ["local"];
+
+function _wpIsReserved(id) {
+  return RESERVED_WORKSPACE_PROVIDER_IDS.indexOf(id) !== -1;
+}
+
 function _wpToastErr(pushToast, fallback) {
   return (err) => {
     if (typeof pushToast !== "function") return;
@@ -112,16 +121,14 @@ function WorkspaceProvidersPage({ pushToast }) {
   );
 }
 
-function WorkspaceProviderCreateModal({ onClose, pushToast }) {
-  const { useMutation, useRouter, apiFetch } = window.primerApi;
-  const { navigate } = useRouter();
-
-  const [form, setForm] = React.useState({
+// Invert the form-state builder used at submit time: given a stored
+// WorkspaceProvider row, return the flat form state the modal expects.
+// Keeps the round-trip lossless for all three backend kinds.
+function _wpFromProvider(row) {
+  const defaults = {
     id: "",
     backend: "local",
-    // local
     path: "",
-    // container
     c_runtime: "docker",
     c_conn_kind: "socket",
     c_socket_path: "/var/run/docker.sock",
@@ -133,7 +140,6 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
     c_bind_host: "127.0.0.1",
     c_network_name: "",
     c_image_pull_secrets: [],
-    // kubernetes
     k_variant: "system",
     k_conn_kind: "in_cluster",
     k_kubeconfig_path: "",
@@ -146,18 +152,83 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
     k_reach_kind: "in_cluster",
     k_ingress_url_template: "",
     k_image_pull_secrets: [],
-  });
+  };
+  if (!row) return defaults;
+  const out = { ...defaults, id: row.id || "", backend: row.provider || "local" };
+  const cfg = row.config || {};
+  if (row.provider === "local") {
+    out.path = cfg.root_path || cfg.path || "";
+  } else if (row.provider === "container") {
+    out.c_runtime = cfg.runtime || "docker";
+    const conn = cfg.connection || {};
+    out.c_conn_kind = conn.kind || "socket";
+    if (conn.kind === "socket") {
+      out.c_socket_path = conn.socket_path || "";
+    } else if (conn.kind === "remote") {
+      out.c_remote_url = conn.url || "";
+      out.c_remote_tls_ca = conn.tls_ca || "";
+      out.c_remote_tls_cert = conn.tls_cert || "";
+      out.c_remote_tls_key = conn.tls_key || "";
+    }
+    const reach = cfg.reachability || {};
+    out.c_reach_kind = reach.kind || "host_port";
+    if (reach.kind === "host_port") {
+      out.c_bind_host = reach.bind_host || "127.0.0.1";
+    } else if (reach.kind === "bridge_network") {
+      out.c_network_name = reach.network_name || "";
+    }
+    out.c_image_pull_secrets = Array.isArray(cfg.image_pull_secrets) ? cfg.image_pull_secrets : [];
+  } else if (row.provider === "kubernetes") {
+    out.k_variant = cfg.variant || "system";
+    const conn = cfg.connection || {};
+    out.k_conn_kind = conn.kind || "in_cluster";
+    if (conn.kind === "kubeconfig") {
+      out.k_kubeconfig_path = conn.path || "";
+      out.k_kubeconfig_context = conn.context || "";
+    } else if (conn.kind === "service_account_token") {
+      out.k_sat_apiserver_url = conn.apiserver_url || "";
+      out.k_sat_ca_data = conn.ca_data || "";
+      out.k_sat_token = conn.token || "";
+      out.k_sat_namespace = conn.namespace || "default";
+    }
+    out.k_namespace = cfg.namespace || "primer";
+    const reach = cfg.reachability || {};
+    out.k_reach_kind = reach.kind || "in_cluster";
+    if (reach.kind === "ingress") {
+      out.k_ingress_url_template = reach.url_template || "";
+    }
+    out.k_image_pull_secrets = Array.isArray(cfg.image_pull_secrets) ? cfg.image_pull_secrets : [];
+  }
+  return out;
+}
+
+function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null }) {
+  const { useMutation, useRouter, apiFetch } = window.primerApi;
+  const { navigate } = useRouter();
+  const isEdit = !!existing;
+
+  const [form, setForm] = React.useState(() => _wpFromProvider(existing));
   const [fieldErrors, setFieldErrors] = React.useState({});
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/workspace_providers", body),
+    (body) => isEdit
+      ? apiFetch("PUT", `/workspace_providers/${encodeURIComponent(existing.id)}`, body)
+      : apiFetch("POST", "/workspace_providers", body),
     {
-      invalidates: [WP_LIST_KEY],
+      invalidates: isEdit
+        ? [WP_LIST_KEY, `ws:provider:${existing.id}`]
+        : [WP_LIST_KEY],
       onSuccess: (row) => {
         onClose();
-        if (pushToast) pushToast({ kind: "success", title: "Provider created", detail: row.id });
-        navigate(`/workspaces/providers/${encodeURIComponent(row.id)}`);
+        if (pushToast) pushToast({
+          kind: "success",
+          title: isEdit ? "Provider updated" : "Provider created",
+          detail: row.id,
+        });
+        if (!isEdit) {
+          navigate(`/workspaces/providers/${encodeURIComponent(row.id)}`);
+        }
       },
       onError: (err) => {
         if (err?.status === 422 && Array.isArray(err.fieldErrors)) {
@@ -169,7 +240,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
           }
           setFieldErrors(map);
         } else {
-          _wpToastErr(pushToast, "Create failed")(err);
+          _wpToastErr(pushToast, isEdit ? "Save failed" : "Create failed")(err);
         }
       },
     },
@@ -267,22 +338,22 @@ function WorkspaceProviderCreateModal({ onClose, pushToast }) {
 
   return (
     <Modal
-      title="New workspace provider"
+      title={isEdit ? `Edit workspace provider · ${existing.id}` : "New workspace provider"}
       onClose={onClose}
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" disabled={create.loading} onClick={submit}>
-            {create.loading ? "Creating…" : "Create"}
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} disabled={create.loading} onClick={submit}>
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
           </Btn>
         </>
       }
     >
-      <WS_FieldRow label="id" hint="must be unique" err={fieldErrors.id}>
-        <input className="input mono" value={form.id} onChange={(e) => update("id", e.target.value)} placeholder="local-dev" style={{ width: "100%" }} />
+      <WS_FieldRow label="id" hint={isEdit ? "locked — id cannot change after create" : "must be unique"} err={fieldErrors.id}>
+        <input className="input mono" value={form.id} onChange={(e) => update("id", e.target.value)} placeholder="local-dev" disabled={isEdit} style={{ width: "100%" }} />
       </WS_FieldRow>
-      <WS_FieldRow label="backend">
-        <select className="select mono" value={form.backend} onChange={(e) => update("backend", e.target.value)} style={{ width: "100%" }}>
+      <WS_FieldRow label="backend" hint={isEdit ? "locked — backend kind cannot change after create" : undefined}>
+        <select className="select mono" value={form.backend} onChange={(e) => update("backend", e.target.value)} disabled={isEdit} style={{ width: "100%" }}>
           <option value="local">local (host filesystem)</option>
           <option value="container">container (docker / podman / containerd)</option>
           <option value="kubernetes">kubernetes</option>
@@ -423,6 +494,7 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
   const [tab, setTab] = React.useState("overview");
   const [showDelete, setShowDelete] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
+  const [editOpen, setEditOpen] = React.useState(false);
 
   const detailKey = `ws:provider:${providerId}`;
   const detail = useResource(
@@ -481,6 +553,15 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
               {_wpSummary(p)}
             </div>
           </div>
+          <Btn
+            size="sm"
+            icon="edit"
+            onClick={() => setEditOpen(true)}
+            disabled={_wpIsReserved(p.id)}
+            title={_wpIsReserved(p.id) ? "Reserved providers are managed by the platform — recreate via config rather than editing" : undefined}
+          >
+            Edit
+          </Btn>
           <Btn size="sm" kind="danger" icon="trash" onClick={() => { setDeleteError(null); setShowDelete(true); }}>Delete</Btn>
         </div>
         <div style={{ display: "flex", alignItems: "center", borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
@@ -547,6 +628,14 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
           )}
         </div>
       </div>
+
+      {editOpen && (
+        <WorkspaceProviderCreateModal
+          existing={p}
+          onClose={() => setEditOpen(false)}
+          pushToast={pushToast}
+        />
+      )}
 
       {showDelete && (
         <Modal
