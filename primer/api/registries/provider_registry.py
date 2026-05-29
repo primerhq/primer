@@ -56,6 +56,11 @@ def _build_default_llm_factory(
                 return OpenResponsesLLM(
                     provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
                 )
+            case LLMProviderType.OPENCHAT:
+                from primer.llm.openchat import OpenChatLLM
+                return OpenChatLLM(
+                    provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
+                )
             case LLMProviderType.ANTHROPIC:
                 from primer.llm.anthropic import AnthropicLLM
                 return AnthropicLLM(

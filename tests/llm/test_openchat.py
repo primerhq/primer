@@ -1217,3 +1217,11 @@ class TestConcurrency:
 
         await asyncio.gather(consume(), consume(), consume())
         assert peak == 1
+
+
+class TestPackageReexport:
+    def test_openchat_llm_reexported_from_package(self) -> None:
+        import primer.llm as llm_pkg
+
+        assert "OpenChatLLM" in llm_pkg.__all__
+        assert llm_pkg.OpenChatLLM is OpenChatLLM
