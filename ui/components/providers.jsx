@@ -299,22 +299,59 @@ function ProvidersList({ kindProp, pushToast }) {
 // Create modal — provider-pattern with rich per-provider controls.
 // ============================================================================
 
-function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToast }) {
+function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToast, existing }) {
   const _push = pushToast || (() => {});
   const fieldKind = _normKind(kindProp);
   const providers = PROVIDER_KINDS_FIELDS[fieldKind] || {};
   const providerOptions = Object.keys(providers);
+  // Same modal handles create (existing == null) and edit. In edit
+  // mode the id and provider-type are locked, secrets get a
+  // placeholder hint, and submit PUT-replaces.
+  const isEdit = !!existing;
 
-  const [id, setId] = React.useState("");
-  const [provider, setProvider] = React.useState(providerOptions[0] || "");
-  const [configValues, setConfigValues] = React.useState({});
-  const [models, setModels] = React.useState([]);
-  const [maxConcurrency, setMaxConcurrency] = React.useState(1);
+  const [id, setId] = React.useState(existing?.id || "");
+  const [provider, setProvider] = React.useState(
+    existing?.provider || providerOptions[0] || ""
+  );
+  // Secret fields from the GET row arrive redacted as "**********".
+  // Persisting that literal would clobber the real secret, so prefill
+  // edit-mode secrets as blank and force the operator to re-enter
+  // them (or leave blank — at submit we still pass blank, which the
+  // form-validity check forbids for required secrets, surfacing the
+  // requirement up-front).
+  const [configValues, setConfigValues] = React.useState(() => {
+    if (!isEdit) return {};
+    const seed = { ...(existing?.config || {}) };
+    const def0 = providers[existing?.provider];
+    if (def0) {
+      for (const f of def0.config) {
+        if (f.type === "password" && /^\*{6,}$/.test(String(seed[f.key] || ""))) {
+          seed[f.key] = "";
+        }
+      }
+    }
+    return seed;
+  });
+  const [models, setModels] = React.useState(
+    () => isEdit ? (existing?.models || []).map((m) => ({ ...m })) : []
+  );
+  const [maxConcurrency, setMaxConcurrency] = React.useState(
+    existing?.limits?.max_concurrency ?? 1
+  );
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   // Whenever the provider type changes, re-seed config defaults + wipe the
-  // models list (it would have the wrong shape).
+  // models list (it would have the wrong shape). Skipped in edit mode
+  // on the FIRST render — we already seeded from the existing row, and
+  // resetting would discard the live config. We only re-seed if the
+  // user manually changes provider (which is also locked in edit).
+  const _isFirstRender = React.useRef(true);
   React.useEffect(() => {
+    if (isEdit && _isFirstRender.current) {
+      _isFirstRender.current = false;
+      return;
+    }
+    _isFirstRender.current = false;
     const def = providers[provider];
     if (!def) return;
     const seeded = {};
@@ -329,9 +366,13 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
   const def = providers[provider];
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/" + plural, body),
+    (body) => isEdit
+      ? apiFetch("PUT", "/" + plural + "/" + encodeURIComponent(existing.id), body)
+      : apiFetch("POST", "/" + plural, body),
     {
-      invalidates: [`providers:${plural}`],
+      invalidates: isEdit
+        ? [`providers:${plural}`, `provider-detail:${plural}:${existing?.id}`]
+        : [`providers:${plural}`],
       onSuccess: (row) => onCreated(row),
       onError: (err) => {
         if (err.status === 422 && Array.isArray(err.fieldErrors)) {
@@ -341,7 +382,7 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
         } else {
           _push({
             kind: "error",
-            title: err.title || "Create failed",
+            title: err.title || (isEdit ? "Save failed" : "Create failed"),
             detail: err.detail || err.message,
             requestId: err.requestId,
           });
@@ -401,12 +442,18 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
 
   // Strip empty optional fields from the config payload before submit
   // (e.g. an empty api_key on ollama should be omitted, not sent as "").
+  // In edit mode, secret fields prefilled with the "**********" redaction
+  // are also stripped — the backend must keep the existing value, not
+  // overwrite with the literal asterisks.
+  const _isRedaction = (v) => typeof v === "string" && /^\*{6,}$/.test(v);
   const cleanConfig = () => {
     if (!def) return {};
     const out = {};
     for (const f of def.config) {
       const v = configValues[f.key];
-      if (v !== undefined && v !== "" && v !== null) out[f.key] = v;
+      if (v === undefined || v === "" || v === null) continue;
+      if (isEdit && _isRedaction(v)) continue;  // operator left secret unchanged
+      out[f.key] = v;
     }
     return out;
   };
@@ -425,7 +472,9 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
   const submit = async () => {
     setFieldErrors({});
     const body = {
-      ...(id ? { id } : {}),
+      // PUT-replace requires id; create allows empty so the backend
+      // can autogenerate.
+      ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       provider,
       config: cleanConfig(),
       models: cleanModels(),
@@ -441,26 +490,38 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
 
   return (
     <Modal
-      title={`New ${label.toLowerCase()} provider`}
+      title={isEdit
+        ? `Edit ${label.toLowerCase()} provider · ${existing.id}`
+        : `New ${label.toLowerCase()} provider`}
       onClose={onClose}
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit}>
-            {create.loading ? "Creating…" : "Create"}
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!canSubmit}>
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
           </Btn>
         </>
       }
     >
       <div className="field">
-        <label className="field-label">ID <span className="hint">optional — backend assigns if blank</span></label>
-        <input className="input" value={id} onChange={(e) => setId(e.target.value)} placeholder="auto-generated" style={{ width: "100%" }} />
+        <label className="field-label">ID {isEdit
+          ? <span className="hint">locked — id cannot change after create</span>
+          : <span className="hint">optional — backend assigns if blank</span>}
+        </label>
+        <input
+          className="input"
+          value={id}
+          onChange={(e) => setId(e.target.value)}
+          placeholder="auto-generated"
+          disabled={isEdit}
+          style={{ width: "100%" }}
+        />
         {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
       </div>
 
       <div className="field">
-        <label className="field-label">Provider</label>
-        <select className="select" value={provider} onChange={(e) => setProvider(e.target.value)} style={{ width: "100%" }}>
+        <label className="field-label">Provider {isEdit && <span className="hint">locked — recreate to change provider type</span>}</label>
+        <select className="select" value={provider} onChange={(e) => setProvider(e.target.value)} disabled={isEdit} style={{ width: "100%" }}>
           {providerOptions.map((p) => <option key={p} value={p}>{providers[p].label}</option>)}
         </select>
         {/* T0379: documented anomaly surface — see docs/testing/05-ui-spec.md §5.
@@ -662,7 +723,7 @@ function ProviderDetail({ kindProp, id, pushToast }) {
           actions={<Btn size="sm" icon="chevron-left" onClick={goToList}>Back to list</Btn>}
         />
       ) : (
-        <ProviderDetailBody p={detail.data} models={models} k={k} pushToast={pushToast} />
+        <ProviderDetailBody p={detail.data} models={models} k={{ ...k, kindProp }} pushToast={pushToast} />
       )}
 
       {confirmDelete && (
@@ -723,7 +784,6 @@ function ProviderDetailHeader({ label, segment, id, onBack, onInvalidate, onDele
 }
 
 function ProviderDetailBody({ p, models, k, pushToast }) {
-  const { useMutation, apiFetch } = window.primerApi;
   const color = VENDOR_COLORS[p.provider] || "var(--text-3)";
   const modelList = models.data?.models ?? (p.models || []);
 
@@ -731,67 +791,13 @@ function ProviderDetailBody({ p, models, k, pushToast }) {
     () => JSON.stringify(_redactSecrets(p), null, 2),
     [p],
   );
-  const rawPretty = React.useMemo(
-    () => JSON.stringify(p, null, 2),
-    [p],
-  );
 
+  // The provider row in `p` carries secrets redacted as "**********".
+  // When the operator opens the form modal, we prefill from this row;
+  // they must replace any "**********" entry with the real secret
+  // before submit. The modal already renders the SecretStr fields as
+  // password inputs so the placeholder shows but isn't permanent.
   const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState("");
-  const [jsonError, setJsonError] = React.useState(null);
-  const startEdit = () => {
-    // GET responses redact SecretStr fields to "**********". We hand
-    // that body to the editor as-is; the user MUST replace any
-    // "**********" with the real secret on save, otherwise the
-    // backend persists the literal stars.
-    setDraft(rawPretty);
-    setJsonError(null);
-    setEditing(true);
-  };
-  const cancelEdit = () => { setEditing(false); setJsonError(null); };
-
-  const _hasUnsetSecret = (s) => /"\*{6,}"/.test(s);
-
-  const saveMut = useMutation(
-    (body) => apiFetch("PUT", "/" + k.plural + "/" + encodeURIComponent(p.id), body),
-    {
-      invalidates: [k.plural + "-detail:" + p.id, k.plural + ":list"],
-      onSuccess: () => {
-        if (typeof pushToast === "function") {
-          pushToast({ kind: "info", title: "Provider updated", detail: p.id });
-        }
-        setEditing(false);
-      },
-      onError: (err) => {
-        if (typeof pushToast === "function") {
-          pushToast({
-            kind: "error",
-            title: err.title || "Save failed",
-            detail: err.detail || err.message,
-            requestId: err.requestId,
-          });
-        }
-      },
-    },
-  );
-
-  const onSave = async () => {
-    setJsonError(null);
-    if (_hasUnsetSecret(draft)) {
-      setJsonError(
-        'Refusing to save: at least one field still contains the redaction placeholder "**********". ' +
-        "Replace every such value with the real secret (or revert via Cancel).",
-      );
-      return;
-    }
-    let parsed;
-    try { parsed = JSON.parse(draft); }
-    catch (e) { setJsonError(e.message || "Invalid JSON"); return; }
-    if (parsed && typeof parsed === "object" && parsed.id !== p.id) {
-      setJsonError(`id must remain "${p.id}"`); return;
-    }
-    try { await saveMut.mutate(parsed); } catch (_e) { /* toast via onError */ }
-  };
 
   return (
     <>
@@ -801,49 +807,35 @@ function ProviderDetailBody({ p, models, k, pushToast }) {
           <span className="mono">{p.id}</span>
           <span className="sub mono">· {p.provider}</span>
           <div className="right" style={{ display: "flex", gap: 6 }}>
-            {!editing && (
-              <Btn size="sm" icon="edit" kind="secondary" onClick={startEdit}>Edit</Btn>
-            )}
-            {editing && (
-              <>
-                <Btn size="sm" kind="ghost" onClick={cancelEdit} disabled={saveMut.loading}>Cancel</Btn>
-                <Btn size="sm" icon="check" kind="primary" onClick={onSave} disabled={saveMut.loading}>
-                  {saveMut.loading ? "Saving…" : "Save"}
-                </Btn>
-              </>
-            )}
+            <Btn size="sm" icon="edit" kind="secondary" onClick={() => setEditing(true)}>Edit</Btn>
           </div>
         </div>
         <div className="panel-body">
           <div className="muted text-sm mb-3">
-            {editing
-              ? <>Edit the JSON below. <span className="mono">id</span> may not change. <strong>Secret fields show <span className="mono">"**********"</span></strong> — you MUST replace each with the real value before Save (or Cancel to leave the row untouched).</>
-              : <>PUT-replace edit. Secret fields are redacted as <span className="mono">"**********"</span>; click Edit to replace them.</>
-            }
+            PUT-replace edit. Secret fields are redacted as <span className="mono">"**********"</span> in the read-only view below; click Edit to update them through the form.
           </div>
-          {jsonError && <Banner kind="error" title="Couldn't parse JSON" detail={jsonError} />}
-          {editing ? (
-            <textarea
-              className="code-block mono"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              spellCheck={false}
-              style={{
-                width: "100%", minHeight: 360,
-                fontFamily: "IBM Plex Mono, monospace",
-                fontSize: 12, lineHeight: 1.5, padding: 12,
-                background: "var(--bg-0)", color: "var(--text)",
-                border: "1px solid var(--border)", borderRadius: 6,
-                resize: "vertical",
-              }}
-            />
-          ) : (
-            <pre className="code-block mono" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>
-              {redactedPretty}
-            </pre>
-          )}
+          <pre className="code-block mono" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>
+            {redactedPretty}
+          </pre>
         </div>
       </div>
+
+      {editing && (
+        <NewProviderModal
+          kindProp={k.kindProp}
+          plural={k.plural}
+          label={k.label}
+          existing={p}
+          pushToast={pushToast}
+          onClose={() => setEditing(false)}
+          onCreated={() => {
+            setEditing(false);
+            if (typeof pushToast === "function") {
+              pushToast({ kind: "info", title: "Provider updated", detail: p.id });
+            }
+          }}
+        />
+      )}
 
       <div className="panel">
         <div className="panel-h">
