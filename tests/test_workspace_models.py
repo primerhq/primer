@@ -532,3 +532,35 @@ class TestWorkspaceTemplateNoPackages:
         fields = WorkspaceTemplate.model_fields
         for f in ("files", "env", "init_commands"):
             assert f in fields
+
+
+# ---- Legacy migration on read -------------------------------------------
+
+
+class TestWorkspaceTemplateLegacyMigration:
+    def test_legacy_packages_dropped_with_warning(self, caplog):
+        import logging
+        from primer.model.workspace import WorkspaceTemplate
+
+        # Adapted from the task spec to match the actual model shape:
+        # WorkspaceTemplate doesn't have top-level `kind`/`image` — those
+        # live inside the `backend` discriminated-union field. The legacy
+        # bit being exercised here is `packages`, which the redesign drops.
+        raw = {
+            "id": "legacy-1",
+            "description": "old template",
+            "provider_id": "prov-1",
+            "backend": {"kind": "container", "image": "x:1"},
+            "files": [],
+            "env": {},
+            "init_commands": [],
+            "packages": [{"kind": "pip", "name": "requests"}],  # legacy
+        }
+        with caplog.at_level(logging.WARNING, logger="primer.model.workspace"):
+            tpl = WorkspaceTemplate.model_validate(raw)
+        # The model dropped packages on read; it's not in the resulting object.
+        assert "packages" not in tpl.model_dump()
+        # And the loss was logged as WARNING.
+        assert "packages" in caplog.text.lower()
+        # Template otherwise validates fine.
+        assert tpl.id == "legacy-1"

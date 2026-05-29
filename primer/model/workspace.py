@@ -21,6 +21,7 @@ full design.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Union
@@ -36,6 +37,8 @@ from pydantic import (
 )
 
 from primer.model.common import Describeable, Identifiable
+
+_log = logging.getLogger(__name__)
 
 
 # ===========================================================================
@@ -521,6 +524,24 @@ class WorkspaceTemplate(Describeable):
         to the local recipe so old configs keep parsing."""
         if isinstance(data, dict) and "backend" not in data:
             data = {**data, "backend": {"kind": "local"}}
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_packages(cls, data: Any) -> Any:
+        """Silently drop the legacy ``packages`` field with a WARNING log.
+
+        Pre-redesign rows in storage may carry ``packages: [...]``; this
+        validator strips it before Pydantic field validation so the row
+        loads cleanly and operators see one warning per legacy row.
+        """
+        if isinstance(data, dict) and "packages" in data:
+            removed = data.pop("packages")
+            _log.warning(
+                "Dropping legacy 'packages' field from WorkspaceTemplate id=%s: %r — "
+                "redesign §6.1 removes runtime package install in favour of image-as-BOM.",
+                data.get("id"), removed,
+            )
         return data
 
 
