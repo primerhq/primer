@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from primer.model.agent import Agent
 from primer.model.chat import TextPart
+from primer.model.embedding import ExtendedEmbeddingConfig
 from primer.model.collection import Collection, CollectionEmbedder
 from primer.model.except_ import ConfigError, PrimerError, NotFoundError
 from primer.model.graph import Graph
@@ -327,11 +328,25 @@ class InternalCollectionsSubsystem:
             )
         )
 
-    async def _embed_text(self, text: str) -> list[float]:
+    async def _embed_text(
+        self, text: str, *, task_type: str = "retrieval_document",
+    ) -> list[float]:
+        """Embed ``text`` for either ingest (``retrieval_document``,
+        default) or search (``retrieval_query``).
+
+        Asymmetric-retrieval models (BGE, E5, nomic-embed-text) embed
+        queries and documents in slightly different sub-spaces — pass
+        ``retrieval_query`` at search time so the HuggingFace adapter
+        applies the model-family-specific instruction prefix. Without
+        this hint, a "web search" query against the indexed
+        ``web-search: Perform a web search…`` tool description scores
+        ~0.25 cosine on BGE; with it, it scores ~0.7+.
+        """
         embedder = await self._pr.get_embedder(self._config.embedding_provider_id)
         response = await embedder.embed(
             model=self._config.embedding_model,
             inputs=[TextPart(text=text)],
+            config=ExtendedEmbeddingConfig(task_type=task_type),
         )
         return list(response.embeddings[0].vector)
 
@@ -730,7 +745,7 @@ class InternalCollectionsSubsystem:
         store = await self._semantic_search_registry.get_store(
             self._config.search_provider_id
         )
-        vector = await self._embed_text(query)
+        vector = await self._embed_text(query, task_type="retrieval_query")
         coll_id = INTERNAL_COLLECTION_IDS[entity_type]
         return await store.search(coll_id, vector, top_k)
 

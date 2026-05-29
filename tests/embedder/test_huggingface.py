@@ -171,6 +171,79 @@ class TestEncodeSync:
         )
         assert out is model.encode.return_value
 
+    def test_prompt_prepended_to_every_text(self) -> None:
+        """Asymmetric models need the prompt prepended on the caller side
+        (sentence-transformers' built-in prompt support requires model
+        registration which we don't rely on)."""
+        model = MagicMock()
+        model.encode.return_value = np.array([[0.1, 0.2]])
+        _encode_sync(
+            model, ["alpha", "beta"], "sentence_embedding",
+            "Represent this sentence for searching relevant passages: ",
+        )
+        model.encode.assert_called_once_with(
+            [
+                "Represent this sentence for searching relevant passages: alpha",
+                "Represent this sentence for searching relevant passages: beta",
+            ],
+            output_value="sentence_embedding",
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+        )
+
+
+class TestPromptResolution:
+    """Model-family → prompt mapping."""
+
+    def test_bge_query_prompt(self) -> None:
+        from primer.embedder.huggingface import _resolve_prompts_for_model
+        q, d = _resolve_prompts_for_model("BAAI/bge-small-en-v1.5")
+        assert q == "Represent this sentence for searching relevant passages: "
+        assert d is None
+
+    def test_bge_match_is_case_insensitive(self) -> None:
+        from primer.embedder.huggingface import _resolve_prompts_for_model
+        q, d = _resolve_prompts_for_model("BAAI/BGE-Large-EN-v1.5")
+        assert q is not None
+        assert d is None
+
+    def test_e5_has_symmetric_prefixes(self) -> None:
+        from primer.embedder.huggingface import _resolve_prompts_for_model
+        q, d = _resolve_prompts_for_model("intfloat/multilingual-e5-large")
+        assert q == "query: "
+        assert d == "passage: "
+
+    def test_nomic_embed_text_has_symmetric_prefixes(self) -> None:
+        from primer.embedder.huggingface import _resolve_prompts_for_model
+        q, d = _resolve_prompts_for_model("nomic-ai/nomic-embed-text-v1.5")
+        assert q == "search_query: "
+        assert d == "search_document: "
+
+    def test_unknown_model_returns_none_pair(self) -> None:
+        from primer.embedder.huggingface import _resolve_prompts_for_model
+        q, d = _resolve_prompts_for_model("sentence-transformers/all-MiniLM-L6-v2")
+        assert (q, d) == (None, None)
+
+    def test_select_prompt_routes_by_task_type(self) -> None:
+        from primer.embedder.huggingface import _select_prompt
+        bge = "BAAI/bge-small-en-v1.5"
+        assert _select_prompt(
+            task_type="retrieval_query", model_name=bge, raw={},
+        ) == "Represent this sentence for searching relevant passages: "
+        assert _select_prompt(
+            task_type="retrieval_document", model_name=bge, raw={},
+        ) is None
+        assert _select_prompt(task_type=None, model_name=bge, raw={}) is None
+
+    def test_raw_query_prompt_overrides_family_default(self) -> None:
+        from primer.embedder.huggingface import _select_prompt
+        result = _select_prompt(
+            task_type="retrieval_query",
+            model_name="BAAI/bge-small-en-v1.5",
+            raw={"query_prompt": "custom: "},
+        )
+        assert result == "custom: "
+
 
 class TestTranslateResponse:
     def test_sentence_embedding_no_truncation(self) -> None:

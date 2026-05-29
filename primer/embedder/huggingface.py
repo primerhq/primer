@@ -96,7 +96,9 @@ def _part_to_text(part: EmbeddingPart) -> str:
     )
 
 
-def _encode_sync(model, texts: list[str], output_value: str):
+def _encode_sync(
+    model, texts: list[str], output_value: str, prompt: str | None = None,
+):
     """Sync wrapper around SentenceTransformer.encode — runs in
     asyncio.to_thread.
 
@@ -109,13 +111,80 @@ def _encode_sync(model, texts: list[str], output_value: str):
     semantics. Affects every model SentenceTransformer wraps,
     including BGE / E5 / GTE / MiniLM. Operators who relied on raw
     magnitudes for custom rerank will need to scale their thresholds.
+
+    ``prompt`` is the model-family-specific instruction prepended to
+    each text. Asymmetric-retrieval models (BGE, E5, nomic-embed-text)
+    were trained to expect a different prompt on queries vs documents;
+    without it, the query embedding lands in a slightly different
+    region of vector space and similarity scores collapse — a "web
+    search" query against a "web-search: Perform a web search…"
+    document drops from ~0.7 to ~0.25 cosine on bge-small-en-v1.5
+    without the query prompt. The caller picks the prompt via
+    ``_query_prompt_for_model`` / ``_document_prompt_for_model``.
     """
+    if prompt:
+        texts = [prompt + t for t in texts]
     return model.encode(
         texts,
         output_value=output_value,
         convert_to_numpy=True,
         normalize_embeddings=True,
     )
+
+
+# Mapping of model-family substring → (query_prompt, document_prompt).
+# Both can be None when the family doesn't recommend a prefix. Match
+# is by case-insensitive substring on the SentenceTransformer model id.
+# Operators who use a model not on this list (or who want to override
+# the defaults) can pass ``config.raw["query_prompt"]`` /
+# ``config.raw["document_prompt"]`` to bypass.
+_MODEL_FAMILY_PROMPTS: list[tuple[str, str | None, str | None]] = [
+    # BGE: asymmetric. Query gets the prompt; document does not.
+    # Source: model card (BAAI/bge-small-en-v1.5, bge-large, bge-m3).
+    ("bge", "Represent this sentence for searching relevant passages: ", None),
+    # E5: symmetric prefixes. Both sides need a prefix to be in-distribution.
+    # Source: intfloat/e5-* / multilingual-e5-* model cards.
+    ("e5", "query: ", "passage: "),
+    # nomic-embed-text: symmetric task-prefixed.
+    # Source: nomic-ai/nomic-embed-text-v1* / v1.5 model card.
+    ("nomic-embed-text", "search_query: ", "search_document: "),
+]
+
+
+def _resolve_prompts_for_model(model_name: str) -> tuple[str | None, str | None]:
+    """Return (query_prompt, document_prompt) for a model.
+
+    Unknown families get (None, None) — encode raw text on both sides,
+    matching the default SentenceTransformer behaviour.
+    """
+    lower = model_name.lower()
+    for needle, qp, dp in _MODEL_FAMILY_PROMPTS:
+        if needle in lower:
+            return qp, dp
+    return None, None
+
+
+def _select_prompt(
+    *, task_type: str | None, model_name: str, raw: dict
+) -> str | None:
+    """Pick the prompt prefix for this call.
+
+    Precedence: explicit ``raw["query_prompt"]`` / ``raw["document_prompt"]``
+    override family defaults, so an operator can use a non-default
+    prompt for a model we don't recognise. Without a ``task_type`` hint
+    we treat the input as a document (the conservative choice — only
+    the search code path opts into ``retrieval_query``).
+    """
+    if task_type == "retrieval_query":
+        if "query_prompt" in raw:
+            return raw["query_prompt"] or None
+        return _resolve_prompts_for_model(model_name)[0]
+    # Default to document semantics for everything else (None task_type,
+    # retrieval_document, semantic_similarity, classification, ...). Only
+    # E5 / nomic actually prefix documents; BGE / MiniLM / GTE do not.
+    if "document_prompt" in raw:
+        return raw["document_prompt"] or None
+    return _resolve_prompts_for_model(model_name)[1]
 
 
 def _translate_response(
@@ -247,6 +316,8 @@ class HuggingFaceEmbedder(Embedder):
             if raw.get("output_value") == "token_embeddings"
             else "sentence_embedding"
         )
+        task_type = config.task_type if config is not None else None
+        prompt = _select_prompt(task_type=task_type, model_name=model, raw=raw)
 
         logger.info(
             "HuggingFace embed starting",
@@ -256,6 +327,8 @@ class HuggingFaceEmbedder(Embedder):
                 "input_count": len(inputs),
                 "output_dimensions": output_dimensions,
                 "output_value": output_value,
+                "task_type": task_type,
+                "prompt_applied": bool(prompt),
             },
         )
 
@@ -265,7 +338,7 @@ class HuggingFaceEmbedder(Embedder):
             st_model = await self._get_model(model)
             try:
                 arrays = await asyncio.to_thread(
-                    _encode_sync, st_model, texts, output_value
+                    _encode_sync, st_model, texts, output_value, prompt
                 )
             except Exception as exc:
                 err = _classify_hf_exception(exc)
