@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from primer.common.openai_errors import classify_openai_exception
 from primer.int.llm import LLM
+from primer.llm._openai_common import build_sampling_params as _build_sampling_params_impl
 from primer.model.except_ import (
     ConfigError,
     ModelNotFoundError,
@@ -318,26 +319,20 @@ def _build_sampling_params(
     max_output_tokens: int | None,
     stop: list[str] | None,
 ) -> dict[str, Any]:
-    """Forward the universal sampling knobs OpenAI Responses understands.
+    """Forward sampling knobs to the OpenAI Responses wire format.
 
-    ``stop`` is silently dropped with a single WARNING — the Responses
-    API has no native equivalent. Per the foundation contract, adapters
-    silently ignore unsupported universal knobs.
+    Delegates to :func:`primer.llm._openai_common.build_sampling_params`
+    with ``target="responses"``. Kept as a module-local function so the
+    existing test surface (``primer.llm.openresponses._build_sampling_params``)
+    stays stable.
     """
-    params: dict[str, Any] = {}
-    if temperature is not None:
-        params["temperature"] = temperature
-    if top_p is not None:
-        params["top_p"] = top_p
-    if max_output_tokens is not None:
-        params["max_output_tokens"] = max_output_tokens
-    if stop is not None:
-        logger.warning(
-            "OpenAI Responses API does not support 'stop' parameter; "
-            "ignoring stop=%r",
-            stop,
-        )
-    return params
+    return _build_sampling_params_impl(
+        temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=max_output_tokens,
+        stop=stop,
+        target="responses",
+    )
 
 
 _RECOGNISED_EXTENDED_PASSTHROUGH: frozenset[str] = frozenset({
