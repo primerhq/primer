@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import secrets
 import uuid
 from typing import Any
 
@@ -369,6 +370,38 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         async with self._lock:
             self._workspaces[workspace_id] = ws
         return ws
+
+    async def _create_secret(
+        self, workspace_id: str, obj_name: str,
+    ) -> str:
+        """Create the per-workspace Secret holding ``RUNTIME_TOKEN``.
+
+        Returns the freshly-generated bearer token so the caller can both
+        wire it into the StatefulSet (``envFrom`` -> Secret) and hand it
+        to the platform-side ``RuntimeClient``. The token never leaves
+        this process except via the Secret object, which lives in the
+        same namespace as the workspace Pod.
+        """
+        token = secrets.token_urlsafe(32)
+        body = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": obj_name,
+                "namespace": self._config.namespace,
+                "labels": {
+                    "workspace-id": workspace_id,
+                    "app.kubernetes.io/managed-by": "primer",
+                },
+            },
+            "stringData": {"RUNTIME_TOKEN": token},
+        }
+        assert self._core_v1 is not None
+        await self._core_v1.create_namespaced_secret(
+            namespace=self._config.namespace,
+            body=body,
+        )
+        return token
 
     async def _wait_for_pod_running(
         self, pod_name: str, *, timeout_seconds: float = 120.0,
