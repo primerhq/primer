@@ -12,6 +12,7 @@ live in :mod:`primer.llm._openai_common`.
 
 from __future__ import annotations
 
+import base64
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -20,7 +21,16 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from primer.int.llm import LLM
-from primer.model.except_ import ConfigError
+from primer.model.chat import (
+    AudioPart,
+    DocumentPart,
+    ExtendedPart,
+    ImagePart,
+    Part,
+    TextPart,
+    VideoPart,
+)
+from primer.model.except_ import ConfigError, UnsupportedContentError
 from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
@@ -53,6 +63,56 @@ _POLICY_BY_FLAVOR: dict[OpenChatFlavor, _FlavorPolicy] = {
     OpenChatFlavor.VLLM: _FlavorPolicy(require_api_key=False),
     OpenChatFlavor.OTHER: _FlavorPolicy(require_api_key=True),
 }
+
+
+def _part_to_content(part: Part) -> dict[str, Any]:
+    """Translate one universal :class:`Part` into a Chat Completions content dict.
+
+    Pure function, no I/O. Raises :class:`UnsupportedContentError` for
+    parts the Chat Completions API does not accept.
+    """
+    if isinstance(part, TextPart):
+        return {"type": "text", "text": part.text}
+
+    if isinstance(part, ImagePart):
+        if part.file_id is not None:
+            raise UnsupportedContentError(
+                "Chat Completions does not accept image input by file_id; "
+                "fetch the bytes and pass an ImagePart(data=...) instead"
+            )
+        if part.data is not None:
+            mime = part.mime_type or "application/octet-stream"
+            url = f"data:{mime};base64,{base64.b64encode(part.data).decode()}"
+        else:
+            url = part.url  # type: ignore[assignment]
+        image_url: dict[str, Any] = {"url": url}
+        if part.detail is not None:
+            image_url["detail"] = part.detail
+        return {"type": "image_url", "image_url": image_url}
+
+    if isinstance(part, DocumentPart):
+        raise UnsupportedContentError(
+            "Chat Completions does not accept document input; "
+            "extract text from the document and pass a TextPart instead"
+        )
+
+    if isinstance(part, ExtendedPart):
+        ext = part.extended
+        if isinstance(ext, AudioPart):
+            raise UnsupportedContentError(
+                "Chat Completions does not accept audio input on this adapter"
+            )
+        if isinstance(ext, VideoPart):
+            raise UnsupportedContentError(
+                "Chat Completions does not accept video input"
+            )
+        raise UnsupportedContentError(
+            f"Chat Completions does not support extended part type {ext.type!r}"
+        )
+
+    raise UnsupportedContentError(  # pragma: no cover
+        f"unexpected part type {type(part).__name__}"
+    )
 
 
 class OpenChatLLM(LLM):

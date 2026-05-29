@@ -148,3 +148,72 @@ class TestListModels:
         with patch.object(OpenChatLLM, "_get_client") as mock_get_client:
             await llm.list_models()
             mock_get_client.assert_not_called()
+
+
+import base64
+
+from primer.llm.openchat import _part_to_content
+from primer.model.chat import (
+    AudioPart,
+    DocumentPart,
+    ExtendedPart,
+    ImagePart,
+    TextPart,
+    VideoPart,
+)
+from primer.model.except_ import UnsupportedContentError
+
+
+class TestPartToContent:
+    def test_text_part(self) -> None:
+        assert _part_to_content(TextPart(text="hi")) == {
+            "type": "text",
+            "text": "hi",
+        }
+
+    def test_image_part_url(self) -> None:
+        out = _part_to_content(ImagePart(url="https://example.com/x.png"))
+        assert out == {
+            "type": "image_url",
+            "image_url": {"url": "https://example.com/x.png"},
+        }
+
+    def test_image_part_url_includes_detail_when_set(self) -> None:
+        out = _part_to_content(ImagePart(url="https://example.com/x.png", detail="high"))
+        assert out == {
+            "type": "image_url",
+            "image_url": {"url": "https://example.com/x.png", "detail": "high"},
+        }
+
+    def test_image_part_data_emits_data_uri(self) -> None:
+        out = _part_to_content(ImagePart(data=b"\x89PNG", mime_type="image/png"))
+        assert out["type"] == "image_url"
+        url = out["image_url"]["url"]
+        assert url.startswith("data:image/png;base64,")
+        assert base64.b64decode(url.split(",", 1)[1]) == b"\x89PNG"
+
+    def test_image_part_data_defaults_mime(self) -> None:
+        out = _part_to_content(ImagePart(data=b"raw"))
+        assert out["image_url"]["url"].startswith("data:application/octet-stream;base64,")
+
+    def test_image_part_file_id_raises(self) -> None:
+        with pytest.raises(UnsupportedContentError, match="file_id"):
+            _part_to_content(ImagePart(file_id="file-abc"))
+
+    def test_document_part_raises(self) -> None:
+        with pytest.raises(UnsupportedContentError, match="document"):
+            _part_to_content(
+                DocumentPart(data=b"%PDF", mime_type="application/pdf")
+            )
+
+    def test_audio_extended_part_raises(self) -> None:
+        with pytest.raises(UnsupportedContentError, match="audio"):
+            _part_to_content(
+                ExtendedPart(extended=AudioPart(data=b"x", mime_type="audio/mp3"))
+            )
+
+    def test_video_extended_part_raises(self) -> None:
+        with pytest.raises(UnsupportedContentError, match="video"):
+            _part_to_content(
+                ExtendedPart(extended=VideoPart(url="https://example.com/v.mp4"))
+            )
