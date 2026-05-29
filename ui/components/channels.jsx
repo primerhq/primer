@@ -162,10 +162,23 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
   );
 }
 
-function NewChannelProviderModal({ onClose, onCreated, pushToast }) {
-  const [id, setId] = React.useState("");
-  const [provider, setProvider] = React.useState("slack");
+function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
+  const isEdit = !!existing;
+  const [id, setId] = React.useState(existing?.id || "");
+  const [provider, setProvider] = React.useState(existing?.provider || "slack");
   const [values, setValues] = React.useState(() => {
+    if (isEdit) {
+      // Blank out password fields on edit-mode prefill so the redacted
+      // "**********" placeholder doesn't get PUT back over the real secret.
+      const seed = { ...(existing?.config || {}) };
+      const fs = CH_PROVIDER_FIELDS[existing?.provider] || [];
+      for (const f of fs) {
+        if (f.secret && /^\*{6,}$/.test(String(seed[f.key] || ""))) {
+          seed[f.key] = "";
+        }
+      }
+      return seed;
+    }
     const seeded = {};
     for (const f of CH_PROVIDER_FIELDS.slack) {
       if (f.default !== undefined) seeded[f.key] = f.default;
@@ -174,15 +187,22 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast }) {
   });
   const [fieldErrors, setFieldErrors] = React.useState({});
 
-  // Re-seed defaults whenever the provider type changes.
+  // Re-seed defaults whenever the provider type changes — skip the
+  // FIRST render in edit mode so we keep the prefill we just set up.
+  const _isFirstRender = React.useRef(true);
   React.useEffect(() => {
+    if (isEdit && _isFirstRender.current) {
+      _isFirstRender.current = false;
+      return;
+    }
+    _isFirstRender.current = false;
     const seeded = {};
     for (const f of CH_PROVIDER_FIELDS[provider] || []) {
       if (f.default !== undefined) seeded[f.key] = f.default;
     }
     setValues(seeded);
     setFieldErrors({});
-  }, [provider]);
+  }, [provider]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const fields = CH_PROVIDER_FIELDS[provider] || [];
 
@@ -202,9 +222,13 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast }) {
   };
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/channel_providers", body),
+    (body) => isEdit
+      ? apiFetch("PUT", "/channel_providers/" + encodeURIComponent(existing.id), body)
+      : apiFetch("POST", "/channel_providers", body),
     {
-      invalidates: [CH_LIST_PROVIDERS],
+      invalidates: isEdit
+        ? [CH_LIST_PROVIDERS, "channel-provider-detail:" + (existing?.id || "")]
+        : [CH_LIST_PROVIDERS],
       onSuccess: (row) => { onCreated(row); },
       onError: (err) => {
         if (err.status === 422 && Array.isArray(err.fieldErrors)) {
@@ -214,7 +238,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast }) {
         } else {
           if (pushToast) pushToast({
             kind: "error",
-            title: err.title || "Create failed",
+            title: err.title || (isEdit ? "Save failed" : "Create failed"),
             detail: err.detail || err.message,
             requestId: err.requestId,
           });
@@ -226,7 +250,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast }) {
   const submit = () => {
     setFieldErrors({});
     const body = {
-      ...(id ? { id } : {}),
+      ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       provider,
       config: cleanConfig(),
     };
@@ -241,34 +265,39 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast }) {
 
   return (
     <Modal
-      title="New channel provider"
+      title={isEdit ? `Edit channel provider · ${existing.id}` : "New channel provider"}
       onClose={onClose}
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit}>
-            {create.loading ? "Creating…" : "Create provider"}
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!canSubmit}>
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create provider")}
           </Btn>
         </>
       }
     >
       <div className="field">
-        <label className="field-label">id <span className="hint">auto-generated if blank</span></label>
+        <label className="field-label">id {isEdit
+          ? <span className="hint">locked — id cannot change after create</span>
+          : <span className="hint">auto-generated if blank</span>}
+        </label>
         <input
           className="input mono"
           placeholder="auto-generated"
           value={id}
           onChange={(e) => setId(e.target.value)}
+          disabled={isEdit}
           style={{ width: "100%" }}
         />
         {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
       </div>
       <div className="field">
-        <label className="field-label">platform</label>
+        <label className="field-label">platform {isEdit && <span className="hint">locked — recreate to change platform</span>}</label>
         <select
           className="select mono"
           value={provider}
           onChange={(e) => setProvider(e.target.value)}
+          disabled={isEdit}
           style={{ width: "100%" }}
         >
           <option value="slack">Slack</option>
@@ -338,6 +367,7 @@ function ChannelProviderDetail({ providerId, pushToast }) {
   const detailKey = CH_DETAIL_PREFIX + providerId;
   const [showDelete, setShowDelete] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
+  const [editing, setEditing] = React.useState(false);
 
   const detail = useResource(
     detailKey,
@@ -416,6 +446,7 @@ function ChannelProviderDetail({ providerId, pushToast }) {
           >
             Probe
           </Btn>
+          <Btn size="sm" kind="secondary" icon="edit" onClick={() => setEditing(true)}>Edit</Btn>
           <Btn size="sm" kind="danger" icon="trash" onClick={() => { setDeleteError(null); setShowDelete(true); }}>Delete</Btn>
         </div>
       </div>
@@ -503,6 +534,20 @@ function ChannelProviderDetail({ providerId, pushToast }) {
           )}
         </Modal>
       )}
+      {editing && (
+        <NewChannelProviderModal
+          existing={p}
+          pushToast={pushToast}
+          onClose={() => setEditing(false)}
+          onCreated={() => {
+            setEditing(false);
+            if (typeof pushToast === "function") {
+              pushToast({ kind: "info", title: "Provider updated", detail: p.id });
+            }
+            detail.refetch();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -511,6 +556,7 @@ function ChannelProviderDetail({ providerId, pushToast }) {
 
 function ChannelsPage({ onNavigate, pushToast }) {
   const [showNew, setShowNew] = React.useState(false);
+  const [editing, setEditing] = React.useState(null);
   const [filter, setFilter] = React.useState("");
   const [providerFilter, setProviderFilter] = React.useState("");
 
@@ -626,7 +672,15 @@ function ChannelsPage({ onNavigate, pushToast }) {
                   </td>
                   <td className="mono muted">{c.external_id}</td>
                   <td>{c.label}</td>
-                  <td style={{ textAlign: "right", paddingRight: 12 }}>
+                  <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }}>
+                    <button
+                      className="icon-btn"
+                      style={{ width: 22, height: 22, marginRight: 4 }}
+                      title="Edit channel"
+                      onClick={() => setEditing(c)}
+                    >
+                      <Icon name="edit" size={10} />
+                    </button>
                     <button
                       className="icon-btn"
                       style={{ width: 22, height: 22 }}
@@ -655,19 +709,37 @@ function ChannelsPage({ onNavigate, pushToast }) {
           pushToast={pushToast}
         />
       )}
+      {editing && (
+        <NewChannelModal
+          providers={providerItems}
+          existing={editing}
+          onClose={() => setEditing(null)}
+          onCreated={() => {
+            const editedId = editing.id;
+            setEditing(null);
+            if (pushToast) pushToast({ kind: "info", title: "Channel updated", detail: editedId });
+          }}
+          pushToast={pushToast}
+        />
+      )}
     </div>
   );
 }
 
-function NewChannelModal({ providers, onClose, onCreated, pushToast }) {
-  const [id, setId] = React.useState("");
-  const [providerId, setProviderId] = React.useState(providers[0]?.id || "");
-  const [externalId, setExternalId] = React.useState("");
-  const [label, setLabel] = React.useState("");
+function NewChannelModal({ providers, onClose, onCreated, pushToast, existing }) {
+  const isEdit = !!existing;
+  const [id, setId] = React.useState(existing?.id || "");
+  const [providerId, setProviderId] = React.useState(
+    existing?.provider_id || providers[0]?.id || ""
+  );
+  const [externalId, setExternalId] = React.useState(existing?.external_id || "");
+  const [label, setLabel] = React.useState(existing?.label || "");
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/channels", body),
+    (body) => isEdit
+      ? apiFetch("PUT", "/channels/" + encodeURIComponent(existing.id), body)
+      : apiFetch("POST", "/channels", body),
     {
       invalidates: [CH_LIST_CHANNELS],
       onSuccess: () => onCreated(),
@@ -679,7 +751,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast }) {
         } else {
           if (pushToast) pushToast({
             kind: "error",
-            title: err.title || "Create failed",
+            title: err.title || (isEdit ? "Save failed" : "Create failed"),
             detail: err.detail || err.message,
             requestId: err.requestId,
           });
@@ -691,7 +763,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast }) {
   const submit = () => {
     setFieldErrors({});
     const body = {
-      ...(id ? { id } : {}),
+      ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       provider_id: providerId,
       external_id: externalId,
       ...(label ? { label } : {}),
@@ -703,34 +775,39 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast }) {
 
   return (
     <Modal
-      title="New channel"
+      title={isEdit ? `Edit channel · ${existing.id}` : "New channel"}
       onClose={onClose}
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit}>
-            {create.loading ? "Creating…" : "Create channel"}
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!canSubmit}>
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create channel")}
           </Btn>
         </>
       }
     >
       <div className="field">
-        <label className="field-label">id <span className="hint">auto</span></label>
+        <label className="field-label">id {isEdit
+          ? <span className="hint">locked</span>
+          : <span className="hint">auto</span>}
+        </label>
         <input
           className="input mono"
           placeholder="auto-generated"
           value={id}
           onChange={(e) => setId(e.target.value)}
+          disabled={isEdit}
           style={{ width: "100%" }}
         />
         {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
       </div>
       <div className="field">
-        <label className="field-label">provider</label>
+        <label className="field-label">provider {isEdit && <span className="hint">locked — recreate to change provider</span>}</label>
         <select
           className="select mono"
           value={providerId}
           onChange={(e) => setProviderId(e.target.value)}
+          disabled={isEdit}
           style={{ width: "100%" }}
         >
           {providers.map((p) => <option key={p.id} value={p.id}>{p.id} ({p.provider})</option>)}
@@ -768,6 +845,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast }) {
 
 function AssociationsPage({ onNavigate, pushToast }) {
   const [showNew, setShowNew] = React.useState(false);
+  const [editing, setEditing] = React.useState(null);
 
   const associations = useResource(
     CH_LIST_ASSOCIATIONS,
@@ -879,7 +957,15 @@ function AssociationsPage({ onNavigate, pushToast }) {
                   <td><Toggle on={a.enabled} onChange={() => toggle(a, "enabled")} /></td>
                   <td><Toggle on={a.forward_ask_user} onChange={() => toggle(a, "forward_ask_user")} /></td>
                   <td><Toggle on={a.forward_tool_approval} onChange={() => toggle(a, "forward_tool_approval")} /></td>
-                  <td style={{ textAlign: "right", paddingRight: 12 }}>
+                  <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }}>
+                    <button
+                      className="icon-btn"
+                      style={{ width: 22, height: 22, marginRight: 4 }}
+                      title="Edit association"
+                      onClick={() => setEditing(a)}
+                    >
+                      <Icon name="edit" size={10} />
+                    </button>
                     <button
                       className="icon-btn"
                       style={{ width: 22, height: 22 }}
@@ -909,20 +995,47 @@ function AssociationsPage({ onNavigate, pushToast }) {
           pushToast={pushToast}
         />
       )}
+      {editing && (
+        <NewAssociationModal
+          workspaces={workspaceItems}
+          channels={channelItems}
+          existing={editing}
+          onClose={() => setEditing(null)}
+          onCreated={() => {
+            const editedId = editing.id;
+            setEditing(null);
+            if (pushToast) pushToast({ kind: "info", title: "Association updated", detail: editedId });
+          }}
+          pushToast={pushToast}
+        />
+      )}
     </div>
   );
 }
 
-function NewAssociationModal({ workspaces, channels, onClose, onCreated, pushToast }) {
-  const [workspaceId, setWorkspaceId] = React.useState(workspaces[0]?.id || "");
-  const [channelId, setChannelId] = React.useState(channels[0]?.id || "");
-  const [enabled, setEnabled] = React.useState(true);
-  const [forwardAskUser, setForwardAskUser] = React.useState(true);
-  const [forwardToolApproval, setForwardToolApproval] = React.useState(true);
+function NewAssociationModal({ workspaces, channels, onClose, onCreated, pushToast, existing }) {
+  const isEdit = !!existing;
+  const [workspaceId, setWorkspaceId] = React.useState(
+    existing?.workspace_id || workspaces[0]?.id || ""
+  );
+  const [channelId, setChannelId] = React.useState(
+    existing?.channel_id || channels[0]?.id || ""
+  );
+  const [enabled, setEnabled] = React.useState(
+    existing?.enabled != null ? !!existing.enabled : true
+  );
+  const [forwardAskUser, setForwardAskUser] = React.useState(
+    existing?.forward_ask_user != null ? !!existing.forward_ask_user : true
+  );
+  const [forwardToolApproval, setForwardToolApproval] = React.useState(
+    existing?.forward_tool_approval != null ? !!existing.forward_tool_approval : true
+  );
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/workspace_channel_associations", body),
+    (body) => isEdit
+      ? apiFetch("PUT", "/workspace_channel_associations/" + encodeURIComponent(existing.id), body)
+      : apiFetch("POST", "/workspace_channel_associations", body),
     {
       invalidates: [CH_LIST_ASSOCIATIONS],
       onSuccess: () => onCreated(),
@@ -934,7 +1047,7 @@ function NewAssociationModal({ workspaces, channels, onClose, onCreated, pushToa
         } else {
           if (pushToast) pushToast({
             kind: "error",
-            title: err.title || "Create failed",
+            title: err.title || (isEdit ? "Save failed" : "Create failed"),
             detail: err.detail || err.message,
             requestId: err.requestId,
           });
@@ -945,12 +1058,12 @@ function NewAssociationModal({ workspaces, channels, onClose, onCreated, pushToa
 
   const submit = () => {
     setFieldErrors({});
-    // WorkspaceChannelAssociation requires an explicit `id` in the
-    // POST body — the make_crud_router does NOT auto-allocate it for
-    // this entity (unlike Channel / ChannelProvider, which do).
-    // Generate a short opaque id client-side; server 409s on duplicate.
+    // Create: WorkspaceChannelAssociation requires explicit id —
+    // make_crud_router doesn't allocate one for this entity. Mint a
+    // short opaque id; server 409s on duplicate.
+    // Edit: preserve the existing id (PUT replace).
     create.mutate({
-      id: "assoc-" + Math.random().toString(36).slice(2, 14),
+      id: isEdit ? existing.id : "assoc-" + Math.random().toString(36).slice(2, 14),
       workspace_id: workspaceId,
       channel_id: channelId,
       enabled,
@@ -963,7 +1076,7 @@ function NewAssociationModal({ workspaces, channels, onClose, onCreated, pushToa
 
   return (
     <Modal
-      title="New workspace channel association"
+      title={isEdit ? `Edit association · ${existing.id}` : "New workspace channel association"}
       onClose={onClose}
       footer={
         <>
