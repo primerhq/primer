@@ -13,6 +13,7 @@ live in :mod:`primer.llm._openai_common`.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -26,8 +27,11 @@ from primer.model.chat import (
     DocumentPart,
     ExtendedPart,
     ImagePart,
+    Message,
     Part,
     TextPart,
+    ToolCallPart,
+    ToolResultPart,
     VideoPart,
 )
 from primer.model.except_ import ConfigError, UnsupportedContentError
@@ -113,6 +117,84 @@ def _part_to_content(part: Part) -> dict[str, Any]:
     raise UnsupportedContentError(  # pragma: no cover
         f"unexpected part type {type(part).__name__}"
     )
+
+
+def _messages_to_chat(messages: list[Message]) -> list[dict[str, Any]]:
+    """Walk a chat history and produce Chat Completions ``messages`` rows.
+
+    Mapping rules:
+
+    * ``role="system"`` -> one row with string ``content`` joining all
+      :class:`TextPart` text values.
+    * ``role="user"`` -> if the message is text-only, ``content`` is a
+      plain string; if any image part is present, ``content`` is the
+      multimodal content array.
+    * ``role="assistant"`` -> text concatenated into ``content`` (or
+      ``None`` when there is no text), with any :class:`ToolCallPart`
+      flattened into the ``tool_calls`` array.
+    * ``role="tool"`` -> one row per :class:`ToolResultPart`, each with
+      ``tool_call_id`` echoing the assistant's call id.
+    """
+    rows: list[dict[str, Any]] = []
+
+    for msg in messages:
+        if msg.role == "tool":
+            for part in msg.parts:
+                if not isinstance(part, ToolResultPart):
+                    raise UnsupportedContentError(
+                        f"tool-role messages must contain only ToolResultPart; "
+                        f"got {type(part).__name__}"
+                    )
+                rows.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": part.id,
+                        "content": part.output,
+                    }
+                )
+            continue
+
+        text_chunks: list[str] = []
+        non_text_contents: list[dict[str, Any]] = []
+        tool_calls: list[dict[str, Any]] = []
+
+        for part in msg.parts:
+            if isinstance(part, ToolCallPart):
+                tool_calls.append(
+                    {
+                        "id": part.id,
+                        "type": "function",
+                        "function": {
+                            "name": part.name,
+                            "arguments": json.dumps(part.arguments),
+                        },
+                    }
+                )
+            elif isinstance(part, ToolResultPart):
+                raise UnsupportedContentError(
+                    "ToolResultPart is only valid inside a tool-role message"
+                )
+            elif isinstance(part, TextPart):
+                text_chunks.append(part.text)
+            else:
+                non_text_contents.append(_part_to_content(part))
+
+        if non_text_contents:
+            content: Any = [
+                {"type": "text", "text": "".join(text_chunks)}
+            ] if text_chunks else []
+            content.extend(non_text_contents)
+        elif text_chunks:
+            content = "".join(text_chunks)
+        else:
+            content = None
+
+        row: dict[str, Any] = {"role": msg.role, "content": content}
+        if tool_calls:
+            row["tool_calls"] = tool_calls
+        rows.append(row)
+
+    return rows
 
 
 class OpenChatLLM(LLM):

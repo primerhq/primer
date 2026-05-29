@@ -217,3 +217,157 @@ class TestPartToContent:
             _part_to_content(
                 ExtendedPart(extended=VideoPart(url="https://example.com/v.mp4"))
             )
+
+
+from primer.llm.openchat import _messages_to_chat
+from primer.model.chat import (
+    Message,
+    ToolCallPart,
+    ToolResultPart,
+)
+
+
+class TestMessagesToChat:
+    def test_simple_user_text_uses_string_content(self) -> None:
+        rows = _messages_to_chat(
+            [Message(role="user", parts=[TextPart(text="hi")])]
+        )
+        assert rows == [{"role": "user", "content": "hi"}]
+
+    def test_user_with_image_uses_content_array(self) -> None:
+        rows = _messages_to_chat(
+            [
+                Message(
+                    role="user",
+                    parts=[
+                        TextPart(text="what is this?"),
+                        ImagePart(url="https://example.com/x.png"),
+                    ],
+                )
+            ]
+        )
+        assert rows == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/x.png"},
+                    },
+                ],
+            }
+        ]
+
+    def test_system_message_passes_through(self) -> None:
+        rows = _messages_to_chat(
+            [Message(role="system", parts=[TextPart(text="be terse")])]
+        )
+        assert rows == [{"role": "system", "content": "be terse"}]
+
+    def test_assistant_text_only(self) -> None:
+        rows = _messages_to_chat(
+            [Message(role="assistant", parts=[TextPart(text="ok")])]
+        )
+        assert rows == [{"role": "assistant", "content": "ok"}]
+
+    def test_assistant_tool_calls_only_emits_null_content(self) -> None:
+        rows = _messages_to_chat(
+            [
+                Message(
+                    role="assistant",
+                    parts=[
+                        ToolCallPart(
+                            id="call_1", name="search", arguments={"q": "weather"}
+                        )
+                    ],
+                )
+            ]
+        )
+        assert rows == [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": '{"q": "weather"}',
+                        },
+                    }
+                ],
+            }
+        ]
+
+    def test_assistant_text_and_tool_calls_combined(self) -> None:
+        rows = _messages_to_chat(
+            [
+                Message(
+                    role="assistant",
+                    parts=[
+                        TextPart(text="let me check"),
+                        ToolCallPart(id="call_1", name="search", arguments={}),
+                    ],
+                )
+            ]
+        )
+        assert rows == [
+            {
+                "role": "assistant",
+                "content": "let me check",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    }
+                ],
+            }
+        ]
+
+    def test_tool_role_message_emits_one_row_per_result(self) -> None:
+        rows = _messages_to_chat(
+            [
+                Message(
+                    role="tool",
+                    parts=[
+                        ToolResultPart(id="call_1", output="42"),
+                        ToolResultPart(id="call_2", output="done"),
+                    ],
+                )
+            ]
+        )
+        assert rows == [
+            {"role": "tool", "tool_call_id": "call_1", "content": "42"},
+            {"role": "tool", "tool_call_id": "call_2", "content": "done"},
+        ]
+
+    def test_tool_role_with_non_tool_result_raises(self) -> None:
+        msg = Message.model_construct(role="tool", parts=[TextPart(text="oops")])
+        with pytest.raises(UnsupportedContentError, match="ToolResultPart"):
+            _messages_to_chat([msg])
+
+    def test_full_conversation_round_trip(self) -> None:
+        messages = [
+            Message(role="system", parts=[TextPart(text="be helpful")]),
+            Message(role="user", parts=[TextPart(text="weather?")]),
+            Message(
+                role="assistant",
+                parts=[
+                    ToolCallPart(
+                        id="call_1", name="get_weather", arguments={"city": "NYC"}
+                    )
+                ],
+            ),
+            Message(
+                role="tool", parts=[ToolResultPart(id="call_1", output="sunny")]
+            ),
+            Message(role="assistant", parts=[TextPart(text="It's sunny.")]),
+        ]
+        rows = _messages_to_chat(messages)
+        roles = [r["role"] for r in rows]
+        assert roles == ["system", "user", "assistant", "tool", "assistant"]
+        assert rows[2]["tool_calls"][0]["function"]["name"] == "get_weather"
+        assert rows[3]["tool_call_id"] == "call_1"
