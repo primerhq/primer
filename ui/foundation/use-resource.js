@@ -33,8 +33,39 @@
     return { data: entry.data, error: entry.error, loading: entry.loading };
   }
 
-  function emit(entry) {
+  // Reference + structural equality. Used to skip re-renders when a
+  // poll returns identical data. The serialise-then-compare path is
+  // good-enough for the JSON shapes the API returns; we deliberately
+  // stop at one level of stringify so a very deep response still
+  // converges in constant memory.
+  function _eq(a, b) {
+    if (a === b) return true;
+    if (a == null || b == null) return false;
+    if (typeof a !== "object" || typeof b !== "object") return false;
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+      return false;
+    }
+  }
+
+  function emit(entry, force) {
     const snap = snapshotOf(entry);
+    // Skip the broadcast if nothing observable changed since the last
+    // emit. Without this every 5s poll fires setSnap with a new object
+    // reference even when data is identical, forcing every consuming
+    // component to re-render. The page-level App calls ~10 useResource
+    // hooks on a 5s cadence, so the savings cascade.
+    if (
+      !force
+      && entry._lastSnap
+      && entry._lastSnap.loading === snap.loading
+      && entry._lastSnap.error === snap.error
+      && _eq(entry._lastSnap.data, snap.data)
+    ) {
+      return;
+    }
+    entry._lastSnap = snap;
     for (const cb of entry.subscribers) cb(snap);
   }
 
@@ -72,8 +103,15 @@
     abortInflight(entry);
     const ctrl = new AbortController();
     entry.abortCtrl = ctrl;
-    entry.loading = true;
-    emit(entry);
+    // loading=true is only meaningful for the FIRST fetch ("show
+    // skeleton, no data yet"). Subsequent polls retain stale data —
+    // flipping loading during a background poll just causes the
+    // consuming component to flicker between "show data" and "show
+    // loading" twice per cycle.
+    if (entry.data === undefined) {
+      entry.loading = true;
+      emit(entry);
+    }
     try {
       const data = await entry.fetcher(ctrl.signal);
       if (entry.abortCtrl !== ctrl) return; // superseded
