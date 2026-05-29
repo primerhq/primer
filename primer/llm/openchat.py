@@ -30,7 +30,9 @@ from primer.model.chat import (
     Message,
     Part,
     TextPart,
+    Tool,
     ToolCallPart,
+    ToolChoice,
     ToolResultPart,
     VideoPart,
 )
@@ -195,6 +197,37 @@ def _messages_to_chat(messages: list[Message]) -> list[dict[str, Any]]:
         rows.append(row)
 
     return rows
+
+
+def _tool_to_chat(tool: Tool) -> dict[str, Any]:
+    """Translate a universal :class:`Tool` into one Chat Completions tool dict.
+
+    The Chat Completions envelope nests the function-spec fields under
+    ``function:`` — unlike the Responses envelope which inlines them.
+    ``tool.toolset_id`` is caller-side correlation only and is not
+    transmitted.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.id,
+            "description": tool.description,
+            "parameters": tool.args_schema,
+        },
+    }
+
+
+def _tool_choice_to_chat(choice: ToolChoice | None) -> Any:
+    """Translate the universal :data:`ToolChoice` to the Chat Completions value.
+
+    Returns ``None`` to signal "do not include in the request"; the
+    caller must drop the key from the payload.
+    """
+    if choice is None:
+        return None
+    if choice in ("auto", "required", "none"):
+        return choice
+    return {"type": "function", "function": {"name": choice}}
 
 
 class OpenChatLLM(LLM):

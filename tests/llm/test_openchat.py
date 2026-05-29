@@ -371,3 +371,50 @@ class TestMessagesToChat:
         assert roles == ["system", "user", "assistant", "tool", "assistant"]
         assert rows[2]["tool_calls"][0]["function"]["name"] == "get_weather"
         assert rows[3]["tool_call_id"] == "call_1"
+
+
+from primer.llm.openchat import _tool_choice_to_chat, _tool_to_chat
+from primer.model.chat import Tool
+
+
+class TestTools:
+    def test_tool_to_chat_wraps_function_envelope(self) -> None:
+        tool = Tool(
+            id="get_weather",
+            description="Get the weather",
+            toolset_id="weather_kit",
+            args_schema={
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        )
+        out = _tool_to_chat(tool)
+        assert out == {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }
+        assert "toolset_id" not in out["function"]
+
+
+class TestToolChoice:
+    def test_none_returns_none(self) -> None:
+        assert _tool_choice_to_chat(None) is None
+
+    @pytest.mark.parametrize("mode", ["auto", "required", "none"])
+    def test_mode_strings_pass_through(self, mode: str) -> None:
+        assert _tool_choice_to_chat(mode) == mode
+
+    def test_specific_tool_name_wraps_with_function_nesting(self) -> None:
+        assert _tool_choice_to_chat("get_weather") == {
+            "type": "function",
+            "function": {"name": "get_weather"},
+        }
