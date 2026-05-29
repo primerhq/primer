@@ -24,6 +24,7 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
     ContainerTemplateConfig,
 )
+from primer.workspace.files import resolve_file_sources
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
 from primer.workspace.sandbox.workspace import SandboxWorkspace
 
@@ -142,17 +143,19 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         )
 
         try:
-            for fm in files:
-                if fm.source.kind == "inline":
-                    await sandbox.write_file(
-                        f"{spec.workdir}/{fm.path}",
-                        fm.source.content.encode("utf-8"),
-                    )
-                else:
-                    logger.warning(
-                        "non-inline file source not yet supported",
-                        extra={"path": fm.path, "kind": fm.source.kind},
-                    )
+            # Resolve every FileSource variant (inline/url/document/secret)
+            # up-front via the central helper; the sandbox just writes the
+            # resulting bytes. document/secret resolvers aren't wired here
+            # yet — the orchestration layer will pass them in once Phase 6
+            # threads app state through.
+            resolved_files = await resolve_file_sources(files)
+            for rf in resolved_files:
+                await sandbox.write_file(
+                    f"{spec.workdir}/{rf.path}",
+                    rf.content,
+                )
+                # NOTE: file mode application via container exec is deferred;
+                # the sandbox protocol has no chmod yet (Phase 5 will add it).
             for cmd in init_cmds:
                 res = await sandbox.exec(
                     cmd, workdir=spec.workdir, env=env_str,

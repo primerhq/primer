@@ -21,6 +21,7 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
     KubernetesTemplateConfig,
 )
+from primer.workspace.files import resolve_file_sources
 from primer.workspace.k8s.sandbox import K8sSandbox
 from primer.workspace.sandbox.workspace import SandboxWorkspace
 
@@ -334,6 +335,23 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         )
 
         try:
+            # Resolve every FileSource variant (inline/url/document/secret)
+            # up-front via the central helper; the sandbox just writes the
+            # resulting bytes. document/secret resolvers aren't wired here
+            # yet — the orchestration layer will pass them in once Phase 6
+            # threads app state through.
+            files = list(template.files) + (
+                list(overrides.files) if overrides else []
+            )
+            resolved_files = await resolve_file_sources(files)
+            workdir = template.backend.workdir
+            for rf in resolved_files:
+                await sandbox.write_file(
+                    f"{workdir}/{rf.path}",
+                    rf.content,
+                )
+                # NOTE: file mode application via exec is deferred;
+                # the sandbox protocol has no chmod yet (Phase 5 will add it).
             ws = await SandboxWorkspace.materialise(
                 workspace_id=workspace_id,
                 template=template,

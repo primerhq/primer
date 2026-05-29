@@ -9,7 +9,10 @@ Per the spec, this backend skips capabilities it cannot enforce:
 * Resource limits (CPU / memory / disk) — startup warning if any set.
 * Network mode — startup warning, no enforcement.
 * Package installation — init_commands still run.
-* File sources other than ``inline`` — logged and skipped.
+
+File sources of all kinds (``inline``, ``url``, ``document``, ``secret``)
+are resolved by :func:`primer.workspace.files.resolve_file_sources`
+before they are written to the workspace directory.
 
 See ``docs/superpowers/specs/2026-05-02-workspace-design.md`` and
 ``docs/superpowers/specs/2026-05-11-workspace-backends-design.md`` §12.
@@ -28,10 +31,10 @@ from typing import TYPE_CHECKING
 from primer.int.workspace import Workspace, WorkspaceBackend
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.model.workspace import (
-    FileMount,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.workspace.files import ResolvedFile, resolve_file_sources
 from primer.workspace.local.workspace import LocalWorkspace
 
 
@@ -116,8 +119,14 @@ class LocalWorkspaceBackend(WorkspaceBackend):
         await asyncio.to_thread(ws_root.mkdir, parents=True, exist_ok=False)
 
         try:
-            for fm in merged_files:
-                await self._materialise_file(ws_root, fm)
+            # Resolve every FileSource variant (inline/url/document/secret)
+            # up-front via the central helper; the backend just writes the
+            # resulting bytes. document/secret resolvers aren't wired here
+            # yet — the orchestration layer will pass them in once Phase 6
+            # threads app state through.
+            resolved_files = await resolve_file_sources(merged_files)
+            for rf in resolved_files:
+                await self._materialise_resolved_file(ws_root, rf)
             for cmd in merged_init:
                 await self._run_init_command(ws_root, cmd, env_str)
             ws = await LocalWorkspace.materialise(
@@ -169,34 +178,26 @@ class LocalWorkspaceBackend(WorkspaceBackend):
 
     # ---- internals ------------------------------------------------------
 
-    async def _materialise_file(self, ws_root: Path, fm: FileMount) -> None:
-        if "\x00" in fm.path:
-            raise BadRequestError(f"file path contains null byte: {fm.path!r}")
-        target = ws_root / fm.path
+    async def _materialise_resolved_file(
+        self, ws_root: Path, rf: ResolvedFile,
+    ) -> None:
+        if "\x00" in rf.path:
+            raise BadRequestError(f"file path contains null byte: {rf.path!r}")
+        target = ws_root / rf.path
         # Defensive: keep writes inside ws_root.
         try:
             target.resolve().relative_to(ws_root.resolve())
         except ValueError as exc:
             raise BadRequestError(
-                f"file path resolves outside workspace: {fm.path!r}"
+                f"file path resolves outside workspace: {rf.path!r}"
             ) from exc
         await asyncio.to_thread(
             target.parent.mkdir, parents=True, exist_ok=True
         )
-        kind = fm.source.kind
-        if kind == "inline":
-            await asyncio.to_thread(
-                target.write_text, fm.source.content, encoding="utf-8"
-            )
-        else:
-            logger.warning(
-                "LocalWorkspaceBackend: file source kind not yet supported",
-                extra={"path": fm.path, "kind": kind},
-            )
-            return
-        if fm.mode is not None:
+        await asyncio.to_thread(target.write_bytes, rf.content)
+        if rf.mode is not None:
             try:
-                octal = int(fm.mode, 8)
+                octal = int(rf.mode, 8)
                 await asyncio.to_thread(target.chmod, octal)
             except (ValueError, OSError, NotImplementedError):
                 # Mode application is best-effort on local backend.

@@ -188,11 +188,39 @@ class TestProviderCreate:
         children = list(provider_root.iterdir())
         assert children == []
 
-    async def test_unknown_file_source_logs_warning_and_skips(
+    async def test_url_file_source_is_fetched_and_written(
         self,
         provider: LocalWorkspaceBackend,
-        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """A kind=url FileMount is fetched via the central resolver and
+        the resulting bytes land in the workspace fs."""
+
+        class _FakeResp:
+            status = 200
+
+            async def read(self) -> bytes:
+                return b"remote-bytes"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            def get(self, url, **_):
+                return _FakeResp()
+
+        monkeypatch.setattr(
+            "primer.workspace.files._http_session", lambda: _FakeSession()
+        )
         tpl = _template(
             files=[
                 FileMount(
@@ -201,14 +229,9 @@ class TestProviderCreate:
                 )
             ]
         )
-        with caplog.at_level("WARNING"):
-            ws = await provider.create(tpl)
+        ws = await provider.create(tpl)
         assert isinstance(ws, LocalWorkspace)
-        assert not (ws.root / "foo").exists()
-        assert any(
-            "file source kind not yet supported" in record.message
-            for record in caplog.records
-        )
+        assert (ws.root / "foo").read_bytes() == b"remote-bytes"
 
     async def test_warns_on_resource_limits(
         self,
