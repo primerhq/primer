@@ -47,7 +47,7 @@ def _lmstudio_port_open(host: str = "127.0.0.1", port: int = 8080) -> bool:
         sock.close()
 
 
-_LMSTUDIO_API_KEY = "***REMOVED***"
+_LMSTUDIO_API_KEY = os.environ.get("PRIMER_E2E_LMSTUDIO_TOKEN", "")
 
 
 def _lmstudio_has_model(host: str = "127.0.0.1", port: int = 8080) -> bool:
@@ -62,6 +62,8 @@ def _lmstudio_has_model(host: str = "127.0.0.1", port: int = 8080) -> bool:
     model regardless of whether it is loaded into memory, so it cannot be used
     to gate this test. ``/api/v0/models`` is the authoritative signal.
     """
+    if not _LMSTUDIO_API_KEY:
+        return False
     if not _lmstudio_port_open(host, port):
         return False
     url = f"http://{host}:{port}/api/v0/models"
@@ -124,7 +126,7 @@ async def test_real_openai_smoke() -> None:
 
 @pytest.mark.skipif(
     not _lmstudio_has_model(),
-    reason="LM Studio not reachable or no model loaded on 127.0.0.1:8080",
+    reason="PRIMER_E2E_LMSTUDIO_TOKEN unset, LM Studio unreachable, or no model loaded",
 )
 async def test_lmstudio_smoke() -> None:
     # Pull whatever the user has loaded locally; LM Studio shows it

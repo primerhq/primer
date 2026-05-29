@@ -32,6 +32,7 @@ worker activity. This test pins the OBSERVABLE OUTPUT of a turn —
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import sys
 from pathlib import Path
@@ -47,7 +48,7 @@ import pytest
 
 
 _LM_STUDIO_URL = "http://127.0.0.1:8080"
-_LM_STUDIO_API_KEY = "***REMOVED***"
+_LM_STUDIO_API_KEY = os.environ.get("PRIMER_E2E_LMSTUDIO_TOKEN", "")
 
 
 def _lmstudio_tcp_reachable(host: str = "127.0.0.1", port: int = 8080) -> bool:
@@ -65,6 +66,8 @@ def _lmstudio_tcp_reachable(host: str = "127.0.0.1", port: int = 8080) -> bool:
 
 def _discover_chat_model() -> str | None:
     """Return the id of the first non-embedding model loaded in LM Studio."""
+    if not _LM_STUDIO_API_KEY:
+        return None
     if not _lmstudio_tcp_reachable():
         return None
     try:
@@ -91,8 +94,9 @@ _MODEL_ID = _discover_chat_model()
 pytestmark = pytest.mark.skipif(
     _MODEL_ID is None,
     reason=(
-        f"LM Studio not reachable at {_LM_STUDIO_URL} or no chat model "
-        "loaded; see docs/testing/02-bringup.md"
+        f"PRIMER_E2E_LMSTUDIO_TOKEN unset, LM Studio not reachable at "
+        f"{_LM_STUDIO_URL}, or no chat model loaded; see "
+        "docs/testing/02-bringup.md"
     ),
 )
 

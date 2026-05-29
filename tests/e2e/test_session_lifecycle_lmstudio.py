@@ -4,10 +4,11 @@ Covers backlog items T0037 (resume→pause→resume→cancel walk) and
 T0056 (pause then resume returns to RUNNING).
 
 These tests require LM Studio reachable at ``http://127.0.0.1:8080``
-(bearer ``***REMOVED***``) with at least one chat-completion model loaded
-(see docs/testing/02-bringup.md § "Available local model server"). The
-module probes LM Studio at collection time and `pytest.skip`s the whole
-file if it isn't reachable.
+with at least one chat-completion model loaded (see
+docs/testing/02-bringup.md § "Available local model server"). Set
+``PRIMER_E2E_LMSTUDIO_TOKEN`` to the bearer token; the module probes LM
+Studio at collection time and `pytest.skip`s the whole file if the token
+isn't set or LM Studio isn't reachable.
 
 Timing semantics — important:
 the worker pool actually processes turns once a session reaches
@@ -28,6 +29,7 @@ worker isn't controllable from the harness.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -37,7 +39,7 @@ import pytest
 
 
 _LM_STUDIO_URL = "http://127.0.0.1:8080"
-_LM_STUDIO_API_KEY = "***REMOVED***"
+_LM_STUDIO_API_KEY = os.environ.get("PRIMER_E2E_LMSTUDIO_TOKEN", "")
 
 
 def _discover_chat_model() -> str | None:
@@ -46,6 +48,8 @@ def _discover_chat_model() -> str | None:
     Done at module-import time (collection time) so the skip fires
     before the test setup spends time on the workspace/agent chain.
     """
+    if not _LM_STUDIO_API_KEY:
+        return None
     try:
         import json
         req = Request(
@@ -72,8 +76,9 @@ _MODEL_ID = _discover_chat_model()
 pytestmark = pytest.mark.skipif(
     _MODEL_ID is None,
     reason=(
-        f"LM Studio not reachable at {_LM_STUDIO_URL} or no chat model "
-        "loaded; see docs/testing/02-bringup.md for setup"
+        f"PRIMER_E2E_LMSTUDIO_TOKEN unset, LM Studio not reachable at "
+        f"{_LM_STUDIO_URL}, or no chat model loaded; see "
+        "docs/testing/02-bringup.md for setup"
     ),
 )
 

@@ -66,8 +66,12 @@ async def test_real_openai_smoke() -> None:
 
 
 @pytest.mark.skipif(
-    not (_lmstudio_reachable() and os.environ.get("LMSTUDIO_EMBED_MODEL")),
-    reason="LM Studio not reachable on 127.0.0.1:8080 OR LMSTUDIO_EMBED_MODEL not set",
+    not (
+        _lmstudio_reachable()
+        and os.environ.get("LMSTUDIO_EMBED_MODEL")
+        and os.environ.get("PRIMER_E2E_LMSTUDIO_TOKEN")
+    ),
+    reason="LM Studio not reachable, LMSTUDIO_EMBED_MODEL unset, or PRIMER_E2E_LMSTUDIO_TOKEN unset",
 )
 async def test_lmstudio_smoke() -> None:
     # Embedding model selection on LM Studio varies by what the user
@@ -79,7 +83,7 @@ async def test_lmstudio_smoke() -> None:
         models=[EmbeddingModel(name=model_name)],
         config=OpenAIConfig(
             url=HttpUrl("http://127.0.0.1:8080/v1/"),
-            api_key=SecretStr("***REMOVED***"),
+            api_key=SecretStr(os.environ["PRIMER_E2E_LMSTUDIO_TOKEN"]),
             flavor=OpenAIEmbeddingFlavor.LMSTUDIO,
         ),
         limits=Limits(max_concurrency=1),

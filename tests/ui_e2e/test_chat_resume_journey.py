@@ -14,7 +14,8 @@ Pins the chat-turn-detachment contract end-to-end:
   via the tick router until the turn terminates with ``done``.
 
 Requires the LM Studio config from ``docs/testing/02-bringup.md``
-(``http://127.0.0.1:8080`` with bearer ``***REMOVED***``).
+(``http://127.0.0.1:8080``; set ``PRIMER_E2E_LMSTUDIO_TOKEN`` to
+the bearer token).
 """
 
 from __future__ import annotations
@@ -30,15 +31,15 @@ from playwright.sync_api import expect
 _LMSTUDIO_URL = os.environ.get(
     "PRIMER_E2E_LMSTUDIO_URL", "http://127.0.0.1:8080",
 )
-_LMSTUDIO_TOKEN = os.environ.get(
-    "PRIMER_E2E_LMSTUDIO_TOKEN", "***REMOVED***",
-)
+_LMSTUDIO_TOKEN = os.environ.get("PRIMER_E2E_LMSTUDIO_TOKEN", "")
 _LMSTUDIO_MODEL = os.environ.get(
     "PRIMER_E2E_LMSTUDIO_MODEL", "google/gemma-4-e4b",
 )
 
 
 def _lmstudio_reachable() -> bool:
+    if not _LMSTUDIO_TOKEN:
+        return False
     try:
         with httpx.Client(timeout=3.0) as c:
             r = c.get(
@@ -52,7 +53,7 @@ def _lmstudio_reachable() -> bool:
 
 @pytest.mark.skipif(
     not _lmstudio_reachable(),
-    reason=f"LM Studio at {_LMSTUDIO_URL} is not reachable",
+    reason=f"PRIMER_E2E_LMSTUDIO_TOKEN unset or LM Studio at {_LMSTUDIO_URL} unreachable",
 )
 def test_chat_survives_refresh_mid_stream(
     page,
