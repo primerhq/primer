@@ -7,8 +7,11 @@ running LM Studio locally on the default port (LM Studio).
 
 from __future__ import annotations
 
+import json
 import os
 import socket
+import urllib.error
+import urllib.request
 from typing import cast
 
 import pytest
@@ -32,7 +35,7 @@ from primer.model.provider import (
 )
 
 
-def _lmstudio_reachable(host: str = "127.0.0.1", port: int = 8080) -> bool:
+def _lmstudio_port_open(host: str = "127.0.0.1", port: int = 8080) -> bool:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(0.5)
     try:
@@ -42,6 +45,47 @@ def _lmstudio_reachable(host: str = "127.0.0.1", port: int = 8080) -> bool:
         return False
     finally:
         sock.close()
+
+
+_LMSTUDIO_API_KEY = "***REMOVED***"
+
+
+def _lmstudio_has_model(host: str = "127.0.0.1", port: int = 8080) -> bool:
+    """Return True iff LM Studio is reachable AND has at least one model loaded.
+
+    Fast pre-check on the TCP port to avoid paying an HTTP timeout when the
+    port is closed, then a quick GET on LM Studio's native REST endpoint
+    ``/api/v0/models`` (which exposes a per-model ``state`` field) to confirm
+    that at least one model has ``state == "loaded"``.
+
+    Note: the OpenAI-compatible ``/v1/models`` endpoint lists every *installed*
+    model regardless of whether it is loaded into memory, so it cannot be used
+    to gate this test. ``/api/v0/models`` is the authoritative signal.
+    """
+    if not _lmstudio_port_open(host, port):
+        return False
+    url = f"http://{host}:{port}/api/v0/models"
+    req = urllib.request.Request(  # noqa: S310
+        url, headers={"Authorization": f"Bearer {_LMSTUDIO_API_KEY}"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:  # noqa: S310
+            if resp.status < 200 or resp.status >= 300:
+                return False
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return False
+    if isinstance(payload, dict):
+        data = payload.get("data")
+    elif isinstance(payload, list):
+        data = payload
+    else:
+        data = None
+    if not isinstance(data, list):
+        return False
+    return any(
+        isinstance(m, dict) and m.get("state") == "loaded" for m in data
+    )
 
 
 @pytest.mark.skipif(
@@ -79,8 +123,8 @@ async def test_real_openai_smoke() -> None:
 
 
 @pytest.mark.skipif(
-    not _lmstudio_reachable(),
-    reason="LM Studio not reachable on 127.0.0.1:8080",
+    not _lmstudio_has_model(),
+    reason="LM Studio not reachable or no model loaded on 127.0.0.1:8080",
 )
 async def test_lmstudio_smoke() -> None:
     # Pull whatever the user has loaded locally; LM Studio shows it
@@ -92,7 +136,7 @@ async def test_lmstudio_smoke() -> None:
         models=[LLMModel(name=model_name, context_length=8192)],
         config=OpenResponsesConfig(
             url=HttpUrl("http://127.0.0.1:8080/v1/"),
-            api_key=SecretStr("***REMOVED***"),
+            api_key=SecretStr(_LMSTUDIO_API_KEY),
             flavor=OpenResponsesFlavor.LMSTUDIO,
         ),
         limits=Limits(max_concurrency=1),
