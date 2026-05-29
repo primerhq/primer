@@ -452,8 +452,15 @@ async def test_create_session_graph_binding_allocates_holder_slot(
 ):
     """Graph bindings get a holder slot with a synthetic ``graph:<id>`` agent_id.
 
-    The slot lets per-node sessions share the workspace's tools via the
-    on-disk session directory (see primer/api/routers/sessions.py).
+    DO NOT flip this back to ``skips_on_disk_slot``. The holder slot is
+    load-bearing: the graph executor in ``primer/worker/pool.py`` calls
+    ``workspace.get_session(session.id)`` on this slot and uses the
+    returned AgentSession to build a ``ToolExecutionManager.for_workspace``
+    for every per-node agent — that's how graph nodes inherit the
+    workspace's tools (ls/read/write/exec/...). Without the holder,
+    ``workspace_session`` is ``None`` and per-node agents fall back to
+    the tool-less path. See the inline comment in the create-session
+    handler at primer/api/routers/sessions.py (search ``graph:<graph_id>``).
     """
     from primer.model.graph import Graph, _TerminalNode
 

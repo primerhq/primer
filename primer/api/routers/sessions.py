@@ -113,12 +113,16 @@ async def create_session(
     2. 422 when the agent / graph referenced by the binding can't be
        resolved (binding-level semantic validation failure).
     3. Persist the row with ``status=CREATED``.
-    4. For agent bindings, allocate the on-disk session slot inside the
-       workspace via :meth:`Workspace.start_session` so the
-       scheduler-visible Session row and the workspace's
-       ``.state/sessions/<sid>/`` directory share the same id (spec
-       §11.4 step 5). Graph bindings defer this — the graph executor
-       wires its own per-node session slots.
+    4. Allocate the on-disk session slot inside the workspace via
+       :meth:`Workspace.start_session` so the scheduler-visible Session
+       row and the workspace's ``.state/sessions/<sid>/`` directory
+       share the same id (spec §11.4 step 5). Agent bindings get a
+       slot keyed by the resolved agent. Graph bindings get a *holder*
+       slot whose synthetic agent_id is ``graph:<graph_id>`` — the
+       graph executor (primer/worker/pool.py) looks the holder up via
+       :meth:`Workspace.get_session` and composes the workspace's
+       tools into every per-node ``ToolExecutionManager``. Without the
+       holder, graph-bound sessions cannot access workspace tools.
     5. If ``auto_start``: bump status to ``RUNNING``, stamp
        ``started_at``, and enqueue with the scheduler.
     """
