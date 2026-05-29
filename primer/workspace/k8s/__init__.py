@@ -5,7 +5,6 @@ Wraps a single-replica StatefulSet + PVC per workspace and uses
 """
 
 from primer.workspace.k8s.backend import KubernetesWorkspaceBackend
-from primer.workspace.k8s.sandbox import K8sSandbox
 
 
-__all__ = ["K8sSandbox", "KubernetesWorkspaceBackend"]
+__all__ = ["KubernetesWorkspaceBackend"]
