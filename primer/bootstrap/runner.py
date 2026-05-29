@@ -272,12 +272,12 @@ class BootstrapRunner:
     def _resolve_wp_paths(self, spec: dict[str, Any]) -> dict[str, Any]:
         """Replace tilde paths in the workspace-provider config dict.
 
-        ``spec["config"]["path"]`` may be ``"~/.primer/workspaces"`` —
+        ``spec["config"]["root_path"]`` may be ``"~/.primer/workspaces"`` —
         replace the ``~/.primer`` prefix with ``self._root_dir``.
         """
         cfg = spec.get("config", {})
-        if isinstance(cfg, dict) and "path" in cfg:
-            cfg["path"] = str(self._resolve_path(str(cfg["path"])))
+        if isinstance(cfg, dict) and "root_path" in cfg:
+            cfg["root_path"] = str(self._resolve_path(str(cfg["root_path"])))
             spec["config"] = cfg
         return spec
 

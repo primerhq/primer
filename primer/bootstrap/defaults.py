@@ -66,7 +66,7 @@ RESERVED_WORKSPACE_PROVIDERS: dict[str, dict] = {
         "config": {
             "kind": "local",
             # Tilde is resolved by BootstrapRunner at creation time.
-            "path": "~/.primer/workspaces",
+            "root_path": "~/.primer/workspaces",
         },
     },
 }

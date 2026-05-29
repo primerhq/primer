@@ -11,7 +11,7 @@ Usage::
     config = WorkspaceProvider(
         id="local-1",
         provider=WorkspaceProviderType.LOCAL,
-        config=LocalWorkspaceConfig(path="/var/lib/primer/workspaces"),
+        config=LocalWorkspaceConfig(root_path="/var/lib/primer/workspaces"),
     )
     backend = WorkspaceBackendFactory.create(config)
     await backend.initialize()
@@ -47,7 +47,7 @@ class WorkspaceBackendFactory:
                 raise ConfigError(
                     "provider='local' requires a LocalWorkspaceConfig"
                 )
-            return LocalWorkspaceBackend(root=Path(config.config.path))
+            return LocalWorkspaceBackend(root=Path(config.config.root_path))
         if config.provider == WorkspaceProviderType.CONTAINER:
             from primer.model.workspace import ContainerWorkspaceConfig
             from primer.workspace.container.backend import (
