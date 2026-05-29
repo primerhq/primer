@@ -2,11 +2,28 @@
 ContainerRuntimeAdapter.
 
 The runtime adapter (Docker / Podman / containerd) is selected by the
-provider config's ``runtime.kind`` discriminator. Concrete adapters
-land in :mod:`primer.workspace.runtime.docker` / ``podman`` /
-``containerd`` -- imported lazily inside :func:`_adapter_for` so that
+provider config's ``runtime`` discriminator. Concrete adapters land in
+:mod:`primer.workspace.runtime.docker` / ``podman`` / ``containerd`` --
+imported lazily inside :func:`_adapter_for` so that
 ``ContainerWorkspaceBackend`` is unit-testable with a fake adapter
 without needing those modules.
+
+``create()`` honours the provider's :class:`ContainerReachabilityConfig`:
+
+* ``host_port`` -- ask the adapter to publish 5959 on the configured
+  ``bind_host`` (random host port). After start, the adapter reports
+  the discovered port back on the returned sandbox; we feed that into
+  :func:`build_runtime_url` so the runtime client URL matches.
+* ``bridge_network`` -- ask the adapter to attach the container to the
+  shared docker network and name it ``workspace-<workspace_id>``. The
+  URL is purely DNS-based; no port lookup is needed.
+
+A fresh per-workspace bearer token (``RUNTIME_TOKEN``) is minted before
+the container starts and handed to the adapter, which injects it as a
+container env var AND opens a :class:`RuntimeClient` against the
+runtime listening inside. This mirrors the K8s backend's flow so the
+two backends present the same handshake to primer-runtime; Task 6.3
+will persist the URL+token on the workspace row for re-attach.
 """
 
 from __future__ import annotations
@@ -14,22 +31,29 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import uuid
 
 from primer.int.workspace import Workspace, WorkspaceBackend
 from primer.model.except_ import ConfigError, NotFoundError
 from primer.model.workspace import (
+    ContainerReachabilityHostPort,
+    ContainerTemplateConfig,
     ContainerWorkspaceConfig,
+    ResourceLimits,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
-    ContainerTemplateConfig,
 )
 from primer.workspace.files import resolve_file_sources
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
+from primer.workspace.runtime.url import build_runtime_url
 from primer.workspace.sandbox.workspace import SandboxWorkspace
 
 
 logger = logging.getLogger(__name__)
+
+
+_NAME_PREFIX = "workspace-"
 
 
 def _generate_workspace_id() -> str:
@@ -45,22 +69,22 @@ def _host_uid_gid() -> str | None:
         return None
 
 
-def _adapter_for(runtime_cfg) -> ContainerRuntimeAdapter:
+def _adapter_for(cfg: ContainerWorkspaceConfig) -> ContainerRuntimeAdapter:
     """Build the matching adapter. Imports are deferred so that this
     module loads cleanly even when the optional runtime libraries
     aren't installed."""
-    if runtime_cfg.kind == "docker":
+    if cfg.runtime == "docker":
         from primer.workspace.runtime.docker import DockerRuntimeAdapter
-        return DockerRuntimeAdapter(runtime_cfg)
-    if runtime_cfg.kind == "podman":
+        return DockerRuntimeAdapter(cfg)
+    if cfg.runtime == "podman":
         from primer.workspace.runtime.podman import PodmanRuntimeAdapter
-        return PodmanRuntimeAdapter(runtime_cfg)
-    if runtime_cfg.kind == "containerd":
+        return PodmanRuntimeAdapter(cfg)
+    if cfg.runtime == "containerd":
         from primer.workspace.runtime.containerd.adapter import (
             ContainerdRuntimeAdapter,
         )
-        return ContainerdRuntimeAdapter(runtime_cfg)
-    raise ConfigError(f"unknown runtime kind {runtime_cfg.kind!r}")
+        return ContainerdRuntimeAdapter(cfg)
+    raise ConfigError(f"unknown runtime kind {cfg.runtime!r}")
 
 
 class ContainerWorkspaceBackend(WorkspaceBackend):
@@ -74,7 +98,7 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
     ) -> None:
         self._config = config
         self._adapter = adapter if adapter is not None else _adapter_for(
-            config.runtime,
+            config,
         )
         self._workspaces: dict[str, SandboxWorkspace] = {}
         self._lock = asyncio.Lock()
@@ -119,13 +143,26 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         env_str = {k: v.get_secret_value() for k, v in env.items()}
 
         workspace_id = _generate_workspace_id()
-        name = f"{self._config.name_prefix}{workspace_id}"
+        # ``workspace-<id>`` is also the docker container's hostname; the
+        # bridge_network URL builder reaches the runtime via this exact
+        # name. Keep the prefix shared between both reachability modes so
+        # ``list()`` works uniformly.
+        name = f"{_NAME_PREFIX}{workspace_id}"
         volume = f"{name}-data"
-        image = spec.image or self._config.default_image
-        if image is None:
-            raise ConfigError(
-                "template has no image and provider has no default_image"
-            )
+        image = spec.image
+        if not image:
+            raise ConfigError("template has no image")
+
+        token = secrets.token_urlsafe(32)
+        reachability = self._config.reachability
+
+        # Resource limits live on the template in the redesigned model;
+        # build the legacy ResourceLimits shape the adapter still consumes.
+        resources = ResourceLimits(
+            cpu_cores=spec.cpu_cores,
+            memory_bytes=spec.memory_bytes,
+            network="full",
+        )
 
         sandbox = await self._adapter.create_sandbox(
             name=name,
@@ -137,16 +174,49 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
             volume_target=spec.workdir,
             extra_mounts=spec.extra_mounts,
             user=spec.user or _host_uid_gid(),
-            resources=template.resources,
-            network=template.resources.network,
-            pull_policy=self._config.pull_policy,
+            resources=resources,
+            network="full",
+            pull_policy="if_missing",
+            reachability=reachability,
+            token=token,
         )
 
         try:
+            # For host_port mode, the adapter discovered the mapped host
+            # port after start and stashed it on the sandbox; pick it up
+            # so the URL we build below matches what the platform can
+            # actually reach.
+            mapped_host_port: int | None = None
+            if isinstance(reachability, ContainerReachabilityHostPort):
+                mapped_host_port = getattr(sandbox, "mapped_host_port", None)
+                if mapped_host_port is None:
+                    raise ConfigError(
+                        "host_port reachability: adapter did not report "
+                        "a mapped_host_port back to the backend"
+                    )
+            # Build the platform-side URL via the same helper the K8s
+            # backend uses. The real Docker adapter has already wired a
+            # :class:`RuntimeClient` against this same URL+token inside
+            # the returned :class:`WSSandbox` -- we re-derive the URL
+            # here purely for assertion + observability (Task 6.3 will
+            # persist it on the workspace row). Test adapters that
+            # return a non-WSSandbox handle (e.g. ``FakeSandbox``) skip
+            # the runtime-client step entirely since there's no real
+            # process to talk to.
+            url = build_runtime_url(
+                provider_config=self._config,
+                workspace_id=workspace_id,
+                mapped_host_port=mapped_host_port,
+            )
+            logger.debug(
+                "container workspace %s URL=%s (token redacted)",
+                workspace_id, url,
+            )
+
             # Resolve every FileSource variant (inline/url/document/secret)
-            # up-front via the central helper; the sandbox just writes the
+            # up-front via the central helper; the sandbox writes the
             # resulting bytes. document/secret resolvers aren't wired here
-            # yet — the orchestration layer will pass them in once Phase 6
+            # yet -- the orchestration layer will pass them in once Phase 6
             # threads app state through.
             resolved_files = await resolve_file_sources(files)
             for rf in resolved_files:
@@ -154,8 +224,6 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
                     f"{spec.workdir}/{rf.path}",
                     rf.content,
                 )
-                # NOTE: file mode application via container exec is deferred;
-                # the sandbox protocol has no chmod yet (Phase 5 will add it).
             for cmd in init_cmds:
                 res = await sandbox.exec(
                     cmd, workdir=spec.workdir, env=env_str,
@@ -196,7 +264,7 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         cached = self._workspaces.get(workspace_id)
         if cached is not None:
             return cached
-        name = f"{self._config.name_prefix}{workspace_id}"
+        name = f"{_NAME_PREFIX}{workspace_id}"
         sandbox = await self._adapter.get_sandbox(name)
         if sandbox is None:
             return None
@@ -237,14 +305,14 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
     async def list(self) -> list[str]:
         names = await self._adapter.list_sandboxes()
         return [
-            n.removeprefix(self._config.name_prefix) for n in names
-            if n.startswith(self._config.name_prefix)
+            n.removeprefix(_NAME_PREFIX) for n in names
+            if n.startswith(_NAME_PREFIX)
         ]
 
     async def destroy(self, workspace_id: str) -> None:
         async with self._lock:
             ws = self._workspaces.pop(workspace_id, None)
-        name = f"{self._config.name_prefix}{workspace_id}"
+        name = f"{_NAME_PREFIX}{workspace_id}"
         volume = f"{name}-data"
         if ws is not None:
             sandbox = ws.sandbox

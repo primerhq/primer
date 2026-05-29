@@ -17,7 +17,13 @@ import secrets
 from typing import Any, Literal
 
 from primer.int.sandbox import Sandbox
-from primer.model.workspace import ResourceLimits, VolumeMount
+from primer.model.workspace import (
+    ContainerReachabilityBridge,
+    ContainerReachabilityConfig,
+    ContainerReachabilityHostPort,
+    ResourceLimits,
+    VolumeMount,
+)
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
 from primer.workspace.runtime.runtime_client import RuntimeClient
 from primer.workspace.runtime.ws_sandbox import WSSandbox
@@ -109,24 +115,54 @@ async def _discover_host_port(container, container_port: int) -> int:
     )
 
 
-async def _make_ws_sandbox(docker, container, name: str, token: str) -> WSSandbox:
-    """Wait for runtime, connect RuntimeClient, wrap in WSSandbox."""
+async def _make_ws_sandbox(
+    docker,
+    container,
+    name: str,
+    token: str,
+    *,
+    reachability: ContainerReachabilityConfig,
+) -> WSSandbox:
+    """Wait for runtime, connect RuntimeClient, wrap in WSSandbox.
+
+    The RuntimeClient URL depends on ``reachability``:
+
+    * ``host_port`` -- discover the host port docker mapped 5959 to and
+      use it together with the configured ``bind_host`` over loopback /
+      LAN. The discovered port is also stashed on the returned
+      :class:`WSSandbox` as ``mapped_host_port`` so the backend can
+      record it on the workspace.
+    * ``bridge_network`` -- reach the runtime through docker's bridge
+      DNS at ``workspace-<id>:5959``. The container name is the docker
+      hostname, so we use it verbatim.
+    """
     await _wait_for_ready(container)
-    host_port = await _discover_host_port(container, _RUNTIME_PORT)
-    runtime_client = RuntimeClient(
-        url=f"ws://127.0.0.1:{host_port}/",
-        token=token,
-    )
+    mapped_host_port: int | None = None
+    if isinstance(reachability, ContainerReachabilityHostPort):
+        mapped_host_port = await _discover_host_port(container, _RUNTIME_PORT)
+        url = f"ws://{reachability.bind_host}:{mapped_host_port}/"
+    elif isinstance(reachability, ContainerReachabilityBridge):
+        url = f"ws://{name}:{_RUNTIME_PORT}/"
+    else:  # pragma: no cover -- discriminated union exhausted
+        raise ValueError(
+            f"Unknown container reachability kind: {reachability.kind!r}"
+        )
+    runtime_client = RuntimeClient(url=url, token=token)
     await runtime_client.connect()
     handle = _DockerContainerHandle(container)
     container_info = await container.show()
     container_id = container_info.get("Id", name)
-    return WSSandbox(
+    sandbox = WSSandbox(
         runtime_client=runtime_client,
         container_id=container_id,
         workspace_root="/workspace",
         container_handle=handle,
     )
+    # Stash the mapped host port on the sandbox so the backend can pass
+    # it back into ``build_runtime_url`` (only meaningful in host_port
+    # mode; remains None for bridge_network).
+    sandbox.mapped_host_port = mapped_host_port  # type: ignore[attr-defined]
+    return sandbox
 
 
 class DockerRuntimeAdapter(ContainerRuntimeAdapter):
@@ -138,8 +174,30 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
 
     async def initialize(self) -> None:
         import aiodocker
-        url = self._config.socket
+        # ``self._config`` is either the legacy DockerRuntimeConfig (which
+        # exposes ``.socket``) or a :class:`ContainerWorkspaceConfig` with a
+        # ``.connection`` block. Handle both so the adapter is usable from
+        # the redesigned backend without forcing every existing caller to
+        # migrate at once.
+        url = self._extract_docker_url()
         self._docker = aiodocker.Docker(url=url) if url else aiodocker.Docker()
+
+    def _extract_docker_url(self) -> str | None:
+        """Resolve the Docker engine URL from whichever config shape we
+        were handed."""
+        cfg = self._config
+        socket = getattr(cfg, "socket", None)
+        if socket is not None:
+            return socket
+        conn = getattr(cfg, "connection", None)
+        if conn is None:
+            return None
+        if getattr(conn, "kind", None) == "socket":
+            sp = getattr(conn, "socket_path", None)
+            return f"unix://{sp}" if sp else None
+        if getattr(conn, "kind", None) == "remote":
+            return getattr(conn, "url", None)
+        return None
 
     async def aclose(self) -> None:
         if self._docker is not None:
@@ -161,6 +219,8 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         resources: ResourceLimits,
         network: Literal["none", "egress", "full"],
         pull_policy: Literal["always", "if_missing", "never"],
+        reachability: ContainerReachabilityConfig | None = None,
+        token: str | None = None,
     ) -> Sandbox:
         assert self._docker is not None, "call initialize() first"
 
@@ -168,6 +228,14 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         # ``image`` is recorded in labels for traceability but the
         # runtime server is the actual entrypoint.
         runtime_image = _RUNTIME_IMAGE
+
+        # Backwards-compat: legacy callers (the live docker integration
+        # tests) don't pass reachability/token. Default to host_port on
+        # loopback and a fresh token so they keep working.
+        if reachability is None:
+            reachability = ContainerReachabilityHostPort()
+        if token is None:
+            token = secrets.token_urlsafe(32)
 
         # Pull runtime image per policy.
         if pull_policy == "always":
@@ -200,20 +268,40 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
                 "ReadOnly": vm.read_only,
             })
 
-        # Generate a per-sandbox shared secret for the runtime auth.
-        token = secrets.token_urlsafe(32)
-
         # Merge caller env with runtime-required vars.
         merged_env = dict(env)
+        # Runtime container reads ``PRIMER_RUNTIME_TOKEN``; ``RUNTIME_TOKEN``
+        # is the operator-facing name used by the K8s Secret. Inject both
+        # so both startup paths work without operator-side adjustment.
         merged_env["PRIMER_RUNTIME_TOKEN"] = token
+        merged_env["RUNTIME_TOKEN"] = token
 
         host_config: dict[str, Any] = {
             "Mounts": mounts,
-            # Ask Docker to assign a free host port for the runtime WS port.
-            "PortBindings": {
-                f"{_RUNTIME_PORT}/tcp": [{"HostIp": "127.0.0.1", "HostPort": ""}],
-            },
         }
+        endpoints: dict[str, Any] | None = None
+        if isinstance(reachability, ContainerReachabilityHostPort):
+            host_config["PortBindings"] = {
+                f"{_RUNTIME_PORT}/tcp": [
+                    {"HostIp": reachability.bind_host, "HostPort": ""},
+                ],
+            }
+        elif isinstance(reachability, ContainerReachabilityBridge):
+            # Join the shared bridge network so the platform container
+            # can resolve ``workspace-<id>`` via docker's embedded DNS.
+            host_config["NetworkMode"] = reachability.network_name
+            endpoints = {
+                reachability.network_name: {
+                    # ``Aliases`` so the platform can also reach the
+                    # workspace by an alternate name if it wants to.
+                    "Aliases": [name],
+                },
+            }
+        else:  # pragma: no cover
+            raise ValueError(
+                f"Unknown container reachability kind: {reachability.kind!r}"
+            )
+
         if network == "none":
             # "none" network mode is incompatible with port publishing.
             # We need the runtime accessible over loopback, so we do NOT
@@ -237,6 +325,10 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             "ExposedPorts": {f"{_RUNTIME_PORT}/tcp": {}},
             "Tty": False,
         }
+        if endpoints is not None:
+            container_config["NetworkingConfig"] = {
+                "EndpointsConfig": endpoints,
+            }
         if user is not None:
             container_config["User"] = user
 
@@ -244,7 +336,9 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             name=name, config=container_config,
         )
         await container.start()
-        return await _make_ws_sandbox(self._docker, container, name, token)
+        return await _make_ws_sandbox(
+            self._docker, container, name, token, reachability=reachability,
+        )
 
     async def get_sandbox(self, name: str) -> Sandbox | None:
         """Look up a sandbox by name.

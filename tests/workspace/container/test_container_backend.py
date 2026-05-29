@@ -17,12 +17,14 @@ import pytest
 from primer.int.sandbox import Sandbox
 from primer.model.except_ import ConfigError, NotFoundError
 from primer.model.workspace import (
+    ContainerConnectionSocket,
+    ContainerReachabilityConfig,
+    ContainerReachabilityHostPort,
+    ContainerTemplateConfig,
     ContainerWorkspaceConfig,
     ResourceLimits,
     VolumeMount,
     WorkspaceTemplate,
-    ContainerTemplateConfig,
-    DockerRuntimeConfig,
 )
 from primer.workspace.container.backend import ContainerWorkspaceBackend
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
@@ -75,10 +77,16 @@ class _FakeAdapter(ContainerRuntimeAdapter):
         resources: ResourceLimits,
         network: Literal["none", "egress", "full"],
         pull_policy: Literal["always", "if_missing", "never"],
+        reachability: ContainerReachabilityConfig,
+        token: str,
     ) -> Sandbox:
         root = self._tmp / name
         root.mkdir(parents=True, exist_ok=True)
         sb = _TrackingFakeSandbox(root=root, sandbox_id=name, adapter=self)
+        # The backend reads ``mapped_host_port`` off the returned sandbox
+        # for host_port reachability; the FakeSandbox represents both
+        # modes here.
+        sb.mapped_host_port = 32100
         self._sandboxes[name] = sb
         self._volumes.add(volume_name)
         return sb
@@ -101,7 +109,13 @@ def _template() -> WorkspaceTemplate:
 
 
 def _config() -> ContainerWorkspaceConfig:
-    return ContainerWorkspaceConfig(runtime=DockerRuntimeConfig())
+    return ContainerWorkspaceConfig(
+        runtime="docker",
+        connection=ContainerConnectionSocket(
+            socket_path="/var/run/docker.sock",
+        ),
+        reachability=ContainerReachabilityHostPort(),
+    )
 
 
 @pytest.mark.asyncio
@@ -154,13 +168,17 @@ async def test_destroy_nonexistent_raises(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_image_required(tmp_path: Path) -> None:
-    """Pydantic itself rejects empty image at parse time."""
-    from pydantic import ValidationError
-    with pytest.raises(ValidationError):
-        WorkspaceTemplate(
-            id="t1", provider_id="c1", description="",
-            backend={"kind": "container", "image": ""},  # type: ignore[arg-type]
-        )
+    """Empty image is refused at create time (template parses but is unusable)."""
+    adapter = _FakeAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    template = WorkspaceTemplate(
+        id="t1", provider_id="c1", description="",
+        backend=ContainerTemplateConfig(image=""),
+    )
+    with pytest.raises(ConfigError, match="image"):
+        await backend.create(template)
+    await backend.aclose()
 
 
 @pytest.mark.asyncio
