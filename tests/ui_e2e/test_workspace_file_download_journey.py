@@ -63,7 +63,7 @@ def _seed_workspace_with_file(
         r = c.post("/v1/workspace_providers", json={
             "id": ids["wp"],
             "provider": "local",
-            "config": {"kind": "local", "path": f"/tmp/u0106-{suffix}"},
+            "config": {"kind": "local", "root_path": f"/tmp/u0106-{suffix}"},
         })
         assert r.status_code == 201, f"wp: {r.text}"
         r = c.post("/v1/workspace_templates", json={

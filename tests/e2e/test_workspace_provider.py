@@ -59,7 +59,16 @@ async def test_t0116_workspace_provider_container_kind_clean_response(
         "provider": "container",
         "config": {
             "kind": "container",
-            "runtime": {"kind": "docker"},
+            "runtime": "docker",
+            "connection": {
+                "kind": "socket",
+                "socket_path": "/var/run/docker.sock",
+            },
+            "reachability": {
+                "kind": "host_port",
+                "bind_host": "127.0.0.1",
+            },
+            "image_pull_secrets": [],
         },
     }
     resp = await client.post("/v1/workspace_providers", json=body)
@@ -96,7 +105,11 @@ async def test_t0117_workspace_provider_kubernetes_kind_clean_response(
         "provider": "kubernetes",
         "config": {
             "kind": "kubernetes",
-            "namespace": "default",
+            "variant": "system",
+            "connection": {"kind": "in_cluster"},
+            "namespace": "primer",
+            "reachability": {"kind": "in_cluster"},
+            "image_pull_secrets": [],
         },
     }
     resp = await client.post("/v1/workspace_providers", json=body)
@@ -133,7 +146,7 @@ async def test_t0124_workspace_template_description_optional(
         json={
             "id": provider_id,
             "provider": "local",
-            "config": {"kind": "local", "path": "/tmp/primer-e2e-t0124"},
+            "config": {"kind": "local", "root_path": "/tmp/primer-e2e-t0124"},
         },
     )
     assert pr.status_code == 201, pr.text
@@ -185,7 +198,7 @@ async def test_t0052_delete_workspace_provider_round_trip(
     body = {
         "id": entity_id,
         "provider": "local",
-        "config": {"kind": "local", "path": "/tmp/primer-e2e-t0052"},
+        "config": {"kind": "local", "root_path": "/tmp/primer-e2e-t0052"},
     }
     create = await client.post("/v1/workspace_providers", json=body)
     assert create.status_code == 201, create.text
@@ -210,12 +223,12 @@ async def test_t0305_workspace_provider_get_echoes_local_config(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
     """T0305 — Local-kind WorkspaceProvider config has no SecretStr
-    fields (just `kind` + `path`). GET response must echo both
+    fields (just `kind` + `root_path`). GET response must echo both
     fields byte-identical to the create body — pin that the provider
     config introspection works for non-secret backends.
     """
     provider_id = f"wp-t0305-{unique_suffix}"
-    config = {"kind": "local", "path": str(tmp_path)}
+    config = {"kind": "local", "root_path": str(tmp_path)}
     create = await client.post(
         "/v1/workspace_providers",
         json={"id": provider_id, "provider": "local", "config": config},
@@ -227,7 +240,7 @@ async def test_t0305_workspace_provider_get_echoes_local_config(
         row = got.json()
         assert row["provider"] == "local", row
         assert row["config"]["kind"] == "local", row
-        assert row["config"]["path"] == str(tmp_path), row
+        assert row["config"]["root_path"] == str(tmp_path), row
     finally:
         await client.delete(f"/v1/workspace_providers/{provider_id}")
 
@@ -254,7 +267,7 @@ async def test_t0306_workspace_providers_find_predicate_provider_kind(
                 json={
                     "id": pid,
                     "provider": "local",
-                    "config": {"kind": "local", "path": str(tmp_path)},
+                    "config": {"kind": "local", "root_path": str(tmp_path)},
                 },
             )
             assert r.status_code == 201, r.text
@@ -312,7 +325,7 @@ async def test_t0345_delete_workspace_provider_orphan_templates_still_listable(
         json={
             "id": provider_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         },
     )
     assert pr.status_code == 201, pr.text

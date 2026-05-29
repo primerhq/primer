@@ -182,7 +182,7 @@ async def test_t0852_sqlite_multi_router_crud_journey(tmp_path: Path) -> None:
                 json={
                     "id": wp_id,
                     "provider": "local",
-                    "config": {"kind": "local", "path": str(tmp_path / "ws")},
+                    "config": {"kind": "local", "root_path": str(tmp_path / "ws")},
                 },
             )
             assert r.status_code == 201, r.text

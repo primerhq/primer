@@ -306,8 +306,16 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
             "provider": "container",
             "config": {
                 "kind": "container",
-                "image": "alpine:3.20",
-                "workspace_subpath": "/workspace",
+                "runtime": "docker",
+                "connection": {
+                    "kind": "socket",
+                    "socket_path": "/var/run/docker.sock",
+                },
+                "reachability": {
+                    "kind": "host_port",
+                    "bind_host": "127.0.0.1",
+                },
+                "image_pull_secrets": [],
             },
         },
     )
@@ -341,7 +349,6 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
                 "backend": {
                     "kind": "container",
                     "image": "alpine:3.20",
-                    "workspace_subpath": "/workspace",
                 },
             },
         )
@@ -452,7 +459,7 @@ async def test_t0739_graph_callable_router_empty_registry_clean_fatal(
         json={
             "id": wp_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         },
     )
     assert r.status_code == 201, r.text

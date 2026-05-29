@@ -100,7 +100,7 @@ def _seed_ladder(
             json={
                 "id": wp_id,
                 "provider": "local",
-                "config": {"kind": "local", "path": container_root},
+                "config": {"kind": "local", "root_path": container_root},
             },
         )
         assert r.status_code == 201, r.text

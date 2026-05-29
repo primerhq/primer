@@ -3460,7 +3460,7 @@ async def test_t0485_predicate_gt_on_sparse_metadata_path_clean(
                 json={
                     "id": wp_id,
                     "provider": "local",
-                    "config": {"kind": "local", "path": tmp},
+                    "config": {"kind": "local", "root_path": tmp},
                 },
             )
             assert wp.status_code == 201, wp.text

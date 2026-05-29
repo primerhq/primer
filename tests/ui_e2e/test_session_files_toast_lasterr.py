@@ -61,7 +61,7 @@ def _seed_workspace(base_url: str, wp_id: str, tpl_id: str, tmp_path) -> str:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/workspace_providers", json={
             "id": wp_id, "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         })
         assert r.status_code == 201, r.text
         r = c.post("/v1/workspace_templates", json={
@@ -242,7 +242,7 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/workspace_providers", json={
             "id": wp_id, "provider": "local",
-            "config": {"kind": "local", "path": container_path},
+            "config": {"kind": "local", "root_path": container_path},
         })
         assert r.status_code == 201, r.text
         r = c.post("/v1/workspace_templates", json={

@@ -130,7 +130,7 @@ def test_u0095_workspaces_sidebar_count_decrements_after_delete(
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/workspace_providers", json={
             "id": wp_id, "provider": "local",
-            "config": {"kind": "local", "path": container_path},
+            "config": {"kind": "local", "root_path": container_path},
         })
         assert r.status_code == 201, r.text
         r = c.post("/v1/workspace_templates", json={

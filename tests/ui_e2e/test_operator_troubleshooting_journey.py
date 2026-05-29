@@ -64,7 +64,7 @@ def _seed_ladder(base_url: str, suffix: str) -> dict[str, str]:
         r = c.post("/v1/workspace_providers", json={
             "id": ids["wp"],
             "provider": "local",
-            "config": {"kind": "local", "path": _container_ws_root(suffix)},
+            "config": {"kind": "local", "root_path": _container_ws_root(suffix)},
         })
         assert r.status_code == 201, f"seed wp: {r.text}"
         r = c.post("/v1/workspace_templates", json={

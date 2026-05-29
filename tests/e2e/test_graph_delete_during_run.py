@@ -118,7 +118,7 @@ async def test_t0737_delete_graph_during_running_graph_session(
         json={
             "id": wp_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         },
     )
     assert r.status_code == 201, r.text

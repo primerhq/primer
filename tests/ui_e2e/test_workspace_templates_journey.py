@@ -26,7 +26,7 @@ def _seed_provider(base_url: str, provider_id: str) -> None:
         r = c.post("/v1/workspace_providers", json={
             "id": provider_id,
             "provider": "local",
-            "config": {"kind": "local", "path": f"/tmp/{provider_id}"},
+            "config": {"kind": "local", "root_path": f"/tmp/{provider_id}"},
         })
         assert r.status_code == 201, r.text
 

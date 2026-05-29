@@ -24,7 +24,7 @@ def _provider_body(entity_id: str, root: Path) -> dict:
     return {
         "id": entity_id,
         "provider": "local",
-        "config": {"kind": "local", "path": str(root)},
+        "config": {"kind": "local", "root_path": str(root)},
     }
 
 
@@ -2547,7 +2547,7 @@ async def test_t0222_workspace_provider_delete_then_recreate_same_id(
     body = {
         "id": provider_id,
         "provider": "local",
-        "config": {"kind": "local", "path": str(tmp_path)},
+        "config": {"kind": "local", "root_path": str(tmp_path)},
     }
     first = await client.post("/v1/workspace_providers", json=body)
     assert first.status_code == 201, first.text
@@ -3857,7 +3857,7 @@ async def test_t0378_template_with_empty_init_commands_materialises_cleanly(
         json={
             "id": provider_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         },
     )
     assert pr.status_code == 201, pr.text
@@ -6281,7 +6281,7 @@ async def test_t0529_workspace_destroy_random_uuid_clean_404(
         "/v1/workspace_providers",
         json={
             "id": provider_id, "provider": "local",
-            "config": {"kind": "local", "path": "/tmp/t0529"},
+            "config": {"kind": "local", "root_path": "/tmp/t0529"},
         },
     )
     if pr.status_code != 201:

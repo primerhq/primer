@@ -246,7 +246,7 @@ async def test_t0850_tool_approval_required_park_journey(
             json={
                 "id": wp_id,
                 "provider": "local",
-                "config": {"kind": "local", "path": str(tmp_path)},
+                "config": {"kind": "local", "root_path": str(tmp_path)},
             },
         )
         assert r.status_code == 201, r.text

@@ -71,7 +71,7 @@ def _workspace_provider_body(entity_id: str, root: Path) -> dict:
     return {
         "id": entity_id,
         "provider": "local",
-        "config": {"kind": "local", "path": str(root)},
+        "config": {"kind": "local", "root_path": str(root)},
     }
 
 

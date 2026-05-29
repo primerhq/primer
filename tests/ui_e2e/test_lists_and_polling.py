@@ -87,7 +87,7 @@ def test_u0024_workspaces_sidebar_count_polls_after_api_create(
         r = c.post("/v1/workspace_providers", json={
             "id": wp_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         })
         assert r.status_code == 201, f"seed provider failed: {r.text}"
         r = c.post("/v1/workspace_templates", json={

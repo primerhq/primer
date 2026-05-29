@@ -73,7 +73,7 @@ def _seed_session_ladder(
         r = c.post("/v1/workspace_providers", json={
             "id": ids["wp"],
             "provider": "local",
-            "config": {"kind": "local", "path": _container_ws_root(suffix)},
+            "config": {"kind": "local", "root_path": _container_ws_root(suffix)},
         })
         assert r.status_code == 201, f"seed wp failed: {r.text}"
         r = c.post("/v1/workspace_templates", json={
@@ -285,7 +285,7 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
             r = c.post("/v1/workspace_providers", json={
                 "id": ids["wp"],
                 "provider": "local",
-                "config": {"kind": "local", "path": f"/tmp/u0104-{unique_suffix}"},
+                "config": {"kind": "local", "root_path": f"/tmp/u0104-{unique_suffix}"},
             })
             assert r.status_code == 201, f"seed wp: {r.text}"
             r = c.post("/v1/workspace_templates", json={

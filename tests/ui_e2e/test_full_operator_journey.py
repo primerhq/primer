@@ -68,7 +68,7 @@ def _seed_full_set(base_url: str, suffix: str, ws_root: Path) -> dict[str, str]:
         r = c.post("/v1/workspace_providers", json={
             "id": ids["wp"],
             "provider": "local",
-            "config": {"kind": "local", "path": str(ws_root)},
+            "config": {"kind": "local", "root_path": str(ws_root)},
         })
         assert r.status_code == 201, f"seed wp failed: {r.text}"
         r = c.post("/v1/workspace_templates", json={

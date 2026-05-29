@@ -69,7 +69,7 @@ def test_u0101_workspaces_list_filter_narrows_table(
         for wpid in (wp_a, wp_b):
             r = c.post("/v1/workspace_providers", json={
                 "id": wpid, "provider": "local",
-                "config": {"kind": "local", "path": container_path},
+                "config": {"kind": "local", "root_path": container_path},
             })
             assert r.status_code == 201, r.text
             cleanup_urls.append(f"/v1/workspace_providers/{wpid}")

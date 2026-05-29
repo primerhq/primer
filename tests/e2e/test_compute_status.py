@@ -881,7 +881,7 @@ async def test_t0358_session_bound_to_graph_with_subgraph_creates_cleanly(
                 json={
                     "id": wp_id,
                     "provider": "local",
-                    "config": {"kind": "local", "path": tmp},
+                    "config": {"kind": "local", "root_path": tmp},
                 },
             )
             assert wp.status_code == 201, wp.text
@@ -1749,7 +1749,7 @@ async def test_t0473_put_graph_with_live_session_clean_envelope(
                 json={
                     "id": wp_id,
                     "provider": "local",
-                    "config": {"kind": "local", "path": tmp},
+                    "config": {"kind": "local", "root_path": tmp},
                 },
             )
             assert wp.status_code == 201, wp.text
@@ -1892,7 +1892,7 @@ async def test_t0474_delete_graph_with_bound_session_orphan_tolerated(
                 json={
                     "id": wp_id,
                     "provider": "local",
-                    "config": {"kind": "local", "path": tmp},
+                    "config": {"kind": "local", "root_path": tmp},
                 },
             )
             assert wp.status_code == 201, wp.text
@@ -2703,7 +2703,7 @@ async def test_t0520_graph_entry_at_subgraph_node_session_converges_cleanly(
                 json={
                     "id": wp_id,
                     "provider": "local",
-                    "config": {"kind": "local", "path": tmp},
+                    "config": {"kind": "local", "root_path": tmp},
                 },
             )
             assert wp.status_code == 201, wp.text
@@ -3408,7 +3408,7 @@ async def test_t0548_put_graph_with_paused_session_clean(
                 "/v1/workspace_providers",
                 json={
                     "id": wp_id, "provider": "local",
-                    "config": {"kind": "local", "path": tmp},
+                    "config": {"kind": "local", "root_path": tmp},
                 },
             )
             assert wp.status_code == 201, wp.text
@@ -4848,7 +4848,7 @@ async def test_t0624_graph_deleted_then_resume_session_clean_fatal_path(
         json={
             "id": wp_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         },
     )
     assert wp.status_code == 201, wp.text
@@ -5090,7 +5090,7 @@ async def test_t0638_graph_session_steer_cancel_resume_clean_fatal(
         json={
             "id": wp_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         },
     )
     assert wp.status_code == 201, wp.text
@@ -5216,7 +5216,7 @@ async def test_t0639_two_graph_bound_sessions_terminate_independently(
         json={
             "id": wp_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         },
     )
     assert wp.status_code == 201, wp.text
@@ -5344,7 +5344,7 @@ async def test_t0640_graph_put_mid_flight_on_running_session(
         json={
             "id": wp_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         },
     )
     assert wp.status_code == 201, wp.text
@@ -5641,7 +5641,7 @@ async def test_t0672_cancel_graph_bound_created_before_first_turn(
         json={
             "id": wp_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         },
     )
     assert wp.status_code == 201, wp.text
@@ -5745,7 +5745,7 @@ async def test_t0673_graph_put_entry_swap_mid_flight_session_clean_fatal(
         json={
             "id": wp_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         },
     )
     assert wp.status_code == 201, wp.text

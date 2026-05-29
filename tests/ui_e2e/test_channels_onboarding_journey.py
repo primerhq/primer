@@ -63,7 +63,7 @@ def _seed_workspace(base_url: str, suffix: str, tmp_path) -> dict[str, str]:
             json={
                 "id": ids["wp"],
                 "provider": "local",
-                "config": {"kind": "local", "path": f"/tmp/u0108-{suffix}"},
+                "config": {"kind": "local", "root_path": f"/tmp/u0108-{suffix}"},
             },
         )
         assert r.status_code == 201, r.text

@@ -50,7 +50,7 @@ def _seed_workspace(base_url: str, wp_id: str, tpl_id: str, tmp_path) -> str:
         r = c.post("/v1/workspace_providers", json={
             "id": wp_id,
             "provider": "local",
-            "config": {"kind": "local", "path": str(tmp_path)},
+            "config": {"kind": "local", "root_path": str(tmp_path)},
         })
         assert r.status_code == 201, f"seed wp provider failed: {r.text}"
         r = c.post("/v1/workspace_templates", json={
