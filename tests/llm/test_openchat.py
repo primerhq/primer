@@ -533,3 +533,378 @@ class TestResponseFormat:
     def test_invalid_type_raises_config_error(self) -> None:
         with pytest.raises(ConfigError, match="response_format"):
             _response_format_to_param(42)  # type: ignore[arg-type]
+
+
+from types import SimpleNamespace as NS
+
+from primer.llm.openchat import (
+    _StreamState,
+    _build_usage,
+    _map_finish_reason,
+    _translate_chunk,
+)
+from primer.model.chat import (
+    Done,
+    StreamStart,
+    TextDelta,
+    ToolCallDelta,
+    ToolCallEnd,
+    ToolCallStart,
+    Usage,
+)
+
+
+class TestStopReason:
+    def test_stop_maps_to_stop(self) -> None:
+        assert _map_finish_reason("stop") == "stop"
+
+    def test_length_maps_to_max_tokens(self) -> None:
+        assert _map_finish_reason("length") == "max_tokens"
+
+    def test_tool_calls_maps_to_tool_use(self) -> None:
+        assert _map_finish_reason("tool_calls") == "tool_use"
+
+    def test_content_filter_maps_to_content_filter(self) -> None:
+        assert _map_finish_reason("content_filter") == "content_filter"
+
+    def test_unknown_maps_to_other(self) -> None:
+        assert _map_finish_reason("weird") == "other"
+
+    def test_none_maps_to_other(self) -> None:
+        assert _map_finish_reason(None) == "other"
+
+
+class TestStreamMapping:
+    def test_first_chunk_with_role_emits_stream_start(self) -> None:
+        state = _StreamState()
+        chunk = NS(
+            id="chatcmpl-1",
+            model="gpt-4o-mini",
+            choices=[NS(index=0, delta=NS(role="assistant", content=None, tool_calls=None), finish_reason=None)],
+            usage=None,
+        )
+        out = _translate_chunk(chunk, state)
+        assert len(out) == 1
+        assert isinstance(out[0], StreamStart)
+        assert out[0].request_id == "chatcmpl-1"
+        assert out[0].model == "gpt-4o-mini"
+        assert state.stream_started is True
+
+    def test_subsequent_text_only_chunk_emits_text_delta(self) -> None:
+        state = _StreamState()
+        _translate_chunk(
+            NS(
+                id="chatcmpl-1",
+                model="gpt-4o-mini",
+                choices=[NS(index=0, delta=NS(role="assistant", content=None, tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            state,
+        )
+        chunk = NS(
+            id="chatcmpl-1",
+            model="gpt-4o-mini",
+            choices=[NS(index=0, delta=NS(role=None, content="hi", tool_calls=None), finish_reason=None)],
+            usage=None,
+        )
+        out = _translate_chunk(chunk, state)
+        assert len(out) == 1
+        assert isinstance(out[0], TextDelta)
+        assert out[0].text == "hi"
+
+    def test_text_delta_when_role_arrives_in_same_chunk_emits_start_then_text(self) -> None:
+        state = _StreamState()
+        chunk = NS(
+            id="chatcmpl-1",
+            model="gpt-4o-mini",
+            choices=[NS(index=0, delta=NS(role="assistant", content="hi", tool_calls=None), finish_reason=None)],
+            usage=None,
+        )
+        out = _translate_chunk(chunk, state)
+        kinds = [type(e).__name__ for e in out]
+        assert kinds == ["StreamStart", "TextDelta"]
+
+    def test_tool_call_start_emits_tool_call_start(self) -> None:
+        state = _StreamState()
+        _translate_chunk(
+            NS(
+                id="x",
+                model="m",
+                choices=[NS(index=0, delta=NS(role="assistant", content=None, tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            state,
+        )
+        chunk = NS(
+            id="x",
+            model="m",
+            choices=[
+                NS(
+                    index=0,
+                    delta=NS(
+                        role=None,
+                        content=None,
+                        tool_calls=[
+                            NS(
+                                index=0,
+                                id="call_a",
+                                type="function",
+                                function=NS(name="search", arguments=""),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
+        out = _translate_chunk(chunk, state)
+        assert len(out) == 1
+        assert isinstance(out[0], ToolCallStart)
+        assert out[0].id == "call_a"
+        assert out[0].name == "search"
+        assert state.saw_function_call is True
+
+    def test_tool_call_arguments_delta_after_start(self) -> None:
+        state = _StreamState()
+        _translate_chunk(
+            NS(
+                id="x",
+                model="m",
+                choices=[NS(index=0, delta=NS(role="assistant", content=None, tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            state,
+        )
+        _translate_chunk(
+            NS(
+                id="x",
+                model="m",
+                choices=[
+                    NS(
+                        index=0,
+                        delta=NS(
+                            role=None,
+                            content=None,
+                            tool_calls=[
+                                NS(
+                                    index=0,
+                                    id="call_a",
+                                    type="function",
+                                    function=NS(name="search", arguments=""),
+                                )
+                            ],
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            ),
+            state,
+        )
+        chunk = NS(
+            id="x",
+            model="m",
+            choices=[
+                NS(
+                    index=0,
+                    delta=NS(
+                        role=None,
+                        content=None,
+                        tool_calls=[
+                            NS(
+                                index=0,
+                                id=None,
+                                type=None,
+                                function=NS(name=None, arguments='{"q":'),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
+        out = _translate_chunk(chunk, state)
+        assert len(out) == 1
+        assert isinstance(out[0], ToolCallDelta)
+        assert out[0].arguments_delta == '{"q":'
+        assert out[0].id == "call_a"
+
+    def test_finish_reason_tool_calls_flushes_tool_call_end_then_done(self) -> None:
+        state = _StreamState()
+        _translate_chunk(
+            NS(
+                id="x",
+                model="m",
+                choices=[NS(index=0, delta=NS(role="assistant", content=None, tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            state,
+        )
+        _translate_chunk(
+            NS(
+                id="x",
+                model="m",
+                choices=[
+                    NS(
+                        index=0,
+                        delta=NS(
+                            role=None,
+                            content=None,
+                            tool_calls=[
+                                NS(
+                                    index=0,
+                                    id="call_a",
+                                    type="function",
+                                    function=NS(name="search", arguments='{"q":"weather"}'),
+                                )
+                            ],
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            ),
+            state,
+        )
+        chunk = NS(
+            id="x",
+            model="m",
+            choices=[
+                NS(
+                    index=0,
+                    delta=NS(role=None, content=None, tool_calls=None),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=None,
+        )
+        out = _translate_chunk(chunk, state)
+        kinds = [type(e).__name__ for e in out]
+        assert kinds == ["ToolCallEnd", "Done"]
+        end = out[0]
+        assert isinstance(end, ToolCallEnd)
+        assert end.id == "call_a"
+        assert end.arguments == {"q": "weather"}
+        done = out[1]
+        assert isinstance(done, Done)
+        assert done.stop_reason == "tool_use"
+        assert done.raw_reason == "tool_calls"
+
+    def test_finish_reason_stop_emits_done_without_tool_end(self) -> None:
+        state = _StreamState()
+        _translate_chunk(
+            NS(
+                id="x",
+                model="m",
+                choices=[NS(index=0, delta=NS(role="assistant", content="hi", tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            state,
+        )
+        chunk = NS(
+            id="x",
+            model="m",
+            choices=[
+                NS(
+                    index=0,
+                    delta=NS(role=None, content=None, tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+        out = _translate_chunk(chunk, state)
+        kinds = [type(e).__name__ for e in out]
+        assert kinds == ["Done"]
+        assert out[0].stop_reason == "stop"
+
+    def test_final_chunk_with_usage_emits_usage_then_done(self) -> None:
+        state = _StreamState()
+        _translate_chunk(
+            NS(
+                id="x",
+                model="m",
+                choices=[NS(index=0, delta=NS(role="assistant", content="hi", tool_calls=None), finish_reason=None)],
+                usage=None,
+            ),
+            state,
+        )
+        chunk = NS(
+            id="x",
+            model="m",
+            choices=[
+                NS(
+                    index=0,
+                    delta=NS(role=None, content=None, tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=NS(prompt_tokens=10, completion_tokens=5),
+        )
+        out = _translate_chunk(chunk, state)
+        kinds = [type(e).__name__ for e in out]
+        assert kinds == ["Usage", "Done"]
+        usage = out[0]
+        assert isinstance(usage, Usage)
+        assert usage.input_tokens == 10
+        assert usage.output_tokens == 5
+        assert usage.cumulative is False
+
+    def test_trailing_usage_only_chunk_no_choices(self) -> None:
+        state = _StreamState()
+        state.stream_started = True
+        chunk = NS(
+            id="x",
+            model="m",
+            choices=[],
+            usage=NS(prompt_tokens=8, completion_tokens=3),
+        )
+        out = _translate_chunk(chunk, state)
+        assert len(out) == 1
+        assert isinstance(out[0], Usage)
+        assert out[0].input_tokens == 8
+
+    def test_build_usage_returns_none_when_missing_token_counts(self) -> None:
+        assert _build_usage(None) is None
+        assert _build_usage(NS(prompt_tokens=None, completion_tokens=5)) is None
+        assert _build_usage(NS(prompt_tokens=10, completion_tokens=None)) is None
+
+    def test_finish_reason_length_maps_max_tokens(self) -> None:
+        state = _StreamState()
+        state.stream_started = True
+        chunk = NS(
+            id="x",
+            model="m",
+            choices=[
+                NS(
+                    index=0,
+                    delta=NS(role=None, content=None, tool_calls=None),
+                    finish_reason="length",
+                )
+            ],
+            usage=None,
+        )
+        out = _translate_chunk(chunk, state)
+        assert isinstance(out[-1], Done)
+        assert out[-1].stop_reason == "max_tokens"
+
+    def test_finish_reason_content_filter_maps(self) -> None:
+        state = _StreamState()
+        state.stream_started = True
+        chunk = NS(
+            id="x",
+            model="m",
+            choices=[
+                NS(
+                    index=0,
+                    delta=NS(role=None, content=None, tool_calls=None),
+                    finish_reason="content_filter",
+                )
+            ],
+            usage=None,
+        )
+        out = _translate_chunk(chunk, state)
+        assert isinstance(out[-1], Done)
+        assert out[-1].stop_reason == "content_filter"

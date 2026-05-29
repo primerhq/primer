@@ -16,7 +16,7 @@ import base64
 import json
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -29,15 +29,24 @@ from primer.llm._openai_common import (
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
+    Done,
     ExtendedPart,
     ImagePart,
     Message,
     Part,
+    StopReason,
+    StreamEvent,
+    StreamStart,
+    TextDelta,
     TextPart,
     Tool,
+    ToolCallDelta,
+    ToolCallEnd,
     ToolCallPart,
+    ToolCallStart,
     ToolChoice,
     ToolResultPart,
+    Usage,
     VideoPart,
 )
 from primer.model.except_ import ConfigError, UnsupportedContentError
@@ -326,6 +335,164 @@ def _response_format_to_param(
     }
 
 
+@dataclass
+class _ToolCallInProgress:
+    """Tracked state for one tool call as it streams in."""
+
+    call_id: str
+    name: str
+    arguments_buffer: str = ""
+    index: int = 0
+
+
+@dataclass
+class _StreamState:
+    """Per-stream mutable state used by :func:`_translate_chunk`."""
+
+    stream_started: bool = False
+    saw_function_call: bool = False
+    tool_calls: dict[int, _ToolCallInProgress] = field(default_factory=dict)
+    request_id: str | None = None
+    model: str = ""
+
+
+def _build_usage(usage_obj: Any) -> Usage | None:
+    """Translate a Chat Completions ``usage`` object to a :class:`Usage` event."""
+    if usage_obj is None:
+        return None
+    prompt = getattr(usage_obj, "prompt_tokens", None)
+    completion = getattr(usage_obj, "completion_tokens", None)
+    if prompt is None or completion is None:
+        return None
+    return Usage(
+        input_tokens=prompt,
+        output_tokens=completion,
+        cached_input_tokens=None,
+        reasoning_tokens=None,
+        cumulative=False,
+    )
+
+
+def _map_finish_reason(reason: str | None) -> StopReason:
+    if reason == "stop":
+        return "stop"
+    if reason == "length":
+        return "max_tokens"
+    if reason == "tool_calls":
+        return "tool_use"
+    if reason == "content_filter":
+        return "content_filter"
+    return "other"
+
+
+def _translate_chunk(  # noqa: C901
+    chunk: Any, state: _StreamState
+) -> list[StreamEvent]:
+    """Translate one Chat Completions streaming chunk into universal events.
+
+    Pure function. Mutates ``state`` to track per-tool-call buffers and
+    whether the stream has emitted its initial :class:`StreamStart`.
+    """
+    out: list[StreamEvent] = []
+    choices = getattr(chunk, "choices", None) or []
+
+    for choice in choices:
+        delta = getattr(choice, "delta", None)
+        if delta is not None:
+            role = getattr(delta, "role", None)
+            if role and not state.stream_started:
+                state.stream_started = True
+                state.request_id = getattr(chunk, "id", None)
+                state.model = getattr(chunk, "model", "") or ""
+                out.append(
+                    StreamStart(
+                        request_id=state.request_id, model=state.model,
+                    )
+                )
+
+            content = getattr(delta, "content", None)
+            if content:
+                out.append(TextDelta(text=content, index=0))
+
+            tool_calls = getattr(delta, "tool_calls", None) or []
+            for tc in tool_calls:
+                tc_index = getattr(tc, "index", 0)
+                tc_id = getattr(tc, "id", None)
+                fn = getattr(tc, "function", None)
+                fn_name = getattr(fn, "name", None) if fn is not None else None
+                fn_args = getattr(fn, "arguments", None) if fn is not None else None
+
+                existing = state.tool_calls.get(tc_index)
+                if existing is None and tc_id and fn_name:
+                    in_progress = _ToolCallInProgress(
+                        call_id=tc_id, name=fn_name, index=tc_index,
+                    )
+                    if fn_args:
+                        in_progress.arguments_buffer = fn_args
+                    state.tool_calls[tc_index] = in_progress
+                    state.saw_function_call = True
+                    out.append(
+                        ToolCallStart(
+                            id=in_progress.call_id,
+                            name=in_progress.name,
+                            index=tc_index,
+                        )
+                    )
+                    if fn_args:
+                        out.append(
+                            ToolCallDelta(
+                                id=in_progress.call_id,
+                                arguments_delta=fn_args,
+                                index=tc_index,
+                            )
+                        )
+                elif existing is not None and fn_args:
+                    existing.arguments_buffer += fn_args
+                    out.append(
+                        ToolCallDelta(
+                            id=existing.call_id,
+                            arguments_delta=fn_args,
+                            index=tc_index,
+                        )
+                    )
+
+        finish_reason = getattr(choice, "finish_reason", None)
+        if finish_reason is not None:
+            for tc_index in sorted(state.tool_calls.keys()):
+                in_progress = state.tool_calls[tc_index]
+                try:
+                    parsed = json.loads(in_progress.arguments_buffer or "{}")
+                except json.JSONDecodeError:
+                    parsed = {}
+                out.append(
+                    ToolCallEnd(
+                        id=in_progress.call_id,
+                        arguments=parsed,
+                        index=in_progress.index,
+                    )
+                )
+            state.tool_calls.clear()
+
+            usage_event = _build_usage(getattr(chunk, "usage", None))
+            if usage_event is not None:
+                out.append(usage_event)
+
+            out.append(
+                Done(
+                    stop_reason=_map_finish_reason(finish_reason),
+                    raw_reason=finish_reason,
+                )
+            )
+            return out
+
+    if not choices:
+        usage_event = _build_usage(getattr(chunk, "usage", None))
+        if usage_event is not None:
+            out.append(usage_event)
+
+    return out
+
+
 class OpenChatLLM(LLM):
     """Streaming LLM adapter for the OpenAI Chat Completions API."""
 
@@ -390,5 +557,4 @@ class OpenChatLLM(LLM):
         instantiable and an end-to-end smoke can confirm the dispatch
         path is wired. Real translation lands in Phase 8/9.
         """
-        from primer.model.chat import Done
         yield Done(stop_reason="stop", raw_reason="stub")
