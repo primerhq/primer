@@ -9,8 +9,10 @@ from pydantic import SecretStr, ValidationError
 
 from primer.model.workspace import (
     ContainerConnectionSocket,
+    ContainerNetworkConfig,
     ContainerReachabilityBridge,
     ContainerReachabilityHostPort,
+    ContainerTemplateConfig,
     ContainerWorkspaceConfig,
     FileEntry,
     FileMount,
@@ -482,3 +484,29 @@ class TestKubernetesWorkspaceConfig:
                 reachability=K8sReachabilityInCluster(),
                 storage_class="fast-ssd",  # type: ignore[call-arg]
             )
+
+
+# ---- ContainerTemplateConfig --------------------------------------------
+
+
+class TestContainerTemplateConfig:
+    def test_minimum_image_required(self):
+        with pytest.raises(ValidationError):
+            ContainerTemplateConfig()  # image is required
+
+    def test_full_shape(self):
+        tpl = ContainerTemplateConfig(
+            image="ghcr.io/example/primer-runtime:1",
+            cpu_cores=2.0,
+            memory_bytes=4 * 1024**3,
+            network=ContainerNetworkConfig(egress="deny_all"),
+        )
+        assert tpl.image == "ghcr.io/example/primer-runtime:1"
+        assert tpl.cpu_cores == 2.0
+        assert tpl.network.egress == "deny_all"
+
+    def test_network_egress_optional(self):
+        tpl = ContainerTemplateConfig(image="x:1")
+        assert tpl.network is None
+        assert tpl.cpu_cores is None
+        assert tpl.memory_bytes is None

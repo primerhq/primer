@@ -285,28 +285,77 @@ class LocalTemplateConfig(BaseModel):
     kind: Literal["local"] = "local"
 
 
-class ContainerTemplateConfig(BaseModel):
-    """Container-backend template config."""
+class ContainerMount(BaseModel):
+    """Host → container mount declaration (template-owned)."""
 
-    kind: Literal["container"] = "container"
-    image: str = Field(..., min_length=1)
+    model_config = ConfigDict(extra="forbid")
+    host: str = Field(..., description="Path on the host (provider's runtime).")
+    container: str = Field(..., description="Mount point inside the container.")
+    readonly: bool = Field(default=False, description="Mount read-only.")
+
+
+class ContainerNetworkConfig(BaseModel):
+    """Container network policy.
+
+    ``egress`` toggles whether the workspace can reach outside the provider's
+    network. Best-effort: docker/podman support ``--internal`` networks
+    (deny_all); containerd is CNI-dependent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    egress: Literal["allow_all", "deny_all"] | None = Field(
+        default=None,
+        description=(
+            "allow_all → default bridge (internet reachable); "
+            "deny_all → docker --internal network (workspace-internal only); "
+            "null → runtime default."
+        ),
+    )
+
+
+class ContainerTemplateConfig(BaseModel):
+    """Container template variant — owns image, cpu/mem, mounts, network.
+
+    Image is expected to derive from a primer-runtime base; the platform
+    reaches the runtime via WSSandbox + RuntimeClient (Phase 5/6 work).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["container"] = Field(
+        default="container",
+        description="Discriminator tag identifying this as container-template config.",
+    )
+    image: str = Field(
+        ...,
+        description="OCI image; expected to derive from a primer-runtime base.",
+    )
     entrypoint: list[str] | None = Field(
         default=None,
-        description='Override container PID 1. Default ["sleep", "infinity"].',
+        description="Override the image's ENTRYPOINT; null = use image default.",
     )
     user: str | None = Field(
         default=None,
-        description=(
-            "Container user, e.g. 'root' or 'uid:gid'. Default = host UID:GID."
-        ),
+        description="uid:gid override; null = image default.",
     )
-    workdir: str = Field(default="/workspace")
-    extra_mounts: list[VolumeMount] = Field(default_factory=list)
-    extra_volume_size: str | None = Field(
+    workdir: str = Field(
+        default="/workspace",
+        description="Container workdir.",
+    )
+    cpu_cores: float | None = Field(
         default=None,
-        description=(
-            "Workspace volume size hint (advisory; not all runtimes enforce)."
-        ),
+        description="docker --cpus value; null = unlimited.",
+    )
+    memory_bytes: int | None = Field(
+        default=None,
+        description="docker --memory value in bytes; null = unlimited.",
+    )
+    extra_mounts: list[ContainerMount] = Field(
+        default_factory=list,
+        description="Optional additional host mounts (operator opt-in).",
+    )
+    network: ContainerNetworkConfig | None = Field(
+        default=None,
+        description="Network policy; null = runtime default.",
     )
 
 
@@ -901,6 +950,8 @@ __all__ = [
     "ContainerConnectionRemote",
     "ContainerConnectionSocket",
     "ContainerdRuntimeConfig",
+    "ContainerMount",
+    "ContainerNetworkConfig",
     "ContainerReachabilityBridge",
     "ContainerReachabilityConfig",
     "ContainerReachabilityHostPort",
