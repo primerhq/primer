@@ -381,7 +381,7 @@ class TestMessagesToInputItems:
         assert len(items) == 2
         assert items[0] == {
             "role": "assistant",
-            "content": [{"type": "input_text", "text": "let me check"}],
+            "content": [{"type": "output_text", "text": "let me check"}],
         }
         assert items[1] == {
             "type": "function_call",
@@ -405,7 +405,7 @@ class TestMessagesToInputItems:
         assert items[0]["type"] == "function_call"
         assert items[1] == {
             "role": "assistant",
-            "content": [{"type": "input_text", "text": "done"}],
+            "content": [{"type": "output_text", "text": "done"}],
         }
 
     def test_full_conversation_round_trip(self) -> None:
