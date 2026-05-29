@@ -323,6 +323,8 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
     window.location.hash = "#/workspaces/" + encodeURIComponent(wid) + "?tab=" + t;
   };
 
+  const [diagOpen, setDiagOpen] = React.useState(false);
+
   const ws = useResource(
     `workspace-detail:${wid}`,
     (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(wid)}`, null, { signal }),
@@ -366,6 +368,28 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
           detail={failureDetail}
         />
       )}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <Btn
+          size="sm"
+          kind="ghost"
+          icon="pause"
+          disabled
+          title="Workspace pause is reserved (501) — coming soon"
+        >Pause</Btn>
+        <Btn
+          size="sm"
+          kind="ghost"
+          icon="play"
+          disabled
+          title="Workspace resume is reserved (501) — coming soon"
+        >Resume</Btn>
+        <Btn
+          size="sm"
+          kind="ghost"
+          icon="zap"
+          onClick={() => setDiagOpen(true)}
+        >Run diagnostic</Btn>
+      </div>
       <div className="panel">
         <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
           {tabs.map((t) => (
@@ -405,6 +429,9 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
           {tab === "destroy" && <WS_DestroyTab wid={wid} pushToast={pushToast} sessionsForBadge={sessionsForBadge} />}
         </div>
       </div>
+      {diagOpen && (
+        <WS_DiagnosticModal workspaceId={wid} onClose={() => setDiagOpen(false)} />
+      )}
     </div>
   );
 }
@@ -1199,6 +1226,116 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
         </Modal>
       )}
     </div>
+  );
+}
+
+// ============================================================================
+// Diagnostic modal — POSTs to /v1/workspaces/{id}/diagnostic with a
+// whitelisted command (echo, pwd, whoami, uname, ls) and renders
+// stdout/stderr/exit_code. Surfaces the backend whitelist as a <select>
+// so users can't trip the 400 by typing a non-whitelisted head token.
+// ============================================================================
+
+function WS_DiagnosticModal({ workspaceId, onClose }) {
+  const { apiFetch } = window.primerApi;
+  const [command, setCommand] = React.useState("echo");
+  const [args, setArgs] = React.useState("hello");
+  const [result, setResult] = React.useState(null);
+  const [error, setError] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const trimmedArgs = (args || "").trim();
+      const fullCommand = trimmedArgs ? `${command} ${trimmedArgs}` : command;
+      const data = await apiFetch(
+        "POST",
+        `/workspaces/${encodeURIComponent(workspaceId)}/diagnostic`,
+        { command: fullCommand }
+      );
+      setResult(data);
+    } catch (e) {
+      // apiFetch throws an ApiError with .title/.detail/.message — fall back
+      // to a plain string for native errors (network, etc.).
+      const detail = e?.detail || e?.message || String(e);
+      setError(typeof detail === "string" ? detail : JSON.stringify(detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Run diagnostic command"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Close</Btn>
+          <Btn kind="primary" icon="zap" disabled={busy} onClick={run}>Run</Btn>
+        </>
+      }
+    >
+      <div className="field" style={{ marginBottom: 12 }}>
+        <label className="field-label">workspace <span className="hint">auto-filled</span></label>
+        <input className="input mono" value={workspaceId} readOnly style={{ width: "100%" }} />
+      </div>
+      <div className="field" style={{ marginBottom: 12 }}>
+        <label className="field-label">command <span className="hint">whitelisted</span></label>
+        <select
+          className="select mono"
+          style={{ width: "100%" }}
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+        >
+          <option value="echo">echo</option>
+          <option value="pwd">pwd</option>
+          <option value="whoami">whoami</option>
+          <option value="uname">uname</option>
+          <option value="ls">ls</option>
+        </select>
+      </div>
+      <div className="field" style={{ marginBottom: 12 }}>
+        <label className="field-label">arguments <span className="hint">optional</span></label>
+        <input
+          className="input mono"
+          value={args}
+          onChange={(e) => setArgs(e.target.value)}
+          placeholder="(optional)"
+          style={{ width: "100%" }}
+        />
+      </div>
+      {error && (
+        <div style={{ marginTop: 8 }}>
+          <Banner kind="error" title="Diagnostic failed" detail={error} />
+        </div>
+      )}
+      {result && (
+        <div style={{ marginTop: 8 }}>
+          <div className="muted text-sm" style={{ marginBottom: 6 }}>
+            exit_code: <span className="mono">{result.exit_code}</span>
+            {typeof result.duration_seconds === "number" && (
+              <> · duration: <span className="mono">{result.duration_seconds.toFixed(3)}s</span></>
+            )}
+          </div>
+          {result.stdout && (
+            <pre className="mono" style={{ maxHeight: 240, overflow: "auto", background: "var(--bg-2)", padding: 8, borderRadius: 4, fontSize: 12 }}>
+              stdout:{"\n"}{result.stdout}
+            </pre>
+          )}
+          {result.stderr && (
+            <pre className="mono" style={{ maxHeight: 240, overflow: "auto", background: "var(--bg-2)", padding: 8, borderRadius: 4, fontSize: 12 }}>
+              stderr:{"\n"}{result.stderr}
+            </pre>
+          )}
+          {!result.stdout && !result.stderr && (
+            <div className="muted text-sm">(no output)</div>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 
