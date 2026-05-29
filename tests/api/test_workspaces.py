@@ -651,6 +651,55 @@ class TestWorkspaceRouter:
         assert "resume" in body["detail"]["message"].lower()
 
     @pytest.mark.asyncio
+    async def test_create_against_agent_sandbox_provider_returns_501(
+        self, client
+    ) -> None:
+        """POST /v1/workspaces against a k8s provider with
+        variant=agent_sandbox returns 501 — the slot is reserved but not yet
+        implemented."""
+        prov_resp = await client.post(
+            "/v1/workspace_providers",
+            json={
+                "id": "k8s-as",
+                "provider": "kubernetes",
+                "config": {
+                    "kind": "kubernetes",
+                    "variant": "agent_sandbox",
+                    "connection": {"kind": "in_cluster"},
+                    "namespace": "primer",
+                    "reachability": {"kind": "in_cluster"},
+                },
+            },
+        )
+        assert prov_resp.status_code in (200, 201), prov_resp.text
+
+        tpl_resp = await client.post(
+            "/v1/workspace_templates",
+            json={
+                "id": "tpl-k",
+                "description": "t",
+                "provider_id": "k8s-as",
+                "backend": {
+                    "kind": "kubernetes",
+                    "image": "primer-runtime:1",
+                },
+                "files": [],
+                "env": {},
+                "init_commands": [],
+            },
+        )
+        assert tpl_resp.status_code in (200, 201), tpl_resp.text
+
+        resp = await client.post(
+            "/v1/workspaces",
+            json={"template_id": "tpl-k", "provider_id": "k8s-as"},
+        )
+        assert resp.status_code == 501, resp.text
+        detail = resp.json()["detail"]
+        assert detail["error"] == "not_implemented"
+        assert "agent_sandbox" in detail["message"]
+
+    @pytest.mark.asyncio
     async def test_workspace_list_includes_phase(self, client) -> None:
         """GET /v1/workspaces lists each workspace with its phase + probe
         fields (no stripped DTO in the way)."""

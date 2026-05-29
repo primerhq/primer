@@ -281,6 +281,7 @@ async def create_workspace(
     body: WorkspaceCreateBody,
     workspace_storage=Depends(get_workspace_storage),
     template_storage=Depends(get_workspace_template_storage),
+    provider_storage=Depends(get_workspace_provider_storage),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> WorkspaceRow:
     template = await template_storage.get(body.template_id)
@@ -294,6 +295,31 @@ async def create_workspace(
             raise ConflictError(
                 f"Workspace with id {body.id!r} already exists"
             )
+
+    # Reserve agent_sandbox slot — k8s provider variant=agent_sandbox is
+    # accepted at provider-create time but workspace materialisation is
+    # not implemented in v1 (see redesign spec §9).
+    provider = await provider_storage.get(template.provider_id)
+    if provider is None:
+        raise NotFoundError(
+            f"WorkspaceProvider {template.provider_id!r} does not exist"
+        )
+    if (
+        provider.config.kind == "kubernetes"
+        and getattr(provider.config, "variant", "system") == "agent_sandbox"
+    ):
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "error": "not_implemented",
+                "message": (
+                    "K8s provider variant=agent_sandbox is reserved "
+                    "(see redesign spec §9). Implementation lands in a "
+                    "follow-up engagement; switch the provider variant to "
+                    "'system' to use the StatefulSet+Service path."
+                ),
+            },
+        )
 
     live = await registry.materialise(template=template, overrides=body.overrides)
 
