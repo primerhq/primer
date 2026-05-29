@@ -31,6 +31,7 @@ class LLMProviderType(str, Enum):
     """
 
     OPENRESPONSES = "openresponses"
+    OPENCHAT = "openchat"
     GEMINI = "gemini"
     ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
@@ -69,6 +70,26 @@ class OpenResponsesFlavor(str, Enum):
 
     OPENAI = "openai"
     LMSTUDIO = "lmstudio"
+    OTHER = "other"
+
+
+class OpenChatFlavor(str, Enum):
+    """Which OpenAI-compatible Chat Completions server is on the wire.
+
+    The legacy ``/v1/chat/completions`` surface is the dominant one for
+    non-OpenAI servers (LM Studio, Ollama's OpenAI shim, vLLM,
+    OpenRouter, Together, Fireworks). Distinguishing the flavor lets the
+    adapter apply server-specific defaults — chiefly whether an
+    ``api_key`` is required at construction time.
+
+    Use :attr:`OTHER` for any OpenAI-compatible Chat Completions
+    endpoint not explicitly modelled.
+    """
+
+    OPENAI = "openai"
+    LMSTUDIO = "lmstudio"
+    OLLAMA = "ollama"
+    VLLM = "vllm"
     OTHER = "other"
 
 
@@ -136,6 +157,25 @@ class OpenResponsesConfig(_HttpApiKeyConfig):
     flavor: OpenResponsesFlavor = Field(
         default=OpenResponsesFlavor.OTHER,
         description="Identifies which OpenAI-compatible server is on the other end so the adapter can apply flavor-specific behavior. Defaults to OTHER (conservative; no quirk handling applied).",
+    )
+
+
+class OpenChatConfig(_HttpApiKeyConfig):
+    """Connection settings for the ``openchat`` LLM provider.
+
+    Targets the legacy OpenAI Chat Completions wire format
+    (``/v1/chat/completions``) — the surface every OpenAI-compatible
+    third party (LM Studio, Ollama-OpenAI shim, vLLM, OpenRouter, …)
+    supports.
+    """
+
+    flavor: OpenChatFlavor = Field(
+        default=OpenChatFlavor.OTHER,
+        description=(
+            "Identifies which OpenAI-compatible Chat Completions server "
+            "is on the other end so the adapter can apply flavor-specific "
+            "behavior. Defaults to OTHER (conservative; api_key required)."
+        ),
     )
 
 
@@ -364,7 +404,13 @@ class LLMProvider(Identifiable):
         min_length=1,
         description="Models permitted on this provider; must contain at least one.",
     )
-    config: OpenResponsesConfig | GoogleConfig | AnthropicConfig | OllamaConfig = Field(
+    config: (
+        OpenResponsesConfig
+        | OpenChatConfig
+        | GoogleConfig
+        | AnthropicConfig
+        | OllamaConfig
+    ) = Field(
         ...,
         description="Backend-specific connection configuration; must match ``provider``.",
     )
@@ -372,6 +418,41 @@ class LLMProvider(Identifiable):
         ...,
         description="Rate-limit settings enforced when calling this provider.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_config_to_provider(cls, data: object) -> object:
+        """Pre-validate: when ``config`` arrives as a dict, parse it with the
+        concrete config class matching ``provider`` rather than letting the
+        union's first-match-wins behavior pick the wrong subclass.
+
+        ``OpenResponsesConfig`` and ``OpenChatConfig`` share the same
+        ``_HttpApiKeyConfig`` shape and overlapping flavor values
+        (``openai``, ``other``), so leaving the union to disambiguate
+        would silently coerce ``openchat`` configs to
+        ``OpenResponsesConfig``.
+        """
+        if not isinstance(data, dict):
+            return data
+        provider = data.get("provider")
+        config = data.get("config")
+        if not isinstance(config, dict):
+            return data
+        try:
+            provider_enum = LLMProviderType(provider) if not isinstance(provider, LLMProviderType) else provider
+        except ValueError:
+            return data
+        config_cls: type[BaseModel] | None = {
+            LLMProviderType.OPENRESPONSES: OpenResponsesConfig,
+            LLMProviderType.OPENCHAT: OpenChatConfig,
+            LLMProviderType.GEMINI: GoogleConfig,
+            LLMProviderType.ANTHROPIC: AnthropicConfig,
+            LLMProviderType.OLLAMA: OllamaConfig,
+        }.get(provider_enum)
+        if config_cls is None:
+            return data
+        data = {**data, "config": config_cls.model_validate(config)}
+        return data
 
 
 class EmbeddingProvider(Identifiable):
