@@ -13,23 +13,41 @@ import pytest
 
 from primer.model.except_ import ConfigError
 from primer.model.workspace import (
+    ContainerConnectionSocket,
+    ContainerReachabilityHostPort,
     ContainerWorkspaceConfig,
+    K8sConnectionInCluster,
+    K8sReachabilityInCluster,
     KubernetesWorkspaceConfig,
     LocalWorkspaceConfig,
     WorkspaceProvider,
     WorkspaceProviderType,
-    DockerRuntimeConfig,
-    PodmanRuntimeConfig,
 )
 from primer.workspace.factory import WorkspaceBackendFactory
 from primer.workspace.local import LocalWorkspaceBackend
+
+
+def _container_cfg(runtime: str = "docker") -> ContainerWorkspaceConfig:
+    return ContainerWorkspaceConfig(
+        runtime=runtime,  # type: ignore[arg-type]
+        connection=ContainerConnectionSocket(socket_path="/var/run/docker.sock"),
+        reachability=ContainerReachabilityHostPort(bind_host="127.0.0.1"),
+    )
+
+
+def _k8s_cfg() -> KubernetesWorkspaceConfig:
+    return KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer",
+        reachability=K8sReachabilityInCluster(),
+    )
 
 
 def test_factory_builds_local() -> None:
     cfg = WorkspaceProvider(
         id="l1",
         provider=WorkspaceProviderType.LOCAL,
-        config=LocalWorkspaceConfig(path="/tmp/wsroot"),
+        config=LocalWorkspaceConfig(root_path="/tmp/wsroot"),
     )
     backend = WorkspaceBackendFactory.create(cfg)
     assert isinstance(backend, LocalWorkspaceBackend)
@@ -39,7 +57,7 @@ def test_factory_builds_container_docker() -> None:
     cfg = WorkspaceProvider(
         id="c1",
         provider=WorkspaceProviderType.CONTAINER,
-        config=ContainerWorkspaceConfig(runtime=DockerRuntimeConfig()),
+        config=_container_cfg("docker"),
     )
     backend = WorkspaceBackendFactory.create(cfg)
     from primer.workspace.container.backend import ContainerWorkspaceBackend
@@ -52,7 +70,7 @@ def test_factory_builds_container_podman_raises_stub() -> None:
     cfg = WorkspaceProvider(
         id="c1",
         provider=WorkspaceProviderType.CONTAINER,
-        config=ContainerWorkspaceConfig(runtime=PodmanRuntimeConfig()),
+        config=_container_cfg("podman"),
     )
     with pytest.raises(ConfigError, match="Podman"):
         WorkspaceBackendFactory.create(cfg)
@@ -62,7 +80,7 @@ def test_factory_builds_kubernetes() -> None:
     cfg = WorkspaceProvider(
         id="k1",
         provider=WorkspaceProviderType.KUBERNETES,
-        config=KubernetesWorkspaceConfig(),
+        config=_k8s_cfg(),
     )
     backend = WorkspaceBackendFactory.create(cfg)
     from primer.workspace.k8s.backend import KubernetesWorkspaceBackend
@@ -76,5 +94,5 @@ def test_factory_kind_mismatch_rejected_at_parse_time() -> None:
         WorkspaceProvider(
             id="bad",
             provider=WorkspaceProviderType.CONTAINER,
-            config=LocalWorkspaceConfig(path="/tmp/x"),
+            config=LocalWorkspaceConfig(root_path="/tmp/x"),
         )

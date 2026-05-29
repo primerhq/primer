@@ -121,7 +121,7 @@ def test_workspace_provider_spec_constructs_pydantic_model(tmp_path):
 
     raw_spec = RESERVED_WORKSPACE_PROVIDERS[RESERVED_LOCAL_WORKSPACE_PROVIDER]
     config_dict = dict(raw_spec["config"])
-    config_dict["path"] = str(tmp_path / "workspaces")
+    config_dict["root_path"] = str(tmp_path / "workspaces")
     spec = {**raw_spec, "config": config_dict}
 
     provider = WorkspaceProvider(**spec)

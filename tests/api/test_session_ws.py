@@ -27,8 +27,37 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient as SyncTestClient
 
+from pydantic import SecretStr
+
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
+
+
+def _runtime_meta():
+    """Build a minimal valid WorkspaceRuntimeMeta for test rows."""
+    from primer.model.workspace import WorkspaceRuntimeMeta
+    return WorkspaceRuntimeMeta(
+        url="ws://127.0.0.1:5959/",
+        token=SecretStr("t"),
+    )
+
+
+def _auth_sync_client(sclient) -> None:
+    """Register + login a default test user so the WS auth gate passes."""
+    try:
+        sclient.post(
+            "/v1/auth/register",
+            json={"username": "testuser", "password": "testpassword"},
+        )
+    except Exception:
+        pass
+    try:
+        sclient.post(
+            "/v1/auth/login",
+            json={"username": "testuser", "password": "testpassword"},
+        )
+    except Exception:
+        pass
 from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
@@ -168,7 +197,7 @@ async def seeded_workspace_id(app, workspace_registry):
             WorkspaceProvider(
                 id="p-ws",
                 provider=WorkspaceProviderType.LOCAL,
-                config=LocalWorkspaceConfig(path="/tmp/primer-ws-ws-test"),
+                config=LocalWorkspaceConfig(root_path="/tmp/primer-ws-ws-test"),
             )
         )
     except Exception:
@@ -180,6 +209,7 @@ async def seeded_workspace_id(app, workspace_registry):
                 template_id="t-noop",
                 provider_id="p-ws",
                 created_at=datetime.now(timezone.utc),
+                runtime_meta=_runtime_meta(),
             )
         )
     except Exception:
@@ -235,6 +265,7 @@ async def test_ws_cursor_zero_replays_full_history(app, seeded_workspace_id):
     live_ws.seed_messages(sid, seeded)
 
     with SyncTestClient(app) as sclient:
+        _auth_sync_client(sclient)
         with sclient.websocket_connect(
             f"/v1/workspaces/{wid}/sessions/{sid}/ws?cursor=0"
         ) as ws:
@@ -262,6 +293,7 @@ async def test_ws_interrupt_frame_sets_cancel(app, seeded_workspace_id):
     await _seed_session(app, wid, sid, status=SessionStatus.RUNNING)
 
     with SyncTestClient(app) as sclient:
+        _auth_sync_client(sclient)
         with sclient.websocket_connect(
             f"/v1/workspaces/{wid}/sessions/{sid}/ws?cursor=0"
         ) as ws:
@@ -307,6 +339,7 @@ async def test_ws_mid_turn_reconnect_catches_up(app, seeded_workspace_id):
 
     # First connect: receive first 3 frames (cursor=0, so replay all → take first 3).
     with SyncTestClient(app) as sclient:
+        _auth_sync_client(sclient)
         with sclient.websocket_connect(
             f"/v1/workspaces/{wid}/sessions/{sid}/ws?cursor=0"
         ) as ws:
@@ -317,6 +350,7 @@ async def test_ws_mid_turn_reconnect_catches_up(app, seeded_workspace_id):
 
     # Reconnect with cursor=3; should get only seq 4 and 5.
     with SyncTestClient(app) as sclient:
+        _auth_sync_client(sclient)
         with sclient.websocket_connect(
             f"/v1/workspaces/{wid}/sessions/{sid}/ws?cursor={cursor}"
         ) as ws:
@@ -338,6 +372,7 @@ async def test_ws_4404_for_missing_session(app, seeded_workspace_id):
     sid = "s-does-not-exist"
 
     with SyncTestClient(app) as sclient:
+        _auth_sync_client(sclient)
         with pytest.raises(Exception):
             # Starlette's TestClient raises when the server closes with
             # a non-1000 code before the client sends anything.
@@ -361,6 +396,7 @@ async def test_ws_4410_for_ended_session(app, seeded_workspace_id):
     await _seed_session(app, wid, sid, status=SessionStatus.ENDED)
 
     with SyncTestClient(app) as sclient:
+        _auth_sync_client(sclient)
         with pytest.raises(Exception):
             with sclient.websocket_connect(
                 f"/v1/workspaces/{wid}/sessions/{sid}/ws"
@@ -381,6 +417,7 @@ async def test_ws_ping_pong(app, seeded_workspace_id):
     await _seed_session(app, wid, sid)
 
     with SyncTestClient(app) as sclient:
+        _auth_sync_client(sclient)
         with sclient.websocket_connect(
             f"/v1/workspaces/{wid}/sessions/{sid}/ws?cursor=0"
         ) as ws:

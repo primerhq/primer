@@ -600,7 +600,7 @@ class TestFactory:
         config = WorkspaceProvider(
             id="local-1",
             provider=WorkspaceProviderType.LOCAL,
-            config=LocalWorkspaceConfig(path=str(tmp_path / "factory_root")),
+            config=LocalWorkspaceConfig(root_path=str(tmp_path / "factory_root")),
         )
         backend = WorkspaceBackendFactory.create(config)
         assert isinstance(backend, LocalWorkspaceBackend)

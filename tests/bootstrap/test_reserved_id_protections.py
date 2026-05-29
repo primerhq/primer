@@ -133,7 +133,7 @@ def _workspace_provider_body(provider_id: str) -> dict:
     return {
         "id": provider_id,
         "provider": "local",
-        "config": {"kind": "local", "path": "/tmp/primer-test-ws"},
+        "config": {"kind": "local", "root_path": "/tmp/primer-test-ws"},
     }
 
 

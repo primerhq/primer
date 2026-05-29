@@ -109,7 +109,7 @@ async def _build_session(tmp_path: Path):
     config_entry = WorkspaceProvider(
         id="local-1",
         provider=WorkspaceProviderType.LOCAL,
-        config=LocalWorkspaceConfig(path=str(tmp_path / "wsroot")),
+        config=LocalWorkspaceConfig(root_path=str(tmp_path / "wsroot")),
     )
     backend = WorkspaceBackendFactory.create(config_entry)
     assert isinstance(backend, LocalWorkspaceBackend)

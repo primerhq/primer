@@ -117,7 +117,7 @@ async def test_end_to_end_user_flow(tmp_path: Path) -> None:
     backend_config = WorkspaceProvider(
         id="local-1",
         provider=WorkspaceProviderType.LOCAL,
-        config=LocalWorkspaceConfig(path=str(tmp_path / "provider_root")),
+        config=LocalWorkspaceConfig(root_path=str(tmp_path / "provider_root")),
     )
     provider = WorkspaceBackendFactory.create(backend_config)
     assert isinstance(provider, LocalWorkspaceBackend)

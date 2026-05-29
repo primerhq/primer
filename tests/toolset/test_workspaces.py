@@ -143,9 +143,16 @@ class _LiveWorkspace:
     """In-memory live workspace satisfying the ABC for handler tests."""
 
     def __init__(self, workspace_id="ws-stub") -> None:
+        from pydantic import SecretStr
+        from primer.model.workspace import WorkspaceRuntimeMeta
+
         self.id = workspace_id
         self._files: dict[str, bytes] = {}
         self._sessions: dict[str, _LiveSession] = {"sess-1": _LiveSession()}
+        self.runtime_meta = WorkspaceRuntimeMeta(
+            url="ws://127.0.0.1:5959/",
+            token=SecretStr("t"),
+        )
 
     async def list_files(self, path=".", *, recursive=False):
         from datetime import datetime, timezone
@@ -328,7 +335,7 @@ def _provider() -> WorkspaceProvider:
     return WorkspaceProvider(
         id="local-1",
         provider=WorkspaceProviderType.LOCAL,
-        config=LocalWorkspaceConfig(path="/tmp/x"),
+        config=LocalWorkspaceConfig(root_path="/tmp/x"),
     )
 
 

@@ -17,12 +17,22 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
 from primer.api.app import create_test_app
 from primer.api.registries import (
     ProviderRegistry,
     WorkspaceRegistry,
 )
+
+
+def _runtime_meta():
+    """Build a minimal valid WorkspaceRuntimeMeta for test rows."""
+    from primer.model.workspace import WorkspaceRuntimeMeta
+    return WorkspaceRuntimeMeta(
+        url="ws://127.0.0.1:5959/",
+        token=SecretStr("t"),
+    )
 
 
 # ===========================================================================
@@ -157,7 +167,7 @@ async def seeded_workspace(app):
         WorkspaceProvider(
             id="p-1",
             provider=WorkspaceProviderType.LOCAL,
-            config=LocalWorkspaceConfig(path="/tmp/primer-ws-tests"),
+            config=LocalWorkspaceConfig(root_path="/tmp/primer-ws-tests"),
         )
     )
 
@@ -167,6 +177,7 @@ async def seeded_workspace(app):
         template_id="t-1",
         provider_id="p-1",
         created_at=datetime.now(timezone.utc),
+        runtime_meta=_runtime_meta(),
     )
     await storage.create(ws)
     yield ws
@@ -436,11 +447,14 @@ async def test_create_session_allocates_on_disk_slot(
     assert on_disk["agent_binding"].agent_id == seeded_agent.id
 
 
-async def test_create_session_graph_binding_skips_on_disk_slot(
+async def test_create_session_graph_binding_allocates_holder_slot(
     sessions_client, seeded_workspace, app,
 ):
-    """Graph bindings must not allocate an on-disk slot (graph executor
-    wires its own per-node session slots)."""
+    """Graph bindings get a holder slot with a synthetic ``graph:<id>`` agent_id.
+
+    The slot lets per-node sessions share the workspace's tools via the
+    on-disk session directory (see primer/api/routers/sessions.py).
+    """
     from primer.model.graph import Graph, _TerminalNode
 
     storage = app.state.storage_provider.get_storage(Graph)
@@ -462,7 +476,11 @@ async def test_create_session_graph_binding_skips_on_disk_slot(
 
         registry = app.state.workspace_registry
         live_workspace = await registry.get_workspace(seeded_workspace.id)
-        assert sid not in live_workspace.started_sessions
+        # Graph bindings allocate a holder slot whose synthetic agent_id
+        # is ``graph:<graph_id>`` (see sessions router).
+        assert sid in live_workspace.started_sessions
+        binding = live_workspace.started_sessions[sid]["agent_binding"]
+        assert binding.agent_id == "graph:gr-skip"
     finally:
         try:
             await storage.delete(graph.id)
@@ -621,7 +639,7 @@ async def test_claim_engine_upsert_on_create(
             WorkspaceProvider(
                 id="p-eng",
                 provider=WorkspaceProviderType.LOCAL,
-                config=LocalWorkspaceConfig(path="/tmp/primer-eng"),
+                config=LocalWorkspaceConfig(root_path="/tmp/primer-eng"),
             )
         )
         await sp.get_storage(Workspace).create(Workspace(
@@ -629,6 +647,7 @@ async def test_claim_engine_upsert_on_create(
             template_id="t-1",
             provider_id="p-eng",
             created_at=datetime.now(timezone.utc),
+            runtime_meta=_runtime_meta(),
         ))
     except Exception:
         pass
@@ -669,7 +688,7 @@ async def test_claim_engine_delete_lease_on_cancel(
             WorkspaceProvider(
                 id="p-can",
                 provider=WorkspaceProviderType.LOCAL,
-                config=LocalWorkspaceConfig(path="/tmp/primer-can"),
+                config=LocalWorkspaceConfig(root_path="/tmp/primer-can"),
             )
         )
         await sp.get_storage(Workspace).create(Workspace(
@@ -677,6 +696,7 @@ async def test_claim_engine_delete_lease_on_cancel(
             template_id="t-1",
             provider_id="p-can",
             created_at=datetime.now(timezone.utc),
+            runtime_meta=_runtime_meta(),
         ))
     except Exception:
         pass
@@ -772,7 +792,7 @@ async def test_claim_engine_upsert_on_resume(
             WorkspaceProvider(
                 id="p-res",
                 provider=WorkspaceProviderType.LOCAL,
-                config=LocalWorkspaceConfig(path="/tmp/primer-res"),
+                config=LocalWorkspaceConfig(root_path="/tmp/primer-res"),
             )
         )
         await sp.get_storage(Workspace).create(Workspace(
@@ -780,6 +800,7 @@ async def test_claim_engine_upsert_on_resume(
             template_id="t-1",
             provider_id="p-res",
             created_at=datetime.now(timezone.utc),
+            runtime_meta=_runtime_meta(),
         ))
     except Exception:
         pass
