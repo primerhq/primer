@@ -356,3 +356,58 @@ class TestFileEntry:
                 size_bytes=0,
                 modified_at=datetime.now(timezone.utc),
             )
+
+
+# ---- ContainerWorkspaceConfig (minimal: connection + reachability) -------
+
+
+from primer.model.workspace import (  # noqa: E402
+    ContainerConnectionSocket,
+    ContainerReachabilityBridge,
+    ContainerReachabilityHostPort,
+    ContainerWorkspaceConfig,
+)
+
+
+def test_container_config_host_port_reachability():
+    cfg = ContainerWorkspaceConfig(
+        runtime="docker",
+        connection=ContainerConnectionSocket(
+            socket_path="/var/run/docker.sock",
+        ),
+        reachability=ContainerReachabilityHostPort(
+            bind_host="127.0.0.1",
+        ),
+    )
+    assert cfg.reachability.kind == "host_port"
+    assert cfg.reachability.bind_host == "127.0.0.1"
+
+
+def test_container_config_bridge_network_reachability():
+    cfg = ContainerWorkspaceConfig(
+        runtime="docker",
+        connection=ContainerConnectionSocket(
+            socket_path="/var/run/docker.sock",
+        ),
+        reachability=ContainerReachabilityBridge(
+            network_name="primer-net",
+        ),
+    )
+    assert cfg.reachability.kind == "bridge_network"
+    assert cfg.reachability.network_name == "primer-net"
+
+
+def test_container_config_rejects_template_fields():
+    # image / entrypoint / cpu / memory / mounts moved to template;
+    # passing them on provider config is a validation error.
+    with pytest.raises(ValidationError):
+        ContainerWorkspaceConfig(
+            runtime="docker",
+            connection=ContainerConnectionSocket(
+                socket_path="/var/run/docker.sock",
+            ),
+            reachability=ContainerReachabilityHostPort(
+                bind_host="127.0.0.1",
+            ),
+            image="ghcr.io/example/img:1",  # type: ignore[call-arg]
+        )

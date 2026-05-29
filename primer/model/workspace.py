@@ -28,6 +28,7 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     HttpUrl,
     SecretStr,
@@ -611,32 +612,70 @@ ContainerRuntimeConfig = Annotated[
 ]
 
 
-class ContainerWorkspaceConfig(BaseModel):
-    """Settings for ContainerWorkspaceBackend."""
+class ContainerConnectionSocket(BaseModel):
+    kind: Literal["socket"] = "socket"
+    socket_path: str = Field(..., description="Unix socket to the container runtime.")
 
-    kind: Literal["container"] = "container"
-    runtime: ContainerRuntimeConfig = Field(
-        ...,
-        description="Which OCI runtime to use and how to reach it.",
+
+class ContainerConnectionRemote(BaseModel):
+    kind: Literal["remote"] = "remote"
+    url: str = Field(..., description="Remote runtime endpoint, e.g. tcp://docker:2375.")
+    tls_ca: str | None = Field(default=None, description="PEM CA cert for mTLS.")
+    tls_cert: str | None = Field(default=None, description="PEM client cert for mTLS.")
+    tls_key: SecretStr | None = Field(default=None, description="PEM client key for mTLS.")
+
+
+ContainerConnectionConfig = Annotated[
+    Union[ContainerConnectionSocket, ContainerConnectionRemote],
+    Field(discriminator="kind"),
+]
+
+
+class ContainerReachabilityHostPort(BaseModel):
+    kind: Literal["host_port"] = "host_port"
+    bind_host: str = Field(
+        default="127.0.0.1",
+        description="Host interface the container port maps to. 127.0.0.1 keeps it loopback-only.",
     )
-    default_image: str | None = Field(
-        default=None,
+
+
+class ContainerReachabilityBridge(BaseModel):
+    kind: Literal["bridge_network"] = "bridge_network"
+    network_name: str = Field(
+        ...,
         description=(
-            "Default container image used when the WorkspaceTemplate "
-            "does not supply one. None = templates MUST set image."
+            "Docker network shared by the platform container and workspace containers. "
+            "Workspaces are reached via the container hostname; no port mapping is needed."
         ),
     )
-    name_prefix: str = Field(
-        default="primer-ws-",
-        description="Container/volume name prefix.",
+
+
+ContainerReachabilityConfig = Annotated[
+    Union[ContainerReachabilityHostPort, ContainerReachabilityBridge],
+    Field(discriminator="kind"),
+]
+
+
+class ContainerWorkspaceConfig(BaseModel):
+    """Container provider — connection to the runtime + reachability mode only.
+
+    Image, entrypoint, mounts, resource limits, etc. moved to the template
+    in this redesign (see ContainerTemplateConfig)."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["container"] = "container"
+    runtime: Literal["docker", "podman", "containerd"] = Field(
+        ..., description="Container runtime to use.",
     )
-    volume_driver: str | None = Field(
-        default=None,
-        description="Volume driver. None = runtime default.",
+    connection: ContainerConnectionConfig = Field(
+        ..., description="How the platform reaches the runtime API.",
     )
-    pull_policy: Literal["always", "if_missing", "never"] = Field(
-        default="if_missing",
-        description="Image pull policy applied at workspace create.",
+    reachability: ContainerReachabilityConfig = Field(
+        ..., description="How the platform reaches primer-runtime inside each workspace.",
+    )
+    image_pull_secrets: list[str] = Field(
+        default_factory=list,
+        description="Optional list of registry-auth secret refs.",
     )
 
 
@@ -816,7 +855,13 @@ class Workspace(Identifiable):
 
 __all__ = [
     "CommitInfo",
+    "ContainerConnectionConfig",
+    "ContainerConnectionRemote",
+    "ContainerConnectionSocket",
     "ContainerdRuntimeConfig",
+    "ContainerReachabilityBridge",
+    "ContainerReachabilityConfig",
+    "ContainerReachabilityHostPort",
     "ContainerRuntimeConfig",
     "ContainerTemplateConfig",
     "ContainerWorkspaceConfig",
