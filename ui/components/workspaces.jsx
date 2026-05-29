@@ -13,6 +13,23 @@
 
 const WS_TERMINAL = new Set(["ended", "completed", "failed", "cancelled"]);
 
+function WS_PhasePill({ phase }) {
+  // Follows the inline-styled pill convention used in toolsets.jsx and
+  // channels.jsx — pairs the .pill / .dot classes from app.css with a phase-
+  // specific tint so the colour palette stays in sync with the rest of the UI.
+  const color =
+    phase === "running" ? "var(--green)" :
+    phase === "pending" ? "var(--amber)" :
+    phase === "failed" ? "var(--red)" :
+    phase === "terminating" ? "var(--text-3)" : "var(--text-3)";
+  return (
+    <span className="pill" style={{ color, borderColor: "var(--border)", background: "var(--bg-2)" }}>
+      <span className="dot" style={{ background: color }}></span>
+      {phase || "unknown"}
+    </span>
+  );
+}
+
 function _wsAgeSec(iso) {
   if (!iso) return null;
   if (iso instanceof Date) return (Date.now() - iso.getTime()) / 1000;
@@ -149,13 +166,14 @@ function WorkspacesPage({ onOpen, pushToast }) {
                 <th>ID</th>
                 <th>Template</th>
                 <th>Provider</th>
+                <th>Phase</th>
                 <th>Created</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={5} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+                <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
                   No workspaces match the current filter{textQuery ? ` "${textQuery}"` : ""}.
                   {" · "}<a
                     onClick={() => { setTextQuery(""); setTemplateFilter(""); setProviderFilter(""); }}
@@ -167,6 +185,7 @@ function WorkspacesPage({ onOpen, pushToast }) {
                   <td className="mono">{w.id}</td>
                   <td className="mono">{w.template_id}</td>
                   <td className="mono muted">{w.provider_id}</td>
+                  <td><WS_PhasePill phase={w.phase} /></td>
                   <td className="mono muted">{w.created_at ? relativeTime(_wsAgeSec(w.created_at)) : "—"}</td>
                   <td style={{ textAlign: "right", paddingRight: 12 }}>
                     <Icon name="chevron-right" size={12} className="muted" />
@@ -328,8 +347,25 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
     { id: "destroy", label: "Destroy", icon: "trash", danger: true },
   ];
 
+  const wsRow = ws.data || {};
+  const showFailureBanner = wsRow.phase === "failed";
+  const failureDetail = (() => {
+    const reason = wsRow.failure_reason || "Workspace probe failed";
+    if (wsRow.last_probe_at) {
+      return `${reason} (last checked: ${wsRow.last_probe_at})`;
+    }
+    return reason;
+  })();
+
   return (
     <div className="col" style={{ gap: 14 }}>
+      {showFailureBanner && (
+        <Banner
+          kind="error"
+          title="Workspace failed"
+          detail={failureDetail}
+        />
+      )}
       <div className="panel">
         <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
           {tabs.map((t) => (
