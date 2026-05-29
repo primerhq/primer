@@ -17,13 +17,19 @@ from typing import Any
 from primer.int.workspace import Workspace, WorkspaceBackend
 from primer.model.except_ import ConfigError, NotFoundError
 from primer.model.workspace import (
+    K8sConnectionInCluster,
+    K8sConnectionKubeconfig,
+    K8sConnectionServiceAccountToken,
     KubernetesWorkspaceConfig,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
     KubernetesTemplateConfig,
 )
 from primer.workspace.files import resolve_file_sources
-from primer.workspace.k8s.sandbox import K8sSandbox
+from primer.workspace.k8s.naming import k8s_object_name
+from primer.workspace.runtime.runtime_client import RuntimeClient
+from primer.workspace.runtime.url import build_runtime_url
+from primer.workspace.runtime.ws_sandbox import WSSandbox
 from primer.workspace.sandbox.workspace import SandboxWorkspace
 
 
@@ -264,14 +270,35 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         if self._core_v1 is None or self._apps_v1 is None:
             from kubernetes_asyncio import client, config as kconfig
 
-            if self._config.in_cluster:
+            conn = self._config.connection
+            if isinstance(conn, K8sConnectionInCluster):
                 kconfig.load_incluster_config()
-            else:
+                api_client = client.ApiClient()
+            elif isinstance(conn, K8sConnectionKubeconfig):
                 await kconfig.load_kube_config(
-                    config_file=self._config.kubeconfig_path,
-                    context=self._config.context,
+                    config_file=conn.path,
+                    context=conn.context,
                 )
-            api_client = client.ApiClient()
+                api_client = client.ApiClient()
+            elif isinstance(conn, K8sConnectionServiceAccountToken):
+                cfg = client.Configuration()
+                cfg.host = conn.apiserver_url
+                cfg.api_key = {
+                    "authorization": f"Bearer {conn.token.get_secret_value()}",
+                }
+                # Trust the supplied PEM bundle for the apiserver.
+                import tempfile
+                ca_file = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".pem", delete=False,
+                )
+                ca_file.write(conn.ca_data)
+                ca_file.close()
+                cfg.ssl_ca_cert = ca_file.name
+                api_client = client.ApiClient(configuration=cfg)
+            else:
+                raise ConfigError(
+                    f"unknown k8s connection kind {conn.kind!r}"
+                )
             self._core_v1 = client.CoreV1Api(api_client)
             self._apps_v1 = client.AppsV1Api(api_client)
         self._initialised = True
@@ -291,7 +318,16 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         template: WorkspaceTemplate,
         *,
         overrides: WorkspaceTemplateOverrides | None = None,
+        workspace_id: str | None = None,
     ) -> Workspace:
+        """Materialise a workspace as Secret + Headless Service + StatefulSet
+        and wire a :class:`SandboxWorkspace` over a :class:`WSSandbox` over
+        :class:`RuntimeClient`.
+
+        ``workspace_id`` is generated when not supplied so this matches the
+        :class:`WorkspaceBackend` ABC signature; callers (and tests) may pin
+        the id for predictable K8s object names.
+        """
         if not isinstance(template.backend, KubernetesTemplateConfig):
             raise ConfigError(
                 f"KubernetesWorkspaceBackend requires template backend kind "
@@ -304,45 +340,57 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
             await self.initialize()
         assert self._core_v1 is not None and self._apps_v1 is not None
 
-        workspace_id = _generate_workspace_id()
-        sts_name = f"{self._config.name_prefix}{workspace_id}"
-        pvc_name = _pvc_name_for(sts_name)
+        if workspace_id is None:
+            workspace_id = _generate_workspace_id()
+        obj_name = k8s_object_name(workspace_id)
 
+        # 1. Per-workspace Secret with RUNTIME_TOKEN -- the STS will envFrom
+        #    this Secret so the runtime container inherits the bearer token
+        #    on start-up.
+        token = await self._create_secret(workspace_id, obj_name)
+        # 2. Headless Service -- gives the Pod stable DNS
+        #    (<obj_name>-0.<obj_name>.<ns>.svc.cluster.local).
+        await self._create_service(workspace_id, obj_name)
+        # 3. StatefulSet bound to the Service (serviceName=obj_name) with
+        #    envFrom the Secret and workspace-id label on the pod template
+        #    so the Service selector matches.
         manifest = _build_statefulset_manifest(
-            sts_name=sts_name,
+            sts_name=obj_name,
             namespace=self._config.namespace,
             workspace_id=workspace_id,
             template=template,
             provider_cfg=self._config,
+            obj_name=obj_name,
         )
-        try:
-            await self._apps_v1.create_namespaced_stateful_set(
-                self._config.namespace, manifest,
-            )
-        except Exception:
-            raise
+        await self._apps_v1.create_namespaced_stateful_set(
+            namespace=self._config.namespace,
+            body=manifest,
+        )
 
-        # Wait for the Pod to be Running (pod name is <sts>-0).
-        pod_name = f"{sts_name}-0"
+        # 4. Wait for the Pod to be Running (pod name is <sts>-0).
+        pod_name = f"{obj_name}-0"
         await self._wait_for_pod_running(pod_name)
 
-        sandbox = K8sSandbox(
-            core_v1=self._core_v1,
-            apps_v1=self._apps_v1,
-            ws_api=self._ws_api,
-            namespace=self._config.namespace,
-            sts_name=sts_name,
-            pod_name=pod_name,
-            sandbox_id=sts_name,
-            pvc_name=pvc_name,
+        # 5. Open the runtime WebSocket and wrap as a Sandbox + Workspace.
+        url = build_runtime_url(
+            provider_config=self._config,
+            workspace_id=workspace_id,
+            k8s_object_name=obj_name,
+        )
+        client = RuntimeClient(url=url, token=token)
+        await client.connect()
+        sandbox = WSSandbox(
+            runtime_client=client,
+            container_id=obj_name,
+            workspace_root=template.backend.workdir,
         )
 
         try:
             # Resolve every FileSource variant (inline/url/document/secret)
             # up-front via the central helper; the sandbox just writes the
-            # resulting bytes. document/secret resolvers aren't wired here
-            # yet — the orchestration layer will pass them in once Phase 6
-            # threads app state through.
+            # resulting bytes via the WS runtime. document/secret resolvers
+            # aren't wired here yet — the orchestration layer will pass them
+            # in once Phase 6 threads app state through.
             files = list(template.files) + (
                 list(overrides.files) if overrides else []
             )
@@ -353,8 +401,6 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
                     f"{workdir}/{rf.path}",
                     rf.content,
                 )
-                # NOTE: file mode application via exec is deferred;
-                # the sandbox protocol has no chmod yet (Phase 5 will add it).
             ws = await SandboxWorkspace.materialise(
                 workspace_id=workspace_id,
                 template=template,
@@ -364,9 +410,11 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
             )
         except Exception:
             try:
-                await sandbox.remove()
+                await client.aclose()
             except Exception as exc:  # noqa: BLE001
-                logger.warning("rollback remove failed: %s", exc)
+                logger.warning(
+                    "rollback runtime-client aclose failed: %s", exc,
+                )
             raise
 
         async with self._lock:
@@ -494,36 +542,46 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         if not self._initialised:
             await self.initialize()
         assert self._core_v1 is not None and self._apps_v1 is not None
-        sts_name = f"{self._config.name_prefix}{workspace_id}"
+        obj_name = k8s_object_name(workspace_id)
         try:
             await self._apps_v1.read_namespaced_stateful_set(
-                sts_name, self._config.namespace,
+                obj_name, self._config.namespace,
             )
         except Exception as exc:  # noqa: BLE001
             if "404" in str(exc):
                 return None
             raise
-        pod_name = f"{sts_name}-0"
+        pod_name = f"{obj_name}-0"
         # Make sure the Pod is up (the StatefulSet may have been scaled
-        # to 0 by a prior `K8sSandbox.stop`).
+        # to 0 between sessions).
         try:
             await self._wait_for_pod_running(pod_name)
         except ConfigError:
             # Scaled down -- bring it back up.
             await self._apps_v1.patch_namespaced_stateful_set_scale(
-                sts_name, self._config.namespace,
+                obj_name, self._config.namespace,
                 {"spec": {"replicas": 1}},
             )
             await self._wait_for_pod_running(pod_name)
-        sandbox = K8sSandbox(
-            core_v1=self._core_v1,
-            apps_v1=self._apps_v1,
-            ws_api=self._ws_api,
-            namespace=self._config.namespace,
-            sts_name=sts_name,
-            pod_name=pod_name,
-            sandbox_id=sts_name,
-            pvc_name=_pvc_name_for(sts_name),
+
+        # Recover RUNTIME_TOKEN from the per-workspace Secret. Persisted
+        # runtime_meta on the workspace row (Task 6.3) will eventually
+        # subsume this; until then the Secret is the source of truth
+        # because the platform doesn't keep tokens in process memory
+        # across restarts.
+        token = await self._read_runtime_token(obj_name)
+
+        url = build_runtime_url(
+            provider_config=self._config,
+            workspace_id=workspace_id,
+            k8s_object_name=obj_name,
+        )
+        client = RuntimeClient(url=url, token=token)
+        await client.connect()
+        sandbox = WSSandbox(
+            runtime_client=client,
+            container_id=obj_name,
+            workspace_root=template.backend.workdir,
         )
         ws = await SandboxWorkspace.materialise(
             workspace_id=workspace_id,
@@ -535,21 +593,101 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         async with self._lock:
             existing = self._workspaces.get(workspace_id)
             if existing is not None:
+                # Another caller materialised first; drop ours.
+                try:
+                    await client.aclose()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "redundant runtime-client aclose failed: %s", exc,
+                    )
                 return existing
             self._workspaces[workspace_id] = ws
         return ws
+
+    async def _read_runtime_token(self, obj_name: str) -> str:
+        """Fetch ``RUNTIME_TOKEN`` out of the per-workspace Secret.
+
+        Used by :meth:`get` to re-attach without holding the token in
+        process memory. The Secret's ``stringData`` round-trips through
+        the API server as base64 ``data``, so decode if needed.
+        """
+        assert self._core_v1 is not None
+        secret = await self._core_v1.read_namespaced_secret(
+            name=obj_name, namespace=self._config.namespace,
+        )
+        # kubernetes_asyncio returns a V1Secret with .data (b64-encoded)
+        # and optionally .string_data on write. Some fakes round-trip via
+        # .string_data only.
+        data = getattr(secret, "data", None) or {}
+        string_data = getattr(secret, "string_data", None) or {}
+        if "RUNTIME_TOKEN" in string_data:
+            return string_data["RUNTIME_TOKEN"]
+        raw = data.get("RUNTIME_TOKEN")
+        if raw is None:
+            raise ConfigError(
+                f"Secret {obj_name!r} missing RUNTIME_TOKEN key"
+            )
+        import base64
+        return base64.b64decode(raw).decode("utf-8")
 
     async def list(self) -> list[str]:
         return list(self._workspaces)
 
     async def destroy(self, workspace_id: str) -> None:
+        """Tear down a workspace's Pod, Service, Secret, STS and PVC.
+
+        Best-effort: missing objects are silently skipped so partial
+        creates roll back cleanly. Raises :class:`NotFoundError` only
+        when the StatefulSet itself doesn't exist (the canonical
+        existence signal).
+        """
+        if not self._initialised:
+            await self.initialize()
+        assert self._core_v1 is not None and self._apps_v1 is not None
+
         async with self._lock:
             ws = self._workspaces.pop(workspace_id, None)
-        if ws is None:
-            raise NotFoundError(f"workspace {workspace_id!r} not found")
-        sandbox = ws.sandbox
-        await sandbox.stop()
-        await sandbox.remove()
+        if ws is not None:
+            # Close the runtime WS first so reconnect attempts don't fire
+            # while we tear the Pod down underneath them.
+            try:
+                await ws.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "workspace aclose during destroy failed: %s", exc,
+                )
+
+        obj_name = k8s_object_name(workspace_id)
+        ns = self._config.namespace
+        try:
+            await self._apps_v1.delete_namespaced_stateful_set(
+                name=obj_name, namespace=ns,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if "404" in str(exc):
+                if ws is None:
+                    raise NotFoundError(
+                        f"workspace {workspace_id!r} not found"
+                    )
+            else:
+                raise
+        # Best-effort cleanup of the Headless Service, Secret, and PVC.
+        for delete_call, name, kind in (
+            (self._core_v1.delete_namespaced_service, obj_name, "service"),
+            (self._core_v1.delete_namespaced_secret, obj_name, "secret"),
+            (
+                self._core_v1.delete_namespaced_persistent_volume_claim,
+                _pvc_name_for(obj_name), "pvc",
+            ),
+        ):
+            try:
+                await delete_call(name=name, namespace=ns)
+            except Exception as exc:  # noqa: BLE001
+                if "404" not in str(exc):
+                    logger.warning(
+                        "destroy: %s delete for %r failed: %s",
+                        kind, name, exc,
+                    )
 
 
 __all__ = ["KubernetesWorkspaceBackend"]

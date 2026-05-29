@@ -260,3 +260,133 @@ async def test_statefulset_manifest_service_name_matches_obj_name():
         obj_name=obj_name,
     )
     assert m["spec"]["serviceName"] == obj_name
+
+
+# ---------------------------------------------------------------------------
+# Task 5.5: create()/get() return a SandboxWorkspace over a WSSandbox.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_returns_sandbox_workspace_with_wssandbox():
+    """K8s backend's ``create()`` returns a :class:`SandboxWorkspace` whose
+    inner :class:`Sandbox` is a :class:`WSSandbox` over a connected
+    :class:`RuntimeClient` -- not the legacy tar-over-exec ``K8sSandbox``."""
+    from unittest.mock import patch
+
+    from primer.model.workspace import (
+        KubernetesTemplateConfig,
+        WorkspaceTemplate,
+    )
+    from primer.workspace.runtime.ws_sandbox import WSSandbox
+    from primer.workspace.sandbox.workspace import SandboxWorkspace
+
+    cfg = KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer-ns",
+        reachability=K8sReachabilityInCluster(),
+    )
+    backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
+    backend._config = cfg
+    backend._core_v1 = AsyncMock()
+    backend._apps_v1 = AsyncMock()
+    backend._workspaces = {}
+    backend._lock = __import__("asyncio").Lock()
+    backend._initialised = True
+    backend._core_v1.create_namespaced_secret = AsyncMock()
+    backend._core_v1.create_namespaced_service = AsyncMock()
+    backend._apps_v1.create_namespaced_stateful_set = AsyncMock()
+    backend._wait_for_pod_running = AsyncMock()
+
+    template = WorkspaceTemplate(
+        id="tpl-1",
+        provider_id="prov-1",
+        description="",
+        backend=KubernetesTemplateConfig(image="primer-runtime:1"),
+    )
+
+    # Stub RuntimeClient so we don't open a real WS connection.
+    with patch("primer.workspace.k8s.backend.RuntimeClient") as MockRC:
+        mock_client = AsyncMock()
+        MockRC.return_value = mock_client
+        ws = await backend.create(
+            template,
+            overrides=None,
+            workspace_id="ws-1",
+        )
+
+    assert isinstance(ws, SandboxWorkspace)
+    inner_sandbox = getattr(ws, "_sandbox", None)
+    assert inner_sandbox is not None
+    assert isinstance(inner_sandbox, WSSandbox)
+    # RuntimeClient was constructed with the matching URL + token from the
+    # Secret we just created.
+    assert MockRC.call_count == 1
+    rc_kwargs = MockRC.call_args.kwargs
+    assert "url" in rc_kwargs and "token" in rc_kwargs
+    assert rc_kwargs["url"].startswith("ws://primer-ws-ws-1-0.primer-ws-ws-1.")
+    # The token must be the one stored in the per-workspace Secret.
+    secret_body = backend._core_v1.create_namespaced_secret.call_args.kwargs[
+        "body"
+    ]
+    assert rc_kwargs["token"] == secret_body["stringData"]["RUNTIME_TOKEN"]
+    # And the WS connection was actually opened.
+    mock_client.connect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_returns_sandbox_workspace_after_reattach():
+    """``get()`` re-attaches to an existing STS by reading RUNTIME_TOKEN out
+    of the Secret and returning a :class:`SandboxWorkspace` over a fresh
+    :class:`WSSandbox`."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from primer.model.workspace import (
+        KubernetesTemplateConfig,
+        WorkspaceTemplate,
+    )
+    from primer.workspace.runtime.ws_sandbox import WSSandbox
+    from primer.workspace.sandbox.workspace import SandboxWorkspace
+
+    cfg = KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer-ns",
+        reachability=K8sReachabilityInCluster(),
+    )
+    backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
+    backend._config = cfg
+    backend._core_v1 = AsyncMock()
+    backend._apps_v1 = AsyncMock()
+    backend._workspaces = {}
+    backend._lock = __import__("asyncio").Lock()
+    backend._initialised = True
+    # STS exists.
+    backend._apps_v1.read_namespaced_stateful_set = AsyncMock()
+    # Secret carries the token.
+    backend._core_v1.read_namespaced_secret = AsyncMock(
+        return_value=SimpleNamespace(
+            data=None,
+            string_data={"RUNTIME_TOKEN": "the-stored-token"},
+        )
+    )
+    backend._wait_for_pod_running = AsyncMock()
+
+    template = WorkspaceTemplate(
+        id="tpl-1",
+        provider_id="prov-1",
+        description="",
+        backend=KubernetesTemplateConfig(image="primer-runtime:1"),
+    )
+
+    with patch("primer.workspace.k8s.backend.RuntimeClient") as MockRC:
+        mock_client = AsyncMock()
+        MockRC.return_value = mock_client
+        ws = await backend.get("ws-1", template=template)
+
+    assert isinstance(ws, SandboxWorkspace)
+    assert isinstance(ws._sandbox, WSSandbox)
+    # The token plumbed into RuntimeClient came from the Secret read.
+    rc_kwargs = MockRC.call_args.kwargs
+    assert rc_kwargs["token"] == "the-stored-token"
+    mock_client.connect.assert_awaited_once()
