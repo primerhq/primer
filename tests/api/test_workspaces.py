@@ -630,6 +630,27 @@ class TestWorkspaceRouter:
         assert body["failure_reason"] is None
 
     @pytest.mark.asyncio
+    async def test_pause_returns_501(self, client) -> None:
+        """POST /v1/workspaces/{id}/pause is reserved and returns 501."""
+        # Note: this test doesn't need a workspace to exist — the 501 is
+        # returned BEFORE any storage lookup. If the route handler signature
+        # implies it accepts the id without backend lookup, that's correct.
+        resp = await client.post("/v1/workspaces/some-id/pause")
+        assert resp.status_code == 501
+        body = resp.json()
+        # FastAPI wraps HTTPException.detail as {"detail": ...}
+        assert body["detail"]["error"] == "not_implemented"
+        assert "pause" in body["detail"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_resume_returns_501(self, client) -> None:
+        resp = await client.post("/v1/workspaces/some-id/resume")
+        assert resp.status_code == 501
+        body = resp.json()
+        assert body["detail"]["error"] == "not_implemented"
+        assert "resume" in body["detail"]["message"].lower()
+
+    @pytest.mark.asyncio
     async def test_workspace_list_includes_phase(self, client) -> None:
         """GET /v1/workspaces lists each workspace with its phase + probe
         fields (no stripped DTO in the way)."""

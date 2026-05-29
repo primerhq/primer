@@ -323,6 +323,42 @@ async def delete_workspace(
     await registry.destroy(workspace_id)
 
 
+@workspace_router.post(
+    "/workspaces/{workspace_id}/pause",
+    status_code=501,
+    summary="Pause a workspace (reserved — not implemented in v1)",
+)
+async def pause_workspace(workspace_id: str) -> dict:
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "error": "not_implemented",
+            "message": (
+                "Workspace pause is reserved in v1 (see redesign spec §8.4). "
+                "Backend implementations: container=docker stop, "
+                "k8s=STS scale-to-0, local=no-op."
+            ),
+        },
+    )
+
+
+@workspace_router.post(
+    "/workspaces/{workspace_id}/resume",
+    status_code=501,
+    summary="Resume a workspace (reserved — not implemented in v1)",
+)
+async def resume_workspace(workspace_id: str) -> dict:
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "error": "not_implemented",
+            "message": (
+                "Workspace resume is reserved in v1 (see redesign spec §8.4)."
+            ),
+        },
+    )
+
+
 # ===========================================================================
 # Sessions sub-resource
 # ===========================================================================
