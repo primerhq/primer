@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -418,3 +419,117 @@ class TestToolChoice:
             "type": "function",
             "function": {"name": "get_weather"},
         }
+
+
+from pydantic import BaseModel as PydanticBaseModel
+
+from primer.llm.openchat import (
+    _build_sampling_params,
+    _extract_extended_kwargs,
+    _response_format_to_param,
+)
+
+
+class TestSampling:
+    def test_all_params_forwarded_chat_keys(self) -> None:
+        params = _build_sampling_params(
+            temperature=0.7,
+            top_p=0.9,
+            max_output_tokens=500,
+            stop=None,
+        )
+        assert params == {
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "max_tokens": 500,
+        }
+
+    def test_stop_passes_through_natively_no_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING, logger="primer.llm._openai_common")
+        params = _build_sampling_params(
+            temperature=None,
+            top_p=None,
+            max_output_tokens=None,
+            stop=["END", "\n"],
+        )
+        assert params == {"stop": ["END", "\n"]}
+        assert not any("stop" in r.message.lower() for r in caplog.records)
+
+    def test_all_none_returns_empty(self) -> None:
+        assert _build_sampling_params(
+            temperature=None, top_p=None, max_output_tokens=None, stop=None,
+        ) == {}
+
+
+class TestExtendedKwargs:
+    @pytest.mark.parametrize(
+        "key, value",
+        [
+            ("parallel_tool_calls", False),
+            ("presence_penalty", 0.5),
+            ("frequency_penalty", -0.25),
+            ("logprobs", True),
+            ("top_logprobs", 3),
+            ("seed", 7),
+            ("user", "u-123"),
+        ],
+    )
+    def test_recognised_keys_passthrough(self, key: str, value: Any) -> None:
+        assert _extract_extended_kwargs({key: value}) == {key: value}
+
+    def test_unknown_keys_dropped_with_debug_log(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm.openchat")
+        out = _extract_extended_kwargs({"frobnicate": True, "foobar": 42})
+        assert out == {}
+        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any(
+            "frobnicate" in r.message and "foobar" in r.message
+            for r in debug_records
+        )
+
+    def test_reasoning_effort_dropped_as_unknown(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm.openchat")
+        assert _extract_extended_kwargs({"reasoning_effort": "high"}) == {}
+
+    def test_none_returns_empty(self) -> None:
+        assert _extract_extended_kwargs(None) == {}
+
+    def test_empty_dict_returns_empty(self) -> None:
+        assert _extract_extended_kwargs({}) == {}
+
+
+class TestResponseFormat:
+    def test_none_returns_none(self) -> None:
+        assert _response_format_to_param(None) is None
+
+    def test_dict_schema_root_level_json_schema(self) -> None:
+        schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+        out = _response_format_to_param(schema)
+        assert out == {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "schema",
+                "schema": schema,
+                "strict": True,
+            },
+        }
+
+    def test_pydantic_class(self) -> None:
+        class Answer(PydanticBaseModel):
+            value: int
+
+        out = _response_format_to_param(Answer)
+        assert out["type"] == "json_schema"
+        assert out["json_schema"]["name"] == "Answer"
+        assert "value" in out["json_schema"]["schema"]["properties"]
+        assert out["json_schema"]["strict"] is True
+
+    def test_invalid_type_raises_config_error(self) -> None:
+        with pytest.raises(ConfigError, match="response_format"):
+            _response_format_to_param(42)  # type: ignore[arg-type]
