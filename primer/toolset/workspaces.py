@@ -700,6 +700,7 @@ def build_workspaces_toolset(
             provider_id=template.provider_id,
             overrides=args.overrides,
             created_at=datetime.now(timezone.utc),
+            runtime_meta=live.runtime_meta,
         )
         await _workspace_storage().create(row)
         return _ok(row)
