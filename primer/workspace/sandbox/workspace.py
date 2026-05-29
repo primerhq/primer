@@ -23,6 +23,7 @@ from primer.model.workspace_session import (
 )
 from primer.model.workspace import (
     FileEntry,
+    WorkspaceRuntimeMeta,
     WorkspaceStatus,
     WorkspaceTemplate,
 )
@@ -75,6 +76,7 @@ class SandboxWorkspace(Workspace):
         truncation_store: SandboxTruncationStore,
         tools: list[WorkspaceTool],
         backend_kind: Literal["container", "kubernetes"],
+        runtime_meta: WorkspaceRuntimeMeta,
         workspace_root: str = "/workspace",
     ) -> None:
         self._workspace_id = workspace_id
@@ -84,6 +86,7 @@ class SandboxWorkspace(Workspace):
         self._cache = truncation_store
         self._tools = tools
         self._backend_kind = backend_kind
+        self._runtime_meta = runtime_meta
         self._workspace_root = workspace_root.rstrip("/")
         self._sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
@@ -96,6 +99,7 @@ class SandboxWorkspace(Workspace):
         template: WorkspaceTemplate,
         sandbox: Sandbox,
         backend_kind: Literal["container", "kubernetes"],
+        runtime_meta: WorkspaceRuntimeMeta,
         workspace_root: str = "/workspace",
     ) -> "SandboxWorkspace":
         """Build the in-sandbox state repo + cache + tools and return a
@@ -126,6 +130,7 @@ class SandboxWorkspace(Workspace):
             truncation_store=cache,
             tools=tools,
             backend_kind=backend_kind,
+            runtime_meta=runtime_meta,
             workspace_root=workspace_root,
         )
 
@@ -138,6 +143,10 @@ class SandboxWorkspace(Workspace):
     @property
     def template(self) -> WorkspaceTemplate:
         return self._template
+
+    @property
+    def runtime_meta(self) -> WorkspaceRuntimeMeta:
+        return self._runtime_meta
 
     @property
     def sandbox(self) -> Sandbox:

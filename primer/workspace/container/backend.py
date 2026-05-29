@@ -36,11 +36,14 @@ import uuid
 
 from primer.int.workspace import Workspace, WorkspaceBackend
 from primer.model.except_ import ConfigError, NotFoundError
+from pydantic import SecretStr
+
 from primer.model.workspace import (
     ContainerReachabilityHostPort,
     ContainerTemplateConfig,
     ContainerWorkspaceConfig,
     ResourceLimits,
+    WorkspaceRuntimeMeta,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
@@ -233,11 +236,17 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
                         f"init command failed (rc={res.exit_code}): "
                         f"{cmd!r}\nstderr: {res.stderr}"
                     )
+            runtime_meta = WorkspaceRuntimeMeta(
+                url=url,
+                token=SecretStr(token),
+                mapped_host_port=mapped_host_port,
+            )
             ws = await SandboxWorkspace.materialise(
                 workspace_id=workspace_id,
                 template=template,
                 sandbox=sandbox,
                 backend_kind="container",
+                runtime_meta=runtime_meta,
                 workspace_root=spec.workdir,
             )
         except Exception:
@@ -285,11 +294,31 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
                 f"backend kind is {template.backend.kind!r}, expected "
                 "'container'"
             )
+        # Re-attach: rebuild the runtime_meta so the wrapper still
+        # exposes a non-None ``runtime_meta`` per the Workspace ABC. The
+        # token isn't recoverable here (it was injected into the
+        # container's env at create time); the persisted workspace row
+        # remains the source of truth — re-attach merely rebuilds the
+        # live handle.
+        reattach_host_port: int | None = None
+        if isinstance(self._config.reachability, ContainerReachabilityHostPort):
+            reattach_host_port = getattr(sandbox, "mapped_host_port", None)
+        reattach_url = build_runtime_url(
+            provider_config=self._config,
+            workspace_id=workspace_id,
+            mapped_host_port=reattach_host_port,
+        )
+        runtime_meta = WorkspaceRuntimeMeta(
+            url=reattach_url,
+            token=SecretStr(""),
+            mapped_host_port=reattach_host_port,
+        )
         ws = await SandboxWorkspace.materialise(
             workspace_id=workspace_id,
             template=template,
             sandbox=sandbox,
             backend_kind="container",
+            runtime_meta=runtime_meta,
             workspace_root=template.backend.workdir,
         )
         async with self._lock:

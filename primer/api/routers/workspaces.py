@@ -304,6 +304,7 @@ async def create_workspace(
         provider_id=template.provider_id,
         overrides=body.overrides,
         created_at=datetime.now(timezone.utc),
+        runtime_meta=live.runtime_meta,
     )
     await workspace_storage.create(row)
     return row

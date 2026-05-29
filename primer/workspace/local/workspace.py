@@ -26,9 +26,12 @@ from primer.model.workspace_session import (
     SessionInfo,
     SessionStatus,
 )
+from pydantic import SecretStr
+
 from primer.model.workspace import (
     CommitInfo,
     FileEntry,
+    WorkspaceRuntimeMeta,
     WorkspaceStatus,
     WorkspaceTemplate,
 )
@@ -138,6 +141,22 @@ class LocalWorkspace(Workspace):
     @property
     def template(self) -> WorkspaceTemplate:
         return self._template
+
+    @property
+    def runtime_meta(self) -> WorkspaceRuntimeMeta:
+        """Sentinel runtime meta for the local backend.
+
+        The local backend has no real WebSocket runtime — file/exec ops
+        happen in-process against the host filesystem. We return a
+        sentinel ``local://<workspace_id>`` URL plus an empty
+        :class:`SecretStr` so the workspace row schema (which requires
+        ``runtime_meta`` for every backend) stays satisfied while making
+        it obvious to readers that no actual transport is wired up.
+        """
+        return WorkspaceRuntimeMeta(
+            url=f"local://{self._workspace_id}",
+            token=SecretStr(""),
+        )
 
     @property
     def root(self) -> Path:

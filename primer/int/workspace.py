@@ -34,6 +34,7 @@ from typing import Any, TYPE_CHECKING
 from primer.model.workspace_session import AgentBinding, SessionInfo, SessionStatus
 from primer.model.workspace import (
     FileEntry,
+    WorkspaceRuntimeMeta,
     WorkspaceStatus,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
@@ -76,6 +77,24 @@ class Workspace(ABC):
     @abstractmethod
     def template(self) -> WorkspaceTemplate:
         """The template this workspace was materialised from."""
+
+    @property
+    @abstractmethod
+    def runtime_meta(self) -> WorkspaceRuntimeMeta:
+        """Connection coordinates for the workspace's primer-runtime.
+
+        Returned by every backend's :meth:`WorkspaceBackend.create` so the
+        API layer can persist the URL+token on the workspace row for
+        re-attach. The token is wrapped in :class:`pydantic.SecretStr` so
+        it is redacted by default when the row is serialised on GET.
+
+        For the local backend (no real runtime) implementations return a
+        sentinel value (``url="local://<id>"``, empty token); for the
+        container/k8s backends the URL is built via
+        :func:`primer.workspace.runtime.url.build_runtime_url` and the
+        token is the same bearer minted into the container/Secret on
+        materialisation.
+        """
 
     @property
     def state_repo(self) -> "Any | None":

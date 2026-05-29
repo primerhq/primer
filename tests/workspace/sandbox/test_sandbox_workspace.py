@@ -7,13 +7,23 @@ from pathlib import Path
 
 import pytest
 
+from pydantic import SecretStr
+
 from primer.model.workspace import (
+    WorkspaceRuntimeMeta,
     WorkspaceStatus,
     WorkspaceTemplate,
     ContainerTemplateConfig,
 )
 from primer.workspace.sandbox.fake import FakeSandbox
 from primer.workspace.sandbox.workspace import SandboxWorkspace
+
+
+def _runtime_meta(workspace_id: str = "ws-test") -> WorkspaceRuntimeMeta:
+    return WorkspaceRuntimeMeta(
+        url=f"ws://fake/{workspace_id}",
+        token=SecretStr("fake-token"),
+    )
 
 
 pytestmark = pytest.mark.skipif(
@@ -35,6 +45,7 @@ async def test_status_ready(tmp_path: Path) -> None:
     ws = await SandboxWorkspace.materialise(
         workspace_id="ws-1", template=_template(),
         sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
     )
     s = await ws.status()
     assert isinstance(s, WorkspaceStatus)
@@ -48,6 +59,7 @@ async def test_get_tools_returns_seven(tmp_path: Path) -> None:
     ws = await SandboxWorkspace.materialise(
         workspace_id="ws-1", template=_template(),
         sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
     )
     tools = ws.get_tools()
     ids = sorted(t.id for t in tools)
@@ -60,6 +72,7 @@ async def test_read_write_file(tmp_path: Path) -> None:
     ws = await SandboxWorkspace.materialise(
         workspace_id="ws-1", template=_template(),
         sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
     )
     await ws.write_file("hello.txt", b"world")
     assert await ws.read_file("hello.txt") == b"world"
@@ -71,6 +84,7 @@ async def test_list_files_recursive(tmp_path: Path) -> None:
     ws = await SandboxWorkspace.materialise(
         workspace_id="ws-1", template=_template(),
         sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
     )
     await ws.write_file("a.txt", b"1")
     await ws.write_file("dir/b.txt", b"2")
@@ -86,6 +100,7 @@ async def test_refuses_writes_under_state(tmp_path: Path) -> None:
     ws = await SandboxWorkspace.materialise(
         workspace_id="ws-1", template=_template(),
         sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
     )
     from primer.model.except_ import BadRequestError
     with pytest.raises(BadRequestError):
@@ -98,6 +113,7 @@ async def test_status_kubernetes_backend_label(tmp_path: Path) -> None:
     ws = await SandboxWorkspace.materialise(
         workspace_id="ws-2", template=_template(),
         sandbox=sb, backend_kind="kubernetes",
+        runtime_meta=_runtime_meta(),
     )
     s = await ws.status()
     assert s.backend == "kubernetes"
@@ -115,6 +131,7 @@ async def test_append_message_line_creates_file(tmp_path: Path) -> None:
     ws = await SandboxWorkspace.materialise(
         workspace_id="ws-aml-1", template=_template(),
         sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
     )
     sid = "sess-aml-1"
     await ws.append_message_line(sid, b'{"seq":1,"kind":"done"}\n')
@@ -136,6 +153,7 @@ async def test_append_message_line_appends_sequentially(tmp_path: Path) -> None:
     ws = await SandboxWorkspace.materialise(
         workspace_id="ws-aml-2", template=_template(),
         sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
     )
     sid = "sess-aml-2"
     line1 = b'{"seq":1,"kind":"user_input"}\n'
@@ -155,6 +173,7 @@ async def test_append_message_line_adds_trailing_newline(tmp_path: Path) -> None
     ws = await SandboxWorkspace.materialise(
         workspace_id="ws-aml-3", template=_template(),
         sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
     )
     sid = "sess-aml-3"
     await ws.append_message_line(sid, b'{"seq":1}')
@@ -170,6 +189,7 @@ async def test_append_message_line_noop_for_empty(tmp_path: Path) -> None:
     ws = await SandboxWorkspace.materialise(
         workspace_id="ws-aml-4", template=_template(),
         sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
     )
     sid = "sess-aml-4"
     await ws.append_message_line(sid, b"")

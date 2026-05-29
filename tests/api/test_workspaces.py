@@ -28,11 +28,14 @@ from primer.model.except_ import (
 )
 from primer.model.workspace_session import SessionInfo, SessionStatus
 from primer.model.storage import OffsetPage, OffsetPageResponse
+from pydantic import SecretStr
+
 from primer.model.workspace import (
     FileEntry,
     LocalWorkspaceConfig,
     WorkspaceProvider,
     WorkspaceProviderType,
+    WorkspaceRuntimeMeta,
     WorkspaceTemplate,
 )
 
@@ -149,10 +152,18 @@ class _FakeWorkspace:
         self.workspace_id = workspace_id
         self._files: dict[str, bytes] = {}
         self._sessions: dict[str, _FakeAgentSession] = {}
+        self._runtime_meta = WorkspaceRuntimeMeta(
+            url=f"ws://fake/{workspace_id}",
+            token=SecretStr(f"tok-{workspace_id}"),
+        )
 
     @property
     def id(self) -> str:
         return self.workspace_id
+
+    @property
+    def runtime_meta(self) -> WorkspaceRuntimeMeta:
+        return self._runtime_meta
 
     async def list_files(self, path=".", *, recursive=False):
         out: list[FileEntry] = []

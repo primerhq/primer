@@ -16,11 +16,14 @@ from typing import Any
 
 from primer.int.workspace import Workspace, WorkspaceBackend
 from primer.model.except_ import ConfigError, NotFoundError
+from pydantic import SecretStr
+
 from primer.model.workspace import (
     K8sConnectionInCluster,
     K8sConnectionKubeconfig,
     K8sConnectionServiceAccountToken,
     KubernetesWorkspaceConfig,
+    WorkspaceRuntimeMeta,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
     KubernetesTemplateConfig,
@@ -401,11 +404,17 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
                     f"{workdir}/{rf.path}",
                     rf.content,
                 )
+            runtime_meta = WorkspaceRuntimeMeta(
+                url=url,
+                token=SecretStr(token),
+                k8s_object_name=obj_name,
+            )
             ws = await SandboxWorkspace.materialise(
                 workspace_id=workspace_id,
                 template=template,
                 sandbox=sandbox,
                 backend_kind="kubernetes",
+                runtime_meta=runtime_meta,
                 workspace_root=template.backend.workdir,
             )
         except Exception:
@@ -583,11 +592,17 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
             container_id=obj_name,
             workspace_root=template.backend.workdir,
         )
+        reattach_meta = WorkspaceRuntimeMeta(
+            url=url,
+            token=SecretStr(token),
+            k8s_object_name=obj_name,
+        )
         ws = await SandboxWorkspace.materialise(
             workspace_id=workspace_id,
             template=template,
             sandbox=sandbox,
             backend_kind="kubernetes",
+            runtime_meta=reattach_meta,
             workspace_root=template.backend.workdir,
         )
         async with self._lock:
