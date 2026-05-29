@@ -9,7 +9,6 @@ Models exported:
 
 * :class:`WorkspaceTemplate` -- declarative recipe for materialising a
   workspace. Stored as a ``Document`` in a templates ``Collection``.
-* :class:`PackageSpec` -- one package to install during init.
 * :class:`FileMount` + :class:`FileSource` -- file seeding shape.
 * :class:`ResourceLimits` -- backend-enforced bounds (CPU / mem / network / disk).
 * :class:`WorkspaceTemplateOverrides` -- per-instantiation tweaks.
@@ -37,34 +36,6 @@ from pydantic import (
 )
 
 from primer.model.common import Describeable, Identifiable
-
-
-# ===========================================================================
-# Packages
-# ===========================================================================
-
-
-class PackageSpec(BaseModel):
-    """One package to install during workspace init.
-
-    The ``kind`` tag tells the backend which package manager to invoke;
-    backends MAY ignore kinds they don't support (with a startup
-    warning).
-    """
-
-    kind: Literal["apt", "pip", "npm", "cargo", "go", "system"] = Field(
-        ...,
-        description="Which package manager handles this entry.",
-    )
-    name: str = Field(
-        ...,
-        min_length=1,
-        description="Package name to install.",
-    )
-    version: str | None = Field(
-        default=None,
-        description="Pinned version or version range. None = latest.",
-    )
 
 
 # ===========================================================================
@@ -485,10 +456,6 @@ class WorkspaceTemplate(Describeable):
             "the template targets."
         ),
     )
-    packages: list[PackageSpec] = Field(
-        default_factory=list,
-        description="System / language packages to install during init.",
-    )
     files: list[FileMount] = Field(
         default_factory=list,
         description="Files to seed into the workspace at materialisation time.",
@@ -500,7 +467,7 @@ class WorkspaceTemplate(Describeable):
     init_commands: list[str] = Field(
         default_factory=list,
         description=(
-            "Shell commands run once after files / packages land. "
+            "Shell commands run once after files land. "
             "Failure of any command is fatal to workspace materialisation."
         ),
     )
@@ -1037,7 +1004,6 @@ __all__ = [
     "LocalTemplateConfig",
     "LocalWorkspaceConfig",
     "Op",
-    "PackageSpec",
     "PodmanRuntimeConfig",
     "ResourceLimits",
     "VolumeMount",

@@ -14,7 +14,6 @@ from primer.model.except_ import BadRequestError, NotFoundError
 from primer.model.workspace_session import AgentBinding, SessionStatus
 from primer.model.workspace import (
     FileMount,
-    PackageSpec,
     ResourceLimits,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
@@ -38,7 +37,6 @@ def _template(
     files: list[FileMount] | None = None,
     init_commands: list[str] | None = None,
     env: dict[str, str] | None = None,
-    packages: list[PackageSpec] | None = None,
     resources: ResourceLimits | None = None,
     provider_id: str = "local-1",
 ) -> WorkspaceTemplate:
@@ -49,7 +47,6 @@ def _template(
         files=files or [],
         init_commands=init_commands or [],
         env={k: v for k, v in (env or {}).items()},
-        packages=packages or [],
         resources=resources or ResourceLimits(),
     )
 
@@ -212,16 +209,6 @@ class TestProviderCreate:
             "file source kind not yet supported" in record.message
             for record in caplog.records
         )
-
-    async def test_warns_on_packages(
-        self,
-        provider: LocalWorkspaceBackend,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        tpl = _template(packages=[PackageSpec(kind="apt", name="git")])
-        with caplog.at_level("WARNING"):
-            await provider.create(tpl)
-        assert any("packages declaratively" in r.message for r in caplog.records)
 
     async def test_warns_on_resource_limits(
         self,

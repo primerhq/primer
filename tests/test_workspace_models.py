@@ -26,36 +26,12 @@ from primer.model.workspace import (
     KubernetesTemplateConfig,
     KubernetesWorkspaceConfig,
     LocalWorkspaceConfig,
-    PackageSpec,
     ResourceLimits,
     WorkspaceProvider,
     WorkspaceProviderType,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-
-
-# ---- PackageSpec ---------------------------------------------------------
-
-
-class TestPackageSpec:
-    def test_minimal_construction_defaults_version_to_none(self) -> None:
-        p = PackageSpec(kind="apt", name="git")
-        assert p.kind == "apt"
-        assert p.name == "git"
-        assert p.version is None
-
-    def test_with_pinned_version(self) -> None:
-        p = PackageSpec(kind="pip", name="ruff", version=">=0.6.0")
-        assert p.version == ">=0.6.0"
-
-    def test_unknown_kind_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            PackageSpec(kind="brew", name="git")  # type: ignore[arg-type]
-
-    def test_empty_name_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            PackageSpec(kind="apt", name="")
 
 
 # ---- FileMount + FileSource discriminated union --------------------------
@@ -165,7 +141,6 @@ class TestWorkspaceTemplate:
         assert tpl.id == "python-basic"
         assert tpl.description == "Python 3.13 with git installed"
         assert tpl.provider_id == "local-1"
-        assert tpl.packages == []
         assert tpl.files == []
         assert tpl.env == {}
         assert tpl.init_commands == []
@@ -178,10 +153,6 @@ class TestWorkspaceTemplate:
             id="python-research",
             description="Research workstation with science stack",
             provider_id="local-1",
-            packages=[
-                PackageSpec(kind="apt", name="ripgrep"),
-                PackageSpec(kind="pip", name="numpy", version=">=2.0"),
-            ],
             files=[
                 FileMount(
                     path="README.md",
@@ -194,7 +165,6 @@ class TestWorkspaceTemplate:
             tmp_path=".primer/tmp",
             resources=ResourceLimits(cpu_cores=4, memory_bytes=8 * 1024**3),
         )
-        assert len(tpl.packages) == 2
         assert tpl.files[0].source.kind == "inline"
         assert tpl.env["OPENAI_API_KEY"].get_secret_value() == "redacted-secret"
         assert tpl.state_path == ".primer/state"
@@ -546,3 +516,19 @@ class TestKubernetesTemplateConfig:
             pod_overrides={"nodeSelector": {"role": "agent"}},
         )
         assert tpl.pod_overrides == {"nodeSelector": {"role": "agent"}}
+
+
+# ---- WorkspaceTemplate has no packages field ----------------------------
+
+
+class TestWorkspaceTemplateNoPackages:
+    def test_no_packages_field(self):
+        from primer.model.workspace import WorkspaceTemplate
+        fields = WorkspaceTemplate.model_fields
+        assert "packages" not in fields, "packages dropped per redesign §6.1"
+
+    def test_still_has_files_env_init(self):
+        from primer.model.workspace import WorkspaceTemplate
+        fields = WorkspaceTemplate.model_fields
+        for f in ("files", "env", "init_commands"):
+            assert f in fields

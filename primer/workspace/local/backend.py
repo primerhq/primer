@@ -253,12 +253,6 @@ def _warn_unenforced(template: WorkspaceTemplate) -> None:
             "LocalWorkspaceBackend does not enforce network mode",
             extra={"network": r.network},
         )
-    if template.packages:
-        logger.warning(
-            "LocalWorkspaceBackend does not install packages declaratively; "
-            "run them via init_commands",
-            extra={"packages": [p.name for p in template.packages]},
-        )
 
 
 __all__ = ["LocalWorkspaceBackend"]
