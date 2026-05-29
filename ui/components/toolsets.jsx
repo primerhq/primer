@@ -202,21 +202,44 @@ function _tsTarget(t) {
 // New toolset modal — MCP-stdio + MCP-http variants
 // ============================================================================
 
-function TS_NewToolsetModal({ onClose, onCreate, pushToast }) {
+function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
+  // Same modal: create when existing == null, otherwise edit. In edit
+  // mode the id field locks and PUT-replaces.
+  const isEdit = !!existing;
   const { useMutation, apiFetch } = window.primerApi;
-  const [id, setId] = React.useState("");
-  const [provider, setProvider] = React.useState("mcp");
-  const [transport, setTransport] = React.useState("stdio");
-  const [command, setCommand] = React.useState("");
-  const [stdioEnv, setStdioEnv] = React.useState([]);
-  const [url, setUrl] = React.useState("");
-  const [httpHeaders, setHttpHeaders] = React.useState([]);
+
+  // Re-hydrate dict[str,str] fields back into the KV-editor pair shape.
+  const _dictToPairs = (d) => d && typeof d === "object"
+    ? Object.entries(d).map(([key, value]) => ({ key, value: String(value) }))
+    : [];
+  const _initialCommand = () => {
+    const cmd = existing?.config?.config?.command;
+    return Array.isArray(cmd) ? cmd.join(" ") : "";
+  };
+  const _initialTransport = () =>
+    existing?.config?.transport === "http" ? "http" : "stdio";
+
+  const [id, setId] = React.useState(existing?.id || "");
+  const [provider, setProvider] = React.useState(existing?.provider || "mcp");
+  const [transport, setTransport] = React.useState(_initialTransport);
+  const [command, setCommand] = React.useState(_initialCommand);
+  const [stdioEnv, setStdioEnv] = React.useState(
+    () => _dictToPairs(existing?.config?.config?.env)
+  );
+  const [url, setUrl] = React.useState(existing?.config?.config?.url || "");
+  const [httpHeaders, setHttpHeaders] = React.useState(
+    () => _dictToPairs(existing?.config?.config?.headers)
+  );
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/toolsets", body),
+    (body) => isEdit
+      ? apiFetch("PUT", "/toolsets/" + encodeURIComponent(existing.id), body)
+      : apiFetch("POST", "/toolsets", body),
     {
-      invalidates: ["toolsets:list"],
+      invalidates: isEdit
+        ? ["toolsets:list", "toolset-detail:" + (existing?.id || "")]
+        : ["toolsets:list"],
       onSuccess: (row) => onCreate(row),
       onError: (err) => {
         if (err && err.status === 422 && Array.isArray(err.fieldErrors)) {
@@ -228,7 +251,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast }) {
         } else if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
-            title: err?.title || "Create failed",
+            title: err?.title || (isEdit ? "Save failed" : "Create failed"),
             detail: err?.detail || err?.message,
             requestId: err?.requestId,
           });
@@ -262,7 +285,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast }) {
           };
     }
     const body = {
-      ...(id ? { id } : {}),
+      ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       provider,
       ...(config ? { config } : {}),
     };
@@ -275,24 +298,28 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast }) {
 
   return (
     <Modal
-      title="New toolset"
+      title={isEdit ? `Edit toolset · ${existing.id}` : "New toolset"}
       onClose={onClose}
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit || create.loading}>
-            {create.loading ? "Creating…" : "Create"}
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!canSubmit || create.loading}>
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
           </Btn>
         </>
       }
     >
       <div className="field">
-        <label className="field-label">ID <span className="hint">optional — backend assigns if blank</span></label>
+        <label className="field-label">ID {isEdit
+          ? <span className="hint">locked — id cannot change after create</span>
+          : <span className="hint">optional — backend assigns if blank</span>}
+        </label>
         <input
           className="input"
           value={id}
           onChange={(e) => setId(e.target.value)}
           placeholder="auto-generated"
+          disabled={isEdit}
           style={{ width: "100%" }}
         />
         {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
@@ -617,51 +644,11 @@ function TS_DetailActions({ onInvalidate, onDelete, onBack }) {
 // ============================================================================
 
 function TS_ConfigTab({ ts, pushToast }) {
-  const { useMutation, apiFetch } = window.primerApi;
   const hl = window.primerVendor?.highlightJson;
   const transport = _tsTransport(ts);
   const isManaged = !!ts?.harness_id;
   const pretty = React.useMemo(() => JSON.stringify(ts, null, 2), [ts]);
-
   const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState("");
-  const [jsonError, setJsonError] = React.useState(null);
-  const startEdit = () => { setDraft(pretty); setJsonError(null); setEditing(true); };
-  const cancelEdit = () => { setEditing(false); setJsonError(null); };
-
-  const saveMut = useMutation(
-    (body) => apiFetch("PUT", "/toolsets/" + encodeURIComponent(ts.id), body),
-    {
-      invalidates: ["toolset-detail:" + ts?.id, "toolsets:list"],
-      onSuccess: () => {
-        if (typeof pushToast === "function") {
-          pushToast({ kind: "info", title: "Toolset updated", detail: ts.id });
-        }
-        setEditing(false);
-      },
-      onError: (err) => {
-        if (typeof pushToast === "function") {
-          pushToast({
-            kind: "error",
-            title: err.title || "Save failed",
-            detail: err.detail || err.message,
-            requestId: err.requestId,
-          });
-        }
-      },
-    },
-  );
-
-  const onSave = async () => {
-    setJsonError(null);
-    let parsed;
-    try { parsed = JSON.parse(draft); }
-    catch (e) { setJsonError(e.message || "Invalid JSON"); return; }
-    if (parsed && typeof parsed === "object" && parsed.id !== ts.id) {
-      setJsonError(`id must remain "${ts.id}"`); return;
-    }
-    try { await saveMut.mutate(parsed); } catch (_e) { /* toast via onError */ }
-  };
 
   return (
     <div style={{ padding: 14 }}>
@@ -669,46 +656,33 @@ function TS_ConfigTab({ ts, pushToast }) {
         <div className="muted text-sm">
           {isManaged ? (
             <>Managed by harness <span className="mono">{ts.harness_id}</span>. Update the harness instead.</>
-          ) : editing ? (
-            <>Edit the JSON below. <span className="mono">id</span> may not change.</>
           ) : (
             <>
-              PUT-replace edit. Provider <span className="mono">{ts?.provider || "—"}</span>
+              PUT-replace edit via the form. Provider <span className="mono">{ts?.provider || "—"}</span>
               {transport && <> · transport <span className="mono">{transport}</span></>}
             </>
           )}
         </div>
         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-          {!editing && !isManaged && (
-            <Btn size="sm" icon="edit" kind="secondary" onClick={startEdit}>Edit</Btn>
-          )}
-          {editing && (
-            <>
-              <Btn size="sm" kind="ghost" onClick={cancelEdit} disabled={saveMut.loading}>Cancel</Btn>
-              <Btn size="sm" icon="check" kind="primary" onClick={onSave} disabled={saveMut.loading}>
-                {saveMut.loading ? "Saving…" : "Save"}
-              </Btn>
-            </>
+          {!isManaged && (
+            <Btn size="sm" icon="edit" kind="secondary" onClick={() => setEditing(true)}>Edit</Btn>
           )}
         </div>
       </div>
-      {jsonError && <Banner kind="error" title="Couldn't parse JSON" detail={jsonError} />}
-      {editing ? (
-        <textarea
-          className="code-block"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          spellCheck={false}
-          style={{
-            width: "100%", minHeight: 360,
-            fontFamily: "IBM Plex Mono, monospace",
-            fontSize: 12, lineHeight: 1.5, padding: 12,
-            background: "var(--bg-0)", color: "var(--text)",
-            border: "1px solid var(--border)", borderRadius: 6,
-            resize: "vertical",
+      {editing && (
+        <TS_NewToolsetModal
+          existing={ts}
+          pushToast={pushToast}
+          onClose={() => setEditing(false)}
+          onCreate={() => {
+            setEditing(false);
+            if (typeof pushToast === "function") {
+              pushToast({ kind: "info", title: "Toolset updated", detail: ts.id });
+            }
           }}
         />
-      ) : hl
+      )}
+      {hl
         ? <div className="code-block" dangerouslySetInnerHTML={{ __html: hl(pretty) }} />
         : <pre className="code-block">{pretty}</pre>}
     </div>
