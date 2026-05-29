@@ -347,6 +347,7 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
 function AP_PoliciesTable({ policies, loading, error, pushToast }) {
   const { useMutation, apiFetch } = window.primerApi;
   const [confirmDelete, setConfirmDelete] = React.useState(null);
+  const [editing, setEditing] = React.useState(null);
 
   const updatePolicy = useMutation(
     ({ pid, body }) => apiFetch("PUT", `/tool_approval_policies/${encodeURIComponent(pid)}`, body),
@@ -436,7 +437,15 @@ function AP_PoliciesTable({ policies, loading, error, pushToast }) {
                   <span className="muted text-sm">{p.enabled ? "on" : "off"}</span>
                 </label>
               </td>
-              <td style={{ textAlign: "right", paddingRight: 12 }}>
+              <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }}>
+                <Btn
+                  size="sm"
+                  kind="ghost"
+                  icon="edit"
+                  onClick={() => setEditing(p)}
+                  title="Edit policy"
+                  data-testid={`approvals-policy-edit-${p.id}`}
+                />
                 <Btn
                   size="sm"
                   kind="ghost"
@@ -451,6 +460,13 @@ function AP_PoliciesTable({ policies, loading, error, pushToast }) {
           );
         })}
       </tbody>
+      {editing && (
+        <AP_NewPolicyModal
+          existing={editing}
+          pushToast={pushToast}
+          onClose={() => setEditing(null)}
+        />
+      )}
       {confirmDelete && (
         <Modal
           title={`Delete policy ${confirmDelete.id}?`}
@@ -480,19 +496,25 @@ function AP_PoliciesTable({ policies, loading, error, pushToast }) {
 // New-policy modal — Required/Policy/LLM tabbed create
 // =============================================================
 
-function AP_NewPolicyModal({ onClose, pushToast }) {
+function AP_NewPolicyModal({ onClose, pushToast, existing }) {
+  // Same modal: create (existing == null) and edit. In edit mode the
+  // id field locks and submit PUT-replaces.
+  const isEdit = !!existing;
   const { useResource, useMutation, apiFetch } = window.primerApi;
-  const [type, setType] = React.useState("required");
-  const [id, setId] = React.useState("");
-  const [toolsetId, setToolsetId] = React.useState("workspaces");
-  const [toolName, setToolName] = React.useState("");
-  const [timeoutSec, setTimeoutSec] = React.useState("");
+  const [type, setType] = React.useState(existing?.approval?.type || "required");
+  const [id, setId] = React.useState(existing?.id || "");
+  const [toolsetId, setToolsetId] = React.useState(existing?.toolset_id || "workspaces");
+  const [toolName, setToolName] = React.useState(existing?.tool_name || "");
+  const [timeoutSec, setTimeoutSec] = React.useState(
+    existing?.timeout_seconds != null ? String(existing.timeout_seconds) : ""
+  );
   const [policyRego, setPolicyRego] = React.useState(
+    existing?.approval?.policy ||
     "package primer.approval\n\ndefault required := false\n\n# Set `required = true` when the tool call must wait for a human.\nrequired { input.arguments.amount > 10000 }\n",
   );
-  const [providerId, setProviderId] = React.useState("");
-  const [model, setModel] = React.useState("");
-  const [prompt, setPrompt] = React.useState("");
+  const [providerId, setProviderId] = React.useState(existing?.approval?.provider_id || "");
+  const [model, setModel] = React.useState(existing?.approval?.model || "");
+  const [prompt, setPrompt] = React.useState(existing?.approval?.prompt || "");
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   // Provider dropdown source — keyed separately from the page-level
@@ -518,11 +540,13 @@ function AP_NewPolicyModal({ onClose, pushToast }) {
   }, [providerId]);
 
   const create = useMutation(
-    (body) => apiFetch("POST", "/tool_approval_policies", body),
+    (body) => isEdit
+      ? apiFetch("PUT", `/tool_approval_policies/${encodeURIComponent(existing.id)}`, body)
+      : apiFetch("POST", "/tool_approval_policies", body),
     {
       invalidates: ["approvals:policies"],
       onSuccess: () => {
-        if (pushToast) pushToast({ kind: "success", title: "Policy created" });
+        if (pushToast) pushToast({ kind: "success", title: isEdit ? "Policy updated" : "Policy created" });
         onClose();
       },
       onError: (err) => {
@@ -533,7 +557,7 @@ function AP_NewPolicyModal({ onClose, pushToast }) {
         } else if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
-            title: err?.title || "Create failed",
+            title: err?.title || (isEdit ? "Save failed" : "Create failed"),
             detail: err?.detail || err?.message,
             requestId: err?.requestId,
           });
@@ -549,10 +573,12 @@ function AP_NewPolicyModal({ onClose, pushToast }) {
     else if (type === "policy") approval = { type: "policy", policy: policyRego };
     else approval = { type: "llm", provider_id: providerId, model, prompt };
     const body = {
-      id: id.trim(),
+      id: isEdit ? existing.id : id.trim(),
       toolset_id: toolsetId.trim(),
       tool_name: toolName.trim(),
-      enabled: true,
+      // PUT-replace: preserve the toggle state when editing; create
+      // defaults to enabled.
+      enabled: isEdit ? !!existing.enabled : true,
       approval,
       ...(timeoutSec ? { timeout_seconds: Number(timeoutSec) } : {}),
     };
@@ -576,19 +602,19 @@ function AP_NewPolicyModal({ onClose, pushToast }) {
 
   return (
     <Modal
-      title="New approval policy"
+      title={isEdit ? `Edit policy · ${existing.id}` : "New approval policy"}
       onClose={onClose}
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
           <Btn
             kind="primary"
-            icon="plus"
+            icon={isEdit ? "check" : "plus"}
             disabled={!canSubmit || create.loading}
             onClick={submit}
             data-testid="approval-policy-create"
           >
-            {create.loading ? "Creating…" : "Create policy"}
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create policy")}
           </Btn>
         </>
       }
@@ -617,13 +643,17 @@ function AP_NewPolicyModal({ onClose, pushToast }) {
       </div>
 
       <div className="field">
-        <label className="field-label">id <span className="hint">unique policy identifier</span></label>
+        <label className="field-label">id {isEdit
+          ? <span className="hint">locked — id cannot change after create</span>
+          : <span className="hint">unique policy identifier</span>}
+        </label>
         <input
           className="input mono"
           value={id}
           onChange={(e) => setId(e.target.value)}
           style={{ width: "100%" }}
           placeholder="approve-stripe-refund"
+          disabled={isEdit}
           data-testid="approval-policy-id"
         />
         {fieldErr("body.id")}
