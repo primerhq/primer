@@ -404,9 +404,16 @@ class TestWorkspaceProviderRouter:
             "provider": "container",
             "config": {
                 "kind": "container",
-                "runtime": {"kind": "docker"},
-                "name_prefix": "primer-ws-",
-                "pull_policy": "if_missing",
+                "runtime": "docker",
+                "connection": {
+                    "kind": "socket",
+                    "socket_path": "/var/run/docker.sock",
+                },
+                "reachability": {
+                    "kind": "host_port",
+                    "bind_host": "127.0.0.1",
+                },
+                "image_pull_secrets": [],
             },
         }
         post = await client.post("/v1/workspace_providers", json=body)
@@ -415,8 +422,9 @@ class TestWorkspaceProviderRouter:
         assert get.status_code == 200
         got = get.json()
         assert got["provider"] == "container"
-        assert got["config"]["runtime"]["kind"] == "docker"
-        assert got["config"]["name_prefix"] == "primer-ws-"
+        assert got["config"]["runtime"] == "docker"
+        assert got["config"]["connection"]["kind"] == "socket"
+        assert got["config"]["reachability"]["kind"] == "host_port"
         delete = await client.delete("/v1/workspace_providers/docker-1")
         assert delete.status_code == 204
 
@@ -427,15 +435,11 @@ class TestWorkspaceProviderRouter:
             "provider": "kubernetes",
             "config": {
                 "kind": "kubernetes",
-                "in_cluster": False,
+                "variant": "system",
+                "connection": {"kind": "in_cluster"},
                 "namespace": "primer",
-                "name_prefix": "primer-ws-",
-                "default_pvc_size": "20Gi",
+                "reachability": {"kind": "in_cluster"},
                 "image_pull_secrets": [],
-                "pull_policy": "IfNotPresent",
-                "annotations": {"team": "platform"},
-                "labels": {"app": "primer"},
-                "node_selector": {},
             },
         }
         post = await client.post("/v1/workspace_providers", json=body)
@@ -445,8 +449,9 @@ class TestWorkspaceProviderRouter:
         got = get.json()
         assert got["provider"] == "kubernetes"
         assert got["config"]["namespace"] == "primer"
-        assert got["config"]["default_pvc_size"] == "20Gi"
-        assert got["config"]["annotations"] == {"team": "platform"}
+        assert got["config"]["variant"] == "system"
+        assert got["config"]["connection"]["kind"] == "in_cluster"
+        assert got["config"]["reachability"]["kind"] == "in_cluster"
         delete = await client.delete("/v1/workspace_providers/k8s-1")
         assert delete.status_code == 204
 
@@ -456,7 +461,7 @@ class TestWorkspaceProviderRouter:
         bad = {
             "id": "bad",
             "provider": "kubernetes",
-            "config": {"kind": "local", "path": "/tmp"},
+            "config": {"kind": "local", "root_path": "/tmp"},
         }
         post = await client.post("/v1/workspace_providers", json=bad)
         assert post.status_code == 422, post.text
@@ -488,9 +493,16 @@ class TestWorkspaceTemplateRouter:
             "provider": "container",
             "config": {
                 "kind": "container",
-                "runtime": {"kind": "docker"},
-                "name_prefix": "primer-ws-",
-                "pull_policy": "if_missing",
+                "runtime": "docker",
+                "connection": {
+                    "kind": "socket",
+                    "socket_path": "/var/run/docker.sock",
+                },
+                "reachability": {
+                    "kind": "host_port",
+                    "bind_host": "127.0.0.1",
+                },
+                "image_pull_secrets": [],
             },
         })
         body = {
@@ -521,15 +533,11 @@ class TestWorkspaceTemplateRouter:
             "provider": "kubernetes",
             "config": {
                 "kind": "kubernetes",
-                "in_cluster": False,
+                "variant": "system",
+                "connection": {"kind": "in_cluster"},
                 "namespace": "default",
-                "name_prefix": "primer-ws-",
-                "default_pvc_size": "10Gi",
+                "reachability": {"kind": "in_cluster"},
                 "image_pull_secrets": [],
-                "pull_policy": "IfNotPresent",
-                "annotations": {},
-                "labels": {},
-                "node_selector": {},
             },
         })
         body = {
@@ -558,7 +566,7 @@ class TestWorkspaceTemplateRouter:
         await client.post("/v1/workspace_providers", json={
             "id": "local-mismatch",
             "provider": "local",
-            "config": {"kind": "local", "path": "/tmp"},
+            "config": {"kind": "local", "root_path": "/tmp"},
         })
         bad = {
             "id": "tpl-bad",

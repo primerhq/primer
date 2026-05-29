@@ -7,6 +7,8 @@ without needing a real K8s cluster.
 from __future__ import annotations
 
 from primer.model.workspace import (
+    K8sConnectionInCluster,
+    K8sReachabilityInCluster,
     KubernetesWorkspaceConfig,
     WorkspaceTemplate,
     KubernetesTemplateConfig,
@@ -21,6 +23,17 @@ from primer.workspace.k8s.backend import (
     _pvc_name_for,
     _validate_template_overrides,
 )
+
+
+def _provider_cfg(**overrides) -> KubernetesWorkspaceConfig:
+    """Build a valid KubernetesWorkspaceConfig with new-shape defaults."""
+    base = dict(
+        connection=K8sConnectionInCluster(),
+        namespace="primer",
+        reachability=K8sReachabilityInCluster(),
+    )
+    base.update(overrides)
+    return KubernetesWorkspaceConfig(**base)
 
 
 # ---- _deep_merge ---------------------------------------------------------
@@ -74,7 +87,7 @@ def _template(image: str = "python:3.13", **kwargs) -> WorkspaceTemplate:
 
 
 def test_manifest_has_one_replica_and_pvc_template() -> None:
-    cfg = KubernetesWorkspaceConfig(namespace="primer")
+    cfg = _provider_cfg(namespace="primer")
     m = _build_statefulset_manifest(
         sts_name="primer-ws-abc",
         namespace="primer",
@@ -89,7 +102,7 @@ def test_manifest_has_one_replica_and_pvc_template() -> None:
 
 
 def test_manifest_carries_image() -> None:
-    cfg = KubernetesWorkspaceConfig()
+    cfg = _provider_cfg()
     m = _build_statefulset_manifest(
         sts_name="primer-ws-abc",
         namespace="default",
@@ -101,27 +114,10 @@ def test_manifest_carries_image() -> None:
     assert container["image"] == "alpine:latest"
 
 
-def test_container_overrides_deep_merge() -> None:
-    cfg = KubernetesWorkspaceConfig()
-    template = _template(
-        container_overrides={"image": "override:tag", "newField": "x"},
-    )
-    m = _build_statefulset_manifest(
-        sts_name="primer-ws-abc",
-        namespace="default",
-        workspace_id="abc",
-        template=template,
-        provider_cfg=cfg,
-    )
-    container = m["spec"]["template"]["spec"]["containers"][0]
-    assert container["image"] == "override:tag"
-    assert container["newField"] == "x"
-
-
 def test_pod_overrides_deep_merge() -> None:
-    cfg = KubernetesWorkspaceConfig()
+    cfg = _provider_cfg()
     template = _template(
-        pod_overrides={"hostNetwork": True, "dnsPolicy": "ClusterFirst"},
+        pod_overrides={"dnsPolicy": "ClusterFirst", "restartPolicy": "Always"},
     )
     m = _build_statefulset_manifest(
         sts_name="primer-ws-abc",
@@ -131,17 +127,18 @@ def test_pod_overrides_deep_merge() -> None:
         provider_cfg=cfg,
     )
     pod_spec = m["spec"]["template"]["spec"]
-    assert pod_spec["hostNetwork"] is True
     assert pod_spec["dnsPolicy"] == "ClusterFirst"
+    assert pod_spec["restartPolicy"] == "Always"
 
 
-def test_provider_storage_class_lands_on_pvc() -> None:
-    cfg = KubernetesWorkspaceConfig(storage_class="fast-ssd")
+def test_template_storage_class_lands_on_pvc() -> None:
+    cfg = _provider_cfg()
+    template = _template(storage_class="fast-ssd")
     m = _build_statefulset_manifest(
         sts_name="primer-ws-abc",
         namespace="default",
         workspace_id="abc",
-        template=_template(),
+        template=template,
         provider_cfg=cfg,
     )
     pvc = m["spec"]["volumeClaimTemplates"][0]["spec"]
@@ -149,10 +146,7 @@ def test_provider_storage_class_lands_on_pvc() -> None:
 
 
 def test_workspace_label_present() -> None:
-    cfg = KubernetesWorkspaceConfig(
-        labels={"team": "platform"},
-        annotations={"owner": "primer"},
-    )
+    cfg = _provider_cfg()
     m = _build_statefulset_manifest(
         sts_name="primer-ws-abc",
         namespace="default",
@@ -162,20 +156,10 @@ def test_workspace_label_present() -> None:
     )
     labels = m["metadata"]["labels"]
     assert labels["primer.workspace.id"] == "abc"
-    assert labels["team"] == "platform"
-    annotations = m["metadata"]["annotations"]
-    assert annotations["owner"] == "primer"
+    assert labels["app.kubernetes.io/managed-by"] == "primer"
 
 
 # ---- _validate_template_overrides ----------------------------------------
-
-
-def test_overrides_reject_privileged_security_context() -> None:
-    template = _template(
-        container_overrides={"securityContext": {"privileged": True}},
-    )
-    with pytest.raises(ConfigError, match="securityContext"):
-        _validate_template_overrides(template)
 
 
 def test_overrides_reject_host_path_volume() -> None:
@@ -207,10 +191,6 @@ def test_overrides_accept_benign_keys() -> None:
         pod_overrides={
             "dnsPolicy": "ClusterFirst",
             "restartPolicy": "Always",
-        },
-        container_overrides={
-            "imagePullPolicy": "Always",
-            "lifecycle": {"preStop": {"exec": {"command": ["echo", "bye"]}}},
         },
     )
     # Should not raise.
