@@ -131,6 +131,15 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    # --- Workspace probe -------------------------------------------------
+    workspace_probe_interval_seconds: float = Field(
+        default=30.0,
+        description=(
+            "How often the workspace probe loop pings each running "
+            "workspace."
+        ),
+    )
+
     # --- Bootstrap -------------------------------------------------------
     auto_bootstrap: bool = Field(
         default=True,

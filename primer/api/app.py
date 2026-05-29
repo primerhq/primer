@@ -54,6 +54,7 @@ from primer.toolset.search import build_search_toolset
 from primer.toolset.system import build_system_toolset
 from primer.toolset.web import build_web_toolset
 from primer.toolset.workspaces import build_workspaces_toolset
+from primer.workspace.probe import WorkspaceProbeTask
 
 
 if TYPE_CHECKING:
@@ -231,6 +232,21 @@ def _make_lifespan(config: AppConfig):
         app.state.internal_collections = None
         app.state.search_toolset = None
         app.state.config = config
+
+        # Workspace health-probe loop. Pings each running/failed
+        # workspace at ``workspace_probe_interval_seconds`` cadence,
+        # flips phase on three-strike misses/hits. Lives next to the
+        # workspace_registry (its sole non-storage dependency).
+        workspace_probe = WorkspaceProbeTask(
+            storage_provider=storage_provider,
+            registry=workspace_registry,
+            interval_seconds=config.workspace_probe_interval_seconds,
+        )
+        app.state.workspace_probe = workspace_probe
+        workspace_probe_runner = asyncio.create_task(
+            workspace_probe.start(), name="workspace-probe",
+        )
+        app.state.workspace_probe_runner = workspace_probe_runner
 
         # Resolve the cookie-signing secret (env var > db > auto-generate).
         # Stashed on app.state so the auth router + middleware can sign /
@@ -678,6 +694,19 @@ def _make_lifespan(config: AppConfig):
             # then close the scheduler, then the rest of the
             # subsystems. Each step is guarded so a teardown failure
             # downstream still runs the others.
+            # Stop the workspace probe early — independent of the
+            # scheduler/bus, but it touches the workspace_registry
+            # so it must finish before workspace_registry.aclose().
+            try:
+                workspace_probe.stop()
+                try:
+                    await asyncio.wait_for(
+                        workspace_probe_runner, timeout=2.0,
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+            except Exception:
+                logger.exception("workspace_probe stop failed")
             if worker_pool is not None:
                 try:
                     await worker_pool.drain_and_stop()

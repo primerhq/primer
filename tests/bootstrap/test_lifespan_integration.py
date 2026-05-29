@@ -22,9 +22,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import asyncio
+
 import httpx
 import pytest
 import pytest_asyncio
+
+from fastapi import FastAPI
 
 from primer.api.app import create_app
 from primer.api.config import AppConfig
@@ -58,6 +62,7 @@ class _AppHandle:
     """Thin wrapper exposing ``client`` for use inside the ``async with`` block."""
 
     client: httpx.AsyncClient
+    app: FastAPI
 
 
 @asynccontextmanager
@@ -89,7 +94,7 @@ async def _boot_app(
                     )
             except Exception:
                 pass
-            yield _AppHandle(client=client)
+            yield _AppHandle(client=client, app=app)
 
 
 # ---------------------------------------------------------------------------
@@ -165,3 +170,17 @@ async def test_second_boot_does_not_re_bootstrap(
         f"Second boot should NOT re-run bootstrap; found in logs: "
         f"{[m for m in bootstrap_log_messages if 'running auto-bootstrap' in m]}"
     )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_workspace_probe(tmp_db_path: Path) -> None:
+    """Lifespan spawns the WorkspaceProbeTask runner and stops it cleanly."""
+    async with _boot_app(auto_bootstrap=True, db_path=tmp_db_path) as handle:
+        probe = getattr(handle.app.state, "workspace_probe", None)
+        runner = getattr(handle.app.state, "workspace_probe_runner", None)
+        assert probe is not None, "expected app.state.workspace_probe to be set"
+        assert runner is not None, (
+            "expected app.state.workspace_probe_runner to be set"
+        )
+        assert isinstance(runner, asyncio.Task)
+        assert not runner.done(), "probe runner should be active during lifespan"
