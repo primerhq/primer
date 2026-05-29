@@ -319,6 +319,14 @@ class LocalWorkspace(Workspace):
             return WorkspaceStatus(state="ready", backend="local")
         return WorkspaceStatus(state="destroyed", backend="local")
 
+    async def ping(self) -> bool:
+        """In-proc liveness probe: True iff the workspace root still exists.
+
+        No transport involved — the local backend keeps the workspace
+        on disk, so root existence is the only meaningful health signal.
+        """
+        return await asyncio.to_thread(self._root.exists)
+
     async def append_message_line(self, session_id: str, line: bytes) -> None:
         """Append ``line`` to the session's ``messages.jsonl``.
 

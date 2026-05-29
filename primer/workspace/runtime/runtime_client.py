@@ -178,6 +178,17 @@ class RuntimeClient:
     # Per-op public methods
     # ------------------------------------------------------------------
 
+    async def ping(self) -> None:
+        """Cheap liveness probe over the live WS connection.
+
+        Sends a ``health`` request and discards the result.  Raises if
+        the connection is down or the runtime responds with ``ok=false``.
+        Used by :meth:`primer.workspace.runtime.ws_sandbox.WSSandbox.ping`
+        and the Phase-7 workspace probe task; callers wrap the
+        :class:`Exception` into a ``False`` return value.
+        """
+        await self._send_request(OpName.HEALTH, {})
+
     async def read_file(self, path: str) -> bytes:
         result = await self._send_request(OpName.READ_FILE, {"path": path})
         return base64.b64decode(result["content_b64"])

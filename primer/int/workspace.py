@@ -259,6 +259,15 @@ class Workspace(ABC):
         materialising backend ('local', 'container', 'kubernetes').
         """
 
+    @abstractmethod
+    async def ping(self) -> bool:
+        """Cheap liveness probe. True if the underlying transport is healthy.
+
+        Called by the workspace probe task at ~30s intervals to drive
+        phase transitions. Must be fast — implementations should not
+        retry or wait beyond the connection's natural timeout.
+        """
+
     async def append_message_line(self, session_id: str, line: bytes) -> None:
         """Append ``line`` to the session's ``messages.jsonl``.
 

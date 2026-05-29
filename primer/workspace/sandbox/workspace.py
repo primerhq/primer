@@ -326,6 +326,23 @@ class SandboxWorkspace(Workspace):
             detail=info.detail,
         )
 
+    async def ping(self) -> bool:
+        """Delegate the liveness probe to the underlying sandbox.
+
+        Sandbox impls that speak the WS runtime protocol (i.e.
+        :class:`WSSandbox`) wrap a ``health`` request; impls without a
+        cheap probe should override :meth:`Sandbox.ping` directly.
+        Returns False on any error rather than propagating — the
+        Phase-7 probe task interprets False as "transport unhealthy".
+        """
+        ping = getattr(self._sandbox, "ping", None)
+        if ping is None:
+            return False
+        try:
+            return await ping()
+        except Exception:  # noqa: BLE001
+            return False
+
     async def append_message_line(self, session_id: str, line: bytes) -> None:
         """Append ``line`` to the session's ``messages.jsonl``.
 

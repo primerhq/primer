@@ -187,6 +187,19 @@ class WSSandbox(Sandbox):
         except Exception:  # noqa: BLE001
             return SandboxInspectInfo(state="unknown")
 
+    async def ping(self) -> bool:
+        """Cheap liveness probe via the underlying :class:`RuntimeClient`.
+
+        Returns True if the runtime responds to a ``health`` request,
+        False on any error (disconnected, timeout, protocol error).
+        Used by :class:`SandboxWorkspace.ping` and the Phase-7 probe.
+        """
+        try:
+            await self._client.ping()
+        except Exception:  # noqa: BLE001
+            return False
+        return True
+
     async def stop(self) -> None:
         """Stop the container.
 
