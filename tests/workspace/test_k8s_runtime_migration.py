@@ -139,3 +139,124 @@ async def test_create_namespaced_service_creates_headless_service():
     assert body["spec"]["ports"][0]["port"] == 5959
     assert body["spec"]["ports"][0]["targetPort"] == 5959
     assert body["spec"]["ports"][0]["name"] == "runtime"
+
+
+# ---------------------------------------------------------------------------
+# Task 5.4: StatefulSet manifest binds to Secret + Headless Service.
+# ---------------------------------------------------------------------------
+
+
+def _statefulset_test_inputs(workspace_id: str = "ws-1"):
+    """Smallest viable (template, provider_cfg, obj_name) for the manifest
+    builder under the *current* model shape (post-c8dd6ce5)."""
+    from primer.model.workspace import (
+        K8sConnectionInCluster,
+        K8sReachabilityInCluster,
+        KubernetesTemplateConfig,
+        KubernetesWorkspaceConfig,
+        WorkspaceTemplate,
+    )
+    from primer.workspace.k8s.naming import k8s_object_name
+
+    template = WorkspaceTemplate(
+        id="t1",
+        provider_id="k1",
+        description="",
+        backend=KubernetesTemplateConfig(image="python:3.13"),
+    )
+    provider_cfg = KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer-ns",
+        reachability=K8sReachabilityInCluster(),
+    )
+    return template, provider_cfg, k8s_object_name(workspace_id)
+
+
+@pytest.mark.asyncio
+async def test_statefulset_manifest_has_envfrom_secret():
+    """The pod template envFrom the per-workspace Secret so the container
+    inherits RUNTIME_TOKEN at start-up."""
+    from primer.workspace.k8s.backend import _build_statefulset_manifest
+
+    template, provider_cfg, obj_name = _statefulset_test_inputs("ws-1")
+    m = _build_statefulset_manifest(
+        sts_name=obj_name,
+        namespace="primer-ns",
+        workspace_id="ws-1",
+        template=template,
+        provider_cfg=provider_cfg,
+        obj_name=obj_name,
+    )
+    container = m["spec"]["template"]["spec"]["containers"][0]
+    env_from = container.get("envFrom", [])
+    secret_refs = [
+        e["secretRef"]["name"]
+        for e in env_from
+        if isinstance(e, dict) and "secretRef" in e
+    ]
+    assert obj_name in secret_refs, (
+        f"expected secretRef named {obj_name!r} in container.envFrom; "
+        f"got {env_from!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_statefulset_manifest_has_runtime_port():
+    """Container ports include a 'runtime' port at 5959, matching the
+    Headless Service's targetPort."""
+    from primer.workspace.k8s.backend import _build_statefulset_manifest
+
+    template, provider_cfg, obj_name = _statefulset_test_inputs("ws-1")
+    m = _build_statefulset_manifest(
+        sts_name=obj_name,
+        namespace="primer-ns",
+        workspace_id="ws-1",
+        template=template,
+        provider_cfg=provider_cfg,
+        obj_name=obj_name,
+    )
+    container = m["spec"]["template"]["spec"]["containers"][0]
+    ports = container.get("ports", [])
+    runtime_ports = [
+        p for p in ports
+        if isinstance(p, dict) and p.get("name") == "runtime"
+    ]
+    assert len(runtime_ports) == 1, f"expected one runtime port; got {ports!r}"
+    assert runtime_ports[0]["containerPort"] == 5959
+
+
+@pytest.mark.asyncio
+async def test_statefulset_manifest_pod_template_has_workspace_id_label():
+    """Pod template labels include workspace-id=<workspace_id>, matching
+    the Headless Service's selector."""
+    from primer.workspace.k8s.backend import _build_statefulset_manifest
+
+    template, provider_cfg, obj_name = _statefulset_test_inputs("ws-1")
+    m = _build_statefulset_manifest(
+        sts_name=obj_name,
+        namespace="primer-ns",
+        workspace_id="ws-1",
+        template=template,
+        provider_cfg=provider_cfg,
+        obj_name=obj_name,
+    )
+    pod_labels = m["spec"]["template"]["metadata"]["labels"]
+    assert pod_labels.get("workspace-id") == "ws-1"
+
+
+@pytest.mark.asyncio
+async def test_statefulset_manifest_service_name_matches_obj_name():
+    """spec.serviceName binds the STS pods to the per-workspace Headless
+    Service (whose name is obj_name)."""
+    from primer.workspace.k8s.backend import _build_statefulset_manifest
+
+    template, provider_cfg, obj_name = _statefulset_test_inputs("ws-1")
+    m = _build_statefulset_manifest(
+        sts_name=obj_name,
+        namespace="primer-ns",
+        workspace_id="ws-1",
+        template=template,
+        provider_cfg=provider_cfg,
+        obj_name=obj_name,
+    )
+    assert m["spec"]["serviceName"] == obj_name

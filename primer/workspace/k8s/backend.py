@@ -114,16 +114,15 @@ def _validate_template_overrides(template: WorkspaceTemplate) -> None:
         return
     tcfg = template.backend
     _assert_no_dangerous_keys(
-        tcfg.container_overrides, source="container_overrides",
+        tcfg.pod_overrides or {}, source="pod_overrides",
     )
     _assert_no_dangerous_keys(
-        tcfg.pod_overrides, source="pod_overrides",
+        [vol.model_dump(exclude_none=True) if hasattr(vol, "model_dump") else vol for vol in tcfg.extra_volumes],
+        source="extra_volumes",
     )
     _assert_no_dangerous_keys(
-        tcfg.extra_volumes, source="extra_volumes",
-    )
-    _assert_no_dangerous_keys(
-        tcfg.extra_volume_mounts, source="extra_volume_mounts",
+        [vm.model_dump(exclude_none=True) if hasattr(vm, "model_dump") else vm for vm in tcfg.extra_volume_mounts],
+        source="extra_volume_mounts",
     )
 
 
@@ -134,22 +133,39 @@ def _build_statefulset_manifest(
     workspace_id: str,
     template: WorkspaceTemplate,
     provider_cfg: KubernetesWorkspaceConfig,
+    obj_name: str | None = None,
 ) -> dict[str, Any]:
-    """Compose the StatefulSet body with the template's recipe + any
-    container/pod overrides deep-merged on top."""
+    """Compose the StatefulSet body for a workspace Pod.
+
+    ``obj_name`` is the per-workspace object name (Secret + Headless
+    Service share it; see :func:`primer.workspace.k8s.naming.k8s_object_name`).
+    The container ``envFrom``s this Secret to inherit ``RUNTIME_TOKEN``,
+    and ``spec.serviceName`` is set to ``obj_name`` so the STS binds to
+    the matching Headless Service. ``workspace-id=<id>`` lands on the pod
+    template labels to match the Service selector.
+    """
     assert isinstance(template.backend, KubernetesTemplateConfig)
     tcfg = template.backend
+    if obj_name is None:
+        from primer.workspace.k8s.naming import k8s_object_name
+        obj_name = k8s_object_name(workspace_id)
+
     base_container: dict[str, Any] = {
         "name": "workspace",
         "image": tcfg.image,
         "workingDir": tcfg.workdir,
-        "imagePullPolicy": provider_cfg.pull_policy,
         "volumeMounts": [
             {"name": "ws", "mountPath": tcfg.workdir},
-        ] + list(tcfg.extra_volume_mounts),
+        ] + [vm.model_dump(exclude_none=True) if hasattr(vm, "model_dump") else dict(vm) for vm in tcfg.extra_volume_mounts],
         "env": [
             {"name": k, "value": v.get_secret_value()}
             for k, v in template.env.items()
+        ],
+        "envFrom": [
+            {"secretRef": {"name": obj_name}},
+        ],
+        "ports": [
+            {"name": "runtime", "containerPort": 5959},
         ],
     }
     if tcfg.entrypoint is not None:
@@ -158,10 +174,6 @@ def _build_statefulset_manifest(
         base_container["command"] = ["sleep", "infinity"]
     if tcfg.args is not None:
         base_container["args"] = list(tcfg.args)
-    if provider_cfg.container_security_context is not None:
-        base_container["securityContext"] = copy.deepcopy(
-            provider_cfg.container_security_context,
-        )
     if template.resources.cpu_cores is not None or template.resources.memory_bytes is not None:
         limits: dict[str, str] = {}
         if template.resources.cpu_cores is not None:
@@ -170,42 +182,32 @@ def _build_statefulset_manifest(
             limits["memory"] = str(template.resources.memory_bytes)
         base_container["resources"] = {"limits": limits, "requests": limits}
 
-    # Apply container_overrides via deep merge.
-    container = _deep_merge(base_container, tcfg.container_overrides)
+    container = base_container
 
     base_pod: dict[str, Any] = {
         "containers": [container],
-        "volumes": list(tcfg.extra_volumes),
+        "volumes": [v.model_dump(exclude_none=True) if hasattr(v, "model_dump") else dict(v) for v in tcfg.extra_volumes],
     }
-    if provider_cfg.service_account is not None:
-        base_pod["serviceAccountName"] = provider_cfg.service_account
     if provider_cfg.image_pull_secrets:
         base_pod["imagePullSecrets"] = [
             {"name": n} for n in provider_cfg.image_pull_secrets
         ]
-    if provider_cfg.node_selector:
-        base_pod["nodeSelector"] = dict(provider_cfg.node_selector)
-    if provider_cfg.tolerations:
-        base_pod["tolerations"] = list(provider_cfg.tolerations)
-    if provider_cfg.pod_security_context is not None:
-        base_pod["securityContext"] = copy.deepcopy(
-            provider_cfg.pod_security_context,
-        )
 
-    pod = _deep_merge(base_pod, tcfg.pod_overrides)
+    pod = _deep_merge(base_pod, tcfg.pod_overrides or {})
 
     labels = {
         "primer.workspace.id": workspace_id,
-        **provider_cfg.labels,
+        "workspace-id": workspace_id,
+        "app.kubernetes.io/managed-by": "primer",
     }
-    annotations = dict(provider_cfg.annotations)
+    annotations: dict[str, str] = {}
 
     pvc_spec: dict[str, Any] = {
         "accessModes": list(tcfg.pvc_access_modes),
         "resources": {"requests": {"storage": tcfg.pvc_size}},
     }
-    if provider_cfg.storage_class is not None:
-        pvc_spec["storageClassName"] = provider_cfg.storage_class
+    if tcfg.storage_class is not None:
+        pvc_spec["storageClassName"] = tcfg.storage_class
 
     return {
         "apiVersion": "apps/v1",
@@ -218,8 +220,8 @@ def _build_statefulset_manifest(
         },
         "spec": {
             "replicas": 1,
-            "serviceName": f"{sts_name}-headless",
-            "selector": {"matchLabels": {"primer.workspace.id": workspace_id}},
+            "serviceName": obj_name,
+            "selector": {"matchLabels": {"workspace-id": workspace_id}},
             "template": {
                 "metadata": {
                     "labels": labels,
