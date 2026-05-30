@@ -21,7 +21,8 @@ Preserve, in this order:
 4. Files / artefacts currently being worked on, by name.
 5. Tool results that materially affect the next step (the values, not
    the raw output).
-6. What remains to be done.
+6. Any pending tool calls whose ``id``s the next turn still needs.
+7. What remains to be done.
 
 Drop intermediate exploration, raw tool outputs, and any reasoning the
 agent already discarded. Output a single dense paragraph; no headers,
