@@ -1,7 +1,8 @@
 /* global React, Icon, Btn, Sparkline */
 
 function HealthPage({ sessions }) {
-  const { useResource, apiFetch } = window.primerApi;
+  const { useResource, useViewport, apiFetch } = window.primerApi;
+  const { isMobile } = useViewport();
   const health = useResource(
     "health:root",
     (signal) => apiFetch("GET", "/health", null, { signal }),
@@ -96,7 +97,7 @@ function HealthPage({ sessions }) {
       </div>
 
       {/* Two-column metrics */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+      <div className={`metric-grid ${isMobile ? "metric-grid-mobile" : ""}`} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <MetricsPanel title="Scheduler" icon="settings" rows={schedulerMetrics} />
         <MetricsPanel title="Worker pool" icon="worker" rows={poolMetrics} />
       </div>
