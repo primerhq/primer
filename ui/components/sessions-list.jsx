@@ -157,6 +157,133 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
     else navigate("/sessions/" + id);
   };
 
+  const _toast = (t) => {
+    const push = window.primerApi?.toastPush;
+    if (typeof push === "function") push(t);
+  };
+
+  // Per-row action gate: while a cancel/delete is in flight we hide the
+  // affordances on the affected row and ignore repeat clicks. Keyed by
+  // session id so multiple rows can be acted on concurrently without
+  // their refs colliding.
+  const inFlightRef = React.useRef(new Set());
+  const [, _bumpRender] = React.useState(0);
+  const _markInFlight = (id, on) => {
+    if (on) inFlightRef.current.add(id);
+    else inFlightRef.current.delete(id);
+    _bumpRender((n) => n + 1);
+  };
+
+  const _cancelOne = async (s) => {
+    if (inFlightRef.current.has(s.id)) return;
+    _markInFlight(s.id, true);
+    try {
+      await apiFetch(
+        "POST",
+        `/workspaces/${encodeURIComponent(s.workspace_id)}/sessions/${encodeURIComponent(s.id)}/cancel`,
+      );
+      _toast({ kind: "success", title: "Session cancelled", detail: s.id });
+      list.refetch();
+    } catch (err) {
+      _toast({
+        kind: "error",
+        title: "Cancel failed",
+        detail: (err && (err.detail || err.message)) || String(err),
+      });
+    } finally {
+      _markInFlight(s.id, false);
+    }
+  };
+
+  const _deleteOne = async (s) => {
+    if (inFlightRef.current.has(s.id)) return;
+    _markInFlight(s.id, true);
+    try {
+      await apiFetch(
+        "DELETE",
+        `/workspaces/${encodeURIComponent(s.workspace_id)}/sessions/${encodeURIComponent(s.id)}`,
+      );
+      setSelected((prev) => {
+        if (!prev.has(s.id)) return prev;
+        const next = new Set(prev);
+        next.delete(s.id);
+        return next;
+      });
+      _toast({ kind: "success", title: "Session deleted", detail: s.id });
+      list.refetch();
+    } catch (err) {
+      _toast({
+        kind: "error",
+        title: "Delete failed",
+        detail: (err && (err.detail || err.message)) || String(err),
+      });
+    } finally {
+      _markInFlight(s.id, false);
+    }
+  };
+
+  const _bulkDelete = async () => {
+    const eligible = pageItems.filter(
+      (s) => selected.has(s.id) && s.status === "ended"
+    );
+    const skipped = selected.size - eligible.length;
+    if (eligible.length === 0) {
+      _toast({
+        kind: "warning",
+        title: "Nothing to delete",
+        detail: "Only ENDED sessions can be deleted; cancel active sessions first.",
+      });
+      return;
+    }
+    await Promise.all(eligible.map((s) => _deleteOne(s)));
+    if (skipped > 0) {
+      _toast({
+        kind: "warning",
+        title: `${skipped} session${skipped === 1 ? "" : "s"} skipped`,
+        detail: "Active sessions must be cancelled before deletion.",
+      });
+    }
+  };
+
+  const RowActions = ({ s, layout }) => {
+    const busy = inFlightRef.current.has(s.id);
+    const canDelete = s.status === "ended";
+    const canCancel = SL_NON_TERMINAL.has(s.status);
+    const stop = (e) => e.stopPropagation();
+    if (!canDelete && !canCancel) return null;
+    const style = layout === "card"
+      ? { display: "inline-flex", gap: 6 }
+      : { display: "inline-flex", gap: 4, justifyContent: "flex-end" };
+    return (
+      <span style={style} onClick={stop}>
+        {canCancel && (
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost touch-target"
+            title="Cancel session"
+            aria-label={`Cancel session ${s.id}`}
+            disabled={busy}
+            onClick={(e) => { stop(e); _cancelOne(s); }}
+          >
+            <Icon name="x" size={12} />
+          </button>
+        )}
+        {canDelete && (
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost touch-target"
+            title="Delete session permanently"
+            aria-label={`Delete session ${s.id}`}
+            disabled={busy}
+            onClick={(e) => { stop(e); _deleteOne(s); }}
+          >
+            <Icon name="trash" size={12} />
+          </button>
+        )}
+      </span>
+    );
+  };
+
   // ---- Demo overrides (still honoured for tweaks panel) ----
   if (demoState === "loading") return <SLLoadingTable />;
   if (demoState === "error") return (
@@ -234,7 +361,7 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
           ))}
         </select>
         {selected.size > 0 && (
-          <Btn size="sm" kind="danger" icon="trash">Delete {selected.size}</Btn>
+          <Btn size="sm" kind="danger" icon="trash" onClick={_bulkDelete}>Delete {selected.size}</Btn>
         )}
       </div>
 
@@ -262,7 +389,9 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
                 pill={<StatusPill status={s.status} />}
                 meta={metaParts.join(" · ")}
                 onClick={() => openSession(s.id)}
-              />
+              >
+                <RowActions s={s} layout="card" />
+              </Card>
             );
           }}
         />
@@ -289,11 +418,12 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
               <Th col="worker_id">Worker</Th>
               <Th col="last_turn_at">Last turn</Th>
               <Th col="created_at">Created</Th>
+              <th style={{ width: 80, textAlign: "right" }}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {pageItems.length === 0 ? (
-              <tr><td colSpan={9} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+              <tr><td colSpan={10} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
                 No sessions match the current filter{textQuery ? ` "${textQuery}"` : ""}.
                 {" · "}<a
                   onClick={() => { setTextQuery(""); setStatusSet(new Set()); setAgentFilter(""); setWorkspaceFilter(""); }}
@@ -337,6 +467,7 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
                   <td className="mono muted">{workerId || "—"}</td>
                   <td className="mono muted">{lastTurnSec != null ? relativeTime(lastTurnSec) : "—"}</td>
                   <td className="mono muted">{createdSec != null ? relativeTime(createdSec) : "—"}</td>
+                  <td style={{ textAlign: "right" }}><RowActions s={s} layout="table" /></td>
                 </tr>
               );
             })}

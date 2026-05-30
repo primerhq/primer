@@ -1271,13 +1271,14 @@ function NewSessionModal({ onClose, onCreate }) {
       const url = `/workspaces/${encodeURIComponent(workspaceId)}/sessions`;
       return await apiFetch("POST", url, body);
     },
-    {
-      invalidates: ["sessions:", `workspace-sessions:${workspaceId}`],
-      onSuccess: (session) => {
-        onCreate(session);
-      },
-    }
+    { invalidates: ["sessions", `workspace-sessions:${workspaceId}`] }
   );
+
+  // Ref-gate the submit so a rapid double-click can't queue two POSTs
+  // before React has a chance to flip the disabled flag, and so a
+  // re-render mid-flight (e.g. from useResource polling) can't re-arm
+  // the button. Reset on completion or error.
+  const submittingRef = React.useRef(false);
 
   const loading = agents.loading || graphs.loading || workspaces.loading;
   const noWorkspaces = !loading && workspaceItems.length === 0;
@@ -1291,16 +1292,28 @@ function NewSessionModal({ onClose, onCreate }) {
     && workspaceId
     && (kind === "agent" ? !!agentId : !!graphId);
 
-  const onSubmit = () => {
+  const onSubmit = async () => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     const binding =
       kind === "agent"
         ? { kind: "agent", agent_id: agentId }
         : { kind: "graph", graph_id: graphId };
-    create.mutate({
-      binding,
-      initial_instructions: instructions.trim(),
-      auto_start: autoStart,
-    });
+    try {
+      const session = await create.mutate({
+        binding,
+        initial_instructions: instructions.trim(),
+        auto_start: autoStart,
+      });
+      // Close + toast happen here, not in useMutation.onSuccess — that
+      // way the close is guaranteed to fire even if a future cache
+      // invalidation step throws inside useMutation's success path.
+      onCreate(session);
+    } catch (_err) {
+      // useMutation already pushed an error toast via the shared
+      // toastPush fallback; just allow another attempt.
+      submittingRef.current = false;
+    }
   };
 
   return (

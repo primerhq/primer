@@ -373,6 +373,49 @@ async def test_cancel_from_created_ends_immediately(
     assert body["ended_reason"] == "cancelled"
 
 
+async def test_delete_ended_session_removes_row(
+    sessions_client, seeded_workspace, seeded_agent, app,
+):
+    from primer.model.workspace_session import WorkspaceSession
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
+    )
+    sid = create.json()["id"]
+    await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}/cancel"
+    )
+    resp = await sessions_client.delete(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}"
+    )
+    assert resp.status_code == 204, resp.text
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    assert await storage.get(sid) is None
+
+
+async def test_delete_active_session_conflict(
+    sessions_client, seeded_workspace, seeded_agent,
+):
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
+    )
+    sid = create.json()["id"]
+    resp = await sessions_client.delete(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}"
+    )
+    assert resp.status_code == 409, resp.text
+
+
+async def test_delete_unknown_session_404(
+    sessions_client, seeded_workspace,
+):
+    resp = await sessions_client.delete(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/does-not-exist"
+    )
+    assert resp.status_code == 404
+
+
 async def test_pause_running_sets_pause_requested_flag(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):

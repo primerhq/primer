@@ -353,6 +353,64 @@ async def cancel_session(
     return s
 
 
+@nested_session_router.delete(
+    "/workspaces/{workspace_id}/sessions/{session_id}",
+    status_code=204,
+    summary="Permanently delete an ENDED session",
+    responses=common_responses(404, 409, 500),
+)
+async def delete_session(
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    sessions=Depends(get_session_storage),
+    workspace_registry=Depends(get_workspace_registry),
+) -> None:
+    """Permanently remove a session row + best-effort cleanup of its
+    on-disk slot under ``<workspace>/.state/sessions/<sid>/``.
+
+    Only ENDED sessions are eligible — active sessions must be
+    cancelled first (returns 409). The on-disk slot cleanup is
+    best-effort: if the workspace is unreachable (e.g. its backing
+    storage was wiped), the row is still removed.
+    """
+    s = await sessions.get(session_id)
+    if s is None or s.workspace_id != workspace_id:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
+    if s.status != SessionStatus.ENDED:
+        raise ConflictError(
+            f"Session {session_id!r} is {s.status.value!r}; cancel it "
+            "before deleting"
+        )
+
+    # Best-effort: reap the on-disk session slot.
+    try:
+        live_workspace = await workspace_registry.get_workspace(workspace_id)
+        state_root = getattr(live_workspace, "_state", None)
+        state_path = getattr(state_root, "path", None) if state_root else None
+        if state_path is not None:
+            import shutil
+            session_dir = state_path / "sessions" / session_id
+            if session_dir.exists():
+                await asyncio.to_thread(
+                    shutil.rmtree, session_dir, ignore_errors=True
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "delete_session: on-disk cleanup failed (row still removed)",
+            extra={
+                "session_id": session_id,
+                "workspace_id": workspace_id,
+                "exception": type(exc).__name__,
+                "message": str(exc),
+            },
+        )
+
+    await sessions.delete(session_id)
+
+
 def _and(predicates: list[Predicate]) -> Predicate:
     """Left-fold a list of predicates into a single AND tree.
 
@@ -877,6 +935,7 @@ __all__ = [
     "SessionCreateBody",
     "cancel_session",
     "create_session",
+    "delete_session",
     "find_sessions",
     "get_session_by_id",
     "list_sessions",
