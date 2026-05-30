@@ -540,15 +540,6 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
 
   return (
     <div className="col">
-      {isGraph && (
-        <Banner
-          kind="warning"
-          icon="alert"
-          title="Graph executor is unimplemented"
-          detail="This session is bound to a graph. The graph executor currently raises NotImplementedError, so the session ends with `failed` on the first turn. Pinned in app spec §12."
-        />
-      )}
-
       {/* Yielding-tools surfaces. Each polls /ask_user/pending (404 = nothing). */}
       <AskUserPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
       <ApprovalBannerPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />

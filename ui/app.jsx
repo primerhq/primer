@@ -1228,11 +1228,81 @@ function prettyPage(p) {
 }
 
 function NewSessionModal({ onClose, onCreate }) {
+  const { useResource, useMutation, apiFetch } = window.primerApi;
+  const agents = useResource(
+    "new-session:agents",
+    (signal) => apiFetch("GET", "/agents?limit=200", null, { signal }),
+    { pollMs: 0 }
+  );
+  const graphs = useResource(
+    "new-session:graphs",
+    (signal) => apiFetch("GET", "/graphs?limit=200", null, { signal }),
+    { pollMs: 0 }
+  );
+  const workspaces = useResource(
+    "new-session:workspaces",
+    (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
+    { pollMs: 0 }
+  );
+
+  const agentItems = agents.data?.items ?? [];
+  const graphItems = graphs.data?.items ?? [];
+  const workspaceItems = workspaces.data?.items ?? [];
+
   const [kind, setKind] = React.useState("agent");
-  const [agentId, setAgentId] = React.useState(window.MOCK.AGENTS[0].id);
-  const [graphId, setGraphId] = React.useState(window.MOCK.GRAPHS[0]);
-  const [workspace, setWorkspace] = React.useState(window.MOCK.WORKSPACES[0]);
+  const [agentId, setAgentId] = React.useState("");
+  const [graphId, setGraphId] = React.useState("");
+  const [workspaceId, setWorkspaceId] = React.useState("");
   const [instructions, setInstructions] = React.useState("");
+  const [autoStart, setAutoStart] = React.useState(true);
+
+  React.useEffect(() => {
+    if (!agentId && agentItems.length) setAgentId(agentItems[0].id);
+  }, [agentItems, agentId]);
+  React.useEffect(() => {
+    if (!graphId && graphItems.length) setGraphId(graphItems[0].id);
+  }, [graphItems, graphId]);
+  React.useEffect(() => {
+    if (!workspaceId && workspaceItems.length) setWorkspaceId(workspaceItems[0].id);
+  }, [workspaceItems, workspaceId]);
+
+  const create = useMutation(
+    async (body) => {
+      const url = `/workspaces/${encodeURIComponent(workspaceId)}/sessions`;
+      return await apiFetch("POST", url, body);
+    },
+    {
+      invalidates: ["sessions:", `workspace-sessions:${workspaceId}`],
+      onSuccess: (session) => {
+        onCreate(session);
+      },
+    }
+  );
+
+  const loading = agents.loading || graphs.loading || workspaces.loading;
+  const noWorkspaces = !loading && workspaceItems.length === 0;
+  const noBinding =
+    !loading && (kind === "agent" ? agentItems.length === 0 : graphItems.length === 0);
+
+  const canSubmit =
+    !loading
+    && !create.loading
+    && instructions.trim()
+    && workspaceId
+    && (kind === "agent" ? !!agentId : !!graphId);
+
+  const onSubmit = () => {
+    const binding =
+      kind === "agent"
+        ? { kind: "agent", agent_id: agentId }
+        : { kind: "graph", graph_id: graphId };
+    create.mutate({
+      binding,
+      initial_instructions: instructions.trim(),
+      auto_start: autoStart,
+    });
+  };
+
   return (
     <Modal
       title="New session"
@@ -1240,7 +1310,9 @@ function NewSessionModal({ onClose, onCreate }) {
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={onCreate} disabled={!instructions.trim()}>Create</Btn>
+          <Btn kind="primary" icon="plus" onClick={onSubmit} disabled={!canSubmit}>
+            {create.loading ? "Creating…" : "Create"}
+          </Btn>
         </>
       }
     >
@@ -1254,27 +1326,72 @@ function NewSessionModal({ onClose, onCreate }) {
       <div className="field">
         <label className="field-label">{kind === "agent" ? "Agent" : "Graph"}</label>
         {kind === "agent" ? (
-          <select className="select" value={agentId} onChange={(e) => setAgentId(e.target.value)} style={{ width: "100%" }}>
-            {window.MOCK.AGENTS.map((a) => <option key={a.id} value={a.id}>{a.id}</option>)}
+          <select
+            className="select"
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            style={{ width: "100%" }}
+            disabled={loading || agentItems.length === 0}
+          >
+            {agentItems.length === 0 && (
+              <option value="">{loading ? "Loading…" : "No agents available"}</option>
+            )}
+            {agentItems.map((a) => <option key={a.id} value={a.id}>{a.id}</option>)}
           </select>
         ) : (
-          <>
-            <select className="select" value={graphId} onChange={(e) => setGraphId(e.target.value)} style={{ width: "100%" }}>
-              {window.MOCK.GRAPHS.map((g) => <option key={g} value={g}>{g}</option>)}
-            </select>
-            <div className="field-help warn"><Icon name="alert" size={11} /> Graph executor is unimplemented — this session will end with <span className="mono">failed</span> on turn 1.</div>
-          </>
+          <select
+            className="select"
+            value={graphId}
+            onChange={(e) => setGraphId(e.target.value)}
+            style={{ width: "100%" }}
+            disabled={loading || graphItems.length === 0}
+          >
+            {graphItems.length === 0 && (
+              <option value="">{loading ? "Loading…" : "No graphs available"}</option>
+            )}
+            {graphItems.map((g) => <option key={g.id} value={g.id}>{g.id}</option>)}
+          </select>
+        )}
+        {noBinding && (
+          <div className="field-help warn">
+            <Icon name="alert" size={11} />{" "}
+            No {kind === "agent" ? "agents" : "graphs"} are defined yet — create one first.
+          </div>
         )}
       </div>
       <div className="field">
         <label className="field-label">Workspace</label>
-        <select className="select" value={workspace} onChange={(e) => setWorkspace(e.target.value)} style={{ width: "100%" }}>
-          {window.MOCK.WORKSPACES.map((w) => <option key={w} value={w}>{w}</option>)}
+        <select
+          className="select"
+          value={workspaceId}
+          onChange={(e) => setWorkspaceId(e.target.value)}
+          style={{ width: "100%" }}
+          disabled={loading || workspaceItems.length === 0}
+        >
+          {workspaceItems.length === 0 && (
+            <option value="">{loading ? "Loading…" : "No workspaces available"}</option>
+          )}
+          {workspaceItems.map((w) => <option key={w.id} value={w.id}>{w.id}</option>)}
         </select>
+        {noWorkspaces && (
+          <div className="field-help warn">
+            <Icon name="alert" size={11} /> No workspaces yet — create one before starting a session.
+          </div>
+        )}
       </div>
       <div className="field">
         <label className="field-label">Initial instructions</label>
         <textarea className="textarea" value={instructions} onChange={(e) => setInstructions(e.target.value)} rows={4} placeholder="Tell the agent what to do…" />
+      </div>
+      <div className="field">
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={autoStart}
+            onChange={(e) => setAutoStart(e.target.checked)}
+          />
+          <span>Start immediately</span>
+        </label>
       </div>
     </Modal>
   );
