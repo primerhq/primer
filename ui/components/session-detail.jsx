@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, ApprovalBanner, relativeTime, fmtDate */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, ApprovalBanner, MobileTabs, relativeTime, fmtDate */
 
 const SESSION_TERMINAL = new Set(["ended", "completed", "failed", "cancelled"]);
 
@@ -21,9 +21,12 @@ function _sdToastErr(pushToast, fallbackTitle) {
 }
 
 function SessionDetail({ sid: sidProp, pushToast, onBack }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
-  const { params, navigate } = useRouter();
+  const { useResource, useMutation, useRouter, useViewport, apiFetch } = window.primerApi;
+  const { params, navigate, query, path } = useRouter();
+  const { isMobile } = useViewport();
   const sid = sidProp || params.id;
+  const activeTab = query.tab || "overview";
+  const setTab = (id) => navigate(path, { ...query, tab: id });
 
   const [steer, setSteer] = React.useState("");
   const [showCancel, setShowCancel] = React.useState(false);
@@ -163,32 +166,10 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
   const lastError = session.last_error || session.error;
   const metadata = session.metadata || {};
 
-  return (
-    <div className="col">
-      {isGraph && (
-        <Banner
-          kind="warning"
-          icon="alert"
-          title="Graph executor is unimplemented"
-          detail="This session is bound to a graph. The graph executor currently raises NotImplementedError, so the session ends with `failed` on the first turn. Pinned in app spec §12."
-        />
-      )}
-
-      {/* Yielding-tools surfaces. Each polls /ask_user/pending (404 = nothing). */}
-      <AskUserPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
-      <ApprovalBannerPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
-      {wid && (
-        <WatchFilesPanel sid={sid} wid={wid} session={session} pushToast={pushToast} />
-      )}
-      {wid && (
-        <SleepPanel sid={sid} wid={wid} session={session} pushToast={pushToast} />
-      )}
-
-      <div className="session-detail-grid">
-        {/* LEFT — primary */}
-        <div className="col" style={{ gap: 14 }}>
-          {/* Header card */}
-          <div className="panel">
+  // Lifted panel JSX — both desktop split-pane and MobileTabs render
+  // the same panels, so we build them once and share between branches.
+  const headerPanel = (
+        <div className="panel">
             <div className="panel-body" style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 18, alignItems: "flex-start" }}>
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
@@ -247,9 +228,9 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
               >View JSON</Btn>
             </div>
           </div>
+  );
 
-          {/* Initial instructions */}
-          {(session.initial_instructions || session.instructions) && (
+  const instructionsPanel = (session.initial_instructions || session.instructions) ? (
             <div className="panel">
               <div className="panel-h">
                 <span>Initial instructions</span>
@@ -263,9 +244,9 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
                 </div>
               </div>
             </div>
-          )}
+  ) : null;
 
-          {/* Turns timeline */}
+  const turnsPanel = (
           <div className="panel">
             <div className="panel-h" onClick={() => setTurnsOpen(!turnsOpen)} style={{ cursor: "pointer" }}>
               <Icon name={turnsOpen ? "chevron-down" : "chevron-right"} size={12} className="muted" />
@@ -295,14 +276,13 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
               </div>
             )}
           </div>
+  );
 
-          {/* Live stream — WS-backed message timeline (Task 14) */}
-          {wid && (
+  const liveStreamPanel = wid ? (
             <SessionLiveStream sid={sid} wid={wid} session={session} pushToast={pushToast} />
-          )}
+  ) : null;
 
-          {/* Last error */}
-          {lastError && (
+  const lastErrorPanel = lastError ? (
             <div className="panel" style={{ borderColor: "oklch(0.7 0.2 25 / 0.4)" }}>
               <div className="panel-h" onClick={() => setErrorOpen(!errorOpen)} style={{ cursor: "pointer", background: "var(--red-dim)" }}>
                 <Icon name={errorOpen ? "chevron-down" : "chevron-right"} size={12} style={{ color: "var(--red)" }} />
@@ -330,10 +310,9 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
                 </div>
               )}
             </div>
-          )}
+  ) : null;
 
-          {/* Metadata */}
-          {metadata && Object.keys(metadata).length > 0 && (
+  const metadataPanel = (metadata && Object.keys(metadata).length > 0) ? (
             <div className="panel">
               <div className="panel-h" onClick={() => setMetaOpen(!metaOpen)} style={{ cursor: "pointer" }}>
                 <Icon name={metaOpen ? "chevron-down" : "chevron-right"} size={12} className="muted" />
@@ -353,12 +332,9 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
                 </div>
               )}
             </div>
-          )}
-        </div>
+  ) : null;
 
-        {/* RIGHT — controls + signals */}
-        <div className="col" style={{ gap: 14 }}>
-          {/* Signals */}
+  const signalsPanel = (
           <div className="panel">
             <div className="panel-h">
               <Icon name="zap" size={13} style={{ color: "var(--accent)" }} />
@@ -417,8 +393,9 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
               )}
             </div>
           </div>
+  );
 
-          {/* References — cross-page anchors (U0105) */}
+  const referencesPanel = (
           <div className="panel">
             <div className="panel-h">
               <Icon name="fork" size={13} />
@@ -456,11 +433,13 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
               )}
             </div>
           </div>
+  );
 
-          {/* T0399 stale-cache notice — unconditional per design §3.7
-              (anomaly-surface for the workspace-path-drifts-after-signals
-              issue tracked as T0399/T0555/T0611). U0013 pins this banner's
-              copy + presence. */}
+  // T0399 stale-cache notice — unconditional per design §3.7
+  // (anomaly-surface for the workspace-path-drifts-after-signals
+  // issue tracked as T0399/T0555/T0611). U0013 pins this banner's
+  // copy + presence.
+  const staleNoticePanel = (
           <div
             className="banner banner-info"
             style={{
@@ -489,8 +468,119 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
               </div>
             </div>
           </div>
+  );
+
+  // Tab content for MobileTabs. Each tab content is a column of the
+  // already-built panel JSX consts above — the desktop split-pane
+  // renders the same JSX so we never duplicate panel bodies.
+  //  • overview  → header + references + stale-cache notice
+  //  • messages  → live WS stream (the chat-like timeline)
+  //  • state     → signals, initial instructions, turns, last error, metadata
+  //  • files     → parked yields (WatchFiles / Sleep) when present
+  const filesParked = (session?.parked_status === "parked" || session?.parked_status === "waiting")
+    && (session?.parked_state?.yielded?.tool_name === "watch_files"
+        || session?.parked_state?.yielded?.tool_name === "sleep"
+        || session?.parked_state?.tool_name === "watch_files"
+        || session?.parked_state?.tool_name === "sleep");
+  const filesPanel = wid && filesParked ? (
+    <div className="col" style={{ gap: 14 }}>
+      <WatchFilesPanel sid={sid} wid={wid} session={session} pushToast={pushToast} />
+      <SleepPanel sid={sid} wid={wid} session={session} pushToast={pushToast} />
+    </div>
+  ) : (
+    <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+      No parked file or sleep yields. Watching surfaces here when active.
+    </div>
+  );
+
+  const tabs = [
+    {
+      id: "overview",
+      label: "Overview",
+      content: (
+        <div className="col" style={{ gap: 14, padding: 12 }}>
+          {headerPanel}
+          {referencesPanel}
+          {staleNoticePanel}
         </div>
-      </div>
+      ),
+    },
+    {
+      id: "messages",
+      label: "Messages",
+      content: (
+        <div className="col" style={{ gap: 14, padding: 12 }}>
+          {liveStreamPanel || (
+            <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+              Live stream unavailable — session has no workspace_id.
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: "state",
+      label: "State",
+      content: (
+        <div className="col" style={{ gap: 14, padding: 12 }}>
+          {signalsPanel}
+          {instructionsPanel}
+          {turnsPanel}
+          {lastErrorPanel}
+          {metadataPanel}
+        </div>
+      ),
+    },
+    {
+      id: "files",
+      label: "Files",
+      content: filesPanel,
+    },
+  ];
+
+  return (
+    <div className="col">
+      {isGraph && (
+        <Banner
+          kind="warning"
+          icon="alert"
+          title="Graph executor is unimplemented"
+          detail="This session is bound to a graph. The graph executor currently raises NotImplementedError, so the session ends with `failed` on the first turn. Pinned in app spec §12."
+        />
+      )}
+
+      {/* Yielding-tools surfaces. Each polls /ask_user/pending (404 = nothing). */}
+      <AskUserPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
+      <ApprovalBannerPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
+      {!isMobile && wid && (
+        <WatchFilesPanel sid={sid} wid={wid} session={session} pushToast={pushToast} />
+      )}
+      {!isMobile && wid && (
+        <SleepPanel sid={sid} wid={wid} session={session} pushToast={pushToast} />
+      )}
+
+      {isMobile ? (
+        <MobileTabs tabs={tabs} active={activeTab} onSelect={setTab} />
+      ) : (
+        <div className="session-detail-grid">
+          {/* LEFT — primary */}
+          <div className="col" style={{ gap: 14 }}>
+            {headerPanel}
+            {instructionsPanel}
+            {turnsPanel}
+            {liveStreamPanel}
+            {lastErrorPanel}
+            {metadataPanel}
+          </div>
+
+          {/* RIGHT — controls + signals */}
+          <div className="col" style={{ gap: 14 }}>
+            {signalsPanel}
+            {referencesPanel}
+            {staleNoticePanel}
+          </div>
+        </div>
+      )}
 
       {showCancel && (
         <Modal
