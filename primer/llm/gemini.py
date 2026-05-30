@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from primer.common.google_errors import classify_google_exception
 from primer.int.llm import LLM
+from primer.llm._tokenizer.gemini import count_tokens_gemini
 from primer.model.except_ import (
     ConfigError,
     ModelNotFoundError,
@@ -767,6 +768,18 @@ class GeminiLLM(LLM):
 
     async def list_models(self) -> Iterable[str]:
         return [m.name for m in self._provider.models]
+
+    async def count_tokens(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> int:
+        client = self._get_client()
+        return await count_tokens_gemini(
+            client=client, model=model, messages=messages, tools=tools,
+        )
 
     def _get_client(self) -> genai.Client:
         """Construct the genai.Client lazily on first use."""

@@ -1040,3 +1040,22 @@ class TestPackageReexport:
         import primer.llm as llm_pkg
 
         assert "OpenResponsesLLM" in llm_pkg.__all__
+
+
+class TestCountTokens:
+    async def test_delegates_to_module_with_client(self) -> None:
+        from unittest.mock import AsyncMock, patch
+        llm = GeminiLLM(_make_provider())
+        msgs = [Message(role="user", parts=[TextPart(text="hi")])]
+        with patch(
+            "primer.llm.gemini.count_tokens_gemini",
+            new=AsyncMock(return_value=17),
+        ) as mock_count:
+            n = await llm.count_tokens(
+                model="gemini-2.5-flash", messages=msgs, tools=None,
+            )
+        assert n == 17
+        mock_count.assert_awaited_once()
+        call_kwargs = mock_count.await_args.kwargs
+        assert call_kwargs["model"] == "gemini-2.5-flash"
+        assert call_kwargs["messages"] == msgs
