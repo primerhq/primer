@@ -749,6 +749,11 @@ function _SLS_ExpandableRow({ icon, iconColor, borderColor, name, separator, pre
 function SessionLiveStream({ sid, wid, session, pushToast }) {
   const [messages, setMessages] = React.useState([]);
   const [wsState, setWsState] = React.useState("connecting");
+  // Token-usage snapshot for the read-only header TokenMeter. Hydrated
+  // from any `"usage"` WS envelope the worker emits; if the session
+  // WS never carries one, we fall back below to the most recent turn's
+  // tokens_in so the meter still surfaces something meaningful.
+  const [usage, setUsage] = React.useState({ input_tokens: 0, output_tokens: 0, context_length: 0 });
   const wsRef = React.useRef(null);
   const scrollRef = React.useRef(null);
 
@@ -786,6 +791,18 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
         return;
       }
       if (msg.kind === "pong") return;
+
+      // Token-usage envelope (no seq). Drives the read-only header
+      // TokenMeter — the session WS surface mirrors the chats WS for
+      // this shape (`input_tokens` / `context_length`).
+      if (msg.kind === "usage" && typeof msg.seq !== "number") {
+        setUsage({
+          input_tokens: Number(msg.input_tokens) || 0,
+          output_tokens: Number(msg.output_tokens) || 0,
+          context_length: Number(msg.context_length) || 0,
+        });
+        return;
+      }
 
       // Persisted frame — deduplicate and append.
       if (typeof msg.seq === "number") {
@@ -851,6 +868,21 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
   const coalesced = _SLS_coalesceMessages(messages);
   const isTerminalSession = session && SESSION_TERMINAL.has(session.status);
 
+  // Fallback for the read-only TokenMeter when no `"usage"` envelope
+  // has landed yet. Use the most recent turn's recorded tokens_in so
+  // we surface something on first paint; the WS envelope (if/when it
+  // arrives) takes precedence.
+  const fallbackUsage = React.useMemo(() => {
+    const turns = Array.isArray(session?.turns) ? session.turns : [];
+    const last = turns.length > 0 ? turns[turns.length - 1] : null;
+    return {
+      input_tokens: Number(last?.tokens_in) || 0,
+      context_length: Number(session?.context_length) || 0,
+    };
+  }, [session]);
+  const meterInput = usage.input_tokens || fallbackUsage.input_tokens;
+  const meterContext = usage.context_length || fallbackUsage.context_length;
+
   return (
     <div className="panel" style={{ display: "flex", flexDirection: "column" }}>
       <div className="panel-h">
@@ -858,6 +890,14 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
         <span>Live stream</span>
         <span className="sub">· {messages.length} frame{messages.length === 1 ? "" : "s"}</span>
         <div className="right" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {/* Read-only TokenMeter — workspace sessions surface context
+              pressure but don't expose an operator-triggered compact
+              action (those flow through the chat surface). */}
+          <window.TokenMeter
+            inputTokens={meterInput}
+            contextLength={meterContext}
+            onCompact={null}
+          />
           {wsBadge}
           {!isTerminalSession && (
             <Btn
