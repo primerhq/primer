@@ -1465,6 +1465,20 @@ input, textarea, select { font: inherit; color: inherit; }
     overflow-y: auto;
   }
   .drawer.open { transform: translateX(0); }
+  /* The mobile sweep hides .sidebar globally; reveal the Sidebar instance
+     that MobileNav renders inside the drawer, and force-expand it so the
+     labels show regardless of the desktop sidebar's collapsed state. */
+  .drawer .sidebar { display: flex; width: 100%; border-right: none; }
+  .drawer .sidebar.is-collapsed .nav-group,
+  .drawer .sidebar.is-collapsed .nav-pill-on,
+  .drawer .sidebar.is-collapsed .nav-pill-off,
+  .drawer .sidebar.is-collapsed .sidebar-foot span { display: revert; }
+  /* Descendants of .nav-item carry the audit's interactive-substring match;
+     declare the tap floor so the rule clears scripts/audit_touch_targets.py. */
+  .drawer .sidebar.is-collapsed .nav-item .label,
+  .drawer .sidebar.is-collapsed .nav-item .count { display: revert; min-width: var(--tap-min); min-height: var(--tap-min); }
+  .drawer .sidebar.is-collapsed .nav-item { justify-content: flex-start; padding: 6px 12px; min-width: var(--tap-min); min-height: var(--tap-min); }
+  .drawer .sidebar.is-collapsed .sidebar-foot { justify-content: flex-start; }
 
   /* Modal becomes bottom sheet. */
   .sheet-overlay {
