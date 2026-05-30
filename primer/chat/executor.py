@@ -34,6 +34,12 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from primer.agent.compaction import CompactionStrategy
+from primer.agent.compaction_mixin import (
+    apply_compaction as _mixin_apply_compaction,
+    should_compact as _mixin_should_compact,
+)
+from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
 from primer.int.storage import Storage
 from primer.model.chat import (
     Done,
@@ -46,6 +52,7 @@ from primer.model.chat import (
     ToolCallPart,
     ToolCallStart,
     ToolResultPart,
+    Usage,
 )
 from primer.model.chats import Chat, ChatMessage
 from primer.model.storage import (
@@ -224,6 +231,12 @@ class ChatTurnRunner:
         self._chats = chat_storage
         self._messages = message_storage
         self._cancel_event = cancel_event
+        # Pre-turn auto-compaction state.
+        self._marker_persisted: bool = False
+        # Last Usage event consumed from the LLM stream; populated by
+        # ``_record_usage`` when the provider reports per-turn counts.
+        self._last_input_tokens: int | None = None
+        self._last_output_tokens: int | None = None
 
     async def run_turn(
         self,
@@ -302,6 +315,25 @@ class ChatTurnRunner:
         history = await self._load_history(
             chat.id, current_user_msg_seq=user_msg.seq,
         )
+        # Pre-turn auto-compaction: if the prompt would exceed budget,
+        # summarise the head + persist a marker row. ``history`` is
+        # mutated in place so the prompt below carries the compacted
+        # form. Failures fall through with the un-compacted history —
+        # better to risk an oversize prompt than to abort the turn.
+        try:
+            compacted = await self._maybe_compact_history(chat, history)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "ChatTurnRunner: pre-turn compaction failed for chat %s; "
+                "continuing with un-compacted history",
+                chat.id,
+            )
+            compacted = False
+        if compacted:
+            logger.info(
+                "ChatTurnRunner: pre-turn compaction fired for chat %s",
+                chat.id,
+            )
         new_user_msg = Message(role="user", parts=parts)
         prompt = self._build_prompt(history, new_user_msg)
 
@@ -519,7 +551,11 @@ class ChatTurnRunner:
             )
             return
 
-        # StreamStart / ReasoningDelta / Usage / Done / MediaDelta /
+        if isinstance(event, Usage):
+            self._record_usage(event)
+            return
+
+        # StreamStart / ReasoningDelta / Done / MediaDelta /
         # ToolCallDelta / ExtendedEvent — silently ignored. ToolCallDelta
         # carries argument JSON fragments; ToolCallEnd already exposes
         # the parsed argument object so we don't need to buffer deltas.
@@ -675,6 +711,105 @@ class ChatTurnRunner:
             if not cursor:
                 break
         return out
+
+    # ------------------------------------------------------------------
+    # Pre-turn auto-compaction
+    # ------------------------------------------------------------------
+
+    async def _maybe_compact_history(
+        self,
+        chat: Chat,
+        history: list[Message],
+    ) -> bool:
+        """Run pre-turn compaction if the prompt would exceed budget.
+
+        Returns ``True`` if compaction fired and ``history`` was
+        replaced + a ``compaction_marker`` row persisted; ``False``
+        otherwise. The caller passes ``history`` by reference so the
+        mutated list (cleared and refilled with the compacted form) is
+        observable in the turn driver.
+        """
+        tools = None
+        try:
+            tools = await self._tools.list_tools()
+        except Exception:  # noqa: BLE001 — fall through with no tools.
+            tools = None
+        triggered, _count = await _mixin_should_compact(
+            llm=self._llm,
+            model_name=self._model.name,
+            context_length=self._model.context_length,
+            history=history,
+            tools=tools or None,
+        )
+        if not triggered:
+            return False
+
+        strategy = CompactionStrategy()
+        compaction_prompt_field = getattr(self._agent, "compaction_prompt", None)
+        if compaction_prompt_field:
+            compaction_prompt = "\n\n".join(compaction_prompt_field)
+            prompt_source = "custom"
+        else:
+            compaction_prompt = DEFAULT_COMPACTION_PROMPT
+            prompt_source = "default"
+        result = await _mixin_apply_compaction(
+            llm=self._llm,
+            strategy=strategy,
+            history=history,
+            compaction_prompt=compaction_prompt,
+            model_name=self._model.name,
+            context_length=self._model.context_length,
+        )
+        next_seq = await self._next_seq_for_marker(chat)
+        chat_msg = ChatMessage(
+            id=ChatMessage.make_id(chat.id, next_seq),
+            chat_id=chat.id,
+            seq=next_seq,
+            kind="compaction_marker",
+            payload={
+                "summary": result.summary_text,
+                "replaced_from_seq": 1,
+                "replaced_to_seq": next_seq - 1,
+                "model": self._model.name,
+                "tokens_before": result.tokens_before,
+                "tokens_after": result.tokens_after,
+                "compaction_prompt_source": prompt_source,
+                "created_at": result.created_at.isoformat(),
+            },
+            created_at=result.created_at,
+        )
+        await self._messages.create(chat_msg)
+        chat.last_seq = next_seq
+        self._marker_persisted = True
+        history[:] = result.new_history
+        return True
+
+    async def _next_seq_for_marker(self, chat: Chat) -> int:
+        """Compute the next free seq for a marker row.
+
+        Re-reads the chat row from storage to pick up any concurrent
+        last_seq bumps (e.g. when the user_message has just been
+        appended on a different code path). Falls back to the
+        in-memory ``chat.last_seq`` if the row has gone missing.
+        """
+        fresh = await self._chats.get(chat.id)
+        last = getattr(fresh, "last_seq", chat.last_seq) if fresh else chat.last_seq
+        return last + 1
+
+    # ------------------------------------------------------------------
+    # Usage tracking
+    # ------------------------------------------------------------------
+
+    def _record_usage(self, ev: Usage) -> None:
+        """Stash per-chat last input/output tokens from a ``Usage`` event.
+
+        The chat-runner currently has no surface that exposes these to
+        the WS, but the workspace executor reads ``_last_input_tokens``
+        for the next compaction-pass decision and we mirror the same
+        contract here so future plumbing can reuse it.
+        """
+        self._last_input_tokens = ev.input_tokens
+        self._last_output_tokens = ev.output_tokens
 
     def _build_prompt(
         self,
