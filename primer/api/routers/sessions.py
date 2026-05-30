@@ -477,9 +477,19 @@ async def delete_session(
                 },
             )
 
-    # Best-effort: reap the on-disk session slot.
+    # Best-effort: reap the on-disk session slot AND drop the
+    # in-memory session handle so list_sessions() stops returning it.
     try:
         live_workspace = await workspace_registry.get_workspace(workspace_id)
+        # Unbind the in-memory handle first — the workspace exposes the
+        # ABC method since the diagnostic-report follow-up landed.
+        try:
+            await live_workspace.remove_session(session_id)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "delete_session: remove_session raised; continuing",
+                exc_info=True,
+            )
         state_root = getattr(live_workspace, "_state", None)
         state_path = getattr(state_root, "path", None) if state_root else None
         if state_path is not None:

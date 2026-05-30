@@ -162,6 +162,19 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
     if (typeof push === "function") push(t);
   };
 
+  // Invalidate every useResource cache whose key starts with one of
+  // the supplied prefixes. After cancel/delete we want the workspace
+  // detail page's sessions tab + the main sessions list + the
+  // dashboard counters to all converge on the new state immediately;
+  // none of them subscribe to the session list's local refetch.
+  const _invalidate = React.useCallback((keys) => {
+    const api = window.primerApi?._resource;
+    if (!api) return;
+    for (const baseKey of keys) {
+      for (const k of api.findKeys(baseKey)) api.refetchKey(k);
+    }
+  }, []);
+
   // Per-row action gate: while a cancel/delete is in flight we hide the
   // affordances on the affected row and ignore repeat clicks. Keyed by
   // session id so multiple rows can be acted on concurrently without
@@ -184,6 +197,11 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
       );
       _toast({ kind: "success", title: "Session cancelled", detail: s.id });
       list.refetch();
+      _invalidate([
+        "sessions",
+        `workspace-sessions:${s.workspace_id}`,
+        `session-detail:${s.id}`,
+      ]);
     } catch (err) {
       _toast({
         kind: "error",
@@ -216,6 +234,11 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
         detail: s.id,
       });
       list.refetch();
+      _invalidate([
+        "sessions",
+        `workspace-sessions:${s.workspace_id}`,
+        `session-detail:${s.id}`,
+      ]);
     } catch (err) {
       // 409 on a RUNNING row means we hit the no-force gate. Offer the
       // user the force path via a follow-up toast button.

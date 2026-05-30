@@ -224,6 +224,16 @@ class LocalWorkspace(Workspace):
     async def get_session(self, session_id: str) -> AgentSession | None:
         return self._sessions.get(session_id)
 
+    async def remove_session(self, session_id: str) -> bool:
+        """Drop the in-memory handle for ``session_id``.
+
+        The on-disk slot under ``.state/sessions/<sid>/`` is removed by
+        the API handler; this just unbinds the in-memory cache entry so
+        ``list_sessions()`` stops reporting it.
+        """
+        async with self._lock:
+            return self._sessions.pop(session_id, None) is not None
+
     async def list_files(
         self,
         path: str = ".",

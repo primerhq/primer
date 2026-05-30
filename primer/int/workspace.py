@@ -184,6 +184,18 @@ class Workspace(ABC):
     async def get_session(self, session_id: str) -> "AgentSession | None":
         """Return the live session handle, or ``None`` if no such session."""
 
+    async def remove_session(self, session_id: str) -> bool:
+        """Forget the in-memory session handle for ``session_id``.
+
+        Called by the session DELETE handler after the scheduler-visible
+        row and the on-disk slot have been removed, so subsequent
+        ``list_sessions()`` calls don't surface a stale entry. Backends
+        without in-memory caches can leave this as a no-op (the default
+        returns ``False``). Returns ``True`` when an entry was removed.
+        """
+        del session_id  # default no-op
+        return False
+
     # ---------- File browsing for users ----------------------------------
 
     @abstractmethod

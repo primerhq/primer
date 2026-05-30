@@ -75,6 +75,15 @@ class _FakeWorkspaceForSessions:
         }
         return object()  # AgentSession stand-in; the router ignores the return.
 
+    async def list_sessions(self, *, agent_id=None, status=None):
+        out = []
+        for sid in self.started_sessions:
+            out.append(type("S", (), {"session_id": sid, "agent_id": "ag1", "status": "running"})())
+        return out
+
+    async def remove_session(self, session_id):
+        return self.started_sessions.pop(session_id, None) is not None
+
     async def aclose(self):
         return
 
@@ -502,6 +511,38 @@ async def test_delete_unknown_session_404(
         f"/v1/workspaces/{seeded_workspace.id}/sessions/does-not-exist"
     )
     assert resp.status_code == 404
+
+
+async def test_delete_drops_workspace_in_memory_session_handle(
+    sessions_client, seeded_workspace, seeded_agent, app,
+):
+    """DELETE must remove the session from the workspace's in-memory
+    handle so /v1/workspaces/{wid}/sessions stops returning it.
+
+    Pre-fix the session row was deleted from the scheduler-visible
+    storage but the workspace cached the live handle in
+    LocalWorkspace._sessions; the workspace-detail page's sessions
+    tab kept showing the deleted entry forever."""
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
+    )
+    sid = create.json()["id"]
+    # Verify the workspace registers the session in its in-memory map.
+    registry = app.state.workspace_registry
+    ws = await registry.get_workspace(seeded_workspace.id)
+    sessions_before = await ws.list_sessions()
+    assert any(s.session_id == sid for s in sessions_before)
+    # Delete it.
+    resp = await sessions_client.delete(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}"
+    )
+    assert resp.status_code == 204, resp.text
+    # Workspace's in-memory list MUST no longer report it.
+    sessions_after = await ws.list_sessions()
+    assert not any(s.session_id == sid for s in sessions_after), (
+        f"workspace.list_sessions still returns deleted session {sid!r}"
+    )
 
 
 async def test_force_delete_running_session_evicts_orphan(
