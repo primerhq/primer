@@ -1095,3 +1095,18 @@ class TestPackageReexport:
         assert "AnthropicLLM" in llm_pkg.__all__
         assert "GeminiLLM" in llm_pkg.__all__
         assert "OpenResponsesLLM" in llm_pkg.__all__
+
+
+class TestCountTokens:
+    async def test_delegates_to_hf_module(self) -> None:
+        from unittest.mock import patch
+        llm = OllamaLLM(_make_provider())
+        msgs = [Message(role="user", parts=[TextPart(text="hi")])]
+        with patch(
+            "primer.llm.ollama.count_tokens_hf", return_value=17,
+        ) as mock_count:
+            n = await llm.count_tokens(
+                model="llama3.2", messages=msgs, tools=None,
+            )
+        assert n == 17
+        mock_count.assert_called_once()

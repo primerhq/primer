@@ -25,6 +25,7 @@ import ollama
 from pydantic import BaseModel as PydanticBaseModel
 
 from primer.int.llm import LLM
+from primer.llm._tokenizer.hf import count_tokens_hf
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
@@ -450,6 +451,18 @@ class OllamaLLM(LLM):
 
     async def list_models(self) -> Iterable[str]:
         return [m.name for m in self._provider.models]
+
+    async def count_tokens(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> int:
+        import asyncio
+        return await asyncio.to_thread(
+            count_tokens_hf, model=model, messages=messages, tools=tools,
+        )
 
     def _get_client(self) -> ollama.AsyncClient:
         if self._client is None:
