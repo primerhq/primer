@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, relativeTime, Banner */
+/* global React, Icon, StatusPill, Btn, CardList, Card, Fab, relativeTime, Banner */
 
 const SL_STATUS_CHIPS = [
   { s: "created",   color: "var(--text-3)" },
@@ -19,8 +19,9 @@ function _slAgeSec(iso) {
 }
 
 function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
+  const { isMobile } = useViewport();
 
   // Local filter state. Seed status filter from filterPreset prop (set by
   // dashboard "running" tile). Otherwise empty (= show everything).
@@ -237,6 +238,35 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
         )}
       </div>
 
+      {isMobile ? (
+        <CardList
+          items={pageItems}
+          empty="No sessions match the current filter."
+          renderCard={(s) => {
+            const isGraph = (s.binding?.kind || s.binding_kind) === "graph";
+            const boundAgent = s.binding?.agent_id || s.agent_id;
+            const boundGraph = s.binding?.graph_id || s.graph_id;
+            const lastTurnSec = _slAgeSec(s.last_turn_at);
+            const createdSec = _slAgeSec(s.created_at);
+            const subtitle = isGraph
+              ? `graph · ${boundGraph || "—"}`
+              : `agent · ${boundAgent || "—"}`;
+            const ageSec = lastTurnSec != null ? lastTurnSec : createdSec;
+            const metaParts = [];
+            metaParts.push(`${s.turn_count ?? 0} turn${(s.turn_count ?? 0) === 1 ? "" : "s"}`);
+            if (ageSec != null) metaParts.push(relativeTime(ageSec));
+            return (
+              <Card
+                title={(s.id || "").length > 22 ? (s.id.slice(0, 22) + "…") : s.id}
+                subtitle={subtitle}
+                pill={<StatusPill status={s.status} />}
+                meta={metaParts.join(" · ")}
+                onClick={() => openSession(s.id)}
+              />
+            );
+          }}
+        />
+      ) : (
       <div className="tbl-wrap">
         <table className="tbl">
           <thead>
@@ -328,6 +358,10 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
           </div>
         </div>
       </div>
+      )}
+      {isMobile && typeof onNewSession === "function" && (
+        <Fab icon="plus" label="New session" onClick={onNewSession} />
+      )}
     </div>
   );
 }
