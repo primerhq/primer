@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, StatusPill, Modal, Banner, relativeTime */
+/* global React, Icon, Btn, StatusPill, Modal, Banner, CardList, Card, Fab, relativeTime */
 
 // Knowledge: Collections + Documents + SearchBench wired to the real API.
 // The Designer's mock-data scaffold was replaced in Phase 2 — every fetch
@@ -46,8 +46,9 @@ async function _knFetchIcConfig(signal) {
 // ============================================================================
 
 function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
+  const { isMobile } = useViewport();
 
   const list = useResource(
     "collections:list",
@@ -88,6 +89,24 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
         </div>
       </div>
 
+      {isMobile ? (
+        <CardList
+          items={filtered}
+          empty={items.length === 0 ? "No collections yet." : `No collections match "${textFilter}".`}
+          renderCard={(c) => (
+            <Card
+              title={c.id}
+              subtitle={c.description || ""}
+              meta={`${c.embedder?.provider_id || "—"} · ${c.embedder?.model || "—"}`}
+              pill={c.system ? <span className="pill"><span className="dot"></span>system</span> : null}
+              onClick={() => {
+                if (typeof onOpen === "function") onOpen(c.id);
+                else navigate("/knowledge/documents", { collection: c.id });
+              }}
+            />
+          )}
+        />
+      ) : (
       <div style={{ display: "grid", gridTemplateColumns: sel ? "1.6fr 1fr" : "1fr", gap: 18 }}>
         <div className="tbl-wrap">
           <table className="tbl">
@@ -154,6 +173,11 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
           />
         )}
       </div>
+      )}
+
+      {isMobile && (
+        <Fab icon="plus" label="New collection" onClick={() => setCreateOpen(true)} />
+      )}
 
       {createOpen && (
         <KN_NewCollectionModal
@@ -672,8 +696,9 @@ function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate, e
 // ============================================================================
 
 function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { query, navigate } = useRouter();
+  const { isMobile } = useViewport();
   // Prefer the explicit prop (app.jsx passes docsFilterCollection) and fall
   // back to the router query for deep-link cases.
   const collectionFilter = (filterCollection != null && filterCollection !== "")
@@ -767,6 +792,16 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
 
   return (
     <div className="col" style={{ gap: 14 }}>
+      {isMobile && collectionFilter && (
+        <div
+          className="knowledge-mobile-back"
+          onClick={() => setCollectionFilter("")}
+        >
+          <Icon name="chevron-left" size={14} />
+          <span>All collections</span>
+          <span className="mono muted" style={{ marginLeft: 6 }}>· {collectionFilter}</span>
+        </div>
+      )}
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
@@ -797,6 +832,20 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
         </div>
       </div>
 
+      {isMobile ? (
+        <CardList
+          items={filtered}
+          empty={items.length === 0 ? "No documents yet." : "No documents match."}
+          renderCard={(d) => (
+            <Card
+              title={d.id}
+              subtitle={d.name || ""}
+              meta={d.collection_id}
+              onClick={() => { if (!d._indexed) setEditing(d); }}
+            />
+          )}
+        />
+      ) : (
       <div className="tbl-wrap">
         <table className="tbl">
           <thead>
@@ -862,6 +911,11 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
           </tbody>
         </table>
       </div>
+      )}
+
+      {isMobile && (
+        <Fab icon="plus" label="New document" onClick={() => setCreateOpen(true)} />
+      )}
 
       <div style={{
         display: "flex",

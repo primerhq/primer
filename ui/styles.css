@@ -1604,6 +1604,15 @@ input, textarea, select { font: inherit; color: inherit; }
     z-index: 5;
   }
 
+  .knowledge-mobile-back {
+    display: flex; align-items: center; gap: 4px;
+    padding: 10px var(--mobile-pad-x);
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    color: var(--text-2);
+    cursor: pointer;
+  }
+
   /* Reduced motion. */
   @media (prefers-reduced-motion: reduce) {
     .drawer, .sheet { animation: none !important; transition: none !important; }
