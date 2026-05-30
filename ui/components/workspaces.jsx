@@ -906,6 +906,7 @@ function WS_SessionsTab({ wid, onOpen }) {
 function WS_LogTab({ wid }) {
   const { useResource, apiFetch } = window.primerApi;
   const [limit, setLimit] = React.useState(50);
+  const [openSha, setOpenSha] = React.useState(null);
 
   const log = useResource(
     `workspace-log:${wid}:${limit}`,
@@ -919,7 +920,7 @@ function WS_LogTab({ wid }) {
     <div style={{ padding: 14 }}>
       <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
         <div className="muted text-sm">
-          <span className="mono">git log</span> of the workspace's <span className="mono">.state</span> repository · default limit 50, max 500
+          <span className="mono">git log</span> of <span className="mono">.state</span> · click a row to see the diff
         </div>
         <div style={{ marginLeft: "auto" }}>
           <Btn size="sm" kind="ghost" icon="refresh" onClick={log.refetch}>Refresh</Btn>
@@ -943,19 +944,15 @@ function WS_LogTab({ wid }) {
         <>
           <div style={{ position: "relative", paddingLeft: 18 }}>
             <div style={{ position: "absolute", left: 6, top: 6, bottom: 6, width: 1, background: "var(--border)" }}></div>
-            {commits.map((e) => {
-              const sha = (e.sha || e.id || "").slice(0, 7);
-              const at = e.committed_at || e.at;
-              const sec = at ? _wsAgeSec(at) : null;
-              return (
-                <div key={e.sha || e.id} style={{ position: "relative", padding: "6px 0 6px 16px", display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ position: "absolute", left: -4, top: 9, width: 11, height: 11, borderRadius: "50%", background: "var(--bg-2)", border: "2px solid var(--accent)" }}></div>
-                  <span className="mono" style={{ color: "var(--accent)", fontSize: 12, fontWeight: 500 }}>{sha}</span>
-                  {sec != null && <span className="muted mono text-sm">{relativeTime(sec)}</span>}
-                  <span style={{ fontSize: 12.5 }}>"{e.message || e.msg || ""}"</span>
-                </div>
-              );
-            })}
+            {commits.map((e) => (
+              <WS_LogRow
+                key={e.sha}
+                wid={wid}
+                commit={e}
+                expanded={openSha === e.sha}
+                onToggle={() => setOpenSha(openSha === e.sha ? null : e.sha)}
+              />
+            ))}
           </div>
           <div style={{ marginTop: 14, display: "flex", justifyContent: "center" }}>
             {limit < 500 && (
@@ -964,6 +961,144 @@ function WS_LogTab({ wid }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function WS_LogRow({ wid, commit, expanded, onToggle }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const sha = (commit.sha || "").slice(0, 7);
+  const at = commit.committed_at;
+  const sec = at ? _wsAgeSec(at) : null;
+  // Op chip colour by family.
+  const opColor = (
+    commit.op === "message" ? "var(--blue)"
+    : commit.op === "user_instruction" ? "var(--accent)"
+    : commit.op === "status_change" ? "var(--amber)"
+    : commit.op === "attach" ? "var(--text-3)"
+    : commit.op === "tool" ? "var(--violet)"
+    : "var(--text-3)"
+  );
+  const sessionShort = commit.session_id ? commit.session_id.slice(-10) : null;
+
+  return (
+    <div style={{ position: "relative", padding: "4px 0", marginBottom: 2 }}>
+      <div style={{ position: "absolute", left: -4, top: 11, width: 11, height: 11, borderRadius: "50%", background: "var(--bg-2)", border: "2px solid var(--accent)" }}></div>
+      <div
+        onClick={onToggle}
+        className="touch-target"
+        style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "6px 8px 6px 16px",
+          cursor: "pointer", borderRadius: 4,
+          background: expanded ? "var(--bg-hover)" : "transparent",
+        }}
+        title={`Click to ${expanded ? "collapse" : "expand"} the diff`}
+      >
+        <Icon name={expanded ? "chevron-down" : "chevron-right"} size={11} className="muted" />
+        <span className="mono" style={{ color: "var(--accent)", fontSize: 12, fontWeight: 500 }}>{sha}</span>
+        {commit.op && (
+          <span
+            className="mono"
+            style={{
+              fontSize: 10, padding: "1px 6px", borderRadius: 3,
+              background: "var(--bg-2)", color: opColor, border: `1px solid ${opColor}`,
+            }}
+          >{commit.op}</span>
+        )}
+        {commit.agent_id && (
+          <span className="mono text-sm" style={{ color: "var(--text-2)" }}>
+            <Icon name="agent" size={10} style={{ display: "inline", verticalAlign: "-1px" }} /> {commit.agent_id}
+          </span>
+        )}
+        {sessionShort && (
+          <span className="mono text-sm muted" title={commit.session_id}>
+            {sessionShort}
+          </span>
+        )}
+        {sec != null && <span className="muted mono text-sm">{relativeTime(sec)}</span>}
+        <span style={{ fontSize: 12.5, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {commit.subject || ""}
+        </span>
+      </div>
+      {expanded && <WS_CommitDiff wid={wid} sha={commit.sha} />}
+    </div>
+  );
+}
+
+function WS_CommitDiff({ wid, sha }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const diff = useResource(
+    `workspace-commit:${wid}:${sha}`,
+    (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(wid)}/commit/${encodeURIComponent(sha)}`, null, { signal }),
+    { deps: [wid, sha] }
+  );
+
+  if (diff.loading && !diff.data) {
+    return (
+      <div className="muted text-sm" style={{ padding: "8px 28px" }}>Loading diff…</div>
+    );
+  }
+  if (diff.error) {
+    return (
+      <div style={{ padding: "8px 28px" }}>
+        <Banner
+          kind="error"
+          title={diff.error.title || "Couldn't load diff"}
+          detail={diff.error.detail || diff.error.message}
+        />
+      </div>
+    );
+  }
+  const files = diff.data?.files || [];
+  if (files.length === 0) {
+    return (
+      <div className="muted text-sm" style={{ padding: "8px 28px" }}>
+        Trailer-only commit — no file changes.
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: "6px 28px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
+      {diff.data?.body && (
+        <pre className="mono text-sm muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+          {diff.data.body}
+        </pre>
+      )}
+      {files.map((f) => (
+        <div key={f.path} style={{ border: "1px solid var(--border)", borderRadius: 4 }}>
+          <div style={{ padding: "4px 8px", background: "var(--bg-2)", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid var(--border)" }}>
+            <span
+              className="mono"
+              style={{
+                fontSize: 10, padding: "0 5px", borderRadius: 2,
+                background: "var(--bg-1)",
+                color: (
+                  f.status === "A" ? "var(--green)"
+                  : f.status === "D" ? "var(--red)"
+                  : f.status === "M" ? "var(--blue)"
+                  : "var(--text-3)"
+                ),
+              }}
+            >{f.status}</span>
+            <span className="mono text-sm">{f.path}</span>
+          </div>
+          {f.patch ? (
+            <pre className="mono text-sm" style={{ margin: 0, padding: 8, overflow: "auto", maxHeight: 360, background: "var(--bg-1)" }}>
+              {f.patch.split("\n").map((line, i) => {
+                let color = "var(--text-2)";
+                if (line.startsWith("+") && !line.startsWith("+++")) color = "var(--green)";
+                else if (line.startsWith("-") && !line.startsWith("---")) color = "var(--red)";
+                else if (line.startsWith("@@")) color = "var(--violet)";
+                return (
+                  <div key={i} style={{ color }}>{line || " "}</div>
+                );
+              })}
+            </pre>
+          ) : (
+            <div className="muted text-sm" style={{ padding: 8 }}>(binary or no diff)</div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

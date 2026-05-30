@@ -109,8 +109,14 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
     async def _persist_turn(self, turn_messages: list[Message]) -> None:
         """Append ``turn_messages`` to ``messages.jsonl`` via ``commit_state``."""
         new_text = await self._appended_jsonl(turn_messages)
+        excerpt = _summary_excerpt_from_messages(turn_messages)
+        sid_short = self._session.session_id[-12:]
+        if excerpt:
+            subject = f"turn[{sid_short}]: {excerpt}"
+        else:
+            subject = f"turn[{sid_short}]: assistant turn"
         await self._session.commit_state(
-            summary=f"{self._session.session_id}: assistant turn",
+            summary=subject,
             op="message",
             files={"messages.jsonl": new_text},
         )
@@ -305,6 +311,52 @@ def _ends_with_question(text: str) -> bool:
 def _extract_question(text: str) -> str:
     """Return the trimmed text up to and including the trailing question mark."""
     return text.rstrip()
+
+
+_SUMMARY_MAX_CHARS = 72
+
+
+def _summary_excerpt_from_messages(messages: "list[Message]") -> str | None:
+    """Build a single-line excerpt from the turn's assistant text + any
+    tool-call surface, so the commit subject in ``git log`` is actually
+    informative.
+
+    Picks the LAST assistant message in ``messages`` and joins any text
+    parts; trims to ``_SUMMARY_MAX_CHARS`` characters with an ellipsis.
+    Falls back to listing the tool names called when there's no text
+    (pure tool-use turn). Returns ``None`` when neither is available.
+    """
+    last_assistant = None
+    for m in messages:
+        if getattr(m, "role", None) == "assistant":
+            last_assistant = m
+    if last_assistant is None:
+        return None
+
+    text_parts: list[str] = []
+    tool_names: list[str] = []
+    for part in last_assistant.parts:
+        t = getattr(part, "type", None) or part.__class__.__name__.lower()
+        text = getattr(part, "text", None)
+        if isinstance(text, str) and text.strip():
+            text_parts.append(text.strip())
+        # ToolCallPart-shaped: surface the tool name when there's no text.
+        tool_name = getattr(part, "tool_name", None) or getattr(part, "name", None)
+        if tool_name and "tool" in (t or "").lower():
+            tool_names.append(str(tool_name))
+
+    summary: str
+    if text_parts:
+        summary = " ".join(text_parts).replace("\n", " ").strip()
+    elif tool_names:
+        summary = "tool_use: " + ", ".join(tool_names)
+    else:
+        return None
+
+    summary = " ".join(summary.split())
+    if len(summary) > _SUMMARY_MAX_CHARS:
+        summary = summary[: _SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+    return summary
 
 
 __all__ = ["WorkspaceAgentExecutor"]

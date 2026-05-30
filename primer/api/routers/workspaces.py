@@ -809,6 +809,41 @@ async def workspace_log(
     return {"commits": [c.model_dump(mode="json") for c in commits]}
 
 
+@log_router.get(
+    "/workspaces/{workspace_id}/commit/{sha}",
+    summary="Show one commit: header + per-file unified diff",
+    responses=common_responses(404, 500),
+)
+async def workspace_show_commit(
+    workspace_id: str = Path(...),
+    sha: str = Path(..., min_length=7, max_length=64),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+) -> dict:
+    """Return the diff payload for a single commit in the workspace
+    state repo. The returned shape is
+    ``{sha, subject, body, parent, files: [{path, status, patch}]}``.
+    """
+    ws = await registry.get_workspace(workspace_id)
+    state_repo = getattr(ws, "_state", None)
+    show = getattr(state_repo, "show_commit", None) if state_repo else None
+    if show is None:
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "error": "not_implemented",
+                "message": (
+                    "Backend does not expose a state-repo show_commit "
+                    "hook. Only local + container-state backends support "
+                    "diff inspection today."
+                ),
+            },
+        )
+    try:
+        return await show(sha)
+    except FileNotFoundError as exc:
+        raise NotFoundError(str(exc)) from exc
+
+
 # ===========================================================================
 # Helpers
 # ===========================================================================

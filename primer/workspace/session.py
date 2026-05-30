@@ -369,9 +369,13 @@ class AgentSession:
             updated_info = self._info.model_copy(
                 update={"last_activity_at": now},
             )
+            sid_short = self.session_id[-12:]
+            excerpt = " ".join(content.split())
+            if len(excerpt) > 60:
+                excerpt = excerpt[:59].rstrip() + "…"
             await self._state.commit(
                 self.session_id,
-                summary=f"{self.session_id}: user_instruction",
+                summary=f"user[{sid_short}]: {excerpt}" if excerpt else f"user[{sid_short}]: user_instruction",
                 op="user_instruction",
                 files={
                     "messages.jsonl": new_messages_jsonl,
@@ -482,9 +486,10 @@ class AgentSession:
             ):
                 delete_files.append("waiting.json")
 
+            sid_short = self.session_id[-12:]
             await self._state.commit(
                 self.session_id,
-                summary=f"{self.session_id}: status_change ({status.value})",
+                summary=f"status[{sid_short}]: -> {status.value}",
                 op="status_change",
                 files=files,
                 delete_files=delete_files or None,

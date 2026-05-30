@@ -381,6 +381,100 @@ class LocalStateRepo:
         stdout, _ = await self._run_git(*args, allow_empty_repo=True)
         return _parse_log_records(stdout)
 
+    async def show_commit(self, sha: str) -> dict:
+        """Return ``{subject, body, parent, files: [{path, status, patch}]}``
+        for a single commit, ready to render as a diff view.
+
+        ``status`` is git's name-status code (``A``/``M``/``D``/``R``…).
+        ``patch`` is the unified diff payload for that file (text only —
+        binary files are surfaced with a ``<binary>`` placeholder so the
+        endpoint doesn't 500 on non-text blobs).
+        """
+        if not sha:
+            raise ValueError("sha must be non-empty")
+        # 1) Header: subject + parent.
+        try:
+            head_out, _ = await self._run_git(
+                "show",
+                "--no-patch",
+                "--format=%P%x1f%s%x1f%b",
+                sha,
+            )
+        except _GitCommandError as exc:
+            stderr = exc.stderr.lower()
+            if "unknown revision" in stderr or "bad revision" in stderr:
+                raise FileNotFoundError(f"commit {sha!r} not found") from exc
+            raise
+        header = head_out.strip("\n")
+        parent = subject = body = ""
+        if header:
+            parts = header.split("\x1f")
+            if len(parts) >= 1:
+                parent = parts[0].split(" ")[0] if parts[0] else ""
+            if len(parts) >= 2:
+                subject = parts[1]
+            if len(parts) >= 3:
+                body = "\x1f".join(parts[2:])
+        # 2) Per-file status + patch.
+        try:
+            ns_out, _ = await self._run_git(
+                "diff-tree",
+                "--no-commit-id",
+                "-r",
+                "--name-status",
+                sha,
+            )
+        except _GitCommandError:
+            ns_out = ""
+        files: list[dict] = []
+        for line in ns_out.splitlines():
+            line = line.rstrip()
+            if not line:
+                continue
+            try:
+                status, path = line.split("\t", 1)
+            except ValueError:
+                continue
+            files.append({"path": path, "status": status, "patch": ""})
+        # 3) Pull the patch and slot it onto each file entry.
+        try:
+            patch_out, _ = await self._run_git(
+                "show",
+                "--format=",
+                "--no-color",
+                sha,
+            )
+        except _GitCommandError:
+            patch_out = ""
+        # Split the unified diff by file boundaries (``diff --git`` lines).
+        # Each block lists the +++/--- header and the patch hunks.
+        cur_path: str | None = None
+        cur: list[str] = []
+        path_to_patch: dict[str, str] = {}
+        for raw in patch_out.splitlines():
+            if raw.startswith("diff --git"):
+                if cur_path is not None:
+                    path_to_patch[cur_path] = "\n".join(cur)
+                cur = [raw]
+                # diff --git a/<path> b/<path>
+                try:
+                    cur_path = raw.split(" b/", 1)[1].strip()
+                except IndexError:
+                    cur_path = None
+            else:
+                cur.append(raw)
+        if cur_path is not None:
+            path_to_patch[cur_path] = "\n".join(cur)
+        for f in files:
+            f["patch"] = path_to_patch.get(f["path"], "")
+        return {
+            "sha": sha,
+            "subject": subject,
+            "body": body.strip("\n"),
+            "parent": parent or None,
+            "files": files,
+        }
+
     async def read_at(self, sha: str, path: str) -> bytes:
         """Read a file from a historical commit.
 

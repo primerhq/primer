@@ -147,6 +147,23 @@ class _FakeAgentSession:
         )
 
 
+class _FakeStateRepo:
+    """Minimal stand-in exposing the show_commit hook the diff endpoint reads."""
+
+    async def show_commit(self, sha: str) -> dict:
+        if sha != "a" * 40:
+            raise FileNotFoundError(f"commit {sha!r} not found")
+        return {
+            "sha": sha,
+            "subject": "init",
+            "body": "",
+            "parent": None,
+            "files": [
+                {"path": "README.md", "status": "A", "patch": "+ hello\n"}
+            ],
+        }
+
+
 class _FakeWorkspace:
     def __init__(self, workspace_id: str) -> None:
         self.workspace_id = workspace_id
@@ -159,6 +176,8 @@ class _FakeWorkspace:
         # Test instrumentation for diagnostic_exec — tests assert the
         # route forwards (command, timeout_seconds) verbatim.
         self.diagnostic_calls: list[tuple[str, float]] = []
+        # state_repo stand-in for the diff endpoint.
+        self._state = _FakeStateRepo()
         self._diagnostic_raise: BaseException | None = None
 
     @property
@@ -1193,6 +1212,48 @@ class TestLogSubResource:
         body = resp.json()
         assert "commits" in body
         assert len(body["commits"]) >= 1
+
+    @pytest.mark.asyncio
+    async def test_show_commit_returns_diff(self, client, wsr) -> None:
+        """GET /v1/workspaces/{wid}/commit/{sha} returns the per-commit
+        diff payload (subject, parent, files: [{path, status, patch}])."""
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        post = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        wid = post.json()["id"]
+        log_resp = await client.get(f"/v1/workspaces/{wid}/log")
+        assert log_resp.status_code == 200
+        commits = log_resp.json()["commits"]
+        assert commits, "expected at least one commit in the seeded workspace"
+        sha = commits[0]["sha"]
+
+        resp = await client.get(f"/v1/workspaces/{wid}/commit/{sha}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["sha"] == sha
+        assert "subject" in body
+        assert "files" in body
+        assert isinstance(body["files"], list)
+
+    @pytest.mark.asyncio
+    async def test_show_commit_unknown_sha_404(self, client, wsr) -> None:
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        post = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        wid = post.json()["id"]
+        # A syntactically valid but nonexistent sha.
+        resp = await client.get(
+            f"/v1/workspaces/{wid}/commit/0000000000000000000000000000000000000000"
+        )
+        assert resp.status_code == 404
 
 
 # ===========================================================================
