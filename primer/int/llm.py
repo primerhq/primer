@@ -119,6 +119,27 @@ class LLM(ABC):
             ``fatal=True`` for failure) before closing.
         """
 
+    @abstractmethod
+    async def count_tokens(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> int:
+        """Estimate prompt token count for ``messages`` (+ optional tools).
+
+        Adapters MUST return a best-effort estimate. Preferred path is
+        the provider's native tokenizer or count API. A char-heuristic
+        fallback is acceptable when neither is available.
+
+        Used by :func:`primer.agent.compaction_mixin.should_compact`
+        to decide whether the next turn needs compaction before
+        dispatch. Called on the hot path, so adapters with
+        network-based counters (Anthropic, Gemini) MUST cache
+        aggressively.
+        """
+
     async def aclose(self) -> None:
         """Release backend resources held by this adapter.
 
