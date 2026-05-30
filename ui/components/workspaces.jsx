@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, relativeTime, fmtDate */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, MobileTabs, relativeTime, fmtDate */
 
 // Workspaces page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
@@ -53,8 +53,9 @@ function _wsToastErr(pushToast, fallbackTitle) {
 // ============================================================================
 
 function WorkspacesPage({ onOpen, pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
+  const { isMobile } = useViewport();
 
   const [createOpen, setCreateOpen] = React.useState(false);
   const [textQuery, setTextQuery] = React.useState("");
@@ -158,6 +159,28 @@ function WorkspacesPage({ onOpen, pushToast }) {
             </div>
           </div>
         </div>
+      ) : isMobile ? (
+        <CardList
+          items={filtered}
+          empty={
+            <span>
+              No workspaces match the current filter{textQuery ? ` "${textQuery}"` : ""}.
+              {" · "}<a
+                onClick={() => { setTextQuery(""); setTemplateFilter(""); setProviderFilter(""); }}
+                style={{ cursor: "pointer", color: "var(--accent)" }}
+              >Clear filters</a>
+            </span>
+          }
+          renderCard={(w) => (
+            <Card
+              title={w.id}
+              subtitle={`${w.template_id || "—"} · ${w.provider_id || "—"}`}
+              pill={<WS_PhasePill phase={w.phase} />}
+              meta={w.created_at ? relativeTime(_wsAgeSec(w.created_at)) : "—"}
+              onClick={() => openRow(w.id)}
+            />
+          )}
+        />
       ) : (
         <div className="tbl-wrap">
           <table className="tbl">
@@ -195,6 +218,10 @@ function WorkspacesPage({ onOpen, pushToast }) {
             </tbody>
           </table>
         </div>
+      )}
+
+      {isMobile && (
+        <Fab icon="plus" label="New workspace" onClick={() => setCreateOpen(true)} />
       )}
 
       {createOpen && (
@@ -314,8 +341,9 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
 const WS_TABS = ["files", "sessions", "log", "channels", "config", "destroy"];
 
 function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { params, query, navigate } = useRouter();
+  const { isMobile } = useViewport();
   const wid = workspaceId || params.id;
 
   const tab = WS_TABS.includes(query.tab) ? query.tab : "files";
@@ -359,6 +387,28 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
     return reason;
   })();
 
+  // Lifted tab-panel JSX — shared by the desktop tab strip and the mobile
+  // MobileTabs renderer below. Keeping panels in named locals avoids
+  // duplicating the wid/onOpen wiring across both views.
+  const filesPanel = <WS_FilesTab wid={wid} pushToast={pushToast} />;
+  const sessionsPanel = <WS_SessionsTab wid={wid} onOpen={onOpenSession} />;
+  const logPanel = <WS_LogTab wid={wid} />;
+  const channelsPanel = <WS_ChannelsTab wid={wid} pushToast={pushToast} />;
+  const configPanel = <WS_ConfigTab wid={wid} ws={ws} />;
+  const destroyPanel = <WS_DestroyTab wid={wid} pushToast={pushToast} sessionsForBadge={sessionsForBadge} />;
+
+  // Mobile tab id "logs" maps onto the desktop "log" tab content so the
+  // mobile/desktop label stays singular in routes while the spec-required
+  // detail tab id remains "logs".
+  const mobileTabs = [
+    { id: "files", label: "Files", content: filesPanel },
+    { id: "sessions", label: "Sessions", content: sessionsPanel },
+    { id: "logs", label: "Logs", content: logPanel },
+    { id: "config", label: "Config", content: configPanel },
+  ];
+  const mobileActive = query.tab === "logs" ? "logs"
+    : (mobileTabs.find((t) => t.id === tab) ? tab : "files");
+
   return (
     <div className="col" style={{ gap: 14 }}>
       {showFailureBanner && (
@@ -390,6 +440,13 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
           onClick={() => setDiagOpen(true)}
         >Run diagnostic</Btn>
       </div>
+      {isMobile ? (
+        <MobileTabs
+          tabs={mobileTabs}
+          active={mobileActive}
+          onSelect={(id) => setTab(id === "logs" ? "log" : id)}
+        />
+      ) : (
       <div className="panel">
         <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
           {tabs.map((t) => (
@@ -421,14 +478,15 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
           ))}
         </div>
         <div className="panel-body" style={{ padding: 0 }}>
-          {tab === "files" && <WS_FilesTab wid={wid} pushToast={pushToast} />}
-          {tab === "sessions" && <WS_SessionsTab wid={wid} onOpen={onOpenSession} />}
-          {tab === "log" && <WS_LogTab wid={wid} />}
-          {tab === "channels" && <WS_ChannelsTab wid={wid} pushToast={pushToast} />}
-          {tab === "config" && <WS_ConfigTab wid={wid} ws={ws} />}
-          {tab === "destroy" && <WS_DestroyTab wid={wid} pushToast={pushToast} sessionsForBadge={sessionsForBadge} />}
+          {tab === "files" && filesPanel}
+          {tab === "sessions" && sessionsPanel}
+          {tab === "log" && logPanel}
+          {tab === "channels" && channelsPanel}
+          {tab === "config" && configPanel}
+          {tab === "destroy" && destroyPanel}
         </div>
       </div>
+      )}
       {diagOpen && (
         <WS_DiagnosticModal workspaceId={wid} onClose={() => setDiagOpen(false)} />
       )}
