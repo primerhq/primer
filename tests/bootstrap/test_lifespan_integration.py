@@ -184,3 +184,79 @@ async def test_lifespan_starts_workspace_probe(tmp_db_path: Path) -> None:
         )
         assert isinstance(runner, asyncio.Task)
         assert not runner.done(), "probe runner should be active during lifespan"
+
+
+@pytest.mark.asyncio
+async def test_lifespan_recovers_running_session_into_claim_engine(
+    tmp_db_path: Path,
+) -> None:
+    """A RUNNING WorkspaceSession row persisted before this process must
+    be re-armed in the claim engine on startup. This is Bug 1 from the
+    diagnostic report: without this, sessions created in a prior api
+    process are invisible to the worker pool forever after a restart.
+    """
+    from datetime import datetime, timezone
+
+    from primer.int.claim import ClaimKind
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        SessionStatus,
+        WorkspaceSession,
+    )
+
+    # Recovery needs a claim engine — that requires a scheduler. Use
+    # API-only mode + an explicit scheduler config so the engine is
+    # wired but no worker pool runs (otherwise the worker would claim
+    # the recovered lease immediately and drop it on the workspace
+    # lookup failure, defeating the assertion below).
+    from primer.model.scheduler import (
+        InMemorySchedulerConfig,
+        SchedulerProviderConfig,
+        SchedulerProviderType,
+    )
+
+    def _cfg() -> AppConfig:
+        return AppConfig(
+            runtime_mode=RuntimeMode.API,
+            auto_bootstrap=True,
+            scheduler=SchedulerProviderConfig(
+                provider=SchedulerProviderType.IN_MEMORY,
+                config=InMemorySchedulerConfig(),
+            ),
+            db=StorageProviderConfig(
+                provider=StorageProviderType.SQLITE,
+                config=SqliteConfig(path=tmp_db_path),
+            ),
+        )
+
+    # ---- Boot #1: seed a RUNNING session row directly via storage ----
+    app1 = create_app(_cfg())
+    async with app1.router.lifespan_context(app1):
+        sp = app1.state.storage_provider
+        storage = sp.get_storage(WorkspaceSession)
+        sess = WorkspaceSession(
+            id="sess-recovered",
+            workspace_id="ws-from-prior-boot",
+            binding=AgentSessionBinding(agent_id="ag-x"),
+            status=SessionStatus.RUNNING,
+            created_at=datetime.now(timezone.utc),
+            started_at=datetime.now(timezone.utc),
+        )
+        await storage.create(sess)
+
+    # ---- Boot #2: same DB, the recovery loop should pick up the row ----
+    app2 = create_app(_cfg())
+    async with app2.router.lifespan_context(app2):
+        engine = app2.state.claim_engine
+        assert engine is not None, (
+            "expected app.state.claim_engine to be wired in API_PLUS_WORKER mode"
+        )
+        # In-memory engine exposes ._leases as the source of truth; the
+        # post-recovery state should include a lease for the row.
+        leases = getattr(engine, "_leases", None)
+        assert leases is not None, (
+            "in-memory claim engine should expose ._leases"
+        )
+        assert (ClaimKind.SESSION, "sess-recovered") in leases, (
+            f"recovered lease not in engine; got keys: {list(leases.keys())}"
+        )

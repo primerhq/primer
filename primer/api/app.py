@@ -458,6 +458,68 @@ def _make_lifespan(config: AppConfig):
         app.state.event_bus = event_bus
         app.state.claim_engine = claim_engine
 
+        # --- Session recovery on startup -----------------------------------
+        # The claim engine + scheduler are in-memory; their state does NOT
+        # survive a process restart. Persisted WorkspaceSession rows DO.
+        # Scan for non-ENDED rows and re-arm the engine so workers can
+        # claim them again. Without this, a session created in the
+        # previous process sits at status=RUNNING forever with no owner
+        # — the diagnostic-report Bug 1.
+        if claim_engine is not None:
+            try:
+                from primer.int.claim import ClaimKind as _ClaimKind
+                from primer.model.storage import OffsetPage as _OffsetPage
+                from primer.model.workspace_session import (
+                    SessionStatus as _SessionStatus,
+                    WorkspaceSession as _WorkspaceSession,
+                )
+
+                _session_storage = storage_provider.get_storage(_WorkspaceSession)
+                _recovered_running = 0
+                _recovered_other = 0
+                _offset = 0
+                while True:
+                    _page = await _session_storage.list(
+                        _OffsetPage(offset=_offset, length=200)
+                    )
+                    _items = list(_page.items)
+                    for _sess in _items:
+                        if _sess.status == _SessionStatus.ENDED:
+                            continue
+                        try:
+                            await claim_engine.upsert(_ClaimKind.SESSION, _sess.id)
+                            if _sess.status == _SessionStatus.RUNNING:
+                                # Also notify the scheduler — Postgres
+                                # enqueue is pg_notify-only; in-memory is
+                                # idempotent.
+                                try:
+                                    await scheduler.enqueue(_sess.id)
+                                except Exception:  # noqa: BLE001
+                                    logger.debug(
+                                        "session recovery: scheduler.enqueue "
+                                        "failed for %s (lease will still be "
+                                        "claimable)", _sess.id, exc_info=True,
+                                    )
+                                _recovered_running += 1
+                            else:
+                                _recovered_other += 1
+                        except Exception:
+                            logger.exception(
+                                "session recovery: failed to upsert lease "
+                                "for %s", _sess.id,
+                            )
+                    if len(_items) < 200:
+                        break
+                    _offset += 200
+                if _recovered_running or _recovered_other:
+                    logger.info(
+                        "lifespan: session recovery — re-armed %d RUNNING + "
+                        "%d non-RUNNING leases from persisted state",
+                        _recovered_running, _recovered_other,
+                    )
+            except Exception:  # noqa: BLE001 -- never break startup
+                logger.exception("lifespan: session recovery failed")
+
         # --- Observability: claim queue-depth sampler ----------------------
         # Runs every 10s when the claim engine is Postgres-backed and
         # metrics are enabled.  In-memory engine doesn't need it (the

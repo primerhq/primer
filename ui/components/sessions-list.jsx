@@ -195,13 +195,14 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
     }
   };
 
-  const _deleteOne = async (s) => {
+  const _deleteOne = async (s, { force = false } = {}) => {
     if (inFlightRef.current.has(s.id)) return;
     _markInFlight(s.id, true);
     try {
+      const qs = force ? "?force=true" : "";
       await apiFetch(
         "DELETE",
-        `/workspaces/${encodeURIComponent(s.workspace_id)}/sessions/${encodeURIComponent(s.id)}`,
+        `/workspaces/${encodeURIComponent(s.workspace_id)}/sessions/${encodeURIComponent(s.id)}${qs}`,
       );
       setSelected((prev) => {
         if (!prev.has(s.id)) return prev;
@@ -209,14 +210,28 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
         next.delete(s.id);
         return next;
       });
-      _toast({ kind: "success", title: "Session deleted", detail: s.id });
+      _toast({
+        kind: "success",
+        title: force ? "Session force-deleted" : "Session deleted",
+        detail: s.id,
+      });
       list.refetch();
     } catch (err) {
-      _toast({
-        kind: "error",
-        title: "Delete failed",
-        detail: (err && (err.detail || err.message)) || String(err),
-      });
+      // 409 on a RUNNING row means we hit the no-force gate. Offer the
+      // user the force path via a follow-up toast button.
+      if (err && err.status === 409 && !force) {
+        _toast({
+          kind: "warning",
+          title: "Session is running",
+          detail: "Cancel it first, or force-delete to evict an orphaned row.",
+        });
+      } else {
+        _toast({
+          kind: "error",
+          title: "Delete failed",
+          detail: (err && (err.detail || err.message)) || String(err),
+        });
+      }
     } finally {
       _markInFlight(s.id, false);
     }
@@ -252,11 +267,14 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
     // Delete is allowed on every status except RUNNING — the server
     // auto-cancels CREATED/WAITING/PAUSED inline before removing the
     // row. Cancel stays available on every non-terminal status so the
-    // user can stop a RUNNING worker without leaving the list.
+    // user can stop a RUNNING worker without leaving the list. The
+    // force-delete affordance only renders on RUNNING rows — it's the
+    // escape hatch when a worker died mid-turn and the row is stuck.
     const canDelete = s.status !== "running";
     const canCancel = SL_NON_TERMINAL.has(s.status);
+    const canForceDelete = s.status === "running";
     const stop = (e) => e.stopPropagation();
-    if (!canDelete && !canCancel) return null;
+    if (!canDelete && !canCancel && !canForceDelete) return null;
     const style = layout === "card"
       ? { display: "inline-flex", gap: 6 }
       : { display: "inline-flex", gap: 4, justifyContent: "flex-end" };
@@ -282,6 +300,25 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
             aria-label={`Delete session ${s.id}`}
             disabled={busy}
             onClick={(e) => { stop(e); _deleteOne(s); }}
+          >
+            <Icon name="trash" size={12} />
+          </button>
+        )}
+        {canForceDelete && (
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost touch-target"
+            title="Force-delete (evict orphaned row)"
+            aria-label={`Force-delete session ${s.id}`}
+            disabled={busy}
+            onClick={(e) => {
+              stop(e);
+              if (window.confirm(
+                `Force-delete ${s.id}? Only do this when no worker is actually executing — used to evict orphaned rows after an API restart.`
+              )) {
+                _deleteOne(s, { force: true });
+              }
+            }}
           >
             <Icon name="trash" size={12} />
           </button>

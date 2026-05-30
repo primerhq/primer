@@ -30,6 +30,7 @@ from primer.int.storage_provider import StorageProvider
 from primer.model.workspace_session import (
     SessionMessageKind,
     SessionMessageRecord,
+    SessionStatus,
     WorkspaceSession,
 )
 from primer.model.yield_ import YieldToWorker
@@ -95,6 +96,23 @@ async def run_one_session_turn(
     if session is None:
         logger.warning("session %s vanished before dispatch", session_id)
         return ReleaseOutcome(success=False, drop_lease=True)
+
+    # Early-exit checks that don't need an executor:
+    # * If the row is already ENDED (lease leaked through somehow) just
+    #   drop the lease; nothing to do.
+    # * If cancel_requested is set on the row — set by REST cancel before
+    #   any worker observed it, or carried over from a previous process
+    #   that died mid-turn — transition to ENDED/cancelled without
+    #   running another turn. This is what makes "I cancelled it but
+    #   nothing happened" actually terminate after the api restarts.
+    if session.status == SessionStatus.ENDED:
+        return ReleaseOutcome(success=True, drop_lease=True)
+    if session.cancel_requested:
+        session.status = SessionStatus.ENDED
+        session.ended_reason = "cancelled"
+        session.ended_at = _now()
+        await session_storage.update(session)
+        return ReleaseOutcome(success=True, drop_lease=True)
 
     # ------------------------------------------------------------------
     # 2. Build executor

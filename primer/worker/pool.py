@@ -675,11 +675,17 @@ class WorkerPool:
         """Callable passed as ``SessionDispatchDeps.build_executor``.
 
         Resolves the workspace for ``session.workspace_id`` then delegates
-        to :meth:`_build_executor`.  The returned executor exposes an
-        ``invoke(messages)`` async-generator of :class:`StreamEvent`s.
+        to :meth:`_build_executor`. The dispatch path consumes the
+        executor's streaming ``invoke()`` via ``async for``, so we
+        unwrap the legacy ``_TurnDriver``/``_GraphTurnDriver`` shim
+        (which exposes ``invoke`` as a non-iterable coroutine for the
+        old ``_run_one_turn`` path) and return the underlying streaming
+        executor.
         """
         workspace = await self._load_workspace_for_persist(session.workspace_id)
-        return await self._build_executor(session, workspace)
+        wrapped = await self._build_executor(session, workspace)
+        inner = getattr(wrapped, "_executor", None)
+        return inner if inner is not None else wrapped
 
     async def _build_agent_executor(self, session: WorkspaceSession, workspace):
         """Build a turn-driver around :class:`WorkspaceAgentExecutor`.

@@ -396,3 +396,82 @@ async def test_each_record_gets_a_tick(
     assert len(lines) == 1
     assert len(ticks) == 1
     assert ticks[0]["seq"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_requested_on_entry_ends_without_executor(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """A row that already carries cancel_requested=True must transition
+    to ENDED/cancelled at the start of dispatch — the executor must
+    never be invoked. This is what makes a cancel issued before the
+    api restart actually land after recovery."""
+    # Flip the row's cancel flag on disk.
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    seeded_session.cancel_requested = True
+    seeded_session.cancel_requested_at = _now()
+    await storage.update(seeded_session)
+
+    executor_called = False
+
+    async def _build_executor(session: WorkspaceSession):
+        nonlocal executor_called
+        executor_called = True
+        return FakeExecutor([])
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.success is True
+    assert outcome.drop_lease is True
+    assert not executor_called, (
+        "executor must NOT be built when cancel_requested is set on entry"
+    )
+    # Row transitioned to ENDED/cancelled.
+    row = await storage.get(seeded_session.id)
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "cancelled"
+    assert row.ended_at is not None
+
+
+@pytest.mark.asyncio
+async def test_already_ended_row_drops_lease_without_executor(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """A row that's already ENDED on entry must not be re-executed."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    seeded_session.status = SessionStatus.ENDED
+    seeded_session.ended_reason = "completed"
+    seeded_session.ended_at = _now()
+    await storage.update(seeded_session)
+
+    executor_called = False
+
+    async def _build_executor(session: WorkspaceSession):
+        nonlocal executor_called
+        executor_called = True
+        return FakeExecutor([])
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.drop_lease is True
+    assert not executor_called
