@@ -118,13 +118,15 @@ async def test_disconnect_mid_stream_then_reconnect_replays(
         cid = r.json()["id"]
         # First WS: send + receive a couple frames, then close.
         with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+            assert ws.receive_json()["kind"] == "usage"  # initial usage frame
             ws.send_json({"kind": "user_message", "content": "hi"})
             ws.receive_json()  # user_message echo
             ws.receive_json()  # first assistant_token
             # Drop the socket here.
         # Wait for the worker to finish on its own.
         time.sleep(0.6)
-        # Reconnect with cursor=0; replay should include all four tokens + done.
+        # Reconnect with cursor=0; replay sends user+4 tokens+done,
+        # then the post-replay initial usage frame fires.
         with sclient.websocket_connect(f"/v1/chats/{cid}/ws?cursor=0") as ws:
             kinds = []
             for _ in range(6):  # user + 4 tokens + done
@@ -161,6 +163,7 @@ async def test_interrupt_cancels_in_flight_turn(
         r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
         cid = r.json()["id"]
         with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+            assert ws.receive_json()["kind"] == "usage"  # initial usage frame
             ws.send_json({"kind": "user_message", "content": "hi"})
             ws.receive_json()  # user_message
             ws.receive_json()  # one token
@@ -192,9 +195,10 @@ async def test_queued_user_messages_processed_fifo(
         r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
         cid = r.json()["id"]
         with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+            assert ws.receive_json()["kind"] == "usage"  # initial usage frame
             for n in range(3):
                 ws.send_json({"kind": "user_message", "content": f"q{n}"})
-            # Drain — each turn = user + token + done = 3 frames.
+            # Drain — each turn = user + token + done + usage = 4 frames.
             kinds = []
             while True:
                 try:

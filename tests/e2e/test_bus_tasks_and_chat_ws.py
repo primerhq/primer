@@ -347,20 +347,24 @@ async def test_t0792_chat_ws_reconnect_with_cursor_replays_missed_messages(
 
         # Connection 1: drive a turn → 3 rows seq 1..3.
         async with websockets.connect(ws_url) as ws:
+            # Spec §6.4: initial ``usage`` frame after accept().
+            initial = json.loads(await ws.recv())
+            assert initial["kind"] == "usage", initial
             await ws.send(json.dumps(
                 {"kind": "user_message", "content": "hello"}
             ))
             seen_kinds_1: list[str] = []
-            for _ in range(3):
+            for _ in range(4):  # user / assistant / done / usage
                 msg = json.loads(await ws.recv())
                 seen_kinds_1.append(msg["kind"])
             assert seen_kinds_1 == [
-                "user_message", "assistant_token", "done",
+                "user_message", "assistant_token", "done", "usage",
             ], seen_kinds_1
             # Settle delay so the runner's writes commit before WS close.
             await asyncio.sleep(0.2)
 
-        # Connection 2: ?cursor=0 → server replays all 3 rows in order.
+        # Connection 2: ?cursor=0 → server replays all 3 rows in order,
+        # then sends the initial ``usage`` envelope.
         async with websockets.connect(
             f"{ws_url}?cursor=0",
         ) as ws2:
@@ -377,6 +381,11 @@ async def test_t0792_chat_ws_reconnect_with_cursor_replays_missed_messages(
             assert kinds == [
                 "user_message", "assistant_token", "done",
             ], kinds
+            # Post-replay initial usage envelope.
+            initial2 = json.loads(await asyncio.wait_for(
+                ws2.recv(), timeout=3.0,
+            ))
+            assert initial2["kind"] == "usage", initial2
 
             # Connection accepts new live messages after replay.
             await ws2.send(json.dumps(
@@ -390,6 +399,11 @@ async def test_t0792_chat_ws_reconnect_with_cursor_replays_missed_messages(
             live_seqs = [m["seq"] for m in live]
             # Seqs continue from 4.
             assert live_seqs == [4, 5, 6], f"live seqs: {live_seqs}"
+            # Trailing usage after second turn's done row.
+            tail2 = json.loads(await asyncio.wait_for(
+                ws2.recv(), timeout=3.0,
+            ))
+            assert tail2["kind"] == "usage", tail2
             await asyncio.sleep(0.2)
     finally:
         await _cleanup(client, cleanup_urls)

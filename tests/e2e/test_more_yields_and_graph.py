@@ -113,15 +113,18 @@ async def test_t0766_chat_messages_after_seq_filter(
 
         async def _send_one(text: str) -> None:
             async with websockets.connect(ws_url) as ws:
+                # Spec §6.4: drain the initial ``usage`` envelope first.
+                initial = json.loads(await ws.recv())
+                assert initial["kind"] == "usage", initial
                 await ws.send(json.dumps(
                     {"kind": "user_message", "content": text}
                 ))
-                # Consume 3 messages (user_message + assistant_token + done).
+                # Consume 4 messages (user + assistant + done + usage).
                 received: list[dict] = []
-                for _ in range(3):
+                for _ in range(4):
                     msg = await ws.recv()
                     received.append(json.loads(msg))
-                # Ensure all 3 kinds arrived (defensive in case the
+                # Ensure all 4 kinds arrived (defensive in case the
                 # runner's row ordering changes).
                 kinds = [m["kind"] for m in received]
                 assert "done" in kinds, f"got {kinds}, expected done"

@@ -319,6 +319,11 @@ async def test_t0811_chat_ws_interrupt_persists_error_row(
         ws_url = f"{ws_origin}/v1/chats/{cid}/ws"
 
         async with websockets.connect(ws_url) as ws:
+            # Spec §6.4: drain the initial ``usage`` envelope first.
+            initial = json.loads(
+                await asyncio.wait_for(ws.recv(), timeout=3.0)
+            )
+            assert initial["kind"] == "usage", initial
             await ws.send(json.dumps({"kind": "interrupt"}))
             # Server sends back the error row.
             msg = json.loads(

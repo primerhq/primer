@@ -329,8 +329,9 @@ class TestChatTitle:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "user_message", "content": "Hello agent, can you help me?"})
-                for _ in range(3):  # user / assistant / done
+                for _ in range(4):  # user / assistant / done / usage
                     ws.receive_json()
             # Fetch the chat row back through REST — title now stamped.
             r2 = sclient.get(f"/v1/chats/{cid}")
@@ -352,8 +353,9 @@ class TestChatTitle:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "user_message", "content": long_text})
-                for _ in range(3):
+                for _ in range(4):  # user / assistant / done / usage
                     ws.receive_json()
             title = sclient.get(f"/v1/chats/{cid}").json()["title"]
         assert title.endswith("…")
@@ -374,11 +376,12 @@ class TestChatTitle:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "user_message", "content": "first message"})
-                for _ in range(3):
+                for _ in range(4):  # user / assistant / done / usage
                     ws.receive_json()
                 ws.send_json({"kind": "user_message", "content": "different topic now"})
-                for _ in range(3):
+                for _ in range(4):  # user / assistant / done / usage
                     ws.receive_json()
             # Title still reflects the first message — operators don't
             # want the list label drifting as the conversation evolves.
@@ -401,11 +404,12 @@ class TestChatTitle:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({
                     "kind": "user_message",
                     "parts": [{"type": "image", "data": png_b64, "mime_type": "image/png"}],
                 })
-                for _ in range(3):
+                for _ in range(4):  # user / assistant / done / usage
                     ws.receive_json()
             assert sclient.get(f"/v1/chats/{cid}").json()["title"] == "[attachment]"
 
@@ -427,9 +431,10 @@ class TestChatWebSocket:
             assert r.status_code == 201
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "user_message", "content": "hi"})
                 got: list[dict] = []
-                for _ in range(3):  # user_message + assistant_token + done
+                for _ in range(4):  # user_message + assistant_token + done + usage
                     got.append(ws.receive_json())
                 assert got[0]["kind"] == "user_message"
                 assert got[0]["content"] == "hi"
@@ -437,6 +442,7 @@ class TestChatWebSocket:
                 assert got[1]["delta"] == "hello back"
                 assert got[2]["kind"] == "done"
                 assert got[2]["stop_reason"] == "stop"
+                assert got[3]["kind"] == "usage"  # post-done usage refresh
         # The fake LLM should have been invoked exactly once for this
         # one-turn chat, with the user message as the prompt's tail.
         assert len(fake_llm.calls) == 1
@@ -455,10 +461,12 @@ class TestChatWebSocket:
             cid = r.json()["id"]
             # Run one turn so the chat has some history.
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "user_message", "content": "first"})
-                for _ in range(3):
+                for _ in range(4):  # user / assistant / done / usage
                     ws.receive_json()
-            # Reconnect with cursor=0 — must replay all 3 messages.
+            # Reconnect with cursor=0 — replay sends rows 1..3, then
+            # the initial usage frame fires after the replay completes.
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws?cursor=0") as ws:
                 replayed: list[dict] = []
                 for _ in range(3):
@@ -467,6 +475,8 @@ class TestChatWebSocket:
                     "user_message", "assistant_token", "done",
                 ]
                 assert [m["seq"] for m in replayed] == [1, 2, 3]
+                # The post-replay initial usage frame should follow.
+                assert ws.receive_json()["kind"] == "usage"
 
     async def test_ws_skips_replay_when_cursor_at_last_seq(
         self, app, seeded_agent,
@@ -479,16 +489,20 @@ class TestChatWebSocket:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "user_message", "content": "first"})
-                for _ in range(3):
+                for _ in range(4):  # user / assistant / done / usage
                     ws.receive_json()
             # Reconnect with cursor=3 — no replay; the client supplies
             # the next user_message and gets a fresh stream.
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws?cursor=3") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "user_message", "content": "second"})
                 got = [ws.receive_json() for _ in range(3)]
                 # seqs continue from 4: user_message=4, token=5, done=6
                 assert [m["seq"] for m in got] == [4, 5, 6]
+                # Tail usage frame after done.
+                assert ws.receive_json()["kind"] == "usage"
 
     async def test_ws_ping_returns_pong(self, app, seeded_agent):
         from starlette.testclient import TestClient as SyncTestClient
@@ -499,6 +513,7 @@ class TestChatWebSocket:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "ping"})
                 msg = ws.receive_json()
                 assert msg == {"kind": "pong"}
@@ -528,6 +543,7 @@ class TestChatWebSocket:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({
                     "kind": "user_message",
                     "content": "what's in this?",
@@ -540,6 +556,8 @@ class TestChatWebSocket:
                     ],
                 })
                 got = [ws.receive_json() for _ in range(3)]
+                # Drain the post-done usage frame.
+                assert ws.receive_json()["kind"] == "usage"
 
         # Frame 0: user_message echo carries both flattened content
         # and the structured parts list.
@@ -608,6 +626,7 @@ class TestChatWebSocket:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({
                     "kind": "user_message",
                     "content": "what's in this?",
@@ -616,7 +635,8 @@ class TestChatWebSocket:
                     ],
                 })
                 # Expect: user_message echo, then an error row with the
-                # friendly diagnosis.
+                # friendly diagnosis. Stream aborts before ``done`` so
+                # no trailing usage frame.
                 user_msg = ws.receive_json()
                 err = ws.receive_json()
 
@@ -680,6 +700,7 @@ class TestChatWebSocket:
                 "[400 invalid_union] Invalid type for 'input'."
             )
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({
                     "kind": "user_message",
                     "content": "describe this",
@@ -695,6 +716,7 @@ class TestChatWebSocket:
             fake_llm.raise_on_stream = None
             fake_llm._reply_text = "Sure, what would you like to know?"
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws?cursor=2") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "user_message", "content": "still there?"})
                 got = [ws.receive_json() for _ in range(3)]
             kinds = [g["kind"] for g in got]
@@ -732,6 +754,7 @@ class TestChatWebSocket:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "user_message", "content": "hello"})
                 _user_msg = ws.receive_json()
                 err = ws.receive_json()
@@ -753,6 +776,7 @@ class TestChatWebSocket:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({
                     "kind": "user_message",
                     "parts": [{"type": "image", "mime_type": "image/png"}],
@@ -770,6 +794,7 @@ class TestChatWebSocket:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "user_message", "content": "   "})
                 msg = ws.receive_json()
                 assert msg["kind"] == "error"
@@ -783,6 +808,7 @@ class TestChatWebSocket:
             r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
             cid = r.json()["id"]
             with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
                 ws.send_json({"kind": "totally_bogus"})
                 msg = ws.receive_json()
                 assert msg["kind"] == "error"
@@ -901,8 +927,9 @@ async def test_claim_engine_upsert_called_on_user_message(
         assert r.status_code == 201, r.text
         cid = r.json()["id"]
         with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+            assert ws.receive_json()["kind"] == "usage"  # initial usage frame
             ws.send_json({"kind": "user_message", "content": "hello engine"})
-            for _ in range(3):
+            for _ in range(4):  # user / assistant / done / usage
                 ws.receive_json()
 
     # engine.upsert must have been called with kind=CHAT, chat_id, priority=10

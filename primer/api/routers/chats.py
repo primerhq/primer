@@ -542,6 +542,35 @@ def _usage_envelope(chat_id: str, context_length: int) -> dict[str, Any]:
     }
 
 
+async def _resolve_context_length(sp, chat_id: str) -> int:
+    """Resolve the agent's model ``context_length`` for a chat.
+
+    Walks ``chat → agent → llm_provider → model`` and returns the
+    model's ``context_length``. Returns 0 on any missing link — the
+    ``usage`` envelope just degrades to ``used_pct=0.0`` rather than
+    failing the WS upgrade. Cached once per WS session in
+    :func:`chat_ws` so we don't re-resolve every turn.
+    """
+    chat_storage = sp.get_storage(Chat)
+    chat = await chat_storage.get(chat_id)
+    if chat is None or not chat.agent_id:
+        return 0
+    agent = await sp.get_storage(Agent).get(chat.agent_id)
+    if agent is None or agent.model is None:
+        return 0
+    provider_id = agent.model.provider_id
+    model_name = agent.model.model_name
+    if not provider_id or not model_name:
+        return 0
+    provider_row = await sp.get_storage(LLMProvider).get(provider_id)
+    if provider_row is None:
+        return 0
+    for m in provider_row.models:
+        if m.name == model_name:
+            return m.context_length
+    return 0
+
+
 def _message_to_wire(msg: ChatMessage) -> dict[str, Any]:
     """Render a :class:`ChatMessage` for the WebSocket protocol.
 
@@ -633,6 +662,22 @@ async def chat_ws(
             except WebSocketDisconnect:
                 return
 
+            # Resolve context_length once for this session; cheap, but
+            # the lookup walks three storage rows. The cached usage
+            # counters live in primer.chat.usage_cache and are updated
+            # by ChatTurnRunner after every Usage event.
+            context_length = await _resolve_context_length(sp, chat_id)
+
+            # Spec §6.4: send an initial ``usage`` frame so the
+            # client's TokenMeter renders immediately on connect,
+            # even if no turn has run yet (counters → zeros).
+            try:
+                await websocket.send_json(
+                    _usage_envelope(chat_id, context_length),
+                )
+            except WebSocketDisconnect:
+                return
+
             tick_sub = chat_tick_router.subscribe(chat_id)
             try:
                 recv_task = asyncio.ensure_future(
@@ -645,6 +690,7 @@ async def chat_ws(
                     _send_loop_instrumented(
                         websocket, chat_id, messages_storage, tick_sub, last_seq,
                         kind="chat",
+                        context_length=context_length,
                     )
                 )
                 try:
@@ -854,8 +900,14 @@ async def _send_loop_instrumented(
     last_sent_seq: int,
     *,
     kind: str,
+    context_length: int = 0,
 ) -> None:
-    """Wrapper around :func:`_send_loop` that increments the frames-sent counter."""
+    """Wrapper around :func:`_send_loop` that increments the frames-sent counter.
+
+    Also re-emits a ``usage`` envelope after every ``done`` row so the
+    UI's TokenMeter stays in sync with the cached counters that
+    :class:`ChatTurnRunner` updates from Usage events.
+    """
     from primer.model.storage import OffsetPage
 
     async for tick in tick_sub:
@@ -876,6 +928,11 @@ async def _send_loop_instrumented(
             try:
                 await websocket.send_json(_message_to_wire(row))
                 _metrics.ws_frames_sent_total.labels(kind).inc()
+                if row.kind == "done":
+                    await websocket.send_json(
+                        _usage_envelope(chat_id, context_length),
+                    )
+                    _metrics.ws_frames_sent_total.labels(kind).inc()
             except WebSocketDisconnect:
                 return
             last_sent_seq = row.seq

@@ -1,9 +1,8 @@
 """Unit tests for the WS envelope encoders (spec §6.4).
 
 Pure-function tests against ``_compaction_envelope`` /
-``_usage_envelope`` / ``_message_to_wire`` — no FastAPI test client,
-no WebSocket connection. The end-to-end WS verification belongs to
-the e2e journey suite (T14.1).
+``_usage_envelope`` / ``_message_to_wire`` plus a bounded WS-client
+test that pins the initial ``usage`` envelope on connect.
 """
 
 from __future__ import annotations
@@ -11,14 +10,26 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+import pytest_asyncio
+from fastapi import FastAPI
+from pydantic import SecretStr
 
+from primer.api.app import create_test_app
 from primer.api.routers.chats import (
     _compaction_envelope,
     _message_to_wire,
     _usage_envelope,
 )
 from primer.chat.usage_cache import reset_cache, set_usage
+from primer.model.agent import Agent, AgentModel
 from primer.model.chats import ChatMessage
+from primer.model.provider import (
+    AnthropicConfig,
+    Limits,
+    LLMModel,
+    LLMProvider,
+    LLMProviderType,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -128,3 +139,98 @@ class TestMessageToWireRouting:
         )
         wire = _message_to_wire(row)
         assert wire == {"kind": "assistant_token", "seq": 7, "delta": "hello"}
+
+
+# ---------------------------------------------------------------------------
+# End-to-end WS handshake test: confirms the initial usage envelope arrives
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def envelope_app(fake_storage_provider, fake_provider_registry) -> FastAPI:
+    """App fixture for the initial-usage WS test.
+
+    Uses ``start_chat_worker=True`` to match the test_chats.py setup
+    that drives auth + WS through SyncTestClient; the worker pool is
+    not exercised by this test (we never send a user_message), but
+    the attached lifespan ensures the event_bus / tick router are
+    wired correctly when SyncTestClient runs the app.
+    """
+    return create_test_app(
+        storage_provider=fake_storage_provider,
+        provider_registry=fake_provider_registry,
+        start_chat_worker=True,
+    )
+
+
+@pytest_asyncio.fixture
+async def envelope_seeded_agent(envelope_app: FastAPI) -> Agent:
+    sp = envelope_app.state.storage_provider
+    await sp.get_storage(LLMProvider).create(
+        LLMProvider(
+            id="llm-env",
+            provider=LLMProviderType.ANTHROPIC,
+            models=[LLMModel(name="m-env", context_length=12_345)],
+            config=AnthropicConfig(api_key=SecretStr("test-only")),
+            limits=Limits(max_concurrency=1),
+        ),
+    )
+    agent = Agent(
+        id="ag-env",
+        description="envelope-test agent",
+        model=AgentModel(provider_id="llm-env", model_name="m-env"),
+        tools=[],
+        system_prompt=[],
+    )
+    await sp.get_storage(Agent).create(agent)
+    return agent
+
+
+class TestUsageEnvelopeOnConnect:
+    """Pin the spec §6.4 initial ``usage`` frame contract end-to-end."""
+
+    def test_initial_usage_frame_appears_in_first_frames(
+        self, envelope_app, envelope_seeded_agent,
+    ) -> None:
+        """Connect, receive the initial ``usage`` envelope, then use a
+        ping/pong round trip as a bounded sync barrier so we never
+        wait open-ended on a frame that might not come (that's how
+        the earlier T10.1 attempt wedged for 6 hours).
+        """
+        from starlette.testclient import TestClient as SyncTestClient
+
+        with SyncTestClient(envelope_app) as sclient:
+            sclient.post(
+                "/v1/auth/register",
+                json={"username": "envuser", "password": "envpass123"},
+            )
+            sclient.post(
+                "/v1/auth/login",
+                json={"username": "envuser", "password": "envpass123"},
+            )
+            r = sclient.post("/v1/chats", json={"agent_id": "ag-env"})
+            assert r.status_code == 201, r.text
+            cid = r.json()["id"]
+
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                frames: list[dict] = []
+                # First frame must be the initial usage envelope.
+                frames.append(ws.receive_json())
+                # Use ping/pong as a bounded second receive — pong is
+                # the only other frame the server is guaranteed to
+                # send without further activity.
+                ws.send_json({"kind": "ping"})
+                frames.append(ws.receive_json())
+
+        assert frames[0].get("kind") == "usage", frames
+        usage = frames[0]
+        assert usage["seq"] is None
+        # The seeded LLMProvider declared context_length=12345.
+        assert usage["context_length"] == 12_345
+        # No tokens consumed yet.
+        assert usage["input_tokens"] == 0
+        assert usage["output_tokens"] == 0
+        assert usage["used_pct"] == 0.0
+        # And the pong arrives after the usage frame — proves the
+        # initial envelope didn't displace normal protocol traffic.
+        assert frames[1].get("kind") == "pong", frames
