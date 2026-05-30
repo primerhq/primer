@@ -35,16 +35,25 @@ class SessionClaimAdapter(ClaimAdapter):
         if sess is None:
             return
 
-        # Bump turn counter and clear all park fields.
-        updated = sess.model_copy(update={
-            "turn_no": sess.turn_no + 1,
+        # Only bump turn_no / stamp last_turn_at when a turn actually ran.
+        # A failed release (reclaim, executor build failure, executor crash)
+        # must leave the counters untouched so the next claim sees the same
+        # turn — otherwise a stuck row drifts to turn_no=N with no matching
+        # messages.jsonl entries (the symptom in
+        # docs/superpowers/specs analysis).
+        updates: dict[str, object | None] = {
             "parked_status": None,
             "parked_event_key": None,
             "parked_until": None,
             "parked_at": None,
             "parked_state": None,
             "last_worker_id": None,
-        })
+        }
+        if outcome.success:
+            updates["turn_no"] = sess.turn_no + 1
+            updates["last_turn_at"] = datetime.now(timezone.utc)
+
+        updated = sess.model_copy(update=updates)
         await self._storage.update(updated)
 
         # Write a terminal error record to messages.jsonl when the release

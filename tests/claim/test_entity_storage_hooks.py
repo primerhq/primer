@@ -91,10 +91,14 @@ async def test_session_on_release_failure_still_clears_park(sqlite_provider):
 
     updated = await storage.get("sess-1")
     assert updated is not None
-    assert updated.turn_no == 4
+    # Park / worker fields cleared (bookkeeping).
     assert updated.parked_status is None
     assert updated.parked_event_key is None
     assert updated.parked_state is None
+    # turn_no MUST NOT bump on failure — only successful turns advance
+    # the counter. Bug 5 of the diagnostic report fixed this.
+    assert updated.turn_no == 3
+    assert updated.last_turn_at is None
 
 
 @pytest.mark.asyncio

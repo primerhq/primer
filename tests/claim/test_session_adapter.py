@@ -151,3 +151,45 @@ async def test_on_release_no_workspace_io_still_updates_storage() -> None:
     )
     # Storage update still happened
     assert len(fake_storage.updated) == 1
+
+
+@pytest.mark.asyncio
+async def test_on_release_success_bumps_turn_no_and_stamps_last_turn_at() -> None:
+    """A successful release bumps turn_no and stamps last_turn_at."""
+    sess = _make_session("s5")
+    fake_storage = FakeStorage(sess)
+    adapter = SessionClaimAdapter(session_storage=fake_storage)
+    await adapter.on_release(
+        conn=None,
+        entity_id="s5",
+        outcome=ReleaseOutcome(success=True),
+    )
+    assert len(fake_storage.updated) == 1
+    updated = fake_storage.updated[0]
+    assert updated.turn_no == 1
+    assert updated.last_turn_at is not None
+    assert updated.last_worker_id is None
+
+
+@pytest.mark.asyncio
+async def test_on_release_failure_does_not_bump_turn_no() -> None:
+    """A failed release MUST NOT bump turn_no or stamp last_turn_at.
+
+    Pre-fix this adapter unconditionally bumped turn_no on every release,
+    producing the diagnostic-report symptom: turn_no=1 with last_turn_at=null
+    on a session that never actually ran a turn.
+    """
+    sess = _make_session("s6")
+    fake_storage = FakeStorage(sess)
+    adapter = SessionClaimAdapter(session_storage=fake_storage)
+    await adapter.on_release(
+        conn=None,
+        entity_id="s6",
+        outcome=ReleaseOutcome(success=False, last_error="executor_error"),
+    )
+    assert len(fake_storage.updated) == 1
+    updated = fake_storage.updated[0]
+    assert updated.turn_no == 0, "turn_no must stay at its pre-release value on failure"
+    assert updated.last_turn_at is None, "last_turn_at must NOT be stamped on failure"
+    # Park / worker fields still cleared — that's bookkeeping, not turn accounting.
+    assert updated.last_worker_id is None
