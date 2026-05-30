@@ -182,12 +182,12 @@ class CompactionStrategy:
     user-confirmed design decision).
     """
 
-    DEFAULT_TRIGGER_RATIO: float = 0.85
+    DEFAULT_TRIGGER_RATIO: float = 0.90
     DEFAULT_RESERVED_OUTPUT: int = 8192
     DEFAULT_TAIL_TURNS: int = 4
     DEFAULT_PRUNE_PER_OUTPUT: int = 20_000
     DEFAULT_PRUNE_TOTAL_THRESHOLD: int = 40_000
-    DEFAULT_SUMMARY_MAX_TOKENS: int = 2048
+    DEFAULT_SUMMARY_MAX_TOKENS: int = 4096
 
     def __init__(
         self,

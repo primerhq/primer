@@ -466,3 +466,13 @@ class TestCompactedTurn:
             estimated_tokens_after=50,
         )
         assert ct.estimated_tokens_after == 50
+
+
+class TestDefaultConstants:
+    def test_default_trigger_ratio_is_090(self) -> None:
+        from primer.agent.compaction import CompactionStrategy
+        assert CompactionStrategy.DEFAULT_TRIGGER_RATIO == 0.90
+
+    def test_default_summary_max_tokens_is_4096(self) -> None:
+        from primer.agent.compaction import CompactionStrategy
+        assert CompactionStrategy.DEFAULT_SUMMARY_MAX_TOKENS == 4096
