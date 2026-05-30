@@ -99,7 +99,7 @@ function _PasswordField({ label, value, onChange, placeholder, autoComplete, has
         />
         <button
           type="button"
-          className="toggle"
+          className="toggle touch-target"
           aria-label={show ? "Hide password" : "Show password"}
           onClick={() => setShow((s) => !s)}
         >
@@ -226,7 +226,7 @@ function RegisterScreen({ onDone }) {
 
             <button
               type="submit"
-              className="auth-submit"
+              className="auth-submit touch-target"
               disabled={busy || !username || !password || !confirm}
               style={{ marginTop: 6 }}
             >
@@ -340,7 +340,7 @@ function LoginScreen({ onDone }) {
 
             <button
               type="submit"
-              className="auth-submit"
+              className="auth-submit touch-target"
               disabled={busy || !username || !password}
             >
               {busy ? (<><span className="spinner" /><span>Signing in…</span></>) : <span>Sign in</span>}
