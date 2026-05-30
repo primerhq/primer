@@ -1,11 +1,11 @@
-/* global React, Icon, Btn, Modal, Banner, relativeTime */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime */
 
 // Top-level scope is shared with the babel-standalone IIFE; prefix all
 // consts with CH_ to avoid clashes with other components (notably the
 // `PROVIDER_FIELDS` const which collided with providers.jsx during the
 // Task 3 wiring — see plan §"Task 3").
 
-const { apiFetch, useResource, useMutation, useRouter } = window.primerApi;
+const { apiFetch, useResource, useMutation, useRouter, useViewport } = window.primerApi;
 
 const CH_LIST_PROVIDERS = "channels:providers";
 const CH_LIST_CHANNELS = "channels:channels";
@@ -63,6 +63,7 @@ function ProviderBadge({ kind }) {
 // ============== Providers list ==============
 
 function ChannelProvidersPage({ onOpen, pushToast }) {
+  const { isMobile } = useViewport();
   const [showNew, setShowNew] = React.useState(false);
   const [filter, setFilter] = React.useState("");
   const [platform, setPlatform] = React.useState("");
@@ -119,6 +120,23 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
         />
       )}
 
+      {isMobile ? (
+        <CardList
+          items={filtered}
+          empty={items.length === 0 ? "No channel providers yet." : "No providers match."}
+          renderCard={(p) => {
+            const chs = channelItems.filter((c) => c.provider_id === p.id);
+            return (
+              <Card
+                title={p.id}
+                subtitle={<ProviderBadge kind={p.provider} />}
+                meta={`${chs.length} channel${chs.length === 1 ? "" : "s"} · ${CH_relAge(p.created_at)}`}
+                onClick={() => onOpen(p.id)}
+              />
+            );
+          }}
+        />
+      ) : (
       <div className="tbl-wrap">
         <table className="tbl">
           <thead><tr><th>ID</th><th>Platform</th><th style={{ textAlign: "right" }}>Channels</th><th>Created</th><th></th></tr></thead>
@@ -146,6 +164,11 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
           </tbody>
         </table>
       </div>
+      )}
+
+      {isMobile && (
+        <Fab icon="plus" label="New channel provider" onClick={() => setShowNew(true)} />
+      )}
 
       {showNew && (
         <NewChannelProviderModal
@@ -555,6 +578,7 @@ function ChannelProviderDetail({ providerId, pushToast }) {
 // ============== Channels list ==============
 
 function ChannelsPage({ onNavigate, pushToast }) {
+  const { isMobile } = useViewport();
   const [showNew, setShowNew] = React.useState(false);
   const [editing, setEditing] = React.useState(null);
   const [filter, setFilter] = React.useState("");
@@ -639,6 +663,28 @@ function ChannelsPage({ onNavigate, pushToast }) {
         />
       )}
 
+      {isMobile ? (
+        <CardList
+          items={filtered}
+          empty={
+            channelItems.length === 0
+              ? (providerItems.length === 0 ? "Create a channel provider first." : "No channels yet.")
+              : "No channels match."
+          }
+          renderCard={(c) => {
+            const p = providerItems.find((x) => x.id === c.provider_id);
+            return (
+              <Card
+                title={c.id}
+                subtitle={c.provider_id}
+                pill={p ? <ProviderBadge kind={p.provider} /> : null}
+                meta={`${c.external_id || ""}${c.label ? " · " + c.label : ""}`}
+                onClick={() => setEditing(c)}
+              />
+            );
+          }}
+        />
+      ) : (
       <div className="tbl-wrap">
         <table className="tbl">
           <thead><tr><th>ID</th><th>Provider</th><th>External ID</th><th>Label</th><th></th></tr></thead>
@@ -697,6 +743,11 @@ function ChannelsPage({ onNavigate, pushToast }) {
           </tbody>
         </table>
       </div>
+      )}
+
+      {isMobile && providerItems.length > 0 && (
+        <Fab icon="plus" label="New channel" onClick={() => setShowNew(true)} />
+      )}
 
       {showNew && (
         <NewChannelModal
@@ -844,6 +895,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
 // ============== Associations ==============
 
 function AssociationsPage({ onNavigate, pushToast }) {
+  const { isMobile } = useViewport();
   const [showNew, setShowNew] = React.useState(false);
   const [editing, setEditing] = React.useState(null);
 
@@ -923,6 +975,32 @@ function AssociationsPage({ onNavigate, pushToast }) {
         />
       )}
 
+      {isMobile ? (
+        <CardList
+          items={items}
+          empty="No associations yet."
+          renderCard={(a) => {
+            const ch = channelItems.find((c) => c.id === a.channel_id);
+            const flags = [];
+            if (a.enabled) flags.push("enabled");
+            if (a.forward_ask_user) flags.push("ask_user");
+            if (a.forward_tool_approval) flags.push("tool_approval");
+            return (
+              <Card
+                title={a.workspace_id}
+                subtitle={`${a.channel_id}${ch && ch.label ? " · " + ch.label : ""}`}
+                pill={
+                  <span className={`pill ${a.enabled ? "pill-ended" : "pill-paused"}`}>
+                    <span className="dot"></span>{a.enabled ? "on" : "off"}
+                  </span>
+                }
+                meta={flags.join(" · ") || "no flags"}
+                onClick={() => setEditing(a)}
+              />
+            );
+          }}
+        />
+      ) : (
       <div className="tbl-wrap">
         <table className="tbl">
           <thead>
@@ -982,6 +1060,11 @@ function AssociationsPage({ onNavigate, pushToast }) {
           </tbody>
         </table>
       </div>
+      )}
+
+      {isMobile && workspaceItems.length > 0 && channelItems.length > 0 && (
+        <Fab icon="plus" label="New association" onClick={() => setShowNew(true)} />
+      )}
 
       {showNew && (
         <NewAssociationModal
