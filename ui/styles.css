@@ -1423,3 +1423,161 @@ input, textarea, select { font: inherit; color: inherit; }
   --tap-min: 44px;
   --fab-size: 56px;
 }
+
+/* ---------- Touch-target utility (used outside the media block too) -- */
+.touch-target {
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- Mobile (< 640px) ---------------------------------------- */
+@media (max-width: 639px) {
+  .desktop-only { display: none !important; }
+  .mobile-only { display: revert; }
+
+  /* Hide existing sidebar in favor of slide-over drawer. */
+  .app { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+
+  /* Topbar: hamburger left, brand + theme toggle right. */
+  .topbar-brand { padding-left: 8px; }
+  .topbar-search,
+  .topbar .breadcrumbs { display: none; }
+
+  /* Slide-over drawer + backdrop. */
+  .drawer-overlay {
+    position: fixed; inset: 0;
+    background: oklch(0 0 0 / 0.5);
+    z-index: 50;
+  }
+  .drawer {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 85vw; max-width: 320px;
+    background: var(--bg-1);
+    border-right: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    transform: translateX(-100%);
+    transition: transform 0.18s ease;
+    z-index: 51;
+    overflow-y: auto;
+  }
+  .drawer.open { transform: translateX(0); }
+
+  /* Modal becomes bottom sheet. */
+  .sheet-overlay {
+    position: fixed; inset: 0;
+    background: oklch(0 0 0 / 0.5);
+    z-index: 50;
+    display: flex; align-items: flex-end;
+  }
+  .sheet {
+    width: 100%;
+    max-height: 90vh;
+    background: var(--bg-1);
+    border-radius: 16px 16px 0 0;
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow);
+    display: flex; flex-direction: column;
+    animation: sheet-slide-up 0.18s ease;
+  }
+  @keyframes sheet-slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  .sheet-handle {
+    width: 36px; height: 4px;
+    background: var(--border-strong);
+    border-radius: 2px;
+    margin: 8px auto;
+  }
+  .sheet-h {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 14px 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sheet-b { padding: 14px; overflow-y: auto; flex: 1; }
+  .sheet-f {
+    border-top: 1px solid var(--border);
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+    display: flex; gap: 8px; justify-content: flex-end;
+  }
+
+  /* Card list. */
+  .card-list { display: flex; flex-direction: column; gap: 8px; padding: var(--mobile-pad-y) var(--mobile-pad-x); }
+  .card-list-empty { padding: var(--mobile-pad-y) var(--mobile-pad-x); color: var(--text-3); text-align: center; }
+  .card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    min-height: var(--tap-min);
+  }
+  .card-interactive { cursor: pointer; }
+  .card-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .card-title-wrap { min-width: 0; flex: 1; }
+  .card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-subtitle { color: var(--text-2); font-size: 12.5px; margin-top: 2px; }
+  .card-body { margin-top: 8px; }
+  .card-meta { color: var(--text-3); font-size: 12px; margin-top: 8px; }
+
+  /* Floating action button. */
+  .fab {
+    position: fixed;
+    right: var(--mobile-pad-x);
+    bottom: calc(var(--mobile-pad-y) + env(safe-area-inset-bottom));
+    width: var(--fab-size); height: var(--fab-size);
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-fg);
+    box-shadow: var(--shadow);
+    z-index: 40;
+    display: grid; place-items: center;
+    border: none; cursor: pointer;
+  }
+
+  /* MobileTabs. */
+  .mobile-tabs-wrap { display: flex; flex-direction: column; }
+  .mobile-tabs {
+    display: flex; gap: 4px;
+    border-bottom: 1px solid var(--border);
+    padding: 0 var(--mobile-pad-x);
+    background: var(--bg-1);
+    position: sticky; top: 48px; z-index: 5;
+    overflow-x: auto;
+  }
+  .mobile-tab {
+    background: transparent;
+    border: none;
+    color: var(--text-2);
+    padding: 10px 14px;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+  .mobile-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .mobile-tab-panel { flex: 1; min-height: 0; }
+
+  /* Hamburger. */
+  .hamburger {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    cursor: pointer;
+    padding: 8px;
+  }
+
+  /* Prevent iOS zoom-on-focus. */
+  input, textarea, select { font-size: 16px; }
+
+  /* Reduced motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .drawer, .sheet { animation: none !important; transition: none !important; }
+  }
+}
+
+/* ---------- Desktop (≥ 640px) — utility-class inversion ------------- */
+@media (min-width: 640px) {
+  .mobile-only { display: none !important; }
+  .desktop-only { display: revert; }
+}
