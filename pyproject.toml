@@ -44,6 +44,7 @@ dependencies = [
     "sentence-transformers>=3.0.0",
     "slack-bolt>=1.20",
     "slack-sdk>=3.27",
+    "tiktoken>=0.8.0",
     "transformers>=5.6.2",
     "typer>=0.12",
     "tzdata>=2026.2",
