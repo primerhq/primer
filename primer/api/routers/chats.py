@@ -40,12 +40,18 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from primer.api.deps import get_agent_storage, get_claim_engine, get_storage_provider
+from primer.api.deps import (
+    get_agent_storage,
+    get_claim_engine,
+    get_provider_registry,
+    get_storage_provider,
+)
 from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
 from primer.model.agent import Agent
 from primer.model.chats import Chat, ChatMessage
-from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.except_ import ConfigError, ConflictError, NotFoundError
+from primer.model.provider import LLMProvider
 from primer.model.storage import (
     Op,
     OrderBy,
@@ -241,6 +247,192 @@ async def list_chat_messages(
         q = q.where_op("seq", Op.GT, after_seq)
     return await messages.find(
         q.build(), page, order_by=[OrderBy(field="seq", direction="asc")],
+    )
+
+
+# ===========================================================================
+# REST: on-demand compaction
+# ===========================================================================
+
+
+class CompactResponse(BaseModel):
+    """Body of a successful ``POST /v1/chats/{id}/compact``."""
+
+    compaction_marker_seq: int = Field(
+        ...,
+        description=(
+            "Sequence number of the persisted ``compaction_marker`` row. "
+            "Clients can use this with the cursor-replay surface to "
+            "fetch the marker payload directly."
+        ),
+    )
+    summary: str = Field(
+        ...,
+        description="Summary text the LLM produced for the rolled-up history.",
+    )
+    tokens_before: int = Field(
+        ..., description="Estimated token count before compaction."
+    )
+    tokens_after: int = Field(
+        ..., description="Estimated token count after compaction."
+    )
+
+
+@chats_router.post(
+    "/chats/{chat_id}/compact",
+    response_model=CompactResponse,
+    summary="Force-compact a chat's history on demand",
+    responses=common_responses(404, 409, 422, 500, 503),
+)
+async def compact_chat(
+    chat_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+    agents=Depends(get_agent_storage),
+    provider_registry=Depends(get_provider_registry),
+) -> CompactResponse:
+    """Run :func:`primer.agent.compaction_mixin.force_compact` against
+    the chat's current history, persist a ``compaction_marker`` row,
+    and return the summary.
+
+    Status codes:
+
+    * ``200`` — compaction ran; body carries ``compaction_marker_seq``,
+      ``summary``, ``tokens_before``, ``tokens_after``.
+    * ``404`` — no such chat.
+    * ``409`` — a worker turn is in flight (``turn_status='running'``).
+      Forcing compaction would race the runner's own pre-turn auto-
+      compact pass and risk a double-marker.
+    * ``503`` — the chat's agent has no resolvable LLM provider /
+      model. Compaction needs the LLM to produce the summary; the
+      surface raises :class:`ConfigError` (rendered as 503) so the
+      operator can fix the agent's provider binding.
+
+    Implementation mirrors :func:`primer.chat.dispatch._build_runner`'s
+    resolution path (agent → provider → model row) so the same
+    failures land in the same buckets.
+    """
+    from primer.agent.compaction import CompactionStrategy
+    from primer.agent.compaction_mixin import force_compact
+    from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
+    from primer.chat.executor import ChatTurnRunner
+
+    # 1) Chat exists?
+    chat_storage = sp.get_storage(Chat)
+    chat = await chat_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+
+    # 2) No in-flight turn?
+    if chat.turn_status == "running":
+        raise ConflictError(
+            f"Chat {chat_id!r} has a turn in flight; "
+            "wait for it to finish before compacting."
+        )
+
+    # 3) Resolve agent + LLM + model row.
+    agent = await agents.get(chat.agent_id)
+    if agent is None:
+        raise ConfigError(
+            f"Chat {chat_id!r} references agent {chat.agent_id!r} which "
+            "no longer exists; cannot compact."
+        )
+    try:
+        llm = await provider_registry.get_llm(agent.model.provider_id)
+    except (NotFoundError, ConfigError) as exc:
+        raise ConfigError(
+            f"Agent {agent.id!r} has no resolvable LLM provider "
+            f"({agent.model.provider_id!r}): {exc}"
+        ) from exc
+    provider_rows = sp.get_storage(LLMProvider)
+    provider_row = await provider_rows.get(agent.model.provider_id)
+    if provider_row is None:
+        raise ConfigError(
+            f"LLMProvider {agent.model.provider_id!r} configured on "
+            f"agent {agent.id!r} does not exist."
+        )
+    llm_model = next(
+        (m for m in provider_row.models if m.name == agent.model.model_name),
+        None,
+    )
+    if llm_model is None:
+        raise ConfigError(
+            f"Model {agent.model.model_name!r} is not enabled on "
+            f"provider {agent.model.provider_id!r}."
+        )
+
+    # 4) Load current history via the runner's helper so compaction-
+    #    marker reassembly stays consistent with pre-turn compaction.
+    messages_storage = sp.get_storage(ChatMessage)
+    runner = ChatTurnRunner.__new__(ChatTurnRunner)
+    runner._agent = agent
+    runner._llm = llm
+    runner._model = llm_model
+    runner._tools = None  # _load_history doesn't touch tools
+    runner._chats = chat_storage
+    runner._messages = messages_storage
+    runner._cancel_event = None
+    runner._marker_persisted = False
+    runner._last_input_tokens = None
+    runner._last_output_tokens = None
+    history = await runner._load_history(chat_id)
+
+    # 5) Force-compact (bypasses the should_compact threshold check).
+    compaction_prompt_field = getattr(agent, "compaction_prompt", None)
+    if compaction_prompt_field:
+        compaction_prompt = "\n\n".join(compaction_prompt_field)
+        prompt_source = "custom"
+    else:
+        compaction_prompt = DEFAULT_COMPACTION_PROMPT
+        prompt_source = "default"
+    result = await force_compact(
+        llm=llm,
+        strategy=CompactionStrategy(),
+        history=list(history),
+        compaction_prompt=compaction_prompt,
+        model_name=llm_model.name,
+        context_length=llm_model.context_length,
+    )
+
+    # 6) Persist the compaction_marker row + bump chat.last_seq.
+    #    Refresh the chat row first to absorb any concurrent last_seq
+    #    bump (the dispatcher path goes through the same fields).
+    fresh = await chat_storage.get(chat_id)
+    if fresh is None:  # racing delete
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+    next_seq = fresh.last_seq + 1
+    marker = ChatMessage(
+        id=ChatMessage.make_id(chat_id, next_seq),
+        chat_id=chat_id,
+        seq=next_seq,
+        kind="compaction_marker",
+        payload={
+            "summary": result.summary_text,
+            "replaced_from_seq": 1,
+            "replaced_to_seq": next_seq - 1,
+            "model": llm_model.name,
+            "tokens_before": result.tokens_before,
+            "tokens_after": result.tokens_after,
+            "compaction_prompt_source": prompt_source,
+            "created_at": result.created_at.isoformat(),
+            "trigger": "operator_forced",
+        },
+        created_at=result.created_at,
+    )
+    await messages_storage.create(marker)
+    fresh.last_seq = next_seq
+    await chat_storage.update(fresh)
+
+    # 7) TODO(T10): emit a ws-side tick + marker envelope so live
+    #    sessions see the marker without an explicit poll. The bus
+    #    plumbing for the per-chat tick goes through the same event
+    #    key the worker uses ("chat:<id>:tick"); leaving the wiring
+    #    to T10 keeps this commit small.
+
+    return CompactResponse(
+        compaction_marker_seq=next_seq,
+        summary=result.summary_text,
+        tokens_before=result.tokens_before,
+        tokens_after=result.tokens_after,
     )
 
 
@@ -764,7 +956,9 @@ def _parse_user_message_parts(frame: dict[str, Any]) -> list:
 
 __all__ = [
     "ChatCreateBody",
+    "CompactResponse",
     "chats_router",
+    "compact_chat",
     "create_chat",
     "end_chat",
     "get_chat",
