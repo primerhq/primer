@@ -1467,16 +1467,22 @@ input, textarea, select { font: inherit; color: inherit; }
   .drawer.open { transform: translateX(0); }
   /* The mobile sweep hides .sidebar globally; reveal the Sidebar instance
      that MobileNav renders inside the drawer, and force-expand it so the
-     labels show regardless of the desktop sidebar's collapsed state. */
+     labels show regardless of the desktop sidebar's collapsed state.
+     Two earlier rules conspire to empty the drawer:
+       (a) the @media (max-width: 900px) block at line ~1189 hides
+           .sidebar .nav-item .label, .nav-item .count, .nav-group
+           on every sidebar — fires here too.
+       (b) the .sidebar.is-collapsed rules at line ~123 hide the same
+           plus .nav-pill-on/.nav-pill-off and .sidebar-foot span
+           when the desktop sidebar was collapsed.
+     The reveals below override both with higher specificity. */
   .drawer .sidebar { display: flex; width: 100%; border-right: none; }
-  .drawer .sidebar.is-collapsed .nav-group,
+  .drawer .sidebar .nav-group { display: revert; }
+  .drawer .sidebar .nav-item .label,
+  .drawer .sidebar .nav-item .count { display: revert; min-width: var(--tap-min); min-height: var(--tap-min); }
   .drawer .sidebar.is-collapsed .nav-pill-on,
   .drawer .sidebar.is-collapsed .nav-pill-off,
   .drawer .sidebar.is-collapsed .sidebar-foot span { display: revert; }
-  /* Descendants of .nav-item carry the audit's interactive-substring match;
-     declare the tap floor so the rule clears scripts/audit_touch_targets.py. */
-  .drawer .sidebar.is-collapsed .nav-item .label,
-  .drawer .sidebar.is-collapsed .nav-item .count { display: revert; min-width: var(--tap-min); min-height: var(--tap-min); }
   .drawer .sidebar.is-collapsed .nav-item { justify-content: flex-start; padding: 6px 12px; min-width: var(--tap-min); min-height: var(--tap-min); }
   .drawer .sidebar.is-collapsed .sidebar-foot { justify-content: flex-start; }
 

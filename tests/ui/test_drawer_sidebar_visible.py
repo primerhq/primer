@@ -51,3 +51,20 @@ def test_drawer_collapsed_labels_revealed() -> None:
         "expected a .drawer .sidebar.is-collapsed override so collapsed "
         "labels are revealed inside the drawer"
     )
+
+
+def test_drawer_unconditional_label_reveal() -> None:
+    """An earlier @media (max-width: 900px) rule hides .nav-item .label,
+    .nav-item .count and .nav-group across every sidebar. The drawer's
+    nested sidebar must override those even when .is-collapsed is NOT
+    present (the default expanded desktop state)."""
+    block = _mobile_block()
+    for selector in (
+        ".drawer .sidebar .nav-group",
+        ".drawer .sidebar .nav-item .label",
+        ".drawer .sidebar .nav-item .count",
+    ):
+        assert selector in block, (
+            f"expected {selector!r} override in the mobile block so the "
+            "drawer renders labels regardless of desktop collapsed state"
+        )

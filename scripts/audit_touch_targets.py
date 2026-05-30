@@ -105,8 +105,16 @@ def _selector_inherits_touch_target(rules: list[tuple[str, str]]) -> set[str]:
     return inheriting
 
 
+_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _strip_comments(src: str) -> str:
+    return _CSS_COMMENT_RE.sub("", src)
+
+
 def audit_text(css_src: str) -> list[str]:
     failures: list[str] = []
+    css_src = _strip_comments(css_src)
     block = _extract_mobile_block(css_src)
     if not block:
         return ["could not locate @media (max-width: 639px) block"]
