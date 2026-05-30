@@ -1616,6 +1616,8 @@ input, textarea, select { font: inherit; color: inherit; }
   .ic-mobile-stack { display: flex; flex-direction: column; gap: 8px; }
   .ic-mobile-stack > * { width: 100% !important; }
 
+  .ssp-mobile-stack { display: flex; flex-direction: column; gap: 8px; }
+
   /* Reduced motion. */
   @media (prefers-reduced-motion: reduce) {
     .drawer, .sheet { animation: none !important; transition: none !important; }

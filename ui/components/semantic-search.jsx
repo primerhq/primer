@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, relativeTime, fmtDate */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, relativeTime, fmtDate */
 
 // Semantic-Search Provider (SSP) pages — wired to the real API.
 //
@@ -43,8 +43,9 @@ function _sspAgeSec(iso) {
 // ----------------------------------------------------------------------
 
 function SSPListPage({ onOpen, pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
+  const { isMobile } = useViewport();
 
   const [createOpen, setCreateOpen] = React.useState(false);
   const [textQuery, setTextQuery] = React.useState("");
@@ -123,7 +124,7 @@ function SSPListPage({ onOpen, pushToast }) {
 
   return (
     <>
-      <div className="col" style={{ gap: 14 }}>
+      <div className={"col" + (isMobile ? " ssp-mobile-stack" : "")} style={{ gap: 14 }}>
         <div className="filter-bar">
           <div className="input-icon">
             <Icon name="search" size={13} className="icon" />
@@ -158,6 +159,20 @@ function SSPListPage({ onOpen, pushToast }) {
             title={list.error.title || "Couldn't load providers"}
             detail={list.error.detail || list.error.message}
             actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
+          />
+        ) : isMobile ? (
+          <CardList
+            items={filtered}
+            empty={`No providers match the current filter${textQuery ? ` "${textQuery}"` : ""}.`}
+            renderCard={(p) => (
+              <Card
+                title={p.id}
+                subtitle={p.config?.hostname || ""}
+                pill={<BackendBadge kind={p.provider} />}
+                meta={`${p.config?.db_schema || "public"} · ${p.config?.database || "—"}`}
+                onClick={() => openRow(p.id)}
+              />
+            )}
           />
         ) : (
           <div className="tbl-wrap">
