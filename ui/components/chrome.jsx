@@ -117,7 +117,35 @@ function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapse
   );
 }
 
-function Topbar({ workerStats, onNavigate, onOpenPalette }) {
+// drawerOpen state is owned by the App shell in app.jsx — see Task 4.2.
+function MobileNav({ open, onClose, ...sidebarProps }) {
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") onClose && onClose(); };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div className="drawer-overlay" onClick={onClose}>
+      <aside
+        className="drawer open"
+        role="dialog"
+        aria-modal="true"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Sidebar {...sidebarProps} />
+      </aside>
+    </div>
+  );
+}
+
+function Topbar({ workerStats, onNavigate, onOpenPalette, onOpenDrawer }) {
   const totalCap = workerStats.capacity;
   const inFlight = workerStats.in_flight;
   const active = workerStats.active;
@@ -148,6 +176,13 @@ function Topbar({ workerStats, onNavigate, onOpenPalette }) {
 
   return (
     <header className="topbar">
+      <button
+        className="hamburger touch-target mobile-only"
+        aria-label="Open navigation"
+        onClick={onOpenDrawer}
+      >
+        <Icon name="panel-left" size={18} />
+      </button>
       <div className="topbar-brand">
         <div className="logo" aria-label="primer">
           <svg viewBox="0 0 24 24" width="22" height="22" role="img">
@@ -349,4 +384,4 @@ function CommandPalette({ onClose, onNavigate, sessions }) {
   );
 }
 
-Object.assign(window, { Sidebar, Topbar, CommandPalette });
+Object.assign(window, { Sidebar, MobileNav, Topbar, CommandPalette });
