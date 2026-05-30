@@ -119,13 +119,48 @@ function fmtDate(d) {
   return d.toISOString().replace("T", " ").replace(/\..+$/, "");
 }
 
-// Modal
+// Modal — desktop: centered dialog. Mobile: bottom sheet via the
+// same API. Consumers (every form modal in the app) get the mobile
+// behavior automatically.
 const Modal = ({ title, onClose, children, footer, danger }) => {
+  const useViewport = (window.primerApi && window.primerApi.useViewport) || null;
+  const vp = useViewport ? useViewport() : { isMobile: false };
+  const isMobile = !!vp.isMobile;
+
   React.useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose && onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  React.useEffect(() => {
+    if (!isMobile) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [isMobile]);
+
+  if (isMobile) {
+    return (
+      <div className="sheet-overlay" onClick={onClose}>
+        <div
+          className="sheet"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="sheet-handle" />
+          <div className="sheet-h">
+            <span className="title" style={{ color: danger ? "var(--red)" : undefined }}>{title}</span>
+            <button className="close touch-target" onClick={onClose} aria-label="Close"><Icon name="x" size={16} /></button>
+          </div>
+          <div className="sheet-b">{children}</div>
+          {footer && <div className="sheet-f">{footer}</div>}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
