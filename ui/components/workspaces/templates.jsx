@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, WS_FieldRow, WS_Section */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, WS_FieldRow, WS_Section */
 
 const WT_LIST_KEY = "ws:templates";
 
@@ -51,8 +51,9 @@ function _wtToastErr(pushToast, fallback) {
 }
 
 function WorkspaceTemplatesPage({ pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
+  const { isMobile } = useViewport();
   const [createOpen, setCreateOpen] = React.useState(false);
 
   const list = useResource(
@@ -100,6 +101,20 @@ function WorkspaceTemplatesPage({ pushToast }) {
         </div>
         {list.error && items.length === 0 ? (
           <Banner kind="error" title={list.error.title || "Couldn't load templates"} detail={list.error.detail || list.error.message} actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>} />
+        ) : isMobile ? (
+          <CardList
+            items={items}
+            empty="No workspace templates."
+            renderCard={(t) => (
+              <Card
+                title={t.id}
+                subtitle={t.description || t.provider_id}
+                pill={<window.WorkspaceBackendBadge kind={t.backend?.kind} />}
+                meta={t.provider_id}
+                onClick={() => navigate(`/workspaces/templates/${encodeURIComponent(t.id)}`)}
+              />
+            )}
+          />
         ) : (
           <div className="tbl-wrap">
             <table className="tbl">
@@ -127,6 +142,9 @@ function WorkspaceTemplatesPage({ pushToast }) {
               </tbody>
             </table>
           </div>
+        )}
+        {isMobile && (
+          <Fab icon="plus" label="New template" onClick={() => setCreateOpen(true)} />
         )}
       </div>
       {modal}
