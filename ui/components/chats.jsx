@@ -442,6 +442,12 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   const [composer, setComposer] = React.useState("");
   const [pendingSendText, setPendingSendText] = React.useState(null);
   const [historyError, setHistoryError] = React.useState(null);
+  // Live token-usage snapshot — driven by `"usage"` WS envelopes the
+  // worker emits after each turn. Drives the header TokenMeter pill;
+  // values stay at 0 until the first envelope lands so the meter
+  // renders dimmed but present.
+  const [usage, setUsage] = React.useState({ input_tokens: 0, output_tokens: 0, context_length: 0 });
+  const [compactInFlight, setCompactInFlight] = React.useState(false);
   // Set true the moment the user sends a frame; cleared when any
   // assistant_token / tool_call / done / error row arrives. Drives
   // the "Thinking..." placeholder so the operator sees the system
@@ -546,6 +552,31 @@ function ChatDetail({ chatId, onBack, pushToast }) {
         return;
       }
       if (msg.kind === "pong") return;
+
+      // Token usage envelope (no seq). Emitted by the worker after each
+      // assistant turn. Snapshot drives the header TokenMeter pill.
+      if (msg.kind === "usage" && typeof msg.seq !== "number") {
+        setUsage({
+          input_tokens: Number(msg.input_tokens) || 0,
+          output_tokens: Number(msg.output_tokens) || 0,
+          context_length: Number(msg.context_length) || 0,
+        });
+        return;
+      }
+
+      // Compaction envelope (no seq). Server tells us a compaction
+      // pass just happened; surface as an in-stream marker row so the
+      // operator sees where context was summarised.
+      if (msg.kind === "compaction" && typeof msg.seq !== "number") {
+        setMessages((prev) => [...prev, {
+          kind: "compaction_marker",
+          seq: `compaction-${Date.now()}`,
+          before_tokens: Number(msg.before_tokens) || 0,
+          after_tokens: Number(msg.after_tokens) || 0,
+          reason: msg.reason || "",
+        }]);
+        return;
+      }
 
       // Any persisted row carries seq → append + advance cursor. We
       // de-dupe against the initial REST replay because both sources
@@ -680,6 +711,33 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     setAttachments([]);
   };
 
+  // Operator-triggered compaction. POSTs to the chat's compact
+  // endpoint; the server runs the configured compaction prompt
+  // against the conversation and emits a `"compaction"` envelope on
+  // the WS once finished — that envelope flows through onmessage
+  // above and appends a `compaction_marker` row to the timeline.
+  const handleCompact = async () => {
+    if (compactInFlight) return;
+    setCompactInFlight(true);
+    try {
+      await apiFetch("POST", `/chats/${encodeURIComponent(cid)}/compact`);
+      if (typeof pushToast === "function") {
+        pushToast({ kind: "success", title: "Compaction started" });
+      }
+    } catch (err) {
+      if (typeof pushToast === "function") {
+        pushToast({
+          kind: "error",
+          title: err?.title || "Compact failed",
+          detail: err?.detail || err?.message,
+          requestId: err?.requestId,
+        });
+      }
+    } finally {
+      setCompactInFlight(false);
+    }
+  };
+
   const confirmSendOverApproval = () => {
     if (!pendingSendText) return;
     sendMessage(pendingSendText.text, pendingSendText.attachments);
@@ -774,7 +832,20 @@ function ChatDetail({ chatId, onBack, pushToast }) {
             <span className="mono">{cid}</span>
           )}
           <span className="sub">· agent <span className="mono">{chatAgent}</span></span>
-          <div className="right">
+          <div className="right" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <window.TokenMeter
+              inputTokens={usage.input_tokens}
+              contextLength={usage.context_length}
+              onCompact={chatStatus === "ended" ? null : handleCompact}
+              compactDisabled={compactInFlight || wsState !== "open"}
+              compactTooltip={
+                compactInFlight
+                  ? "Compaction in progress…"
+                  : wsState !== "open"
+                    ? "WebSocket offline"
+                    : ""
+              }
+            />
             {wsBadge}
             <span className={chatStatus === "active" ? "pill pill-running" : "pill pill-ended"}>
               <span className="dot"></span>{chatStatus}
@@ -1302,6 +1373,10 @@ function Message({ m }) {
     );
   }
 
+  if (kind === "compaction_marker") {
+    return <CompactionMarker m={m} />;
+  }
+
   // Coalesced agent reply (the streaming tokens collapsed into one
   // bubble by CT_coalesceMessages above). Renders as markdown — LLMs
   // routinely emit headings, lists, bold, and code blocks; raw text
@@ -1405,5 +1480,46 @@ function CT_AttachmentPart({ part }) {
   return null;
 }
 
+// ============================================================================
+// CompactionMarker — in-stream divider rendered for `kind: "compaction_marker"`
+// rows. The marker is synthesised client-side when a `"compaction"` envelope
+// arrives over the WS so the operator sees where context was summarised.
+// ============================================================================
+
+function CompactionMarker({ m }) {
+  const before = Number(m.before_tokens) || 0;
+  const after = Number(m.after_tokens) || 0;
+  const saved = before > 0 ? Math.max(0, before - after) : 0;
+  return (
+    <div
+      className="compaction-marker"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        margin: "12px 0",
+        padding: "6px 10px",
+        borderTop: "1px dashed var(--border)",
+        borderBottom: "1px dashed var(--border)",
+        fontSize: 11,
+        color: "var(--text-3)",
+        fontFamily: "IBM Plex Mono, monospace",
+      }}
+      title={m.reason || "Conversation was compacted to fit the context window."}
+    >
+      <Icon name="compress" size={11} />
+      <span>conversation compacted</span>
+      {before > 0 && (
+        <span className="muted">
+          · {before.toLocaleString()} → {after.toLocaleString()} tokens
+          {saved > 0 ? ` (-${saved.toLocaleString()})` : ""}
+        </span>
+      )}
+      {m.reason && <span className="muted">· {m.reason}</span>}
+    </div>
+  );
+}
+
 window.ChatsPage = ChatsPage;
 window.ChatDetail = ChatDetail;
+window.CompactionMarker = CompactionMarker;
