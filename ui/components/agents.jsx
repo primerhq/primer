@@ -748,6 +748,10 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
               Agent-specific because <em>what to keep</em> depends on the agent's purpose — a researcher may
               want to preserve cited sources, a coder the current file under edit.
             </div>
+            <p className="help-text">
+              Leave blank to use the default prompt (recommended unless your agent has a domain-specific compaction need).
+              The default is designed to preserve system context, recent turns, and pending tool calls.
+            </p>
           </div>
           <div className="field">
             <label className="field-label" htmlFor="na-temperature">
