@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, relativeTime */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, relativeTime */
 
 // Toolsets page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
@@ -48,8 +48,9 @@ function _tsToastErr(pushToast, fallbackTitle) {
 // ============================================================================
 
 function ToolsetsPage({ pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
+  const { isMobile } = useViewport();
 
   // /v1/tools is the merged catalogue: each entry has {id, builtin,
   // tagline, available, tools[]}. Cheaper than fetching /toolsets and
@@ -108,6 +109,46 @@ function ToolsetsPage({ pushToast }) {
         </div>
       </div>
 
+      {isMobile ? (
+        catalogue.loading && items.length === 0 ? (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
+        ) : catalogue.error && items.length === 0 ? (
+          <Banner
+            kind="error"
+            title={catalogue.error.title || "Couldn't load toolsets"}
+            detail={catalogue.error.detail || catalogue.error.message}
+            actions={<Btn size="sm" icon="refresh" onClick={catalogue.refetch}>Retry</Btn>}
+          />
+        ) : (
+          <CardList
+            items={filtered}
+            empty="No toolsets match."
+            renderCard={(t) => {
+              const kindLabel = t.builtin ? "built-in" : "user";
+              const kindColor = t.builtin ? "var(--blue)" : "var(--accent)";
+              const statusPill = t.available ? (
+                <span className="pill pill-ended"><span className="dot"></span>available</span>
+              ) : (
+                <span className="pill pill-cancelled" title={t.unavailable_reason || ""}><span className="dot"></span>unavailable</span>
+              );
+              return (
+                <Card
+                  title={t.id}
+                  subtitle={
+                    <span className="pill" style={{ color: kindColor, borderColor: "var(--border)", background: "var(--bg-2)" }}>
+                      <span className="dot" style={{ background: kindColor }}></span>
+                      {kindLabel}
+                    </span>
+                  }
+                  pill={statusPill}
+                  meta={`${(t.tools || []).length} tool${(t.tools || []).length === 1 ? "" : "s"}${t.tagline ? " · " + t.tagline : ""}`}
+                  onClick={() => navigate("/toolsets/" + t.id)}
+                />
+              );
+            }}
+          />
+        )
+      ) : (
       <div className="tbl-wrap">
         <table className="tbl">
           <thead>
@@ -161,6 +202,11 @@ function ToolsetsPage({ pushToast }) {
           </tbody>
         </table>
       </div>
+      )}
+
+      {isMobile && (
+        <Fab icon="plus" label="New toolset" onClick={() => setCreateOpen(true)} />
+      )}
 
       {createOpen && (
         <TS_NewToolsetModal
