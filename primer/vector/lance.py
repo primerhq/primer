@@ -61,10 +61,26 @@ logger = logging.getLogger(__name__)
 
 def _similarity(distance_metric: str, raw_distance: float) -> float:
     """Map LanceDB's distance value to a similarity score per the
-    VectorStore convention (higher = more similar)."""
+    VectorStore convention (higher = more similar).
+
+    LanceDB's ``vector_search()`` returns the **squared L2 distance**
+    by default, regardless of the distance label stored in our
+    catalogue, because ``create_table()`` doesn't propagate a distance
+    metric to the underlying Lance schema. Since the IC ingest path
+    L2-normalises every vector (in ``HuggingFaceEmbedder._encode_sync``
+    and the OpenAI embedder's response handler), the squared chord
+    length equals ``2 * (1 - cos)`` — that's the raw distance we
+    receive here. So to recover cosine similarity:
+
+        cos = 1 - raw / 2
+
+    The ranking is identical to true cosine because L2 and cosine
+    rank unit-norm vectors equivalently; the score is what the bug
+    fix corrects. See ``scripts/diag_lance_distance.py`` for the
+    isolation test that pinned this empirically.
+    """
     if distance_metric == "cosine":
-        # LanceDB cosine returns 1 - cosine_similarity in [0, 2].
-        return 1.0 - float(raw_distance)
+        return 1.0 - (float(raw_distance) / 2.0)
     if distance_metric == "l2":
         return 1.0 / (1.0 + float(raw_distance))
     if distance_metric == "dot":

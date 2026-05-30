@@ -262,6 +262,49 @@ async def test_search_returns_top_k_ordered_by_similarity(lance_provider):
 
 
 @pytest.mark.asyncio
+async def test_search_score_equals_true_cosine_for_unit_vectors(lance_provider):
+    """Regression test for the cosine-distance score discrepancy.
+
+    LanceDB's vector_search returns squared L2 distance (which equals
+    ``2 * (1 - cos)`` for unit-norm vectors), not ``1 - cos``. The
+    _similarity helper must convert correctly so the score consumers
+    see matches the textbook cosine value.
+
+    Without the fix, identical unit vectors give score=1.0 (correct
+    by coincidence), but a vector at ~74 degrees of similarity gives
+    score=0.4795 instead of the true 0.7398.
+    """
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+
+    # Pre-normalised: q = (1, 0, 0).  d = (0.7398, 0.6729, 0) — unit-norm,
+    # cosine sim = 0.7398.
+    import math
+    cos = 0.7398
+    sin = math.sqrt(1.0 - cos * cos)
+    await store.put(_record(doc="d1", chunk="c1", vec=[cos, sin, 0.0], text="off-axis"))
+
+    hits = await store.search("col-a", [1.0, 0.0, 0.0], k=1)
+    assert len(hits) == 1
+    assert hits[0].score is not None
+    # Tolerate a small float drift from Lance's f32 path.
+    assert abs(hits[0].score - cos) < 1e-3, (
+        f"expected score ≈ {cos:.4f}, got {hits[0].score:.4f}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_identical_vector_scores_one(lance_provider):
+    """Identical unit vectors must score 1.0 (boundary case of cosine fix)."""
+    store = lance_provider.get_vector_store()
+    await store.create_collection("col-a", dimensions=3)
+    await store.put(_record(doc="d1", chunk="c1", vec=[1.0, 0.0, 0.0]))
+    hits = await store.search("col-a", [1.0, 0.0, 0.0], k=1)
+    assert hits[0].score is not None
+    assert abs(hits[0].score - 1.0) < 1e-3
+
+
+@pytest.mark.asyncio
 async def test_search_empty_collection_returns_empty(lance_provider):
     store = lance_provider.get_vector_store()
     await store.create_collection("col-a", dimensions=3)
