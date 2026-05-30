@@ -1642,6 +1642,9 @@ input, textarea, select { font: inherit; color: inherit; }
     margin-top: 4px;
   }
 
+  .harness-form-mobile { display: flex; flex-direction: column; gap: 12px; }
+  .harness-form-mobile > * { width: 100% !important; grid-column: unset !important; }
+
   /* Reduced motion. */
   @media (prefers-reduced-motion: reduce) {
     .drawer, .sheet { animation: none !important; transition: none !important; }

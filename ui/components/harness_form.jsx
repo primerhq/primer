@@ -35,15 +35,27 @@ function HF_ProviderPicker({ endpoint, value, onChange, label }) {
 // ============================================================================
 
 function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
+  const { useViewport } = window.primerApi;
+  const { isMobile } = useViewport();
   if (!schema) return null;
   const path = _path || "";
   const type = schema.type;
   const widget = schema["x-primer-widget"];
 
+  // Only the top-level (root) call has no _path. Wrap that single
+  // render in a div carrying the mobile-aware class so children stack
+  // single-column at narrow viewports.
+  const isRoot = !_path;
+  const renderInner = (node) => isRoot ? (
+    <div className={`harness-form ${isMobile ? "harness-form-mobile" : ""}`}>
+      {node}
+    </div>
+  ) : node;
+
   // Custom widgets take priority
   if (widget === "llm-provider-picker") {
     const err = (errors || []).find((e) => e.path === path);
-    return (
+    return renderInner(
       <div className="field">
         {schema.title && <label className="field-label">{schema.title}</label>}
         <HF_ProviderPicker endpoint="/v1/llm_providers" value={value} onChange={onChange} label={schema.title || "LLM provider"} />
@@ -54,7 +66,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
   }
   if (widget === "embedding-provider-picker") {
     const err = (errors || []).find((e) => e.path === path);
-    return (
+    return renderInner(
       <div className="field">
         {schema.title && <label className="field-label">{schema.title}</label>}
         <HF_ProviderPicker endpoint="/v1/embedding_providers" value={value} onChange={onChange} label={schema.title || "Embedding provider"} />
@@ -65,7 +77,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
   }
   if (widget === "cross-encoder-picker") {
     const err = (errors || []).find((e) => e.path === path);
-    return (
+    return renderInner(
       <div className="field">
         {schema.title && <label className="field-label">{schema.title}</label>}
         <HF_ProviderPicker endpoint="/v1/cross_encoder_providers" value={value} onChange={onChange} label={schema.title || "Cross-encoder"} />
@@ -76,7 +88,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
   }
   if (widget === "ssp-picker") {
     const err = (errors || []).find((e) => e.path === path);
-    return (
+    return renderInner(
       <div className="field">
         {schema.title && <label className="field-label">{schema.title}</label>}
         <HF_ProviderPicker endpoint="/v1/ssp" value={value} onChange={onChange} label={schema.title || "SSP"} />
@@ -89,7 +101,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
   // enum → select
   if (schema.enum) {
     const err = (errors || []).find((e) => e.path === path);
-    return (
+    return renderInner(
       <div className="field">
         {schema.title && <label className="field-label">{schema.title}</label>}
         <select
@@ -111,7 +123,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
 
   // boolean → checkbox
   if (type === "boolean") {
-    return (
+    return renderInner(
       <div className="field">
         <label className="field-label" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           <input
@@ -129,7 +141,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
   // number / integer → number input
   if (type === "number" || type === "integer") {
     const err = (errors || []).find((e) => e.path === path);
-    return (
+    return renderInner(
       <div className="field">
         {schema.title && <label className="field-label">{schema.title}</label>}
         <input
@@ -153,7 +165,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
   if (type === "string" || (!type && !schema.properties && !schema.items)) {
     const err = (errors || []).find((e) => e.path === path);
     const isTextarea = widget === "textarea";
-    return (
+    return renderInner(
       <div className="field">
         {schema.title && <label className="field-label">{schema.title}</label>}
         {isTextarea ? (
@@ -183,7 +195,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
     const props = schema.properties || {};
     const keys = Object.keys(props);
     const obj = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-    return (
+    return renderInner(
       <fieldset style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "8px 12px", margin: "4px 0" }}>
         {schema.title && <legend style={{ fontSize: 12, color: "var(--text-2)", padding: "0 4px" }}>{schema.title}</legend>}
         {schema.description && <div className="field-help" style={{ marginBottom: 8 }}>{schema.description}</div>}
@@ -211,7 +223,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
   if (type === "array") {
     const items = Array.isArray(value) ? value : [];
     const itemSchema = schema.items || { type: "string" };
-    return (
+    return renderInner(
       <div className="field">
         {schema.title && <label className="field-label">{schema.title}</label>}
         {schema.description && <div className="field-help">{schema.description}</div>}
@@ -253,7 +265,7 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
   }
 
   // Fallback — unknown type
-  return (
+  return renderInner(
     <div className="field">
       {schema.title && <label className="field-label">{schema.title}</label>}
       <pre className="code-block" style={{ fontSize: 11 }}>{JSON.stringify(value, null, 2)}</pre>
