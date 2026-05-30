@@ -167,3 +167,124 @@ class TestChatRunnerCompaction:
         assert runner._marker_persisted is False
         assert message_storage.create.await_count == 0
         assert history == original
+
+
+def _row(seq: int, kind: str, payload: dict[str, Any]) -> ChatMessage:
+    return ChatMessage(
+        id=ChatMessage.make_id("c1", seq),
+        chat_id="c1",
+        seq=seq,
+        kind=kind,  # type: ignore[arg-type]
+        payload=payload,
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+def _stub_message_storage(rows: list[ChatMessage]) -> AsyncMock:
+    """Build a message-storage mock whose ``find`` returns ``rows`` in
+    one page.
+
+    ``_read_messages_full`` calls ``find(predicate, CursorPage(...))``
+    and loops until ``next_cursor`` is falsy. A single-page response
+    with ``next_cursor=None`` is enough for these tests.
+    """
+    page = MagicMock()
+    page.items = rows
+    page.next_cursor = None
+    storage = AsyncMock()
+    storage.find = AsyncMock(return_value=page)
+    return storage
+
+
+class TestHistoryReassembly:
+    async def test_load_history_replaces_pre_marker_rows_with_summary(
+        self,
+    ) -> None:
+        """A ``compaction_marker`` row collapses every prior row into
+        a single synthetic assistant message carrying ``payload.summary``;
+        rows after the marker are translated as usual."""
+        rows = [
+            _row(1, "user_message", {"content": "old 1"}),
+            _row(2, "assistant_token", {"delta": "old reply"}),
+            _row(3, "done", {"stop_reason": "stop"}),
+            _row(
+                4, "compaction_marker",
+                {
+                    "summary": "SUMMARY HERE",
+                    "replaced_from_seq": 1,
+                    "replaced_to_seq": 3,
+                    "model": "gpt-4o",
+                    "tokens_before": 999,
+                    "tokens_after": 9,
+                    "compaction_prompt_source": "default",
+                    "created_at": "2026-05-30T14:30:00Z",
+                },
+            ),
+            _row(5, "user_message", {"content": "new"}),
+            _row(6, "assistant_token", {"delta": "fresh reply"}),
+            _row(7, "done", {"stop_reason": "stop"}),
+        ]
+        storage = _stub_message_storage(rows)
+        runner = _make_runner(message_storage=storage)
+
+        loaded = await runner._load_history("c1")
+
+        # synthetic assistant summary + user "new" + assistant "fresh reply"
+        assert len(loaded) == 3
+        assert loaded[0].role == "assistant"
+        assert loaded[0].parts[0].text == "SUMMARY HERE"
+        assert loaded[1].role == "user"
+        assert loaded[1].parts[0].text == "new"
+        assert loaded[2].role == "assistant"
+        assert loaded[2].parts[0].text == "fresh reply"
+
+    async def test_load_history_uses_last_marker_when_multiple(self) -> None:
+        """If the chat has more than one marker (rare — only possible
+        after repeated forced compactions), only the last one's summary
+        survives. Older rows are dropped entirely."""
+        rows = [
+            _row(1, "user_message", {"content": "v1"}),
+            _row(
+                2, "compaction_marker",
+                {"summary": "FIRST PASS", "replaced_from_seq": 1, "replaced_to_seq": 1},
+            ),
+            _row(3, "user_message", {"content": "v2"}),
+            _row(
+                4, "compaction_marker",
+                {"summary": "SECOND PASS", "replaced_from_seq": 1, "replaced_to_seq": 3},
+            ),
+            _row(5, "user_message", {"content": "v3"}),
+            _row(6, "assistant_token", {"delta": "after"}),
+            _row(7, "done", {"stop_reason": "stop"}),
+        ]
+        storage = _stub_message_storage(rows)
+        runner = _make_runner(message_storage=storage)
+
+        loaded = await runner._load_history("c1")
+
+        # synthetic summary + user "v3" + assistant "after"
+        assert len(loaded) == 3
+        assert loaded[0].role == "assistant"
+        assert loaded[0].parts[0].text == "SECOND PASS"
+        assert loaded[1].role == "user"
+        assert loaded[1].parts[0].text == "v3"
+        assert loaded[2].role == "assistant"
+        assert loaded[2].parts[0].text == "after"
+
+    async def test_load_history_unaffected_when_no_marker(self) -> None:
+        """No marker row → translation matches the pre-compaction path."""
+        rows = [
+            _row(1, "user_message", {"content": "hi"}),
+            _row(2, "assistant_token", {"delta": "hello"}),
+            _row(3, "done", {"stop_reason": "stop"}),
+        ]
+        storage = _stub_message_storage(rows)
+        runner = _make_runner(message_storage=storage)
+
+        loaded = await runner._load_history("c1")
+
+        assert len(loaded) == 2
+        assert loaded[0].role == "user"
+        assert loaded[0].parts[0].text == "hi"
+        assert loaded[1].role == "assistant"
+        assert loaded[1].parts[0].text == "hello"

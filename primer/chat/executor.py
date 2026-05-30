@@ -599,7 +599,30 @@ class ChatTurnRunner:
         # so subsequent turns don't replay the same upstream 400.
         rows = [r for r in rows if not (r.payload or {}).get("_history_excluded")]
 
+        # Compaction marker reassembly: if the chat has been compacted
+        # at any point, replace every row at or before the *last*
+        # marker with a single synthetic assistant message carrying
+        # the marker's summary text. Everything after the marker is
+        # translated normally below. This keeps the live prompt small
+        # without losing the rolled-up context.
+        synthetic_summary: Message | None = None
+        last_marker_idx = -1
+        for idx, row in enumerate(rows):
+            if row.kind == "compaction_marker":
+                last_marker_idx = idx
+        if last_marker_idx >= 0:
+            marker = rows[last_marker_idx]
+            summary_text = (marker.payload or {}).get("summary") or ""
+            if summary_text:
+                synthetic_summary = Message(
+                    role="assistant",
+                    parts=[TextPart(text=summary_text)],
+                )
+            rows = rows[last_marker_idx + 1:]
+
         out: list[Message] = []
+        if synthetic_summary is not None:
+            out.append(synthetic_summary)
         current_assistant_text: list[str] = []
         current_assistant_tools: list[ToolCallPart] = []
         current_tool_results: list[ToolResultPart] = []
