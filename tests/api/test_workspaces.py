@@ -772,8 +772,11 @@ class TestWorkspaceRouter:
         assert "last_probe_ok" in body
         assert "failure_reason" in body
         assert "runtime_meta" in body
-        # Fresh row defaults driven by primer/workspace/probe.py.
-        assert body["phase"] == "pending"
+        # The create handler marks freshly-materialised workspaces as
+        # "running" so the probe loop owns the row from tick #1; the
+        # ambient row default is "pending" but should never surface
+        # via the create path.
+        assert body["phase"] == "running"
         assert body["last_probe_at"] is None
         assert body["last_probe_ok"] is False
         assert body["failure_reason"] is None
@@ -871,7 +874,7 @@ class TestWorkspaceRouter:
             assert "last_probe_ok" in item
             assert "failure_reason" in item
             assert "runtime_meta" in item
-            assert item["phase"] == "pending"
+            assert item["phase"] == "running"
 
 
 # ===========================================================================

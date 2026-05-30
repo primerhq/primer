@@ -20,8 +20,9 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from primer.model.storage import OffsetPage
+from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.workspace import Workspace as WorkspaceRow
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
 
 
 if TYPE_CHECKING:
@@ -81,11 +82,11 @@ class WorkspaceProbeTask:
         self._stop_event.set()
 
     async def tick(self) -> None:
-        """One probe pass: ping every running+failed workspace.
+        """One probe pass: ping every pending / running / failed workspace.
 
-        Iterates pages of :class:`Workspace` rows, skips any row whose
-        ``phase`` is not ``running`` or ``failed``, pings the rest via
-        the registry, updates streak counters, and writes the new state
+        Iterates pages of :class:`Workspace` rows, skips terminating
+        rows (which are being destroyed), pings the rest via the
+        registry, updates streak counters, and writes the new state
         back to storage.
         """
         storage = self._sp.get_storage(WorkspaceRow)
@@ -97,7 +98,7 @@ class WorkspaceProbeTask:
             )
             items = list(page.items)
             for ws in items:
-                if ws.phase not in ("running", "failed"):
+                if ws.phase not in ("pending", "running", "failed"):
                     continue
                 await self._probe_one(storage, ws)
             if len(items) < _LIST_PAGE_SIZE:
@@ -128,6 +129,15 @@ class WorkspaceProbeTask:
                         fail_reason or "runtime unreachable"
                     )
                     self._miss_counts.pop(ws.id, None)
+        elif ws.phase == "pending":
+            # A freshly-created workspace that the create handler didn't
+            # mark "running" (e.g. an upgrade from an older row, or a
+            # row created via a path that bypassed the handler). One
+            # successful ping is enough to promote — the workspace is
+            # already materialised, we just hadn't observed that fact.
+            if ok:
+                updates["phase"] = "running"
+                updates["failure_reason"] = None
         elif ws.phase == "failed":
             if ok:
                 self._hit_counts[ws.id] += 1
@@ -144,6 +154,72 @@ class WorkspaceProbeTask:
         except Exception:  # noqa: BLE001 -- log and continue
             logger.exception(
                 "workspace probe: failed to persist update for %s", ws.id
+            )
+            return
+
+        # When the workspace transitions to failed, reconcile any
+        # session row still pointing at it — without this sweep, RUNNING
+        # / CREATED / WAITING / PAUSED sessions on a dead workspace are
+        # orphaned forever (worker can never re-attach to the runtime,
+        # so the row never reaches ENDED on its own).
+        if updates.get("phase") == "failed":
+            await self._reconcile_sessions_for_failed_workspace(ws.id)
+
+    async def _reconcile_sessions_for_failed_workspace(
+        self, workspace_id: str
+    ) -> None:
+        """Mark every non-ENDED session on a failed workspace as
+        ENDED/`workspace_lost` so the UI doesn't surface immortal rows."""
+        try:
+            session_storage = self._sp.get_storage(WorkspaceSession)
+        except Exception:  # noqa: BLE001 -- storage layer unavailable
+            logger.warning(
+                "workspace probe: session storage unavailable, "
+                "cannot reconcile %s", workspace_id,
+            )
+            return
+
+        try:
+            page = await session_storage.find(
+                Predicate(
+                    left=FieldRef(name="workspace_id"),
+                    op=Op.EQ,
+                    right=Value(value=workspace_id),
+                ),
+                OffsetPage(offset=0, length=_LIST_PAGE_SIZE),
+            )
+        except Exception:  # noqa: BLE001 -- find unavailable
+            logger.exception(
+                "workspace probe: failed to query sessions on %s",
+                workspace_id,
+            )
+            return
+
+        now = datetime.now(timezone.utc)
+        reconciled = 0
+        for sess in page.items:
+            if sess.status == SessionStatus.ENDED:
+                continue
+            updated_sess = sess.model_copy(update={
+                "status": SessionStatus.ENDED,
+                "ended_reason": "workspace_lost",
+                "ended_at": now,
+            })
+            try:
+                await session_storage.update(updated_sess)
+            except Exception:  # noqa: BLE001 -- log + continue
+                logger.exception(
+                    "workspace probe: failed to reconcile session %s on %s",
+                    sess.id, workspace_id,
+                )
+                continue
+            reconciled += 1
+
+        if reconciled:
+            logger.info(
+                "workspace probe: reconciled %d session(s) on failed "
+                "workspace %s as ENDED/workspace_lost",
+                reconciled, workspace_id,
             )
 
 

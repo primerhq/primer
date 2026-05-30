@@ -437,12 +437,17 @@ async def create_workspace(
     live = await registry.materialise(template=template, overrides=body.overrides)
 
     row_id = body.id if body.id is not None else live.id
+    # Mark the row "running" immediately — materialise() returned a live
+    # handle, so the workspace IS up. The probe loop transitions from
+    # running <-> failed thereafter; without this initial mark the row
+    # would sit at the default "pending" forever and the probe skips it.
     row = WorkspaceRow(
         id=row_id,
         template_id=body.template_id,
         provider_id=template.provider_id,
         overrides=body.overrides,
         created_at=datetime.now(timezone.utc),
+        phase="running",
         runtime_meta=live.runtime_meta,
     )
     await workspace_storage.create(row)
