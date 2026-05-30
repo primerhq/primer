@@ -1,4 +1,4 @@
-/* global React, ReactDOM, Sidebar, Topbar, SessionsList, SessionDetail, Icon, Btn, StatusPill, CommandPalette, Banner, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, Sparkline, HarnessesPage */
+/* global React, ReactDOM, Sidebar, MobileNav, Topbar, SessionsList, SessionDetail, Icon, Btn, StatusPill, CommandPalette, Banner, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, Sparkline, HarnessesPage */
 
 const ACCENT_OPTIONS = {
   "Primer green": { h: 145, c: 0.18, l: 0.85 },
@@ -102,6 +102,10 @@ function App() {
     window.location.hash = next;
   };
   const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const [drawerOpen, setDrawerOpen] = React.useState(false);
+  React.useEffect(() => {
+    setDrawerOpen(false);
+  }, [path]);
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(() => {
     try { return localStorage.getItem("primer.sidebar.iconsOnly") === "1"; } catch { return false; }
   });
@@ -1007,9 +1011,9 @@ function App() {
 
   return (
     <div className={`app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <Topbar workerStats={workerStats} onNavigate={navigate} onOpenPalette={() => setPaletteOpen(true)} />
-      <Sidebar
-        page={
+      <Topbar workerStats={workerStats} onNavigate={navigate} onOpenPalette={() => setPaletteOpen(true)} onOpenDrawer={() => setDrawerOpen(true)} />
+      {(() => {
+        const sidebarPage = (
           page === "session-detail" ? "sessions"
           : page === "workspace-detail" ? "workspaces"
           : page === "workspace-provider-detail" ? "workspace-providers"
@@ -1022,13 +1026,27 @@ function App() {
           : page === "channel-provider-detail" ? "channel-providers"
           : page === "toolset-detail" ? "toolsets"
           : page
-        }
-        onNavigate={navigate}
-        counts={counts}
-        subsystemOn={subsystemOn}
-        collapsed={sidebarCollapsed}
-        onCollapseToggle={toggleSidebar}
-      />
+        );
+        const sidebarProps = {
+          page: sidebarPage,
+          onNavigate: navigate,
+          counts,
+          subsystemOn,
+          collapsed: sidebarCollapsed,
+          onCollapseToggle: toggleSidebar,
+        };
+        return (
+          <>
+            <Sidebar {...sidebarProps} />
+            <MobileNav
+              {...sidebarProps}
+              open={drawerOpen}
+              onClose={() => setDrawerOpen(false)}
+              onNavigate={(id, arg) => { setDrawerOpen(false); navigate(id, arg); }}
+            />
+          </>
+        );
+      })()}
       <main className="main">
         <div className="page-header">
           {pageHeader}
