@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Banner, Modal, relativeTime */
+/* global React, Icon, Btn, Banner, Modal, CardList, Card, Fab, relativeTime */
 // Task 7 (UI reconciliation Phase 2):
 // Wires GraphsPage + GraphDetail to the real API. The detail body
 // is the full visual graph editor ported wholesale from the pre-swap
@@ -180,7 +180,8 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
 // ============================================================================
 
 function GraphsPage({ onOpen, pushToast }) {
-  const { apiFetch, useResource } = window.primerApi;
+  const { apiFetch, useResource, useViewport } = window.primerApi;
+  const { isMobile } = useViewport();
   const list = useResource(
     "graphs:list",
     (s) => apiFetch("GET", "/graphs?limit=200", null, { signal: s }),
@@ -234,6 +235,49 @@ function GraphsPage({ onOpen, pushToast }) {
         </div>
       </div>
 
+      {isMobile ? (
+        list.loading && items.length === 0 ? (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
+        ) : list.error && items.length === 0 ? (
+          <Banner
+            kind="error"
+            title={list.error.title || "Couldn't load graphs"}
+            detail={list.error.detail || list.error.message}
+            actions={<Btn size="sm" icon="refresh" onClick={() => list.refetch()}>Retry</Btn>}
+          />
+        ) : (
+          <CardList
+            items={filtered}
+            empty={items.length === 0 ? "No graphs yet." : "No graphs match."}
+            renderCard={(g) => {
+              const status = perRowStatus[g.id];
+              const nodeCount = (g.nodes || []).length;
+              const edgeCount = (g.edges || []).length;
+              const statusPill = status == null
+                ? null
+                : status.ok === true
+                  ? <span className="pill pill-ended"><span className="dot"></span>ok</span>
+                  : status.ok === false
+                    ? <span className="pill pill-failed"><span className="dot"></span>{(status.issues || []).length} issue{(status.issues || []).length === 1 ? "" : "s"}</span>
+                    : <span className="muted" title={status.error}>err</span>;
+              const metaParts = [
+                `${nodeCount} node${nodeCount === 1 ? "" : "s"}`,
+                `${edgeCount} edge${edgeCount === 1 ? "" : "s"}`,
+              ];
+              if (g.entry_node_id) metaParts.push(`entry: ${g.entry_node_id}`);
+              return (
+                <Card
+                  title={g.id}
+                  subtitle={g.description || null}
+                  pill={statusPill}
+                  meta={metaParts.join(" · ")}
+                  onClick={() => onOpen(g.id)}
+                />
+              );
+            }}
+          />
+        )
+      ) : (
       <div className="tbl-wrap">
         <table className="tbl">
           <thead>
@@ -309,6 +353,11 @@ function GraphsPage({ onOpen, pushToast }) {
           </tbody>
         </table>
       </div>
+      )}
+
+      {isMobile && (
+        <Fab icon="plus" label="New graph" onClick={() => setCreateOpen(true)} />
+      )}
 
       {createOpen && (
         <GR_NewGraphModal
