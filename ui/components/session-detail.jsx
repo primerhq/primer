@@ -31,7 +31,6 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
   const [steer, setSteer] = React.useState("");
   const [showCancel, setShowCancel] = React.useState(false);
   const [queuedInstructions, setQueuedInstructions] = React.useState([]);
-  const [turnsOpen, setTurnsOpen] = React.useState(true);
   const [errorOpen, setErrorOpen] = React.useState(true);
   const [metaOpen, setMetaOpen] = React.useState(false);
 
@@ -158,7 +157,6 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
   }
   if (!session) return null;
 
-  const turns = Array.isArray(session.turns) ? session.turns : [];
   const lastWorker = session.last_worker_id || session.worker_id;
   const boundAgent = session.binding?.agent_id || session.agent_id;
   const boundGraph = session.binding?.graph_id || session.graph_id;
@@ -180,10 +178,10 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
                   <StatusPill status={session.status} />
                   <span className="muted text-sm">
-                    {session.status === "running" && `turn ${session.turn_count ?? 0}${session.started_at ? ` · started ${relativeTime(_sdAgeSec(session.started_at))}` : ""}`}
-                    {session.status === "paused" && `paused at turn ${session.turn_count ?? 0}`}
+                    {session.status === "running" && `turn ${session.turn_no ?? session.turn_count ?? 0}${session.started_at ? ` · started ${relativeTime(_sdAgeSec(session.started_at))}` : ""}`}
+                    {session.status === "paused" && `paused at turn ${session.turn_no ?? session.turn_count ?? 0}`}
                     {session.status === "created" && "awaiting worker claim"}
-                    {(session.status === "ended" || session.status === "completed") && `completed ${session.turn_count ?? 0} turn${(session.turn_count ?? 0) === 1 ? "" : "s"}`}
+                    {(session.status === "ended" || session.status === "completed") && `completed ${session.turn_no ?? session.turn_count ?? 0} turn${(session.turn_no ?? session.turn_count ?? 0) === 1 ? "" : "s"}`}
                     {session.status === "failed" && "failed during execution"}
                     {session.status === "cancelled" && "cancelled by operator"}
                   </span>
@@ -244,38 +242,6 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
               </div>
             </div>
   ) : null;
-
-  const turnsPanel = (
-          <div className="panel">
-            <div className="panel-h" onClick={() => setTurnsOpen(!turnsOpen)} style={{ cursor: "pointer" }}>
-              <Icon name={turnsOpen ? "chevron-down" : "chevron-right"} size={12} className="muted" />
-              <span>Turns timeline</span>
-              <span className="sub">· {turns.length} turn{turns.length === 1 ? "" : "s"}</span>
-              <div className="right">
-                {session.status === "running" && (
-                  <span className="text-sm mono" style={{ color: "var(--blue)" }}>● live</span>
-                )}
-              </div>
-            </div>
-            {turnsOpen && (
-              <div className="panel-body">
-                {turns.length === 0 ? (
-                  <div className="muted text-sm" style={{ textAlign: "center", padding: 20 }}>
-                    {session.status === "created"
-                      ? "No turns yet — session is awaiting worker claim."
-                      : "No turns yet on this session's row."}
-                  </div>
-                ) : (
-                  <div className="turn-list">
-                    {turns.map((t, i) => (
-                      <TurnRow key={i} turn={t} index={i} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-  );
 
   const liveStreamPanel = wid ? (
             <SessionLiveStream sid={sid} wid={wid} session={session} pushToast={pushToast} />
@@ -488,7 +454,6 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
         <div className="col" style={{ gap: 14, padding: 12 }}>
           {signalsPanel}
           {instructionsPanel}
-          {turnsPanel}
           {lastErrorPanel}
           {metadataPanel}
         </div>
@@ -521,7 +486,6 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
           <div className="col" style={{ gap: 14 }}>
             {headerPanel}
             {instructionsPanel}
-            {turnsPanel}
             {liveStreamPanel}
             {lastErrorPanel}
             {metadataPanel}

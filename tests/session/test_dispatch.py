@@ -475,3 +475,68 @@ async def test_already_ended_row_drops_lease_without_executor(
 
     assert outcome.drop_lease is True
     assert not executor_called
+
+
+@pytest.mark.asyncio
+async def test_clean_completion_transitions_to_ended_completed(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """After a clean turn (Done with stop_reason='stop'), the session
+    row MUST transition to ENDED/completed. Pre-fix the row stayed
+    at RUNNING forever — a one-shot session would never end."""
+    fake_executor = FakeExecutor([
+        TextDelta(text="4", index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.success is True
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(seeded_session.id)
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "completed"
+    assert row.ended_at is not None
+
+
+@pytest.mark.asyncio
+async def test_executor_error_transitions_to_ended_failed(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """When the executor raises, the row must transition to ENDED/failed."""
+    fake_executor = FakeExecutor([RuntimeError("kaboom")])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.success is False
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(seeded_session.id)
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "failed"

@@ -200,6 +200,12 @@ async def run_one_session_turn(
         await deps.event_bus.publish(
             f"session:{session_id}:tick", {"seq": seq}
         )
+        await _transition_session_status(
+            session_storage,
+            session,
+            new_status=SessionStatus.ENDED,
+            ended_reason="failed",
+        )
         return ReleaseOutcome(success=False, drop_lease=True)
 
     finally:
@@ -210,7 +216,7 @@ async def run_one_session_turn(
             pass
 
     # ------------------------------------------------------------------
-    # 5b. Cancel path — write CANCELLED record
+    # 5b. Cancel path — write CANCELLED record, transition row to ENDED
     # ------------------------------------------------------------------
     if cancel_requested:
         rec = _cancelled_record(cancel_reason)
@@ -219,15 +225,30 @@ async def run_one_session_turn(
         await deps.event_bus.publish(
             f"session:{session_id}:tick", {"seq": seq}
         )
+        await _transition_session_status(
+            session_storage,
+            session,
+            new_status=SessionStatus.ENDED,
+            ended_reason="cancelled",
+        )
         return ReleaseOutcome(success=True, drop_lease=True)
 
     # ------------------------------------------------------------------
     # 6. Clean completion — write DONE record (if not already written by
-    #    translate_stream_event), flush, final tick
+    #    translate_stream_event), flush, final tick, then transition the
+    #    scheduler-visible row based on what the executor did.
     # ------------------------------------------------------------------
-    # flush any remaining buffer (translate_stream_event already emitted
-    # the DONE record if the executor sent a Done event; no extra record needed)
     await writer.flush()
+
+    last_done_reason = getattr(executor, "last_done_reason", None)
+    agent_status = await _read_agent_session_status(executor)
+    new_status, ended_reason = _post_turn_status(last_done_reason, agent_status)
+    await _transition_session_status(
+        session_storage,
+        session,
+        new_status=new_status,
+        ended_reason=ended_reason,
+    )
 
     return ReleaseOutcome(success=True, drop_lease=True)
 
@@ -263,6 +284,104 @@ def _cancelled_record(reason: str) -> SessionMessageRecord:
         payload={"reason": reason},
         created_at=_now(),
     )
+
+
+async def _read_agent_session_status(executor) -> SessionStatus | None:
+    """Read the on-disk AgentSession's status after a clean turn.
+
+    The agent executor (see primer/agent/workspace_executor.py) sets
+    the AgentSession status as a side effect: ENDED on stop_reason=error,
+    WAITING when the assistant ends with a question, etc. The dispatch
+    propagates that decision to the scheduler-visible WorkspaceSession
+    row. Returns None if the executor doesn't expose ``.session.status()``.
+    """
+    inner = getattr(executor, "session", None)
+    if inner is None:
+        return None
+    status_fn = getattr(inner, "status", None)
+    if status_fn is None:
+        return None
+    try:
+        return await status_fn()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Mapping from Done.stop_reason -> (new_status, ended_reason).
+# Mirrors primer/worker/pool.py::_infer_post_turn_status, but here we
+# prefer a terminal ENDED transition for clean stops so a one-shot
+# session (the common UI flow) actually ends instead of looping on
+# the same input forever. tool_use still leaves status RUNNING — the
+# worker will pick up the next turn that the executor itself queues.
+_STOP_REASON_TO_STATUS: dict[str, tuple[SessionStatus, str | None]] = {
+    "stop": (SessionStatus.ENDED, "completed"),
+    "end_turn": (SessionStatus.ENDED, "completed"),
+    "stop_sequence": (SessionStatus.ENDED, "completed"),
+    "tool_use": (SessionStatus.RUNNING, None),
+    "max_tokens": (SessionStatus.WAITING, None),
+    "error": (SessionStatus.ENDED, "failed"),
+    "content_filter": (SessionStatus.WAITING, None),
+    "graph_ended": (SessionStatus.ENDED, "completed"),
+}
+
+
+def _post_turn_status(
+    last_done_reason: str | None,
+    agent_status: SessionStatus | None,
+) -> tuple[SessionStatus, str | None]:
+    """Decide the WorkspaceSession.status to write after a clean turn.
+
+    Precedence: a definitive AgentSession decision wins (the executor
+    set ENDED on internal error, WAITING on a user-input prompt heuristic,
+    etc.). Otherwise fall back to the LLM's last stop reason. The default
+    when neither is informative is ENDED/completed — a one-shot session
+    shouldn't perpetually sit at RUNNING.
+    """
+    # An executor-set ENDED is authoritative.
+    if agent_status == SessionStatus.ENDED:
+        # Translate ended-but-stop-reason into a finer reason when we can.
+        mapped = _STOP_REASON_TO_STATUS.get(last_done_reason or "", (None, None))
+        return (SessionStatus.ENDED, mapped[1] or "completed")
+    # Executor-set WAITING (e.g. assistant asked a question heuristic).
+    if agent_status == SessionStatus.WAITING:
+        return (SessionStatus.WAITING, None)
+    # Stop-reason mapping.
+    if last_done_reason is None:
+        return (SessionStatus.ENDED, "completed")
+    mapped = _STOP_REASON_TO_STATUS.get(last_done_reason)
+    if mapped is None:
+        return (SessionStatus.ENDED, "completed")
+    return mapped
+
+
+async def _transition_session_status(
+    session_storage,
+    session: WorkspaceSession,
+    *,
+    new_status: SessionStatus,
+    ended_reason: str | None = None,
+) -> None:
+    """Update the WorkspaceSession row in storage. Idempotent on no-op."""
+    # Re-read the current row so we don't overwrite concurrent changes.
+    fresh = await session_storage.get(session.id)
+    if fresh is None:
+        return
+    if fresh.status == new_status and (
+        ended_reason is None or fresh.ended_reason == ended_reason
+    ):
+        return
+    updates: dict[str, object | None] = {"status": new_status}
+    if new_status == SessionStatus.ENDED:
+        updates["ended_at"] = datetime.now(timezone.utc)
+        if ended_reason is not None:
+            updates["ended_reason"] = ended_reason
+    try:
+        await session_storage.update(fresh.model_copy(update=updates))
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "dispatch: failed to transition session %s to %s",
+            session.id, new_status.value,
+        )
 
 
 async def _cancel_watcher(
