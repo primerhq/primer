@@ -42,6 +42,9 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from primer.agent.compaction import CompactionStrategy
+from primer.agent.compaction_mixin import (
+    should_compact as _mixin_should_compact,
+)
 from primer.agent.events import (
     AgentEventSubscriber,
     Subscription,
