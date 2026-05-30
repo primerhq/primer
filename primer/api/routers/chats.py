@@ -34,6 +34,7 @@ from fastapi import (
     Depends,
     Path,
     Query,
+    Request,
     WebSocket,
     WebSocketDisconnect,
     status,
@@ -204,6 +205,10 @@ async def end_chat(
             pass
         if engine is not None:
             await engine.delete_lease(ClaimKind.CHAT, chat_id)
+        # Drop the per-chat usage cache entry so subsequent recreations
+        # of a same-named chat start clean.
+        from primer.chat.usage_cache import clear_usage
+        clear_usage(chat_id)
         return {"id": chat_id, "deleted": True}
 
     if chat.status == "ended":
@@ -285,6 +290,7 @@ class CompactResponse(BaseModel):
     responses=common_responses(404, 409, 422, 500, 503),
 )
 async def compact_chat(
+    request: Request,
     chat_id: str = Path(...),
     sp=Depends(get_storage_provider),
     agents=Depends(get_agent_storage),
@@ -422,11 +428,22 @@ async def compact_chat(
     fresh.last_seq = next_seq
     await chat_storage.update(fresh)
 
-    # 7) TODO(T10): emit a ws-side tick + marker envelope so live
-    #    sessions see the marker without an explicit poll. The bus
-    #    plumbing for the per-chat tick goes through the same event
-    #    key the worker uses ("chat:<id>:tick"); leaving the wiring
-    #    to T10 keeps this commit small.
+    # 7) Publish a per-chat tick so any live WS subscriber picks up
+    #    the new marker row + the translated ``compaction`` envelope
+    #    (spec §6.4). Mirrors the dispatcher's per-row tick in
+    #    ``primer.chat.dispatch``. The bus is optional — when absent
+    #    the row is still persisted and the next cursor-replay covers
+    #    the gap.
+    event_bus = getattr(request.app.state, "event_bus", None)
+    if event_bus is not None:
+        try:
+            await event_bus.publish(
+                f"chat:{chat_id}:tick", {"seq": next_seq},
+            )
+        except Exception:  # noqa: BLE001 — never break the REST response
+            logger.exception(
+                "compact_chat: failed to publish tick for chat %s", chat_id,
+            )
 
     return CompactResponse(
         compaction_marker_seq=next_seq,
@@ -482,6 +499,49 @@ async def _replay_since_cursor(
     return last_emitted
 
 
+def _compaction_envelope(msg: ChatMessage) -> dict[str, Any]:
+    """Translate a ``compaction_marker`` row into the WS 'compaction' envelope.
+
+    Spec §6.4: the on-the-wire ``compaction`` envelope carries the
+    rolled-up summary plus before/after token counts and the seq
+    range that the marker replaced. Mirrors the payload shape
+    persisted in :func:`compact_chat` / :class:`ChatTurnRunner._maybe_compact_history`.
+    """
+    payload = msg.payload or {}
+    return {
+        "kind": "compaction",
+        "seq": msg.seq,
+        "summary": payload.get("summary", ""),
+        "tokens_before": payload.get("tokens_before", 0),
+        "tokens_after": payload.get("tokens_after", 0),
+        "replaced_from_seq": payload.get("replaced_from_seq"),
+        "replaced_to_seq": payload.get("replaced_to_seq"),
+    }
+
+
+def _usage_envelope(chat_id: str, context_length: int) -> dict[str, Any]:
+    """Build the WS 'usage' envelope for a chat using the cached counters.
+
+    Spec §6.4: every WS session starts with an initial ``usage``
+    frame (zeros if nothing has run yet) and re-emits one after each
+    ``done`` row so the context-meter UI stays in sync.
+    """
+    from primer.chat.usage_cache import get_usage
+    cached = get_usage(chat_id)
+    used_pct = (
+        cached["input_tokens"] / context_length
+        if context_length > 0 else 0.0
+    )
+    return {
+        "kind": "usage",
+        "seq": None,
+        "input_tokens": cached["input_tokens"],
+        "output_tokens": cached["output_tokens"],
+        "context_length": context_length,
+        "used_pct": used_pct,
+    }
+
+
 def _message_to_wire(msg: ChatMessage) -> dict[str, Any]:
     """Render a :class:`ChatMessage` for the WebSocket protocol.
 
@@ -490,7 +550,13 @@ def _message_to_wire(msg: ChatMessage) -> dict[str, Any]:
     the spec's TypeScript union (``{ kind: ..., seq: ..., delta:
     ..., ... }``) and means clients don't need to unwrap a nested
     ``payload`` key.
+
+    ``compaction_marker`` rows are translated to the dedicated
+    ``compaction`` envelope (spec §6.4) so client code can branch on
+    a stable envelope kind regardless of the underlying row schema.
     """
+    if msg.kind == "compaction_marker":
+        return _compaction_envelope(msg)
     out: dict[str, Any] = {"kind": msg.kind, "seq": msg.seq}
     out.update(msg.payload or {})
     return out

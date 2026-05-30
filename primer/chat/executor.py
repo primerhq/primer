@@ -260,6 +260,10 @@ class ChatTurnRunner:
         ``chat.last_seq`` field is NOT updated to match (the caller
         should ensure it is already ≥ the row's seq before calling).
         """
+        # Stash the active chat id so ``_record_usage`` can route the
+        # Usage event into the per-chat cache (spec §6.4).
+        self._active_chat_id = chat.id
+
         # Normalise to a list of Parts.
         if isinstance(user_input, str):
             parts: list = [TextPart(text=user_input)]
@@ -826,13 +830,17 @@ class ChatTurnRunner:
     def _record_usage(self, ev: Usage) -> None:
         """Stash per-chat last input/output tokens from a ``Usage`` event.
 
-        The chat-runner currently has no surface that exposes these to
-        the WS, but the workspace executor reads ``_last_input_tokens``
-        for the next compaction-pass decision and we mirror the same
-        contract here so future plumbing can reuse it.
+        Also mirrors the values into :mod:`primer.chat.usage_cache` so
+        the WS layer can build a ``usage`` envelope without re-running
+        the prompt-build math (spec §6.4). ``_active_chat_id`` is set
+        by :meth:`run_turn` before the LLM stream begins.
         """
         self._last_input_tokens = ev.input_tokens
         self._last_output_tokens = ev.output_tokens
+        chat_id = getattr(self, "_active_chat_id", "") or ""
+        if chat_id:
+            from primer.chat.usage_cache import set_usage
+            set_usage(chat_id, ev.input_tokens, ev.output_tokens)
 
     def _build_prompt(
         self,
