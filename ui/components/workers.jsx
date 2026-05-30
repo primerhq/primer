@@ -1,7 +1,8 @@
 /* global React, Icon, Btn, Modal, relativeTime, fmtDate */
 
 function WorkersPage({ sessions, pushToast }) {
-  const { useResource, useMutation, apiFetch } = window.primerApi;
+  const { useResource, useMutation, useViewport, apiFetch } = window.primerApi;
+  const { isMobile } = useViewport();
   const [drainTarget, setDrainTarget] = React.useState(null);
   const [, tick] = React.useState(0);
   // Tick heartbeats live
@@ -74,7 +75,7 @@ function WorkersPage({ sessions, pushToast }) {
   return (
     <div className="col" style={{ gap: 14 }}>
       {/* Summary strip */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+      <div className={`metric-grid ${isMobile ? "metric-grid-mobile" : ""}`} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
         <SummaryStat label="Total" value={workers.length} sub="registered workers" />
         <SummaryStat label="Active" value={totals.active} sub={`${totals.draining} draining`} accent={totals.active === 0 ? "red" : "green"} />
         <SummaryStat label="In flight" value={`${totals.flight} / ${totals.cap}`} sub="claim utilization" accent={totals.cap > 0 && totals.flight / totals.cap > 0.8 ? "amber" : "green"} />
