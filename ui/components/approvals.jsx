@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, relativeTime, fmtDate */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, BottomSheet, relativeTime, fmtDate */
 
 // Top-level scope is shared with the babel-standalone IIFE; prefix all
 // consts with AP_ to avoid clashes with other components.
@@ -32,7 +32,9 @@ const AP_PARKED_PREDICATE = {
 };
 
 function ApprovalsPage({ pushToast, onNavigate }) {
-  const { useResource, apiFetch } = window.primerApi;
+  const { useResource, useViewport, apiFetch } = window.primerApi;
+  // eslint-disable-next-line no-unused-vars
+  const { isMobile } = useViewport();
   const [tab, setTab] = React.useState("pending");
   const [showNew, setShowNew] = React.useState(false);
 
@@ -192,9 +194,11 @@ function AP_PendingPanel({ sessions, chats, loading, error, onNavigate, pushToas
 }
 
 function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
-  const { useResource, useMutation, apiFetch } = window.primerApi;
+  const { useResource, useMutation, useViewport, apiFetch } = window.primerApi;
+  const { isMobile } = useViewport();
   const [rejecting, setRejecting] = React.useState(false);
   const [reason, setReason] = React.useState("");
+  const [sheetOpen, setSheetOpen] = React.useState(false);
 
   // Reuse the same cache key as the banner so a respond from either
   // surface refetches the other.
@@ -244,7 +248,98 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
     setRejecting(false);
     setReason("");
   };
+  const onDeny = () => {
+    // Mobile shortcut: open the inline rejection form inside the sheet.
+    setRejecting(true);
+  };
   const navTarget = scope === "chats" ? "chat-detail" : "session-detail";
+
+  if (isMobile) {
+    const parkedSecLabel = parkedSec != null ? `parked ${relativeTime(parkedSec)}` : null;
+    return (
+      <>
+        <div style={{ padding: "0 var(--mobile-pad-x)" }}>
+          <CardList
+            items={[a]}
+            empty=""
+            renderCard={() => (
+              <Card
+                title={a.tool_name}
+                subtitle={`${scope === "chats" ? "chat" : "session"} · ${id}`}
+                pill={<StatusPill status="paused" />}
+                meta={parkedSecLabel}
+                onClick={() => setSheetOpen(true)}
+              />
+            )}
+          />
+        </div>
+        <BottomSheet
+          open={sheetOpen}
+          onClose={() => { setSheetOpen(false); setRejecting(false); setReason(""); }}
+          title="Review approval"
+          footer={
+            !rejecting ? (
+              <>
+                <button
+                  className="btn touch-target"
+                  data-testid="approval-deny"
+                  onClick={onDeny}
+                >
+                  Deny
+                </button>
+                <button
+                  className="btn btn-primary touch-target"
+                  data-testid="approval-approve"
+                  onClick={() => { onApprove(); setSheetOpen(false); }}
+                >
+                  Approve
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className="btn touch-target"
+                  onClick={() => { setRejecting(false); setReason(""); }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary touch-target"
+                  disabled={!reason.trim() || respond.loading}
+                  onClick={() => { onReject(); setSheetOpen(false); }}
+                >
+                  Send rejection
+                </button>
+              </>
+            )
+          }
+        >
+          <div className="mono" style={{ fontWeight: 600 }}>{a.tool_name}</div>
+          {a.toolset_id && <div className="muted text-sm mono">{a.toolset_id}</div>}
+          {a.gate_reason && (
+            <div className="muted text-sm mt-2">
+              <strong style={{ color: "var(--text)" }}>Gate:</strong> {a.gate_reason}
+            </div>
+          )}
+          <pre className="mono" style={{ whiteSpace: "pre-wrap", marginTop: 8, fontSize: 12 }}>
+            {JSON.stringify(a.arguments || {}, null, 2)}
+          </pre>
+          {rejecting && (
+            <div className="field" style={{ marginTop: 10 }}>
+              <input
+                className="input"
+                placeholder="Reason for rejection (required)…"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                style={{ width: "100%" }}
+                autoFocus
+              />
+            </div>
+          )}
+        </BottomSheet>
+      </>
+    );
+  }
 
   return (
     <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)" }} data-testid={`approval-row-${id}`}>
