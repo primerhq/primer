@@ -1512,7 +1512,7 @@ input, textarea, select { font: inherit; color: inherit; }
     padding: 12px 14px;
     min-height: var(--tap-min);
   }
-  .card-interactive { cursor: pointer; }
+  .card-interactive { cursor: pointer; min-width: var(--tap-min); min-height: var(--tap-min); }
   .card-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
   .card-title-wrap { min-width: 0; flex: 1; }
   .card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1526,6 +1526,7 @@ input, textarea, select { font: inherit; color: inherit; }
     right: var(--mobile-pad-x);
     bottom: calc(var(--mobile-pad-y) + env(safe-area-inset-bottom));
     width: var(--fab-size); height: var(--fab-size);
+    min-width: var(--tap-min); min-height: var(--tap-min);
     border-radius: 50%;
     background: var(--accent);
     color: var(--accent-fg);
@@ -1536,7 +1537,7 @@ input, textarea, select { font: inherit; color: inherit; }
   }
 
   /* MobileTabs. */
-  .mobile-tabs-wrap { display: flex; flex-direction: column; }
+  .mobile-tabs-wrap { display: flex; flex-direction: column; min-width: var(--tap-min); min-height: var(--tap-min); }
   .mobile-tabs {
     display: flex; gap: 4px;
     border-bottom: 1px solid var(--border);
@@ -1544,6 +1545,7 @@ input, textarea, select { font: inherit; color: inherit; }
     background: var(--bg-1);
     position: sticky; top: 48px; z-index: 5;
     overflow-x: auto;
+    min-width: var(--tap-min); min-height: var(--tap-min);
   }
   .mobile-tab {
     background: transparent;
@@ -1554,9 +1556,10 @@ input, textarea, select { font: inherit; color: inherit; }
     cursor: pointer;
     white-space: nowrap;
     font-size: 13px;
+    min-width: var(--tap-min); min-height: var(--tap-min);
   }
-  .mobile-tab.active { color: var(--text); border-bottom-color: var(--accent); }
-  .mobile-tab-panel { flex: 1; min-height: 0; }
+  .mobile-tab.active { color: var(--text); border-bottom-color: var(--accent); min-width: var(--tap-min); min-height: var(--tap-min); }
+  .mobile-tab-panel { flex: 1; min-height: var(--tap-min); min-width: var(--tap-min); }
 
   /* Hamburger. */
   .hamburger {
@@ -1565,6 +1568,7 @@ input, textarea, select { font: inherit; color: inherit; }
     color: var(--text);
     cursor: pointer;
     padding: 8px;
+    min-width: var(--tap-min); min-height: var(--tap-min);
   }
 
   /* Prevent iOS zoom-on-focus. */
