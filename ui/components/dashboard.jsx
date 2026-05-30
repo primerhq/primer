@@ -1,7 +1,8 @@
 /* global React, Icon, StatusPill, Btn, Sparkline, relativeTime, Banner */
 
 function Dashboard({ workerStats, subsystemOn, onNavigate, onNewSession }) {
-  const { useResource, apiFetch } = window.primerApi;
+  const { useResource, apiFetch, useViewport } = window.primerApi;
+  const { isMobile } = useViewport();
 
   // Tile counts — lightweight polls (every 5s).
   const sessionsResource = useResource(
@@ -111,7 +112,10 @@ function Dashboard({ workerStats, subsystemOn, onNavigate, onNewSession }) {
   return (
     <div className="col" style={{ gap: 18 }}>
       {/* System health strip */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+      <div
+        className={`metric-grid ${isMobile ? "metric-grid-mobile" : ""}`}
+        style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}
+      >
         <HealthCard
           icon="worker"
           label="Workers"

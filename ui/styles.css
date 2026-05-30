@@ -1570,6 +1570,14 @@ input, textarea, select { font: inherit; color: inherit; }
   /* Prevent iOS zoom-on-focus. */
   input, textarea, select { font-size: 16px; }
 
+  .metric-grid-mobile {
+    display: flex !important;
+    flex-direction: column;
+    gap: 8px;
+    padding: var(--mobile-pad-y) var(--mobile-pad-x);
+  }
+  .metric-grid-mobile > * { width: 100%; }
+
   /* Reduced motion. */
   @media (prefers-reduced-motion: reduce) {
     .drawer, .sheet { animation: none !important; transition: none !important; }
