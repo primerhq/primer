@@ -1,6 +1,6 @@
 /* global React, Icon, StatusPill, Btn, Sparkline, relativeTime, Banner */
 
-function Dashboard({ workerStats, subsystemOn, onNavigate, onNewSession }) {
+function Dashboard({ workerStats, subsystemOn, icConfig, onNavigate, onNewSession }) {
   const { useResource, apiFetch, useViewport } = window.primerApi;
   const { isMobile } = useViewport();
 
@@ -137,8 +137,12 @@ function Dashboard({ workerStats, subsystemOn, onNavigate, onNewSession }) {
           icon="subsystem"
           label="Internal Collections"
           value={subsystemOn ? "ON" : "OFF"}
-          sub={subsystemOn ? "last bootstrap 14m ago" : "configured · not bootstrapped"}
-          status={subsystemOn ? "ok" : "warn"}
+          sub={
+            subsystemOn ? "active"
+            : icConfig == null ? "not configured"
+            : "configured · bootstrap required"
+          }
+          status={subsystemOn ? "ok" : (icConfig != null ? "warn" : "muted")}
           onClick={() => onNavigate("internal-collections")}
         />
         <HealthCard

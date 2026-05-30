@@ -222,6 +222,26 @@ function App() {
     [realSsps.data]
   );
 
+  // Internal Collections subsystem activation: GET /v1/internal_collections/config.
+  //   404                      -> unconfigured (OFF)
+  //   200 + activated_at unset  -> configured but not bootstrapped (OFF, bell badge)
+  //   200 + activated_at set    -> active (ON)
+  // The sidebar + dashboard tile both derive from this single probe.
+  const icConfig = window.primerApi.useResource(
+    "app:ic-config",
+    async (signal) => {
+      try {
+        return await window.primerApi.apiFetch(
+          "GET", "/internal_collections/config", null, { signal },
+        );
+      } catch (e) {
+        if (e && e.status === 404) return null;
+        throw e;
+      }
+    },
+    { pollMs: 30000 }
+  );
+
   const [tick, setTick] = React.useState(0);
 
   // Live tick — bump running sessions' last_turn_at + occasionally a turn count
@@ -293,7 +313,7 @@ function App() {
     approvals_pending: approvalsPending,
   };
 
-  const subsystemOn = !!tweaks.subsystemOn;
+  const subsystemOn = !!(icConfig.data && icConfig.data.activated_at);
 
   const pushToast = (t) => {
     const id = Math.random().toString(36).slice(2);
@@ -935,6 +955,7 @@ function App() {
       <Dashboard
         workerStats={workerStats}
         subsystemOn={subsystemOn}
+        icConfig={icConfig.data}
         onNavigate={navigate}
         onNewSession={() => setNewSessionOpen(true)}
       />

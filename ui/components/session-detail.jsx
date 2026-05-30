@@ -35,10 +35,9 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
   const [errorOpen, setErrorOpen] = React.useState(true);
   const [metaOpen, setMetaOpen] = React.useState(false);
 
-  // Top-level /v1/sessions/{id} is the authoritative path per app spec
-  // §12 (T0399/T0555/T0611). Poll every 2s while non-terminal; pause
-  // once terminal so we don't spam reads for unchanging rows. The
-  // status check uses a ref so the pauseWhile closure stays stable.
+  // Poll every 2s while non-terminal; pause once terminal so we don't
+  // spam reads for unchanging rows. The status check uses a ref so the
+  // pauseWhile closure stays stable.
   const lastStatusRef = React.useRef(null);
   const detail = useResource(
     `session-detail:${sid}`,
@@ -363,7 +362,6 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
 
               <div className="field-label mt-2" style={{ marginBottom: 4 }}>
                 Steer instruction
-                <span className="hint">does not gate on status — pinned spec §12</span>
               </div>
               <textarea
                 className="textarea mono"
@@ -435,40 +433,6 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
           </div>
   );
 
-  // T0399 stale-cache notice — unconditional per design §3.7
-  // (anomaly-surface for the workspace-path-drifts-after-signals
-  // issue tracked as T0399/T0555/T0611). U0013 pins this banner's
-  // copy + presence.
-  const staleNoticePanel = (
-          <div
-            className="banner banner-info"
-            style={{
-              background: "var(--bg-1)",
-              color: "var(--text-3)",
-              borderColor: "var(--border)",
-            }}
-          >
-            <Icon
-              name="info"
-              size={14}
-              className="ico"
-              style={{ color: "var(--blue)" }}
-            />
-            <div style={{ flex: 1 }}>
-              <div className="title" style={{ color: "var(--text)" }}>
-                Reads are authoritative
-              </div>
-              <div className="detail" style={{ color: "var(--text-3)" }}>
-                This view reads from{" "}
-                <span className="mono" style={{ color: "var(--text)" }}>
-                  /v1/sessions/{`{id}`}
-                </span>
-                . The nested workspace path is known to drift after
-                signals (T0399 / T0555 / T0611).
-              </div>
-            </div>
-          </div>
-  );
 
   // Tab content for MobileTabs. Each tab content is a column of the
   // already-built panel JSX consts above — the desktop split-pane
@@ -501,7 +465,6 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
         <div className="col" style={{ gap: 14, padding: 12 }}>
           {headerPanel}
           {referencesPanel}
-          {staleNoticePanel}
         </div>
       ),
     },
@@ -568,7 +531,6 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
           <div className="col" style={{ gap: 14 }}>
             {signalsPanel}
             {referencesPanel}
-            {staleNoticePanel}
           </div>
         </div>
       )}
