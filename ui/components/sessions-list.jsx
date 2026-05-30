@@ -223,31 +223,37 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
   };
 
   const _bulkDelete = async () => {
-    const eligible = pageItems.filter(
-      (s) => selected.has(s.id) && s.status === "ended"
-    );
-    const skipped = selected.size - eligible.length;
+    // Server policy: DELETE auto-cancels CREATED/WAITING/PAUSED inline.
+    // Only RUNNING rows are refused (409) — those must be cancelled
+    // first so their worker doesn't write back to a deleted row.
+    const selectedRows = pageItems.filter((s) => selected.has(s.id));
+    const eligible = selectedRows.filter((s) => s.status !== "running");
+    const runningSkipped = selectedRows.length - eligible.length;
     if (eligible.length === 0) {
       _toast({
         kind: "warning",
         title: "Nothing to delete",
-        detail: "Only ENDED sessions can be deleted; cancel active sessions first.",
+        detail: "Cancel RUNNING sessions first; then they can be deleted.",
       });
       return;
     }
     await Promise.all(eligible.map((s) => _deleteOne(s)));
-    if (skipped > 0) {
+    if (runningSkipped > 0) {
       _toast({
         kind: "warning",
-        title: `${skipped} session${skipped === 1 ? "" : "s"} skipped`,
-        detail: "Active sessions must be cancelled before deletion.",
+        title: `${runningSkipped} running session${runningSkipped === 1 ? "" : "s"} skipped`,
+        detail: "Running sessions must be cancelled before they can be deleted.",
       });
     }
   };
 
   const RowActions = ({ s, layout }) => {
     const busy = inFlightRef.current.has(s.id);
-    const canDelete = s.status === "ended";
+    // Delete is allowed on every status except RUNNING — the server
+    // auto-cancels CREATED/WAITING/PAUSED inline before removing the
+    // row. Cancel stays available on every non-terminal status so the
+    // user can stop a RUNNING worker without leaving the list.
+    const canDelete = s.status !== "running";
     const canCancel = SL_NON_TERMINAL.has(s.status);
     const stop = (e) => e.stopPropagation();
     if (!canDelete && !canCancel) return null;

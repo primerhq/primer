@@ -393,12 +393,36 @@ async def test_delete_ended_session_removes_row(
     assert await storage.get(sid) is None
 
 
-async def test_delete_active_session_conflict(
-    sessions_client, seeded_workspace, seeded_agent,
+async def test_delete_created_session_auto_cancels_and_removes_row(
+    sessions_client, seeded_workspace, seeded_agent, app,
 ):
+    """A freshly-created (CREATED) session — no worker holds a lease,
+    so DELETE auto-cancels it inline and removes the row in one call."""
+    from primer.model.workspace_session import WorkspaceSession
     create = await sessions_client.post(
         f"/v1/workspaces/{seeded_workspace.id}/sessions",
         json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
+    )
+    sid = create.json()["id"]
+    resp = await sessions_client.delete(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}"
+    )
+    assert resp.status_code == 204, resp.text
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    assert await storage.get(sid) is None
+
+
+async def test_delete_running_session_conflict(
+    sessions_client, seeded_workspace, seeded_agent,
+):
+    """A RUNNING session is refused — its worker holds the lease and
+    would write back to a deleted row."""
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "auto_start": True,
+        },
     )
     sid = create.json()["id"]
     resp = await sessions_client.delete(

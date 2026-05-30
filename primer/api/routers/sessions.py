@@ -356,22 +356,30 @@ async def cancel_session(
 @nested_session_router.delete(
     "/workspaces/{workspace_id}/sessions/{session_id}",
     status_code=204,
-    summary="Permanently delete an ENDED session",
+    summary="Permanently delete a session (auto-cancels non-RUNNING)",
     responses=common_responses(404, 409, 500),
 )
 async def delete_session(
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
+    scheduler=Depends(get_scheduler),
+    engine=Depends(get_claim_engine),
     workspace_registry=Depends(get_workspace_registry),
 ) -> None:
     """Permanently remove a session row + best-effort cleanup of its
     on-disk slot under ``<workspace>/.state/sessions/<sid>/``.
 
-    Only ENDED sessions are eligible — active sessions must be
-    cancelled first (returns 409). The on-disk slot cleanup is
-    best-effort: if the workspace is unreachable (e.g. its backing
-    storage was wiped), the row is still removed.
+    For CREATED/WAITING/PAUSED rows we transition to ENDED inline (no
+    worker is holding the lease, so the cleanup is safe to do in this
+    request). ENDED / FAILED / CANCELLED rows are removed as-is.
+    RUNNING rows return 409 — a worker holds the lease and would
+    write back to a deleted row; the caller must POST /cancel and
+    wait for the worker to land in ENDED first.
+
+    The on-disk slot cleanup is best-effort: if the workspace is
+    unreachable (e.g. its backing storage was wiped), the row is
+    still removed.
     """
     s = await sessions.get(session_id)
     if s is None or s.workspace_id != workspace_id:
@@ -379,11 +387,40 @@ async def delete_session(
             f"Session {session_id!r} does not exist on workspace "
             f"{workspace_id!r}"
         )
-    if s.status != SessionStatus.ENDED:
+    if s.status == SessionStatus.RUNNING:
         raise ConflictError(
-            f"Session {session_id!r} is {s.status.value!r}; cancel it "
-            "before deleting"
+            f"Session {session_id!r} is running; cancel it first "
+            "(POST /cancel) before deleting"
         )
+
+    # CREATED / WAITING / PAUSED: nobody's holding a lease, so we can
+    # transition to ENDED inline. Drop any stale lease and signal the
+    # scheduler — symmetric with cancel_session's CREATED/WAITING/PAUSED
+    # branch, then the row gets removed below.
+    if s.status in {
+        SessionStatus.CREATED,
+        SessionStatus.WAITING,
+        SessionStatus.PAUSED,
+    }:
+        s.status = SessionStatus.ENDED
+        s.ended_reason = "cancelled"
+        s.ended_at = datetime.now(timezone.utc)
+        await sessions.update(s)
+        if engine is not None:
+            from primer.int.claim import ClaimKind
+            await engine.delete_lease(ClaimKind.SESSION, session_id)
+        # Best-effort scheduler notification so any in-flight bookkeeping
+        # can react. Don't fail the delete if it raises.
+        try:
+            await scheduler.signal_cancel(session_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "delete_session: scheduler.signal_cancel failed",
+                extra={
+                    "session_id": session_id,
+                    "exception": type(exc).__name__,
+                },
+            )
 
     # Best-effort: reap the on-disk session slot.
     try:
