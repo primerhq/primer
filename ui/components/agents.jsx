@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, relativeTime */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime */
 
 // Agents page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
@@ -46,8 +46,9 @@ function _agToastErr(pushToast, fallbackTitle) {
 // ============================================================================
 
 function AgentsPage({ onOpen, pushToast }) {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
+  const { isMobile } = useViewport();
 
   const [createOpen, setCreateOpen] = React.useState(false);
   const [textFilter, setTextFilter] = React.useState("");
@@ -135,6 +136,55 @@ function AgentsPage({ onOpen, pushToast }) {
         </div>
       </div>
 
+      {isMobile ? (
+        list.loading && items.length === 0 ? (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
+        ) : list.error && items.length === 0 ? (
+          <Banner
+            kind="error"
+            title={list.error.title || "Couldn't load agents"}
+            detail={list.error.detail || list.error.message}
+            actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
+          />
+        ) : (
+          <CardList
+            items={filtered}
+            empty={items.length === 0 ? "No agents yet." : "No agents match."}
+            renderCard={(a) => {
+              const providerId = a.model?.provider_id;
+              const modelName = a.model?.model_name;
+              const provider = (providers.data?.items ?? []).find((p) => p.id === providerId);
+              const vendorColor = AG_PROVIDER_COLORS[provider?.provider] || "var(--text-3)";
+              const status = perRowStatus[a.id];
+              const sessionCount = perRowSessions[a.id];
+              const statusPill = status == null
+                ? null
+                : status.ok === true
+                  ? <span className="pill pill-ended"><span className="dot"></span>ok</span>
+                  : status.ok === false
+                    ? <span className="pill pill-failed"><span className="dot"></span>{(status.issues || []).length} issue{(status.issues || []).length === 1 ? "" : "s"}</span>
+                    : <span className="muted" title={status.error}>err</span>;
+              const metaParts = [];
+              metaParts.push(`${(a.tools ?? []).length} tool${(a.tools ?? []).length === 1 ? "" : "s"}`);
+              if (sessionCount != null) metaParts.push(`${sessionCount} session${sessionCount === 1 ? "" : "s"}`);
+              return (
+                <Card
+                  title={a.id}
+                  subtitle={providerId
+                    ? <span className="mono">
+                        <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: vendorColor, marginRight: 6 }}></span>
+                        {providerId}{modelName ? <span className="muted"> · {modelName}</span> : null}
+                      </span>
+                    : <span className="muted">(unconfigured)</span>}
+                  pill={statusPill}
+                  meta={`${metaParts.join(" · ")}${a.description ? " · " + a.description : ""}`}
+                  onClick={() => openRow(a.id)}
+                />
+              );
+            }}
+          />
+        )
+      ) : (
       <div className="tbl-wrap">
         <table className="tbl">
           <thead>
@@ -214,6 +264,11 @@ function AgentsPage({ onOpen, pushToast }) {
           </tbody>
         </table>
       </div>
+      )}
+
+      {isMobile && (
+        <Fab icon="plus" label="New agent" onClick={() => setCreateOpen(true)} />
+      )}
 
       {createOpen && (
         <AG_NewAgentModal
