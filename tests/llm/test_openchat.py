@@ -1225,3 +1225,11 @@ class TestPackageReexport:
 
         assert "OpenChatLLM" in llm_pkg.__all__
         assert llm_pkg.OpenChatLLM is OpenChatLLM
+
+
+class TestCountTokens:
+    async def test_returns_positive_count_for_gpt4o(self) -> None:
+        llm = OpenChatLLM(_make_provider(models=["gpt-4o"]))
+        msgs = [Message(role="user", parts=[TextPart(text="hello world")])]
+        n = await llm.count_tokens(model="gpt-4o", messages=msgs, tools=None)
+        assert n > 0
