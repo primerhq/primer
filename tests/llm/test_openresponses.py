@@ -1266,3 +1266,19 @@ class TestPackageReexport:
 
         assert "OpenResponsesLLM" in llm_pkg.__all__
         assert llm_pkg.OpenResponsesLLM is OpenResponsesLLM
+
+
+class TestCountTokens:
+    async def test_returns_positive_count_for_gpt4o(self) -> None:
+        llm = OpenResponsesLLM(_make_provider(models=["gpt-4o"]))
+        msgs = [Message(role="user", parts=[TextPart(text="hello world")])]
+        n = await llm.count_tokens(model="gpt-4o", messages=msgs, tools=None)
+        assert n > 0
+
+    async def test_falls_back_on_unknown_model(self) -> None:
+        llm = OpenResponsesLLM(_make_provider(models=["future-mystery"]))
+        msgs = [Message(role="user", parts=[TextPart(text="hi")])]
+        n = await llm.count_tokens(
+            model="future-mystery", messages=msgs, tools=None,
+        )
+        assert n > 0

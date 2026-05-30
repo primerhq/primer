@@ -852,6 +852,17 @@ class OpenResponsesLLM(LLM):
     async def list_models(self) -> Iterable[str]:
         return [m.name for m in self._provider.models]
 
+    async def count_tokens(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> int:
+        """Delegate to ``primer.llm._tokenizer.openai`` (tiktoken)."""
+        from primer.llm._tokenizer.openai import count_tokens_openai
+        return count_tokens_openai(model=model, messages=messages, tools=tools)
+
     def _get_client(self) -> AsyncOpenAI:
         """Construct the AsyncOpenAI client lazily on first use."""
         if self._client is None:
