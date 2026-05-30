@@ -46,6 +46,7 @@ ChatMessageKind = Literal[
     "done",
     "cancelled",
     "error",
+    "compaction_marker",
 ]
 """The wire-level message kinds emitted by the chat executor.
 
