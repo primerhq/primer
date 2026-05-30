@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, StatusPill, JsonSchemaForm, validateSchema */
+/* global React, Icon, Btn, Modal, Banner, StatusPill, CardList, Card, Fab, JsonSchemaForm, validateSchema */
 // Harnesses list + detail + registration wizard.
 // Prefix HR_ to avoid global name collisions.
 
@@ -96,8 +96,9 @@ function HR_OutdatedChips({ harness }) {
 // ============================================================================
 
 function HarnessList() {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
+  const { isMobile } = useViewport();
   const [registerOpen, setRegisterOpen] = React.useState(false);
 
   const list = useResource(
@@ -149,7 +150,23 @@ function HarnessList() {
         </div>
       )}
 
-      {items.length > 0 && (
+      {items.length > 0 && isMobile && (
+        <CardList
+          items={items}
+          empty="No harnesses registered."
+          renderCard={(h) => (
+            <Card
+              title={h.name || h.slug}
+              subtitle={h.slug}
+              pill={<StatusPill status={h.status || "running"} />}
+              meta={`${h.ref || "main"}${h.resolved_commit ? " · " + h.resolved_commit.slice(0, 8) : ""}${h.description ? " · " + h.description : ""}`}
+              onClick={() => navigate("/harnesses/" + h.id)}
+            />
+          )}
+        />
+      )}
+
+      {items.length > 0 && !isMobile && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
           {items.map((h) => (
             <div
@@ -199,6 +216,10 @@ function HarnessList() {
             </div>
           ))}
         </div>
+      )}
+
+      {isMobile && (
+        <Fab icon="plus" label="New harness" onClick={() => setRegisterOpen(true)} />
       )}
 
       {registerOpen && (
