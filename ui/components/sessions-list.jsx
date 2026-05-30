@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, CardList, Card, Fab, relativeTime, Banner */
+/* global React, Icon, StatusPill, Btn, Modal, CardList, Card, Fab, relativeTime, Banner */
 
 const SL_STATUS_CHIPS = [
   { s: "created",   color: "var(--text-3)" },
@@ -36,6 +36,11 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
   const [sortDir, setSortDir] = React.useState("desc");
   const [selected, setSelected] = React.useState(() => new Set());
   const [page, setPage] = React.useState(1);
+
+  // Confirmation modal state. ``confirm`` is { kind, sessions } where
+  // ``kind`` is "delete" | "force-delete" | "bulk-delete" and
+  // ``sessions`` is the list of session rows the action targets.
+  const [confirm, setConfirm] = React.useState(null);
 
   // Suspend polling while filter input is focused so an in-progress
   // search doesn't get rug-pulled by a refresh.
@@ -260,13 +265,12 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
     }
   };
 
-  const _bulkDelete = async () => {
+  const _bulkDeleteConfirmed = async (sessions) => {
     // Server policy: DELETE auto-cancels CREATED/WAITING/PAUSED inline.
     // Only RUNNING rows are refused (409) — those must be cancelled
     // first so their worker doesn't write back to a deleted row.
-    const selectedRows = pageItems.filter((s) => selected.has(s.id));
-    const eligible = selectedRows.filter((s) => s.status !== "running");
-    const runningSkipped = selectedRows.length - eligible.length;
+    const eligible = sessions.filter((s) => s.status !== "running");
+    const runningSkipped = sessions.length - eligible.length;
     if (eligible.length === 0) {
       _toast({
         kind: "warning",
@@ -283,6 +287,12 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
         detail: "Running sessions must be cancelled before they can be deleted.",
       });
     }
+  };
+
+  const _openBulkDeleteConfirm = () => {
+    const rows = pageItems.filter((s) => selected.has(s.id));
+    if (rows.length === 0) return;
+    setConfirm({ kind: "bulk-delete", sessions: rows });
   };
 
   const RowActions = ({ s, layout }) => {
@@ -322,7 +332,10 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
             title="Delete session permanently"
             aria-label={`Delete session ${s.id}`}
             disabled={busy}
-            onClick={(e) => { stop(e); _deleteOne(s); }}
+            onClick={(e) => {
+              stop(e);
+              setConfirm({ kind: "delete", sessions: [s] });
+            }}
           >
             <Icon name="trash" size={12} />
           </button>
@@ -336,11 +349,7 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
             disabled={busy}
             onClick={(e) => {
               stop(e);
-              if (window.confirm(
-                `Force-delete ${s.id}? Only do this when no worker is actually executing — used to evict orphaned rows after an API restart.`
-              )) {
-                _deleteOne(s, { force: true });
-              }
+              setConfirm({ kind: "force-delete", sessions: [s] });
             }}
           >
             <Icon name="trash" size={12} />
@@ -427,7 +436,7 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
           ))}
         </select>
         {selected.size > 0 && (
-          <Btn size="sm" kind="danger" icon="trash" onClick={_bulkDelete}>Delete {selected.size}</Btn>
+          <Btn size="sm" kind="danger" icon="trash" onClick={_openBulkDeleteConfirm}>Delete {selected.size}</Btn>
         )}
       </div>
 
@@ -559,7 +568,105 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
       {isMobile && typeof onNewSession === "function" && (
         <Fab icon="plus" label="New session" onClick={onNewSession} />
       )}
+      {confirm && (
+        <SL_DeleteConfirmModal
+          kind={confirm.kind}
+          sessions={confirm.sessions}
+          onClose={() => setConfirm(null)}
+          onConfirm={async () => {
+            const c = confirm;
+            setConfirm(null);
+            if (c.kind === "delete") {
+              await _deleteOne(c.sessions[0]);
+            } else if (c.kind === "force-delete") {
+              await _deleteOne(c.sessions[0], { force: true });
+            } else if (c.kind === "bulk-delete") {
+              await _bulkDeleteConfirmed(c.sessions);
+              setSelected(new Set());
+            }
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function SL_DeleteConfirmModal({ kind, sessions, onClose, onConfirm }) {
+  const isForce = kind === "force-delete";
+  const isBulk = kind === "bulk-delete";
+  const title = isForce
+    ? "Force-delete running session?"
+    : isBulk
+      ? `Delete ${sessions.length} session${sessions.length === 1 ? "" : "s"}?`
+      : "Delete session?";
+  const buttonLabel = isForce
+    ? "Force-delete"
+    : isBulk
+      ? `Delete ${sessions.length}`
+      : "Delete";
+  // Count split for the bulk case so the modal can warn about which
+  // rows will actually be deleted (RUNNING ones get filtered server-side).
+  const runningCount = sessions.filter((s) => s.status === "running").length;
+  const eligibleCount = sessions.length - runningCount;
+  return (
+    <Modal
+      title={title}
+      danger
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Keep</Btn>
+          <Btn kind="danger" icon="trash" onClick={onConfirm}>{buttonLabel}</Btn>
+        </>
+      }
+    >
+      {isForce && (
+        <>
+          <p>
+            About to <strong>force-delete</strong>{" "}
+            <span className="mono">{sessions[0].id}</span>. This bypasses the
+            normal RUNNING-409 gate.
+          </p>
+          <ul>
+            <li>Only do this when no worker is actually executing the session — e.g. to evict an orphaned row left over from a previous API process.</li>
+            <li>If a worker IS still running it, you may see a write-back error in the next turn.</li>
+            <li>The on-disk session slot under <span className="mono" style={{ fontSize: 11 }}>.state/sessions/</span> will also be removed.</li>
+          </ul>
+        </>
+      )}
+      {!isForce && !isBulk && (
+        <>
+          <p>
+            Permanently delete{" "}
+            <span className="mono">{sessions[0].id}</span>?
+          </p>
+          <ul>
+            <li>The session row and its on-disk <span className="mono" style={{ fontSize: 11 }}>.state/sessions/&lt;sid&gt;/</span> slot are removed.</li>
+            <li>The workspace itself and its files are <strong>not</strong> affected.</li>
+            <li>This cannot be undone.</li>
+          </ul>
+        </>
+      )}
+      {isBulk && (
+        <>
+          <p>
+            About to delete <strong>{eligibleCount}</strong> session{eligibleCount === 1 ? "" : "s"}.
+            {runningCount > 0 && (
+              <> <span className="muted">({runningCount} RUNNING row{runningCount === 1 ? "" : "s"} will be skipped — cancel them first.)</span></>
+            )}
+          </p>
+          <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4, padding: 6, marginTop: 6 }}>
+            {sessions.map((s) => (
+              <div key={s.id} className="mono text-sm" style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 4px" }}>
+                <StatusPill status={s.status} />
+                <span>{s.id}</span>
+              </div>
+            ))}
+          </div>
+          <p className="muted text-sm" style={{ marginTop: 8 }}>This cannot be undone.</p>
+        </>
+      )}
+    </Modal>
   );
 }
 
