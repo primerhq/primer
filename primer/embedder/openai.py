@@ -137,6 +137,8 @@ def _part_to_openai_input(part: EmbeddingPart) -> str | list[int]:
 
 def _inputs_to_openai_list(
     inputs: list[EmbeddingPart],
+    *,
+    prompt: str | None = None,
 ) -> list[str | list[int]]:
     """Walk the universal ``inputs`` list and produce a heterogeneous
     list suitable for OpenAI's ``client.embeddings.create(input=...)``.
@@ -144,8 +146,20 @@ def _inputs_to_openai_list(
     Order is preserved; index correspondence is the caller's contract.
     The first part that is not embeddable raises immediately —
     short-circuit, no partial batch sent.
+
+    ``prompt`` (when supplied) is prepended to every text input so
+    asymmetric-retrieval models (nomic-embed-text, E5, BGE served via
+    LM Studio / Ollama / vLLM proxies) see the family-appropriate
+    ``search_query: ``, ``query: ``, etc. prefix on the wire. The prompt
+    is NOT applied to token-list inputs (pre-tokenised already).
     """
-    return [_part_to_openai_input(part) for part in inputs]
+    converted = [_part_to_openai_input(part) for part in inputs]
+    if not prompt:
+        return converted
+    return [
+        (prompt + entry) if isinstance(entry, str) else entry
+        for entry in converted
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -280,9 +294,21 @@ class OpenAIEmbedder(Embedder):
                 f"{self._provider.id!r}; configured models: {sorted(allowed)}"
             )
 
+        # Apply the model-family prompt prefix when the caller has
+        # declared a retrieval task type. The shared mapping covers
+        # nomic-embed-text (search_query:/search_document:), E5
+        # (query:/passage:), and BGE (asymmetric query prefix only);
+        # unknown families pass through unchanged. Matters for
+        # LM Studio / Ollama / vLLM proxies that serve these models
+        # via the OpenAI-compatible /v1/embeddings surface.
+        from primer.embedder._prompts import select_prompt
+        task_type = config.task_type if config is not None else None
+        raw = (config.raw or {}) if config is not None else {}
+        prompt = select_prompt(task_type=task_type, model_name=model, raw=raw)
+
         request: dict[str, Any] = {
             "model": model,
-            "input": _inputs_to_openai_list(inputs),
+            "input": _inputs_to_openai_list(inputs, prompt=prompt),
         }
         if output_dimensions is not None:
             request["dimensions"] = output_dimensions
@@ -296,6 +322,8 @@ class OpenAIEmbedder(Embedder):
                 "model": model,
                 "input_count": len(inputs),
                 "output_dimensions": output_dimensions,
+                "task_type": task_type,
+                "prompt_applied": bool(prompt),
             },
         )
 

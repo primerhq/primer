@@ -354,6 +354,10 @@ async def _build_subsystem_for_request(
     provider_registry = request.app.state.provider_registry
     semantic_search_registry = request.app.state.semantic_search_registry
     storage_provider = request.app.state.storage_provider
+    # Every built-in (reserved-id) toolset must be listed here or its
+    # tools never get embedded and the ``_internal_tools`` semantic
+    # search misses them. Mirrors the lifespan path in primer/api/app.py
+    # — keep both lists in sync when adding new reserved toolsets.
     toolsets: dict[str, Any] = {}
     sys_ts = getattr(request.app.state, "system_toolset", None)
     if sys_ts is not None:
@@ -364,6 +368,12 @@ async def _build_subsystem_for_request(
     misc_ts = getattr(request.app.state, "misc_toolset", None)
     if misc_ts is not None:
         toolsets["misc"] = misc_ts
+    web_ts = getattr(request.app.state, "web_toolset", None)
+    if web_ts is not None:
+        toolsets["web"] = web_ts
+    harness_ts = getattr(request.app.state, "harness_toolset", None)
+    if harness_ts is not None:
+        toolsets["harness"] = harness_ts
     subsystem = build_subsystem(
         config=cfg,
         storage_provider=storage_provider,
