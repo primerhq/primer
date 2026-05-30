@@ -22,6 +22,7 @@ from pydantic import BaseModel as PydanticBaseModel
 
 from primer.common.anthropic_errors import classify_anthropic_exception
 from primer.int.llm import LLM
+from primer.llm._tokenizer.anthropic import count_tokens_anthropic
 from primer.model.chat import (
     AudioPart,
     Citation,
@@ -587,6 +588,18 @@ class AnthropicLLM(LLM):
 
     async def list_models(self) -> Iterable[str]:
         return [m.name for m in self._provider.models]
+
+    async def count_tokens(
+        self,
+        *,
+        model: str,
+        messages: list[Message],
+        tools: list[Tool] | None = None,
+    ) -> int:
+        client = self._get_client()
+        return await count_tokens_anthropic(
+            client=client, model=model, messages=messages, tools=tools,
+        )
 
     def _get_client(self) -> AsyncAnthropic:
         if self._client is None:

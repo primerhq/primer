@@ -1142,3 +1142,22 @@ class TestPackageReexport:
 
         assert "AnthropicLLM" in llm_pkg.__all__
         assert llm_pkg.AnthropicLLM is AnthropicLLM
+
+
+class TestCountTokens:
+    async def test_delegates_to_module_with_client(self) -> None:
+        from unittest.mock import AsyncMock, patch
+        llm = AnthropicLLM(_make_provider())
+        msgs = [Message(role="user", parts=[TextPart(text="hi")])]
+        with patch(
+            "primer.llm.anthropic.count_tokens_anthropic",
+            new=AsyncMock(return_value=42),
+        ) as mock_count:
+            n = await llm.count_tokens(
+                model="claude-opus-4-7", messages=msgs, tools=None,
+            )
+        assert n == 42
+        mock_count.assert_awaited_once()
+        call_kwargs = mock_count.await_args.kwargs
+        assert call_kwargs["model"] == "claude-opus-4-7"
+        assert call_kwargs["messages"] == msgs
