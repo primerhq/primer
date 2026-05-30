@@ -288,3 +288,29 @@ class TestHistoryReassembly:
         assert loaded[0].parts[0].text == "hi"
         assert loaded[1].role == "assistant"
         assert loaded[1].parts[0].text == "hello"
+
+
+class TestUsageTracking:
+    async def test_records_input_and_output_tokens(self) -> None:
+        """``_record_usage`` updates the runner's ``_last_input_tokens``
+        and ``_last_output_tokens`` so callers (or future plumbing
+        hooks) can read the most recent count."""
+        runner = _make_runner()
+        runner._record_usage(
+            Usage(input_tokens=1234, output_tokens=56, cumulative=False),
+        )
+        assert runner._last_input_tokens == 1234
+        assert runner._last_output_tokens == 56
+
+    async def test_record_usage_overwrites_on_each_call(self) -> None:
+        """Each Usage event replaces the prior count (no accumulation
+        — the provider's ``cumulative`` flag decides that semantic)."""
+        runner = _make_runner()
+        runner._record_usage(
+            Usage(input_tokens=100, output_tokens=10, cumulative=False),
+        )
+        runner._record_usage(
+            Usage(input_tokens=250, output_tokens=42, cumulative=False),
+        )
+        assert runner._last_input_tokens == 250
+        assert runner._last_output_tokens == 42
