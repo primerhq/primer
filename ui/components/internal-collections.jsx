@@ -92,13 +92,14 @@ function _icToastErr(pushToast, fallbackTitle) {
 // ============================================================================
 
 function InternalCollectionsPage(props) {
-  const { useResource, useToast } = window.primerApi;
+  const { useResource, useToast, useViewport } = window.primerApi;
   const toast = useToast ? useToast() : null;
   // Prefer the prop forwarded from app.jsx; fall back to the foundation
   // useToast hook so the component still works standalone.
   const pushToast = props && typeof props.pushToast === "function"
     ? props.pushToast
     : (toast?.push || (() => {}));
+  const { isMobile } = useViewport();
 
   const ic = useResource(IC_CACHE_CONFIG, _icFetchConfig, { pollMs: 30000 });
 
@@ -109,7 +110,7 @@ function InternalCollectionsPage(props) {
       : "configured";
 
   return (
-    <div className="col" style={{ gap: 14 }}>
+    <div className={"col" + (isMobile ? " ic-mobile-stack" : "")} style={{ gap: 14 }}>
       {state === "inactive" && <InactiveCard onRefresh={ic.refetch} pushToast={pushToast} />}
       {state === "configured" && <ConfiguredCard config={ic.data} onRefresh={ic.refetch} pushToast={pushToast} />}
       {state === "active" && <ActiveCard config={ic.data} onRefresh={ic.refetch} pushToast={pushToast} />}
