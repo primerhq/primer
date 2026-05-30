@@ -154,10 +154,64 @@ class LocalWorkspaceBackend(WorkspaceBackend):
         *,
         template: WorkspaceTemplate | None = None,
     ) -> Workspace | None:
-        # Local backend keeps every materialised workspace in memory; no
-        # re-attach path is needed (and no template is required).
-        del template
-        return self._workspaces.get(workspace_id)
+        """Resolve a live :class:`LocalWorkspace`, re-attaching from disk
+        if this process didn't materialise it.
+
+        The on-disk directory ``<root>/<workspace_id>/`` survives api
+        restarts; rebuilding the in-memory ``LocalWorkspace`` from it
+        is what keeps existing workspaces usable after a process bounce.
+        Re-attach requires the template (so we know the state/tmp
+        sub-paths and the env to re-derive); when the caller doesn't
+        supply one and the workspace isn't already in the in-memory
+        cache, we cannot safely re-attach and return ``None``.
+        """
+        async with self._lock:
+            cached = self._workspaces.get(workspace_id)
+            if cached is not None:
+                return cached
+        if not self._initialised:
+            await self.initialize()
+        ws_root = self._root / workspace_id
+        if not await asyncio.to_thread(ws_root.is_dir):
+            return None
+        if template is None:
+            logger.warning(
+                "LocalWorkspaceBackend.get: workspace %s exists on disk "
+                "but no template was provided; re-attach skipped",
+                workspace_id,
+            )
+            return None
+        env_str = _resolve_env(dict(template.env))
+        try:
+            ws = await LocalWorkspace.materialise(
+                workspace_id=workspace_id,
+                root=ws_root,
+                template=template,
+                env=env_str,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "LocalWorkspaceBackend.get: re-attach failed for %s: %s",
+                workspace_id, exc,
+            )
+            return None
+        async with self._lock:
+            # Re-check after the lock — a concurrent caller may have
+            # materialised the same workspace while we were rebuilding.
+            existing = self._workspaces.get(workspace_id)
+            if existing is not None:
+                # Drop our rebuild; the existing handle wins.
+                try:
+                    await ws.aclose()
+                except Exception:  # noqa: BLE001
+                    pass
+                return existing
+            self._workspaces[workspace_id] = ws
+        logger.info(
+            "LocalWorkspaceBackend: re-attached workspace %s from disk",
+            workspace_id,
+        )
+        return ws
 
     async def list(self) -> list[str]:
         return list(self._workspaces)

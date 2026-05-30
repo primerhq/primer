@@ -731,3 +731,60 @@ class TestDiagnosticExec:
         result = await ws.diagnostic_exec("sleep 5", timeout_seconds=0.2)
         assert result.exit_code == -1
         assert result.duration_seconds < 5.0
+
+
+# ===========================================================================
+# LocalWorkspaceBackend — re-attach after process restart
+# ===========================================================================
+
+
+class TestReAttachAfterRestart:
+    async def test_get_returns_none_when_dir_missing(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        out = await provider.get("ws-does-not-exist", template=_template())
+        assert out is None
+
+    async def test_get_returns_none_without_template_for_uncached(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """Re-attach needs a template; without it the backend returns
+        None rather than guessing."""
+        ws = await provider.create(_template())
+        wid = ws.id
+        # Simulate a "fresh process" by dropping the in-memory cache.
+        await provider.aclose()
+        provider2 = LocalWorkspaceBackend(provider.root)
+        await provider2.initialize()
+        out = await provider2.get(wid, template=None)
+        assert out is None
+
+    async def test_get_reattaches_existing_workspace_on_fresh_process(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """The on-disk directory survives the process; the second
+        backend instance MUST rebuild a LocalWorkspace from it.
+
+        This is the fix for the diagnostic-report Bug 2 — pre-fix the
+        local backend returned None for any workspace not materialised
+        by the current process, producing the
+        'row exists but the backend has no live instance and re-attach
+        failed' error in the workspace registry.
+        """
+        tpl = _template()
+        ws1 = await provider.create(tpl)
+        wid = ws1.id
+        assert (provider.root / wid).is_dir()
+
+        # Simulate a process restart — drop the in-memory cache.
+        await provider.aclose()
+        provider2 = LocalWorkspaceBackend(provider.root)
+        await provider2.initialize()
+
+        # Re-attach via get() — must NOT return None now.
+        ws2 = await provider2.get(wid, template=tpl)
+        assert ws2 is not None
+        assert ws2.id == wid
+        # The re-attached workspace works just like the original.
+        result = await ws2.diagnostic_exec("pwd")
+        assert result.exit_code == 0
