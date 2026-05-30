@@ -1415,3 +1415,11 @@ input, textarea, select { font: inherit; color: inherit; }
   font-family: "IBM Plex Mono", monospace;
 }
 .auth-foot .sep { color: var(--text-4); margin: 0 8px; }
+
+/* ---------- Mobile design tokens ---------------------------------- */
+:root {
+  --mobile-pad-x: 16px;
+  --mobile-pad-y: 12px;
+  --tap-min: 44px;
+  --fab-size: 56px;
+}
