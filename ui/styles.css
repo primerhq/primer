@@ -1578,6 +1578,32 @@ input, textarea, select { font: inherit; color: inherit; }
   }
   .metric-grid-mobile > * { width: 100%; }
 
+  /* Mobile chat layout. The slim header pins back-arrow / title /
+     kebab so the message list and sticky composer can claim the
+     remaining vertical space. */
+  .chat-mobile-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .chat-mobile-header .title {
+    flex: 1; min-width: 0;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .composer-sticky {
+    position: sticky;
+    bottom: 0;
+    background: var(--bg-1);
+    border-top: 1px solid var(--border);
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+    z-index: 5;
+  }
+
   /* Reduced motion. */
   @media (prefers-reduced-motion: reduce) {
     .drawer, .sheet { animation: none !important; transition: none !important; }

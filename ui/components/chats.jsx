@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, ApprovalBanner, relativeTime, fmtDate */
+/* global React, Icon, Btn, Modal, Banner, ApprovalBanner, BottomSheet, relativeTime, fmtDate */
 //
 // Chats list + detail. Live updates via WebSocket (`/v1/chats/{id}/ws`),
 // initial history via REST (`GET /v1/chats/{id}/messages`), and inline
@@ -433,8 +433,12 @@ function CT_NewChatModal({ onClose, pushToast }) {
 // ============================================================================
 
 function ChatDetail({ chatId, onBack, pushToast }) {
-  const { useResource, useMutation, apiFetch } = window.primerApi;
+  const { useResource, useMutation, useViewport, apiFetch } = window.primerApi;
+  const { isMobile } = useViewport();
   const cid = chatId;
+  // Mobile-only kebab actions sheet (collapses Token meter + Compact +
+  // status pill that don't fit in the slim mobile header).
+  const [actionsOpen, setActionsOpen] = React.useState(false);
 
   const [messages, setMessages] = React.useState([]);
   const [lastSeq, setLastSeq] = React.useState(0);
@@ -821,6 +825,28 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   return (
     <div className="col" style={{ gap: 14, height: "calc(100vh - 180px)", display: "flex", flexDirection: "column" }}>
       <div className="panel" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+        {isMobile ? (
+          <div className="chat-mobile-header">
+            <button
+              className="icon-btn touch-target"
+              aria-label="Back"
+              onClick={() => (typeof onBack === "function" ? onBack() : window.history.back())}
+            >
+              <Icon name="chevron-left" size={16} />
+            </button>
+            <span className="title" title={chatTitle || cid}>
+              {chatTitle || cid}
+            </span>
+            <button
+              className="icon-btn touch-target"
+              aria-label="More actions"
+              data-testid="chat-mobile-kebab"
+              onClick={() => setActionsOpen(true)}
+            >
+              <Icon name="more-vertical" size={16} />
+            </button>
+          </div>
+        ) : (
         <div className="panel-h">
           <Icon name="send" size={13} style={{ color: "var(--accent)" }} />
           {chatTitle ? (
@@ -852,6 +878,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
             </span>
           </div>
         </div>
+        )}
         <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0 }}>
           {messages.length === 0 && !historyError && (
             <div className="muted text-sm" style={{ textAlign: "center", padding: 24 }}>
@@ -937,13 +964,22 @@ function ChatDetail({ chatId, onBack, pushToast }) {
         )}
 
         <div
-          style={{
-            borderTop: "1px solid var(--border)",
-            padding: 14,
-            display: "flex",
-            gap: 8,
-            alignItems: "stretch",
-          }}
+          className={isMobile ? "composer-sticky" : ""}
+          style={
+            isMobile
+              ? {
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "stretch",
+                }
+              : {
+                  borderTop: "1px solid var(--border)",
+                  padding: 14,
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "stretch",
+                }
+          }
         >
           <button
             type="button"
@@ -992,6 +1028,44 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           >Send</Btn>
         </div>
       </div>
+
+      {/* Mobile-only kebab actions sheet — collapses TokenMeter,
+          Compact action, connection badge, and chat status pill that
+          don't fit in the slim mobile header. */}
+      {isMobile && (
+        <BottomSheet
+          open={actionsOpen}
+          onClose={() => setActionsOpen(false)}
+          title="Chat actions"
+        >
+          <div className="col" style={{ gap: 12 }}>
+            <window.TokenMeter
+              inputTokens={usage.input_tokens}
+              contextLength={usage.context_length}
+              onCompact={chatStatus === "ended" ? null : () => {
+                setActionsOpen(false);
+                handleCompact();
+              }}
+              compactDisabled={compactInFlight || wsState !== "open"}
+              compactTooltip={
+                compactInFlight
+                  ? "Compaction in progress…"
+                  : wsState !== "open"
+                    ? "WebSocket offline"
+                    : ""
+              }
+            />
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {wsBadge}
+              <span className={chatStatus === "active" ? "pill pill-running" : "pill pill-ended"}>
+                <span className="dot"></span>{chatStatus}
+              </span>
+            </div>
+            <div className="muted text-sm mono">agent: {chatAgent}</div>
+            <div className="muted text-sm mono" style={{ wordBreak: "break-all" }}>{cid}</div>
+          </div>
+        </BottomSheet>
+      )}
     </div>
   );
 }
