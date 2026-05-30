@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from primer.api.deps import (
     get_agent_storage,
     get_claim_engine,
+    get_event_bus,
     get_graph_storage,
     get_scheduler,
     get_session_storage,
@@ -316,13 +317,18 @@ async def cancel_session(
     sessions=Depends(get_session_storage),
     scheduler=Depends(get_scheduler),
     engine=Depends(get_claim_engine),
+    event_bus=Depends(get_event_bus),
 ) -> WorkspaceSession:
     """Hard cancel.
 
     * For sessions no worker is leasing (CREATED / WAITING / PAUSED) we
       transition directly to ENDED with ``ended_reason='cancelled'``.
-    * For RUNNING sessions we set the cancel flag and best-effort
-      signal the worker holding the lease.
+    * For RUNNING sessions we set the cancel flag and publish the
+      ``session:{sid}:cancel`` event bus key — the engine-path worker's
+      ``_cancel_watcher`` (``primer/session/dispatch.py``) listens on
+      that key and preempts the running turn. We also call the
+      legacy ``scheduler.signal_cancel`` for backward compat with the
+      pre-engine claim path.
     * 409 when the session is already ENDED.
     """
     s = await sessions.get(session_id)
@@ -347,8 +353,21 @@ async def cancel_session(
             from primer.int.claim import ClaimKind
             await engine.delete_lease(ClaimKind.SESSION, session_id)
         return s
+    now = datetime.now(timezone.utc)
     s.cancel_requested = True
+    s.cancel_requested_at = now
     await sessions.update(s)
+    # Publish on the bus so the engine-path worker's _cancel_watcher
+    # preempts the running turn. The WS interrupt handler at line ~820
+    # publishes the same key.
+    if event_bus is not None:
+        try:
+            await event_bus.publish(f"session:{session_id}:cancel", {})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "cancel_session: event_bus.publish failed (legacy path still signalled)",
+                extra={"session_id": session_id, "exception": type(exc).__name__},
+            )
     await scheduler.signal_cancel(session_id)
     return s
 
@@ -362,10 +381,21 @@ async def cancel_session(
 async def delete_session(
     workspace_id: str = Path(...),
     session_id: str = Path(...),
+    force: bool = Query(
+        False,
+        description=(
+            "Force-delete a RUNNING session — bypass the 409 gate that "
+            "normally protects against a worker writing back to a "
+            "deleted row. Use only to evict orphaned / stuck rows where "
+            "no worker is actually executing (e.g. after the previous "
+            "API process died mid-turn)."
+        ),
+    ),
     sessions=Depends(get_session_storage),
     scheduler=Depends(get_scheduler),
     engine=Depends(get_claim_engine),
     workspace_registry=Depends(get_workspace_registry),
+    event_bus=Depends(get_event_bus),
 ) -> None:
     """Permanently remove a session row + best-effort cleanup of its
     on-disk slot under ``<workspace>/.state/sessions/<sid>/``.
@@ -375,7 +405,8 @@ async def delete_session(
     request). ENDED / FAILED / CANCELLED rows are removed as-is.
     RUNNING rows return 409 — a worker holds the lease and would
     write back to a deleted row; the caller must POST /cancel and
-    wait for the worker to land in ENDED first.
+    wait for the worker to land in ENDED first. Pass ``?force=true``
+    to override (e.g. when the worker is provably dead).
 
     The on-disk slot cleanup is best-effort: if the workspace is
     unreachable (e.g. its backing storage was wiped), the row is
@@ -387,11 +418,35 @@ async def delete_session(
             f"Session {session_id!r} does not exist on workspace "
             f"{workspace_id!r}"
         )
-    if s.status == SessionStatus.RUNNING:
+    if s.status == SessionStatus.RUNNING and not force:
         raise ConflictError(
             f"Session {session_id!r} is running; cancel it first "
-            "(POST /cancel) before deleting"
+            "(POST /cancel) before deleting, or pass ?force=true to "
+            "evict an orphaned row"
         )
+    if s.status == SessionStatus.RUNNING and force:
+        # Publish cancel so any worker actually holding the lease
+        # preempts cleanly before its complete_turn CAS. Best-effort —
+        # if the bus publish fails we still proceed with the delete
+        # (force semantics).
+        if event_bus is not None:
+            try:
+                await event_bus.publish(f"session:{session_id}:cancel", {})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "delete_session(force): event_bus.publish failed",
+                    extra={
+                        "session_id": session_id,
+                        "exception": type(exc).__name__,
+                    },
+                )
+        s.status = SessionStatus.ENDED
+        s.ended_reason = "force_deleted"
+        s.ended_at = datetime.now(timezone.utc)
+        await sessions.update(s)
+        if engine is not None:
+            from primer.int.claim import ClaimKind
+            await engine.delete_lease(ClaimKind.SESSION, session_id)
 
     # CREATED / WAITING / PAUSED: nobody's holding a lease, so we can
     # transition to ENDED inline. Drop any stale lease and signal the

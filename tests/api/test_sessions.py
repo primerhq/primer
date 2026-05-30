@@ -373,6 +373,70 @@ async def test_cancel_from_created_ends_immediately(
     assert body["ended_reason"] == "cancelled"
 
 
+async def test_cancel_running_publishes_cancel_bus_event(
+    sessions_client, seeded_workspace, seeded_agent, app,
+):
+    """REST cancel on a RUNNING session MUST publish session:{sid}:cancel.
+
+    The engine-path worker (primer/session/dispatch.py::_cancel_watcher)
+    subscribes to this exact event-bus key — without this publish, the
+    REST cancel cannot preempt the running turn and the session stays
+    stuck.
+    """
+    import asyncio
+
+    from primer.model.workspace_session import WorkspaceSession
+
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "auto_start": True,
+        },
+    )
+    sid = create.json()["id"]
+
+    # Subscribe to the bus BEFORE issuing cancel so the publish lands
+    # while a live subscriber is reading.
+    received: list[str] = []
+    sub = app.state.event_bus.subscribe()
+
+    async def _drain() -> None:
+        async for event in sub:
+            received.append(event.event_key)
+            if event.event_key == f"session:{sid}:cancel":
+                return
+
+    drain_task = asyncio.create_task(_drain())
+    try:
+        resp = await sessions_client.post(
+            f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}/cancel"
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # RUNNING stays RUNNING until the worker observes the cancel and
+        # finishes its turn — but cancel_requested_at MUST be stamped.
+        assert body["status"] == "running"
+        assert body["cancel_requested"] is True
+        assert body["cancel_requested_at"] is not None
+
+        # Bus publish lands within a couple of event-loop ticks.
+        await asyncio.wait_for(drain_task, timeout=2.0)
+        assert f"session:{sid}:cancel" in received, (
+            f"expected session:{sid}:cancel in {received!r}"
+        )
+    finally:
+        if not drain_task.done():
+            drain_task.cancel()
+        await sub.aclose()
+
+    # Sanity: row carries cancel_requested* fields.
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    s = await storage.get(sid)
+    assert s.cancel_requested is True
+    assert s.cancel_requested_at is not None
+
+
 async def test_delete_ended_session_removes_row(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
@@ -438,6 +502,40 @@ async def test_delete_unknown_session_404(
         f"/v1/workspaces/{seeded_workspace.id}/sessions/does-not-exist"
     )
     assert resp.status_code == 404
+
+
+async def test_force_delete_running_session_evicts_orphan(
+    sessions_client, seeded_workspace, seeded_agent, app,
+):
+    """force=true bypasses the RUNNING-409 gate so users can evict
+    orphaned rows whose worker is provably dead (e.g. left over from
+    a previous api process). Without this escape hatch the only way
+    to clean up was editing the DB by hand."""
+    from primer.model.workspace_session import WorkspaceSession
+
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "auto_start": True,
+        },
+    )
+    sid = create.json()["id"]
+
+    # Plain DELETE without force → 409.
+    resp1 = await sessions_client.delete(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}"
+    )
+    assert resp1.status_code == 409, resp1.text
+
+    # ?force=true → 204 and row is gone.
+    resp2 = await sessions_client.delete(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}?force=true"
+    )
+    assert resp2.status_code == 204, resp2.text
+
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    assert await storage.get(sid) is None
 
 
 async def test_pause_running_sets_pause_requested_flag(

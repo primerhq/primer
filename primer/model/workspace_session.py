@@ -200,7 +200,9 @@ class SessionInfo(BaseModel):
         ...,
         description="Current lifecycle state of the session.",
     )
-    ended_reason: Literal["completed", "failed", "cancelled"] | None = Field(
+    ended_reason: Literal[
+        "completed", "failed", "cancelled", "workspace_lost", "force_deleted"
+    ] | None = Field(
         default=None,
         description=(
             "Set when ``status == SessionStatus.ENDED``. ``None`` "
@@ -349,7 +351,9 @@ class WorkspaceSession(Identifiable):
     started_at: datetime | None = Field(default=None)
     last_turn_at: datetime | None = Field(default=None)
     ended_at: datetime | None = Field(default=None)
-    ended_reason: Literal["completed", "failed", "cancelled"] | None = Field(
+    ended_reason: Literal[
+        "completed", "failed", "cancelled", "workspace_lost", "force_deleted"
+    ] | None = Field(
         default=None,
     )
 
