@@ -1,6 +1,6 @@
-/* global React, Icon, Btn, Modal, Banner */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab */
 
-const { apiFetch, useResource, useMutation, useRouter } = window.primerApi;
+const { apiFetch, useResource, useMutation, useRouter, useViewport } = window.primerApi;
 
 const VENDOR_COLORS = {
   openai: "var(--green)",
@@ -221,6 +221,7 @@ function ProvidersPage({ kind: kindProp, pushToast }) {
 
 function ProvidersList({ kindProp, pushToast }) {
   const k = KINDS[kindProp];
+  const { isMobile } = useViewport();
   const list = useResource(
     `providers:${k.plural}`,
     (s) => apiFetch("GET", "/" + k.plural + "?limit=200", null, { signal: s }),
@@ -247,6 +248,42 @@ function ProvidersList({ kindProp, pushToast }) {
         </div>
       </div>
 
+      {isMobile ? (
+        list.loading && items.length === 0 ? (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
+        ) : list.error && items.length === 0 ? (
+          <Banner
+            kind="error"
+            title={list.error.title || "Couldn't load providers"}
+            detail={list.error.detail || list.error.message}
+            actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
+          />
+        ) : (
+          <CardList
+            items={filtered}
+            empty={items.length === 0
+              ? `No ${k.label.toLowerCase()} providers yet.`
+              : "No providers match."}
+            renderCard={(p) => {
+              const color = VENDOR_COLORS[p.provider] || "var(--text-3)";
+              const modelCount = (p.models || []).length;
+              return (
+                <Card
+                  title={p.id}
+                  subtitle={
+                    <span className="mono">
+                      <span className="dot" style={{ background: color, marginRight: 6, display: "inline-block", width: 8, height: 8, borderRadius: "50%" }}></span>
+                      {p.provider || "—"}
+                    </span>
+                  }
+                  meta={`${modelCount} model${modelCount === 1 ? "" : "s"}`}
+                  onClick={() => navigateDetail(p.id)}
+                />
+              );
+            }}
+          />
+        )
+      ) : (
       <div className="tbl-wrap">
         <table className="tbl">
           <thead>
@@ -294,6 +331,11 @@ function ProvidersList({ kindProp, pushToast }) {
           </tbody>
         </table>
       </div>
+      )}
+
+      {isMobile && (
+        <Fab icon="plus" label="New provider" onClick={() => setCreateOpen(true)} />
+      )}
 
       {createOpen && (
         <NewProviderModal
@@ -914,5 +956,60 @@ function _redactSecrets(row) {
   return walk(row);
 }
 
+// ============================================================================
+// JsonField — textarea for JSON config blobs with a mobile "expand to full
+// screen" affordance. On desktop it's a plain textarea; on mobile (or any
+// viewport once expanded) we mount a full-screen overlay so the operator can
+// edit multi-line JSON without fighting the on-screen keyboard / small box.
+//
+// No providers in this file currently expose raw JSON config (they all use
+// per-field structured inputs), but the helper is here so future providers
+// — and the matching test contract — have a single primitive to reach for.
+// ============================================================================
+
+function JsonField({ label, value, onChange, placeholder, rows = 6 }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const { isMobile } = useViewport();
+  return (
+    <div className="field">
+      <label className="field-label">{label}</label>
+      <textarea
+        className="input mono"
+        rows={rows}
+        value={value}
+        placeholder={placeholder || ""}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ width: "100%", resize: "vertical" }}
+      />
+      {isMobile && (
+        <button
+          type="button"
+          className="json-expand"
+          onClick={() => setExpanded(true)}
+          title="Expand to full screen"
+        >
+          Expand to full screen
+        </button>
+      )}
+      {expanded && (
+        <div className="json-expand-overlay">
+          <div className="json-expand-header">
+            <span className="mono">{label}</span>
+            <Btn size="sm" kind="ghost" onClick={() => setExpanded(false)}>Done</Btn>
+          </div>
+          <textarea
+            className="input mono json-expand-textarea"
+            value={value}
+            placeholder={placeholder || ""}
+            onChange={(e) => onChange(e.target.value)}
+            autoFocus
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 window.ProvidersPage = ProvidersPage;
 window.ProviderDetail = ProviderDetail;
+window.JsonField = JsonField;

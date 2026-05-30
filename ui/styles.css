@@ -1618,6 +1618,30 @@ input, textarea, select { font: inherit; color: inherit; }
 
   .ssp-mobile-stack { display: flex; flex-direction: column; gap: 8px; }
 
+  .json-expand-overlay {
+    position: fixed; inset: 0;
+    background: var(--bg-1);
+    z-index: 60;
+    display: flex; flex-direction: column;
+  }
+  .json-expand-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px var(--mobile-pad-x);
+    border-bottom: 1px solid var(--border);
+  }
+  .json-expand-textarea {
+    flex: 1; resize: none; border: none; border-radius: 0;
+    padding: 12px;
+  }
+  .json-expand {
+    background: transparent;
+    border: 1px dashed var(--border);
+    color: var(--text-2);
+    padding: 6px 10px;
+    border-radius: 6px;
+    margin-top: 4px;
+  }
+
   /* Reduced motion. */
   @media (prefers-reduced-motion: reduce) {
     .drawer, .sheet { animation: none !important; transition: none !important; }
