@@ -186,6 +186,20 @@ class _AgentNodeRef(BaseModel):
             "raw text + history."
         ),
     )
+    description: str | None = Field(
+        default=None,
+        description="Free-form human-readable label for the UI.",
+    )
+    input_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Designer metadata. After Jinja renders ``input_template``, "
+            "if the result parses as JSON, the executor soft-validates "
+            "against this schema and logs a WARNING on mismatch; never "
+            "fails the node. Intent is UI assistance for template-"
+            "building, not a runtime gate."
+        ),
+    )
 
 
 class _BeginNode(BaseModel):
@@ -232,6 +246,10 @@ class _GraphNodeRef(BaseModel):
             "Jinja2 template rendered to produce the sub-graph's "
             "``initial_input`` (a single user-role :class:`Message`)."
         ),
+    )
+    description: str | None = Field(
+        default=None,
+        description="Free-form human-readable label for the UI.",
     )
 
 
