@@ -7,10 +7,17 @@ shelling is universal. Token redaction is done before any error surface.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
-from typing import Final
+import tempfile
+from pathlib import Path
+from typing import Any, Final
 from urllib.parse import urlparse, urlunparse
+
+import yaml
+
+from primer.harness.hashes import hash_bundle
 
 
 class HarnessGitError(Exception):
@@ -172,4 +179,110 @@ async def clone_at_ref(
         raise HarnessGitError(code, _redact(stderr.strip() or "git clone failed", token))
 
 
-__all__ = ["HarnessGitError", "clone_at_ref", "ls_remote"]
+async def fetch_harness_metadata(
+    *,
+    git_url: str,
+    ref: str,
+    subpath: str | None,
+    token: str | None,
+) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+    """Sparse-fetch harness.yaml + overrides.schema.json + bundle hash + SHA.
+
+    Clones ``git_url`` at ``ref`` into a temp dir, reads the metadata
+    files under ``subpath`` (or the repo root), computes a bundle hash
+    over all non-.git files in the subpath subtree, resolves the commit
+    SHA, then discards the clone. Returns
+    ``(harness_yaml_dict, overrides_schema_dict, bundle_hash, resolved_commit)``.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        try:
+            await clone_at_ref(git_url, token=token, ref=ref, dest=tmp_dir)
+        except HarnessGitError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            raise HarnessGitError(
+                "git_clone_failed", _redact(str(exc), token),
+            ) from exc
+
+        root = Path(tmp_dir)
+        target = root / subpath if subpath else root
+
+        harness_path = target / "harness.yaml"
+        if not harness_path.is_file():
+            raise HarnessGitError(
+                "dependency_yaml_invalid",
+                "harness.yaml missing or invalid",
+            )
+        try:
+            harness_yaml = yaml.safe_load(harness_path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise HarnessGitError(
+                "dependency_yaml_invalid",
+                _redact("harness.yaml missing or invalid", token),
+            ) from exc
+        if not isinstance(harness_yaml, dict):
+            raise HarnessGitError(
+                "dependency_yaml_invalid",
+                "harness.yaml missing or invalid",
+            )
+
+        schema_path = target / "overrides.schema.json"
+        if schema_path.is_file():
+            try:
+                overrides_schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise HarnessGitError(
+                    "dependency_yaml_invalid",
+                    "overrides.schema.json invalid",
+                ) from exc
+        else:
+            overrides_schema = {"type": "object", "properties": {}}
+
+        # Bundle hash: every non-.git file under target, path relative to target.
+        files: list[tuple[str, bytes]] = []
+        for p in sorted(target.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(target)
+            parts = rel.parts
+            if parts and parts[0] == ".git":
+                continue
+            files.append((rel.as_posix(), p.read_bytes()))
+        bundle_hash = hash_bundle(files)
+
+        # Resolve commit SHA from the working clone.
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "-C", tmp_dir, "rev-parse", "HEAD",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=_GIT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            raise HarnessGitError(
+                "subprocess_error", "git rev-parse timed out",
+            ) from exc
+        except FileNotFoundError as exc:
+            raise HarnessGitError(
+                "subprocess_error", "git binary not found on PATH",
+            ) from exc
+        if proc.returncode != 0:
+            raise HarnessGitError(
+                "git_clone_failed",
+                _redact(
+                    (stderr_b.decode("utf-8", errors="replace") or "git rev-parse failed").strip(),
+                    token,
+                ),
+            )
+        resolved_commit = stdout_b.decode("utf-8", errors="replace").strip()
+        if len(resolved_commit) != 40:
+            raise HarnessGitError(
+                "git_clone_failed", "could not resolve commit SHA",
+            )
+
+        return harness_yaml, overrides_schema, bundle_hash, resolved_commit
+
+
+__all__ = ["HarnessGitError", "clone_at_ref", "fetch_harness_metadata", "ls_remote"]
