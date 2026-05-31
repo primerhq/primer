@@ -356,6 +356,16 @@ class WorkspaceSession(Identifiable):
     ] | None = Field(
         default=None,
     )
+    ended_detail: str | None = Field(
+        default=None,
+        description=(
+            "Free-text refinement of ``ended_reason``. Populated by graph "
+            "execution paths to carry codes like 'begin_input_invalid', "
+            "'end_output_invalid', 'routing_failed', 'template_error', "
+            "'max_iterations_exceeded' that don't warrant new "
+            "ended_reason literals."
+        ),
+    )
 
     # Fence + scheduler-visible columns
     turn_no: int = Field(default=0, ge=0)
