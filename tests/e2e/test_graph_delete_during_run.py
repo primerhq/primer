@@ -157,12 +157,14 @@ async def test_t0737_delete_graph_during_running_graph_session(
             json={
                 "id": gid,
                 "description": "delete-during-run probe",
-                "entry_node_id": "n1",
+                "entry_node_id": "begin",
                 "nodes": [
+                    {"id": "begin", "kind": "begin"},
                     {"id": "n1", "kind": "agent", "agent_id": aid},
-                    {"id": "end", "kind": "terminal"},
+                    {"id": "end", "kind": "end"},
                 ],
                 "edges": [
+                    {"kind": "static", "from_node": "begin", "to_node": "n1"},
                     {"kind": "static", "from_node": "n1", "to_node": "end"},
                 ],
             },
