@@ -12,8 +12,10 @@ event, branch on operation, finally cleanup).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import re
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -23,7 +25,20 @@ from typing import Any
 import jsonschema
 import jsonschema.exceptions
 
-from primer.harness.git import HarnessGitError, _redact, clone_at_ref, ls_remote
+from primer.harness.dependencies import (
+    CanonicalKey,
+    DependencyCycleError,
+    DependencyVersionConflictError,
+    canonical_key,
+    walk_dependencies,
+)
+from primer.harness.git import (
+    HarnessGitError,
+    _redact,
+    clone_at_ref,
+    fetch_harness_metadata,
+    ls_remote,
+)
 from primer.harness.hashes import hash_bundle, hash_overrides, hash_schema
 from primer.harness.service import (
     BuildErrors,
@@ -32,10 +47,21 @@ from primer.harness.service import (
     apply_uninstall,
     build_rendered_entries,
 )
-from primer.harness.template import HarnessTemplateError, RenderedFile, render_bundle
+from primer.harness.template import (
+    HarnessTemplateError,
+    RenderedFile,
+    compose_overrides_schema,
+    render_bundle,
+)
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
-from primer.model.harness import Harness, HarnessOperation, HarnessRendering, HarnessStatus
+from primer.model.harness import (
+    Harness,
+    HarnessOperation,
+    HarnessRendering,
+    HarnessStatus,
+    ResolvedDependency,
+)
 from primer.model.storage import OffsetPage
 
 
@@ -66,6 +92,25 @@ def _safe_error_message(exc: Exception, token: str | None) -> str:
     """Defence in depth: any third-party exception text routed into
     ``last_operation_error`` is passed through the token redactor."""
     return _redact(str(exc), token)
+
+
+_SLUG_NON_ALNUM_RE = re.compile(r"[^a-z0-9-]+")
+_SLUG_DASH_COLLAPSE_RE = re.compile(r"-+")
+
+
+def _slugify(name: str) -> str:
+    """Lower-case, replace non-[a-z0-9-] with '-', collapse repeats, strip edges.
+
+    Used to derive a sub-harness slug from its ``metadata.name`` when the
+    sub does not provide an explicit ``metadata.slug``. Must satisfy the
+    Harness slug regex ``[a-z][a-z0-9-]{1,63}``; callers must validate.
+    """
+    if not isinstance(name, str):
+        return ""
+    s = name.strip().lower()
+    s = _SLUG_NON_ALNUM_RE.sub("-", s)
+    s = _SLUG_DASH_COLLAPSE_RE.sub("-", s)
+    return s.strip("-")
 
 
 @dataclass
@@ -336,25 +381,158 @@ async def _do_fetch(
 
             # Read overrides.schema.json
             schema_path = base / "overrides.schema.json"
-            overrides_schema: dict[str, Any] | None = None
-            new_schema_hash: str | None = None
+            parent_overrides_schema: dict[str, Any] | None = None
             if schema_path.is_file():
                 try:
                     import json as _json
                     _schema_text = await asyncio.to_thread(schema_path.read_text)
-                    overrides_schema = await asyncio.to_thread(_json.loads, _schema_text)
-                    new_schema_hash = hash_schema(overrides_schema)
+                    parent_overrides_schema = await asyncio.to_thread(
+                        _json.loads, _schema_text,
+                    )
                 except Exception as exc:
                     return HarnessStatus.ERROR, json.dumps(
                         {"code": "harness_yaml_invalid",
                          "message": f"overrides.schema.json: {exc}"}
                     )
 
-            # Compute bundle_hash over entire subpath (excluding .git)
+            # Compute parent's own bundle_hash over the subpath (excluding .git)
             bundle_files = await asyncio.to_thread(_collect_bundle_files, base)
-            new_available_bundle_hash = hash_bundle(bundle_files)
+            parent_bundle_hash = hash_bundle(bundle_files)
 
-            # Re-validate current overrides against new schema
+            # ---- Dependency walk (optional) -----------------------------
+            parent_deps = harness_meta.get("dependencies") or []
+            if not isinstance(parent_deps, list):
+                return HarnessStatus.ERROR, json.dumps(
+                    {"code": "harness_yaml_invalid",
+                     "message": "dependencies must be a list"}
+                )
+
+            resolved_deps: list[ResolvedDependency] = []
+            # Side-channel populated by the fetcher closure so we can recover
+            # each sub's overrides.schema.json after walk_dependencies returns.
+            schemas_by_key: dict[CanonicalKey, dict[str, Any]] = {}
+            # Track the most recent (url, ref, subpath, name) being fetched so
+            # we can surface meaningful error details when a sub-fetch fails.
+            current_fetch_target: dict[str, Any] = {}
+
+            async def _fetch_meta(
+                url: str, ref: str, subpath: str | None, tok: str | None,
+            ) -> tuple[str, list[dict], str, str]:
+                current_fetch_target.update(
+                    {"git_url": url, "ref": ref, "subpath": subpath},
+                )
+                hy, sch, sub_bundle_hash, sub_commit = await fetch_harness_metadata(
+                    git_url=url, ref=ref, subpath=subpath, token=tok,
+                )
+                meta = hy.get("metadata") if isinstance(hy.get("metadata"), dict) else {}
+                slug_raw = meta.get("slug") if isinstance(meta, dict) else None
+                if not slug_raw:
+                    slug_raw = _slugify(meta.get("name", "") if isinstance(meta, dict) else "")
+                if not slug_raw:
+                    # Fall back to slugifying any top-level name field too.
+                    slug_raw = _slugify(hy.get("name", "") if isinstance(hy.get("name"), str) else "")
+                if not slug_raw or not re.match(r"^[a-z][a-z0-9-]{1,63}$", slug_raw):
+                    raise HarnessGitError(
+                        "dependency_yaml_invalid",
+                        "sub harness.yaml must declare metadata.name or metadata.slug",
+                    )
+                sub_deps = hy.get("dependencies") or []
+                if not isinstance(sub_deps, list):
+                    raise HarnessGitError(
+                        "dependency_yaml_invalid",
+                        "sub harness.yaml: dependencies must be a list",
+                    )
+                key = canonical_key(url, ref, subpath)
+                if isinstance(sch, dict):
+                    schemas_by_key[key] = sch
+                return slug_raw, sub_deps, sub_bundle_hash, sub_commit
+
+            if parent_deps:
+                try:
+                    resolved_deps, _visited_by_key = await walk_dependencies(
+                        parent_deps=parent_deps,
+                        fetcher=_fetch_meta,
+                    )
+                except DependencyCycleError as exc:
+                    return HarnessStatus.ERROR, json.dumps(
+                        {"code": "dependency_cycle",
+                         "message": str(exc),
+                         "path": exc.path}
+                    )
+                except DependencyVersionConflictError as exc:
+                    return HarnessStatus.ERROR, json.dumps(
+                        {"code": "dependency_version_conflict",
+                         "message": str(exc),
+                         "slug": exc.slug,
+                         "ref_a": exc.ref_a,
+                         "ref_b": exc.ref_b,
+                         "path_a": exc.path_a,
+                         "path_b": exc.path_b}
+                    )
+                except HarnessGitError as exc:
+                    if exc.code == "dependency_yaml_invalid":
+                        return HarnessStatus.ERROR, json.dumps(
+                            {"code": "dependency_yaml_invalid",
+                             "message": exc.message,
+                             "git_url": current_fetch_target.get("git_url"),
+                             "ref": current_fetch_target.get("ref")}
+                        )
+                    return HarnessStatus.ERROR, json.dumps(
+                        {"code": "dependency_fetch_failed",
+                         "message": exc.message,
+                         "git_url": current_fetch_target.get("git_url"),
+                         "ref": current_fetch_target.get("ref"),
+                         "inner_code": exc.code}
+                    )
+
+            # ---- Compose overrides schema --------------------------------
+            # Build (dep.name, sub_schema) pairs for DIRECT deps only; the
+            # walker preserves declaration order for direct entries via the
+            # post-order list with depth==0 trailing each subtree.
+            direct_sub_schemas: list[tuple[str, dict[str, Any]]] = []
+            for dep_decl in parent_deps:
+                name = dep_decl.get("name")
+                url = dep_decl.get("git_url")
+                ref_ = dep_decl.get("ref", "main")
+                subpath_ = dep_decl.get("subpath")
+                if not isinstance(name, str) or not isinstance(url, str):
+                    continue
+                key = canonical_key(url, ref_, subpath_)
+                sub_schema = schemas_by_key.get(key, {"type": "object", "properties": {}})
+                direct_sub_schemas.append((name, sub_schema))
+
+            base_schema_for_compose = parent_overrides_schema or {"type": "object", "properties": {}}
+            if direct_sub_schemas:
+                overrides_schema: dict[str, Any] | None = compose_overrides_schema(
+                    parent_schema=base_schema_for_compose,
+                    sub_schemas=direct_sub_schemas,
+                )
+            else:
+                overrides_schema = parent_overrides_schema
+            new_schema_hash = hash_schema(overrides_schema) if overrides_schema is not None else None
+
+            # ---- Composite available_bundle_hash -------------------------
+            # parent's own bundle hash bytes + each dep's bundle_hash + \0
+            # in canonical-key order (deterministic across runs).
+            if resolved_deps:
+                h = hashlib.sha256()
+                h.update(parent_bundle_hash.encode("utf-8"))
+                ordered = sorted(
+                    resolved_deps,
+                    key=lambda d: (
+                        canonical_key(d.git_url, d.ref, d.subpath).url,
+                        canonical_key(d.git_url, d.ref, d.subpath).ref,
+                        canonical_key(d.git_url, d.ref, d.subpath).subpath,
+                    ),
+                )
+                for d in ordered:
+                    h.update(d.bundle_hash.encode("utf-8"))
+                    h.update(b"\x00")
+                new_available_bundle_hash = h.hexdigest()
+            else:
+                new_available_bundle_hash = parent_bundle_hash
+
+            # Re-validate current overrides against composite schema
             schema_missing_input = False
             if overrides_schema is not None:
                 try:
@@ -401,6 +579,7 @@ async def _do_fetch(
                 "commits_ahead": commits_ahead,
                 "overrides_dirty": overrides_dirty,
                 "schema_missing_input": schema_missing_input,
+                "dependencies_resolved": resolved_deps,
             })
             await harness_storage.update(updated)
 
