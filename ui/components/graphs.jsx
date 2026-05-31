@@ -1258,6 +1258,11 @@ const GR_Canvas = React.forwardRef(function GR_Canvas(
             <marker id="arrow-cond" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="strokeWidth">
               <path d="M0,0 L8,4 L0,8 z" fill="var(--accent)" />
             </marker>
+            {/* Smaller arrowhead for the FanOut implicit dashed edges so
+                they read as "configured, not wired". */}
+            <marker id="arrow-fanout" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L6,3 L0,6 z" fill="var(--text-3)" />
+            </marker>
           </defs>
           {(draft.edges || []).map((e, i) => (
             <GR_EdgePath
@@ -1268,6 +1273,16 @@ const GR_Canvas = React.forwardRef(function GR_Canvas(
               onClick={(ev) => { ev.stopPropagation(); if (onEdgeClick) onEdgeClick(i); }}
             />
           ))}
+          {/* Spec B §1.3: FanOut nodes have NO entries in `graph.edges`;
+              their downstream targets live on per-spec fields. Render
+              one dashed path per (FanOut, target) pair so the operator
+              sees the implicit wiring on the canvas without it counting
+              as a static edge. */}
+          <g className="fanout-implicit-edges">
+            {GR_collectFanOutImplicitEdges(draft.nodes).map(({ from, to }, i) => (
+              <GR_ImplicitFanOutEdge key={`fo-${i}`} from={from} to={to} />
+            ))}
+          </g>
         </svg>
 
         {draft.nodes.map((n) => (
@@ -1570,6 +1585,71 @@ function GR_SingleEdge({ fx, fy, to, dashed, label, selected, onClick }) {
         </text>
       )}
     </g>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// FanOut implicit-edge collection + render.
+//
+// Spec B §1.3 forbids FanOut nodes from appearing as `from_node` in
+// `graph.edges` — their downstream targets are configured per-spec
+// (broadcast.target_node_id, tee.target_node_ids, map.target_node_id).
+// The editor renders these as dashed lines on the canvas so the operator
+// can see the implicit wiring without it counting as a static edge.
+//
+// `GR_collectFanOutImplicitEdges` flattens every (FanOut, target) pair,
+// de-duped so a spec listing the same target twice still draws once.
+// Targets that don't resolve to a known node are skipped silently — the
+// topology-violations banner already flags them.
+// ----------------------------------------------------------------------------
+
+function GR_collectFanOutImplicitEdges(nodes) {
+  if (!Array.isArray(nodes)) return [];
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const seen = new Set();
+  const out = [];
+  for (const node of nodes) {
+    if (node.kind !== "fan_out") continue;
+    const specs = Array.isArray(node.specs) ? node.specs : [];
+    for (const spec of specs) {
+      const targets = [];
+      if (spec.kind === "broadcast" || spec.kind === "map") {
+        if (spec.target_node_id) targets.push(spec.target_node_id);
+      } else if (spec.kind === "tee") {
+        for (const tid of (spec.target_node_ids || [])) targets.push(tid);
+      }
+      for (const tid of targets) {
+        const key = `${node.id}->${tid}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const to = byId.get(tid);
+        if (!to) continue;  // unknown target — flagged elsewhere
+        out.push({ from: node, to });
+      }
+    }
+  }
+  return out;
+}
+
+function GR_ImplicitFanOutEdge({ from, to }) {
+  const fromSize = GR_NODE_SIZE[from.kind] || GR_NODE_SIZE.agent;
+  const toSize = GR_NODE_SIZE[to.kind] || GR_NODE_SIZE.agent;
+  const fx = (from.x || 0) + fromSize.w;
+  const fy = (from.y || 0) + fromSize.h / 2;
+  const tx = to.x || 0;
+  const ty = (to.y || 0) + toSize.h / 2;
+  const mx = (fx + tx) / 2;
+  const path = `M ${fx} ${fy} C ${mx} ${fy}, ${mx} ${ty}, ${tx} ${ty}`;
+  return (
+    <path
+      d={path}
+      stroke="var(--text-3)"
+      strokeWidth="1.4"
+      fill="none"
+      strokeDasharray="6 4"
+      markerEnd="url(#arrow-fanout)"
+      style={{ pointerEvents: "none" }}
+    />
   );
 }
 
