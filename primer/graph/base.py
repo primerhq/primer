@@ -162,6 +162,77 @@ def _render_end_output(end: "_EndNode", context: "GraphContext") -> _EndOutputRe
     return _EndOutputResult(text=text, parsed=parsed_obj, error_code=None)
 
 
+@dataclass(frozen=True)
+class _FanInOutputResult:
+    """Outcome of rendering a :class:`_FanInNode`'s aggregate_template.
+
+    Spec B §2.2 — mirrors :class:`_EndOutputResult` so the executor can use
+    the same error-code surface (``template_error`` / ``end_output_invalid``)
+    for both End-node and FanIn-node failures.
+    """
+
+    text: str
+    parsed: dict[str, Any] | None
+    error_code: str | None
+    error_message: str | None = None
+
+
+def _render_fanin_output(
+    fanin: "_FanInNode", context: "GraphContext"
+) -> _FanInOutputResult:
+    """Render FanIn.aggregate_template + validate optional output_schema.
+
+    Mirrors :func:`_render_end_output` (Spec A §5.4) — failures map to:
+
+    * Jinja error during render → ``template_error``
+    * JSON parse failure when output_schema is set → ``end_output_invalid``
+    * :class:`jsonschema.ValidationError` → ``end_output_invalid``
+    """
+    from primer.graph.template import render_template_safely
+
+    if not fanin.aggregate_template:
+        return _FanInOutputResult(text="", parsed=None, error_code=None)
+
+    try:
+        text = render_template_safely(fanin.aggregate_template, context)
+    except Exception as exc:  # noqa: BLE001 — UndefinedError, TemplateSyntaxError, ...
+        return _FanInOutputResult(
+            text="",
+            parsed=None,
+            error_code="template_error",
+            error_message=str(exc),
+        )
+
+    if fanin.output_schema is None:
+        return _FanInOutputResult(text=text, parsed=None, error_code=None)
+
+    try:
+        parsed_obj = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return _FanInOutputResult(
+            text=text,
+            parsed=None,
+            error_code="end_output_invalid",
+            error_message=f"output is not JSON: {exc}",
+        )
+
+    import jsonschema  # local import keeps base.py import cheap
+
+    try:
+        jsonschema.validate(instance=parsed_obj, schema=fanin.output_schema)
+    except jsonschema.ValidationError as exc:
+        return _FanInOutputResult(
+            text=text,
+            parsed=None,
+            error_code="end_output_invalid",
+            error_message=exc.message,
+        )
+
+    if not isinstance(parsed_obj, dict):
+        return _FanInOutputResult(text=text, parsed=None, error_code=None)
+    return _FanInOutputResult(text=text, parsed=parsed_obj, error_code=None)
+
+
 def _materialise_begin_output(
     graph_input: Any,
     initial_messages: list[Message],
@@ -849,6 +920,32 @@ class _BaseGraphExecutor(ABC):
                     self._fanout_target_expected_count[tgt] = max(
                         self._fanout_target_expected_count.get(tgt, 0), n
                     )
+                return
+            if isinstance(node, _FanInNode):
+                # FanIn is a pure data-shaping aggregator (Spec B §2.2):
+                # render aggregate_template + optional output_schema, then
+                # post a _NodeDone with ended_detail set on failure so the
+                # outer loop terminates `failed`.
+                fres = _render_fanin_output(node, context)
+                if fres.error_code is not None:
+                    await queue.put(
+                        _NodeDone(
+                            node_id=node_id,
+                            output=None,
+                            error=fres.error_message or fres.error_code,
+                            ended_detail=fres.error_code,
+                        )
+                    )
+                    return
+                fan_out = NodeOutput(
+                    text=fres.text,
+                    parsed=fres.parsed,
+                    history=[],
+                    iteration=context.iteration,
+                )
+                await queue.put(
+                    _NodeDone(node_id=node_id, output=fan_out, error=None)
+                )
                 return
             if isinstance(node, _EndNode):
                 # End is pure data-shaping; render output_template + optional
