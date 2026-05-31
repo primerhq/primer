@@ -21,6 +21,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PositiveInt,
+    field_validator,
     model_validator,
 )
 
@@ -152,6 +153,24 @@ _DEFAULT_INPUT_TEMPLATE = (
 )
 
 
+def _validate_json_schema(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Validate ``value`` against the JSON Schema 2020-12 meta-schema.
+
+    Returns the input unchanged when valid (or ``None``). Raises
+    :class:`ValueError` on a meta-schema violation so Pydantic surfaces
+    it as a field-level ``ValidationError``. Spec §7.2: malformed
+    schemas are rejected at save time rather than runtime.
+    """
+    if value is None:
+        return value
+    import jsonschema as _js
+    try:
+        _js.Draft202012Validator.check_schema(value)
+    except _js.SchemaError as exc:
+        raise ValueError(f"invalid JSON Schema: {exc.message}") from exc
+    return value
+
+
 class _AgentNodeRef(BaseModel):
     """Node that runs a single :class:`primer.model.agent.Agent`."""
 
@@ -204,6 +223,13 @@ class _AgentNodeRef(BaseModel):
         ),
     )
 
+    _validate_input_schema = field_validator("input_schema")(
+        _validate_json_schema
+    )
+    _validate_response_format = field_validator("response_format")(
+        _validate_json_schema
+    )
+
 
 class _BeginNode(BaseModel):
     """Entry-point node — pure data-shaping, no LLM call.
@@ -227,6 +253,10 @@ class _BeginNode(BaseModel):
             "against this schema; failure returns 422. When unset, the "
             "graph accepts any input shape (string, list[Message], dict)."
         ),
+    )
+
+    _validate_input_schema = field_validator("input_schema")(
+        _validate_json_schema
     )
 
 
@@ -283,6 +313,10 @@ class _EndNode(BaseModel):
             "schema; failure ends the graph with "
             "ended_detail='end_output_invalid'."
         ),
+    )
+
+    _validate_output_schema = field_validator("output_schema")(
+        _validate_json_schema
     )
 
 
