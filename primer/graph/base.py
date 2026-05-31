@@ -62,6 +62,7 @@ from primer.model.chat import (
 )
 from primer.model.except_ import ConfigError
 from primer.model.graph import (
+    FanOutSpec,
     Graph,
     GraphContext,
     NodeOutput,
@@ -72,6 +73,8 @@ from primer.model.graph import (
     _CallableRouter,
     _ConditionalEdge,
     _EndNode,
+    _FanInNode,
+    _FanOutNode,
     _GraphNodeRef,
     _JsonPathRouter,
     _StaticEdge,
@@ -230,6 +233,115 @@ class _RoutingFailed(Exception):
     def __init__(self, source_node_id: str, message: str) -> None:
         super().__init__(message)
         self.source_node_id = source_node_id
+
+
+class _FanoutSourceInvalid(Exception):
+    """Raised when a FanOutSpec(kind='map') source path doesn't resolve to a list.
+
+    Caught by the executor's outer loop and translated to
+    ``ended_detail="fanout_source_invalid"`` per Spec B §1.4.
+    """
+
+    def __init__(self, source_node_id: str, source_path: str, reason: str) -> None:
+        self.source_node_id = source_node_id
+        self.source_path = source_path
+        self.reason = reason
+        super().__init__(
+            f"FanOut map source {source_node_id!r}.{source_path!r}: {reason}"
+        )
+
+
+@dataclass(frozen=True)
+class _FanoutInstance:
+    """One synthesized instance produced by a FanOutSpec.
+
+    The executor dispatches one instance per row, recording each
+    completed NodeOutput at ``GraphContext.nodes[synthesized_id]`` and
+    accumulating the aggregator list at ``GraphContext.nodes[target_node_id]``.
+    """
+
+    synthesized_id: str            # e.g. "worker[2]" (broadcast/map) or "b" (tee)
+    target_node_id: str            # the underlying node definition
+    fanout_index: int | None       # None for tee
+    fanout_item: Any               # FanOut's NodeOutput for broadcast/tee; list element for map
+
+
+def _resolve_fanout_spec(
+    spec: "FanOutSpec",
+    context: "GraphContext",
+    fanout_output: "NodeOutput",
+) -> list[_FanoutInstance]:
+    """Walk one FanOutSpec into the list of instances to dispatch.
+
+    Spec B §2.1:
+    - broadcast → N instances of ``target_node_id`` named ``target[i]``.
+    - tee → one instance per id in ``target_node_ids`` (no synthesized
+      index — instance id == target id).
+    - map → one instance per element of the source list at
+      ``source_node_id.parsed.<source_path>``; raises
+      :class:`_FanoutSourceInvalid` when the path doesn't resolve or
+      doesn't land on a list.
+    """
+    from primer.graph.router import _resolve_path
+
+    if spec.kind == "broadcast":
+        target = spec.target_node_id or ""
+        n = spec.count or 0
+        return [
+            _FanoutInstance(
+                synthesized_id=f"{target}[{i}]",
+                target_node_id=target,
+                fanout_index=i,
+                fanout_item=fanout_output,
+            )
+            for i in range(n)
+        ]
+    if spec.kind == "tee":
+        return [
+            _FanoutInstance(
+                synthesized_id=tid,
+                target_node_id=tid,
+                fanout_index=None,
+                fanout_item=fanout_output,
+            )
+            for tid in (spec.target_node_ids or [])
+        ]
+    # map
+    source_node_id = spec.source_node_id or ""
+    source_path = spec.source_path or ""
+    source_node = context.nodes.get(source_node_id)
+    if source_node is None or isinstance(source_node, list):
+        raise _FanoutSourceInvalid(
+            source_node_id, source_path,
+            "source node has no parsed output (or is a fan-out target)",
+        )
+    parsed = source_node.parsed
+    if parsed is None:
+        raise _FanoutSourceInvalid(
+            source_node_id, source_path,
+            "source node has no parsed output",
+        )
+    found, value = _resolve_path(parsed, source_path)
+    if not found:
+        raise _FanoutSourceInvalid(
+            source_node_id, source_path,
+            "path did not resolve",
+        )
+    if not isinstance(value, list):
+        raise _FanoutSourceInvalid(
+            source_node_id, source_path,
+            f"resolved to non-list value (type={type(value).__name__})",
+        )
+    target = spec.target_node_id or ""
+    return [
+        _FanoutInstance(
+            synthesized_id=f"{target}[{i}]",
+            target_node_id=target,
+            fanout_index=i,
+            fanout_item=item,
+        )
+        for i, item in enumerate(value)
+    ]
 
 
 @dataclass(frozen=True)
