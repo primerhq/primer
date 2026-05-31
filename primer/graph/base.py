@@ -298,6 +298,7 @@ class _BaseGraphExecutor(ABC):
         node_states: dict[str, NodeRuntimeState],
         status: SessionStatus,
         ended_reason: str | None = None,
+        ended_detail: str | None = None,
     ) -> None:
         """Persist graph-level state between supersteps."""
 
@@ -342,6 +343,7 @@ class _BaseGraphExecutor(ABC):
         )
         ready: set[str] = {_resolve_initial_ready_node(self._graph)}
         ended_reason: str | None = None
+        ended_detail: str | None = None
 
         while ready:
             # Cycle bound check.
@@ -416,9 +418,15 @@ class _BaseGraphExecutor(ABC):
                         error=err_text,
                     )
                     any_failed = True
+                    # When the failure carries a spec §5.4 code (e.g. End-node
+                    # output validation), propagate it so the executor's
+                    # final state records both reason="failed" and the code.
+                    if done is not None and done.ended_detail is not None:
+                        ended_reason = "failed"
+                        ended_detail = done.ended_detail
                     continue
                 node = self._nodes_by_id[nid]
-                if isinstance(node, _TerminalNode):
+                if isinstance(node, (_TerminalNode, _EndNode)):
                     terminal_reached = True
                 if done.output is not None:
                     context.nodes[nid] = done.output
@@ -437,7 +445,11 @@ class _BaseGraphExecutor(ABC):
             )
 
             if any_failed:
-                ended_reason = "failed"
+                # ended_reason / ended_detail may already be set by the
+                # per-node handler above (e.g. End-node failure carries a
+                # spec §5.4 code); only fall back when nothing's been set.
+                if ended_reason is None:
+                    ended_reason = "failed"
                 break
             if terminal_reached:
                 ended_reason = "completed"
@@ -467,6 +479,7 @@ class _BaseGraphExecutor(ABC):
             node_states=node_states,
             status=SessionStatus.ENDED,
             ended_reason=ended_reason,
+            ended_detail=ended_detail,
         )
 
     # ---- Per-node streaming ----------------------------------------------

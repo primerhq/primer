@@ -592,6 +592,16 @@ class GraphThread(Identifiable):
         default=None,
         description="Set when ``status == ENDED``.",
     )
+    ended_detail: str | None = Field(
+        default=None,
+        description=(
+            "Spec §5.4 failure code (e.g. ``end_output_invalid``, "
+            "``template_error``, ``routing_failed``, "
+            "``max_iterations_exceeded``) carried alongside "
+            "``ended_reason='failed'``. ``None`` for successful "
+            "completions and for ``cancelled``."
+        ),
+    )
 
 
 class GraphNodeMessage(Identifiable):

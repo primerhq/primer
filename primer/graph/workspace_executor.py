@@ -255,6 +255,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         node_states: dict[str, NodeRuntimeState],
         status: SessionStatus,
         ended_reason: str | None = None,
+        ended_detail: str | None = None,
     ) -> None:
         """Write graph-level state.json AND git-commit it."""
         rel_state = self._repo_rel(self.state_root / "state.json")
@@ -262,6 +263,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             "iteration": iteration,
             "status": status.value,
             "ended_reason": ended_reason,
+            "ended_detail": ended_detail,
             "node_states": {
                 nid: {
                     "status": ns.status.value,
@@ -282,6 +284,8 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         }
         if ended_reason:
             trailers["X-Primer-Graph-Ended-Reason"] = ended_reason
+        if ended_detail:
+            trailers["X-Primer-Graph-Ended-Detail"] = ended_detail
         await self._state_repo.commit_arbitrary(
             summary=(
                 f"graph {self._graph_session_id}: state @ iter {iteration} "

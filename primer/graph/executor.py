@@ -204,6 +204,7 @@ class GraphExecutor(_BaseGraphExecutor):
         node_states: dict[str, NodeRuntimeState],
         status: SessionStatus,
         ended_reason: str | None = None,
+        ended_detail: str | None = None,
     ) -> None:
         thread = await self._threads.get(self._thread_id)
         if thread is None:
@@ -214,6 +215,7 @@ class GraphExecutor(_BaseGraphExecutor):
                 "node_states": dict(node_states),
                 "status": status,
                 "ended_reason": ended_reason,
+                "ended_detail": ended_detail,
                 "last_activity_at": datetime.now(timezone.utc),
             }
         )
