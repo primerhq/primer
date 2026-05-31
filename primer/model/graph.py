@@ -418,8 +418,45 @@ class _FanOutNode(BaseModel):
     )
 
 
+class _FanInNode(BaseModel):
+    """Pure data-shaping aggregator that waits for all incoming branches.
+
+    Spec B §1.1, §2.2. Unlike every other node kind, FanIn's ready-set
+    logic is wait-for-all: it fires only when every incoming edge's
+    source has produced a NodeOutput. For incoming edges whose source is
+    a fan-out target, "all sources produced output" expands to "all
+    synthesized instances produced output".
+    """
+
+    kind: Literal["fan_in"] = "fan_in"
+    id: str = Field(..., min_length=1)
+    description: str | None = None
+    aggregate_template: str = Field(
+        default="",
+        description=(
+            "Jinja2 template rendered over GraphContext when the FanIn "
+            "fires. Result populates NodeOutput.text. Has access to the "
+            "aggregator list at nodes[target] and individual instances "
+            "at nodes['target[i]']."
+        ),
+    )
+    output_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional JSON Schema 2020-12. When set, the rendered "
+            "aggregate_template MUST parse as JSON conforming to this "
+            "schema; failure ends the graph with "
+            "ended_detail='end_output_invalid'."
+        ),
+    )
+
+    _validate_output_schema = field_validator("output_schema")(
+        _validate_json_schema
+    )
+
+
 GraphNode = Annotated[
-    Union[_AgentNodeRef, _GraphNodeRef, _BeginNode, _EndNode, _FanOutNode],
+    Union[_AgentNodeRef, _GraphNodeRef, _BeginNode, _EndNode, _FanOutNode, _FanInNode],
     Field(discriminator="kind"),
 ]
 
