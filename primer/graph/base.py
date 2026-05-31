@@ -581,7 +581,7 @@ class _BaseGraphExecutor(ABC):
             ready_ordered = sorted(ready)
             end_ids_ready = [
                 nid for nid in ready_ordered
-                if isinstance(self._nodes_by_id[nid], _EndNode)
+                if isinstance(self._resolve_node_def(nid), _EndNode)
             ]
             if len(end_ids_ready) > 1:
                 # Keep the smallest End; drop the others entirely.
@@ -655,11 +655,28 @@ class _BaseGraphExecutor(ABC):
                             )
                         )
                     continue
-                node = self._nodes_by_id[nid]
+                node = self._resolve_node_def(nid)
                 if isinstance(node, _EndNode):
                     terminal_reached = True
                 if done.output is not None:
                     context.nodes[nid] = done.output
+                    # Fan-out instance: also append to the aggregator list at
+                    # the target's bare id, preserving index order via
+                    # pad-with-None for out-of-order completion.
+                    inst = self._fanout_instances.get(nid)
+                    if inst is not None:
+                        agg = context.nodes.get(inst.target_node_id)
+                        agg_list: list[NodeOutput | None] = list(agg) if isinstance(agg, list) else []  # type: ignore[arg-type]
+                        target_len = (inst.fanout_index or 0) + 1
+                        while len(agg_list) < target_len:
+                            agg_list.append(None)
+                        if inst.fanout_index is not None:
+                            agg_list[inst.fanout_index] = done.output
+                        else:
+                            agg_list.append(done.output)
+                        context.nodes[inst.target_node_id] = [
+                            x for x in agg_list if x is not None
+                        ]
                 node_states[nid] = NodeRuntimeState(
                     status=NodeRuntimeStatus.ENDED,
                     last_run_iteration=context.iteration,
@@ -744,14 +761,41 @@ class _BaseGraphExecutor(ABC):
 
     # ---- Per-node streaming ----------------------------------------------
 
+    def _resolve_node_def(self, node_id: str):
+        """Resolve ``node_id`` to its node definition.
+
+        Synthesized fan-out instance ids (e.g. ``"worker[2]"``) resolve to
+        their target node's definition; all other ids resolve directly via
+        ``_nodes_by_id``. Spec B §2.1.
+        """
+        instance = self._fanout_instances.get(node_id)
+        if instance is not None:
+            return self._nodes_by_id[instance.target_node_id]
+        return self._nodes_by_id[node_id]
+
     async def _stream_node(
         self,
         node_id: str,
         context: GraphContext,
         queue: "asyncio.Queue[StreamEvent | _NodeDone]",
     ) -> None:
-        """Run one node; push events live to ``queue``, then a _NodeDone."""
-        node = self._nodes_by_id[node_id]
+        """Run one node; push events live to ``queue``, then a _NodeDone.
+
+        Spec B §2.1: synthesized fan-out instance ids (``worker[2]`` etc.)
+        resolve to the underlying target node definition, and the executor
+        renders the node's input_template against a Jinja scope that includes
+        ``fanout_index`` and ``fanout_item``.
+        """
+        instance = self._fanout_instances.get(node_id)
+        if instance is not None:
+            node = self._nodes_by_id[instance.target_node_id]
+            extra_scope: dict[str, Any] | None = {
+                "fanout_index": instance.fanout_index,
+                "fanout_item": instance.fanout_item,
+            }
+        else:
+            node = self._nodes_by_id[node_id]
+            extra_scope = None
         try:
             if isinstance(node, _FanOutNode):
                 # FanOut is a pure dispatcher (Spec B §2.1):
@@ -858,10 +902,12 @@ class _BaseGraphExecutor(ABC):
                     )
             elif isinstance(node, _GraphNodeRef):
                 output = await self._stream_subgraph_node(
-                    node, context, queue
+                    node, context, queue, extra_scope=extra_scope
                 )
             elif isinstance(node, _AgentNodeRef):
-                output = await self._stream_agent_node(node, context, queue)
+                output = await self._stream_agent_node(
+                    node, context, queue, extra_scope=extra_scope
+                )
             else:  # pragma: no cover -- discriminated union exhausted
                 raise ConfigError(
                     f"unknown node kind: {type(node).__name__}"
@@ -881,8 +927,14 @@ class _BaseGraphExecutor(ABC):
         node: _AgentNodeRef,
         context: GraphContext,
         queue: "asyncio.Queue[StreamEvent | _NodeDone]",
+        *,
+        extra_scope: dict[str, Any] | None = None,
     ) -> NodeOutput:
-        """Run one agent-backed node; identical semantics to a standalone agent."""
+        """Run one agent-backed node; identical semantics to a standalone agent.
+
+        ``extra_scope`` carries per-fan-out-instance vars (``fanout_index``,
+        ``fanout_item``) for synthesized invocations (Spec B §2.1).
+        """
         agent = await self._agent_resolver(node.agent_id)
         llm, llm_model = await self._llm_resolver(agent)
         if self._tool_manager_resolver is not None:
@@ -891,7 +943,9 @@ class _BaseGraphExecutor(ABC):
             tool_manager = ToolExecutionManager()
 
         # Render the input template -> single user-role Message.
-        rendered = render_input_template(node.input_template, context=context)
+        rendered = render_input_template(
+            node.input_template, context=context, extra_scope=extra_scope
+        )
         new_user_msg = Message(role="user", parts=[TextPart(text=rendered)])
 
         # Build the prompt: system + history + new user msg.
@@ -962,8 +1016,14 @@ class _BaseGraphExecutor(ABC):
         node: _GraphNodeRef,
         context: GraphContext,
         queue: "asyncio.Queue[StreamEvent | _NodeDone]",
+        *,
+        extra_scope: dict[str, Any] | None = None,
     ) -> NodeOutput:
-        """Recurse into a subgraph; forward events under the parent node id."""
+        """Recurse into a subgraph; forward events under the parent node id.
+
+        ``extra_scope`` carries per-fan-out-instance vars (``fanout_index``,
+        ``fanout_item``) for synthesized invocations (Spec B §2.1).
+        """
         if self._graph_resolver is None:
             raise ConfigError(
                 f"subgraph node {node.id!r} requires a graph_resolver "
@@ -972,7 +1032,9 @@ class _BaseGraphExecutor(ABC):
         sub_graph = await self._graph_resolver(node.graph_id)
         sub_executor = await self._build_sub_executor(node, sub_graph)
 
-        rendered = render_input_template(node.input_template, context=context)
+        rendered = render_input_template(
+            node.input_template, context=context, extra_scope=extra_scope
+        )
         sub_input = [Message(role="user", parts=[TextPart(text=rendered)])]
 
         # Forward every sub-event under THIS node's id so external taps

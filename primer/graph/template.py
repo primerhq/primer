@@ -45,6 +45,7 @@ def render_input_template(
     template: str,
     *,
     context: GraphContext,
+    extra_scope: dict[str, Any] | None = None,
 ) -> str:
     """Render ``template`` against ``context``; return the rendered string.
 
@@ -57,6 +58,10 @@ def render_input_template(
       values are :class:`NodeOutput` instances). Templates access
       ``nodes.A.text`` / ``nodes.A.parsed`` via attribute syntax.
 
+    ``extra_scope`` (when supplied) merges into the Jinja namespace —
+    used by the executor's per-fan-out-instance render path to expose
+    ``fanout_index`` and ``fanout_item`` (Spec B §2.1).
+
     Raises :class:`BadRequestError` on template syntax errors and on
     runtime errors (missing variable, bad attribute, sandbox
     violation). The exception message embeds the original Jinja2
@@ -68,12 +73,15 @@ def render_input_template(
         raise BadRequestError(
             f"render_input_template: template syntax error at line {exc.lineno}: {exc.message}"
         ) from exc
+    scope: dict[str, Any] = {
+        "initial_input": context.initial_input,
+        "iteration": context.iteration,
+        "nodes": context.nodes,
+    }
+    if extra_scope:
+        scope.update(extra_scope)
     try:
-        return compiled.render(
-            initial_input=context.initial_input,
-            iteration=context.iteration,
-            nodes=context.nodes,
-        )
+        return compiled.render(**scope)
     except TemplateError as exc:
         raise BadRequestError(
             f"render_input_template: render error: {exc!s}"
