@@ -1510,7 +1510,7 @@ function GR_SidePanel({
   );
 }
 
-function GR_GraphStatsBlock({ draft }) {
+function GR_GraphStatsBlock({ draft, onSetGraph }) {
   const nodeIds = new Set((draft.nodes || []).map((n) => n.id));
   const dangling = [];
   for (const e of (draft.edges || [])) {
@@ -1539,7 +1539,27 @@ function GR_GraphStatsBlock({ draft }) {
         graph
       </div>
       <div className="mono" style={{ fontWeight: 600, fontSize: 14 }}>{draft.id}</div>
-      <div className="muted text-sm">{draft.description}</div>
+      {onSetGraph ? (
+        <>
+          <GR_TextField
+            label="description"
+            value={draft.description ?? ""}
+            onChange={(v) => onSetGraph({ description: v })}
+            placeholder="(no description)"
+          />
+          <GR_NumberField
+            label="max_iterations"
+            value={draft.max_iterations ?? ""}
+            onChange={(v) =>
+              onSetGraph({ max_iterations: v === "" ? null : Number(v) })
+            }
+            placeholder="unlimited"
+            help="Cap on per-graph iterations (empty = unlimited)."
+          />
+        </>
+      ) : (
+        <div className="muted text-sm">{draft.description}</div>
+      )}
       <div className="mt-3 muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
         stats
       </div>
