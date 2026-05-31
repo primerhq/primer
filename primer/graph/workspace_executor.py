@@ -232,11 +232,17 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         self,
         node: "_ToolCallNode",
         arguments: dict[str, Any],
+        *,
+        bypass_approval: bool = False,
     ) -> ToolResultPart:
         """Dispatch a ToolCall node via the workspace's ``ToolExecutionManager``.
 
         Spec B §2.3 step 2. Builds a :class:`ToolCallPart` with a fresh
         uuid id and forwards to :meth:`ToolExecutionManager.execute`.
+
+        ``bypass_approval`` is threaded through to the manager so the
+        resume path (Phase 6 Task 6.3) can re-dispatch a previously
+        yielded ToolCall without re-firing the approval gate.
 
         ``self._tool_manager`` is the manager the worker passes in when
         building this executor. When absent, we build a workspace-only
@@ -271,7 +277,23 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         return await manager.execute(
             call,
             principal=self._principal,
-            bypass_approval=False,
+            bypass_approval=bypass_approval,
+        )
+
+    async def _dispatch_toolcall_with_bypass(
+        self,
+        node: "_ToolCallNode",
+        arguments: dict[str, Any],
+    ) -> ToolResultPart:
+        """Resume-path dispatch with ``bypass_approval=True``.
+
+        Spec B §2.3 step 3 / Phase 6 Task 6.3. After operator approval,
+        the resume path drains pending ToolCalls by routing through this
+        hook so the underlying :class:`ToolExecutionManager` skips its
+        approval gate and runs the tool directly.
+        """
+        return await self._dispatch_toolcall(
+            node, arguments, bypass_approval=True,
         )
 
     async def _load_node_history(self, node_id: str) -> list[Message]:

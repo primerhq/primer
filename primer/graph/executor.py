@@ -192,11 +192,63 @@ class GraphExecutor(_BaseGraphExecutor):
         without spinning up a workspace.
         """
         if self._tool_dispatcher is not None:
-            return await self._tool_dispatcher(node, arguments)
+            return await self._call_tool_dispatcher(
+                node, arguments, bypass_approval=False
+            )
         raise NotImplementedError(
             f"GraphExecutor has no tool_dispatcher wired; cannot invoke "
             f"tool {node.tool_id!r}"
         )
+
+    async def _dispatch_toolcall_with_bypass(
+        self,
+        node: "_ToolCallNode",
+        arguments: dict,
+    ) -> ToolResultPart:
+        """Resume-path dispatch with ``bypass_approval=True``.
+
+        Spec B §2.3 step 3 / Phase 6 — calls the injected dispatcher
+        with ``bypass_approval=True`` when its signature accepts the
+        kwarg; otherwise falls back to a plain call.
+        """
+        if self._tool_dispatcher is not None:
+            return await self._call_tool_dispatcher(
+                node, arguments, bypass_approval=True
+            )
+        raise NotImplementedError(
+            f"GraphExecutor has no tool_dispatcher wired; cannot invoke "
+            f"tool {node.tool_id!r}"
+        )
+
+    async def _call_tool_dispatcher(
+        self,
+        node: "_ToolCallNode",
+        arguments: dict,
+        *,
+        bypass_approval: bool,
+    ) -> ToolResultPart:
+        """Call ``self._tool_dispatcher`` with optional ``bypass_approval``.
+
+        Dispatchers may or may not accept the ``bypass_approval`` kwarg
+        (most legacy stubs are 2-arg only); we introspect and adapt so
+        existing tests don't have to change while resume-aware stubs can
+        observe the flag.
+        """
+        import inspect
+
+        assert self._tool_dispatcher is not None
+        try:
+            sig = inspect.signature(self._tool_dispatcher)
+            params = sig.parameters
+        except (TypeError, ValueError):  # pragma: no cover -- builtins
+            params = {}
+        if "bypass_approval" in params or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            return await self._tool_dispatcher(
+                node, arguments, bypass_approval=bypass_approval,
+            )
+        return await self._tool_dispatcher(node, arguments)
 
     async def _load_node_history(self, node_id: str) -> list[Message]:
         out: list[Message] = []

@@ -414,6 +414,23 @@ class _GraphToolCallYield(Exception):
     """
 
 
+class _ToolApprovalRejected(Exception):
+    """Raised on the resume path when the operator rejected the approval.
+
+    Spec B §4.8 / Phase 6 Task 6.4 — the synthetic exception the resume
+    drain catches and translates into a node-level
+    ``ended_detail='tool_execution_failed'``. The worker's resume hook
+    (or a test stub for the storage-backed executor) raises this when
+    it sees a ``rejected`` / ``cancelled`` / ``timeout`` decision on the
+    parked-state event, instead of re-dispatching the original tool.
+    """
+
+    def __init__(self, reason: str | None = None, *, tool_call_id: str | None = None) -> None:
+        super().__init__(reason or "tool approval rejected")
+        self.reason = reason
+        self.tool_call_id = tool_call_id
+
+
 class _RoutingFailed(Exception):
     """Raised when a conditional edge matches no branch and has no default.
 
@@ -887,6 +904,233 @@ class _BaseGraphExecutor(ABC):
             for raw in (payload.get("pending_toolcalls") or [])
         ]
 
+    async def resume_from_checkpoint(
+        self,
+        checkpoint: dict[str, Any],
+    ) -> AsyncIterator[StreamEvent]:
+        """Restore from a checkpoint and continue graph execution.
+
+        Spec B §2.3 step 3 / Phase 6. Called by the worker after the
+        operator approves a yielded ToolCall. The executor:
+
+        1. Repopulates its mid-flight state via :meth:`restore_state`.
+        2. Re-dispatches every pending ToolCall with ``bypass_approval=True``,
+           via :meth:`_dispatch_toolcall_with_bypass` (so the approval
+           gate doesn't fire again).
+        3. Records each result into ``context.nodes`` (or stamps an
+           error NodeOutput on failure / rejection / timeout).
+        4. Marks the pending nodes ENDED in node_states.
+        5. Computes the next ready set from the just-completed nodes and
+           continues :meth:`_run_superstep_loop` to drain the rest of the
+           graph.
+
+        Subclasses that need to surface rejection/timeout exceptions
+        from the worker (e.g. when the operator rejects the approval)
+        should catch them in :meth:`_dispatch_toolcall_with_bypass` and
+        re-raise as a domain exception the resume drain knows about —
+        Phase 6 Task 6.4 handles this via the synthetic
+        :class:`ToolApprovalRejected` exception.
+        """
+        self.restore_state(checkpoint)
+
+        context = self._context
+        if context is None:
+            # Defence in depth: an empty / new checkpoint has no context;
+            # treat as a no-op completion.
+            return
+        node_states = self._node_states
+        ready = self._ready_set
+
+        # Drain pending ToolCalls. We snapshot the list so re-yields during
+        # drain (should not happen with bypass_approval=True) accumulate
+        # into a fresh _pending_toolcalls that the post-drain check below
+        # can re-yield to the worker.
+        pending = list(self._pending_toolcalls)
+        self._pending_toolcalls = []
+        completed_ids: list[str] = []
+        for entry in pending:
+            node_def = self._resolve_node_def(entry.node_id)
+            if not isinstance(node_def, _ToolCallNode):
+                # Topology drifted between checkpoint + resume; surface
+                # as a node failure so the outer loop terminates cleanly.
+                node_states[entry.node_id] = NodeRuntimeState(
+                    status=NodeRuntimeStatus.FAILED,
+                    last_run_iteration=context.iteration,
+                    last_run_at=datetime.now(timezone.utc),
+                    error=(
+                        f"resume: pending ToolCall node id {entry.node_id!r} "
+                        f"resolves to {type(node_def).__name__!r}, not _ToolCallNode"
+                    ),
+                )
+                completed_ids.append(entry.node_id)
+                continue
+            try:
+                result = await self._dispatch_toolcall_with_bypass(
+                    node_def, entry.arguments
+                )
+            except _ToolApprovalRejected as rej:
+                # Spec B §4.8 / Phase 6 Task 6.4 — operator rejected or
+                # the approval timed out; stamp the node as a failure
+                # with ``ended_detail='tool_execution_failed'``.
+                fail_out = NodeOutput(
+                    text="",
+                    parsed=None,
+                    history=[],
+                    iteration=context.iteration,
+                    error=str(rej),
+                    ended_detail="tool_execution_failed",
+                )
+                context.nodes[entry.node_id] = fail_out
+                node_states[entry.node_id] = NodeRuntimeState(
+                    status=NodeRuntimeStatus.FAILED,
+                    last_run_iteration=context.iteration,
+                    last_run_at=datetime.now(timezone.utc),
+                    error=str(rej),
+                )
+                # Spec B §4.8 — emit a terminal error event so taps see
+                # the rejection, then mark the graph failed.
+                yield _GraphErrorEvent(  # type: ignore[misc]
+                    code="tool_execution_failed",
+                    message=str(rej),
+                    node_id=entry.node_id,
+                )
+                await self._save_state(
+                    iteration=context.iteration,
+                    node_states=node_states,
+                    status=SessionStatus.ENDED,
+                    ended_reason="failed",
+                    ended_detail="tool_execution_failed",
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 -- map all to node failure
+                fail_out = NodeOutput(
+                    text="",
+                    parsed=None,
+                    history=[],
+                    iteration=context.iteration,
+                    error=str(exc),
+                    ended_detail="tool_execution_failed",
+                )
+                context.nodes[entry.node_id] = fail_out
+                node_states[entry.node_id] = NodeRuntimeState(
+                    status=NodeRuntimeStatus.FAILED,
+                    last_run_iteration=context.iteration,
+                    last_run_at=datetime.now(timezone.utc),
+                    error=str(exc),
+                )
+                yield _GraphErrorEvent(  # type: ignore[misc]
+                    code="tool_execution_failed",
+                    message=str(exc),
+                    node_id=entry.node_id,
+                )
+                await self._save_state(
+                    iteration=context.iteration,
+                    node_states=node_states,
+                    status=SessionStatus.ENDED,
+                    ended_reason="failed",
+                    ended_detail="tool_execution_failed",
+                )
+                return
+            # Map the result through the same path as the normal
+            # _stream_node ToolCall handler so schema-validation failures
+            # surface consistently.
+            mapped = _map_toolcall_result(
+                result, output_schema=node_def.output_schema
+            )
+            if mapped.error_code is not None:
+                fail_out = NodeOutput(
+                    text=mapped.text,
+                    parsed=None,
+                    history=[],
+                    iteration=context.iteration,
+                    error=mapped.error_message or mapped.error_code,
+                    ended_detail=mapped.error_code,
+                )
+                context.nodes[entry.node_id] = fail_out
+                node_states[entry.node_id] = NodeRuntimeState(
+                    status=NodeRuntimeStatus.FAILED,
+                    last_run_iteration=context.iteration,
+                    last_run_at=datetime.now(timezone.utc),
+                    error=mapped.error_message or mapped.error_code,
+                )
+                yield _GraphErrorEvent(  # type: ignore[misc]
+                    code=mapped.error_code,
+                    message=mapped.error_message or mapped.error_code,
+                    node_id=entry.node_id,
+                )
+                await self._save_state(
+                    iteration=context.iteration,
+                    node_states=node_states,
+                    status=SessionStatus.ENDED,
+                    ended_reason="failed",
+                    ended_detail=mapped.error_code,
+                )
+                return
+            tc_out = NodeOutput(
+                text=mapped.text,
+                parsed=mapped.parsed,
+                history=[],
+                iteration=context.iteration,
+            )
+            context.nodes[entry.node_id] = tc_out
+            node_states[entry.node_id] = NodeRuntimeState(
+                status=NodeRuntimeStatus.ENDED,
+                last_run_iteration=context.iteration,
+                last_run_at=datetime.now(timezone.utc),
+            )
+            completed_ids.append(entry.node_id)
+
+        # Persist the drained-state snapshot so observers can see the
+        # ToolCalls finished before the next superstep starts.
+        await self._save_state(
+            iteration=context.iteration,
+            node_states=node_states,
+            status=SessionStatus.RUNNING,
+        )
+
+        # Compute the next ready set from the now-completed pending
+        # ToolCall nodes. The ``ready`` set on the executor at the time
+        # of the yield was the set of in-flight nodes; the just-completed
+        # subset is ``completed_ids`` (the others, if any, already had
+        # their results applied before the yield fired).
+        if completed_ids:
+            try:
+                next_ready = await self._compute_next_ready(
+                    set(completed_ids), context
+                )
+            except _RoutingFailed as exc:
+                yield _GraphErrorEvent(  # type: ignore[misc]
+                    code="routing_failed",
+                    message=str(exc),
+                    node_id=exc.source_node_id,
+                )
+                await self._save_state(
+                    iteration=context.iteration,
+                    node_states=node_states,
+                    status=SessionStatus.ENDED,
+                    ended_reason="failed",
+                    ended_detail="routing_failed",
+                )
+                return
+            # Drain any fan-out plans spawned by the drained ToolCalls.
+            for fanout_id, instances in list(self._pending_fanout.items()):
+                for inst in instances:
+                    self._fanout_instances[inst.synthesized_id] = inst
+                    next_ready.add(inst.synthesized_id)
+                del self._pending_fanout[fanout_id]
+            context.iteration += 1
+            ready = next_ready
+            self._ready_set = ready
+
+        async for ev in self._run_superstep_loop(
+            context=context,
+            node_states=node_states,
+            ready=ready,
+            ended_reason_in=None,
+            ended_detail_in=None,
+        ):
+            yield ev
+
     # ---- Subclass hooks --------------------------------------------------
 
     @abstractmethod
@@ -948,6 +1192,25 @@ class _BaseGraphExecutor(ABC):
             f"_dispatch_toolcall must be overridden to invoke tool "
             f"{node.tool_id!r}"
         )
+
+    async def _dispatch_toolcall_with_bypass(
+        self,
+        node: "_ToolCallNode",
+        arguments: dict[str, Any],
+    ) -> "ToolResultPart":
+        """Re-dispatch a previously-yielded ToolCall with ``bypass_approval=True``.
+
+        Spec B §2.3 step 3 / Phase 6 — invoked by
+        :meth:`resume_from_checkpoint` to drain pending ToolCalls after
+        operator approval, skipping the approval gate so the tool's
+        underlying handler runs directly.
+
+        Default implementation falls back to :meth:`_dispatch_toolcall`
+        (no bypass) — subclasses with a real approval-aware dispatch
+        surface should override to thread ``bypass_approval=True``
+        through to their underlying manager.
+        """
+        return await self._dispatch_toolcall(node, arguments)
 
     # ---- Public surface --------------------------------------------------
 
