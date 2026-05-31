@@ -108,13 +108,15 @@ def test_u0029_graph_save_disabled_until_node_added(
             "id": graph_id,
             "description": "u0029 save-gating probe",
             "nodes": [
+                {"kind": "begin", "id": "begin"},
                 {"kind": "agent", "id": "start", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "end"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "start"},
                 {"kind": "static", "from_node": "start", "to_node": "end"},
             ],
-            "entry_node_id": "start",
+            "entry_node_id": "begin",
         })
         assert r.status_code == 201, f"seed graph failed: {r.text}"
 
@@ -217,13 +219,15 @@ def test_u0004_graph_bound_session_ended_status_polls_without_refresh(
             "id": graph_id,
             "description": "u0004 graph-bound probe",
             "nodes": [
+                {"kind": "begin", "id": "begin"},
                 {"kind": "agent", "id": "start", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "end"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "start"},
                 {"kind": "static", "from_node": "start", "to_node": "end"},
             ],
-            "entry_node_id": "start",
+            "entry_node_id": "begin",
         })
         assert r.status_code == 201, f"seed graph failed: {r.text}"
 
