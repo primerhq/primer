@@ -150,12 +150,14 @@ class GraphContext(BaseModel):
         ge=0,
         description="Current graph iteration (0 on entry-node execution).",
     )
-    nodes: dict[str, NodeOutput] = Field(
+    nodes: dict[str, "NodeOutput | list[NodeOutput]"] = Field(
         default_factory=dict,
         description=(
-            "Already-executed nodes keyed by node id. Each entry's "
-            "``text`` / ``parsed`` / ``history`` is the most-recent "
-            "result for that node (cycles overwrite)."
+            "Completed node outputs keyed by node id. Fan-out targets "
+            "surface as a list (the aggregator entry); individual "
+            "synthesized instances are at ``nodes['target[i]']`` and "
+            "are single NodeOutputs. Every non-fan-out node is a single "
+            "NodeOutput."
         ),
     )
 
