@@ -188,6 +188,31 @@ class _AgentNodeRef(BaseModel):
     )
 
 
+class _BeginNode(BaseModel):
+    """Entry-point node — pure data-shaping, no LLM call.
+
+    Carries the graph's input contract. When ``input_schema`` is set,
+    the session-create handler validates ``graph_input`` against it
+    before the worker dispatches the graph.
+    """
+
+    kind: Literal["begin"] = "begin"
+    id: str = Field(..., min_length=1)
+    description: str | None = Field(
+        default=None,
+        description="Free-form human-readable label for the UI.",
+    )
+    input_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional JSON Schema 2020-12 describing the graph's input. "
+            "When set, the session-create handler validates ``graph_input`` "
+            "against this schema; failure returns 422. When unset, the "
+            "graph accepts any input shape (string, list[Message], dict)."
+        ),
+    )
+
+
 class _GraphNodeRef(BaseModel):
     """Node that delegates to a sub-graph (recursive composition)."""
 
@@ -220,8 +245,38 @@ class _TerminalNode(BaseModel):
     id: str = Field(..., min_length=1)
 
 
+class _EndNode(BaseModel):
+    """Sink node carrying the graph's output contract.
+
+    Pure data-shaping — when reached, renders ``output_template`` over
+    the current ``GraphContext`` to produce the graph's final output.
+    """
+
+    kind: Literal["end"] = "end"
+    id: str = Field(..., min_length=1)
+    description: str | None = None
+    output_template: str = Field(
+        default="",
+        description=(
+            "Jinja2 template rendered over the GraphContext when End "
+            "fires. The rendered string becomes the graph's final "
+            "output. An empty template terminates the graph without an "
+            "output payload."
+        ),
+    )
+    output_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional JSON Schema 2020-12. When set, the rendered "
+            "output_template MUST parse as JSON conforming to this "
+            "schema; failure ends the graph with "
+            "ended_detail='end_output_invalid'."
+        ),
+    )
+
+
 GraphNode = Annotated[
-    Union[_AgentNodeRef, _GraphNodeRef, _TerminalNode],
+    Union[_AgentNodeRef, _GraphNodeRef, _TerminalNode, _BeginNode, _EndNode],
     Field(discriminator="kind"),
 ]
 
