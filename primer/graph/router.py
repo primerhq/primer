@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re as _re
 from collections.abc import Awaitable, Callable
 from typing import Any, Union
 
@@ -32,19 +33,40 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _resolve_path(parsed: dict[str, Any], dotted: str) -> tuple[bool, Any]:
-    """Walk a dotted path through a nested dict.
+_SEGMENT_RE = _re.compile(r"([^.\[\]]+)|\[(\d+)\]")
 
-    Returns ``(found, value)``: ``found=False`` means the path
-    didn't resolve (intermediate non-dict or missing key) and
-    ``value`` is :data:`None` in that case.
+
+def _resolve_path(root: Any, dotted: str) -> tuple[bool, Any]:
+    """Walk a dotted + bracket-indexed path through nested dict/list.
+
+    Returns ``(found, value)``. ``found=False`` means a segment didn't
+    resolve (missing dict key, list index out of range, wrong-type
+    intermediate). A path landing on a literal ``None`` is still
+    ``found=True`` -- that distinction matters for the
+    missing-path-False rule on BranchCondition operators.
     """
-    keys = dotted.split(".")
-    current: Any = parsed
-    for key in keys:
-        if not isinstance(current, dict) or key not in current:
+    current: Any = root
+    pos = 0
+    if not dotted:
+        return True, current
+    while pos < len(dotted):
+        m = _SEGMENT_RE.match(dotted, pos)
+        if m is None:
             return False, None
-        current = current[key]
+        pos = m.end()
+        # Skip the trailing '.' separator between non-bracket segments.
+        if pos < len(dotted) and dotted[pos] == ".":
+            pos += 1
+        if m.group(1) is not None:
+            key = m.group(1)
+            if not isinstance(current, dict) or key not in current:
+                return False, None
+            current = current[key]
+        else:
+            idx = int(m.group(2))
+            if not isinstance(current, list) or idx < 0 or idx >= len(current):
+                return False, None
+            current = current[idx]
     return True, current
 
 
