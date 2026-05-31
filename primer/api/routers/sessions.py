@@ -150,10 +150,56 @@ async def create_session(
                 f"Agent {body.binding.agent_id!r} does not exist"
             )
     elif isinstance(body.binding, GraphSessionBinding):
-        if await graphs.get(body.binding.graph_id) is None:
+        resolved_graph = await graphs.get(body.binding.graph_id)
+        if resolved_graph is None:
             raise ValidationError(
                 f"Graph {body.binding.graph_id!r} does not exist"
             )
+        # Pre-validate graph_input against the graph's Begin.input_schema
+        # before persisting the session row. The workspace executor reads
+        # ``session.metadata['graph_input']`` as the initial input, so any
+        # shape mismatch must surface as a 422 at create time rather than
+        # blowing up the first turn. When no Begin or no schema is
+        # present we accept whatever was sent (back-compat).
+        import jsonschema as _jsonschema  # local import keeps top clean
+        from primer.model.graph import _BeginNode
+
+        begin = next(
+            (n for n in resolved_graph.nodes if isinstance(n, _BeginNode)),
+            None,
+        )
+        if begin is not None and begin.input_schema is not None:
+            resolved_input: Any | None = body.graph_input
+            if resolved_input is None and body.initial_instructions:
+                # Legacy fallback: parse initial_instructions as JSON so
+                # callers that still drive graphs through that field
+                # continue to work.
+                try:
+                    resolved_input = json.loads(body.initial_instructions)
+                except json.JSONDecodeError as exc:
+                    raise ValidationError(
+                        "initial_instructions for graph with "
+                        "input_schema must be valid JSON (or pass "
+                        "graph_input directly)"
+                    ) from exc
+            if resolved_input is None:
+                raise ValidationError(
+                    f"graph {body.binding.graph_id!r} requires graph_input"
+                )
+            try:
+                _jsonschema.validate(
+                    instance=resolved_input,
+                    schema=begin.input_schema,
+                )
+            except _jsonschema.ValidationError as exc:
+                raise ValidationError(
+                    f"graph_input invalid at path "
+                    f"{list(exc.absolute_path)!r}: {exc.message}"
+                ) from exc
+            # Normalise so the persistence block below writes the
+            # validated value (covers the legacy
+            # initial_instructions-as-JSON fallback path).
+            body.graph_input = resolved_input
 
     sid = f"sess-{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)

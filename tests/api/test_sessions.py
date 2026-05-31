@@ -393,6 +393,91 @@ async def test_create_session_accepts_graph_input_field(
     assert body["metadata"].get("graph_input") == {"q": "hello"}
 
 
+async def test_create_session_validates_graph_input_against_begin_schema(
+    sessions_client, seeded_workspace, seeded_graph,
+):
+    """When the graph's Begin node has ``input_schema``, the create
+    handler validates ``graph_input`` against it. Mismatch returns 422
+    carrying the JSON Schema instance path."""
+    g = await seeded_graph(
+        id="g-schema",
+        input_schema={
+            "type": "object",
+            "required": ["q"],
+            "properties": {"q": {"type": "string"}},
+        },
+    )
+
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "graph", "graph_id": g.id},
+            "graph_input": {"wrong": 1},  # missing required `q`
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    # The error message references `q` (the missing required property)
+    # somewhere in the structured payload. Some shapes carry it on
+    # ``detail.message``, others on ``detail`` directly — accept either.
+    assert "q" in str(body), (
+        f"expected JSON Schema violation reference to 'q' in {body!r}"
+    )
+
+
+async def test_create_session_falls_back_to_initial_instructions_as_json(
+    sessions_client, seeded_workspace, seeded_graph, app,
+):
+    """Legacy fallback: when ``graph_input`` is missing but
+    ``initial_instructions`` is set, the handler parses it as JSON and
+    validates against the Begin schema. On success the resolved value
+    is persisted to ``metadata['graph_input']``."""
+    from primer.model.workspace_session import WorkspaceSession
+
+    g = await seeded_graph(
+        id="g-fb",
+        input_schema={
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+        },
+    )
+
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "graph", "graph_id": g.id},
+            "initial_instructions": '{"q": "hi"}',  # legacy fallback
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    sid = resp.json()["id"]
+
+    # The resolved value must be persisted on metadata so the executor
+    # picks it up (the workspace executor only reads metadata, not
+    # initial_instructions).
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    s = await storage.get(sid)
+    assert s.metadata.get("graph_input") == {"q": "hi"}
+
+
+async def test_create_session_no_schema_accepts_string(
+    sessions_client, seeded_workspace, seeded_graph,
+):
+    """Graphs whose Begin node has no ``input_schema`` accept any
+    ``graph_input`` value — including a plain string — without
+    validation (back-compat)."""
+    g = await seeded_graph(id="g-noschema")  # default fixture: no schema
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "graph", "graph_id": g.id},
+            "graph_input": "plain string input",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["metadata"].get("graph_input") == "plain string input"
+
+
 # ===========================================================================
 # Task 20 — resume / pause / cancel + top-level list / get / find
 # ===========================================================================
