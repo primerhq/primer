@@ -442,6 +442,17 @@ function ChatDetail({ chatId, onBack, pushToast }) {
 
   const [messages, setMessages] = React.useState([]);
   const [lastSeq, setLastSeq] = React.useState(0);
+  // Oldest seq currently loaded; null until the initial tail fetch
+  // completes. Drives the scroll-up lazy-loader's `before_seq` cursor.
+  const [oldestSeq, setOldestSeq] = React.useState(null);
+  // false once the tail fetch (or a later older-page fetch) returns
+  // fewer rows than asked for — we've hit the top of history.
+  const [hasMoreOlder, setHasMoreOlder] = React.useState(false);
+  const [loadingOlder, setLoadingOlder] = React.useState(false);
+  // Set by the initial-load effect when the first batch is in the
+  // store; gates the WebSocket open so the WS cursor can be set to
+  // the highest already-loaded seq and skip a redundant full replay.
+  const [initialLoadedSeq, setInitialLoadedSeq] = React.useState(null);
   const [wsState, setWsState] = React.useState("connecting");
   const [composer, setComposer] = React.useState("");
   const [pendingSendText, setPendingSendText] = React.useState(null);
@@ -471,62 +482,120 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     { pollMs: 10000, deps: [cid] }
   );
 
-  // Initial REST load — fires before WS opens. The WS handshake also
-  // replays from cursor=0, but doing one REST round-trip first means
-  // the timeline is visible immediately instead of waiting for the
-  // (potentially slower) WS upgrade.
-  const initialLoadedRef = React.useRef(false);
+  // Initial REST load — fetches the TAIL of the history (latest N) so
+  // the renderer can scroll straight to the bottom without dragging
+  // through thousands of older rows. The WS then opens with
+  // cursor=<lastSeq> below so it streams only new messages, not a
+  // redundant full replay. Older rows lazy-load on scroll-up.
+  const TAIL_PAGE_SIZE = 50;
+  // Pagination ceiling is 2**53 - 1; the server caps int Query at the
+  // 64-bit boundary, but Number.MAX_SAFE_INTEGER is unambiguous and
+  // matches every persisted seq.
+  const SENTINEL_TAIL_SEQ = Number.MAX_SAFE_INTEGER;
   React.useEffect(() => {
     let cancelled = false;
-    initialLoadedRef.current = false;
+    setMessages([]);
+    setLastSeq(0);
+    setOldestSeq(null);
+    setHasMoreOlder(false);
+    setInitialLoadedSeq(null);
     (async () => {
-      // The server's pagination layer caps ``limit`` at 200 (see
-      // primer/api/pagination.py: ``Query(default=20, ge=1, le=200)``).
-      // A long chat can easily exceed that with assistant_token rows,
-      // so loop with after_seq cursoring until the page comes back
-      // short. Cancellable on unmount via the closure flag.
-      const PAGE = 200;
       try {
-        let cursor = 0;
-        const all = [];
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const data = await apiFetch(
-            "GET",
-            `/chats/${encodeURIComponent(cid)}/messages?after_seq=${cursor}&limit=${PAGE}`,
-          );
-          if (cancelled) return;
-          const items = (data && data.items) || [];
-          if (items.length === 0) break;
-          // REST returns ChatMessage rows with the kind-specific fields
-          // nested under `payload`. WS frames spread payload into the
-          // top-level (see chats router _message_to_wire). The renderers
-          // read top-level fields (delta, name, arguments, result, …),
-          // so we flatten on load to keep both sources homogeneous.
-          for (const row of items) {
-            const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
-            all.push({ ...payload, ...row });
-          }
-          cursor = items[items.length - 1].seq || cursor;
-          if (items.length < PAGE) break;
+        const data = await apiFetch(
+          "GET",
+          `/chats/${encodeURIComponent(cid)}/messages?before_seq=${SENTINEL_TAIL_SEQ}&limit=${TAIL_PAGE_SIZE}`,
+        );
+        if (cancelled) return;
+        const items = (data && data.items) || [];
+        // REST returns ChatMessage rows with kind-specific fields
+        // nested under `payload`. WS frames spread payload into the
+        // top-level (see chats router _message_to_wire). Flatten on
+        // load to keep both sources homogeneous.
+        const flat = items.map((row) => {
+          const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+          return { ...payload, ...row };
+        });
+        setMessages(flat);
+        if (flat.length > 0) {
+          const last = flat[flat.length - 1].seq || 0;
+          const first = flat[0].seq || 0;
+          setLastSeq(last);
+          setOldestSeq(first);
+          setHasMoreOlder(items.length === TAIL_PAGE_SIZE);
+          setInitialLoadedSeq(last);
+        } else {
+          // Empty chat — open WS with cursor 0 to catch the very
+          // first message that may land between mount and any send.
+          setInitialLoadedSeq(0);
         }
-        setMessages(all);
-        if (all.length > 0) setLastSeq(all[all.length - 1].seq || 0);
-        initialLoadedRef.current = true;
       } catch (err) {
         if (cancelled) return;
         setHistoryError(err);
+        // Fall through to opening the WS at cursor 0 so the user can
+        // still send and see new messages even if history failed.
+        setInitialLoadedSeq(0);
       }
     })();
     return () => { cancelled = true; };
   }, [cid]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // WS lifecycle — open once per cid. We intentionally do NOT depend on
-  // lastSeq here: the cursor is read once at connect time, and live
-  // appends after that come down the same socket so there is no gap.
+  // Lazy-load older messages on scroll-up. Captures scroll geometry
+  // before the prepend and restores it after layout so the visible
+  // content doesn't jump.
+  const loadingOlderRef = React.useRef(false);
+  const loadOlder = React.useCallback(async () => {
+    if (loadingOlderRef.current) return;
+    if (!hasMoreOlder || oldestSeq == null || oldestSeq <= 1) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    const el = scrollRef.current;
+    const oldScrollHeight = el ? el.scrollHeight : 0;
+    const oldScrollTop = el ? el.scrollTop : 0;
+    try {
+      const data = await apiFetch(
+        "GET",
+        `/chats/${encodeURIComponent(cid)}/messages?before_seq=${oldestSeq}&limit=${TAIL_PAGE_SIZE}`,
+      );
+      const items = (data && data.items) || [];
+      if (items.length === 0) {
+        setHasMoreOlder(false);
+        return;
+      }
+      const flat = items.map((row) => {
+        const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+        return { ...payload, ...row };
+      });
+      setMessages((prev) => [...flat, ...prev]);
+      setOldestSeq(flat[0].seq || oldestSeq);
+      setHasMoreOlder(items.length === TAIL_PAGE_SIZE);
+      // Restore visual scroll position after React commits + browser
+      // re-lays out the prepended rows. Two rAFs: one to wait for the
+      // commit's paint, one to measure post-layout.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const el2 = scrollRef.current;
+        if (!el2) return;
+        const delta = el2.scrollHeight - oldScrollHeight;
+        el2.scrollTop = oldScrollTop + delta;
+      }));
+    } catch (err) {
+      if (typeof pushToast === "function") {
+        pushToast({ kind: "error", title: "Load older failed", detail: err?.message || "" });
+      }
+    } finally {
+      setLoadingOlder(false);
+      loadingOlderRef.current = false;
+    }
+  }, [cid, oldestSeq, hasMoreOlder, apiFetch, pushToast]);
+
+  // WS lifecycle — opens once the initial REST tail-load has settled,
+  // using the tail's highest seq as the cursor so the server only
+  // streams NEW frames (no redundant full-history replay). The init
+  // gate (`initialLoadedSeq != null`) tolerates an empty-chat or
+  // failed-load fallback to cursor 0.
   React.useEffect(() => {
+    if (initialLoadedSeq == null) return;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/v1/chats/${encodeURIComponent(cid)}/ws?cursor=0`;
+    const url = `${proto}//${window.location.host}/v1/chats/${encodeURIComponent(cid)}/ws?cursor=${initialLoadedSeq}`;
     let ws;
     try {
       ws = new WebSocket(url);
@@ -619,20 +688,25 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       try { ws.close(); } catch { /* no-op */ }
       wsRef.current = null;
     };
-  }, [cid]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cid, initialLoadedSeq]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-scroll to bottom whenever the message list grows or the
-  // thinking placeholder appears. We "stick to bottom" only when the
-  // user is already near the bottom — preserves manual scrollback.
-  // Schedule via rAF so the new row is laid out before we measure
-  // scrollHeight (the effect fires post-commit but pre-paint).
+  // Auto-scroll to bottom only when the tail grows (initial load or
+  // a live frame). `lastSeq` is monotone-increasing on appends, so
+  // depending on it instead of `messages` means scroll-up prepends
+  // (which keep lastSeq unchanged) don't yank the user back down.
   const stickToBottomRef = React.useRef(true);
   const onScroll = React.useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     stickToBottomRef.current = distance < 80;
-  }, []);
+    // Near the top → fetch the next older page. The 100px threshold
+    // gives a small buffer so the user sees the loading indicator
+    // before they bottom-out the scroll.
+    if (el.scrollTop < 100) {
+      loadOlder();
+    }
+  }, [loadOlder]);
   React.useEffect(() => {
     if (!scrollRef.current || !stickToBottomRef.current) return;
     const el = scrollRef.current;
@@ -640,7 +714,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
-  }, [messages, waitingForReply]);
+  }, [lastSeq, waitingForReply]);
 
   // Pending tool approval (polled REST; 404 = none).
   const approval = useResource(
@@ -880,6 +954,15 @@ function ChatDetail({ chatId, onBack, pushToast }) {
         </div>
         )}
         <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0 }}>
+          {(loadingOlder || hasMoreOlder) && messages.length > 0 && (
+            <div
+              className="muted text-sm"
+              style={{ textAlign: "center", padding: "6px 0 12px", fontSize: 11 }}
+              data-testid="chat-load-older"
+            >
+              {loadingOlder ? "Loading older…" : "Scroll up to load older"}
+            </div>
+          )}
           {messages.length === 0 && !historyError && (
             <div className="muted text-sm" style={{ textAlign: "center", padding: 24 }}>
               {wsState === "connecting" ? "Connecting…" : "No messages yet. Say hello to the agent."}

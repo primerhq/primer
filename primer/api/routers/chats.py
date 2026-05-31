@@ -238,6 +238,19 @@ async def list_chat_messages(
             ),
         ),
     ] = None,
+    before_seq: Annotated[
+        int | None,
+        Query(
+            ge=0,
+            description=(
+                "Return only messages with seq < this value, ordered "
+                "DESC + limited then reversed so the response is the "
+                "most recent N below the cursor (still ASC). Pass a "
+                "very large value to fetch the tail of the chat; pass "
+                "the oldest-loaded seq to lazy-load older history."
+            ),
+        ),
+    ] = None,
     page: PageRequest = Depends(parse_page),
     sp=Depends(get_storage_provider),
 ):
@@ -250,6 +263,17 @@ async def list_chat_messages(
     q = Q(ChatMessage).where("chat_id", chat_id)
     if after_seq is not None:
         q = q.where_op("seq", Op.GT, after_seq)
+    if before_seq is not None:
+        q = q.where_op("seq", Op.LT, before_seq)
+    if before_seq is not None:
+        # Tail mode: take the N highest seqs under the cursor, then
+        # reverse for ASC output so the renderer can append directly.
+        result = await messages.find(
+            q.build(), page,
+            order_by=[OrderBy(field="seq", direction="desc")],
+        )
+        result.items.reverse()
+        return result
     return await messages.find(
         q.build(), page, order_by=[OrderBy(field="seq", direction="asc")],
     )

@@ -302,6 +302,47 @@ class TestListMessages:
         resp = await client.get("/v1/chats/nope/messages")
         assert resp.status_code == 404
 
+    async def test_before_seq_returns_tail_in_ascending_order(
+        self, app, client, seeded_agent,
+    ):
+        create = await client.post("/v1/chats", json={"agent_id": "ag-chat"})
+        cid = create.json()["id"]
+        msgs = app.state.storage_provider.get_storage(ChatMessage)
+        for i in range(1, 11):
+            await msgs.create(
+                ChatMessage(
+                    id=ChatMessage.make_id(cid, i),
+                    chat_id=cid,
+                    seq=i,
+                    kind="assistant_token",
+                    payload={"delta": f"t{i}"},
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+        # before_seq + small limit fetches the tail BELOW the cursor,
+        # returned in ASC order so the renderer can append directly.
+        resp = await client.get(
+            f"/v1/chats/{cid}/messages?before_seq=11&limit=3",
+        )
+        assert resp.status_code == 200
+        seqs = [it["seq"] for it in resp.json()["items"]]
+        assert seqs == [8, 9, 10]
+
+        # Scroll-up cursor: fetch 3 messages older than seq 8.
+        resp = await client.get(
+            f"/v1/chats/{cid}/messages?before_seq=8&limit=3",
+        )
+        assert resp.status_code == 200
+        seqs = [it["seq"] for it in resp.json()["items"]]
+        assert seqs == [5, 6, 7]
+
+        # before_seq below the floor returns empty (top reached).
+        resp = await client.get(
+            f"/v1/chats/{cid}/messages?before_seq=1&limit=3",
+        )
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
 
 # ===========================================================================
 # WebSocket: connect + cursor replay + send + receive

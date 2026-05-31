@@ -78,6 +78,20 @@ class _InMemoryStorage(Generic[_T]):
         if predicate is None:
             return await self.list(page, order_by=order_by)
         items = [e for e in self._data.values() if _eval_predicate(e, predicate)]
+        # Honor order_by so DESC paginations (e.g. chat-history tail
+        # fetch) get the expected last-N slice. Stable multi-key sort
+        # by reversing key order. None values sort last.
+        if order_by:
+            for ob in reversed(order_by):
+                field = ob.field
+                desc = ob.direction == "desc"
+                items.sort(
+                    key=lambda e, f=field: (
+                        _resolve_field(e, f) is None,
+                        _resolve_field(e, f) if _resolve_field(e, f) is not None else 0,
+                    ),
+                    reverse=desc,
+                )
         if isinstance(page, OffsetPage):
             sliced = items[page.offset : page.offset + page.length]
             return OffsetPageResponse(
