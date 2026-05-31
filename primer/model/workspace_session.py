@@ -521,8 +521,16 @@ class SessionMessageRecord(BaseModel):
 # runs after this module has finished executing.
 
 def _rebuild_models() -> None:
-    from primer.model.agent import Agent  # noqa: F401
-    from primer.model.graph import Graph  # noqa: F401
+    # When this module is imported AS PART OF primer.model.graph loading
+    # (graph.py imports SessionStatus from us before it finishes
+    # defining Graph), the `from primer.model.graph import Graph` below
+    # would raise ImportError. Swallow it; pydantic will rebuild on
+    # first model use via the lazy resolver below.
+    try:
+        from primer.model.agent import Agent  # noqa: F401
+        from primer.model.graph import Graph  # noqa: F401
+    except ImportError:
+        return
 
     AgentSessionBinding.model_rebuild()
     GraphSessionBinding.model_rebuild()

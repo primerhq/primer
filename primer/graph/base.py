@@ -67,8 +67,10 @@ from primer.model.graph import (
     NodeRuntimeState,
     NodeRuntimeStatus,
     _AgentNodeRef,
+    _BeginNode,
     _CallableRouter,
     _ConditionalEdge,
+    _EndNode,
     _GraphNodeRef,
     _JsonPathRouter,
     _StaticEdge,
@@ -84,6 +86,25 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_initial_ready_node(graph: "Graph") -> str:
+    """Return the id of the node that seeds the executor's initial ready set.
+
+    Spec §2.3: when a :class:`_BeginNode` exists, it's the entry point.
+    Otherwise fall back to :attr:`Graph.entry_node_id` (legacy path,
+    removed in Phase 6). Raises :class:`ValueError` when multiple
+    Begin nodes are present — defence in depth against bypassed
+    validators.
+    """
+    begins = [n for n in graph.nodes if isinstance(n, _BeginNode)]
+    if len(begins) > 1:
+        raise ValueError(
+            f"graph {graph.id!r} has {len(begins)} Begin nodes; expected at most 1"
+        )
+    if begins:
+        return begins[0].id
+    return graph.entry_node_id
 
 
 class _NodeDone:
@@ -201,7 +222,7 @@ class _BaseGraphExecutor(ABC):
             iteration=0,
             nodes={},
         )
-        ready: set[str] = {self._graph.entry_node_id}
+        ready: set[str] = {_resolve_initial_ready_node(self._graph)}
         ended_reason: str | None = None
 
         while ready:
