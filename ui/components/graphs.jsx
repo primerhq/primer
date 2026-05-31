@@ -2027,6 +2027,15 @@ function GR_SelectedNodeForm({
         </>
       )}
 
+      {node.kind === "tool_call" && (
+        <GR_ToolCallForm
+          node={node}
+          onUpdateNode={onUpdateNode}
+          onReportJsonError={onReportJsonError}
+          errBase={errBase}
+        />
+      )}
+
       <div className="muted text-sm">x: {Math.round(node.x || 0)} · y: {Math.round(node.y || 0)}</div>
       <div className="mt-2 muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
         edges in ({edgesIn.length})
@@ -2301,6 +2310,228 @@ function GR_FanOutSpecsEditor({ node, otherNodeIds, onUpdateNode }) {
           Spec
         </Btn>
       </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// GR_ToolCallForm — ToolCall node side-panel form.
+// Fetches the catalogue once via `useResource("graphs-editor:tools-catalogue")`
+// — useResource is the editor's existing cache layer, so multiple ToolCall
+// nodes selected in turn all share one fetch. Presents:
+//   * a tool picker (dropdown of `<id> — <description>`),
+//   * a key/value args editor (auto-seeded from the selected tool's
+//     input_schema; type + required hints rendered next to each key),
+//   * an "Advanced: use a single arguments_template" toggle (the
+//     `arguments` map and `arguments_template` are mutually exclusive
+//     server-side — Spec B §1.1 / _ToolCallNode), and
+//   * an optional `output_schema` JSON field.
+// On fetch failure (or empty catalogue) it falls back to raw text inputs.
+// ----------------------------------------------------------------------------
+
+function GR_ToolCallForm({ node, onUpdateNode, onReportJsonError, errBase }) {
+  const { apiFetch, useResource } = window.primerApi;
+  const catalogue = useResource(
+    "graphs-editor:tools-catalogue",
+    (s) => apiFetch("GET", "/tools/catalogue", null, { signal: s }),
+    {},
+  );
+  const items = catalogue.data?.items || [];
+  const itemById = React.useMemo(() => {
+    const m = new Map();
+    for (const it of items) m.set(it.id, it);
+    return m;
+  }, [items]);
+
+  // `arguments` and `arguments_template` are mutually exclusive
+  // server-side (Spec B §1.1). The toggle is driven off whether
+  // arguments_template is currently a non-empty string.
+  const usingTemplate = node.arguments_template != null && node.arguments_template !== "";
+  const args = node.arguments && typeof node.arguments === "object" ? node.arguments : {};
+  const argKeys = Object.keys(args);
+
+  function pickTool(toolId) {
+    const tool = itemById.get(toolId);
+    const patch = { tool_id: toolId };
+    if (tool && tool.input_schema && tool.input_schema.properties) {
+      // Seed `arguments` with one empty entry per declared property,
+      // preserving any existing values the operator already entered.
+      const seeded = { ...args };
+      for (const k of Object.keys(tool.input_schema.properties)) {
+        if (!(k in seeded)) seeded[k] = "";
+      }
+      patch.arguments = seeded;
+    }
+    onUpdateNode(patch);
+  }
+
+  function updateArg(key, value) {
+    onUpdateNode({ arguments: { ...args, [key]: value } });
+  }
+  function renameArg(oldKey, newKey) {
+    if (newKey === oldKey) return;
+    if (!newKey) return;
+    const next = {};
+    for (const k of argKeys) {
+      next[k === oldKey ? newKey : k] = args[k];
+    }
+    onUpdateNode({ arguments: next });
+  }
+  function deleteArg(key) {
+    const next = { ...args };
+    delete next[key];
+    onUpdateNode({ arguments: next });
+  }
+  function addArg() {
+    let n = 1;
+    let candidate = "arg";
+    while (candidate in args) {
+      n += 1;
+      candidate = `arg${n}`;
+    }
+    onUpdateNode({ arguments: { ...args, [candidate]: "" } });
+  }
+  function toggleTemplate(on) {
+    if (on) {
+      // Switch to template mode: clear the literal args map, seed
+      // arguments_template with the current literal args as JSON so
+      // the operator has something to edit.
+      const seed = argKeys.length ? JSON.stringify(args, null, 2) : "{}";
+      onUpdateNode({ arguments: {}, arguments_template: seed });
+    } else {
+      onUpdateNode({ arguments_template: null });
+    }
+  }
+
+  const selectedTool = node.tool_id ? itemById.get(node.tool_id) : null;
+  const schemaProps = selectedTool?.input_schema?.properties || {};
+  const requiredSet = new Set(selectedTool?.input_schema?.required || []);
+
+  return (
+    <div className="col" style={{ gap: 10 }}>
+      {/* Tool picker */}
+      <div className="field">
+        <label className="field-label">tool_id</label>
+        {catalogue.loading && !catalogue.data && (
+          <div className="muted text-sm">Loading catalogue…</div>
+        )}
+        {catalogue.error && (
+          <div className="field-help" style={{ color: "var(--amber)" }}>
+            Catalogue unavailable ({catalogue.error.title || catalogue.error.message});
+            type the scoped tool id manually below.
+          </div>
+        )}
+        {!catalogue.error && items.length > 0 ? (
+          <select
+            className="select"
+            value={node.tool_id || ""}
+            onChange={(e) => pickTool(e.target.value)}
+            style={{ width: "100%" }}
+          >
+            <option value="">— pick a tool —</option>
+            {items.map((it) => (
+              <option key={it.id} value={it.id}>
+                {it.id}{it.description ? ` — ${it.description.slice(0, 60)}` : ""}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            className="input mono"
+            value={node.tool_id || ""}
+            onChange={(e) => onUpdateNode({ tool_id: e.target.value })}
+            placeholder="toolset__tool_name"
+            style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
+          />
+        )}
+        {selectedTool && selectedTool.description && (
+          <div className="field-help muted">{selectedTool.description}</div>
+        )}
+      </div>
+
+      {/* Advanced toggle: literal args vs single template */}
+      <label className="mono text-sm" style={{
+        display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
+      }}>
+        <input
+          type="checkbox"
+          checked={usingTemplate}
+          onChange={(e) => toggleTemplate(e.target.checked)}
+        />
+        <span>Advanced: use a single arguments_template (Jinja → JSON)</span>
+      </label>
+
+      {!usingTemplate && (
+        <div className="field">
+          <label className="field-label">arguments</label>
+          {argKeys.length === 0 && (
+            <div className="muted text-sm">— no arguments —</div>
+          )}
+          {argKeys.map((k) => {
+            const propType = schemaProps[k]?.type;
+            const required = requiredSet.has(k);
+            return (
+              <div key={k} style={{
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                padding: 6,
+                marginBottom: 6,
+                background: "var(--bg-1)",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
+                  <input
+                    className="input mono"
+                    value={k}
+                    onChange={(e) => renameArg(k, e.target.value)}
+                    style={{ flex: 1, fontFamily: "IBM Plex Mono", fontSize: 11.5 }}
+                  />
+                  {propType && (
+                    <span className="muted text-sm" style={{ fontSize: 10.5 }}>
+                      {propType}{required ? " *" : ""}
+                    </span>
+                  )}
+                  <a
+                    onClick={() => deleteArg(k)}
+                    style={{ cursor: "pointer", color: "var(--red)", fontSize: 12 }}
+                    title="Delete arg"
+                  >
+                    ×
+                  </a>
+                </div>
+                <textarea
+                  className="textarea mono"
+                  rows={2}
+                  value={typeof args[k] === "string" ? args[k] : JSON.stringify(args[k])}
+                  onChange={(e) => updateArg(k, e.target.value)}
+                  placeholder="value (Jinja-templated string)"
+                  style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 11.5 }}
+                />
+              </div>
+            );
+          })}
+          <Btn size="sm" kind="ghost" icon="plus" onClick={addArg}>Arg</Btn>
+        </div>
+      )}
+
+      {usingTemplate && (
+        <GR_TextAreaField
+          label="arguments_template (Jinja2 → JSON)"
+          value={node.arguments_template || ""}
+          onChange={(v) => onUpdateNode({ arguments_template: v })}
+          rows={6}
+          placeholder={"{\n  \"query\": \"{{ graph_input.q }}\"\n}"}
+          help="When set, shadows the literal arguments map. Must render to a JSON object."
+        />
+      )}
+
+      <GR_JsonField
+        label="output_schema"
+        value={node.output_schema}
+        onChange={(v) => onUpdateNode({ output_schema: v })}
+        onError={onReportJsonError}
+        errorKey={`${errBase}:output_schema`}
+        help="Optional JSON Schema validated against the tool result."
+      />
     </div>
   );
 }
