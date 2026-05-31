@@ -803,12 +803,97 @@ class Graph(Describeable):
                     f"End node {end_id!r} must have no outgoing edges"
                 )
 
+        # ===== Spec B §1.3 rules =====
+        fanout_ids = {n.id for n in self.nodes if n.kind == "fan_out"}
+        begin_ids = {n.id for n in self.nodes if n.kind == "begin"}
+
+        # FanOut has no outgoing edges in graph.edges - targets live on specs.
+        for e in self.edges:
+            if e.from_node in fanout_ids:
+                raise ValueError(
+                    f"FanOut node {e.from_node!r} cannot have outgoing edges "
+                    f"in graph.edges - its targets live on `specs`"
+                )
+
+        # Build the set of all fan-out target ids (used for map source check).
+        all_fanout_target_ids: set[str] = set()
+        for nn in self.nodes:
+            if nn.kind != "fan_out":
+                continue
+            for sp in nn.specs:
+                if sp.kind in ("broadcast", "map"):
+                    if sp.target_node_id is not None:
+                        all_fanout_target_ids.add(sp.target_node_id)
+                else:  # tee
+                    for tid in (sp.target_node_ids or []):
+                        all_fanout_target_ids.add(tid)
+
+        # FanOut spec targets exist + are not Begin or another FanOut.
+        for n in self.nodes:
+            if n.kind != "fan_out":
+                continue
+            for spec in n.specs:
+                if spec.kind in ("broadcast", "map"):
+                    targets = [spec.target_node_id] if spec.target_node_id else []
+                else:  # tee
+                    targets = list(spec.target_node_ids or [])
+                for tid in targets:
+                    if tid not in ids:
+                        raise ValueError(
+                            f"FanOut {n.id!r} spec target {tid!r} does not exist"
+                        )
+                    if tid in begin_ids:
+                        raise ValueError(
+                            f"FanOut {n.id!r} cannot target Begin node {tid!r}"
+                        )
+                    if tid in fanout_ids:
+                        raise ValueError(
+                            f"FanOut {n.id!r} cannot target another FanOut {tid!r}"
+                        )
+                if spec.kind == "map":
+                    if spec.source_node_id not in ids:
+                        raise ValueError(
+                            f"FanOut {n.id!r} map source {spec.source_node_id!r} does not exist"
+                        )
+                    if spec.source_node_id in all_fanout_target_ids:
+                        raise ValueError(
+                            f"FanOut {n.id!r} map source {spec.source_node_id!r} "
+                            "is itself a fan-out target - source list must be deterministic"
+                        )
+
+        # FanIn must have >=1 incoming edge.
+        for n in self.nodes:
+            if n.kind != "fan_in":
+                continue
+            if not any(e.to_node == n.id for e in self.edges if isinstance(e, _StaticEdge)) and not any(
+                self._conditional_targets_include(e, n.id)
+                for e in self.edges
+                if isinstance(e, _ConditionalEdge)
+            ):
+                raise ValueError(
+                    f"FanIn {n.id!r} must have at least one incoming edge"
+                )
+
+        # Reachability through FanOut implicit edges - rebuild adjacency
+        # extending the static/conditional graph with FanOut-spec targets.
+        adj: dict[str, set[str]] = {n.id: set(outgoing[n.id]) for n in self.nodes}
+        for n in self.nodes:
+            if n.kind != "fan_out":
+                continue
+            for spec in n.specs:
+                if spec.kind in ("broadcast", "map"):
+                    if spec.target_node_id is not None:
+                        adj[n.id].add(spec.target_node_id)
+                else:
+                    for tid in (spec.target_node_ids or []):
+                        adj[n.id].add(tid)
+
         # Reachability: BFS from Begin must visit every End.
         seen_nodes: set[str] = {begin_id}
         frontier: list[str] = [begin_id]
         while frontier:
             cur = frontier.pop()
-            for nxt in outgoing[cur]:
+            for nxt in adj.get(cur, ()):
                 if nxt in seen_nodes:
                     continue
                 seen_nodes.add(nxt)
@@ -819,6 +904,21 @@ class Graph(Describeable):
                 f"End nodes not reachable from Begin: {sorted(missing)}"
             )
         return self
+
+    @staticmethod
+    def _conditional_targets_include(edge: "_ConditionalEdge", node_id: str) -> bool:
+        """True if a conditional edge's router statically targets ``node_id``."""
+        router = edge.router
+        if isinstance(router, _JsonPathRouter):
+            for b in router.branches:
+                if b.to_node == node_id:
+                    return True
+            if router.default_to == node_id:
+                return True
+            return False
+        # _CallableRouter: targets unknown at validation time; treat as
+        # potentially reaching anything for incoming-edge purposes.
+        return True
 
 
 # ===========================================================================

@@ -71,7 +71,8 @@ async def test_snapshot_and_restore_preserves_state() -> None:
         ],
         edges=[
             _StaticEdge(from_node="begin", to_node="fo"),
-            _StaticEdge(from_node="fo", to_node="worker"),
+            # fo -> worker lives on the FanOut spec (Spec B §1.3 forbids
+            # static edges from a FanOut node).
             _StaticEdge(from_node="worker", to_node="fi"),
             _StaticEdge(from_node="fi", to_node="end"),
         ],
