@@ -88,6 +88,50 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _materialise_begin_output(
+    graph_input: Any,
+    initial_messages: list[Message],
+) -> NodeOutput:
+    """Build the :class:`NodeOutput` for the Begin node.
+
+    Spec §2.1 — Begin is a pure data-shaping node:
+
+    * dict input → ``text`` = JSON, ``parsed`` = the dict
+    * str input → ``text`` = the string, ``parsed`` = ``None``
+    * list[Message] / None → ``text`` = concatenated text parts,
+      ``parsed`` = ``None``
+
+    ``history`` is the message-rendered version of the input.
+    """
+    if isinstance(graph_input, dict):
+        return NodeOutput(
+            text=json.dumps(graph_input, ensure_ascii=False),
+            parsed=graph_input,
+            history=initial_messages,
+            iteration=0,
+        )
+    if isinstance(graph_input, str):
+        return NodeOutput(
+            text=graph_input,
+            parsed=None,
+            history=initial_messages,
+            iteration=0,
+        )
+    # list[Message] or None — concatenate text parts.
+    parts: list[str] = []
+    for msg in initial_messages:
+        for part in getattr(msg, "parts", []):
+            t = getattr(part, "text", None)
+            if isinstance(t, str):
+                parts.append(t)
+    return NodeOutput(
+        text="\n".join(parts),
+        parsed=None,
+        history=initial_messages,
+        iteration=0,
+    )
+
+
 def _resolve_initial_ready_node(graph: "Graph") -> str:
     """Return the id of the node that seeds the executor's initial ready set.
 
@@ -362,8 +406,22 @@ class _BaseGraphExecutor(ABC):
         """Run one node; push events live to ``queue``, then a _NodeDone."""
         node = self._nodes_by_id[node_id]
         try:
-            if isinstance(node, _TerminalNode):
-                output: NodeOutput | None = NodeOutput(
+            if isinstance(node, _BeginNode):
+                # Begin is pure data-shaping; no LLM call, no events emitted.
+                # The base executor stores initial_input as a list[Message];
+                # the workspace executor (Phase 4) widens that union to
+                # also carry dict/str via session metadata.
+                gi = context.initial_input
+                if isinstance(gi, list):
+                    output: NodeOutput | None = _materialise_begin_output(
+                        graph_input=None, initial_messages=gi
+                    )
+                else:
+                    output = _materialise_begin_output(
+                        graph_input=gi, initial_messages=[]
+                    )
+            elif isinstance(node, _TerminalNode):
+                output = NodeOutput(
                     text="", iteration=context.iteration
                 )
             elif isinstance(node, _GraphNodeRef):
