@@ -44,6 +44,13 @@ class RenderedFile:
     rendered_text: str
     rendered: dict[str, Any]
     content: str | None = None   # for kind=document, resolved content_path body
+    # Multi-harness rendering (Spec A §8): when this file came from a
+    # subharness, ``source_slug`` is the sub's slug (used for resolved_id
+    # composition + cross-ref namespacing) and ``source_dependency`` is
+    # the dep-name path ("docs" or "docs/embeddings" for nested).
+    # ``None`` for the parent's own templates.
+    source_slug: str | None = None
+    source_dependency: str | None = None
 
 
 def _env() -> SandboxedEnvironment:

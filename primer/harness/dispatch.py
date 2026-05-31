@@ -52,6 +52,7 @@ from primer.harness.template import (
     RenderedFile,
     compose_overrides_schema,
     render_bundle,
+    slice_overrides_for_dep,
 )
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
@@ -593,6 +594,94 @@ async def _do_fetch(
 
 
 # ---------------------------------------------------------------------------
+# Subharness rendering helpers (Spec A §8)
+# ---------------------------------------------------------------------------
+
+
+def _dep_path_for(
+    dep: ResolvedDependency,
+    all_deps: list[ResolvedDependency],
+) -> str:
+    """Walk parent_name links back to the root and return a path of dep-names.
+
+    e.g. for a chain root → "docs" → "embeddings" the deepest dep gets
+    "docs/embeddings"; a direct (depth-0) dep gets just "docs".
+    """
+    by_name: dict[str, ResolvedDependency] = {d.name: d for d in all_deps}
+    chain: list[str] = []
+    cursor: ResolvedDependency | None = dep
+    visited: set[str] = set()
+    while cursor is not None:
+        if cursor.name in visited:
+            break
+        visited.add(cursor.name)
+        chain.append(cursor.name)
+        if cursor.parent_name is None:
+            break
+        cursor = by_name.get(cursor.parent_name)
+    return "/".join(reversed(chain))
+
+
+def _slice_overrides_along_path(
+    parent_overrides: dict[str, Any],
+    dep: ResolvedDependency,
+    all_deps: list[ResolvedDependency],
+) -> dict[str, Any]:
+    """Chain ``slice_overrides_for_dep`` down the dep-name path.
+
+    For a direct dep ("docs") this just returns
+    ``slice_overrides_for_dep(parent_overrides, "docs")``.
+
+    For a nested dep ("docs/embeddings") this walks
+    parent_overrides["dependencies"]["docs"]["dependencies"]["embeddings"].
+    """
+    path = _dep_path_for(dep, all_deps).split("/")
+    cursor: dict[str, Any] = parent_overrides
+    for segment in path:
+        cursor = slice_overrides_for_dep(cursor, segment)
+        if not cursor:
+            return {}
+    return cursor
+
+
+async def _render_sub_bundle(
+    *,
+    dep: ResolvedDependency,
+    token: str | None,
+    overrides: dict[str, Any],
+    dep_path: str,
+) -> list[RenderedFile]:
+    """Clone a sub at its resolved_commit + render its templates/.
+
+    Each returned file is tagged with ``source_slug=dep.slug`` and
+    ``source_dependency=dep_path``.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dest = str(Path(tmpdir) / "sub")
+        await clone_at_ref(
+            dep.git_url,
+            token=token,
+            ref=dep.resolved_commit,
+            dest=dest,
+        )
+        sub_ctx = {
+            "slug": dep.slug,
+            "name": dep.name,
+            "description": "",
+        }
+        sub_files = await render_bundle(
+            checkout_dir=dest,
+            subpath=dep.subpath,
+            overrides=overrides,
+            harness_ctx=sub_ctx,
+        )
+        for f in sub_files:
+            f.source_slug = dep.slug
+            f.source_dependency = dep_path
+        return sub_files
+
+
+# ---------------------------------------------------------------------------
 # _do_install
 # ---------------------------------------------------------------------------
 
@@ -642,11 +731,34 @@ async def _do_install(
                     {"code": exc.code, "message": exc.message}
                 )
 
-            # Verify bundle hash (excluding .git)
+            # Verify bundle hash (excluding .git). When dependencies are
+            # present, the parent's available_bundle_hash is the COMPOSITE
+            # hash computed in _do_fetch; we recompute it here from
+            # parent_bundle + each dep's stored bundle_hash (deterministic
+            # canonical-key order) so we can detect tampering.
             base = Path(dest)
             if harness.subpath:
                 base = base / harness.subpath
-            current_bundle_hash = hash_bundle(await asyncio.to_thread(_collect_bundle_files, base))
+            parent_bundle_hash = hash_bundle(
+                await asyncio.to_thread(_collect_bundle_files, base),
+            )
+            if harness.dependencies_resolved:
+                h = hashlib.sha256()
+                h.update(parent_bundle_hash.encode("utf-8"))
+                ordered = sorted(
+                    harness.dependencies_resolved,
+                    key=lambda d: (
+                        canonical_key(d.git_url, d.ref, d.subpath).url,
+                        canonical_key(d.git_url, d.ref, d.subpath).ref,
+                        canonical_key(d.git_url, d.ref, d.subpath).subpath,
+                    ),
+                )
+                for d in ordered:
+                    h.update(d.bundle_hash.encode("utf-8"))
+                    h.update(b"\x00")
+                current_bundle_hash = h.hexdigest()
+            else:
+                current_bundle_hash = parent_bundle_hash
             if (
                 harness.available_bundle_hash is not None
                 and current_bundle_hash != harness.available_bundle_hash
@@ -656,11 +768,14 @@ async def _do_install(
                      "message": "bundle changed since fetch; re-run fetch"}
                 )
 
-            # Render the bundle
+            # Render the parent's bundle. Each parent file gets tagged with
+            # the parent's slug + source_dependency=None so the multi-slug
+            # rewrite map in service.build_rendered_entries can scope cross-
+            # refs correctly even when subs are present.
             harness_ctx = {"slug": harness.slug, "name": harness.name,
                            "description": harness.description}
             try:
-                rendered = await render_bundle(
+                parent_rendered = await render_bundle(
                     checkout_dir=dest,
                     subpath=harness.subpath,
                     overrides=harness.overrides,
@@ -670,15 +785,58 @@ async def _do_install(
                 return HarnessStatus.ERROR, json.dumps(
                     {"code": exc.code, "message": exc.message}
                 )
+            for f in parent_rendered:
+                f.source_slug = harness.slug
+                f.source_dependency = None
 
-            # Build + validate entries
+            # ---- Render subharness bundles ------------------------------
+            # ``dependencies_resolved`` is post-order (deepest first); we
+            # render in that same order and concatenate so apply_install
+            # writes deeper subs before parents. Each sub gets its own
+            # tmp clone at its resolved_commit.
+            sub_rendered_concat: list[RenderedFile] = []
+            try:
+                for dep in harness.dependencies_resolved:
+                    dep_overrides = _slice_overrides_along_path(
+                        harness.overrides, dep, harness.dependencies_resolved,
+                    )
+                    dep_path = _dep_path_for(dep, harness.dependencies_resolved)
+                    sub_files = await _render_sub_bundle(
+                        dep=dep,
+                        token=token,
+                        overrides=dep_overrides,
+                        dep_path=dep_path,
+                    )
+                    sub_rendered_concat.extend(sub_files)
+            except HarnessTemplateError as exc:
+                return HarnessStatus.ERROR, json.dumps(
+                    {"code": exc.code, "message": exc.message,
+                     "source_dependency": getattr(exc, "template", None)}
+                )
+            except HarnessGitError as exc:
+                return HarnessStatus.ERROR, json.dumps(
+                    {"code": "dependency_fetch_failed", "message": exc.message,
+                     "inner_code": exc.code}
+                )
+
+            # Combine — subs first (deepest-first by post-order), then parent.
+            rendered = sub_rendered_concat + parent_rendered
+
+            # Build + validate entries. The parent's slug is the fallback
+            # for any file that lacks ``source_slug`` (none here, but the
+            # contract is honoured for safety).
             entries, build_errors = build_rendered_entries(rendered, slug=harness.slug)
             if build_errors:
                 return HarnessStatus.ERROR, json.dumps(
                     {"code": "build_errors", "errors": build_errors.errors}
                 )
 
-            # Build rendered_files_by_name
+            # Build rendered_files_by_name (kept template_name-keyed for
+            # document-content lookups). When multiple subs declare the
+            # same template_name a later entry would overwrite an earlier
+            # one in this dict, but document content lookup matches by
+            # template_name anyway — keep the parent's last to mirror the
+            # entries order (deepest-first then parent).
             rendered_files_by_name: dict[str, RenderedFile] = {
                 f.template_name: f for f in rendered
             }

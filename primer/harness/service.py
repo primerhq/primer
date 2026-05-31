@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from primer.harness.diff import diff_renderings
 from primer.harness.hashes import hash_rendered_payload, hash_template_source
 from primer.harness.template import RenderedFile
+from primer.model.except_ import ConflictError
 from primer.model.harness import Harness, HarnessRendering, RenderedEntry
 
 
@@ -58,29 +59,62 @@ class BuildErrors:
 def _build_rewrite_map(
     rendered: list[RenderedFile],
     *,
-    slug: str,
-) -> dict[tuple[str, str], str]:
-    """Build (kind, template_name) → resolved_id for every entry in the bundle."""
-    return {
-        (f.kind, f.template_name): resolved_id(slug, f.template_name)
-        for f in rendered
-    }
+    default_slug: str,
+) -> dict[tuple[str, str, str], str]:
+    """Build (kind, template_name, source_slug) → resolved_id for the bundle.
+
+    With multi-harness rendering (Spec A §8) each RenderedFile may belong
+    to its own slug (its ``source_slug``). The rewrite map is keyed by
+    (kind, template_name, source_slug) so two subs declaring the same
+    bare template_name get distinct resolved_ids.
+
+    When a file's ``source_slug`` is unset we fall back to ``default_slug``
+    (the parent harness's slug), preserving single-harness behaviour.
+    """
+    out: dict[tuple[str, str, str], str] = {}
+    for f in rendered:
+        slug = f.source_slug or default_slug
+        out[(f.kind, f.template_name, slug)] = resolved_id(slug, f.template_name)
+    return out
+
+
+def _lookup_resolved(
+    rewrite_map: dict[tuple[str, str, str], str],
+    *,
+    kind: str,
+    template_name: str,
+    file_slug: str,
+) -> str | None:
+    """Resolve ``template_name`` against the rewrite map for a given file slug.
+
+    Lookup order:
+      1. The file's own slug — sub-references-its-own-entity (the common case).
+      2. Any other slug — used for parent→sub cross-refs (e.g. parent's agent
+         pointing at a sub's toolset). When multiple slugs declare the same
+         template_name we pick the lexicographically-first slug deterministically.
+    """
+    own = rewrite_map.get((kind, template_name, file_slug))
+    if own is not None:
+        return own
+    matches = sorted(
+        (slug for (k, n, slug) in rewrite_map
+         if k == kind and n == template_name),
+    )
+    if not matches:
+        return None
+    return rewrite_map[(kind, template_name, matches[0])]
 
 
 def _rewrite_agent_payload(
     payload: dict[str, Any],
-    rewrite_map: dict[tuple[str, str], str],
+    rewrite_map: dict[tuple[str, str, str], str],
+    *,
+    file_slug: str,
 ) -> dict[str, Any]:
     """Rewrite Agent.tools scoped ids whose toolset_id is a harness toolset."""
     tools = payload.get("tools")
     if not isinstance(tools, list):
         return payload
-
-    harness_toolset_names: set[str] = {
-        template_name
-        for (kind, template_name) in rewrite_map
-        if kind == "toolset"
-    }
 
     new_tools: list[str] = []
     for tool in tools:
@@ -88,36 +122,30 @@ def _rewrite_agent_payload(
             new_tools.append(tool)
             continue
         # Tool format: <toolset_id>__<tool_name>
-        # We split on the first __ only (toolset_id may not contain __)
         parts = tool.split("__", 1)
-        if len(parts) == 2 and parts[0] in harness_toolset_names:
-            toolset_resolved = rewrite_map[("toolset", parts[0])]
-            new_tools.append(f"{toolset_resolved}__{parts[1]}")
-        else:
-            new_tools.append(tool)
+        if len(parts) == 2:
+            toolset_resolved = _lookup_resolved(
+                rewrite_map, kind="toolset", template_name=parts[0],
+                file_slug=file_slug,
+            )
+            if toolset_resolved is not None:
+                new_tools.append(f"{toolset_resolved}__{parts[1]}")
+                continue
+        new_tools.append(tool)
 
     return {**payload, "tools": new_tools}
 
 
 def _rewrite_graph_payload(
     payload: dict[str, Any],
-    rewrite_map: dict[tuple[str, str], str],
+    rewrite_map: dict[tuple[str, str, str], str],
+    *,
+    file_slug: str,
 ) -> dict[str, Any]:
     """Rewrite Graph.nodes agent_id / graph_id fields when they reference harness entities."""
     nodes = payload.get("nodes")
     if not isinstance(nodes, list):
         return payload
-
-    harness_agent_names: set[str] = {
-        template_name
-        for (kind, template_name) in rewrite_map
-        if kind == "agent"
-    }
-    harness_graph_names: set[str] = {
-        template_name
-        for (kind, template_name) in rewrite_map
-        if kind == "graph"
-    }
 
     new_nodes: list[Any] = []
     for node in nodes:
@@ -130,13 +158,23 @@ def _rewrite_graph_payload(
 
         if node_kind == "agent":
             agent_id = node.get("agent_id")
-            if isinstance(agent_id, str) and agent_id in harness_agent_names:
-                node["agent_id"] = rewrite_map[("agent", agent_id)]
+            if isinstance(agent_id, str):
+                resolved = _lookup_resolved(
+                    rewrite_map, kind="agent", template_name=agent_id,
+                    file_slug=file_slug,
+                )
+                if resolved is not None:
+                    node["agent_id"] = resolved
 
         elif node_kind == "graph":
             graph_id = node.get("graph_id")
-            if isinstance(graph_id, str) and graph_id in harness_graph_names:
-                node["graph_id"] = rewrite_map[("graph", graph_id)]
+            if isinstance(graph_id, str):
+                resolved = _lookup_resolved(
+                    rewrite_map, kind="graph", template_name=graph_id,
+                    file_slug=file_slug,
+                )
+                if resolved is not None:
+                    node["graph_id"] = resolved
 
         new_nodes.append(node)
 
@@ -145,36 +183,38 @@ def _rewrite_graph_payload(
 
 def _rewrite_document_payload(
     payload: dict[str, Any],
-    rewrite_map: dict[tuple[str, str], str],
+    rewrite_map: dict[tuple[str, str, str], str],
+    *,
+    file_slug: str,
 ) -> dict[str, Any]:
     """Rewrite Document.collection_id when it matches a harness collection template_name."""
     collection_id = payload.get("collection_id")
     if not isinstance(collection_id, str):
         return payload
 
-    harness_collection_names: set[str] = {
-        template_name
-        for (kind, template_name) in rewrite_map
-        if kind == "collection"
-    }
-    if collection_id in harness_collection_names:
-        return {**payload, "collection_id": rewrite_map[("collection", collection_id)]}
-
+    resolved = _lookup_resolved(
+        rewrite_map, kind="collection", template_name=collection_id,
+        file_slug=file_slug,
+    )
+    if resolved is not None:
+        return {**payload, "collection_id": resolved}
     return payload
 
 
 def _rewrite_payload(
     kind: str,
     payload: dict[str, Any],
-    rewrite_map: dict[tuple[str, str], str],
+    rewrite_map: dict[tuple[str, str, str], str],
+    *,
+    file_slug: str,
 ) -> dict[str, Any]:
     """Dispatch to the kind-specific rewriter."""
     if kind == "agent":
-        return _rewrite_agent_payload(payload, rewrite_map)
+        return _rewrite_agent_payload(payload, rewrite_map, file_slug=file_slug)
     if kind == "graph":
-        return _rewrite_graph_payload(payload, rewrite_map)
+        return _rewrite_graph_payload(payload, rewrite_map, file_slug=file_slug)
     if kind == "document":
-        return _rewrite_document_payload(payload, rewrite_map)
+        return _rewrite_document_payload(payload, rewrite_map, file_slug=file_slug)
     # Collection and Toolset: no harness cross-refs
     return payload
 
@@ -259,19 +299,29 @@ def build_rendered_entries(
 ) -> tuple[list[RenderedEntry], BuildErrors]:
     """Rewrite cross-refs and Pydantic-validate each RenderedFile.
 
+    ``slug`` is the default/fallback slug used when a file does not set
+    ``source_slug`` (i.e. when called from the legacy single-harness path).
+    Multi-harness callers (Spec A §8) tag each RenderedFile with
+    ``source_slug`` and ``source_dependency``; this function honours both
+    when present and threads them through into the resulting
+    ``RenderedEntry`` rows.
+
     Returns (entries, errors). When errors is truthy, entries is empty
     (build-before-apply contract: validate the whole bundle before writing
     anything).
     """
-    rewrite_map = _build_rewrite_map(rendered, slug=slug)
+    rewrite_map = _build_rewrite_map(rendered, default_slug=slug)
     errors = BuildErrors()
     entries: list[RenderedEntry] = []
 
     for f in rendered:
+        file_slug = f.source_slug or slug
         spec = dict(f.rendered.get("spec", {}))
-        rewritten_payload = _rewrite_payload(f.kind, spec, rewrite_map)
+        rewritten_payload = _rewrite_payload(
+            f.kind, spec, rewrite_map, file_slug=file_slug,
+        )
 
-        rid = resolved_id(slug, f.template_name)
+        rid = resolved_id(file_slug, f.template_name)
         entity, validation_errors = _validate_payload(f.kind, rid, rewritten_payload)
 
         if validation_errors:
@@ -292,6 +342,7 @@ def build_rendered_entries(
                     template_source_hash=hash_template_source(f.source_bytes),
                     rendered_hash=hash_rendered_payload(rewritten_payload),
                     rendered_payload=rewritten_payload,
+                    source_dependency=f.source_dependency,
                 )
             )
 
@@ -395,7 +446,38 @@ async def apply_install(
                     harness_id=harness.id,
                 )
                 storage = _storage_for_kind(storage_provider, kind)
-                await storage.create(entity)
+                try:
+                    await storage.create(entity)
+                except ConflictError as conflict:
+                    # Inspect the colliding row: if it's owned by another
+                    # harness, surface a cross-harness collision so the
+                    # parent can roll back and report apply_id_conflict.
+                    existing = await storage.get(entry.resolved_id)
+                    existing_harness_id = getattr(existing, "harness_id", None)
+                    if (
+                        existing_harness_id is not None
+                        and existing_harness_id != harness.id
+                    ):
+                        # Roll back any rows already written in this attempt.
+                        for rb_kind, rb_id in reversed(created):
+                            try:
+                                await _storage_for_kind(
+                                    storage_provider, rb_kind,
+                                ).delete(rb_id)
+                            except Exception:
+                                pass
+                        return json.dumps({
+                            "code": "apply_id_conflict",
+                            "message": (
+                                f"resolved id {entry.resolved_id!r} already "
+                                f"belongs to harness {existing_harness_id!r}"
+                            ),
+                            "conflicting_id": entry.resolved_id,
+                            "existing_harness_id": existing_harness_id,
+                        })
+                    # Otherwise it's a same-harness or untagged collision —
+                    # let the generic apply_failed path handle it.
+                    raise conflict
                 created.append((kind, entry.resolved_id))
 
     except Exception as exc:
