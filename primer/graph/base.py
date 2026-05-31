@@ -768,9 +768,16 @@ class _BaseGraphExecutor(ABC):
         # Forward every sub-event under THIS node's id so external taps
         # see the parent-graph node's namespace, not the inner one.
         # Track text deltas to assemble a text NodeOutput for downstream
-        # consumers.
+        # consumers. The runtime terminal-event dataclasses
+        # (_GraphErrorEvent, _GraphEndOutputEvent) aren't real
+        # :class:`StreamEvent`s and don't survive ``_wrap_event``'s
+        # ``.type`` access — forward them as-is so the parent's
+        # aggregator can pass them on to taps.
         text_buf: list[str] = []
         async for sub_event in sub_executor.invoke(sub_input):
+            if isinstance(sub_event, (_GraphErrorEvent, _GraphEndOutputEvent)):
+                await queue.put(sub_event)  # type: ignore[arg-type]
+                continue
             await queue.put(
                 self._wrap_event(sub_event, node.id, context.iteration)
             )
