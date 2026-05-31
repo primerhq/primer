@@ -30,9 +30,10 @@ from primer.model.chat import (
 from primer.model.graph import (
     Graph,
     _AgentNodeRef,
+    _BeginNode,
+    _EndNode,
     _GraphNodeRef,
     _StaticEdge,
-    _TerminalNode,
 )
 from primer.model.provider import LLMModel
 from primer.workspace.local.state import LocalStateRepo as StateRepo
@@ -179,12 +180,16 @@ class TestPersistence:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
-            entry_node_id="A",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="A", to_node="exit")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
@@ -221,12 +226,16 @@ class TestPersistence:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
-            entry_node_id="A",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="A", to_node="exit")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
@@ -257,12 +266,16 @@ class TestPersistence:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
-            entry_node_id="A",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="A", to_node="exit")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
@@ -292,8 +305,12 @@ class TestPersistence:
         graph = Graph(
             id="g-snap",
             description="snapshot test",
-            entry_node_id="A",
-            nodes=[_AgentNodeRef(id="A", agent_id="x")],
+            entry_node_id="begin",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="A", agent_id="x"),
+            ],
+            edges=[_StaticEdge(from_node="begin", to_node="A")],
         )
         llm = _FakeLLM(scripts=[[]])
         repo = await _make_state_repo(tmp_path)
@@ -309,7 +326,7 @@ class TestPersistence:
         assert snap_path.exists()
         snapshot = json.loads(snap_path.read_text(encoding="utf-8"))
         assert snapshot["id"] == "g-snap"
-        assert snapshot["entry_node_id"] == "A"
+        assert snapshot["entry_node_id"] == "begin"
 
 
 # ===========================================================================
@@ -325,10 +342,18 @@ class TestCycleHistoryAccumulates:
         graph = Graph(
             id="g-loop",
             description="A -> A bounded",
-            entry_node_id="A",
-            max_iterations=3,
-            nodes=[_AgentNodeRef(id="A", agent_id="x")],
-            edges=[_StaticEdge(from_node="A", to_node="A")],
+            entry_node_id="begin",
+            # +1 vs. the legacy fixture because the Begin step counts as
+            # iteration 0 in the executor's superstep loop.
+            max_iterations=4,
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="A", agent_id="x"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="A"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
@@ -366,12 +391,16 @@ class TestGitVersioning:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
-            entry_node_id="A",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="A", to_node="exit")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
@@ -403,12 +432,16 @@ class TestGitVersioning:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
-            entry_node_id="A",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="A", to_node="exit")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
@@ -453,12 +486,16 @@ class TestToolDispatchInGraphNode:
         graph = Graph(
             id="g-tools",
             description="A -> exit, agent calls a tool first",
-            entry_node_id="A",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="A", to_node="exit")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
@@ -522,22 +559,30 @@ class TestSubgraphExecution:
         inner_graph = Graph(
             id="inner",
             description="single agent then exit",
-            entry_node_id="inner-A",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="inner-A", agent_id="x"),
-                _TerminalNode(id="inner-exit"),
+                _EndNode(id="inner-exit"),
             ],
-            edges=[_StaticEdge(from_node="inner-A", to_node="inner-exit")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="inner-A"),
+                _StaticEdge(from_node="inner-A", to_node="inner-exit"),
+            ],
         )
         outer_graph = Graph(
             id="outer",
             description="subgraph then exit",
-            entry_node_id="SUB",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _GraphNodeRef(id="SUB", graph_id="inner"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="SUB", to_node="exit")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="SUB"),
+                _StaticEdge(from_node="SUB", to_node="exit"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
@@ -608,12 +653,16 @@ class TestWorkspaceAugmentation:
         graph = Graph(
             id="g-aug",
             description="A -> exit, with workspace augmentation",
-            entry_node_id="A",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="A", to_node="exit")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
