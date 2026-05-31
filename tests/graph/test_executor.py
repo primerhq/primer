@@ -30,11 +30,12 @@ from primer.model.graph import (
     JsonPathBranch,
     NodeOutput,
     _AgentNodeRef,
+    _BeginNode,
     _CallableRouter,
     _ConditionalEdge,
+    _EndNode,
     _JsonPathRouter,
     _StaticEdge,
-    _TerminalNode,
 )
 from primer.model.provider import LLMModel
 from primer.model.workspace_session import SessionStatus
@@ -242,12 +243,16 @@ class TestLinearGraph:
         graph = Graph(
             id="g-linear",
             description="A -> exit",
-            entry_node_id="A",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="agent-x"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="A", to_node="exit")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
@@ -292,8 +297,9 @@ class TestFanOutFanIn:
         graph = Graph(
             id="g-fan",
             description="A -> (B, C) -> D -> exit",
-            entry_node_id="A",
+            entry_node_id="begin",
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
                 _AgentNodeRef(
                     id="B",
@@ -312,9 +318,10 @@ class TestFanOutFanIn:
                         "B: {{ nodes.B.text }} | C: {{ nodes.C.text }}"
                     ),
                 ),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
             edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
                 _StaticEdge(from_node="A", to_node="B"),
                 _StaticEdge(from_node="A", to_node="C"),
                 _StaticEdge(from_node="B", to_node="D"),
@@ -355,10 +362,18 @@ class TestCycle:
         graph = Graph(
             id="g-loop",
             description="A -> A forever (bounded)",
-            entry_node_id="A",
-            max_iterations=3,
-            nodes=[_AgentNodeRef(id="A", agent_id="x")],
-            edges=[_StaticEdge(from_node="A", to_node="A")],
+            entry_node_id="begin",
+            # +1 vs. the legacy fixture because the Begin step counts as
+            # iteration 0 in the executor's superstep loop.
+            max_iterations=4,
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="A", agent_id="x"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="A"),
+            ],
         )
         llm = _FakeLLM(
             scripts=[
@@ -394,18 +409,20 @@ class TestConditionalRouting:
         graph = Graph(
             id="g-cond",
             description="A -> route on parsed",
-            entry_node_id="A",
+            entry_node_id="begin",
             max_iterations=5,
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(
                     id="A",
                     agent_id="x",
                     response_format={"type": "object"},
                 ),
                 _AgentNodeRef(id="B", agent_id="x"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
             edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
                 _ConditionalEdge(
                     from_node="A",
                     router=_JsonPathRouter(
@@ -440,14 +457,16 @@ class TestConditionalRouting:
         graph = Graph(
             id="g-call",
             description="A -> route via callable",
-            entry_node_id="A",
+            entry_node_id="begin",
             max_iterations=5,
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
                 _AgentNodeRef(id="B", agent_id="x"),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
             edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
                 _ConditionalEdge(
                     from_node="A",
                     router=_CallableRouter(callable_id="my-router"),
@@ -494,9 +513,10 @@ class TestFailures:
         graph = Graph(
             id="g-fail",
             description="A -> no-match",
-            entry_node_id="A",
+            entry_node_id="begin",
             max_iterations=5,
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(
                     id="A",
                     agent_id="x",
@@ -505,6 +525,7 @@ class TestFailures:
                 _AgentNodeRef(id="B", agent_id="x"),
             ],
             edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
                 _ConditionalEdge(
                     from_node="A",
                     router=_JsonPathRouter(
@@ -541,8 +562,12 @@ class TestThreadManagement:
         graph = Graph(
             id="g-trivial",
             description="trivial",
-            entry_node_id="A",
-            nodes=[_AgentNodeRef(id="A", agent_id="x")],
+            entry_node_id="begin",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="A", agent_id="x"),
+            ],
+            edges=[_StaticEdge(from_node="begin", to_node="A")],
         )
         ts: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
         ms: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
@@ -575,14 +600,22 @@ class TestThreadManagement:
         graph_a = Graph(
             id="g-a",
             description="x",
-            entry_node_id="A",
-            nodes=[_AgentNodeRef(id="A", agent_id="x")],
+            entry_node_id="begin",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="A", agent_id="x"),
+            ],
+            edges=[_StaticEdge(from_node="begin", to_node="A")],
         )
         graph_b = Graph(
             id="g-b",
             description="y",
-            entry_node_id="A",
-            nodes=[_AgentNodeRef(id="A", agent_id="x")],
+            entry_node_id="begin",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="A", agent_id="x"),
+            ],
+            edges=[_StaticEdge(from_node="begin", to_node="A")],
         )
         await GraphExecutor.open_thread(
             graph=graph_a, thread_storage=ts  # type: ignore[arg-type]
