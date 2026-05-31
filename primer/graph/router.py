@@ -70,6 +70,56 @@ def _resolve_path(root: Any, dotted: str) -> tuple[bool, Any]:
     return True, current
 
 
+def evaluate_branch_condition(
+    parsed: Any,
+    cond: "BranchCondition",
+) -> bool:
+    """Apply one BranchCondition against a parsed payload.
+
+    Returns True iff the condition holds. Missing path => False for
+    every operator (use `exists` to test presence). Non-numeric on
+    either side of gt/gte/lt/lte => False (not an error). `in`/`not_in`
+    with a non-list `value` => False.
+    """
+    from primer.model.graph import BranchCondition  # local to avoid cycle
+
+    op = cond.op
+    if op == "exists":
+        found, val = _resolve_path(parsed, cond.path)
+        return found and val is not None
+
+    found, actual = _resolve_path(parsed, cond.path)
+    if not found:
+        return False
+
+    expected = cond.value
+    if op == "eq":
+        return actual == expected
+    if op == "ne":
+        return actual != expected
+    if op in {"gt", "gte", "lt", "lte"}:
+        if not isinstance(actual, (int, float)) or isinstance(actual, bool):
+            return False
+        if not isinstance(expected, (int, float)) or isinstance(expected, bool):
+            return False
+        if op == "gt":
+            return actual > expected
+        if op == "gte":
+            return actual >= expected
+        if op == "lt":
+            return actual < expected
+        return actual <= expected
+    if op == "in":
+        if not isinstance(expected, list):
+            return False
+        return actual in expected
+    if op == "not_in":
+        if not isinstance(expected, list):
+            return False
+        return actual not in expected
+    return False  # unreachable given the Literal[...] op type
+
+
 def match_json_path(parsed: dict[str, Any], when: dict[str, Any]) -> bool:
     """Return True iff every ``(path, expected)`` pair is satisfied.
 
