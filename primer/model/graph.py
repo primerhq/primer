@@ -304,27 +304,74 @@ GraphNode = Annotated[
 # ===========================================================================
 
 
-class JsonPathBranch(BaseModel):
-    """One branch in a :class:`_JsonPathRouter`.
+class BranchCondition(BaseModel):
+    """One predicate inside a JsonPathRouter branch.
 
-    A branch matches when EVERY ``(path, value)`` pair in ``when``
-    is satisfied by the source node's parsed structured output.
+    Resolves ``path`` against the source node's ``NodeOutput.parsed``
+    via dotted-segment + bracket-index walking, then applies ``op``.
+
+    Missing-path rule: when the path doesn't resolve, EVERY operator
+    returns False — including ``ne`` and ``not_in``. Use ``exists`` to
+    test presence.
     """
 
-    when: dict[str, Any] = Field(
+    path: str = Field(
         ...,
         description=(
-            "Dotted-path -> expected-value pairs. Example: "
-            "``{'next_action': 'retry', 'meta.priority': 'high'}`` "
-            "matches when ``parsed.next_action == 'retry'`` AND "
-            "``parsed.meta.priority == 'high'``."
+            "Dotted path with bracket indexing (`a.b[2].c`) into "
+            "NodeOutput.parsed of the conditional edge's source node."
         ),
     )
+    op: Literal[
+        "eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "exists"
+    ]
+    value: Any | None = Field(
+        default=None,
+        description=(
+            "Operand on the right of the comparison. Unused for `exists`. "
+            "For `in`/`not_in` MUST be a list."
+        ),
+    )
+
+
+class JsonPathBranch(BaseModel):
+    """One branch of a JsonPathRouter.
+
+    All ``conditions`` must hold (AND). An empty list matches
+    everything — useful as a catch-all branch placed at the end of the
+    branches list.
+    """
+
+    conditions: list[BranchCondition] = Field(default_factory=list)
     to_node: str = Field(
         ...,
         min_length=1,
         description="Target node id when this branch matches.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_when(cls, data: Any) -> Any:
+        """Translate the legacy ``when: dict[str, Any]`` AND-of-equality
+        shape into ``conditions`` so existing graph fixtures still
+        deserialise during the migration phase.
+
+        Phase 6 cleanup deletes this validator and the
+        ``test_jsonpath_branch_legacy_when_still_accepted_for_now``
+        test together.
+        """
+        if not isinstance(data, dict):
+            return data
+        legacy_when = data.get("when")
+        if legacy_when is None or "conditions" in data:
+            return data
+        data = dict(data)
+        data["conditions"] = [
+            {"path": path, "op": "eq", "value": expected}
+            for path, expected in legacy_when.items()
+        ]
+        data.pop("when")
+        return data
 
 
 class _JsonPathRouter(BaseModel):
@@ -581,6 +628,7 @@ class GraphNodeMessage(Identifiable):
 
 
 __all__ = [
+    "BranchCondition",
     "Graph",
     "GraphContext",
     "GraphEdge",

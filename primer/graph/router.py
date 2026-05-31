@@ -67,9 +67,16 @@ def first_matching_branch(
     parsed: dict[str, Any],
     branches: list[JsonPathBranch],
 ) -> JsonPathBranch | None:
-    """Return the first branch whose ``when`` matches, or :data:`None`."""
+    """Return the first branch whose ``conditions`` all match, or :data:`None`.
+
+    During the additive migration phase, conditions are still the
+    equality-only shape carried over from the legacy ``when`` field
+    (translated by JsonPathBranch._accept_legacy_when). Phase 2 Task 2.3
+    replaces this with a full operator-aware evaluator.
+    """
     for branch in branches:
-        if match_json_path(parsed, branch.when):
+        when = {c.path: c.value for c in branch.conditions if c.op == "eq"}
+        if match_json_path(parsed, when):
             return branch
     return None
 
