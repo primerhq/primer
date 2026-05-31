@@ -618,6 +618,58 @@ function _SLS_coalesceMessages(messages) {
   return out;
 }
 
+// Red "ERROR" chip + wrapped <pre> for NodeOutput.error, with an optional
+// subtler grey chip for NodeOutput.ended_detail (the structured failure code)
+// when distinct from the message. Spec B §5 — operator-facing failure surface.
+//
+// The session WS flattens `payload` onto the top-level frame (see ws.onmessage
+// in SessionDetail), so a graph node-failure record exposes its NodeOutput
+// fields as both `m.payload?.error` and `m.error`. We accept both shapes.
+function _SLS_NodeErrorBadge({ error, code }) {
+  if (!error && !code) return null;
+  const showCode = code && code !== error;
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <span style={{
+        display: "inline-block",
+        background: "var(--red-dim)",
+        color: "var(--red)",
+        padding: "2px 8px",
+        borderRadius: 4,
+        fontSize: 11,
+        fontWeight: 600,
+        letterSpacing: "0.04em",
+      }}>ERROR</span>
+      {error && (
+        <pre className="mono" style={{
+          marginTop: 6,
+          padding: 8,
+          fontSize: 12,
+          background: "var(--bg-2)",
+          border: "1px solid var(--red-dim)",
+          borderRadius: 4,
+          color: "var(--text)",
+          whiteSpace: "pre-wrap",
+          overflow: "auto",
+        }}>{error}</pre>
+      )}
+      {showCode && (
+        <span style={{
+          display: "inline-block",
+          marginTop: 4,
+          background: "var(--bg-2)",
+          color: "var(--text-2)",
+          border: "1px solid var(--border)",
+          padding: "1px 6px",
+          borderRadius: 4,
+          fontSize: 11,
+          fontFamily: "IBM Plex Mono, monospace",
+        }}>code: {code}</span>
+      )}
+    </div>
+  );
+}
+
 // One row in the live-stream timeline.
 function _SLS_Frame({ m }) {
   const kind = m.kind;
@@ -637,6 +689,10 @@ function _SLS_Frame({ m }) {
           borderLeft: "2px solid var(--accent)", paddingLeft: 12,
           whiteSpace: "pre-wrap",
         }}>
+          <_SLS_NodeErrorBadge
+            error={m.payload?.error || m.error}
+            code={m.payload?.ended_detail || m.ended_detail}
+          />
           {typeof window.renderMarkdown === "function"
             ? window.renderMarkdown(m.text)
             : m.text}
@@ -748,15 +804,23 @@ function _SLS_Frame({ m }) {
       name={name} separator="→" previewText={previewStr} fullText={fullStr} />;
   }
 
-  // Error banner.
+  // Error banner. Graph node failures arrive here via _GraphErrorEvent, whose
+  // payload carries the structured ``code`` (NodeOutput.ended_detail) and the
+  // human-readable ``message`` (NodeOutput.error). Older / non-graph error
+  // records may carry only ``message`` / ``error`` / ``detail`` — fall back
+  // to the original banner shape in that case.
   if (kind === "error") {
-    const msg = m.message || m.error || m.detail || "error";
+    const msg = m.payload?.error || m.error || m.message || m.detail || "error";
+    const code = m.payload?.ended_detail || m.ended_detail || m.code;
+    const nodeId = m.payload?.node_id || m.node_id;
     return (
       <div style={{ marginLeft: 64, marginTop: 6, marginBottom: 6 }}>
-        <div className="banner banner-error" style={{ margin: 0, fontSize: 12 }}>
-          <Icon name="x-circle" size={12} className="ico" />
-          <div>{msg}</div>
-        </div>
+        <_SLS_NodeErrorBadge error={msg} code={code} />
+        {nodeId && (
+          <div className="muted text-sm mono" style={{ marginTop: 2 }}>
+            node: {nodeId}
+          </div>
+        )}
       </div>
     );
   }
