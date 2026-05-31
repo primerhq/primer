@@ -165,12 +165,32 @@ def translate_stream_event(
     | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
     | Done                 | flush text_buffer (if any), then DONE           |
     | Error                | ERROR                                           |
+    | _GraphErrorEvent     | ERROR (graph runtime terminal failure)          |
     | (others)             | None — silently dropped                         |
 
     Worker code is responsible for synthetic kinds (USER_INPUT, CANCELLED,
     YIELDED, RESUMED) — not produced by this translator from LLM events.
     """
     now = _now_utc()
+
+    # Graph runtime terminal-failure event (spec §5.4). Imported locally
+    # to avoid a hard import-time dependency from primer.session on
+    # primer.graph (the latter brings in jinja2 + jsonschema, which the
+    # agent-only session path doesn't need).
+    from primer.graph.base import _GraphErrorEvent
+
+    if isinstance(event, _GraphErrorEvent):
+        return SessionMessageRecord(
+            seq=1,  # WorkspaceMessageWriter overwrites
+            kind=SessionMessageKind.ERROR,
+            payload={
+                "code": event.code,
+                "message": event.message,
+                "node_id": event.node_id,
+                "path": event.path,
+            },
+            created_at=now,
+        )
 
     if isinstance(event, TextDelta):
         state.text_buffer += event.text
