@@ -375,12 +375,20 @@ class _BaseGraphExecutor(ABC):
         ended_detail: str | None = None
 
         while ready:
-            # Cycle bound check.
+            # Cycle bound check. Spec §5.4 maps this to ended_reason='failed'
+            # with the detail code carried separately so the public contract
+            # has a single failure reason and a finite set of codes.
             if (
                 self._graph.max_iterations is not None
                 and context.iteration >= self._graph.max_iterations
             ):
-                ended_reason = "max_iterations_exceeded"
+                yield _GraphErrorEvent(  # type: ignore[misc]
+                    code="max_iterations_exceeded",
+                    message=f"graph ran for {context.iteration} iterations",
+                    node_id=None,
+                )
+                ended_reason = "failed"
+                ended_detail = "max_iterations_exceeded"
                 break
 
             # Mark all ready nodes RUNNING and snapshot state.
