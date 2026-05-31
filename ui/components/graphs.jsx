@@ -774,6 +774,8 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   if (!draft) return null;
   const selected = draft.nodes.find((n) => n.id === selectedNodeId);
   const hasBegin = (draft.nodes || []).some((n) => n.kind === "begin");
+  const violations = GR_localViolations(draft);
+  const hardViolation = violations.some((v) => v.kind === "hard");
 
   return (
     <div className="panel" style={{ overflow: "hidden" }}>
@@ -887,13 +889,23 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
             size="sm"
             kind="primary"
             icon="check"
-            disabled={diffCount === 0 || save.loading || Object.keys(jsonErrors).length > 0}
+            disabled={
+              diffCount === 0
+              || save.loading
+              || Object.keys(jsonErrors).length > 0
+              || hardViolation
+            }
             onClick={onSave}
           >
             {save.loading ? "Saving…" : "Save"}
           </Btn>
         </div>
       </div>
+
+      {/* Topology violations banner (non-blocking; hard violations gate Save) */}
+      {violations.length > 0 && (
+        <GR_ViolationsBanner violations={violations} />
+      )}
 
       {/* Editor + side panel */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 260px" }}>
@@ -977,6 +989,170 @@ const GR_DD_ITEM_STYLE = {
   color: "var(--text)",
   textDecoration: "none",
 };
+
+function GR_ViolationsBanner({ violations }) {
+  const hard = violations.filter((v) => v.kind === "hard");
+  const soft = violations.filter((v) => v.kind === "soft");
+  const hasHard = hard.length > 0;
+  const bg = hasHard ? "var(--red-dim, rgba(220, 38, 38, 0.08))" : "var(--amber-dim, rgba(217, 119, 6, 0.08))";
+  const borderColor = hasHard ? "var(--red)" : "var(--amber)";
+  const titleColor = hasHard ? "var(--red)" : "var(--amber)";
+  return (
+    <div
+      className="violations-banner"
+      style={{
+        margin: "6px 12px 0 12px",
+        padding: "8px 10px",
+        background: bg,
+        border: `1px solid ${borderColor}`,
+        borderRadius: 6,
+        fontSize: 11.5,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+        <Icon name={hasHard ? "alert-triangle" : "info"} size={12} style={{ color: titleColor }} />
+        <span style={{ fontWeight: 600, color: titleColor }}>
+          {hasHard
+            ? `${hard.length} hard violation${hard.length === 1 ? "" : "s"}`
+            : `${soft.length} warning${soft.length === 1 ? "" : "s"}`}
+          {hasHard && soft.length > 0
+            ? ` · ${soft.length} warning${soft.length === 1 ? "" : "s"}`
+            : ""}
+        </span>
+        {hasHard && (
+          <span className="muted" style={{ marginLeft: "auto", fontSize: 10.5 }}>
+            Save disabled until fixed
+          </span>
+        )}
+      </div>
+      <ul style={{ margin: 0, paddingLeft: 16 }}>
+        {hard.map((v, i) => (
+          <li key={`h${i}`} style={{ color: "var(--red)" }}>{v.text}</li>
+        ))}
+        {soft.map((v, i) => (
+          <li key={`s${i}`} className="muted">{v.text}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// GR_localViolations — client-side topology checks. Hard violations disable
+// Save; soft violations are surfaced as warnings.
+//
+// Hard rules:
+//   - exactly one Begin node
+//   - at least one End node
+//   - all End nodes reachable from Begin (forward-reachable via edges)
+//   - no duplicate node ids
+//   - every edge endpoint references a known node id
+// Soft rules:
+//   - orphan nodes (in-degree == 0 && kind != "begin")
+//   - Begin without a description
+// ----------------------------------------------------------------------------
+
+function GR_localViolations(g) {
+  const out = [];
+  if (!g || !Array.isArray(g.nodes)) return out;
+
+  const nodes = g.nodes;
+  const edges = Array.isArray(g.edges) ? g.edges : [];
+
+  // Duplicate ids.
+  const seen = new Map();
+  for (const n of nodes) {
+    seen.set(n.id, (seen.get(n.id) || 0) + 1);
+  }
+  for (const [id, count] of seen.entries()) {
+    if (count > 1) {
+      out.push({ kind: "hard", text: `Duplicate node id: ${id} (${count}×)` });
+    }
+  }
+
+  // Begin / End counts.
+  const begins = nodes.filter((n) => n.kind === "begin");
+  const ends = nodes.filter((n) => n.kind === "end");
+  if (begins.length === 0) {
+    out.push({ kind: "hard", text: "Exactly one Begin node required (got 0)" });
+  } else if (begins.length > 1) {
+    out.push({ kind: "hard", text: `Exactly one Begin node required (got ${begins.length})` });
+  }
+  if (ends.length === 0) {
+    out.push({ kind: "hard", text: "At least one End node required" });
+  }
+
+  // Edge endpoints.
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const edgeTargets = (e) => {
+    if (e.kind === "static") return [e.to_node];
+    if (e.kind === "conditional") {
+      const r = e.router || {};
+      if (r.kind === "json_path") {
+        const ts = (r.branches || []).map((b) => b.to_node);
+        if (r.default_to) ts.push(r.default_to);
+        return ts;
+      }
+    }
+    return [];
+  };
+  for (let i = 0; i < edges.length; i += 1) {
+    const e = edges[i];
+    if (!nodeIds.has(e.from_node)) {
+      out.push({ kind: "hard", text: `Edge ${i}: unknown from_node "${e.from_node}"` });
+    }
+    for (const t of edgeTargets(e)) {
+      if (!nodeIds.has(t)) {
+        out.push({ kind: "hard", text: `Edge ${i}: unknown target "${t}"` });
+      }
+    }
+  }
+
+  // Forward reachability from Begin.
+  if (begins.length === 1 && ends.length > 0) {
+    const adj = new Map(nodes.map((n) => [n.id, []]));
+    for (const e of edges) {
+      if (!adj.has(e.from_node)) continue;
+      for (const t of edgeTargets(e)) {
+        if (adj.has(t)) adj.get(e.from_node).push(t);
+      }
+    }
+    const reachable = new Set();
+    const stack = [begins[0].id];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (reachable.has(cur)) continue;
+      reachable.add(cur);
+      for (const nx of (adj.get(cur) || [])) stack.push(nx);
+    }
+    for (const ed of ends) {
+      if (!reachable.has(ed.id)) {
+        out.push({ kind: "hard", text: `End "${ed.id}" is not reachable from Begin` });
+      }
+    }
+  }
+
+  // Soft: orphan nodes (no incoming edge, not the Begin).
+  const incoming = new Map(nodes.map((n) => [n.id, 0]));
+  for (const e of edges) {
+    for (const t of edgeTargets(e)) {
+      if (incoming.has(t)) incoming.set(t, incoming.get(t) + 1);
+    }
+  }
+  for (const n of nodes) {
+    if (n.kind === "begin") continue;
+    if ((incoming.get(n.id) || 0) === 0) {
+      out.push({ kind: "soft", text: `Node "${n.id}" has no incoming edges` });
+    }
+  }
+
+  // Soft: Begin without a description.
+  if (begins.length === 1 && !begins[0].description) {
+    out.push({ kind: "soft", text: "Begin node has no description" });
+  }
+
+  return out;
+}
 
 // ----------------------------------------------------------------------------
 // GR_Canvas (forwardRef so the editor can attach its ref)
