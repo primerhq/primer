@@ -100,28 +100,67 @@ function HarnessList() {
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
   const [registerOpen, setRegisterOpen] = React.useState(false);
+  const [outboundOpen, setOutboundOpen] = React.useState(false);
+  // Direction filter: "all" | "inbound" | "outbound". Server supports
+  // ?direction=<x> from Phase 6; we pass it through when non-"all".
+  const [directionFilter, setDirectionFilter] = React.useState("all");
+
+  const listUrl = directionFilter === "all"
+    ? "/harnesses?limit=200"
+    : "/harnesses?limit=200&direction=" + encodeURIComponent(directionFilter);
 
   const list = useResource(
-    "harnesses:list",
-    (signal) => apiFetch("GET", "/harnesses?limit=200", null, { signal }),
-    { pollMs: null }
+    "harnesses:list:" + directionFilter,
+    (signal) => apiFetch("GET", listUrl, null, { signal }),
+    { pollMs: null, deps: [directionFilter] }
   );
 
   const items = list.data?.items ?? [];
 
   const onCreated = (harness) => {
     setRegisterOpen(false);
+    setOutboundOpen(false);
     list.refetch();
     navigate("/harnesses/" + harness.id);
+  };
+
+  // Outbound-card push action — fires POST /v1/harnesses/{id}/push then refetches.
+  const onPushOutbound = async (h, e) => {
+    if (e) { e.stopPropagation(); }
+    try {
+      await apiFetch("POST", "/harnesses/" + encodeURIComponent(h.id) + "/push", {});
+    } catch (_err) {
+      // surfaced in the row's last_operation_error on next refetch
+    }
+    list.refetch();
   };
 
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="filter-bar">
         <span style={{ fontSize: 13, fontWeight: 600 }}>Harnesses</span>
+        <div data-testid="hr-direction-filter" style={{ display: "flex", gap: 4, marginLeft: 10 }}>
+          {[
+            { key: "all", label: "All" },
+            { key: "inbound", label: "Inbound" },
+            { key: "outbound", label: "Outbound" },
+          ].map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              className={`pill ${directionFilter === opt.key ? "pill-claimed" : "pill-paused"}`}
+              style={{ cursor: "pointer", fontSize: 11, border: "1px solid var(--border)", padding: "2px 8px" }}
+              onClick={() => setDirectionFilter(opt.key)}
+              aria-pressed={directionFilter === opt.key}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
           <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
-          <Btn size="sm" kind="primary" icon="plus" onClick={() => setRegisterOpen(true)}>Register</Btn>
+          <Btn size="sm" kind="ghost" icon="plus" onClick={() => setOutboundOpen(true)}>Build outbound</Btn>
+          <Btn size="sm" kind="primary" icon="plus" onClick={() => setRegisterOpen(true)}>Register from git</Btn>
         </div>
       </div>
 
@@ -168,53 +207,102 @@ function HarnessList() {
 
       {items.length > 0 && !isMobile && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
-          {items.map((h) => (
-            <div
-              key={h.id}
-              className="panel"
-              style={{ cursor: "pointer", transition: "border-color 0.15s" }}
-              onClick={() => navigate("/harnesses/" + h.id)}
-              onMouseEnter={(e) => e.currentTarget.style.borderColor = "var(--accent)"}
-              onMouseLeave={(e) => e.currentTarget.style.borderColor = ""}
-            >
-              <div className="panel-body" style={{ padding: "12px 14px" }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {h.name || h.slug}
+          {items.map((h) => {
+            const isOutbound = h.direction === "outbound";
+            const trackedCount = isOutbound ? (h.tracked_entities?.length || 0) : 0;
+            const driftDirty = isOutbound && (h.status === "OUTDATED" || h.status === "outdated");
+            const canPush = isOutbound && (
+              h.status === "DRAFT" || h.status === "draft" ||
+              h.status === "OUTDATED" || h.status === "outdated"
+            );
+            return (
+              <div
+                key={h.id}
+                className="panel"
+                data-testid={isOutbound ? "harness-card-outbound" : "harness-card-inbound"}
+                style={{ cursor: "pointer", transition: "border-color 0.15s" }}
+                onClick={() => navigate("/harnesses/" + h.id)}
+                onMouseEnter={(e) => e.currentTarget.style.borderColor = "var(--accent)"}
+                onMouseLeave={(e) => e.currentTarget.style.borderColor = ""}
+              >
+                <div className="panel-body" style={{ padding: "12px 14px" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+                        {driftDirty && (
+                          <span
+                            data-testid="hr-drift-dot"
+                            title="Outdated — local tracked entities differ from the last push"
+                            style={{
+                              display: "inline-block",
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              background: "var(--amber)",
+                              flexShrink: 0,
+                            }}
+                          />
+                        )}
+                        <span>{h.name || h.slug}</span>
+                        {isOutbound && (
+                          <span className="pill pill-paused" style={{ fontSize: 10, marginLeft: 4 }}>outbound</span>
+                        )}
+                      </div>
+                      <div className="mono muted text-sm" style={{ fontSize: 11 }}>{h.slug}</div>
                     </div>
-                    <div className="mono muted text-sm" style={{ fontSize: 11 }}>{h.slug}</div>
+                    <HR_StatusBadge status={h.status} />
                   </div>
-                  <HR_StatusBadge status={h.status} />
-                </div>
 
-                {h.description && (
-                  <div className="muted text-sm" style={{ marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {h.description}
+                  {h.description && (
+                    <div className="muted text-sm" style={{ marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {h.description}
+                    </div>
+                  )}
+
+                  <div className="muted text-sm" style={{ fontSize: 11.5, display: "flex", gap: 10 }}>
+                    <span><span style={{ color: "var(--text-3)" }}>ref </span><span className="mono">{h.ref || "main"}</span></span>
+                    {h.resolved_commit && (
+                      <span className="mono" title={h.resolved_commit}>{h.resolved_commit.slice(0, 8)}</span>
+                    )}
+                    {isOutbound && (
+                      <span data-testid="hr-tracked-count">
+                        <span style={{ color: "var(--text-3)" }}>· </span>
+                        {trackedCount} tracked
+                      </span>
+                    )}
                   </div>
-                )}
 
-                <div className="muted text-sm" style={{ fontSize: 11.5, display: "flex", gap: 10 }}>
-                  <span><span style={{ color: "var(--text-3)" }}>ref </span><span className="mono">{h.ref || "main"}</span></span>
-                  {h.resolved_commit && (
-                    <span className="mono" title={h.resolved_commit}>{h.resolved_commit.slice(0, 8)}</span>
+                  <HR_OutdatedChips harness={h} />
+
+                  {isOutbound && canPush && (
+                    <div style={{ marginTop: 8 }}>
+                      <Btn
+                        size="sm"
+                        kind="primary"
+                        icon="upload"
+                        onClick={(e) => onPushOutbound(h, e)}
+                        title="Push the current bundle to git"
+                      >
+                        Push
+                      </Btn>
+                    </div>
+                  )}
+
+                  {h.last_operation_error && (
+                    <div
+                      className="muted text-sm"
+                      style={{ marginTop: 6, color: "var(--red)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}
+                      title={typeof h.last_operation_error === "string" ? h.last_operation_error : (h.last_operation_error.message || h.last_operation_error.code)}
+                    >
+                      {typeof h.last_operation_error === "string"
+                        ? h.last_operation_error
+                        : (h.last_operation_error.message || h.last_operation_error.code)}
+                    </div>
                   )}
                 </div>
-
-                <HR_OutdatedChips harness={h} />
-
-                {h.last_operation_error && (
-                  <div
-                    className="muted text-sm"
-                    style={{ marginTop: 6, color: "var(--red)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}
-                    title={h.last_operation_error}
-                  >
-                    {h.last_operation_error}
-                  </div>
-                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -225,6 +313,13 @@ function HarnessList() {
       {registerOpen && (
         <HarnessRegisterDialog
           onClose={() => setRegisterOpen(false)}
+          onCreated={onCreated}
+        />
+      )}
+
+      {outboundOpen && window.HarnessOutboundBuilder && (
+        <window.HarnessOutboundBuilder
+          onClose={() => setOutboundOpen(false)}
           onCreated={onCreated}
         />
       )}
