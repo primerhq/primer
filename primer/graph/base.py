@@ -86,6 +86,7 @@ from primer.model.workspace_session import SessionStatus
 if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.agent import Agent
+    from primer.model.chat import ToolResultPart
     from primer.model.provider import LLMModel
 
 
@@ -232,6 +233,70 @@ def _render_fanin_output(
     if not isinstance(parsed_obj, dict):
         return _FanInOutputResult(text=text, parsed=None, error_code=None)
     return _FanInOutputResult(text=text, parsed=parsed_obj, error_code=None)
+
+
+@dataclass(frozen=True)
+class _ToolCallOutputResult:
+    """Outcome of mapping a :class:`ToolResultPart` into a :class:`NodeOutput`.
+
+    Spec B §2.3 step 4 — mirrors :class:`_EndOutputResult` /
+    :class:`_FanInOutputResult` so the executor can use the same error-code
+    surface (``tool_output_invalid``) for ToolCall-node output validation.
+    """
+
+    text: str
+    parsed: dict[str, Any] | None
+    error_code: str | None
+    error_message: str | None = None
+
+
+def _map_toolcall_result(
+    result: "ToolResultPart",
+    *,
+    output_schema: dict[str, Any] | None,
+) -> _ToolCallOutputResult:
+    """Map a :class:`ToolResultPart` into a NodeOutput-ish result.
+
+    Spec B §2.3 step 4:
+
+    * ``text = result.output`` always.
+    * When ``output_schema`` is set, parse ``text`` as JSON and validate
+      against the schema; on parse / validation failure, return
+      ``error_code='tool_output_invalid'``.
+    * When the parsed JSON is not a dict, ``parsed`` stays ``None`` because
+      :class:`NodeOutput.parsed` is dict-typed; validation against non-object
+      schemas still succeeds (no ``error_code``).
+    """
+    text = result.output
+    if output_schema is None:
+        return _ToolCallOutputResult(text=text, parsed=None, error_code=None)
+
+    try:
+        parsed_obj = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return _ToolCallOutputResult(
+            text=text,
+            parsed=None,
+            error_code="tool_output_invalid",
+            error_message=f"output is not JSON: {exc}",
+        )
+
+    import jsonschema  # local import keeps base.py import cheap
+
+    try:
+        jsonschema.validate(instance=parsed_obj, schema=output_schema)
+    except jsonschema.ValidationError as exc:
+        return _ToolCallOutputResult(
+            text=text,
+            parsed=None,
+            error_code="tool_output_invalid",
+            error_message=exc.message,
+        )
+
+    if not isinstance(parsed_obj, dict):
+        # Schema validates non-objects too; NodeOutput.parsed is dict-only.
+        return _ToolCallOutputResult(text=text, parsed=None, error_code=None)
+    return _ToolCallOutputResult(text=text, parsed=parsed_obj, error_code=None)
 
 
 def _resolve_toolcall_arguments(
