@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph.base import _BaseGraphExecutor
 from primer.graph.router import RouterRegistry
-from primer.model.chat import Message
+from primer.model.chat import Message, ToolResultPart
 from primer.model.except_ import NotFoundError
 from primer.model.graph import (
     Graph,
@@ -31,6 +31,7 @@ from primer.model.graph import (
     GraphThread,
     NodeRuntimeState,
     _GraphNodeRef,
+    _ToolCallNode,
 )
 from primer.model.workspace_session import SessionStatus
 from primer.model.storage import (
@@ -72,6 +73,9 @@ class GraphExecutor(_BaseGraphExecutor):
         ] | None = None,
         graph_resolver: Callable[[str], Awaitable[Graph]] | None = None,
         principal: str | None = None,
+        tool_dispatcher: Callable[
+            ["_ToolCallNode", dict], Awaitable[ToolResultPart]
+        ] | None = None,
     ) -> None:
         super().__init__(
             graph=graph,
@@ -85,6 +89,11 @@ class GraphExecutor(_BaseGraphExecutor):
         self._thread_id = graph_thread_id
         self._threads = thread_storage
         self._messages = message_storage
+        # Optional dispatcher for ToolCall nodes (Spec B §2.3). Tests
+        # inject a stub here; production callers either run via
+        # :class:`WorkspaceGraphExecutor` (which has the real workspace
+        # ToolExecutionManager) or wire one explicitly.
+        self._tool_dispatcher = tool_dispatcher
 
     @property
     def thread_id(self) -> str:
@@ -168,6 +177,26 @@ class GraphExecutor(_BaseGraphExecutor):
         )
 
     # ---- Subclass hooks --------------------------------------------------
+
+    async def _dispatch_toolcall(
+        self,
+        node: "_ToolCallNode",
+        arguments: dict,
+    ) -> ToolResultPart:
+        """Delegate to the injected ``tool_dispatcher``; else raise.
+
+        Spec B §2.3 — production callers should construct
+        :class:`WorkspaceGraphExecutor`, which wires the workspace
+        session's :class:`ToolExecutionManager`. The storage-backed
+        executor accepts a stub so tests can drive the ToolCall branch
+        without spinning up a workspace.
+        """
+        if self._tool_dispatcher is not None:
+            return await self._tool_dispatcher(node, arguments)
+        raise NotImplementedError(
+            f"GraphExecutor has no tool_dispatcher wired; cannot invoke "
+            f"tool {node.tool_id!r}"
+        )
 
     async def _load_node_history(self, node_id: str) -> list[Message]:
         out: list[Message] = []
@@ -258,6 +287,7 @@ class GraphExecutor(_BaseGraphExecutor):
             tool_manager_resolver=self._tool_manager_resolver,
             graph_resolver=self._graph_resolver,
             principal=self._principal,
+            tool_dispatcher=self._tool_dispatcher,
         )
 
     async def _load_node_messages_full(

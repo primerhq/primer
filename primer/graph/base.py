@@ -402,6 +402,17 @@ def _resolve_initial_ready_node(graph: "Graph") -> str:
     return begins[0].id
 
 
+class _GraphToolCallYield(Exception):
+    """Raised by ``_dispatch_toolcall`` to signal mid-graph approval yield.
+
+    Spec B §2.3 step 3 — Phase 6 wires the executor to checkpoint state
+    and re-raise this up through dispatch so the session transitions to
+    ``WAITING``. Phase 3 catches it and fails the node so users get a
+    clear "approval-yielding not yet enabled" signal during the interim
+    rather than a silent hang.
+    """
+
+
 class _RoutingFailed(Exception):
     """Raised when a conditional edge matches no branch and has no default.
 
@@ -675,6 +686,26 @@ class _BaseGraphExecutor(ABC):
         raise ConfigError(
             f"subgraph node {parent_node.id!r} not supported by "
             f"{type(self).__name__}: subclass must override _build_sub_executor"
+        )
+
+    async def _dispatch_toolcall(
+        self,
+        node: "_ToolCallNode",
+        arguments: dict[str, Any],
+    ) -> "ToolResultPart":
+        """Dispatch a ToolCall node's tool. Default raises NotImplementedError.
+
+        Concrete executors override:
+
+        * :class:`primer.graph.WorkspaceGraphExecutor` wires the workspace
+          session's :class:`ToolExecutionManager`.
+        * :class:`primer.graph.GraphExecutor` exposes a
+          ``tool_dispatcher`` constructor arg for tests / non-workspace
+          callers that supply their own dispatch surface.
+        """
+        raise NotImplementedError(
+            f"_dispatch_toolcall must be overridden to invoke tool "
+            f"{node.tool_id!r}"
         )
 
     # ---- Public surface --------------------------------------------------
@@ -1090,6 +1121,76 @@ class _BaseGraphExecutor(ABC):
                 )
                 await queue.put(
                     _NodeDone(node_id=node_id, output=out, error=None)
+                )
+                return
+            if isinstance(node, _ToolCallNode):
+                # Spec B §2.3 — ToolCall fires the configured tool via the
+                # executor's _dispatch_toolcall hook (workspace_executor
+                # wires the workspace session's ToolExecutionManager; tests
+                # inject a stub). Phase 3 covers the happy path + failure
+                # mapping; Phase 6 wires the approval-yielding path
+                # (`_GraphToolCallYield`).
+                try:
+                    args = _resolve_toolcall_arguments(node, context)
+                except Exception as exc:  # noqa: BLE001 — Jinja / JSON parse
+                    await queue.put(
+                        _NodeDone(
+                            node_id=node_id,
+                            output=None,
+                            error=str(exc),
+                            ended_detail="template_error",
+                        )
+                    )
+                    return
+                try:
+                    result = await self._dispatch_toolcall(node, args)
+                except _GraphToolCallYield as exc:
+                    # Phase 6 wires this path; until then, fail the node
+                    # so users get a clear signal rather than a silent hang.
+                    await queue.put(
+                        _NodeDone(
+                            node_id=node_id,
+                            output=None,
+                            error=(
+                                "tool yielded for approval but "
+                                "approval-yielding is not yet enabled "
+                                "(Phase 6)"
+                            ),
+                            ended_detail="tool_execution_failed",
+                        )
+                    )
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    await queue.put(
+                        _NodeDone(
+                            node_id=node_id,
+                            output=None,
+                            error=str(exc),
+                            ended_detail="tool_execution_failed",
+                        )
+                    )
+                    return
+                mapped = _map_toolcall_result(
+                    result, output_schema=node.output_schema
+                )
+                if mapped.error_code is not None:
+                    await queue.put(
+                        _NodeDone(
+                            node_id=node_id,
+                            output=None,
+                            error=mapped.error_message or mapped.error_code,
+                            ended_detail=mapped.error_code,
+                        )
+                    )
+                    return
+                tc_out = NodeOutput(
+                    text=mapped.text,
+                    parsed=mapped.parsed,
+                    history=[],
+                    iteration=context.iteration,
+                )
+                await queue.put(
+                    _NodeDone(node_id=node_id, output=tc_out, error=None)
                 )
                 return
             if isinstance(node, _BeginNode):

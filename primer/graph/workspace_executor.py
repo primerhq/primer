@@ -44,8 +44,8 @@ from typing import TYPE_CHECKING, Any
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph.base import _BaseGraphExecutor
 from primer.graph.router import RouterRegistry
-from primer.model.chat import Message, StreamEvent
-from primer.model.graph import Graph, NodeRuntimeState, _GraphNodeRef
+from primer.model.chat import Message, StreamEvent, ToolResultPart
+from primer.model.graph import Graph, NodeRuntimeState, _GraphNodeRef, _ToolCallNode
 from primer.model.workspace_session import SessionStatus
 
 
@@ -94,6 +94,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         router_registry: RouterRegistry | None = None,
         principal: str | None = None,
         graph_input: Any = None,
+        tool_manager: ToolExecutionManager | None = None,
     ) -> None:
         wrapped_agent_resolver = self._wrap_agent_resolver(
             agent_resolver, workspace_session
@@ -123,6 +124,12 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         # can re-wrap them with their own context if needed.
         self._raw_agent_resolver = agent_resolver
         self._raw_tool_manager_resolver = tool_manager_resolver
+        # Spec B §2.3 — ToolCall nodes dispatch through this manager.
+        # Production callers (pool.py) wire a workspace-bound manager
+        # built from the session + provider registry; when absent we
+        # fall back to a workspace-only manager constructed lazily from
+        # ``workspace_session`` on first ToolCall.
+        self._tool_manager: ToolExecutionManager | None = tool_manager
 
     # ---- Public properties ----------------------------------------------
 
@@ -220,6 +227,52 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             yield ev
 
     # ---- Subclass hooks --------------------------------------------------
+
+    async def _dispatch_toolcall(
+        self,
+        node: "_ToolCallNode",
+        arguments: dict[str, Any],
+    ) -> ToolResultPart:
+        """Dispatch a ToolCall node via the workspace's ``ToolExecutionManager``.
+
+        Spec B §2.3 step 2. Builds a :class:`ToolCallPart` with a fresh
+        uuid id and forwards to :meth:`ToolExecutionManager.execute`.
+
+        ``self._tool_manager`` is the manager the worker passes in when
+        building this executor. When absent, we build a workspace-only
+        manager lazily from ``self._workspace_session`` so tests /
+        callers that only need workspace tools don't have to construct
+        one upfront. When neither is available the call raises so the
+        ToolCall fails with ``tool_execution_failed`` rather than
+        hanging.
+        """
+        import uuid
+        from primer.model.chat import ToolCallPart
+
+        manager = self._tool_manager
+        if manager is None:
+            if self._workspace_session is None:
+                raise RuntimeError(
+                    f"WorkspaceGraphExecutor has neither a tool_manager "
+                    f"nor a workspace_session wired; cannot invoke tool "
+                    f"{node.tool_id!r}"
+                )
+            manager = ToolExecutionManager.for_workspace(
+                toolset_providers={},
+                session=self._workspace_session,
+            )
+            self._tool_manager = manager
+
+        call = ToolCallPart(
+            id=str(uuid.uuid4()),
+            name=node.tool_id,
+            arguments=arguments,
+        )
+        return await manager.execute(
+            call,
+            principal=self._principal,
+            bypass_approval=False,
+        )
 
     async def _load_node_history(self, node_id: str) -> list[Message]:
         path = self._messages_path(node_id)
