@@ -783,23 +783,13 @@ class _BaseGraphExecutor(ABC):
             # and yield to the caller. _NodeDone sentinels track
             # completion + per-node final result.
             #
-            # Spec §2.2 — Multiple End nodes ready in the same superstep:
-            # the lexicographically-smallest End id wins; the others'
-            # outputs are discarded. Sorting the ready set keeps the
-            # superstep deterministic for end-of-graph emission and
-            # ensures only one End's output_template renders / one
-            # ``_GraphEndOutputEvent`` reaches the consumer.
+            # Spec B §2.4 — Multi-End independent termination: every
+            # End fires independently when reached. There is no
+            # "first End wins" / "lex-smallest tie-break" any more.
+            # The outer loop terminates naturally when the ready set
+            # drains AND no nodes are in-flight; the sort here is kept
+            # purely for deterministic stream ordering.
             ready_ordered = sorted(ready)
-            end_ids_ready = [
-                nid for nid in ready_ordered
-                if isinstance(self._resolve_node_def(nid), _EndNode)
-            ]
-            if len(end_ids_ready) > 1:
-                # Keep the smallest End; drop the others entirely.
-                losing_ends = set(end_ids_ready[1:])
-                ready_ordered = [
-                    nid for nid in ready_ordered if nid not in losing_ends
-                ]
             queue: "asyncio.Queue[StreamEvent | _NodeDone]" = asyncio.Queue()
             tasks: list[asyncio.Task] = [
                 asyncio.create_task(
@@ -831,8 +821,12 @@ class _BaseGraphExecutor(ABC):
 
             # Apply per-node results to the supersteps' node_states +
             # graph context, decide whether to terminate.
+            #
+            # Spec B §2.4 — End nodes no longer short-circuit the
+            # outer loop; they only emit their _GraphEndOutputEvent and
+            # produce a NodeOutput. The loop terminates when the ready
+            # set drains naturally (the `while ready:` predicate).
             any_failed = False
-            terminal_reached = False
             # Error events to yield AFTER the per-node loop (yielding
             # inside the loop while we mutate node_states would be fine,
             # but emitting once we've classified everything keeps the
@@ -866,9 +860,6 @@ class _BaseGraphExecutor(ABC):
                             )
                         )
                     continue
-                node = self._resolve_node_def(nid)
-                if isinstance(node, _EndNode):
-                    terminal_reached = True
                 if done.output is not None:
                     context.nodes[nid] = done.output
                     # Fan-out instance: also append to the aggregator list at
@@ -910,9 +901,6 @@ class _BaseGraphExecutor(ABC):
                     ended_reason = "failed"
                 for ev in error_events:
                     yield ev  # type: ignore[misc]
-                break
-            if terminal_reached:
-                ended_reason = "completed"
                 break
 
             # Compute next ready set by evaluating outgoing edges.

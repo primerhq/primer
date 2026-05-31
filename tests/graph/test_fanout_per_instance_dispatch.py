@@ -239,7 +239,8 @@ async def test_per_instance_dispatch_renders_fanout_index() -> None:
 
     # No End reachable through actual edges in this minimal fixture; the
     # executor runs all three worker instances then runs out of ready nodes
-    # and exits cleanly (no terminal_reached / no any_failed).
+    # and exits cleanly (the outer loop terminates when the ready set
+    # drains; Spec B §2.4).
     await _drain(executor.invoke([]))
 
     assert len(llm.calls) == 3

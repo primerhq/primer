@@ -1,8 +1,8 @@
 """End execution integration tests (spec §2.2 / §7.3).
 
-Drives Begin -> End graphs (and a Begin -> {End-A, End-B} fan-out)
-through the full :class:`WorkspaceGraphExecutor` to exercise each
-behaviour End firing must guarantee:
+Drives Begin -> End graphs through the full
+:class:`WorkspaceGraphExecutor` to exercise each behaviour End firing
+must guarantee:
 
 * empty ``output_template`` -> no ``_GraphEndOutputEvent`` payload
   (no assistant_token reaches messages.jsonl)
@@ -10,8 +10,9 @@ behaviour End firing must guarantee:
 * ``output_schema`` validates rendered JSON on success
 * ``output_schema`` rejects mismatched output -> ended_reason=failed,
   ended_detail="end_output_invalid"
-* multiple End nodes ready in the same superstep -> lexicographically-
-  smallest id wins; exactly one End event is emitted (spec §2.2)
+
+Multi-End independent-termination semantics (Spec B §2.4) live in
+:file:`test_multi_end_independent.py`.
 
 Phase 3's :file:`test_end_firing.py` covers ``_render_end_output`` as a
 unit. This file is the integration variant exercising the full
@@ -316,43 +317,3 @@ async def test_output_schema_mismatch_ends_with_end_output_invalid(
     assert err_events[0].code == "end_output_invalid"
 
 
-# ===========================================================================
-# Multiple End nodes ready in the same superstep — lex-smallest wins
-# ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_multi_end_superstep_lexicographically_smallest_wins(
-    tmp_path: Path,
-) -> None:
-    """Spec §2.2: when two End nodes become ready in the same
-    superstep, the lexicographically-smallest id wins; the other's
-    output is discarded. Build a Begin -> {end_a, end_b} fan-out so
-    both Ends become ready together; assert only end_a's
-    ``_GraphEndOutputEvent`` is emitted."""
-    graph = Graph(
-        id="g-multi-end",
-        description="Begin -> {end_a, end_b} fan-out",
-        nodes=[
-            _BeginNode(id="begin"),
-            _EndNode(id="end_a", output_template="A"),
-            _EndNode(id="end_b", output_template="B"),
-        ],
-        edges=[
-            _StaticEdge(from_node="begin", to_node="end_a"),
-            _StaticEdge(from_node="begin", to_node="end_b"),
-        ],
-    )
-    events, _persisted = await _run_through_writer(
-        graph=graph,
-        tmp_path=tmp_path,
-        session_id="sid-multi-end",
-    )
-
-    end_events = [e for e in events if isinstance(e, _GraphEndOutputEvent)]
-    assert len(end_events) == 1, (
-        f"expected exactly one _GraphEndOutputEvent (lex-smallest End "
-        f"wins), got {[e.end_node_id for e in end_events]!r}"
-    )
-    assert end_events[0].end_node_id == "end_a"
-    assert end_events[0].text == "A"
