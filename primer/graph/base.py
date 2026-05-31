@@ -223,6 +223,22 @@ def _resolve_initial_ready_node(graph: "Graph") -> str:
     return graph.entry_node_id
 
 
+@dataclass(frozen=True)
+class _GraphErrorEvent:
+    """Terminal error event yielded immediately before the graph ends ``failed``.
+
+    Spec §5.4. The workspace executor translates this into a
+    ``SessionMessageRecord(kind=error, payload=...)`` on the session
+    log; the storage-backed executor leaves it on the stream for taps
+    to consume.
+    """
+
+    code: str
+    message: str
+    node_id: str | None
+    path: str | None = None
+
+
 class _NodeDone:
     """Sentinel posted to the merge queue when a node finishes streaming."""
 
@@ -405,6 +421,11 @@ class _BaseGraphExecutor(ABC):
             # graph context, decide whether to terminate.
             any_failed = False
             terminal_reached = False
+            # Error events to yield AFTER the per-node loop (yielding
+            # inside the loop while we mutate node_states would be fine,
+            # but emitting once we've classified everything keeps the
+            # ordering predictable: results first, then the terminal error).
+            error_events: list[_GraphErrorEvent] = []
             for nid in ready_ordered:
                 done = results.get(nid)
                 if done is None or done.error is not None:
@@ -420,10 +441,18 @@ class _BaseGraphExecutor(ABC):
                     any_failed = True
                     # When the failure carries a spec §5.4 code (e.g. End-node
                     # output validation), propagate it so the executor's
-                    # final state records both reason="failed" and the code.
+                    # final state records both reason="failed" and the code,
+                    # and emit a terminal _GraphErrorEvent for taps to see.
                     if done is not None and done.ended_detail is not None:
                         ended_reason = "failed"
                         ended_detail = done.ended_detail
+                        error_events.append(
+                            _GraphErrorEvent(
+                                code=done.ended_detail,
+                                message=err_text,
+                                node_id=nid,
+                            )
+                        )
                     continue
                 node = self._nodes_by_id[nid]
                 if isinstance(node, (_TerminalNode, _EndNode)):
@@ -450,6 +479,8 @@ class _BaseGraphExecutor(ABC):
                 # spec §5.4 code); only fall back when nothing's been set.
                 if ended_reason is None:
                     ended_reason = "failed"
+                for ev in error_events:
+                    yield ev  # type: ignore[misc]
                 break
             if terminal_reached:
                 ended_reason = "completed"
