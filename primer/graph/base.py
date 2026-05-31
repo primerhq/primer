@@ -78,6 +78,7 @@ from primer.model.graph import (
     _GraphNodeRef,
     _JsonPathRouter,
     _StaticEdge,
+    _ToolCallNode,
 )
 from primer.model.workspace_session import SessionStatus
 
@@ -231,6 +232,49 @@ def _render_fanin_output(
     if not isinstance(parsed_obj, dict):
         return _FanInOutputResult(text=text, parsed=None, error_code=None)
     return _FanInOutputResult(text=text, parsed=parsed_obj, error_code=None)
+
+
+def _resolve_toolcall_arguments(
+    node: "_ToolCallNode",
+    context: "GraphContext",
+) -> dict[str, Any]:
+    """Resolve a ToolCallNode's arguments against the GraphContext.
+
+    Spec B §2.3 step 1:
+
+    * When ``arguments_template`` is set: render it as Jinja, parse as JSON,
+      return the dict. JSON parse failure raises :class:`ValueError` (caller
+      maps it to ``ended_detail='template_error'``).
+    * Otherwise: walk ``arguments`` recursively. Any string leaf is rendered
+      as a Jinja template against GraphContext; non-string leaves pass through
+      unchanged.
+    """
+    from primer.graph.template import render_template_safely
+
+    if node.arguments_template:
+        text = render_template_safely(node.arguments_template, context)
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"arguments_template did not render to valid JSON: {exc}"
+            ) from exc
+        if not isinstance(result, dict):
+            raise ValueError(
+                "arguments_template must render to a JSON object"
+            )
+        return result
+
+    def _walk(value: Any) -> Any:
+        if isinstance(value, str):
+            return render_template_safely(value, context)
+        if isinstance(value, dict):
+            return {k: _walk(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_walk(v) for v in value]
+        return value
+
+    return {k: _walk(v) for k, v in node.arguments.items()}
 
 
 def _materialise_begin_output(
