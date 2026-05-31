@@ -434,7 +434,24 @@ class _BaseGraphExecutor(ABC):
             # live to the shared queue; we drain them as they arrive
             # and yield to the caller. _NodeDone sentinels track
             # completion + per-node final result.
-            ready_ordered = list(ready)
+            #
+            # Spec §2.2 — Multiple End nodes ready in the same superstep:
+            # the lexicographically-smallest End id wins; the others'
+            # outputs are discarded. Sorting the ready set keeps the
+            # superstep deterministic for end-of-graph emission and
+            # ensures only one End's output_template renders / one
+            # ``_GraphEndOutputEvent`` reaches the consumer.
+            ready_ordered = sorted(ready)
+            end_ids_ready = [
+                nid for nid in ready_ordered
+                if isinstance(self._nodes_by_id[nid], _EndNode)
+            ]
+            if len(end_ids_ready) > 1:
+                # Keep the smallest End; drop the others entirely.
+                losing_ends = set(end_ids_ready[1:])
+                ready_ordered = [
+                    nid for nid in ready_ordered if nid not in losing_ends
+                ]
             queue: "asyncio.Queue[StreamEvent | _NodeDone]" = asyncio.Queue()
             tasks: list[asyncio.Task] = [
                 asyncio.create_task(
