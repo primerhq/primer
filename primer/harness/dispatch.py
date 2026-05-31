@@ -943,17 +943,40 @@ async def _do_sync(
                     {"code": exc.code, "message": exc.message}
                 )
 
-            # Compute bundle hash (excluding .git)
+            # Compute the parent's own bundle hash, then fold in each
+            # dep's bundle_hash for the composite (matches _do_install
+            # and the available_bundle_hash computed during fetch).
             base = Path(dest)
             if harness.subpath:
                 base = base / harness.subpath
-            current_bundle_hash = hash_bundle(await asyncio.to_thread(_collect_bundle_files, base))
+            parent_bundle_hash = hash_bundle(
+                await asyncio.to_thread(_collect_bundle_files, base),
+            )
+            if harness.dependencies_resolved:
+                h = hashlib.sha256()
+                h.update(parent_bundle_hash.encode("utf-8"))
+                ordered = sorted(
+                    harness.dependencies_resolved,
+                    key=lambda d: (
+                        canonical_key(d.git_url, d.ref, d.subpath).url,
+                        canonical_key(d.git_url, d.ref, d.subpath).ref,
+                        canonical_key(d.git_url, d.ref, d.subpath).subpath,
+                    ),
+                )
+                for d in ordered:
+                    h.update(d.bundle_hash.encode("utf-8"))
+                    h.update(b"\x00")
+                current_bundle_hash = h.hexdigest()
+            else:
+                current_bundle_hash = parent_bundle_hash
 
-            # Render the bundle
+            # Render the parent's bundle. Tag every parent file with the
+            # parent slug so the multi-slug rewrite map can scope cross-
+            # refs correctly even when subs are present.
             harness_ctx = {"slug": harness.slug, "name": harness.name,
                            "description": harness.description}
             try:
-                rendered = await render_bundle(
+                parent_rendered = await render_bundle(
                     checkout_dir=dest,
                     subpath=harness.subpath,
                     overrides=harness.overrides,
@@ -963,6 +986,40 @@ async def _do_sync(
                 return HarnessStatus.ERROR, json.dumps(
                     {"code": exc.code, "message": exc.message}
                 )
+            for f in parent_rendered:
+                f.source_slug = harness.slug
+                f.source_dependency = None
+
+            # Render every subharness bundle in post-order (deepest first).
+            # Mirrors _do_install so the 3-way diff sees the full set of
+            # entries; otherwise sub entries from the previous install
+            # would be diff-deleted and the sub's entities removed.
+            sub_rendered_concat: list[RenderedFile] = []
+            try:
+                for dep in harness.dependencies_resolved:
+                    dep_overrides = _slice_overrides_along_path(
+                        harness.overrides, dep, harness.dependencies_resolved,
+                    )
+                    dep_path = _dep_path_for(dep, harness.dependencies_resolved)
+                    sub_files = await _render_sub_bundle(
+                        dep=dep,
+                        token=token,
+                        overrides=dep_overrides,
+                        dep_path=dep_path,
+                    )
+                    sub_rendered_concat.extend(sub_files)
+            except HarnessTemplateError as exc:
+                return HarnessStatus.ERROR, json.dumps(
+                    {"code": exc.code, "message": exc.message,
+                     "source_dependency": getattr(exc, "template", None)}
+                )
+            except HarnessGitError as exc:
+                return HarnessStatus.ERROR, json.dumps(
+                    {"code": "dependency_fetch_failed", "message": exc.message,
+                     "inner_code": exc.code}
+                )
+
+            rendered = sub_rendered_concat + parent_rendered
 
             entries, build_errors = build_rendered_entries(rendered, slug=harness.slug)
             if build_errors:
