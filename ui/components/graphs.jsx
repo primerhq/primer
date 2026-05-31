@@ -565,6 +565,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   const [draft, setDraft] = React.useState(seed);
   const [selectedNodeId, setSelectedNodeId] = React.useState(null);
   const [addEdgeMode, setAddEdgeMode] = React.useState(null);  // null | {fromId?}
+  const [edgeMode, setEdgeMode] = React.useState("static");  // "static" | "conditional"
   const [dragging, setDragging] = React.useState(null);
   const [showAddMenu, setShowAddMenu] = React.useState(false);
   const canvasRef = React.useRef(null);
@@ -665,7 +666,17 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
       if (!addEdgeMode.fromId) {
         setAddEdgeMode({ fromId: nodeId });
       } else if (addEdgeMode.fromId !== nodeId) {
-        const newEdge = { kind: "static", from_node: addEdgeMode.fromId, to_node: nodeId };
+        const newEdge = edgeMode === "static"
+          ? { kind: "static", from_node: addEdgeMode.fromId, to_node: nodeId }
+          : {
+              kind: "conditional",
+              from_node: addEdgeMode.fromId,
+              router: {
+                kind: "json_path",
+                branches: [{ conditions: [], to_node: nodeId }],
+                default_to: nodeId,
+              },
+            };
         setDraft((d) => ({ ...d, edges: [...(d.edges || []), newEdge] }));
         setAddEdgeMode(null);
       }
@@ -789,6 +800,48 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
             ? (addEdgeMode.fromId ? `Pick target for ${addEdgeMode.fromId}…` : "Pick source…")
             : "Add edge"}
         </Btn>
+        <div
+          className="seg"
+          role="group"
+          aria-label="Edge mode"
+          style={{
+            display: "inline-flex",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            overflow: "hidden",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setEdgeMode("static")}
+            className={edgeMode === "static" ? "active" : ""}
+            style={{
+              padding: "4px 10px",
+              fontSize: 12,
+              border: "none",
+              background: edgeMode === "static" ? "var(--accent)" : "transparent",
+              color: edgeMode === "static" ? "var(--bg)" : "var(--text-2)",
+              cursor: "pointer",
+            }}
+          >
+            Static
+          </button>
+          <button
+            type="button"
+            onClick={() => setEdgeMode("conditional")}
+            className={edgeMode === "conditional" ? "active" : ""}
+            style={{
+              padding: "4px 10px",
+              fontSize: 12,
+              border: "none",
+              background: edgeMode === "conditional" ? "var(--accent)" : "transparent",
+              color: edgeMode === "conditional" ? "var(--bg)" : "var(--text-2)",
+              cursor: "pointer",
+            }}
+          >
+            Conditional
+          </button>
+        </div>
         <Btn size="sm" kind="ghost" icon="refresh" onClick={onAutoLayout}>Auto-layout</Btn>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
           {diffCount > 0 && <span className="muted text-sm tabular">· unsaved changes</span>}
@@ -1108,11 +1161,18 @@ function GR_EdgePath({ edge, nodes }) {
   const router = edge.router || {};
   if (router.kind === "json_path") {
     const out = [];
-    for (let i = 0; i < (router.branches || []).length; i += 1) {
-      const br = router.branches[i];
+    const branches = router.branches || [];
+    for (let i = 0; i < branches.length; i += 1) {
+      const br = branches[i];
       const to = nodes.find((n) => n.id === br.to_node);
       if (!to) continue;
-      const label = Object.entries(br.when || {}).map(([k, v]) => `${k}=${v}`).join(" ∧ ");
+      // Prefer the new `conditions` shape; fall back to the legacy `when`.
+      const condBits = (br.conditions || []).map((c) => {
+        if (c.op === "exists") return `${c.path}?`;
+        return `${c.path} ${c.op} ${JSON.stringify(c.value)}`;
+      });
+      const whenBits = Object.entries(br.when || {}).map(([k, v]) => `${k}=${v}`);
+      const label = (condBits.length ? condBits : whenBits).join(" ∧ ");
       out.push(<GR_SingleEdge key={"b" + i} fx={fx} fy={fy} to={to} dashed label={label} />);
     }
     if (router.default_to) {
@@ -1121,6 +1181,20 @@ function GR_EdgePath({ edge, nodes }) {
         out.push(<GR_SingleEdge key="def" fx={fx} fy={fy} to={to} dashed label="(default)" />);
       }
     }
+    // Branch-count badge near the source midpoint.
+    const badgeText = `${branches.length} branch${branches.length === 1 ? "" : "es"}`;
+    out.push(
+      <text
+        key="badge"
+        x={fx + 8}
+        y={fy - 8}
+        fontSize="9.5"
+        fontFamily="IBM Plex Mono"
+        fill="var(--accent)"
+      >
+        {badgeText}
+      </text>,
+    );
     return <>{out}</>;
   }
 
