@@ -455,8 +455,68 @@ class _FanInNode(BaseModel):
     )
 
 
+class _ToolCallNode(BaseModel):
+    """Direct tool invocation as a graph node.
+
+    Spec B §1.1, §2.3. Resolves ``tool_id`` via the workspace session's
+    ``ToolExecutionManager`` surface at runtime. Honors approval-yielding
+    tools by checkpointing the graph executor and yielding the session
+    to WAITING (Spec B §4.8) — implemented in Phase 6 of the plan.
+    """
+
+    kind: Literal["tool_call"] = "tool_call"
+    id: str = Field(..., min_length=1)
+    description: str | None = None
+    tool_id: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Scoped tool id ('toolset_id__bare_name'). Save-time syntax "
+            "check only — existence is checked when the tool manager "
+            "dispatches at runtime."
+        ),
+    )
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Argument object. Any string leaf is rendered as a Jinja "
+            "template against GraphContext at runtime; non-string leaves "
+            "pass through. Ignored when arguments_template is set."
+        ),
+    )
+    arguments_template: str | None = Field(
+        default=None,
+        description=(
+            "Optional escape hatch: full-JSON Jinja template that "
+            "shadows ``arguments``. Used when callers need to produce "
+            "dynamic argument structure (variable list length, etc)."
+        ),
+    )
+    output_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional JSON Schema 2020-12. When set, the tool's "
+            "result.output MUST parse as JSON conforming to this "
+            "schema; failure ends the graph with "
+            "ended_detail='tool_output_invalid'."
+        ),
+    )
+
+    _validate_output_schema = field_validator("output_schema")(
+        _validate_json_schema
+    )
+
+
 GraphNode = Annotated[
-    Union[_AgentNodeRef, _GraphNodeRef, _BeginNode, _EndNode, _FanOutNode, _FanInNode],
+    Union[
+        _AgentNodeRef,
+        _GraphNodeRef,
+        _BeginNode,
+        _EndNode,
+        _FanOutNode,
+        _FanInNode,
+        _ToolCallNode,
+    ],
     Field(discriminator="kind"),
 ]
 
