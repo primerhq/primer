@@ -582,6 +582,9 @@ window.SessionDetail = SessionDetail;
 // The panel only mounts if wid is known (session row has workspace_id).
 
 // Coalesce consecutive assistant_token rows into a single message.
+// If any token in the run carries a `parsed` payload (graph End nodes
+// emit one such record with the structured output), preserve it on the
+// coalesced blob so the renderer can surface a "Structured output" panel.
 function _SLS_coalesceMessages(messages) {
   const out = [];
   let buf = null;
@@ -596,6 +599,15 @@ function _SLS_coalesceMessages(messages) {
       } else {
         buf.text += delta;
         buf.endSeq = m.seq;
+      }
+      // Graph End nodes emit an assistant_token whose payload includes
+      // `parsed` (the validated structured output). Carry it through so
+      // the renderer can show a collapsible JSON panel.
+      if (m.parsed != null && buf.parsed == null) {
+        buf.parsed = m.parsed;
+      }
+      if (typeof m.end_node_id === "string" && !buf.end_node_id) {
+        buf.end_node_id = m.end_node_id;
       }
       continue;
     }
@@ -628,6 +640,63 @@ function _SLS_Frame({ m }) {
           {typeof window.renderMarkdown === "function"
             ? window.renderMarkdown(m.text)
             : m.text}
+          {m.parsed != null && (
+            <details className="structured-output" style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                Structured output
+              </summary>
+              <pre className="mono" style={{
+                marginTop: 6,
+                padding: 8,
+                fontSize: 12,
+                background: "var(--bg-2)",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                whiteSpace: "pre-wrap",
+                overflow: "auto",
+              }}>{JSON.stringify(m.parsed, null, 2)}</pre>
+            </details>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Raw assistant_token (uncoalesced) — render the same way for
+  // defense in depth: if a graph End record arrives outside a token
+  // run, still surface its parsed payload.
+  if (kind === "assistant_token" && m.payload?.parsed != null) {
+    const text = typeof m.text === "string" ? m.text
+               : typeof m.delta === "string" ? m.delta : "";
+    return (
+      <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+        <div style={{
+          width: 52, flexShrink: 0,
+          fontFamily: "IBM Plex Mono, monospace", fontSize: 10.5,
+          textTransform: "uppercase", letterSpacing: "0.06em",
+          color: "var(--accent)", fontWeight: 600, paddingTop: 2,
+        }}>agent</div>
+        <div style={{
+          flex: 1, fontSize: 13, lineHeight: 1.55, color: "var(--text)",
+          borderLeft: "2px solid var(--accent)", paddingLeft: 12,
+          whiteSpace: "pre-wrap",
+        }}>
+          {text}
+          <details className="structured-output" style={{ marginTop: 8 }}>
+            <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Structured output
+            </summary>
+            <pre className="mono" style={{
+              marginTop: 6,
+              padding: 8,
+              fontSize: 12,
+              background: "var(--bg-2)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              whiteSpace: "pre-wrap",
+              overflow: "auto",
+            }}>{JSON.stringify(m.payload.parsed, null, 2)}</pre>
+          </details>
         </div>
       </div>
     );
