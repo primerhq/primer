@@ -16,6 +16,7 @@ attributable to the user-supplied template.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from jinja2 import StrictUndefined, TemplateError
 from jinja2.exceptions import TemplateSyntaxError
@@ -82,6 +83,8 @@ def render_input_template(
 def render_template_safely(
     template: str,
     context: GraphContext,
+    *,
+    extra_scope: dict[str, Any] | None = None,
 ) -> str:
     """Render ``template`` against ``context`` using the same sandbox /
     StrictUndefined surface as :func:`render_input_template`, but raise
@@ -91,13 +94,22 @@ def render_template_safely(
     Callers (e.g. End-node output rendering) need to differentiate
     template errors from other failure codes per spec §5.4. Letting the
     raw Jinja exception propagate gives them the choice.
+
+    ``extra_scope`` (when supplied) merges into the Jinja namespace —
+    used by the executor's per-fan-out-instance render path to expose
+    ``fanout_index`` and ``fanout_item`` (Spec B §2.1). Backwards
+    compatible: existing callers that don't pass ``extra_scope``
+    continue to render the same scope as before.
     """
     compiled = _ENV.from_string(template)
-    return compiled.render(
-        initial_input=context.initial_input,
-        iteration=context.iteration,
-        nodes=context.nodes,
-    )
+    scope: dict[str, Any] = {
+        "initial_input": context.initial_input,
+        "iteration": context.iteration,
+        "nodes": context.nodes,
+    }
+    if extra_scope:
+        scope.update(extra_scope)
+    return compiled.render(**scope)
 
 
 __all__ = ["render_input_template", "render_template_safely"]
