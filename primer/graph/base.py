@@ -423,8 +423,33 @@ class _BaseGraphExecutor(ABC):
         # Lookup helpers built once at construction.
         self._nodes_by_id = {n.id: n for n in graph.nodes}
         self._edges_by_from: dict[str, list] = {}
+        self._edges_by_to: dict[str, list] = {}
         for e in graph.edges:
             self._edges_by_from.setdefault(e.from_node, []).append(e)
+            # Only static + json-path conditional edges have statically-known
+            # ``to_node``s; conditional + callable router targets are skipped
+            # (FanIn ready-set treats them as already-satisfied since their
+            # source completion already records output to context.nodes).
+            if isinstance(e, _StaticEdge):
+                self._edges_by_to.setdefault(e.to_node, []).append(e)
+            elif isinstance(e, _ConditionalEdge):
+                if isinstance(e.router, _JsonPathRouter):
+                    for branch in e.router.branches:
+                        self._edges_by_to.setdefault(branch.to_node, []).append(e)
+                    if e.router.default_to is not None:
+                        self._edges_by_to.setdefault(
+                            e.router.default_to, []
+                        ).append(e)
+        # FanOut bookkeeping (Spec B §2.1):
+        # ``_pending_fanout`` -- staged instances awaiting drain after the
+        #   FanOut's own completion within the current superstep.
+        # ``_fanout_instances`` -- map of synthesized_id -> _FanoutInstance for
+        #   the executor's per-instance dispatch path.
+        # ``_fanout_target_expected_count`` -- per fan-out target id, the
+        #   expected number of synthesized instances (for FanIn ready-set).
+        self._pending_fanout: dict[str, list[_FanoutInstance]] = {}
+        self._fanout_instances: dict[str, _FanoutInstance] = {}
+        self._fanout_target_expected_count: dict[str, int] = {}
 
     @property
     def graph(self) -> Graph:
@@ -692,6 +717,17 @@ class _BaseGraphExecutor(ABC):
                 ended_reason = "failed"
                 break
 
+            # Drain any pending fan-out plans into the next-ready set.
+            # Spec B §2.1 — each synthesized instance becomes a node in the
+            # next superstep; per-instance dispatch resolves the underlying
+            # target node and renders its template with fanout_* in scope
+            # (Task 2.4).
+            for fanout_id, instances in list(self._pending_fanout.items()):
+                for inst in instances:
+                    self._fanout_instances[inst.synthesized_id] = inst
+                    next_ready.add(inst.synthesized_id)
+                del self._pending_fanout[fanout_id]
+
             ready = next_ready
             context.iteration += 1
 
@@ -717,6 +753,59 @@ class _BaseGraphExecutor(ABC):
         """Run one node; push events live to ``queue``, then a _NodeDone."""
         node = self._nodes_by_id[node_id]
         try:
+            if isinstance(node, _FanOutNode):
+                # FanOut is a pure dispatcher (Spec B §2.1):
+                # 1) Build its own bookkeeping NodeOutput.
+                # 2) Resolve every spec into instances.
+                # 3) Stash the instance plan on the executor so the outer
+                #    superstep loop drains them into next_ready.
+                fanout_self_output = NodeOutput(
+                    text=json.dumps(
+                        {"node_id": node.id, "specs": len(node.specs)}
+                    ),
+                    parsed=None,
+                    history=[],
+                    iteration=context.iteration,
+                )
+                try:
+                    all_instances: list[_FanoutInstance] = []
+                    for spec in node.specs:
+                        all_instances.extend(
+                            _resolve_fanout_spec(
+                                spec, context, fanout_self_output
+                            )
+                        )
+                except _FanoutSourceInvalid as exc:
+                    await queue.put(
+                        _NodeDone(
+                            node_id=node.id,
+                            output=None,
+                            error=exc.reason,
+                            ended_detail="fanout_source_invalid",
+                        )
+                    )
+                    return
+                # Record the FanOut's own NodeOutput so downstream conditional
+                # edges from FanOut can read it.
+                await queue.put(
+                    _NodeDone(
+                        node_id=node.id,
+                        output=fanout_self_output,
+                        error=None,
+                    )
+                )
+                # Stash plan + per-target expected counts for FanIn ready-set.
+                self._pending_fanout[node.id] = all_instances
+                counts: dict[str, int] = {}
+                for inst in all_instances:
+                    counts[inst.target_node_id] = (
+                        counts.get(inst.target_node_id, 0) + 1
+                    )
+                for tgt, n in counts.items():
+                    self._fanout_target_expected_count[tgt] = max(
+                        self._fanout_target_expected_count.get(tgt, 0), n
+                    )
+                return
             if isinstance(node, _EndNode):
                 # End is pure data-shaping; render output_template + optional
                 # schema validation, then post a _NodeDone with ended_detail
