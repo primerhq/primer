@@ -1276,6 +1276,25 @@ function NewSessionModal({ onClose, onCreate }) {
   const [workspaceId, setWorkspaceId] = React.useState("");
   const [instructions, setInstructions] = React.useState("");
   const [autoStart, setAutoStart] = React.useState(true);
+  // Dynamic Begin.input_schema form state for the graph binding.
+  // Keyed by property name. Reset whenever the selected graph changes.
+  const [graphInputDraft, setGraphInputDraft] = React.useState({});
+
+  // Look up the selected graph + Begin node to drive the dynamic form.
+  const selectedGraph = graphItems.find((g) => g.id === graphId) || null;
+  const beginNode = (selectedGraph?.nodes || []).find((n) => n.kind === "begin") || null;
+  const inputSchema = beginNode?.input_schema || null;
+  const hasObjectSchema =
+    !!inputSchema
+    && inputSchema.type === "object"
+    && inputSchema.properties
+    && typeof inputSchema.properties === "object";
+  const schemaPropertyKeys = hasObjectSchema ? Object.keys(inputSchema.properties) : [];
+
+  // Reset draft when the schema target changes.
+  React.useEffect(() => {
+    setGraphInputDraft({});
+  }, [graphId, kind]);
 
   React.useEffect(() => {
     if (!agentId && agentItems.length) setAgentId(agentItems[0].id);
@@ -1306,12 +1325,17 @@ function NewSessionModal({ onClose, onCreate }) {
   const noBinding =
     !loading && (kind === "agent" ? agentItems.length === 0 : graphItems.length === 0);
 
+  // For graph bindings with an object input_schema, the dynamic form
+  // replaces the free-text instructions field; we don't require the
+  // textarea to be filled in. For agent bindings (and graphs without
+  // a schema) the existing textarea behavior is preserved.
+  const usesGraphInputForm = kind === "graph" && hasObjectSchema;
   const canSubmit =
     !loading
     && !create.loading
-    && instructions.trim()
     && workspaceId
-    && (kind === "agent" ? !!agentId : !!graphId);
+    && (kind === "agent" ? !!agentId : !!graphId)
+    && (usesGraphInputForm || instructions.trim());
 
   const onSubmit = async () => {
     if (submittingRef.current) return;
@@ -1320,12 +1344,19 @@ function NewSessionModal({ onClose, onCreate }) {
       kind === "agent"
         ? { kind: "agent", agent_id: agentId }
         : { kind: "graph", graph_id: graphId };
+    const body = {
+      binding,
+      auto_start: autoStart,
+    };
+    if (usesGraphInputForm) {
+      // Submit the schema-driven object as `graph_input`. The server
+      // validates against Begin.input_schema at session-create time.
+      body.graph_input = graphInputDraft;
+    } else {
+      body.initial_instructions = instructions.trim();
+    }
     try {
-      const session = await create.mutate({
-        binding,
-        initial_instructions: instructions.trim(),
-        auto_start: autoStart,
-      });
+      const session = await create.mutate(body);
       // Close + toast happen here, not in useMutation.onSuccess — that
       // way the close is guaranteed to fire even if a future cache
       // invalidation step throws inside useMutation's success path.
@@ -1413,10 +1444,25 @@ function NewSessionModal({ onClose, onCreate }) {
           </div>
         )}
       </div>
-      <div className="field">
-        <label className="field-label">Initial instructions</label>
-        <textarea className="textarea" value={instructions} onChange={(e) => setInstructions(e.target.value)} rows={4} placeholder="Tell the agent what to do…" />
-      </div>
+      {usesGraphInputForm ? (
+        // Schema-driven form for graph bindings whose Begin node
+        // declares an object input_schema. One <field> per property,
+        // packaged into `graph_input` on submit.
+        schemaPropertyKeys.map((key) => (
+          <_GraphInputSchemaField
+            key={key}
+            propKey={key}
+            schema={inputSchema.properties[key] || {}}
+            value={graphInputDraft[key]}
+            onChange={(v) => setGraphInputDraft({ ...graphInputDraft, [key]: v })}
+          />
+        ))
+      ) : (
+        <div className="field">
+          <label className="field-label">Initial instructions</label>
+          <textarea className="textarea" value={instructions} onChange={(e) => setInstructions(e.target.value)} rows={4} placeholder="Tell the agent what to do…" />
+        </div>
+      )}
       <div className="field">
         <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
           <input
@@ -1428,6 +1474,108 @@ function NewSessionModal({ onClose, onCreate }) {
         </label>
       </div>
     </Modal>
+  );
+}
+
+// One field of the NewSessionModal dynamic schema-driven form.
+// Renders an input control chosen by the JSON Schema fragment.
+function _GraphInputSchemaField({ propKey, schema, value, onChange }) {
+  const label = (schema && schema.title) || propKey;
+  const help = schema && schema.description;
+  const placeholder =
+    schema && Array.isArray(schema.examples) && schema.examples.length > 0
+      ? String(schema.examples[0])
+      : "";
+
+  let control = null;
+  if (schema && Array.isArray(schema.enum)) {
+    control = (
+      <select
+        className="select"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ width: "100%" }}
+      >
+        <option value="">—</option>
+        {schema.enum.map((v) => <option key={String(v)} value={v}>{String(v)}</option>)}
+      </select>
+    );
+  } else if (schema && schema.type === "boolean") {
+    control = (
+      <input
+        type="checkbox"
+        checked={!!value}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+    );
+  } else if (schema && (schema.type === "integer" || schema.type === "number")) {
+    control = (
+      <input
+        type="number"
+        className="input"
+        value={value ?? ""}
+        placeholder={placeholder}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") {
+            onChange("");
+            return;
+          }
+          const parsed = schema.type === "integer" ? parseInt(raw, 10) : Number(raw);
+          onChange(Number.isFinite(parsed) ? parsed : raw);
+        }}
+        style={{ width: "100%" }}
+      />
+    );
+  } else if (schema && (schema.type === "object" || schema.type === "array")) {
+    // JSON textarea — parse-on-change so the submitted value is the
+    // structured object/array, not a raw string.
+    control = (
+      <textarea
+        className="textarea mono"
+        defaultValue={value != null ? JSON.stringify(value, null, 2) : ""}
+        placeholder={placeholder || (schema.type === "array" ? "[]" : "{}")}
+        rows={4}
+        onChange={(e) => {
+          try {
+            onChange(JSON.parse(e.target.value));
+          } catch (_err) {
+            // Keep the user's raw text in the textarea; surface a hint
+            // via the help text rather than blocking onChange.
+            onChange(e.target.value);
+          }
+        }}
+      />
+    );
+  } else {
+    // string fallback
+    const long = schema && typeof schema.maxLength === "number" && schema.maxLength >= 200;
+    control = long ? (
+      <textarea
+        className="textarea"
+        value={value ?? ""}
+        placeholder={placeholder}
+        rows={4}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    ) : (
+      <input
+        type="text"
+        className="input"
+        value={value ?? ""}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ width: "100%" }}
+      />
+    );
+  }
+
+  return (
+    <div className="field">
+      <label className="field-label">{label}</label>
+      {control}
+      {help && <div className="field-help">{help}</div>}
+    </div>
   );
 }
 
