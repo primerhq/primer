@@ -544,8 +544,36 @@ function GR_GraphStatusPanel({ id, status, onRefresh, onDelete }) {
 // ============================================================================
 
 function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
-  const { apiFetch, useMutation, useRouter } = window.primerApi;
+  const { apiFetch, useMutation, useResource, useRouter } = window.primerApi;
   const { navigate } = useRouter();
+
+  // Track JSON parse errors from per-node JsonField helpers; Save is
+  // disabled when any error key is non-null.
+  const [jsonErrors, setJsonErrors] = React.useState({});
+  const reportJsonError = React.useCallback((key, msg) => {
+    setJsonErrors((prev) => {
+      if (!msg) {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      }
+      if (prev[key] === msg) return prev;
+      return { ...prev, [key]: msg };
+    });
+  }, []);
+
+  // Agents + graphs lists for dropdowns on agent/graph node forms.
+  const agents = useResource(
+    "graphs-editor:agents",
+    (s) => apiFetch("GET", "/agents?limit=200", null, { signal: s }),
+    {},
+  );
+  const allGraphs = useResource(
+    "graphs-editor:graphs",
+    (s) => apiFetch("GET", "/graphs?limit=200", null, { signal: s }),
+    {},
+  );
 
   // Augment server payload with UI-only x/y coordinates (server
   // doesn't store them). Re-applies auto-layout on first load.
@@ -859,7 +887,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
             size="sm"
             kind="primary"
             icon="check"
-            disabled={diffCount === 0 || save.loading}
+            disabled={diffCount === 0 || save.loading || Object.keys(jsonErrors).length > 0}
             onClick={onSave}
           >
             {save.loading ? "Saving…" : "Save"}
@@ -888,6 +916,9 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
         <GR_SidePanel
           draft={draft}
           selected={selected}
+          selectedEdgeIdx={selectedEdgeId}
+          agentsList={agents.data?.items}
+          graphsList={allGraphs.data?.items}
           onUpdateNode={(patch) => {
             setDraft((d) => ({
               ...d,
@@ -921,8 +952,17 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
           }}
           onDeleteEdgeAt={(idx) => {
             setDraft((d) => ({ ...d, edges: d.edges.filter((_, i) => i !== idx) }));
+            setSelectedEdgeId(null);
+          }}
+          onUpdateEdge={(idx, nextEdge) => {
+            setDraft((d) => ({
+              ...d,
+              edges: d.edges.map((e, i) => i === idx ? nextEdge : e),
+            }));
           }}
           onNavigateSubgraph={(gid) => navigate("/graphs/" + gid)}
+          onSetGraph={(patch) => setDraft((d) => ({ ...d, ...patch }))}
+          onReportJsonError={reportJsonError}
         />
       </div>
     </div>
@@ -1317,10 +1357,128 @@ function GR_SingleEdge({ fx, fy, to, dashed, label, selected, onClick }) {
 }
 
 // ----------------------------------------------------------------------------
+// Form-field helpers (text / textarea / number / JSON)
+// ----------------------------------------------------------------------------
+
+function GR_TextField({ label, value, onChange, placeholder, help }) {
+  return (
+    <div className="field">
+      <label className="field-label">{label}</label>
+      <input
+        className="input"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder || ""}
+        style={{ width: "100%" }}
+      />
+      {help && <div className="field-help muted">{help}</div>}
+    </div>
+  );
+}
+
+function GR_TextAreaField({ label, value, onChange, rows, help, placeholder }) {
+  return (
+    <div className="field">
+      <label className="field-label">{label}</label>
+      <textarea
+        className="textarea mono"
+        rows={rows || 4}
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder || ""}
+        style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
+      />
+      {help && <div className="field-help muted">{help}</div>}
+    </div>
+  );
+}
+
+function GR_NumberField({ label, value, onChange, help, placeholder }) {
+  return (
+    <div className="field">
+      <label className="field-label">{label}</label>
+      <input
+        className="input"
+        type="number"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder || ""}
+        style={{ width: "100%" }}
+      />
+      {help && <div className="field-help muted">{help}</div>}
+    </div>
+  );
+}
+
+// JsonField parses the textarea on blur and reports parse errors up to the
+// parent via `onError`. Empty input is treated as null. The parent can track
+// outstanding errors and disable Save.
+function GR_JsonField({ label, value, onChange, onError, help, errorKey }) {
+  const [text, setText] = React.useState(
+    value === undefined || value === null ? "" : JSON.stringify(value, null, 2),
+  );
+  const [err, setErr] = React.useState(null);
+  // Sync local text when value changes externally (e.g. a different node selected).
+  React.useEffect(() => {
+    setText(value === undefined || value === null ? "" : JSON.stringify(value, null, 2));
+    setErr(null);
+    if (onError && errorKey) onError(errorKey, null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  function commit() {
+    if (text.trim() === "") {
+      onChange(null);
+      setErr(null);
+      if (onError && errorKey) onError(errorKey, null);
+      return;
+    }
+    try {
+      onChange(JSON.parse(text));
+      setErr(null);
+      if (onError && errorKey) onError(errorKey, null);
+    } catch (e) {
+      const msg = String(e.message || e);
+      setErr(msg);
+      if (onError && errorKey) onError(errorKey, msg);
+    }
+  }
+  return (
+    <div className="field">
+      <label className="field-label">{label}</label>
+      <textarea
+        className="textarea mono"
+        rows={6}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
+      />
+      {help && <div className="field-help muted">{help}</div>}
+      {err && <div className="field-help" style={{ color: "var(--red)" }}>JSON parse: {err}</div>}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
 // Side panel
 // ----------------------------------------------------------------------------
 
-function GR_SidePanel({ draft, selected, onUpdateNode, onDeleteNode, onSetEntry, onDeleteEdgeAt, onNavigateSubgraph }) {
+function GR_SidePanel({
+  draft,
+  selected,
+  selectedEdgeIdx,
+  onUpdateNode,
+  onDeleteNode,
+  onSetEntry,
+  onDeleteEdgeAt,
+  onUpdateEdge,
+  onNavigateSubgraph,
+  onSetGraph,
+  onReportJsonError,
+  agentsList,
+  graphsList,
+}) {
+  const selectedEdge = selectedEdgeIdx != null ? (draft.edges || [])[selectedEdgeIdx] : null;
   return (
     <div style={{ borderLeft: "1px solid var(--border)", padding: 14, fontSize: 12.5, overflow: "auto", maxHeight: 500 }}>
       {selected ? (
@@ -1333,9 +1491,20 @@ function GR_SidePanel({ draft, selected, onUpdateNode, onDeleteNode, onSetEntry,
           onSetEntry={onSetEntry}
           onDeleteEdgeAt={onDeleteEdgeAt}
           onNavigateSubgraph={onNavigateSubgraph}
+          onReportJsonError={onReportJsonError}
+          agentsList={agentsList}
+          graphsList={graphsList}
+        />
+      ) : selectedEdge ? (
+        <GR_SelectedEdgeForm
+          edge={selectedEdge}
+          edgeIdx={selectedEdgeIdx}
+          nodes={draft.nodes || []}
+          onUpdateEdge={onUpdateEdge}
+          onDeleteEdge={() => onDeleteEdgeAt(selectedEdgeIdx)}
         />
       ) : (
-        <GR_GraphStatsBlock draft={draft} />
+        <GR_GraphStatsBlock draft={draft} onSetGraph={onSetGraph} />
       )}
     </div>
   );
@@ -1408,7 +1577,19 @@ function GR_GraphStatsBlock({ draft }) {
   );
 }
 
-function GR_SelectedNodeForm({ node, isEntry, edges, onUpdateNode, onDeleteNode, onSetEntry, onDeleteEdgeAt, onNavigateSubgraph }) {
+function GR_SelectedNodeForm({
+  node,
+  isEntry,
+  edges,
+  onUpdateNode,
+  onDeleteNode,
+  onSetEntry,
+  onDeleteEdgeAt,
+  onNavigateSubgraph,
+  onReportJsonError,
+  agentsList,
+  graphsList,
+}) {
   const edgesIn = edges.map((e, i) => ({ e, i })).filter(({ e }) => {
     if (e.kind === "static") return e.to_node === node.id;
     if (e.kind === "conditional") {
@@ -1420,6 +1601,8 @@ function GR_SelectedNodeForm({ node, isEntry, edges, onUpdateNode, onDeleteNode,
     return false;
   });
   const edgesOut = edges.map((e, i) => ({ e, i })).filter(({ e }) => e.from_node === node.id);
+
+  const errBase = `node:${node.id}`;
 
   return (
     <div className="col" style={{ gap: 10 }}>
@@ -1435,39 +1618,143 @@ function GR_SelectedNodeForm({ node, isEntry, edges, onUpdateNode, onDeleteNode,
           style={{ width: "100%" }}
         />
       </div>
-      {node.kind === "agent" && (
-        <div className="field">
-          <label className="field-label">agent_id</label>
-          <input
-            className="input"
-            value={node.agent_id || ""}
-            onChange={(e) => onUpdateNode({ agent_id: e.target.value })}
-            placeholder="(none)"
-            style={{ width: "100%" }}
-          />
-        </div>
+
+      {/* description shared across all kinds */}
+      <GR_TextField
+        label="description"
+        value={node.description ?? ""}
+        onChange={(v) => onUpdateNode({ description: v || null })}
+        placeholder="(optional)"
+      />
+
+      {/* Per-kind fields */}
+      {node.kind === "begin" && (
+        <GR_JsonField
+          label="input_schema"
+          value={node.input_schema}
+          onChange={(v) => onUpdateNode({ input_schema: v })}
+          onError={onReportJsonError}
+          errorKey={`${errBase}:input_schema`}
+          help="Optional JSON Schema (Draft 2020-12) for graph_input."
+        />
       )}
-      {node.kind === "graph" && (
-        <div className="field">
-          <label className="field-label">
-            graph_id <span className="hint">double-click node to navigate</span>
-          </label>
-          <div style={{ display: "flex", gap: 4 }}>
-            <input
-              className="input"
-              value={node.graph_id || ""}
-              onChange={(e) => onUpdateNode({ graph_id: e.target.value })}
-              placeholder="(none)"
-              style={{ flex: 1 }}
-            />
-            {node.graph_id && (
-              <Btn size="sm" icon="chevron-right" kind="ghost" onClick={() => onNavigateSubgraph(node.graph_id)}>
-                Open
-              </Btn>
+
+      {node.kind === "end" && (
+        <>
+          <GR_TextAreaField
+            label="output_template (Jinja2)"
+            value={node.output_template || ""}
+            onChange={(v) => onUpdateNode({ output_template: v })}
+            rows={4}
+            placeholder="{{ result }}"
+          />
+          <GR_JsonField
+            label="output_schema"
+            value={node.output_schema}
+            onChange={(v) => onUpdateNode({ output_schema: v })}
+            onError={onReportJsonError}
+            errorKey={`${errBase}:output_schema`}
+            help="Optional JSON Schema validated against End's parsed payload."
+          />
+        </>
+      )}
+
+      {node.kind === "agent" && (
+        <>
+          <div className="field">
+            <label className="field-label">agent_id</label>
+            {agentsList && Array.isArray(agentsList) ? (
+              <select
+                className="select"
+                value={node.agent_id || ""}
+                onChange={(e) => onUpdateNode({ agent_id: e.target.value })}
+                style={{ width: "100%" }}
+              >
+                <option value="">— pick an agent —</option>
+                {agentsList.map((a) => (
+                  <option key={a.id} value={a.id}>{a.id}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="input"
+                value={node.agent_id || ""}
+                onChange={(e) => onUpdateNode({ agent_id: e.target.value })}
+                placeholder="(none)"
+                style={{ width: "100%" }}
+              />
             )}
           </div>
-        </div>
+          <GR_TextAreaField
+            label="input_template (Jinja2)"
+            value={node.input_template || ""}
+            onChange={(v) => onUpdateNode({ input_template: v || null })}
+            rows={4}
+            placeholder="{{ graph_input.question }}"
+          />
+          <GR_JsonField
+            label="input_schema (designer metadata)"
+            value={node.input_schema}
+            onChange={(v) => onUpdateNode({ input_schema: v })}
+            onError={onReportJsonError}
+            errorKey={`${errBase}:input_schema`}
+          />
+          <GR_JsonField
+            label="response_format"
+            value={node.response_format}
+            onChange={(v) => onUpdateNode({ response_format: v })}
+            onError={onReportJsonError}
+            errorKey={`${errBase}:response_format`}
+            help="Optional structured-output schema for this agent."
+          />
+        </>
       )}
+
+      {node.kind === "graph" && (
+        <>
+          <div className="field">
+            <label className="field-label">
+              graph_id <span className="hint">double-click node to navigate</span>
+            </label>
+            <div style={{ display: "flex", gap: 4 }}>
+              {graphsList && Array.isArray(graphsList) ? (
+                <select
+                  className="select"
+                  value={node.graph_id || ""}
+                  onChange={(e) => onUpdateNode({ graph_id: e.target.value })}
+                  style={{ flex: 1 }}
+                >
+                  <option value="">— pick a graph —</option>
+                  {graphsList.map((g) => (
+                    <option key={g.id} value={g.id}>{g.id}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="input"
+                  value={node.graph_id || ""}
+                  onChange={(e) => onUpdateNode({ graph_id: e.target.value })}
+                  placeholder="(none)"
+                  style={{ flex: 1 }}
+                />
+              )}
+              {node.graph_id && (
+                <Btn size="sm" icon="chevron-right" kind="ghost" onClick={() => onNavigateSubgraph(node.graph_id)}>
+                  Open
+                </Btn>
+              )}
+            </div>
+          </div>
+          <GR_TextAreaField
+            label="input_template (Jinja2)"
+            value={node.input_template || ""}
+            onChange={(v) => onUpdateNode({ input_template: v || null })}
+            rows={4}
+            placeholder="{{ graph_input }}"
+          />
+        </>
+      )}
+
       <div className="muted text-sm">x: {Math.round(node.x || 0)} · y: {Math.round(node.y || 0)}</div>
       <div className="mt-2 muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
         edges in ({edgesIn.length})
@@ -1489,13 +1776,30 @@ function GR_SelectedNodeForm({ node, isEntry, edges, onUpdateNode, onDeleteNode,
         <GR_EdgeOutRow key={"out-" + i} edge={e} idx={i} onDelete={() => onDeleteEdgeAt(i)} />
       ))}
       <div className="mt-3" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {!isEntry && <Btn size="sm" kind="ghost" icon="play" onClick={onSetEntry}>Set as entry</Btn>}
+        {!isEntry && node.kind !== "begin" && node.kind !== "end" && (
+          <Btn size="sm" kind="ghost" icon="play" onClick={onSetEntry}>Set as entry</Btn>
+        )}
         {isEntry && <span className="muted text-sm">(entry node)</span>}
         <Btn size="sm" kind="danger" icon="trash" onClick={onDeleteNode}>Delete node</Btn>
       </div>
       <div className="muted text-sm mt-2">
         Edits stage locally; click Save to PUT-replace the whole graph.
       </div>
+    </div>
+  );
+}
+
+// Edge form — stub here; conditional-edge BranchEditor lands in Task 8.5.
+function GR_SelectedEdgeForm({ edge, edgeIdx, nodes, onUpdateEdge, onDeleteEdge }) {
+  return (
+    <div className="col" style={{ gap: 10 }}>
+      <div className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
+        {edge.kind} edge
+      </div>
+      <div className="mono text-sm">
+        {edge.from_node} → {edge.kind === "static" ? edge.to_node : "(conditional)"}
+      </div>
+      <Btn size="sm" kind="danger" icon="trash" onClick={onDeleteEdge}>Delete edge</Btn>
     </div>
   );
 }
