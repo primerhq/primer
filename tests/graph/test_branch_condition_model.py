@@ -46,19 +46,3 @@ def test_jsonpath_branch_with_conditions() -> None:
         to_node="next",
     )
     assert len(b.conditions) == 2
-
-
-def test_jsonpath_branch_legacy_when_still_accepted_for_now() -> None:
-    """During the additive phase, the legacy `when: dict` shape must still
-    deserialize so existing graphs / tests don't break.
-
-    After Phase 6 cleanup this test is deleted; for now the model
-    accepts both shapes."""
-    raw = {"when": {"complete": True}, "to_node": "end"}
-    b = JsonPathBranch.model_validate(raw)
-    # Either the model migrates the legacy when into conditions, or the
-    # legacy attribute remains accessible. Locking the migration shape:
-    assert b.conditions == [
-        BranchCondition(path="complete", op="eq", value=True),
-    ]
-    assert b.to_node == "end"

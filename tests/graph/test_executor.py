@@ -23,6 +23,7 @@ from primer.model.chat import (
 from primer.model.common import Identifiable
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.graph import (
+    BranchCondition,
     Graph,
     GraphContext,
     GraphNodeMessage,
@@ -438,8 +439,18 @@ class TestConditionalRouting:
                     from_node="A",
                     router=_JsonPathRouter(
                         branches=[
-                            JsonPathBranch(when={"go": "exit"}, to_node="exit"),
-                            JsonPathBranch(when={"go": "B"}, to_node="B"),
+                            JsonPathBranch(
+                                conditions=[
+                                    BranchCondition(path="go", op="eq", value="exit")
+                                ],
+                                to_node="exit",
+                            ),
+                            JsonPathBranch(
+                                conditions=[
+                                    BranchCondition(path="go", op="eq", value="B")
+                                ],
+                                to_node="B",
+                            ),
                         ],
                     ),
                 ),
@@ -539,7 +550,14 @@ class TestFailures:
                 _ConditionalEdge(
                     from_node="A",
                     router=_JsonPathRouter(
-                        branches=[JsonPathBranch(when={"go": "B"}, to_node="B")],
+                        branches=[
+                            JsonPathBranch(
+                                conditions=[
+                                    BranchCondition(path="go", op="eq", value="B")
+                                ],
+                                to_node="B",
+                            )
+                        ],
                     ),
                 ),
                 _StaticEdge(from_node="B", to_node="exit"),

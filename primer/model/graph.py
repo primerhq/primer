@@ -342,30 +342,6 @@ class JsonPathBranch(BaseModel):
         description="Target node id when this branch matches.",
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_when(cls, data: Any) -> Any:
-        """Translate the legacy ``when: dict[str, Any]`` AND-of-equality
-        shape into ``conditions`` so existing graph fixtures still
-        deserialise during the migration phase.
-
-        Phase 6 cleanup deletes this validator and the
-        ``test_jsonpath_branch_legacy_when_still_accepted_for_now``
-        test together.
-        """
-        if not isinstance(data, dict):
-            return data
-        legacy_when = data.get("when")
-        if legacy_when is None or "conditions" in data:
-            return data
-        data = dict(data)
-        data["conditions"] = [
-            {"path": path, "op": "eq", "value": expected}
-            for path, expected in legacy_when.items()
-        ]
-        data.pop("when")
-        return data
-
 
 class _JsonPathRouter(BaseModel):
     """Routes by JSON-path matching against the source's parsed output.

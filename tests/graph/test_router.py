@@ -10,7 +10,12 @@ from primer.graph.router import (
 )
 from primer.model.chat import Message, TextPart
 from primer.model.except_ import ConfigError
-from primer.model.graph import GraphContext, JsonPathBranch, NodeOutput
+from primer.model.graph import (
+    BranchCondition,
+    GraphContext,
+    JsonPathBranch,
+    NodeOutput,
+)
 
 
 def _ctx() -> GraphContext:
@@ -26,28 +31,43 @@ def _output(parsed: dict | None = None, text: str = "") -> NodeOutput:
 
 
 # ===========================================================================
-# first_matching_branch (legacy when= shape, translated via model validator)
+# first_matching_branch (BranchCondition shape — AND-of-conditions per branch,
+# first-match-wins across branches, empty conditions == catch-all)
 # ===========================================================================
 
 
 class TestFirstMatchingBranch:
     def test_first_match_wins(self) -> None:
         branches = [
-            JsonPathBranch(when={"next": "retry"}, to_node="A"),
-            JsonPathBranch(when={"next": "exit"}, to_node="exit"),
+            JsonPathBranch(
+                conditions=[BranchCondition(path="next", op="eq", value="retry")],
+                to_node="A",
+            ),
+            JsonPathBranch(
+                conditions=[BranchCondition(path="next", op="eq", value="exit")],
+                to_node="exit",
+            ),
         ]
         match = first_matching_branch({"next": "exit"}, branches)
         assert match is not None and match.to_node == "exit"
 
     def test_no_match_returns_none(self) -> None:
-        branches = [JsonPathBranch(when={"next": "retry"}, to_node="A")]
+        branches = [
+            JsonPathBranch(
+                conditions=[BranchCondition(path="next", op="eq", value="retry")],
+                to_node="A",
+            )
+        ]
         assert first_matching_branch({"next": "exit"}, branches) is None
 
     def test_first_among_overlapping(self) -> None:
         # If two branches both match, the first wins.
         branches = [
-            JsonPathBranch(when={}, to_node="catchall"),  # matches anything
-            JsonPathBranch(when={"next": "exit"}, to_node="exit"),
+            JsonPathBranch(conditions=[], to_node="catchall"),  # matches anything
+            JsonPathBranch(
+                conditions=[BranchCondition(path="next", op="eq", value="exit")],
+                to_node="exit",
+            ),
         ]
         match = first_matching_branch({"next": "exit"}, branches)
         assert match is not None and match.to_node == "catchall"

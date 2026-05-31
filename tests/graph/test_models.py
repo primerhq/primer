@@ -16,6 +16,7 @@ from primer.model.chat import (
     _GraphNodeEvent,
 )
 from primer.model.graph import (
+    BranchCondition,
     Graph,
     GraphContext,
     GraphEdge,
@@ -83,7 +84,14 @@ class TestEdgeUnionDiscrimination:
         e = _ConditionalEdge(
             from_node="D",
             router=_JsonPathRouter(
-                branches=[JsonPathBranch(when={"next": "exit"}, to_node="exit")],
+                branches=[
+                    JsonPathBranch(
+                        conditions=[
+                            BranchCondition(path="next", op="eq", value="exit")
+                        ],
+                        to_node="exit",
+                    )
+                ],
             ),
         )
         adapter: TypeAdapter[GraphEdge] = TypeAdapter(GraphEdge)
@@ -138,8 +146,26 @@ class TestGraphRoundTrip:
                     from_node="D",
                     router=_JsonPathRouter(
                         branches=[
-                            JsonPathBranch(when={"next_action": "retry"}, to_node="A"),
-                            JsonPathBranch(when={"next_action": "exit"}, to_node="exit"),
+                            JsonPathBranch(
+                                conditions=[
+                                    BranchCondition(
+                                        path="next_action",
+                                        op="eq",
+                                        value="retry",
+                                    )
+                                ],
+                                to_node="A",
+                            ),
+                            JsonPathBranch(
+                                conditions=[
+                                    BranchCondition(
+                                        path="next_action",
+                                        op="eq",
+                                        value="exit",
+                                    )
+                                ],
+                                to_node="exit",
+                            ),
                         ],
                     ),
                 ),
