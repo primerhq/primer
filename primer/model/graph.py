@@ -517,48 +517,115 @@ class Graph(Describeable):
 
     @model_validator(mode="after")
     def _validate_topology(self) -> "Graph":
-        node_ids = [n.id for n in self.nodes]
-        # Unique node ids.
-        seen: set[str] = set()
-        for nid in node_ids:
-            if nid in seen:
+        # Spec §1.5 topology rules:
+        #   - Unique node ids
+        #   - Exactly one Begin node
+        #   - At least one End node
+        #   - Begin has no incoming edges
+        #   - End nodes have no outgoing edges
+        #   - Every End reachable from Begin (forward BFS)
+        #   - Every edge endpoint (static to_node, conditional router
+        #     branch to_node, conditional router default_to) references
+        #     an existing node id
+        ids: set[str] = set()
+        for n in self.nodes:
+            if n.id in ids:
                 raise ValueError(
-                    f"duplicate node id {nid!r}; node ids must be unique within a graph"
+                    f"duplicate node id {n.id!r}; node ids must be unique within a graph"
                 )
-            seen.add(nid)
-        # entry_node_id is in nodes.
-        if self.entry_node_id not in seen:
+            ids.add(n.id)
+
+        begins = [n for n in self.nodes if n.kind == "begin"]
+        ends = [n for n in self.nodes if n.kind == "end"]
+        if len(begins) != 1:
             raise ValueError(
-                f"entry_node_id {self.entry_node_id!r} does not match any node id"
+                f"graph must have exactly one Begin node; got {len(begins)}"
             )
-        # Every edge endpoint exists. ConditionalEdge router branch
-        # `to_node` is also validated.
+        if len(ends) < 1:
+            raise ValueError("graph must have at least one End node")
+
+        begin_id = begins[0].id
+        end_ids = {e.id for e in ends}
+
+        # Build adjacency from static + conditional edges; conditional
+        # routers may name multiple targets (branches + default_to).
+        # ``incoming`` tracks STATICALLY KNOWN incoming edges only — it
+        # backs the "Begin has no incoming" rule, which can only be
+        # enforced against edges whose targets we can verify at
+        # validation time. ``outgoing`` is used for reachability and
+        # includes callable-router edges as connecting from the source
+        # to every non-Begin node (the callable can return any node id
+        # at run time, so we conservatively treat it as ``reaches any``).
+        outgoing: dict[str, set[str]] = {n.id: set() for n in self.nodes}
+        incoming: dict[str, set[str]] = {n.id: set() for n in self.nodes}
         for edge in self.edges:
-            if edge.from_node not in seen:
+            if edge.from_node not in ids:
                 raise ValueError(
                     f"edge.from_node {edge.from_node!r} does not match any node id"
                 )
             if isinstance(edge, _StaticEdge):
-                if edge.to_node not in seen:
+                if edge.to_node not in ids:
                     raise ValueError(
                         f"edge.to_node {edge.to_node!r} does not match any node id"
                     )
+                outgoing[edge.from_node].add(edge.to_node)
+                incoming[edge.to_node].add(edge.from_node)
             else:  # _ConditionalEdge
                 router = edge.router
                 if isinstance(router, _JsonPathRouter):
+                    targets: set[str] = set()
                     for branch in router.branches:
-                        if branch.to_node not in seen:
+                        if branch.to_node not in ids:
                             raise ValueError(
                                 f"branch.to_node {branch.to_node!r} does not match any node id"
                             )
-                    if (
-                        router.default_to is not None
-                        and router.default_to not in seen
-                    ):
-                        raise ValueError(
-                            f"router.default_to {router.default_to!r} does not match any node id"
-                        )
-                # _CallableRouter target is resolved at run time.
+                        targets.add(branch.to_node)
+                    if router.default_to is not None:
+                        if router.default_to not in ids:
+                            raise ValueError(
+                                f"router.default_to {router.default_to!r} does not match any node id"
+                            )
+                        targets.add(router.default_to)
+                    for t in targets:
+                        outgoing[edge.from_node].add(t)
+                        incoming[t].add(edge.from_node)
+                else:
+                    # _CallableRouter: targets unknown at validation
+                    # time. Conservatively treat the router as
+                    # potentially routing to any non-Begin node for
+                    # reachability purposes; skip ``incoming`` so we
+                    # don't spuriously flag Begin as having a
+                    # statically-known incoming edge.
+                    for nid in ids:
+                        if nid == begin_id:
+                            continue
+                        outgoing[edge.from_node].add(nid)
+
+        if incoming[begin_id]:
+            raise ValueError(
+                f"Begin node {begin_id!r} must have no incoming edges"
+            )
+        for end_id in end_ids:
+            if outgoing[end_id]:
+                raise ValueError(
+                    f"End node {end_id!r} must have no outgoing edges"
+                )
+
+        # Reachability: BFS from Begin must visit every End.
+        seen_nodes: set[str] = {begin_id}
+        frontier: list[str] = [begin_id]
+        while frontier:
+            cur = frontier.pop()
+            for nxt in outgoing[cur]:
+                if nxt in seen_nodes:
+                    continue
+                seen_nodes.add(nxt)
+                frontier.append(nxt)
+        missing = end_ids - seen_nodes
+        if missing:
+            raise ValueError(
+                f"End nodes not reachable from Begin: {sorted(missing)}"
+            )
         return self
 
 

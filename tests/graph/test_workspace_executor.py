@@ -29,10 +29,13 @@ from primer.model.chat import (
 )
 from primer.model.graph import (
     Graph,
+    JsonPathBranch,
     _AgentNodeRef,
     _BeginNode,
+    _ConditionalEdge,
     _EndNode,
     _GraphNodeRef,
+    _JsonPathRouter,
     _StaticEdge,
 )
 from primer.model.provider import LLMModel
@@ -309,8 +312,12 @@ class TestPersistence:
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="begin", to_node="A")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         llm = _FakeLLM(scripts=[[]])
         repo = await _make_state_repo(tmp_path)
@@ -348,17 +355,32 @@ class TestCycleHistoryAccumulates:
             max_iterations=4,
             nodes=[
                 _BeginNode(id="begin"),
-                _AgentNodeRef(id="A", agent_id="x"),
+                _AgentNodeRef(
+                    id="A",
+                    agent_id="x",
+                    response_format={"type": "object"},
+                ),
+                # Reachability declaration only — the loop below always
+                # routes back to A so this End never actually fires.
+                _EndNode(id="exit"),
             ],
             edges=[
                 _StaticEdge(from_node="begin", to_node="A"),
-                _StaticEdge(from_node="A", to_node="A"),
+                _ConditionalEdge(
+                    from_node="A",
+                    router=_JsonPathRouter(
+                        branches=[
+                            JsonPathBranch(conditions=[], to_node="A"),
+                        ],
+                        default_to="exit",
+                    ),
+                ),
             ],
         )
         llm = _FakeLLM(
             scripts=[
                 [
-                    TextDelta(text="loop", index=0),
+                    TextDelta(text='{"go": "a"}', index=0),
                     Done(stop_reason="stop", raw_reason="stop"),
                 ]
             ]

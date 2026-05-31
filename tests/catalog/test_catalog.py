@@ -14,7 +14,13 @@ from primer.model.chat import Tool
 from primer.model.collection import Collection, CollectionEmbedder
 from primer.model.embedding import EmbedResponse, Embedding
 from primer.model.except_ import BadRequestError, ConfigError, NotFoundError
-from primer.model.graph import Graph, _AgentNodeRef
+from primer.model.graph import (
+    Graph,
+    _AgentNodeRef,
+    _BeginNode,
+    _EndNode,
+    _StaticEdge,
+)
 from primer.model.vector import EmbeddingRecord, SearchResult
 
 
@@ -210,8 +216,16 @@ def _graph(
     return Graph(
         id=graph_id,
         description=description,
-        entry_node_id="A",
-        nodes=[_AgentNodeRef(id="A", agent_id="x")],
+        entry_node_id="begin",
+        nodes=[
+            _BeginNode(id="begin"),
+            _AgentNodeRef(id="A", agent_id="x"),
+            _EndNode(id="end"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="A"),
+            _StaticEdge(from_node="A", to_node="end"),
+        ],
     )
 
 

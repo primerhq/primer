@@ -1,5 +1,9 @@
-"""Executor's initial ready set seeds from the unique Begin node when
-present; falls back to entry_node_id otherwise (during the migration)."""
+"""Executor's initial ready set seeds from the unique Begin node.
+
+The new topology rules forbid zero-Begin graphs at construction time, so
+the only valid case is the happy path; the multi-Begin guard remains as
+defence in depth against bypassed validators (e.g. ``model_construct``).
+"""
 
 from __future__ import annotations
 
@@ -28,23 +32,9 @@ def test_seeds_from_begin_when_present() -> None:
             _StaticEdge(from_node="start", to_node="a"),
             _StaticEdge(from_node="a", to_node="end"),
         ],
-        entry_node_id="a",  # ignored when Begin is present
+        entry_node_id="start",
     )
     assert _resolve_initial_ready_node(g) == "start"
-
-
-def test_falls_back_to_entry_node_id_when_no_begin() -> None:
-    g = Graph(
-        id="g",
-        description="t",
-        nodes=[
-            _AgentNodeRef(id="a", agent_id="ag"),
-            _EndNode(id="end"),
-        ],
-        edges=[_StaticEdge(from_node="a", to_node="end")],
-        entry_node_id="a",
-    )
-    assert _resolve_initial_ready_node(g) == "a"
 
 
 def test_raises_when_multiple_begin_nodes() -> None:

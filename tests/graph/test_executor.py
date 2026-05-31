@@ -368,17 +368,32 @@ class TestCycle:
             max_iterations=4,
             nodes=[
                 _BeginNode(id="begin"),
-                _AgentNodeRef(id="A", agent_id="x"),
+                _AgentNodeRef(
+                    id="A",
+                    agent_id="x",
+                    response_format={"type": "object"},
+                ),
+                # Reachability declaration only — the loop below always
+                # routes back to A so this End never actually fires.
+                _EndNode(id="exit"),
             ],
             edges=[
                 _StaticEdge(from_node="begin", to_node="A"),
-                _StaticEdge(from_node="A", to_node="A"),
+                _ConditionalEdge(
+                    from_node="A",
+                    router=_JsonPathRouter(
+                        branches=[
+                            JsonPathBranch(conditions=[], to_node="A"),
+                        ],
+                        default_to="exit",
+                    ),
+                ),
             ],
         )
         llm = _FakeLLM(
             scripts=[
                 [
-                    TextDelta(text="loop", index=0),
+                    TextDelta(text='{"go": "a"}', index=0),
                     Done(stop_reason="stop", raw_reason="stop"),
                 ]
             ]
@@ -523,6 +538,7 @@ class TestFailures:
                     response_format={"type": "object"},
                 ),
                 _AgentNodeRef(id="B", agent_id="x"),
+                _EndNode(id="exit"),
             ],
             edges=[
                 _StaticEdge(from_node="begin", to_node="A"),
@@ -532,6 +548,7 @@ class TestFailures:
                         branches=[JsonPathBranch(when={"go": "B"}, to_node="B")],
                     ),
                 ),
+                _StaticEdge(from_node="B", to_node="exit"),
             ],
         )
         llm = _FakeLLM(
@@ -566,8 +583,12 @@ class TestThreadManagement:
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="begin", to_node="A")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         ts: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
         ms: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
@@ -604,8 +625,12 @@ class TestThreadManagement:
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="begin", to_node="A")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         graph_b = Graph(
             id="g-b",
@@ -614,8 +639,12 @@ class TestThreadManagement:
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
+                _EndNode(id="exit"),
             ],
-            edges=[_StaticEdge(from_node="begin", to_node="A")],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
         )
         await GraphExecutor.open_thread(
             graph=graph_a, thread_storage=ts  # type: ignore[arg-type]

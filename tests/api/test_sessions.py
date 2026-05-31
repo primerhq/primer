@@ -348,15 +348,15 @@ async def test_create_session_with_graph_binding(
     sessions_client, seeded_workspace, app,
 ):
     """Smoke test for the graph binding kind. Insert a synthetic Graph row."""
-    from primer.model.graph import Graph, _TerminalNode
+    from primer.model.graph import Graph, _BeginNode, _EndNode, _StaticEdge
 
     storage = app.state.storage_provider.get_storage(Graph)
     graph = Graph(
         id="gr-test",
         description="g",
-        nodes=[_TerminalNode(id="end")],
-        edges=[],
-        entry_node_id="end",
+        nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="end")],
+        entry_node_id="begin",
     )
     await storage.create(graph)
     try:
@@ -839,15 +839,15 @@ async def test_create_session_graph_binding_allocates_holder_slot(
     the tool-less path. See the inline comment in the create-session
     handler at primer/api/routers/sessions.py (search ``graph:<graph_id>``).
     """
-    from primer.model.graph import Graph, _TerminalNode
+    from primer.model.graph import Graph, _BeginNode, _EndNode, _StaticEdge
 
     storage = app.state.storage_provider.get_storage(Graph)
     graph = Graph(
         id="gr-skip",
         description="g",
-        nodes=[_TerminalNode(id="end")],
-        edges=[],
-        entry_node_id="end",
+        nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
+        edges=[_StaticEdge(from_node="begin", to_node="end")],
+        entry_node_id="begin",
     )
     await storage.create(graph)
     try:

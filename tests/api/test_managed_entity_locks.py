@@ -14,7 +14,13 @@ import pytest
 
 from primer.model.agent import Agent, AgentModel
 from primer.model.collection import Collection, CollectionEmbedder, Document
-from primer.model.graph import Graph, _AgentNodeRef, _TerminalNode
+from primer.model.graph import (
+    Graph,
+    _AgentNodeRef,
+    _BeginNode,
+    _EndNode,
+    _StaticEdge,
+)
 from primer.model.provider import Toolset, ToolsetProviderType
 
 
@@ -37,10 +43,15 @@ def _build_graph(harness_id: str | None = "h-test") -> Graph:
         id="managed-graph-1",
         description="a managed graph",
         nodes=[
+            _BeginNode(id="begin"),
             _AgentNodeRef(id="n1", agent_id="agt-1"),
-            _TerminalNode(id="end"),
+            _EndNode(id="end"),
         ],
-        entry_node_id="n1",
+        edges=[
+            _StaticEdge(from_node="begin", to_node="n1"),
+            _StaticEdge(from_node="n1", to_node="end"),
+        ],
+        entry_node_id="begin",
         harness_id=harness_id,
     )
 

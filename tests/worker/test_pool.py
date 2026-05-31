@@ -499,18 +499,28 @@ async def test_build_executor_raises_for_graph_binding_without_state_repo(monkey
     Workspace.state_repo is None, so backends opt in by override —
     legacy fakes get the helpful error."""
     from primer.model.except_ import ConfigError
-    from primer.model.graph import Graph, _AgentNodeRef, _TerminalNode, _StaticEdge
+    from primer.model.graph import (
+        Graph,
+        _AgentNodeRef,
+        _BeginNode,
+        _EndNode,
+        _StaticEdge,
+    )
     from primer.model.workspace_session import GraphSessionBinding
 
     sid = "sess-graph-1"
     graph_snapshot = Graph(
         id="g-1", description="t",
         nodes=[
+            _BeginNode(id="begin"),
             _AgentNodeRef(id="start", agent_id="ag-1"),
-            _TerminalNode(id="end"),
+            _EndNode(id="end"),
         ],
-        edges=[_StaticEdge(from_node="start", to_node="end")],
-        entry_node_id="start",
+        edges=[
+            _StaticEdge(from_node="begin", to_node="start"),
+            _StaticEdge(from_node="start", to_node="end"),
+        ],
+        entry_node_id="begin",
     )
     session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
@@ -542,8 +552,9 @@ async def test_build_graph_executor_returns_graph_turn_driver(monkeypatch, tmp_p
     from primer.model.graph import (
         Graph,
         _AgentNodeRef,
+        _BeginNode,
+        _EndNode,
         _StaticEdge,
-        _TerminalNode,
     )
     from primer.model.workspace_session import GraphSessionBinding
     from primer.worker.pool import _GraphTurnDriver
@@ -551,13 +562,17 @@ async def test_build_graph_executor_returns_graph_turn_driver(monkeypatch, tmp_p
 
     sid = "sess-graph-ok-1"
     graph_snapshot = Graph(
-        id="g-ok-1", description="2-node smoke graph",
+        id="g-ok-1", description="3-node smoke graph",
         nodes=[
+            _BeginNode(id="begin"),
             _AgentNodeRef(id="start", agent_id="ag-1"),
-            _TerminalNode(id="end"),
+            _EndNode(id="end"),
         ],
-        edges=[_StaticEdge(from_node="start", to_node="end")],
-        entry_node_id="start",
+        edges=[
+            _StaticEdge(from_node="begin", to_node="start"),
+            _StaticEdge(from_node="start", to_node="end"),
+        ],
+        entry_node_id="begin",
     )
     session = WorkspaceSession(
         id=sid, workspace_id="ws-1",

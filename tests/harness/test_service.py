@@ -134,11 +134,15 @@ def test_build_rewrites_graph_node_agent_id():
         {
             "description": "graph",
             "nodes": [
+                {"kind": "begin", "id": "begin"},
                 {"kind": "agent", "id": "n1", "agent_id": "my-agent"},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "end"},
             ],
-            "edges": [{"kind": "static", "from_node": "n1", "to_node": "end"}],
-            "entry_node_id": "n1",
+            "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
+            "entry_node_id": "begin",
         },
     )
 
@@ -156,9 +160,14 @@ def test_build_rewrites_graph_node_graph_id():
         "graph", "sub-graph",
         {
             "description": "sub",
-            "nodes": [{"kind": "terminal", "id": "t"}],
-            "edges": [],
-            "entry_node_id": "t",
+            "nodes": [
+                {"kind": "begin", "id": "begin"},
+                {"kind": "end", "id": "t"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "t"},
+            ],
+            "entry_node_id": "begin",
         },
     )
     main_graph_file = _make_rendered_file(
@@ -166,11 +175,15 @@ def test_build_rewrites_graph_node_graph_id():
         {
             "description": "main",
             "nodes": [
+                {"kind": "begin", "id": "begin"},
                 {"kind": "graph", "id": "sg1", "graph_id": "sub-graph"},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "end"},
             ],
-            "edges": [{"kind": "static", "from_node": "sg1", "to_node": "end"}],
-            "entry_node_id": "sg1",
+            "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "sg1"},
+                {"kind": "static", "from_node": "sg1", "to_node": "end"},
+            ],
+            "entry_node_id": "begin",
         },
     )
 
@@ -189,11 +202,15 @@ def test_build_leaves_external_graph_id_alone():
         {
             "description": "graph",
             "nodes": [
+                {"kind": "begin", "id": "begin"},
                 {"kind": "graph", "id": "sg1", "graph_id": "external-graph"},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "end"},
             ],
-            "edges": [{"kind": "static", "from_node": "sg1", "to_node": "end"}],
-            "entry_node_id": "sg1",
+            "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "sg1"},
+                {"kind": "static", "from_node": "sg1", "to_node": "end"},
+            ],
+            "entry_node_id": "begin",
         },
     )
 
@@ -360,9 +377,14 @@ async def test_apply_install_orders_kinds(fake_storage_provider):
         template_source_hash="h", rendered_hash="h5",
         rendered_payload={
             "description": "workflow",
-            "nodes": [{"kind": "terminal", "id": "t"}],
-            "edges": [],
-            "entry_node_id": "t",
+            "nodes": [
+                {"kind": "begin", "id": "begin"},
+                {"kind": "end", "id": "t"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "t"},
+            ],
+            "entry_node_id": "begin",
         },
     )
 
@@ -537,9 +559,12 @@ async def test_apply_uninstall_deletes_in_reverse_order(fake_storage_provider):
     await fake_storage_provider.get_storage(Graph).create(
         Graph(
             id="acme__wf", description="wf",
-            nodes=[{"kind": "terminal", "id": "t"}],
-            edges=[],
-            entry_node_id="t",
+            nodes=[
+                {"kind": "begin", "id": "begin"},
+                {"kind": "end", "id": "t"},
+            ],
+            edges=[{"kind": "static", "from_node": "begin", "to_node": "t"}],
+            entry_node_id="begin",
             harness_id=harness.id,
         )
     )

@@ -88,13 +88,26 @@ def test_agent_carries_harness_id():
 def test_graph_carries_harness_id():
     # Imports inside the function to avoid circular-import issues at module level
     import primer.model.workspace_session  # noqa: F401 — ensure workspace_session is fully initialised first
-    from primer.model.graph import Graph, _AgentNodeRef
-    # Graph requires at least one node; provide a minimal valid graph
-    node = _AgentNodeRef(id="n1", agent_id="a1")
+    from primer.model.graph import (
+        Graph,
+        _AgentNodeRef,
+        _BeginNode,
+        _EndNode,
+        _StaticEdge,
+    )
+    # Graph requires Begin + End (topology rules); provide a minimal valid graph
     g = Graph(
         id="g1", description="x",
-        nodes=[node], edges=[],
-        entry_node_id="n1",
+        nodes=[
+            _BeginNode(id="begin"),
+            _AgentNodeRef(id="n1", agent_id="a1"),
+            _EndNode(id="end"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="n1"),
+            _StaticEdge(from_node="n1", to_node="end"),
+        ],
+        entry_node_id="begin",
         harness_id="h1",
     )
     assert g.harness_id == "h1"

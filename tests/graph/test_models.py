@@ -27,8 +27,10 @@ from primer.model.graph import (
     NodeRuntimeState,
     NodeRuntimeStatus,
     _AgentNodeRef,
+    _BeginNode,
     _CallableRouter,
     _ConditionalEdge,
+    _EndNode,
     _GraphNodeRef,
     _JsonPathRouter,
     _StaticEdge,
@@ -96,116 +98,19 @@ class TestEdgeUnionDiscrimination:
 
 
 # ===========================================================================
-# Graph topology validation
+# Graph round-trip (topology rule coverage lives in tests/graph/test_topology.py)
 # ===========================================================================
 
 
-class TestGraphTopology:
-    def test_minimal_valid_graph(self) -> None:
-        g = Graph(
-            id="g-1",
-            description="trivial",
-            nodes=[_AgentNodeRef(id="A", agent_id="agent-x")],
-            entry_node_id="A",
-        )
-        assert g.entry_node_id == "A"
-        assert g.max_iterations is None
-
-    def test_duplicate_node_ids_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="duplicate node id"):
-            Graph(
-                id="g-1",
-                description="dup",
-                nodes=[
-                    _AgentNodeRef(id="A", agent_id="x"),
-                    _AgentNodeRef(id="A", agent_id="y"),
-                ],
-                entry_node_id="A",
-            )
-
-    def test_entry_node_id_must_exist(self) -> None:
-        with pytest.raises(ValidationError, match="entry_node_id"):
-            Graph(
-                id="g-1",
-                description="bad-entry",
-                nodes=[_AgentNodeRef(id="A", agent_id="x")],
-                entry_node_id="not-a-node",
-            )
-
-    def test_static_edge_endpoints_must_exist(self) -> None:
-        with pytest.raises(ValidationError, match="edge.to_node"):
-            Graph(
-                id="g-1",
-                description="bad-edge",
-                nodes=[_AgentNodeRef(id="A", agent_id="x")],
-                edges=[_StaticEdge(from_node="A", to_node="ghost")],
-                entry_node_id="A",
-            )
-
-    def test_jsonpath_branch_targets_validated(self) -> None:
-        with pytest.raises(ValidationError, match="branch.to_node"):
-            Graph(
-                id="g-1",
-                description="bad-branch",
-                nodes=[
-                    _AgentNodeRef(id="A", agent_id="x"),
-                    _AgentNodeRef(id="B", agent_id="y"),
-                ],
-                edges=[
-                    _ConditionalEdge(
-                        from_node="A",
-                        router=_JsonPathRouter(
-                            branches=[
-                                JsonPathBranch(when={"x": 1}, to_node="ghost"),
-                            ],
-                        ),
-                    ),
-                ],
-                entry_node_id="A",
-            )
-
-    def test_jsonpath_default_to_validated(self) -> None:
-        with pytest.raises(ValidationError, match="router.default_to"):
-            Graph(
-                id="g-1",
-                description="bad-default",
-                nodes=[_AgentNodeRef(id="A", agent_id="x")],
-                edges=[
-                    _ConditionalEdge(
-                        from_node="A",
-                        router=_JsonPathRouter(
-                            branches=[JsonPathBranch(when={"x": 1}, to_node="A")],
-                            default_to="ghost",
-                        ),
-                    ),
-                ],
-                entry_node_id="A",
-            )
-
-    def test_callable_router_target_not_validated_at_construction(self) -> None:
-        # Callable routers' targets are checked at run time when the
-        # callable returns; construction succeeds.
-        g = Graph(
-            id="g-1",
-            description="callable-edge",
-            nodes=[_AgentNodeRef(id="A", agent_id="x")],
-            edges=[
-                _ConditionalEdge(
-                    from_node="A",
-                    router=_CallableRouter(callable_id="my_router"),
-                ),
-            ],
-            entry_node_id="A",
-        )
-        assert g.id == "g-1"
-
+class TestGraphRoundTrip:
     def test_round_trip_full_example(self) -> None:
         g = Graph(
             id="my-loop",
-            description="A -> (B, C) -> D -> (A or exit)",
-            entry_node_id="A",
+            description="begin -> A -> (B, C) -> D -> (A or exit)",
+            entry_node_id="begin",
             max_iterations=10,
             nodes=[
+                _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="researcher"),
                 _AgentNodeRef(id="B", agent_id="reviewer"),
                 _AgentNodeRef(id="C", agent_id="reviewer"),
@@ -217,9 +122,10 @@ class TestGraphTopology:
                         "properties": {"next_action": {"type": "string"}},
                     },
                 ),
-                _TerminalNode(id="exit"),
+                _EndNode(id="exit"),
             ],
             edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
                 _StaticEdge(from_node="A", to_node="B"),
                 _StaticEdge(from_node="A", to_node="C"),
                 _StaticEdge(from_node="B", to_node="D"),

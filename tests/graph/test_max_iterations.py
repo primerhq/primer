@@ -24,6 +24,7 @@ from primer.model.graph import (
     _AgentNodeRef,
     _BeginNode,
     _ConditionalEdge,
+    _EndNode,
     _JsonPathRouter,
     _StaticEdge,
 )
@@ -161,6 +162,11 @@ async def test_max_iterations_exceeded_ended_detail() -> None:
                 agent_id="x",
                 response_format={"type": "object"},
             ),
+            # Reachability declaration only — the router's default_to
+            # provides a static path to End so the topology validator
+            # accepts the graph; at run time the loop always routes
+            # back to "a" and the End never fires.
+            _EndNode(id="exit"),
         ],
         edges=[
             _StaticEdge(from_node="b", to_node="a"),
@@ -175,6 +181,7 @@ async def test_max_iterations_exceeded_ended_detail() -> None:
                             to_node="a",
                         )
                     ],
+                    default_to="exit",
                 ),
             ),
         ],
