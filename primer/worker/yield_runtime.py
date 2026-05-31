@@ -100,6 +100,12 @@ class ParkedState:
     started_at: datetime
     tool_call_id: str | None = None
     resume_event_payload: dict[str, Any] | None = None
+    # Spec B Phase 6/11 — set when a graph-bound session parks at a
+    # ToolCall approval gate. Carries the JSON-able payload produced by
+    # :meth:`Graph.snapshot_state` so any worker can rehydrate the
+    # mid-flight graph executor on resume. ``None`` for agent-bound
+    # parks (their continuation runs through the LLM history alone).
+    graph_checkpoint: dict[str, Any] | None = None
     schema_version: int = PARKED_STATE_SCHEMA_VERSION
 
     def to_jsonable(self) -> dict[str, Any]:
@@ -114,6 +120,11 @@ class ParkedState:
             "resume_event_payload": (
                 dict(self.resume_event_payload)
                 if self.resume_event_payload is not None
+                else None
+            ),
+            "graph_checkpoint": (
+                dict(self.graph_checkpoint)
+                if self.graph_checkpoint is not None
                 else None
             ),
         }
@@ -137,6 +148,11 @@ class ParkedState:
             resume_event_payload=(
                 dict(data["resume_event_payload"])
                 if data.get("resume_event_payload") is not None
+                else None
+            ),
+            graph_checkpoint=(
+                dict(data["graph_checkpoint"])
+                if data.get("graph_checkpoint") is not None
                 else None
             ),
             schema_version=version,

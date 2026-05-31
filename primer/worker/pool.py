@@ -1226,12 +1226,22 @@ class WorkerPool:
             m.model_dump(mode="json") for m in captured_messages
         ]
 
+        # Spec B Phase 6/11 — graph-driven ToolCalls stamp the
+        # mid-flight executor snapshot on ``YieldToWorker.graph_checkpoint``
+        # at park time (see ``primer/graph/base.py``). Carry it through
+        # the parked_state blob so :meth:`_handle_resume` can route to
+        # :meth:`Graph.resume_from_checkpoint` instead of the agent
+        # ``inject_resume_messages`` path. ``None`` for agent yields —
+        # they continue through normal LLM history rehydration.
+        graph_checkpoint = getattr(yield_exc, "graph_checkpoint", None)
+
         parked_state = ParkedState(
             yielded=yielded_stamped,
             llm_messages=llm_message_dicts,
             turn_no=lease.turn_no,
             started_at=parked_at,
             tool_call_id=yield_exc.tool_call_id,
+            graph_checkpoint=graph_checkpoint,
         )
 
         logger.info(
@@ -1298,15 +1308,14 @@ class WorkerPool:
 
         sid = session.id
 
-        # Defensive guard: graph-bound sessions don't have an
-        # `inject_resume_messages` surface (graph executor runs to
-        # completion in one turn). Treat this as a programming bug
-        # rather than silently mis-resuming.
-        if session.binding.kind != "agent":
-            logger.error(
-                "resume: non-agent session %s arrived at the resume "
-                "branch with parked_state — clearing park and ending "
-                "as failed (graph sessions are not supposed to park)",
+        # ----- Rehydrate ParkedState from the JSONB blob ------------
+        blob = session.parked_state or {}
+        try:
+            parked = ParkedState.from_jsonable(blob)
+        except (KeyError, ValueError, TypeError):
+            logger.exception(
+                "resume: malformed parked_state for session %s — "
+                "clearing park + failing the session",
                 sid,
             )
             await self._scheduler.clear_park(sid)
@@ -1319,15 +1328,40 @@ class WorkerPool:
             )
             return
 
-        # ----- Rehydrate ParkedState from the JSONB blob ------------
-        blob = session.parked_state or {}
-        try:
-            parked = ParkedState.from_jsonable(blob)
-        except (KeyError, ValueError, TypeError):
-            logger.exception(
-                "resume: malformed parked_state for session %s — "
-                "clearing park + failing the session",
-                sid,
+        # Spec B Phase 11 — graph-bound parks dispatch to the graph
+        # resume adapter instead of the agent ``inject_resume_messages``
+        # path. The parked-state blob carries the executor's
+        # ``snapshot_state`` payload under ``graph_checkpoint`` when a
+        # ``_ToolCallNode`` tripped the approval gate (see
+        # :meth:`_handle_yield`). Sessions whose binding kind is
+        # ``'graph'`` but whose blob has no checkpoint mean the park
+        # was written before Phase 11 — fail closed in that case to
+        # avoid silently mis-resuming.
+        if session.binding.kind == "graph":
+            if parked.graph_checkpoint is None:
+                logger.error(
+                    "resume: graph session %s parked without a "
+                    "graph_checkpoint — clearing park and ending as "
+                    "failed (this should never happen post-Phase-11)",
+                    sid,
+                )
+                await self._scheduler.clear_park(sid)
+                await self._scheduler.complete_turn(
+                    self._worker_id, sid,
+                    expected_turn_no=lease.turn_no,
+                    new_status=SessionStatus.ENDED,
+                    ended_reason="failed",
+                    re_enqueue=False,
+                )
+                return
+            await self._handle_graph_resume(lease, session, parked)
+            return
+
+        if session.binding.kind != "agent":
+            logger.error(
+                "resume: unsupported binding kind %r for session %s — "
+                "clearing park and ending as failed",
+                session.binding.kind, sid,
             )
             await self._scheduler.clear_park(sid)
             await self._scheduler.complete_turn(
@@ -1487,6 +1521,114 @@ class WorkerPool:
             expected_turn_no=lease.turn_no,
             new_status=SessionStatus.RUNNING,
             re_enqueue=True,
+        )
+
+    async def _handle_graph_resume(
+        self,
+        lease: Lease,
+        session: WorkspaceSession,
+        parked: ParkedState,
+    ) -> None:
+        """Resume a graph-bound session parked at a ToolCall approval.
+
+        Spec B Phase 6 / Phase 11. The graph executor stamped a
+        ``snapshot_state()`` payload into ``parked.graph_checkpoint``
+        when its ``_ToolCallNode`` tripped the approval gate. This
+        path:
+
+          1. Classifies the resume payload (real event / timeout /
+             cancel) using the same machinery as the agent path so
+             approve / reject / timeout / cancel behave identically.
+          2. Builds a fresh :class:`WorkspaceGraphExecutor` via the
+             usual graph-executor factory.
+          3. Calls :func:`resume_graph_from_checkpoint`, which drains
+             pending ToolCalls with ``bypass_approval=True`` on the
+             approved path or raises ``_ToolApprovalRejected`` on the
+             rejection paths (per spec §4.8).
+          4. ``clear_park`` + ``complete_turn(ENDED)`` — graph sessions
+             always run to completion in one resume; they never
+             re-enqueue (same contract as :class:`_GraphTurnDriver`).
+        """
+        # Lazy imports — keep the worker pool's startup cost down.
+        from primer.worker.graph_resume import resume_graph_from_checkpoint
+
+        sid = session.id
+        assert parked.graph_checkpoint is not None  # caller-checked
+
+        if session.parked_at is None:
+            # Defensive — graph parks always stamp parked_at via
+            # ``park_turn``. Fail closed rather than mis-resume.
+            logger.error(
+                "resume: graph session %s has parked_status=resumable "
+                "but parked_at=None — failing the session",
+                sid,
+            )
+            await self._scheduler.clear_park(sid)
+            await self._scheduler.complete_turn(
+                self._worker_id, sid,
+                expected_turn_no=lease.turn_no,
+                new_status=SessionStatus.ENDED,
+                ended_reason="failed",
+                re_enqueue=False,
+            )
+            return
+
+        resume_payload = classify_resume_payload(
+            parked, parked_at=session.parked_at,
+        )
+
+        workspace = await self._load_workspace_for_persist(
+            session.workspace_id,
+        )
+        try:
+            executor_or_driver = await self._build_graph_executor(
+                session, workspace,
+            )
+        except Exception:
+            logger.exception(
+                "resume: failed to build graph executor for session %s "
+                "— clearing park and failing the session",
+                sid,
+            )
+            await self._scheduler.clear_park(sid)
+            await self._scheduler.complete_turn(
+                self._worker_id, sid,
+                expected_turn_no=lease.turn_no,
+                new_status=SessionStatus.ENDED,
+                ended_reason="failed",
+                re_enqueue=False,
+            )
+            return
+        executor = getattr(executor_or_driver, "_executor", executor_or_driver)
+
+        ended_reason = "completed"
+        try:
+            decision = await resume_graph_from_checkpoint(
+                executor=executor,
+                checkpoint=parked.graph_checkpoint,
+                payload=resume_payload.payload,
+            )
+            if decision != "approved":
+                # Rejected / timeout / cancelled — the executor stamps
+                # ``tool_execution_failed`` per spec §4.8. The session
+                # itself ends ``failed`` so operators see the rejection
+                # at the session level too.
+                ended_reason = "failed"
+        except Exception:
+            logger.exception(
+                "resume: graph executor for session %s raised during "
+                "resume drain — ending the session as failed",
+                sid,
+            )
+            ended_reason = "failed"
+
+        await self._scheduler.clear_park(sid)
+        await self._scheduler.complete_turn(
+            self._worker_id, sid,
+            expected_turn_no=lease.turn_no,
+            new_status=SessionStatus.ENDED,
+            ended_reason=ended_reason,
+            re_enqueue=False,
         )
 
     async def _handle_cancel(
