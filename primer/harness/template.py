@@ -221,9 +221,48 @@ async def render_bundle(
     return out
 
 
+def compose_overrides_schema(
+    *,
+    parent_schema: dict[str, Any],
+    sub_schemas: list[tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    """Mount each sub schema at properties.dependencies.properties.<name>.
+
+    When ``sub_schemas`` is empty the parent schema is returned unchanged
+    (referentially) so flat single-direction harnesses continue to behave
+    as before.
+    """
+    if not sub_schemas:
+        return parent_schema
+    composite = dict(parent_schema)
+    composite.setdefault("type", "object")
+    props = dict(composite.get("properties", {}))
+    deps_block = {
+        "type": "object",
+        "properties": {name: schema for name, schema in sub_schemas},
+    }
+    props["dependencies"] = deps_block
+    composite["properties"] = props
+    return composite
+
+
+def slice_overrides_for_dep(
+    overrides: dict[str, Any],
+    dep_name: str,
+) -> dict[str, Any]:
+    """Return the per-dependency override subtree, or ``{}`` if absent."""
+    deps = overrides.get("dependencies")
+    if not isinstance(deps, dict):
+        return {}
+    sub = deps.get(dep_name)
+    return sub if isinstance(sub, dict) else {}
+
+
 __all__ = [
     "HarnessTemplateError",
     "RenderedFile",
+    "compose_overrides_schema",
     "render_bundle",
     "render_template",
+    "slice_overrides_for_dep",
 ]
