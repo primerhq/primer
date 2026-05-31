@@ -116,12 +116,15 @@ class GraphContext(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    initial_input: list[Message] = Field(
+    initial_input: Any = Field(
         ...,
         description=(
-            "The list of messages passed to the graph executor's "
-            "``invoke()``. Templates iterate over this to access the "
-            "initial prompt; callable routers may inspect it directly."
+            "The graph's initial input. Historically a ``list[Message]`` "
+            "(the messages passed to ``invoke()``); spec §4.3 widens "
+            "this to ``Any`` so the workspace executor can seed it from "
+            "``session.metadata['graph_input']`` (dict / str / list / "
+            "any JSON-serialisable value). Begin-firing code branches "
+            "on the runtime type to materialise the right NodeOutput."
         ),
     )
     iteration: int = Field(

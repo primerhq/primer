@@ -37,14 +37,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph.base import _BaseGraphExecutor
 from primer.graph.router import RouterRegistry
-from primer.model.chat import Message
+from primer.model.chat import Message, StreamEvent
 from primer.model.graph import Graph, NodeRuntimeState, _GraphNodeRef
 from primer.model.workspace_session import SessionStatus
 
@@ -93,6 +93,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         graph_resolver: Callable[[str], Awaitable[Graph]] | None = None,
         router_registry: RouterRegistry | None = None,
         principal: str | None = None,
+        graph_input: Any = None,
     ) -> None:
         wrapped_agent_resolver = self._wrap_agent_resolver(
             agent_resolver, workspace_session
@@ -112,6 +113,12 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         self._state_repo = state_repo
         self._graph_session_id = graph_session_id
         self._workspace_session = workspace_session
+        # Spec §4.3 — when set (typically by pool.py from
+        # ``session.metadata['graph_input']``), this overrides the
+        # ``messages`` list passed to :meth:`invoke` and becomes
+        # :attr:`GraphContext.initial_input`. The Begin node materialises
+        # its NodeOutput from this value (dict / str / list / Any).
+        self._graph_input: Any = graph_input
         # Cache the original (unwrapped) resolvers so subgraph children
         # can re-wrap them with their own context if needed.
         self._raw_agent_resolver = agent_resolver
@@ -186,6 +193,31 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             )
 
         return _resolve
+
+    # ---- Public invoke override ------------------------------------------
+
+    async def invoke(
+        self,
+        messages: list[Message],
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream graph execution events.
+
+        Spec §4.3 — when ``graph_input`` was supplied at construction
+        time (typically by the worker reading
+        ``session.metadata['graph_input']``), it seeds
+        :attr:`GraphContext.initial_input` instead of ``messages``. The
+        Begin node materialises its NodeOutput from that value;
+        callers that pass a non-empty ``messages`` list when
+        ``graph_input`` is also set get the metadata value (metadata
+        wins — this is the documented precedence in spec §4.2:
+        ``graph_input`` is preferred over ``initial_instructions``).
+        """
+        if self._graph_input is not None:
+            seed: Any = self._graph_input
+        else:
+            seed = messages
+        async for ev in super().invoke(seed):  # type: ignore[arg-type]
+            yield ev
 
     # ---- Subclass hooks --------------------------------------------------
 

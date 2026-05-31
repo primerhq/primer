@@ -350,7 +350,7 @@ class _BaseGraphExecutor(ABC):
 
     async def invoke(
         self,
-        messages: list[Message],
+        messages: "list[Message] | Any",
     ) -> AsyncIterator[StreamEvent]:
         """Execute the graph; stream events live as they happen.
 
@@ -360,13 +360,25 @@ class _BaseGraphExecutor(ABC):
         event is wrapped in
         :class:`ExtendedEvent(_GraphNodeEvent(...))` carrying the
         ``node_id`` and ``iteration`` so consumers can demultiplex.
+
+        ``messages`` historically was a ``list[Message]``; spec §4.3
+        widens the input to ``Any`` so callers (e.g. the workspace
+        executor relaying ``session.metadata['graph_input']``) can pass
+        dict / str / list / any JSON-serialisable value. Begin-firing
+        branches on the runtime type to shape the right NodeOutput.
         """
         node_states: dict[str, NodeRuntimeState] = {
             n.id: NodeRuntimeState(status=NodeRuntimeStatus.PENDING)
             for n in self._graph.nodes
         }
+        # Preserve non-list inputs verbatim so Begin can materialise its
+        # NodeOutput from dict / str / Any.
+        if isinstance(messages, list):
+            initial_input: Any = list(messages)
+        else:
+            initial_input = messages
         context = GraphContext(
-            initial_input=list(messages),
+            initial_input=initial_input,
             iteration=0,
             nodes={},
         )
