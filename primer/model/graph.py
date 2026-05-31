@@ -392,8 +392,34 @@ class FanOutSpec(BaseModel):
         return self
 
 
+class _FanOutNode(BaseModel):
+    """Pure dispatching node — spawns parallel downstream executions.
+
+    Spec B §1.1. Carries a ``specs`` list; each spec produces zero or
+    more synthesized instance ids in ``GraphContext.nodes`` of the form
+    ``f"{target}[{i}]"``. The aggregator entry ``nodes[target]`` is a
+    ``list[NodeOutput]`` accumulated in index order.
+    """
+
+    kind: Literal["fan_out"] = "fan_out"
+    id: str = Field(..., min_length=1)
+    description: str | None = Field(
+        default=None,
+        description="Free-form human-readable label for the UI.",
+    )
+    specs: list[FanOutSpec] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "At least one fan-out spec required. Multiple specs run "
+            "concurrently — broadcast/tee/map can be mixed on one "
+            "FanOut node."
+        ),
+    )
+
+
 GraphNode = Annotated[
-    Union[_AgentNodeRef, _GraphNodeRef, _BeginNode, _EndNode],
+    Union[_AgentNodeRef, _GraphNodeRef, _BeginNode, _EndNode, _FanOutNode],
     Field(discriminator="kind"),
 ]
 
