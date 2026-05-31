@@ -564,6 +564,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
 
   const [draft, setDraft] = React.useState(seed);
   const [selectedNodeId, setSelectedNodeId] = React.useState(null);
+  const [selectedEdgeId, setSelectedEdgeId] = React.useState(null);  // index into draft.edges
   const [addEdgeMode, setAddEdgeMode] = React.useState(null);  // null | {fromId?}
   const [edgeMode, setEdgeMode] = React.useState("static");  // "static" | "conditional"
   const [dragging, setDragging] = React.useState(null);
@@ -574,6 +575,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   React.useEffect(() => {
     setDraft(seed);
     setSelectedNodeId(null);
+    setSelectedEdgeId(null);
     setAddEdgeMode(null);
   }, [seed]);
 
@@ -629,6 +631,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   const onDiscard = () => {
     setDraft(seed);
     setSelectedNodeId(null);
+    setSelectedEdgeId(null);
     setAddEdgeMode(null);
   };
 
@@ -683,6 +686,12 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
       return;
     }
     setSelectedNodeId(nodeId);
+    setSelectedEdgeId(null);
+  };
+
+  const onEdgeClick = (edgeIdx) => {
+    setSelectedEdgeId(edgeIdx);
+    setSelectedNodeId(null);
   };
 
   const onNodeDoubleClick = (nodeId) => {
@@ -864,12 +873,15 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
           ref={canvasRef}
           draft={draft}
           selectedNodeId={selectedNodeId}
+          selectedEdgeId={selectedEdgeId}
           addEdgeMode={addEdgeMode}
           onNodeClick={onNodeClick}
+          onEdgeClick={onEdgeClick}
           onNodeDoubleClick={onNodeDoubleClick}
           onNodeMouseDown={onNodeMouseDown}
           onBackgroundClick={() => {
             setSelectedNodeId(null);
+            setSelectedEdgeId(null);
             if (addEdgeMode) setAddEdgeMode(null);
           }}
         />
@@ -938,7 +950,17 @@ const GR_NODE_SIZE = {
 };
 
 const GR_Canvas = React.forwardRef(function GR_Canvas(
-  { draft, selectedNodeId, addEdgeMode, onNodeClick, onNodeDoubleClick, onNodeMouseDown, onBackgroundClick },
+  {
+    draft,
+    selectedNodeId,
+    selectedEdgeId,
+    addEdgeMode,
+    onNodeClick,
+    onEdgeClick,
+    onNodeDoubleClick,
+    onNodeMouseDown,
+    onBackgroundClick,
+  },
   ref,
 ) {
   // Compute canvas extent (auto-grow for far-flung nodes).
@@ -981,7 +1003,13 @@ const GR_Canvas = React.forwardRef(function GR_Canvas(
             </marker>
           </defs>
           {(draft.edges || []).map((e, i) => (
-            <GR_EdgePath key={i} edge={e} nodes={draft.nodes} />
+            <GR_EdgePath
+              key={i}
+              edge={e}
+              nodes={draft.nodes}
+              selected={selectedEdgeId === i}
+              onClick={(ev) => { ev.stopPropagation(); if (onEdgeClick) onEdgeClick(i); }}
+            />
           ))}
         </svg>
 
@@ -1140,7 +1168,7 @@ function GR_NodeBox({ node, selected, entry, edgePicking, edgePickStage, onClick
 // GR_EdgePath — per-edge SVG router (static / conditional)
 // ----------------------------------------------------------------------------
 
-function GR_EdgePath({ edge, nodes }) {
+function GR_EdgePath({ edge, nodes, selected, onClick }) {
   // For conditional edges with a json_path router, draw one curve per
   // branch + an optional default-to curve. For static edges and
   // callable-router conditionals, draw one curve to the single known
@@ -1154,7 +1182,17 @@ function GR_EdgePath({ edge, nodes }) {
   if (edge.kind === "static") {
     const to = nodes.find((n) => n.id === edge.to_node);
     if (!to) return null;
-    return <GR_SingleEdge fx={fx} fy={fy} to={to} dashed={false} label={null} />;
+    return (
+      <GR_SingleEdge
+        fx={fx}
+        fy={fy}
+        to={to}
+        dashed={false}
+        label={null}
+        selected={selected}
+        onClick={onClick}
+      />
+    );
   }
 
   // conditional
@@ -1173,12 +1211,34 @@ function GR_EdgePath({ edge, nodes }) {
       });
       const whenBits = Object.entries(br.when || {}).map(([k, v]) => `${k}=${v}`);
       const label = (condBits.length ? condBits : whenBits).join(" ∧ ");
-      out.push(<GR_SingleEdge key={"b" + i} fx={fx} fy={fy} to={to} dashed label={label} />);
+      out.push(
+        <GR_SingleEdge
+          key={"b" + i}
+          fx={fx}
+          fy={fy}
+          to={to}
+          dashed
+          label={label}
+          selected={selected}
+          onClick={onClick}
+        />,
+      );
     }
     if (router.default_to) {
       const to = nodes.find((n) => n.id === router.default_to);
       if (to) {
-        out.push(<GR_SingleEdge key="def" fx={fx} fy={fy} to={to} dashed label="(default)" />);
+        out.push(
+          <GR_SingleEdge
+            key="def"
+            fx={fx}
+            fy={fy}
+            to={to}
+            dashed
+            label="(default)"
+            selected={selected}
+            onClick={onClick}
+          />,
+        );
       }
     }
     // Branch-count badge near the source midpoint.
@@ -1191,6 +1251,8 @@ function GR_EdgePath({ edge, nodes }) {
         fontSize="9.5"
         fontFamily="IBM Plex Mono"
         fill="var(--accent)"
+        style={{ pointerEvents: "auto", cursor: "pointer" }}
+        onClick={onClick}
       >
         {badgeText}
       </text>,
@@ -1209,20 +1271,31 @@ function GR_EdgePath({ edge, nodes }) {
   return null;
 }
 
-function GR_SingleEdge({ fx, fy, to, dashed, label }) {
+function GR_SingleEdge({ fx, fy, to, dashed, label, selected, onClick }) {
   const toSize = GR_NODE_SIZE[to.kind] || GR_NODE_SIZE.agent;
   const tx = to.x || 0;
   const ty = (to.y || 0) + toSize.h / 2;
   const mx = (fx + tx) / 2;
   const path = `M ${fx} ${fy} C ${mx} ${fy}, ${mx} ${ty}, ${tx} ${ty}`;
-  const stroke = dashed ? "var(--accent)" : "var(--text-3)";
+  const stroke = selected ? "var(--accent)" : (dashed ? "var(--accent)" : "var(--text-3)");
   const marker = dashed ? "url(#arrow-cond)" : "url(#arrow-static)";
+  const strokeWidth = selected ? "3.2" : "1.6";
+  const interactive = typeof onClick === "function";
   return (
-    <g>
+    <g style={interactive ? { pointerEvents: "auto", cursor: "pointer" } : undefined} onClick={onClick}>
+      {/* Invisible wide hit target for easier clicking on thin paths. */}
+      {interactive && (
+        <path
+          d={path}
+          stroke="transparent"
+          strokeWidth="12"
+          fill="none"
+        />
+      )}
       <path
         d={path}
         stroke={stroke}
-        strokeWidth="1.6"
+        strokeWidth={strokeWidth}
         fill="none"
         strokeDasharray={dashed ? "5 4" : "0"}
         markerEnd={marker}
