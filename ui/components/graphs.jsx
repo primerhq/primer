@@ -22,7 +22,7 @@
 //     different API — paths are the canonical one).
 
 // ============================================================================
-// GR_NewGraphModal — seeds a minimal agent→terminal skeleton
+// GR_NewGraphModal — seeds a minimal begin→agent→end skeleton
 // ============================================================================
 
 function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
@@ -72,20 +72,21 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
 
   const submit = async () => {
     setFieldErrors({});
-    // Seed a minimal valid graph: one agent node + one terminal,
-    // wired by a static edge. The Graph model validator requires
-    // entry_node_id to match a node id and at least one node.
+    // Seed a minimal valid graph: Begin → agent → End, wired by
+    // static edges. The Graph model validator requires exactly one
+    // Begin node and at least one End node reachable from Begin.
     const body = {
       ...(id ? { id } : {}),
       description: description || "(no description)",
       nodes: [
+        { kind: "begin", id: "begin" },
         { kind: "agent", id: "start", agent_id: seedAgentId },
-        { kind: "terminal", id: "end" },
+        { kind: "end", id: "end", output_template: "" },
       ],
       edges: [
+        { kind: "static", from_node: "begin", to_node: "start" },
         { kind: "static", from_node: "start", to_node: "end" },
       ],
-      entry_node_id: "start",
     };
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
@@ -143,7 +144,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
         <label className="field-label">
           Seed agent{" "}
           <span className="hint">
-            required · the new graph starts with one agent node + one terminal
+            required · the new graph starts with Begin → agent → End
           </span>
         </label>
         <select
@@ -639,14 +640,20 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
     if (!draft) return;
     setShowAddMenu(false);
     const existingIds = new Set((draft.nodes || []).map((n) => n.id));
+    // For begin/end use plain kind as the base id; for agent/graph use kind_<n>.
+    const seed = kind === "begin" || kind === "end" ? kind : `${kind}_1`;
+    let newId = seed;
     let i = 1;
-    let newId = `${kind}_${i}`;
-    while (existingIds.has(newId)) { i += 1; newId = `${kind}_${i}`; }
-    const newNode = kind === "agent"
-      ? { kind: "agent", id: newId, agent_id: "" }
-      : kind === "graph"
-        ? { kind: "graph", id: newId, graph_id: "" }
-        : { kind: "terminal", id: newId };
+    while (existingIds.has(newId)) {
+      i += 1;
+      newId = kind === "begin" || kind === "end" ? `${kind}_${i}` : `${kind}_${i}`;
+    }
+    let newNode;
+    if (kind === "agent") newNode = { kind: "agent", id: newId, agent_id: "" };
+    else if (kind === "graph") newNode = { kind: "graph", id: newId, graph_id: "" };
+    else if (kind === "begin") newNode = { kind: "begin", id: newId };
+    else if (kind === "end") newNode = { kind: "end", id: newId, output_template: "" };
+    else throw new Error("unknown node kind: " + kind);
     newNode.x = 60;
     newNode.y = 60;
     setDraft((d) => ({ ...d, nodes: [...(d.nodes || []), newNode] }));
@@ -718,6 +725,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
 
   if (!draft) return null;
   const selected = draft.nodes.find((n) => n.id === selectedNodeId);
+  const hasBegin = (draft.nodes || []).some((n) => n.kind === "begin");
 
   return (
     <div className="panel" style={{ overflow: "hidden" }}>
@@ -753,9 +761,21 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
                 boxShadow: "0 4px 12px rgba(0, 0, 0, 0.2)",
               }}
             >
+              <a
+                className="dd-item"
+                onClick={() => { if (!hasBegin) onAddNode("begin"); }}
+                style={{
+                  ...GR_DD_ITEM_STYLE,
+                  opacity: hasBegin ? 0.4 : 1,
+                  cursor: hasBegin ? "not-allowed" : "pointer",
+                }}
+                aria-disabled={hasBegin}
+              >
+                Begin{hasBegin ? " (exists)" : ""}
+              </a>
               <a className="dd-item" onClick={() => onAddNode("agent")} style={GR_DD_ITEM_STYLE}>Agent</a>
               <a className="dd-item" onClick={() => onAddNode("graph")} style={GR_DD_ITEM_STYLE}>Subgraph</a>
-              <a className="dd-item" onClick={() => onAddNode("terminal")} style={GR_DD_ITEM_STYLE}>Terminal</a>
+              <a className="dd-item" onClick={() => onAddNode("end")} style={GR_DD_ITEM_STYLE}>End</a>
             </div>
           )}
         </div>
@@ -860,7 +880,8 @@ const GR_DD_ITEM_STYLE = {
 const GR_NODE_SIZE = {
   agent: { w: 150, h: 56 },
   graph: { w: 150, h: 56 },
-  terminal: { w: 22, h: 22 },
+  begin: { w: 22, h: 22 },
+  end: { w: 22, h: 22 },
 };
 
 const GR_Canvas = React.forwardRef(function GR_Canvas(
@@ -956,11 +977,12 @@ const GR_Canvas = React.forwardRef(function GR_Canvas(
 });
 
 // ----------------------------------------------------------------------------
-// GR_NodeBox — agent / graph / terminal nodes
+// GR_NodeBox — begin / agent / graph / end nodes
 // ----------------------------------------------------------------------------
 
 function GR_NodeBox({ node, selected, entry, edgePicking, edgePickStage, onClick, onDoubleClick, onMouseDown }) {
-  const isTerminal = node.kind === "terminal";
+  const isBegin = node.kind === "begin";
+  const isEnd = node.kind === "end";
   const isGraph = node.kind === "graph";
 
   const baseStyle = {
@@ -970,19 +992,32 @@ function GR_NodeBox({ node, selected, entry, edgePicking, edgePickStage, onClick
     cursor: edgePicking ? "crosshair" : "grab",
   };
 
-  if (isTerminal) {
-    return (
-      <div onMouseDown={onMouseDown} onClick={onClick} onDoubleClick={onDoubleClick} style={baseStyle}>
-        <div style={{
-          width: 22,
-          height: 22,
-          borderRadius: "50%",
+  if (isBegin || isEnd) {
+    // Begin: hollow ring (accent); End: filled disk (text color).
+    const ringStyle = isBegin
+      ? {
+          background: selected ? "var(--accent-dim)" : "var(--bg-1)",
+          border: edgePickStage === "from"
+            ? "2px dashed var(--accent)"
+            : selected
+              ? "2px solid var(--accent)"
+              : "2px solid var(--accent)",
+        }
+      : {
           background: selected ? "var(--accent)" : "var(--text)",
           border: edgePickStage === "from"
             ? "2px dashed var(--accent)"
             : selected
               ? "2px solid var(--accent)"
               : "2px solid var(--border-strong)",
+        };
+    return (
+      <div onMouseDown={onMouseDown} onClick={onClick} onDoubleClick={onDoubleClick} style={baseStyle}>
+        <div style={{
+          width: 22,
+          height: 22,
+          borderRadius: "50%",
+          ...ringStyle,
           boxShadow: selected ? "0 0 0 4px var(--accent-dim)" : undefined,
         }} />
         <div className="mono text-sm" style={{
@@ -1201,7 +1236,8 @@ function GR_GraphStatsBlock({ draft }) {
             ? draft.entry_node_id
             : <span style={{ color: "var(--red)" }}>{draft.entry_node_id || "(unset)"}</span>}
         </dd>
-        <dt>terminals</dt><dd>{(draft.nodes || []).filter((n) => n.kind === "terminal").length}</dd>
+        <dt>begin</dt><dd>{(draft.nodes || []).filter((n) => n.kind === "begin").length}</dd>
+        <dt>ends</dt><dd>{(draft.nodes || []).filter((n) => n.kind === "end").length}</dd>
         <dt>subgraphs</dt><dd>{(draft.nodes || []).filter((n) => n.kind === "graph").length}</dd>
         {draft.max_iterations != null && (
           <><dt>max_iterations</dt><dd>{draft.max_iterations}</dd></>
