@@ -79,4 +79,25 @@ def render_input_template(
         ) from exc
 
 
-__all__ = ["render_input_template"]
+def render_template_safely(
+    template: str,
+    context: GraphContext,
+) -> str:
+    """Render ``template`` against ``context`` using the same sandbox /
+    StrictUndefined surface as :func:`render_input_template`, but raise
+    the underlying :class:`jinja2.TemplateError` rather than wrapping
+    it in :class:`BadRequestError`.
+
+    Callers (e.g. End-node output rendering) need to differentiate
+    template errors from other failure codes per spec §5.4. Letting the
+    raw Jinja exception propagate gives them the choice.
+    """
+    compiled = _ENV.from_string(template)
+    return compiled.render(
+        initial_input=context.initial_input,
+        iteration=context.iteration,
+        nodes=context.nodes,
+    )
+
+
+__all__ = ["render_input_template", "render_template_safely"]

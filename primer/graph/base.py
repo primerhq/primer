@@ -45,6 +45,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -86,6 +87,77 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _EndOutputResult:
+    """Outcome of rendering an :class:`_EndNode`'s output_template.
+
+    ``error_code`` is one of ``{None, "template_error", "end_output_invalid"}``
+    matching spec §5.4. On success ``parsed`` is the parsed JSON object
+    (dict only — non-dict schemas are accepted but ``parsed`` stays None
+    because :class:`NodeOutput.parsed` is dict-typed).
+    """
+
+    text: str
+    parsed: dict[str, Any] | None
+    error_code: str | None
+    error_message: str | None = None
+
+
+def _render_end_output(end: "_EndNode", context: "GraphContext") -> _EndOutputResult:
+    """Render End.output_template; if End.output_schema is set, parse + validate.
+
+    Errors map to spec §5.4 codes:
+
+    * Jinja error during render → ``template_error``
+    * JSON parse failure when output_schema is set → ``end_output_invalid``
+    * :class:`jsonschema.ValidationError` → ``end_output_invalid``
+    """
+    from primer.graph.template import render_template_safely
+
+    if not end.output_template:
+        return _EndOutputResult(text="", parsed=None, error_code=None)
+
+    try:
+        text = render_template_safely(end.output_template, context)
+    except Exception as exc:  # noqa: BLE001 -- UndefinedError, TemplateSyntaxError, ...
+        return _EndOutputResult(
+            text="",
+            parsed=None,
+            error_code="template_error",
+            error_message=str(exc),
+        )
+
+    if end.output_schema is None:
+        return _EndOutputResult(text=text, parsed=None, error_code=None)
+
+    try:
+        parsed_obj = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return _EndOutputResult(
+            text=text,
+            parsed=None,
+            error_code="end_output_invalid",
+            error_message=f"output is not JSON: {exc}",
+        )
+
+    import jsonschema  # local import keeps base.py import cheap
+
+    try:
+        jsonschema.validate(instance=parsed_obj, schema=end.output_schema)
+    except jsonschema.ValidationError as exc:
+        return _EndOutputResult(
+            text=text,
+            parsed=None,
+            error_code="end_output_invalid",
+            error_message=exc.message,
+        )
+
+    if not isinstance(parsed_obj, dict):
+        # Schema validates non-objects too; NodeOutput.parsed is dict-only.
+        return _EndOutputResult(text=text, parsed=None, error_code=None)
+    return _EndOutputResult(text=text, parsed=parsed_obj, error_code=None)
 
 
 def _materialise_begin_output(
@@ -154,18 +226,20 @@ def _resolve_initial_ready_node(graph: "Graph") -> str:
 class _NodeDone:
     """Sentinel posted to the merge queue when a node finishes streaming."""
 
-    __slots__ = ("node_id", "output", "error")
+    __slots__ = ("node_id", "output", "error", "ended_detail")
 
     def __init__(
         self,
         *,
         node_id: str,
         output: NodeOutput | None,
-        error: BaseException | None,
+        error: BaseException | str | None,
+        ended_detail: str | None = None,
     ) -> None:
         self.node_id = node_id
         self.output = output
         self.error = error
+        self.ended_detail = ended_detail
 
 
 class _BaseGraphExecutor(ABC):
@@ -406,6 +480,31 @@ class _BaseGraphExecutor(ABC):
         """Run one node; push events live to ``queue``, then a _NodeDone."""
         node = self._nodes_by_id[node_id]
         try:
+            if isinstance(node, _EndNode):
+                # End is pure data-shaping; render output_template + optional
+                # schema validation, then post a _NodeDone with ended_detail
+                # set on failure so the outer loop terminates `failed`.
+                res = _render_end_output(node, context)
+                if res.error_code is not None:
+                    await queue.put(
+                        _NodeDone(
+                            node_id=node_id,
+                            output=None,
+                            error=res.error_message or res.error_code,
+                            ended_detail=res.error_code,
+                        )
+                    )
+                    return
+                out = NodeOutput(
+                    text=res.text,
+                    parsed=res.parsed,
+                    history=[],
+                    iteration=context.iteration,
+                )
+                await queue.put(
+                    _NodeDone(node_id=node_id, output=out, error=None)
+                )
+                return
             if isinstance(node, _BeginNode):
                 # Begin is pure data-shaping; no LLM call, no events emitted.
                 # The base executor stores initial_input as a list[Message];
