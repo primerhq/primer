@@ -1073,17 +1073,67 @@ class _BaseGraphExecutor(ABC):
         just_ran: set[str],
         context: GraphContext,
     ) -> set[str]:
-        """Walk outgoing edges from ``just_ran``; return the next ready set."""
+        """Walk outgoing edges from ``just_ran``; return the next ready set.
+
+        Spec B §2.2: for FanIn targets, defer admission until every incoming
+        edge's source has produced output (treating fan-out targets as the
+        full set of synthesized instances).
+
+        Synthesized fan-out instance ids (e.g. ``"worker[2]"``) don't carry
+        outgoing edges of their own — the executor walks the edges of the
+        underlying target node id (e.g. ``"worker"``) instead. This keeps
+        graph authors free to write the natural ``worker -> fanin`` edge
+        once even when ``worker`` is fan-out target with N instances.
+        """
         next_ready: set[str] = set()
+        # Build the effective edge-source set: each just-ran id contributes
+        # its own outgoing edges; synthesized fan-out instances also
+        # contribute their bare target's outgoing edges (de-duplicated).
+        edge_sources: set[str] = set(just_ran)
         for nid in just_ran:
+            inst = self._fanout_instances.get(nid)
+            if inst is not None:
+                edge_sources.add(inst.target_node_id)
+        for nid in edge_sources:
             for edge in self._edges_by_from.get(nid, []):
                 if isinstance(edge, _StaticEdge):
-                    next_ready.add(edge.to_node)
+                    target = edge.to_node
                 else:  # _ConditionalEdge
-                    target = await self._evaluate_conditional(edge, context)
-                    if target is not None:
-                        next_ready.add(target)
+                    target_opt = await self._evaluate_conditional(edge, context)
+                    if target_opt is None:
+                        continue
+                    target = target_opt
+                # FanIn-specific gate: don't admit until every upstream
+                # source has produced output.
+                target_node = self._nodes_by_id.get(target)
+                if isinstance(target_node, _FanInNode):
+                    if not self._fanin_ready(target_node, context):
+                        continue
+                next_ready.add(target)
         return next_ready
+
+    def _fanin_ready(
+        self, node: "_FanInNode", context: GraphContext
+    ) -> bool:
+        """Return True iff every statically-known incoming edge source has
+        produced output. Spec B §2.2.
+
+        Fan-out sources count as "all N synthesized instances must have
+        produced output" — we compare ``len(context.nodes[src])`` against
+        the spawning FanOut's expected instance count.
+        """
+        for edge in self._edges_by_to.get(node.id, []):
+            src = getattr(edge, "from_node", None)
+            if src is None:
+                continue
+            entry = context.nodes.get(src)
+            if entry is None:
+                return False
+            if isinstance(entry, list):
+                expected = self._fanout_target_expected_count.get(src)
+                if expected is None or len(entry) < expected:
+                    return False
+        return True
 
     async def _evaluate_conditional(
         self,
