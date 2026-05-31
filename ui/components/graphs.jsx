@@ -1703,6 +1703,7 @@ function GR_SidePanel({
           node={selected}
           isEntry={draft.entry_node_id === selected.id}
           edges={draft.edges || []}
+          allNodes={draft.nodes || []}
           onUpdateNode={onUpdateNode}
           onDeleteNode={onDeleteNode}
           onSetEntry={onSetEntry}
@@ -1818,6 +1819,7 @@ function GR_SelectedNodeForm({
   node,
   isEntry,
   edges,
+  allNodes,
   onUpdateNode,
   onDeleteNode,
   onSetEntry,
@@ -1992,6 +1994,14 @@ function GR_SelectedNodeForm({
         </>
       )}
 
+      {node.kind === "fan_out" && (
+        <GR_FanOutSpecsEditor
+          node={node}
+          otherNodeIds={(allNodes || []).map((n) => n.id).filter((id) => id !== node.id)}
+          onUpdateNode={onUpdateNode}
+        />
+      )}
+
       <div className="muted text-sm">x: {Math.round(node.x || 0)} · y: {Math.round(node.y || 0)}</div>
       <div className="mt-2 muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
         edges in ({edgesIn.length})
@@ -2021,6 +2031,250 @@ function GR_SelectedNodeForm({
       </div>
       <div className="muted text-sm mt-2">
         Edits stage locally; click Save to PUT-replace the whole graph.
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// GR_FanOutSpecsEditor — list of FanOutSpec rows (broadcast / tee / map).
+// Spec B §1.1 — `_FanOutNode.specs: list[FanOutSpec]`; each spec is
+// discriminated by `kind` with one of three shapes:
+//   broadcast: target_node_id + count
+//   tee      : target_node_ids
+//   map      : target_node_id + source_node_id + source_path
+// All three share `on_failure: fail_fast | drain_then_fail | collect`.
+// State updates flow back into `draft.nodes[i].specs` via onUpdateNode.
+// ----------------------------------------------------------------------------
+
+const GR_ON_FAILURE_OPTS = ["fail_fast", "drain_then_fail", "collect"];
+
+function GR_FanOutSpecsEditor({ node, otherNodeIds, onUpdateNode }) {
+  const specs = Array.isArray(node.specs) ? node.specs : [];
+
+  function setSpecs(next) {
+    onUpdateNode({ specs: next });
+  }
+  function updateSpec(i, patch) {
+    setSpecs(specs.map((s, j) => (i === j ? { ...s, ...patch } : s)));
+  }
+  function changeKind(i, kind) {
+    // Reset disallowed fields when switching kinds — the Python
+    // FanOutSpec validator rejects any cross-kind leftover.
+    const base = { kind, on_failure: specs[i]?.on_failure || "fail_fast" };
+    if (kind === "broadcast") {
+      setSpecs(specs.map((s, j) => (i === j
+        ? { ...base, target_node_id: "", count: 1 }
+        : s)));
+    } else if (kind === "tee") {
+      setSpecs(specs.map((s, j) => (i === j
+        ? { ...base, target_node_ids: [] }
+        : s)));
+    } else { // map
+      setSpecs(specs.map((s, j) => (i === j
+        ? { ...base, target_node_id: "", source_node_id: "", source_path: "" }
+        : s)));
+    }
+  }
+  function removeSpec(i) {
+    setSpecs(specs.filter((_, j) => j !== i));
+  }
+  function addSpec() {
+    setSpecs([
+      ...specs,
+      { kind: "broadcast", target_node_id: "", count: 1, on_failure: "fail_fast" },
+    ]);
+  }
+  function toggleTeeTarget(i, id, checked) {
+    const cur = specs[i]?.target_node_ids || [];
+    const next = checked
+      ? Array.from(new Set([...cur, id]))
+      : cur.filter((x) => x !== id);
+    updateSpec(i, { target_node_ids: next });
+  }
+
+  return (
+    <div className="col" style={{ gap: 10 }}>
+      <div className="muted text-sm mono" style={{
+        textTransform: "uppercase",
+        letterSpacing: "0.06em",
+        fontSize: 10.5,
+      }}>
+        specs ({specs.length})
+      </div>
+      {specs.length === 0 && (
+        <div className="muted text-sm">— no specs (at least one required) —</div>
+      )}
+      {specs.map((spec, i) => (
+        <div
+          key={i}
+          className="spec-card"
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            padding: 8,
+            background: "var(--bg-1)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+            <span className="muted text-sm mono">spec {i + 1}</span>
+            <a
+              onClick={() => removeSpec(i)}
+              style={{ cursor: "pointer", color: "var(--red)", fontSize: 12 }}
+              title="Delete spec"
+            >
+              × remove
+            </a>
+          </div>
+          <div className="field">
+            <label className="field-label">kind</label>
+            <select
+              className="select"
+              value={spec.kind || "broadcast"}
+              onChange={(e) => changeKind(i, e.target.value)}
+              style={{ width: "100%" }}
+            >
+              <option value="broadcast">broadcast — N copies of one target</option>
+              <option value="tee">tee — one copy each to N targets</option>
+              <option value="map">map — one per item in upstream array</option>
+            </select>
+          </div>
+
+          {spec.kind === "broadcast" && (
+            <>
+              <div className="field">
+                <label className="field-label">target_node_id</label>
+                <select
+                  className="select"
+                  value={spec.target_node_id || ""}
+                  onChange={(e) => updateSpec(i, { target_node_id: e.target.value })}
+                  style={{ width: "100%" }}
+                >
+                  <option value="">— pick a target —</option>
+                  {(otherNodeIds || []).map((id) => (
+                    <option key={id} value={id}>{id}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label className="field-label">count</label>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  value={spec.count ?? 1}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    updateSpec(i, { count: Number.isFinite(n) && n >= 1 ? n : 1 });
+                  }}
+                  style={{ width: "100%" }}
+                />
+              </div>
+            </>
+          )}
+
+          {spec.kind === "tee" && (
+            <div className="field">
+              <label className="field-label">
+                target_node_ids{" "}
+                <span className="hint">tick each target</span>
+              </label>
+              <div style={{
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                padding: 6,
+                background: "var(--bg)",
+                maxHeight: 120,
+                overflowY: "auto",
+              }}>
+                {(otherNodeIds || []).length === 0 && (
+                  <div className="muted text-sm">— no other nodes —</div>
+                )}
+                {(otherNodeIds || []).map((id) => {
+                  const checked = (spec.target_node_ids || []).includes(id);
+                  return (
+                    <label key={id} className="mono text-sm" style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      cursor: "pointer",
+                      padding: "2px 0",
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => toggleTeeTarget(i, id, e.target.checked)}
+                      />
+                      <span>{id}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {spec.kind === "map" && (
+            <>
+              <div className="field">
+                <label className="field-label">target_node_id</label>
+                <select
+                  className="select"
+                  value={spec.target_node_id || ""}
+                  onChange={(e) => updateSpec(i, { target_node_id: e.target.value })}
+                  style={{ width: "100%" }}
+                >
+                  <option value="">— pick a target —</option>
+                  {(otherNodeIds || []).map((id) => (
+                    <option key={id} value={id}>{id}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label className="field-label">source_node_id</label>
+                <select
+                  className="select"
+                  value={spec.source_node_id || ""}
+                  onChange={(e) => updateSpec(i, { source_node_id: e.target.value })}
+                  style={{ width: "100%" }}
+                >
+                  <option value="">— pick a source —</option>
+                  {(otherNodeIds || []).map((id) => (
+                    <option key={id} value={id}>{id}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label className="field-label">source_path</label>
+                <input
+                  className="input mono"
+                  value={spec.source_path || ""}
+                  onChange={(e) => updateSpec(i, { source_path: e.target.value })}
+                  placeholder=". or data.items[*]"
+                  style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
+                />
+              </div>
+            </>
+          )}
+
+          <div className="field">
+            <label className="field-label">on_failure</label>
+            <select
+              className="select"
+              value={spec.on_failure || "fail_fast"}
+              onChange={(e) => updateSpec(i, { on_failure: e.target.value })}
+              style={{ width: "100%" }}
+            >
+              {GR_ON_FAILURE_OPTS.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      ))}
+      <div>
+        <Btn size="sm" kind="ghost" icon="plus" onClick={addSpec}>
+          Spec
+        </Btn>
       </div>
     </div>
   );
