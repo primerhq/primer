@@ -153,7 +153,6 @@ async def test_max_iterations_exceeded_ended_detail() -> None:
     graph = Graph(
         id="g-max-iter",
         description="Begin -> A -> A (forever, bounded)",
-        entry_node_id="b",
         max_iterations=2,
         nodes=[
             _BeginNode(id="b"),

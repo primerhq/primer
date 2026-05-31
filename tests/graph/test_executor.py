@@ -243,7 +243,6 @@ class TestLinearGraph:
         graph = Graph(
             id="g-linear",
             description="A -> exit",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="agent-x"),
@@ -297,7 +296,6 @@ class TestFanOutFanIn:
         graph = Graph(
             id="g-fan",
             description="A -> (B, C) -> D -> exit",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
@@ -362,7 +360,6 @@ class TestCycle:
         graph = Graph(
             id="g-loop",
             description="A -> A forever (bounded)",
-            entry_node_id="begin",
             # +1 vs. the legacy fixture because the Begin step counts as
             # iteration 0 in the executor's superstep loop.
             max_iterations=4,
@@ -424,7 +421,6 @@ class TestConditionalRouting:
         graph = Graph(
             id="g-cond",
             description="A -> route on parsed",
-            entry_node_id="begin",
             max_iterations=5,
             nodes=[
                 _BeginNode(id="begin"),
@@ -472,7 +468,6 @@ class TestConditionalRouting:
         graph = Graph(
             id="g-call",
             description="A -> route via callable",
-            entry_node_id="begin",
             max_iterations=5,
             nodes=[
                 _BeginNode(id="begin"),
@@ -528,7 +523,6 @@ class TestFailures:
         graph = Graph(
             id="g-fail",
             description="A -> no-match",
-            entry_node_id="begin",
             max_iterations=5,
             nodes=[
                 _BeginNode(id="begin"),
@@ -579,7 +573,6 @@ class TestThreadManagement:
         graph = Graph(
             id="g-trivial",
             description="trivial",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
@@ -621,7 +614,6 @@ class TestThreadManagement:
         graph_a = Graph(
             id="g-a",
             description="x",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
@@ -635,7 +627,6 @@ class TestThreadManagement:
         graph_b = Graph(
             id="g-b",
             description="y",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),

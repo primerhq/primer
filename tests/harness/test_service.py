@@ -142,7 +142,6 @@ def test_build_rewrites_graph_node_agent_id():
                 {"kind": "static", "from_node": "begin", "to_node": "n1"},
                 {"kind": "static", "from_node": "n1", "to_node": "end"},
             ],
-            "entry_node_id": "begin",
         },
     )
 
@@ -167,7 +166,6 @@ def test_build_rewrites_graph_node_graph_id():
             "edges": [
                 {"kind": "static", "from_node": "begin", "to_node": "t"},
             ],
-            "entry_node_id": "begin",
         },
     )
     main_graph_file = _make_rendered_file(
@@ -183,7 +181,6 @@ def test_build_rewrites_graph_node_graph_id():
                 {"kind": "static", "from_node": "begin", "to_node": "sg1"},
                 {"kind": "static", "from_node": "sg1", "to_node": "end"},
             ],
-            "entry_node_id": "begin",
         },
     )
 
@@ -210,7 +207,6 @@ def test_build_leaves_external_graph_id_alone():
                 {"kind": "static", "from_node": "begin", "to_node": "sg1"},
                 {"kind": "static", "from_node": "sg1", "to_node": "end"},
             ],
-            "entry_node_id": "begin",
         },
     )
 
@@ -384,7 +380,6 @@ async def test_apply_install_orders_kinds(fake_storage_provider):
             "edges": [
                 {"kind": "static", "from_node": "begin", "to_node": "t"},
             ],
-            "entry_node_id": "begin",
         },
     )
 
@@ -564,7 +559,6 @@ async def test_apply_uninstall_deletes_in_reverse_order(fake_storage_provider):
                 {"kind": "end", "id": "t"},
             ],
             edges=[{"kind": "static", "from_node": "begin", "to_node": "t"}],
-            entry_node_id="begin",
             harness_id=harness.id,
         )
     )

@@ -107,7 +107,6 @@ class TestGraphRoundTrip:
         g = Graph(
             id="my-loop",
             description="begin -> A -> (B, C) -> D -> (A or exit)",
-            entry_node_id="begin",
             max_iterations=10,
             nodes=[
                 _BeginNode(id="begin"),

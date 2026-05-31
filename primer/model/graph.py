@@ -494,11 +494,6 @@ class Graph(Describeable):
         default_factory=list,
         description="Static or conditional edges connecting nodes.",
     )
-    entry_node_id: str = Field(
-        ...,
-        min_length=1,
-        description="Id of the first node executed when invoke() is called.",
-    )
     max_iterations: PositiveInt | None = Field(
         default=None,
         description=(

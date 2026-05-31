@@ -144,7 +144,6 @@ async def test_begin_to_end_happy_path_completes() -> None:
     graph = Graph(
         id="g-be-happy",
         description="Begin -> End",
-        entry_node_id="b",
         nodes=[_BeginNode(id="b"), _EndNode(id="e")],
         edges=[_StaticEdge(from_node="b", to_node="e")],
     )
@@ -162,7 +161,6 @@ async def test_begin_to_end_with_bad_schema_carries_ended_detail() -> None:
     graph = Graph(
         id="g-be-bad",
         description="Begin -> End (schema mismatch)",
-        entry_node_id="b",
         nodes=[
             _BeginNode(id="b"),
             _EndNode(

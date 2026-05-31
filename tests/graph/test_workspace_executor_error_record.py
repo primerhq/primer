@@ -114,7 +114,6 @@ async def test_end_output_invalid_emits_graph_error_event(
     graph = Graph(
         id="g-end-invalid",
         description="Begin -> End with non-JSON output and a schema",
-        entry_node_id="begin",
         nodes=[
             _BeginNode(id="begin"),
             _EndNode(

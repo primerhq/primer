@@ -107,7 +107,6 @@ def test_graph_carries_harness_id():
             _StaticEdge(from_node="begin", to_node="n1"),
             _StaticEdge(from_node="n1", to_node="end"),
         ],
-        entry_node_id="begin",
         harness_id="h1",
     )
     assert g.harness_id == "h1"

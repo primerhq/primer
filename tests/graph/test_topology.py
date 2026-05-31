@@ -17,11 +17,6 @@ from primer.model.graph import (
 
 def _g(nodes, edges, **overrides):
     base = dict(id="g", description="t", nodes=nodes, edges=edges)
-    # entry_node_id is still a required Pydantic field at this point in
-    # the migration; pin it to the first node id so Pydantic accepts the
-    # construction and the topology validator (the thing under test)
-    # runs. Phase 7.2 removes the field entirely.
-    base.setdefault("entry_node_id", nodes[0].id)
     base.update(overrides)
     return Graph(**base)
 

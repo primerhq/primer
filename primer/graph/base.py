@@ -205,22 +205,19 @@ def _materialise_begin_output(
 
 
 def _resolve_initial_ready_node(graph: "Graph") -> str:
-    """Return the id of the node that seeds the executor's initial ready set.
+    """Return the id of the unique :class:`_BeginNode` that seeds the
+    executor's initial ready set.
 
-    Spec §2.3: when a :class:`_BeginNode` exists, it's the entry point.
-    Otherwise fall back to :attr:`Graph.entry_node_id` (legacy path,
-    removed in Phase 6). Raises :class:`ValueError` when multiple
-    Begin nodes are present — defence in depth against bypassed
-    validators.
+    Spec §2.3: the topology validator already guarantees exactly one
+    Begin node; this guard is defence in depth against bypassed
+    validators (e.g. ``Graph.model_construct``).
     """
     begins = [n for n in graph.nodes if isinstance(n, _BeginNode)]
-    if len(begins) > 1:
+    if len(begins) != 1:
         raise ValueError(
-            f"graph {graph.id!r} has {len(begins)} Begin nodes; expected at most 1"
+            f"graph {graph.id!r} must have exactly one Begin node; got {len(begins)}"
         )
-    if begins:
-        return begins[0].id
-    return graph.entry_node_id
+    return begins[0].id
 
 
 class _RoutingFailed(Exception):

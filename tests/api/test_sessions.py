@@ -255,7 +255,6 @@ async def seeded_graph(app):
                 _EndNode(id="end"),
             ],
             edges=[_StaticEdge(from_node="start", to_node="end")],
-            entry_node_id="start",
         )
         await storage.create(g)
         created_ids.append(g.id)
@@ -356,7 +355,6 @@ async def test_create_session_with_graph_binding(
         description="g",
         nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
         edges=[_StaticEdge(from_node="begin", to_node="end")],
-        entry_node_id="begin",
     )
     await storage.create(graph)
     try:
@@ -847,7 +845,6 @@ async def test_create_session_graph_binding_allocates_holder_slot(
         description="g",
         nodes=[_BeginNode(id="begin"), _EndNode(id="end")],
         edges=[_StaticEdge(from_node="begin", to_node="end")],
-        entry_node_id="begin",
     )
     await storage.create(graph)
     try:

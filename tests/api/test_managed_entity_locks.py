@@ -51,7 +51,6 @@ def _build_graph(harness_id: str | None = "h-test") -> Graph:
             _StaticEdge(from_node="begin", to_node="n1"),
             _StaticEdge(from_node="n1", to_node="end"),
         ],
-        entry_node_id="begin",
         harness_id=harness_id,
     )
 

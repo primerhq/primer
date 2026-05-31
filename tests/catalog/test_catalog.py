@@ -216,7 +216,6 @@ def _graph(
     return Graph(
         id=graph_id,
         description=description,
-        entry_node_id="begin",
         nodes=[
             _BeginNode(id="begin"),
             _AgentNodeRef(id="A", agent_id="x"),

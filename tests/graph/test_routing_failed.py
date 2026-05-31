@@ -182,7 +182,6 @@ async def test_no_match_no_default_emits_routing_failed() -> None:
     graph = Graph(
         id="g-routing-fail",
         description="Begin -> A -> conditional (no match, no default) -> end",
-        entry_node_id="b",
         max_iterations=5,
         nodes=[
             _BeginNode(id="b"),

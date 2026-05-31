@@ -77,7 +77,6 @@ async def test_graph_input_seeds_initial_input(tmp_path: Path) -> None:
     graph = Graph(
         id="g-graph-input",
         description="Begin -> End, using graph_input",
-        entry_node_id="begin",
         nodes=[
             _BeginNode(id="begin"),
             _EndNode(
@@ -130,7 +129,6 @@ async def test_graph_input_string_passed_through(tmp_path: Path) -> None:
     graph = Graph(
         id="g-graph-input-str",
         description="Begin -> End, string input",
-        entry_node_id="begin",
         nodes=[
             _BeginNode(id="begin"),
             _EndNode(
@@ -175,7 +173,6 @@ async def test_no_graph_input_falls_back_to_invoke_messages(
     graph = Graph(
         id="g-no-graph-input",
         description="Begin -> End, messages-based",
-        entry_node_id="begin",
         nodes=[
             _BeginNode(id="begin"),
             _EndNode(

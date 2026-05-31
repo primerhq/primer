@@ -138,7 +138,6 @@ async def test_emits_graph_error_event_on_end_output_invalid() -> None:
     graph = Graph(
         id="g-err-emit",
         description="Begin -> End (bad schema)",
-        entry_node_id="b",
         nodes=[
             _BeginNode(id="b"),
             _EndNode(

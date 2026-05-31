@@ -183,7 +183,6 @@ class TestPersistence:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
@@ -229,7 +228,6 @@ class TestPersistence:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
@@ -269,7 +267,6 @@ class TestPersistence:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
@@ -308,7 +305,6 @@ class TestPersistence:
         graph = Graph(
             id="g-snap",
             description="snapshot test",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
@@ -333,7 +329,7 @@ class TestPersistence:
         assert snap_path.exists()
         snapshot = json.loads(snap_path.read_text(encoding="utf-8"))
         assert snapshot["id"] == "g-snap"
-        assert snapshot["entry_node_id"] == "begin"
+        assert any(n.get("kind") == "begin" for n in snapshot["nodes"])
 
 
 # ===========================================================================
@@ -349,7 +345,6 @@ class TestCycleHistoryAccumulates:
         graph = Graph(
             id="g-loop",
             description="A -> A bounded",
-            entry_node_id="begin",
             # +1 vs. the legacy fixture because the Begin step counts as
             # iteration 0 in the executor's superstep loop.
             max_iterations=4,
@@ -413,7 +408,6 @@ class TestGitVersioning:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
@@ -454,7 +448,6 @@ class TestGitVersioning:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
@@ -508,7 +501,6 @@ class TestToolDispatchInGraphNode:
         graph = Graph(
             id="g-tools",
             description="A -> exit, agent calls a tool first",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),
@@ -581,7 +573,6 @@ class TestSubgraphExecution:
         inner_graph = Graph(
             id="inner",
             description="single agent then exit",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="inner-A", agent_id="x"),
@@ -595,7 +586,6 @@ class TestSubgraphExecution:
         outer_graph = Graph(
             id="outer",
             description="subgraph then exit",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _GraphNodeRef(id="SUB", graph_id="inner"),
@@ -675,7 +665,6 @@ class TestWorkspaceAugmentation:
         graph = Graph(
             id="g-aug",
             description="A -> exit, with workspace augmentation",
-            entry_node_id="begin",
             nodes=[
                 _BeginNode(id="begin"),
                 _AgentNodeRef(id="A", agent_id="x"),

@@ -520,7 +520,6 @@ async def test_build_executor_raises_for_graph_binding_without_state_repo(monkey
             _StaticEdge(from_node="begin", to_node="start"),
             _StaticEdge(from_node="start", to_node="end"),
         ],
-        entry_node_id="begin",
     )
     session = WorkspaceSession(
         id=sid, workspace_id="ws-1",
@@ -572,7 +571,6 @@ async def test_build_graph_executor_returns_graph_turn_driver(monkeypatch, tmp_p
             _StaticEdge(from_node="begin", to_node="start"),
             _StaticEdge(from_node="start", to_node="end"),
         ],
-        entry_node_id="begin",
     )
     session = WorkspaceSession(
         id=sid, workspace_id="ws-1",

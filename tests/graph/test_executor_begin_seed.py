@@ -32,7 +32,6 @@ def test_seeds_from_begin_when_present() -> None:
             _StaticEdge(from_node="start", to_node="a"),
             _StaticEdge(from_node="a", to_node="end"),
         ],
-        entry_node_id="start",
     )
     assert _resolve_initial_ready_node(g) == "start"
 
@@ -49,7 +48,6 @@ def test_raises_when_multiple_begin_nodes() -> None:
             _EndNode(id="e"),
         ],
         edges=[_StaticEdge(from_node="b1", to_node="e")],
-        entry_node_id="b1",
     )
     with pytest.raises(ValueError):
         _resolve_initial_ready_node(g)

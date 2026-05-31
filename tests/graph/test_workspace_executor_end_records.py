@@ -127,7 +127,6 @@ async def test_end_firing_emits_event_in_stream(tmp_path: Path) -> None:
     graph = Graph(
         id="g-end-emits",
         description="Begin -> End emits assistant_token event",
-        entry_node_id="begin",
         nodes=[
             _BeginNode(id="begin"),
             _EndNode(
@@ -176,7 +175,6 @@ async def test_end_firing_writes_assistant_token_to_messages_jsonl(
     graph = Graph(
         id="g-end-jsonl",
         description="Begin -> End, persisted via the session writer",
-        entry_node_id="begin",
         nodes=[
             _BeginNode(id="begin"),
             _EndNode(
