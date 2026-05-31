@@ -400,6 +400,9 @@ function HarnessDetail({ id }) {
         </div>
       </div>
 
+      {/* Dependencies — Spec A §13 */}
+      <HR_DependenciesPanel harness={h} />
+
       {/* Managed objects */}
       <HR_ManagedObjects harnessId={h.id} slug={h.slug} />
 
@@ -433,6 +436,114 @@ function HarnessDetail({ id }) {
           </ul>
         </Modal>
       )}
+    </div>
+  );
+}
+
+// ============================================================================
+// HR_DependenciesPanel — render the resolved transitive dep tree
+//
+// Reads `harness.dependencies_resolved` (a list of ResolvedDependency entries
+// from the server). Renders one row per dep: name (local alias), slug,
+// git_url, ref, resolved_commit (short SHA), depth. Hidden when the list is
+// missing or empty. Spec A §13.
+// ============================================================================
+
+function HR_DependenciesPanel({ harness }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const deps = Array.isArray(harness?.dependencies_resolved)
+    ? harness.dependencies_resolved
+    : [];
+
+  // Optional: count managed entities sourced from each dep using the same
+  // five entity endpoints the managed-objects panel queries. We do the
+  // same cross-query but only use it for an informational count badge.
+  // Hooks must run unconditionally before any early return, so we always
+  // call them regardless of whether deps is empty.
+  const entityCounts = {};
+  HR_MANAGED_ENDPOINTS.forEach(({ path }) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const res = useResource(
+      `harness-managed-depcount:${harness?.id || "none"}:${path}`,
+      (signal) => apiFetch("GET", path + "?limit=200", null, { signal }),
+      { pollMs: null, deps: [harness?.id] }
+    );
+    const rows = (res.data?.items ?? []).filter((row) => row.harness_id === harness?.id);
+    rows.forEach((row) => {
+      const src = row.source_dependency;
+      if (!src) return;
+      entityCounts[src] = (entityCounts[src] || 0) + 1;
+    });
+  });
+
+  if (deps.length === 0) return null;
+
+  return (
+    <div className="panel">
+      <div className="panel-h">
+        <Icon name="git-commit" size={13} />
+        <span>Dependencies</span>
+        <span className="muted text-sm" style={{ marginLeft: 6 }}>({deps.length})</span>
+      </div>
+      <div className="panel-body" style={{ padding: "4px 0" }}>
+        {deps.map((d, i) => {
+          const key = d.name || (d.slug + ":" + i);
+          const shortSha = d.resolved_commit ? String(d.resolved_commit).slice(0, 7) : "";
+          const count = d.name != null ? entityCounts[d.name] : undefined;
+          return (
+            <div
+              key={key}
+              data-testid={`dep-row-${d.name || d.slug || i}`}
+              style={{ borderBottom: "1px solid var(--border)", padding: "8px 14px" }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{d.name || d.slug}</span>
+                {d.slug && d.slug !== d.name && (
+                  <span className="mono muted text-sm" style={{ fontSize: 11 }}>{d.slug}</span>
+                )}
+                {typeof d.depth === "number" && (
+                  <span
+                    className="pill pill-paused"
+                    title={`Transitive depth ${d.depth}`}
+                    style={{ fontSize: 10.5 }}
+                  >
+                    depth {d.depth}
+                  </span>
+                )}
+                {typeof count === "number" && (
+                  <span
+                    className="pill pill-ended"
+                    title="Managed entities sourced from this dependency"
+                    style={{ fontSize: 10.5, marginLeft: "auto" }}
+                  >
+                    {count} {count === 1 ? "entity" : "entities"}
+                  </span>
+                )}
+              </div>
+              <div className="muted text-sm" style={{ fontSize: 11.5, display: "flex", flexWrap: "wrap", gap: 10 }}>
+                {d.git_url && (
+                  <span>
+                    <span style={{ color: "var(--text-3)" }}>git_url </span>
+                    <span className="mono">{d.git_url}</span>
+                  </span>
+                )}
+                {d.ref && (
+                  <span>
+                    <span style={{ color: "var(--text-3)" }}>ref </span>
+                    <span className="mono">{d.ref}</span>
+                  </span>
+                )}
+                {shortSha && (
+                  <span>
+                    <span style={{ color: "var(--text-3)" }}>commit </span>
+                    <span className="mono" title={d.resolved_commit}>{shortSha}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
