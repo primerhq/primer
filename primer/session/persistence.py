@@ -173,11 +173,12 @@ def translate_stream_event(
     """
     now = _now_utc()
 
-    # Graph runtime terminal-failure event (spec §5.4). Imported locally
-    # to avoid a hard import-time dependency from primer.session on
-    # primer.graph (the latter brings in jinja2 + jsonschema, which the
-    # agent-only session path doesn't need).
-    from primer.graph.base import _GraphErrorEvent
+    # Graph runtime terminal-failure event (spec §5.4) and End-node
+    # output event (spec §4.4 / §2.2). Imported locally to avoid a
+    # hard import-time dependency from primer.session on primer.graph
+    # (the latter brings in jinja2 + jsonschema, which the agent-only
+    # session path doesn't need).
+    from primer.graph.base import _GraphEndOutputEvent, _GraphErrorEvent
 
     if isinstance(event, _GraphErrorEvent):
         return SessionMessageRecord(
@@ -188,6 +189,18 @@ def translate_stream_event(
                 "message": event.message,
                 "node_id": event.node_id,
                 "path": event.path,
+            },
+            created_at=now,
+        )
+
+    if isinstance(event, _GraphEndOutputEvent):
+        return SessionMessageRecord(
+            seq=1,  # WorkspaceMessageWriter overwrites
+            kind=SessionMessageKind.ASSISTANT_TOKEN,
+            payload={
+                "text": event.text,
+                "parsed": event.parsed,
+                "end_node_id": event.end_node_id,
             },
             created_at=now,
         )

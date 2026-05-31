@@ -252,6 +252,24 @@ class _GraphErrorEvent:
     path: str | None = None
 
 
+@dataclass(frozen=True)
+class _GraphEndOutputEvent:
+    """End-node output event yielded immediately after End fires successfully.
+
+    Spec §4.4 / §2.2. Carries the rendered ``text``, optional ``parsed``
+    JSON object, and the End node's id. The session-layer translator
+    converts this into a ``SessionMessageRecord(kind=assistant_token,
+    payload={text, parsed, end_node_id})`` so the session detail page's
+    WS stream surfaces the graph's final output the same way an agent's
+    final assistant turn does. The terminal ``done`` record continues to
+    come from the session-dispatch post-turn path.
+    """
+
+    text: str
+    parsed: dict[str, Any] | None
+    end_node_id: str
+
+
 class _NodeDone:
     """Sentinel posted to the merge queue when a node finishes streaming."""
 
@@ -594,6 +612,17 @@ class _BaseGraphExecutor(ABC):
                     parsed=res.parsed,
                     history=[],
                     iteration=context.iteration,
+                )
+                # Spec §4.4 — emit an End-output event so the session
+                # translator can append an ``assistant_token`` record
+                # to messages.jsonl carrying the graph's final output.
+                # Storage-backed taps that don't care just drop it.
+                await queue.put(
+                    _GraphEndOutputEvent(  # type: ignore[arg-type]
+                        text=res.text,
+                        parsed=res.parsed,
+                        end_node_id=node_id,
+                    )
                 )
                 await queue.put(
                     _NodeDone(node_id=node_id, output=out, error=None)
