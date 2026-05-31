@@ -672,20 +672,54 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
     if (!draft) return;
     setShowAddMenu(false);
     const existingIds = new Set((draft.nodes || []).map((n) => n.id));
-    // For begin/end use plain kind as the base id; for agent/graph use kind_<n>.
-    const seed = kind === "begin" || kind === "end" ? kind : `${kind}_1`;
+    // For begin/end use plain kind as the base id; for everything else use
+    // a `${kind}_<n>` slug (with `fan_out`/`fan_in`/`tool_call` collapsed
+    // to their short forms so the seed id stays readable).
+    const slug = kind === "fan_out"
+      ? "fanout"
+      : kind === "fan_in"
+        ? "fanin"
+        : kind === "tool_call"
+          ? "tool"
+          : kind;
+    const seed = kind === "begin" || kind === "end" ? kind : `${slug}_1`;
     let newId = seed;
     let i = 1;
     while (existingIds.has(newId)) {
       i += 1;
-      newId = kind === "begin" || kind === "end" ? `${kind}_${i}` : `${kind}_${i}`;
+      newId = kind === "begin" || kind === "end" ? `${kind}_${i}` : `${slug}_${i}`;
     }
     let newNode;
     if (kind === "agent") newNode = { kind: "agent", id: newId, agent_id: "" };
     else if (kind === "graph") newNode = { kind: "graph", id: newId, graph_id: "" };
     else if (kind === "begin") newNode = { kind: "begin", id: newId };
     else if (kind === "end") newNode = { kind: "end", id: newId, output_template: "" };
-    else throw new Error("unknown node kind: " + kind);
+    else if (kind === "fan_out") {
+      // Seed with a single broadcast spec so the node is "shaped" enough
+      // for the side-panel form to render meaningfully. Target stays
+      // blank — operator picks it from the dropdown.
+      newNode = {
+        kind: "fan_out",
+        id: newId,
+        specs: [
+          {
+            kind: "broadcast",
+            target_node_id: "",
+            count: 1,
+            on_failure: "fail_fast",
+          },
+        ],
+      };
+    } else if (kind === "fan_in") {
+      newNode = { kind: "fan_in", id: newId, aggregate_template: "" };
+    } else if (kind === "tool_call") {
+      newNode = {
+        kind: "tool_call",
+        id: newId,
+        tool_id: "",
+        arguments: {},
+      };
+    } else throw new Error("unknown node kind: " + kind);
     newNode.x = 60;
     newNode.y = 60;
     setDraft((d) => ({ ...d, nodes: [...(d.nodes || []), newNode] }));
@@ -825,6 +859,9 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
               </a>
               <a className="dd-item" onClick={() => onAddNode("agent")} style={GR_DD_ITEM_STYLE}>Agent</a>
               <a className="dd-item" onClick={() => onAddNode("graph")} style={GR_DD_ITEM_STYLE}>Subgraph</a>
+              <a className="dd-item" onClick={() => onAddNode("fan_out")} style={GR_DD_ITEM_STYLE}>Fan-out</a>
+              <a className="dd-item" onClick={() => onAddNode("fan_in")} style={GR_DD_ITEM_STYLE}>Fan-in</a>
+              <a className="dd-item" onClick={() => onAddNode("tool_call")} style={GR_DD_ITEM_STYLE}>Tool call</a>
               <a className="dd-item" onClick={() => onAddNode("end")} style={GR_DD_ITEM_STYLE}>End</a>
             </div>
           )}
@@ -1163,6 +1200,10 @@ const GR_NODE_SIZE = {
   graph: { w: 150, h: 56 },
   begin: { w: 22, h: 22 },
   end: { w: 22, h: 22 },
+  // Spec B node kinds:
+  fan_out: { w: 170, h: 56 },
+  fan_in: { w: 150, h: 56 },
+  tool_call: { w: 170, h: 56 },
 };
 
 const GR_Canvas = React.forwardRef(function GR_Canvas(
