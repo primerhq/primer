@@ -595,7 +595,7 @@ class _GraphEndOutputEvent:
 class _NodeDone:
     """Sentinel posted to the merge queue when a node finishes streaming."""
 
-    __slots__ = ("node_id", "output", "error", "ended_detail")
+    __slots__ = ("node_id", "output", "error", "ended_detail", "suspended")
 
     def __init__(
         self,
@@ -604,11 +604,53 @@ class _NodeDone:
         output: NodeOutput | None,
         error: BaseException | str | None,
         ended_detail: str | None = None,
+        suspended: bool = False,
     ) -> None:
         self.node_id = node_id
         self.output = output
         self.error = error
         self.ended_detail = ended_detail
+        # Spec B §2.3 step 3 / Phase 6 — when ``True``, the node yielded
+        # for approval and is suspended pending operator decision. The
+        # outer loop must NOT mark it ENDED/FAILED, nor record output;
+        # the executor tracks it via ``_pending_toolcalls`` and resumes
+        # via :meth:`_BaseGraphExecutor.resume_from_checkpoint`.
+        self.suspended = suspended
+
+
+@dataclass(frozen=True)
+class _PendingToolCall:
+    """One ToolCall node suspended on an approval yield.
+
+    Spec B §2.3 step 3 / Phase 6. Captured at the moment the executor
+    sees :class:`YieldToWorker` bubble up from ``_dispatch_toolcall``;
+    persisted into the checkpoint payload so a resumed executor can
+    re-dispatch the same call with ``bypass_approval=True``.
+
+    Attributes
+    ----------
+    node_id
+        The graph node id (or synthesized fan-out instance id) that
+        suspended. Used by :meth:`resume_from_checkpoint` to look up
+        the underlying ``_ToolCallNode`` definition.
+    tool_call_id
+        Stable id of the parked tool invocation. Mirrors the same
+        field on agent-side yielding tools so the worker's parked
+        state shape is identical.
+    parked_event_key
+        Routing key the operator publishes on to wake the park —
+        ``tool_approval:<session_id>:<tool_call_id>`` by convention.
+    arguments
+        The arguments dict resolved at original-dispatch time.
+        Replaying with the same dict + ``bypass_approval=True`` keeps
+        the resumed call semantically identical to a freshly-approved
+        first dispatch.
+    """
+
+    node_id: str
+    tool_call_id: str
+    parked_event_key: str
+    arguments: dict[str, Any]
 
 
 class _BaseGraphExecutor(ABC):
@@ -676,10 +718,173 @@ class _BaseGraphExecutor(ABC):
         #   ``failed`` (drain_then_fail) or continue (collect).
         self._instance_to_spec: dict[str, tuple[str, FanOutSpec]] = {}
         self._fanout_drain_state: dict[str, _FanoutDrainState] = {}
+        # Phase 6 — mid-graph pause/resume bookkeeping (Spec B §2.3 step 3).
+        # ``_pending_toolcalls`` accumulates ToolCall nodes that raised
+        # :class:`YieldToWorker` during a superstep; the executor saves a
+        # checkpoint, re-raises ``YieldToWorker`` upward (the worker parks
+        # the session), and ``resume_from_checkpoint`` drains the list on
+        # the resume path with ``bypass_approval=True``.
+        self._pending_toolcalls: list[_PendingToolCall] = []
+        # ``_context`` and ``_ready_set`` are populated by :meth:`invoke`
+        # at the top of each superstep and kept on the executor so
+        # :meth:`snapshot_state` can serialise them mid-flight. ``None``
+        # before the first superstep / after termination.
+        self._context: GraphContext | None = None
+        self._ready_set: set[str] = set()
+        self._node_states: dict[str, NodeRuntimeState] = {}
 
     @property
     def graph(self) -> Graph:
         return self._graph
+
+    # ---- Checkpoint payload (Phase 6 / Spec B §2.3 step 3) --------------
+
+    def snapshot_state(self) -> dict[str, Any]:
+        """Serialise the executor's mid-flight state into a JSON-compatible dict.
+
+        Used by :meth:`invoke` when a ToolCall node yields for approval —
+        the worker persists this payload onto the session's parked state,
+        and a fresh executor calls :meth:`restore_state` on the resume
+        path to reconstruct the world before draining the pending
+        ToolCalls.
+
+        Fields:
+
+        * ``context`` — :class:`GraphContext` via ``model_dump(mode="json")``.
+        * ``ready_set`` — the sorted list of node ids the outer loop was
+          about to run when the yield fired (so resume can re-enter the
+          superstep loop at the same point).
+        * ``node_states`` — per-node :class:`NodeRuntimeState`, json-dumped.
+        * ``fanout_instances`` — synthesized_id → instance dict.
+        * ``fanout_target_expected_count`` — target_id → expected count.
+        * ``instance_to_spec`` — synthesized_id →
+          ``{"fanout_node_id": ..., "spec": <FanOutSpec.model_dump>}``.
+        * ``fanout_drain_state`` — drain_key → drain_state dict.
+        * ``pending_toolcalls`` — list of pending ToolCall dicts.
+        """
+        ctx_payload: dict[str, Any] | None = None
+        if self._context is not None:
+            ctx_payload = self._context.model_dump(mode="json")
+        return {
+            "context": ctx_payload,
+            "ready_set": sorted(self._ready_set),
+            "node_states": {
+                nid: ns.model_dump(mode="json")
+                for nid, ns in self._node_states.items()
+            },
+            "fanout_instances": {
+                sid: {
+                    "synthesized_id": inst.synthesized_id,
+                    "target_node_id": inst.target_node_id,
+                    "fanout_index": inst.fanout_index,
+                    "fanout_item": (
+                        inst.fanout_item.model_dump(mode="json")
+                        if isinstance(inst.fanout_item, NodeOutput)
+                        else inst.fanout_item
+                    ),
+                    "fanout_item_kind": (
+                        "node_output"
+                        if isinstance(inst.fanout_item, NodeOutput)
+                        else "raw"
+                    ),
+                }
+                for sid, inst in self._fanout_instances.items()
+            },
+            "fanout_target_expected_count": dict(
+                self._fanout_target_expected_count
+            ),
+            "instance_to_spec": {
+                sid: {
+                    "fanout_node_id": fanout_id,
+                    "spec": spec.model_dump(mode="json"),
+                }
+                for sid, (fanout_id, spec) in self._instance_to_spec.items()
+            },
+            "fanout_drain_state": {
+                key: {
+                    "on_failure": ds.on_failure,
+                    "fanout_node_id": ds.fanout_node_id,
+                    "target_node_id": ds.target_node_id,
+                    "expected_count": ds.expected_count,
+                    "completed_count": ds.completed_count,
+                    "any_failed": ds.any_failed,
+                    "first_failure": list(ds.first_failure) if ds.first_failure else None,
+                }
+                for key, ds in self._fanout_drain_state.items()
+            },
+            "pending_toolcalls": [
+                {
+                    "node_id": p.node_id,
+                    "tool_call_id": p.tool_call_id,
+                    "parked_event_key": p.parked_event_key,
+                    "arguments": dict(p.arguments),
+                }
+                for p in self._pending_toolcalls
+            ],
+        }
+
+    def restore_state(self, payload: dict[str, Any]) -> None:
+        """Inverse of :meth:`snapshot_state` — repopulate executor attrs.
+
+        The graph topology + resolvers stay as-passed at construction
+        time; only the dynamic execution state is reconstructed. Callers
+        that mutated the topology between checkpoint + resume are on
+        their own (Spec B does not yet support graph hot-edits across
+        a pause).
+        """
+        ctx_raw = payload.get("context")
+        if ctx_raw is None:
+            self._context = None
+        else:
+            self._context = GraphContext.model_validate(ctx_raw)
+        self._ready_set = set(payload.get("ready_set") or [])
+        self._node_states = {
+            nid: NodeRuntimeState.model_validate(raw)
+            for nid, raw in (payload.get("node_states") or {}).items()
+        }
+        self._fanout_instances = {}
+        for sid, raw in (payload.get("fanout_instances") or {}).items():
+            kind = raw.get("fanout_item_kind", "raw")
+            item_raw = raw.get("fanout_item")
+            if kind == "node_output" and item_raw is not None:
+                item: Any = NodeOutput.model_validate(item_raw)
+            else:
+                item = item_raw
+            self._fanout_instances[sid] = _FanoutInstance(
+                synthesized_id=raw["synthesized_id"],
+                target_node_id=raw["target_node_id"],
+                fanout_index=raw.get("fanout_index"),
+                fanout_item=item,
+            )
+        self._fanout_target_expected_count = dict(
+            payload.get("fanout_target_expected_count") or {}
+        )
+        self._instance_to_spec = {}
+        for sid, raw in (payload.get("instance_to_spec") or {}).items():
+            spec = FanOutSpec.model_validate(raw["spec"])
+            self._instance_to_spec[sid] = (raw["fanout_node_id"], spec)
+        self._fanout_drain_state = {}
+        for key, raw in (payload.get("fanout_drain_state") or {}).items():
+            ff = raw.get("first_failure")
+            first_failure = tuple(ff) if ff else None
+            self._fanout_drain_state[key] = _FanoutDrainState(
+                on_failure=raw["on_failure"],
+                fanout_node_id=raw["fanout_node_id"],
+                target_node_id=raw["target_node_id"],
+                expected_count=raw["expected_count"],
+                completed_count=raw.get("completed_count", 0),
+                any_failed=raw.get("any_failed", False),
+                first_failure=first_failure,  # type: ignore[arg-type]
+            )
+        self._pending_toolcalls = [
+            _PendingToolCall(
+                node_id=raw["node_id"],
+                tool_call_id=raw["tool_call_id"],
+                parked_event_key=raw["parked_event_key"],
+                arguments=dict(raw.get("arguments") or {}),
+            )
+            for raw in (payload.get("pending_toolcalls") or [])
+        ]
 
     # ---- Subclass hooks --------------------------------------------------
 
