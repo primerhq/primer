@@ -370,18 +370,20 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
         wid = r.json()["id"]
         cleanup_urls.insert(0, f"/v1/workspaces/{wid}")
 
-        # Graph: minimal agent→terminal so it parses.
+        # Graph: minimal Begin→agent→End so it parses.
         r = await client.post(
             "/v1/graphs",
             json={
                 "id": gid,
                 "description": "t736 graph",
-                "entry_node_id": "n1",
+                "entry_node_id": "begin",
                 "nodes": [
+                    {"id": "begin", "kind": "begin"},
                     {"id": "n1", "kind": "agent", "agent_id": aid},
-                    {"id": "end", "kind": "terminal"},
+                    {"id": "end", "kind": "end"},
                 ],
                 "edges": [
+                    {"kind": "static", "from_node": "begin", "to_node": "n1"},
                     {"kind": "static", "from_node": "n1", "to_node": "end"},
                 ],
             },
@@ -497,13 +499,19 @@ async def test_t0739_graph_callable_router_empty_registry_clean_fatal(
             json={
                 "id": gid,
                 "description": "router fatal",
-                "entry_node_id": "n1",
+                "entry_node_id": "begin",
                 "nodes": [
+                    {"id": "begin", "kind": "begin"},
                     {"id": "n1", "kind": "agent", "agent_id": aid},
                     {"id": "n2", "kind": "agent", "agent_id": aid},
-                    {"id": "end", "kind": "terminal"},
+                    {"id": "end", "kind": "end"},
                 ],
                 "edges": [
+                    {
+                        "kind": "static",
+                        "from_node": "begin",
+                        "to_node": "n1",
+                    },
                     {
                         "kind": "conditional",
                         "from_node": "n1",
