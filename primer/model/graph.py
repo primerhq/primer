@@ -110,6 +110,23 @@ class NodeOutput(BaseModel):
         ge=0,
         description="Graph iteration that produced this output.",
     )
+    error: str | None = Field(
+        default=None,
+        description=(
+            "Populated only when a node failed inside a fan-out subtree "
+            "configured with `on_failure='collect'`. Every other failure "
+            "path terminates the graph as before — no error-stamped "
+            "NodeOutput is left in GraphContext.nodes."
+        ),
+    )
+    ended_detail: str | None = Field(
+        default=None,
+        description=(
+            "Failure code (e.g. 'tool_output_invalid', "
+            "'tool_execution_failed'); populated when `error` is set. "
+            "Mirrors WorkspaceSession.ended_detail's semantics."
+        ),
+    )
 
 
 class GraphContext(BaseModel):
