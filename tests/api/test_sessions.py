@@ -221,6 +221,74 @@ async def seeded_agent(app):
         pass
 
 
+@pytest.fixture
+async def seeded_graph(app):
+    """Insert a minimal Begin → End Graph row directly via Storage[Graph].
+
+    The fixture exposes a factory so Task 5.2 tests can mount a Begin
+    node with an ``input_schema`` while Task 5.1's test can use the
+    plain no-schema shape. Calling ``await seeded_graph()`` with no
+    arguments returns a graph with id ``gr-seed`` and no input_schema;
+    callers that want a schema pass ``input_schema=...`` and optionally
+    override the ``id``.
+    """
+    from primer.model.graph import (
+        Graph,
+        _BeginNode,
+        _EndNode,
+        _StaticEdge,
+    )
+
+    storage = app.state.storage_provider.get_storage(Graph)
+    created_ids: list[str] = []
+
+    async def _make(
+        *,
+        id: str = "gr-seed",
+        input_schema: dict | None = None,
+    ) -> Graph:
+        g = Graph(
+            id=id,
+            description="seeded graph fixture",
+            nodes=[
+                _BeginNode(id="start", input_schema=input_schema),
+                _EndNode(id="end"),
+            ],
+            edges=[_StaticEdge(from_node="start", to_node="end")],
+            entry_node_id="start",
+        )
+        await storage.create(g)
+        created_ids.append(g.id)
+        return g
+
+    # Pre-create a default graph so tests that don't need a schema can
+    # use ``seeded_graph.id`` / ``seeded_graph.default`` directly.
+    default_graph = await _make()
+
+    class _Handle:
+        """Callable + attribute access for the seeded_graph fixture."""
+
+        def __init__(self, default, factory):
+            self._default = default
+            self._factory = factory
+            self.id = default.id
+
+        def __call__(self, **kwargs):
+            return self._factory(**kwargs)
+
+        @property
+        def default(self):
+            return self._default
+
+    yield _Handle(default_graph, _make)
+
+    for gid in created_ids:
+        try:
+            await storage.delete(gid)
+        except Exception:
+            pass
+
+
 async def test_create_session_default_status_is_created(
     sessions_client, seeded_workspace, seeded_agent,
 ):
@@ -305,6 +373,24 @@ async def test_create_session_with_graph_binding(
             await storage.delete(graph.id)
         except Exception:
             pass
+
+
+async def test_create_session_accepts_graph_input_field(
+    sessions_client, seeded_workspace, seeded_graph,
+):
+    """The session create body accepts an optional ``graph_input: Any``
+    field. For graphs without an ``input_schema``, it's just stored on
+    metadata for the worker to read."""
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "graph", "graph_id": seeded_graph.id},
+            "graph_input": {"q": "hello"},
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["metadata"].get("graph_input") == {"q": "hello"}
 
 
 # ===========================================================================

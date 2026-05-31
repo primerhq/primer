@@ -86,6 +86,17 @@ class SessionCreateBody(BaseModel):
     parent_session_id: str | None = None
     auto_start: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
+    graph_input: Any | None = Field(
+        default=None,
+        description=(
+            "Input value for graph bindings. Validated against the "
+            "graph's Begin.input_schema when set. For graphs without a "
+            "schema, accepted shapes are str, list[Message], or dict. "
+            "Persisted to ``session.metadata['graph_input']`` so the "
+            "workspace graph executor can pick it up as the initial "
+            "input."
+        ),
+    )
 
 
 @nested_session_router.post(
@@ -157,6 +168,21 @@ async def create_session(
         created_at=now,
     )
     await sessions.create(session)
+
+    # Graph bindings: persist ``graph_input`` onto session metadata so
+    # the workspace graph executor can read it as the initial input
+    # (see ``primer/graph/workspace_executor.py`` —
+    # ``session.metadata['graph_input']`` is the source of truth for
+    # the initial graph input).
+    if (
+        isinstance(body.binding, GraphSessionBinding)
+        and body.graph_input is not None
+    ):
+        session.metadata = {
+            **(session.metadata or {}),
+            "graph_input": body.graph_input,
+        }
+        await sessions.update(session)
 
     # Allocate the on-disk session slot inside the workspace so the
     # scheduler-visible Session row and the workspace's
