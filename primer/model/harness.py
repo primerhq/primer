@@ -20,11 +20,55 @@ class HarnessStatus(str, Enum):
     ERROR = "error"
 
 
+class HarnessDirection(str, Enum):
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+
+
 class HarnessOperation(str, Enum):
     FETCH = "fetch"
     INSTALL = "install"
     SYNC = "sync"
     UNINSTALL = "uninstall"
+    BUILD = "build"
+    PUSH = "push"
+
+
+class OverrideMapping(BaseModel):
+    """One field on a tracked entity that becomes an override at render time."""
+
+    field_path: str
+    override_path: str
+    widget: Literal[
+        "llm-provider-picker",
+        "embedding-provider-picker",
+        "ssp-picker",
+        "cross-encoder-picker",
+    ] | None = None
+    schema_override: dict[str, Any] | None = None
+
+    @field_validator("field_path")
+    @classmethod
+    def _fp(cls, v: str) -> str:
+        if not v.startswith("/"):
+            raise ValueError("field_path must be a JSON pointer starting with '/'")
+        return v
+
+
+class TrackedEntity(BaseModel):
+    """One entity included in an outbound harness."""
+
+    kind: Literal["agent", "graph", "collection", "document", "toolset"]
+    source_id: str
+    template_name: str
+    overrides: list[OverrideMapping] = Field(default_factory=list)
+
+    @field_validator("template_name")
+    @classmethod
+    def _tn(cls, v: str) -> str:
+        if not re.match(r"^[a-z][a-z0-9-]{0,62}$", v):
+            raise ValueError("template_name must match [a-z][a-z0-9-]{0,62}")
+        return v
 
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
@@ -88,6 +132,11 @@ class Harness(Identifiable):
     last_operation_at: datetime | None = None
     last_operation_error: str | None = None
     dependencies_resolved: list[ResolvedDependency] = Field(default_factory=list)
+    direction: HarnessDirection = HarnessDirection.INBOUND
+    tracked_entities: list[TrackedEntity] = Field(default_factory=list)
+    last_pushed_commit: str | None = None
+    last_pushed_bundle_hash: str | None = None
+    last_pushed_at: datetime | None = None
     created_at: datetime
 
     @field_validator("slug")
@@ -110,6 +159,7 @@ class RenderedEntry(BaseModel):
     rendered_hash: str
     rendered_payload: dict[str, Any]
     source_dependency: str | None = None
+    source_entity_id: str | None = None
 
 
 class HarnessRendering(Identifiable):
@@ -124,9 +174,12 @@ class HarnessRendering(Identifiable):
 __all__ = [
     "DependencyRef",
     "Harness",
+    "HarnessDirection",
     "HarnessOperation",
     "HarnessRendering",
     "HarnessStatus",
+    "OverrideMapping",
     "RenderedEntry",
     "ResolvedDependency",
+    "TrackedEntity",
 ]
