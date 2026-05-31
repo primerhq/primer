@@ -70,12 +70,14 @@ def _seed_graph(base_url: str, gid: str, agent_id: str) -> None:
         r = c.post("/v1/graphs", json={
             "id": gid,
             "description": "editor probe",
-            "entry_node_id": "n1",
+            "entry_node_id": "begin",
             "nodes": [
+                {"id": "begin", "kind": "begin"},
                 {"id": "n1", "kind": "agent", "agent_id": agent_id},
-                {"id": "end", "kind": "terminal"},
+                {"id": "end", "kind": "end"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "n1"},
                 {"kind": "static", "from_node": "n1", "to_node": "end"},
             ],
         })
