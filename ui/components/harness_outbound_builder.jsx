@@ -153,23 +153,37 @@ function HarnessOutboundBuilder({ onClose, onCreated, initialStep, initialHarnes
   );
 
   // ---- Step 4: Create harness, build, optionally push ----
+  // When `initialHarness` was passed (edit-tracked-entities flow), we PUT
+  // /tracked_entities on the existing row instead of creating a new harness.
   const doCreate = async () => {
     setCreateBusy(true);
     setCreateError("");
     try {
-      const body = {
-        name: name || slug,
-        slug,
-        direction: "outbound",
-        git_url: gitUrl,
-        ref: ref || "main",
-        tracked_entities: tracked,
-      };
-      if (description) body.description = description;
-      if (subpath) body.subpath = subpath;
-      if (gitToken) body.git_token = gitToken;
+      let created;
+      if (initialHarness?.id) {
+        // Edit path — PUT /v1/harnesses/{id}/tracked_entities
+        await apiFetch(
+          "PUT",
+          "/harnesses/" + encodeURIComponent(initialHarness.id) + "/tracked_entities",
+          { tracked_entities: tracked },
+        );
+        if (!mountedRef.current) return;
+        created = await apiFetch("GET", "/harnesses/" + encodeURIComponent(initialHarness.id));
+      } else {
+        const body = {
+          name: name || slug,
+          slug,
+          direction: "outbound",
+          git_url: gitUrl,
+          ref: ref || "main",
+          tracked_entities: tracked,
+        };
+        if (description) body.description = description;
+        if (subpath) body.subpath = subpath;
+        if (gitToken) body.git_token = gitToken;
 
-      const created = await apiFetch("POST", "/harnesses", body);
+        created = await apiFetch("POST", "/harnesses", body);
+      }
       if (!mountedRef.current) return;
       setCreatedHarness(created);
 

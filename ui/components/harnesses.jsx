@@ -336,6 +336,7 @@ function HarnessDetail({ id }) {
   const { navigate } = useRouter();
 
   const [confirmUninstall, setConfirmUninstall] = React.useState(false);
+  const [editTrackedOpen, setEditTrackedOpen] = React.useState(false);
 
   const detail = useResource(
     "harness-detail:" + id,
@@ -378,6 +379,21 @@ function HarnessDetail({ id }) {
       onError: () => detail.refetch(),
     }
   );
+  // Outbound-only ops
+  const buildMut = useMutation(
+    () => apiFetch("POST", "/harnesses/" + encodeURIComponent(id) + "/build", {}),
+    {
+      onSuccess: () => detail.refetch(),
+      onError: () => detail.refetch(),
+    }
+  );
+  const pushMut = useMutation(
+    () => apiFetch("POST", "/harnesses/" + encodeURIComponent(id) + "/push", {}),
+    {
+      onSuccess: () => detail.refetch(),
+      onError: () => detail.refetch(),
+    }
+  );
 
   if (detail.loading && !detail.data) {
     return (
@@ -407,9 +423,14 @@ function HarnessDetail({ id }) {
 
   const h = detail.data;
   const isPending = !!h.pending_operation;
+  const isOutbound = h.direction === "outbound";
   const canFetch = !isPending;
   const canSync = !isPending && (h.status === "INSTALLED" || h.status === "OUTDATED");
   const canUninstall = !isPending;
+  // Outbound: build is allowed any time we aren't pending; push only when we
+  // have something to push (DRAFT or OUTDATED) and there is no in-flight op.
+  const canBuild = !isPending;
+  const canPush = !isPending && (h.status === "DRAFT" || h.status === "OUTDATED");
 
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -418,6 +439,9 @@ function HarnessDetail({ id }) {
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontWeight: 600, fontSize: 14 }}>{h.name || h.slug}</span>
           <span className="mono muted text-sm">{h.slug}</span>
+          {isOutbound && (
+            <span className="pill pill-paused" style={{ fontSize: 10 }}>outbound</span>
+          )}
           <HR_StatusBadge status={h.status} />
           {isPending && (
             <span className="pill pill-claimed">
@@ -427,26 +451,64 @@ function HarnessDetail({ id }) {
           )}
         </div>
         <div style={{ display: "flex", gap: 6 }}>
-          <Btn
-            size="sm"
-            kind="ghost"
-            icon="refresh"
-            disabled={!canFetch || fetchMut.loading}
-            onClick={() => fetchMut.mutate().catch(() => {})}
-            title="Enqueue FETCH — pulls the latest commit and updates metadata"
-          >
-            {fetchMut.loading ? "Fetching…" : "Fetch"}
-          </Btn>
-          <Btn
-            size="sm"
-            kind="ghost"
-            icon="refresh"
-            disabled={!canSync || syncMut.loading}
-            onClick={() => syncMut.mutate().catch(() => {})}
-            title="Enqueue SYNC — re-apply the installed harness from the fetched commit"
-          >
-            {syncMut.loading ? "Syncing…" : "Sync"}
-          </Btn>
+          {!isOutbound && (
+            <>
+              <Btn
+                size="sm"
+                kind="ghost"
+                icon="refresh"
+                disabled={!canFetch || fetchMut.loading}
+                onClick={() => fetchMut.mutate().catch(() => {})}
+                title="Enqueue FETCH — pulls the latest commit and updates metadata"
+              >
+                {fetchMut.loading ? "Fetching…" : "Fetch"}
+              </Btn>
+              <Btn
+                size="sm"
+                kind="ghost"
+                icon="refresh"
+                disabled={!canSync || syncMut.loading}
+                onClick={() => syncMut.mutate().catch(() => {})}
+                title="Enqueue SYNC — re-apply the installed harness from the fetched commit"
+              >
+                {syncMut.loading ? "Syncing…" : "Sync"}
+              </Btn>
+            </>
+          )}
+          {isOutbound && (
+            <>
+              <Btn
+                size="sm"
+                kind="ghost"
+                icon="refresh"
+                disabled={!canBuild || buildMut.loading}
+                onClick={() => buildMut.mutate().catch(() => {})}
+                title="Enqueue BUILD — re-render tracked entities and recompute the bundle"
+              >
+                {buildMut.loading ? "Checking…" : "Check drift"}
+              </Btn>
+              <Btn
+                size="sm"
+                kind="ghost"
+                icon="edit-3"
+                disabled={isPending}
+                onClick={() => setEditTrackedOpen(true)}
+                title="Edit tracked entities + override mappings"
+              >
+                Edit tracked entities
+              </Btn>
+              <Btn
+                size="sm"
+                kind="primary"
+                icon="upload"
+                disabled={!canPush || pushMut.loading}
+                onClick={() => pushMut.mutate().catch(() => {})}
+                title="Enqueue PUSH — commit the rendered bundle and push to the remote ref"
+              >
+                {pushMut.loading ? "Pushing…" : "Push"}
+              </Btn>
+            </>
+          )}
           <Btn
             size="sm"
             kind="danger"
@@ -454,7 +516,7 @@ function HarnessDetail({ id }) {
             disabled={!canUninstall}
             onClick={() => setConfirmUninstall(true)}
           >
-            Uninstall
+            {isOutbound ? "Delete" : "Uninstall"}
           </Btn>
           <Btn size="sm" kind="ghost" icon="chevron-left" onClick={() => navigate("/harnesses")}>Back</Btn>
         </div>
@@ -482,24 +544,61 @@ function HarnessDetail({ id }) {
           {h.last_operation_error && (
             <div
               className="panel"
+              data-testid="hr-last-operation-error"
               style={{ marginTop: 10, background: "var(--red-dim)", borderColor: "oklch(0.7 0.2 25 / 0.3)" }}
             >
               <div className="panel-body" style={{ padding: "8px 12px" }}>
                 <div style={{ fontWeight: 600, fontSize: 12, color: "var(--red)", marginBottom: 4 }}>Last operation error</div>
-                <pre style={{ fontSize: 11, color: "var(--text-2)", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                  {h.last_operation_error}
-                </pre>
+                {typeof h.last_operation_error === "string" ? (
+                  <pre style={{ fontSize: 11, color: "var(--text-2)", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                    {h.last_operation_error}
+                  </pre>
+                ) : (
+                  <>
+                    {h.last_operation_error.code && (
+                      <div className="mono" style={{ fontSize: 11, color: "var(--red)", marginBottom: 4 }}>
+                        {h.last_operation_error.code}
+                      </div>
+                    )}
+                    {h.last_operation_error.message && (
+                      <pre style={{ fontSize: 11, color: "var(--text-2)", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                        {h.last_operation_error.message}
+                      </pre>
+                    )}
+                    {h.last_operation_error.detail && (
+                      <pre style={{ fontSize: 11, color: "var(--text-3)", margin: "4px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                        {typeof h.last_operation_error.detail === "string"
+                          ? h.last_operation_error.detail
+                          : JSON.stringify(h.last_operation_error.detail, null, 2)}
+                      </pre>
+                    )}
+                  </>
+                )}
               </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Dependencies — Spec A §13 */}
-      <HR_DependenciesPanel harness={h} />
+      {/* Outbound: tracked entities + last-pushed panels */}
+      {isOutbound && <HR_LastPushedPanel harness={h} />}
+      {isOutbound && <HR_TrackedEntitiesPanel harness={h} />}
 
-      {/* Managed objects */}
-      <HR_ManagedObjects harnessId={h.id} slug={h.slug} />
+      {/* Dependencies — Spec A §13 (inbound only) */}
+      {!isOutbound && <HR_DependenciesPanel harness={h} />}
+
+      {/* Managed objects (inbound only) */}
+      {!isOutbound && <HR_ManagedObjects harnessId={h.id} slug={h.slug} />}
+
+      {/* Outbound — edit tracked entities (re-opens the builder wizard at step 3) */}
+      {editTrackedOpen && window.HarnessOutboundBuilder && (
+        <window.HarnessOutboundBuilder
+          initialStep={3}
+          initialHarness={h}
+          onClose={() => setEditTrackedOpen(false)}
+          onCreated={() => { setEditTrackedOpen(false); detail.refetch(); }}
+        />
+      )}
 
       {/* Confirm uninstall */}
       {confirmUninstall && (
@@ -531,6 +630,105 @@ function HarnessDetail({ id }) {
           </ul>
         </Modal>
       )}
+    </div>
+  );
+}
+
+// ============================================================================
+// HR_LastPushedPanel — outbound's last-push metadata (commit, time, bundle hash)
+//
+// Only renders when the harness has a last_pushed_commit set. Shows short SHA,
+// timestamp, bundle_hash short hex.
+// ============================================================================
+
+function HR_LastPushedPanel({ harness }) {
+  if (!harness.last_pushed_commit) {
+    return (
+      <div className="panel" data-testid="hr-last-pushed-empty">
+        <div className="panel-h"><Icon name="upload" size={13} /><span>Last push</span></div>
+        <div className="panel-body" style={{ padding: "8px 14px" }}>
+          <div className="muted text-sm">Never pushed.</div>
+        </div>
+      </div>
+    );
+  }
+  const sha = String(harness.last_pushed_commit).slice(0, 8);
+  const bundleShort = harness.last_pushed_bundle_hash ? String(harness.last_pushed_bundle_hash).slice(0, 12) : null;
+  return (
+    <div className="panel" data-testid="hr-last-pushed">
+      <div className="panel-h"><Icon name="upload" size={13} /><span>Last push</span></div>
+      <div className="panel-body" style={{ padding: "8px 14px" }}>
+        <dl className="kv" style={{ gridTemplateColumns: "180px 1fr", rowGap: 4 }}>
+          <dt>Commit</dt><dd className="mono" title={harness.last_pushed_commit}>{sha}</dd>
+          {harness.last_pushed_at && (
+            <><dt>At</dt><dd className="mono">{harness.last_pushed_at}</dd></>
+          )}
+          {bundleShort && (
+            <><dt>Bundle hash</dt><dd className="mono" title={harness.last_pushed_bundle_hash}>{bundleShort}</dd></>
+          )}
+        </dl>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// HR_TrackedEntitiesPanel — outbound's tracked entity table with drift indicator
+//
+// Rows: kind, source_id, template_name, # of override mappings. Drift indicator
+// is the harness-level status pill (per-entity drift is a follow-up — Spec B
+// §11.3 + Plan B Phase 9 footnote).
+// ============================================================================
+
+function HR_TrackedEntitiesPanel({ harness }) {
+  const tracked = Array.isArray(harness.tracked_entities) ? harness.tracked_entities : [];
+  const isDrifted = harness.status === "OUTDATED" || harness.status === "outdated";
+  return (
+    <div className="panel" data-testid="hr-tracked-entities">
+      <div className="panel-h">
+        <Icon name="box" size={13} />
+        <span>Tracked entities</span>
+        <span className="muted text-sm" style={{ marginLeft: 6 }}>({tracked.length})</span>
+        {isDrifted && (
+          <span
+            data-testid="hr-tracked-drift"
+            className="pill pill-paused"
+            style={{ marginLeft: "auto", fontSize: 10.5 }}
+            title="One or more tracked entities have changed since the last push"
+          >
+            <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--amber)", marginRight: 4 }} />
+            drift
+          </span>
+        )}
+      </div>
+      <div className="panel-body" style={{ padding: "4px 0" }}>
+        {tracked.length === 0 && (
+          <div className="muted text-sm" style={{ padding: "8px 14px" }}>No tracked entities.</div>
+        )}
+        {tracked.map((te, i) => {
+          const overrideCount = Array.isArray(te.overrides) ? te.overrides.length : 0;
+          return (
+            <div
+              key={(te.template_name || "te") + ":" + i}
+              data-testid={"hr-tracked-row-" + te.template_name}
+              style={{ borderBottom: "1px solid var(--border)", padding: "6px 14px", display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}
+            >
+              <span className="mono" style={{ minWidth: 90, color: "var(--text-2)" }}>{te.kind}</span>
+              <span className="mono" style={{ fontWeight: 500 }}>{te.template_name}</span>
+              <span className="mono muted text-sm" style={{ fontSize: 10.5 }}>{te.source_id}</span>
+              <span className="pill pill-ended" style={{ marginLeft: "auto", fontSize: 10 }}>
+                {overrideCount} {overrideCount === 1 ? "mapping" : "mappings"}
+              </span>
+              {isDrifted && (
+                <span
+                  title="Harness reports drift — re-build to see what changed"
+                  style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--amber)" }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1025,3 +1223,5 @@ window.HarnessesPage = HarnessesPage;
 window.HarnessList = HarnessList;
 window.HarnessDetail = HarnessDetail;
 window.HarnessRegisterDialog = HarnessRegisterDialog;
+window.HR_LastPushedPanel = HR_LastPushedPanel;
+window.HR_TrackedEntitiesPanel = HR_TrackedEntitiesPanel;
