@@ -457,6 +457,29 @@ class _FanoutInstance:
     fanout_item: Any               # FanOut's NodeOutput for broadcast/tee; list element for map
 
 
+@dataclass
+class _FanoutDrainState:
+    """Per-(FanOut, target) drain bookkeeping for non-fail_fast modes.
+
+    Spec B §1.4 / §2.5:
+
+    * ``drain_then_fail`` — once every instance for ``target_node_id`` has
+      reported (success or failure), terminate the graph ``failed`` with
+      ``ended_detail='fanin_upstream_failed'``.
+    * ``collect`` — stamp failed instances' ``NodeOutput.error`` /
+      ``ended_detail`` and let the graph continue; downstream FanIn templates
+      branch on ``n.error``.
+    """
+
+    on_failure: str   # "fail_fast" | "drain_then_fail" | "collect"
+    fanout_node_id: str
+    target_node_id: str
+    expected_count: int
+    completed_count: int = 0
+    any_failed: bool = False
+    first_failure: tuple[str, str] | None = None  # (synthesized_id, ended_detail)
+
+
 def _resolve_fanout_spec(
     spec: "FanOutSpec",
     context: "GraphContext",
@@ -641,6 +664,18 @@ class _BaseGraphExecutor(ABC):
         self._pending_fanout: dict[str, list[_FanoutInstance]] = {}
         self._fanout_instances: dict[str, _FanoutInstance] = {}
         self._fanout_target_expected_count: dict[str, int] = {}
+        # FanOutSpec on_failure policy bookkeeping (Spec B §1.4 / §2.5):
+        # ``_instance_to_spec`` -- per synthesized_id, the spawning FanOut id
+        #   + the FanOutSpec that produced it. Lets the per-node result
+        #   handler look up the spec's ``on_failure`` and the corresponding
+        #   ``_fanout_drain_state`` entry.
+        # ``_fanout_drain_state`` -- per ``f"{fanout_node_id}__{target_id}"``
+        #   key (one FanOut may have multiple specs to different targets),
+        #   tracks completed_count / any_failed / first_failure so the outer
+        #   loop can decide at end-of-superstep whether to terminate
+        #   ``failed`` (drain_then_fail) or continue (collect).
+        self._instance_to_spec: dict[str, tuple[str, FanOutSpec]] = {}
+        self._fanout_drain_state: dict[str, _FanoutDrainState] = {}
 
     @property
     def graph(self) -> Graph:
@@ -844,6 +879,74 @@ class _BaseGraphExecutor(ABC):
                         last_run_at=datetime.now(timezone.utc),
                         error=err_text,
                     )
+                    # Spec B §2.5 — when this failed node is a fan-out
+                    # instance whose spawning spec has on_failure != fail_fast,
+                    # SUPPRESS the immediate failure: bump the drain state and
+                    # let the superstep continue. For ``collect`` we also
+                    # stamp NodeOutput.error and append to the aggregator.
+                    inst_spec = self._instance_to_spec.get(nid)
+                    if inst_spec is not None and inst_spec[1].on_failure != "fail_fast":
+                        fanout_id, spec = inst_spec
+                        drain_key = f"{fanout_id}__{spec.target_node_id or ''}"
+                        # Fall back to scanning when the spec is a tee (target
+                        # is in target_node_ids and nid identifies one of them).
+                        if drain_key not in self._fanout_drain_state:
+                            # Recover the target id from the synthesized id's
+                            # _FanoutInstance entry (tee path: synthesized_id ==
+                            # target_node_id; broadcast/map: target_node_id is
+                            # the bare target).
+                            inst_lookup = self._fanout_instances.get(nid)
+                            if inst_lookup is not None:
+                                drain_key = (
+                                    f"{fanout_id}__{inst_lookup.target_node_id}"
+                                )
+                        drain = self._fanout_drain_state.get(drain_key)
+                        if drain is not None:
+                            drain.completed_count += 1
+                            drain.any_failed = True
+                            if drain.first_failure is None:
+                                drain.first_failure = (
+                                    nid, done.ended_detail or "node_failed",
+                                )
+                            # ``collect`` mode: stamp NodeOutput.error so
+                            # downstream FanIn templates can branch on n.error,
+                            # and append to the aggregator list so the FanIn
+                            # ready-set still counts the failed instance.
+                            if spec.on_failure == "collect":
+                                fail_output = NodeOutput(
+                                    text="",
+                                    parsed=None,
+                                    history=[],
+                                    iteration=context.iteration,
+                                    error=(
+                                        str(done.error)
+                                        if done is not None and done.error is not None
+                                        else (done.ended_detail if done else "node_failed")
+                                    ),
+                                    ended_detail=(
+                                        done.ended_detail
+                                        if done is not None and done.ended_detail is not None
+                                        else "node_failed"
+                                    ),
+                                )
+                                context.nodes[nid] = fail_output
+                                inst_obj = self._fanout_instances.get(nid)
+                                if inst_obj is not None:
+                                    agg = context.nodes.get(inst_obj.target_node_id)
+                                    agg_list: list[NodeOutput | None] = (
+                                        list(agg) if isinstance(agg, list) else []  # type: ignore[arg-type]
+                                    )
+                                    target_len = (inst_obj.fanout_index or 0) + 1
+                                    while len(agg_list) < target_len:
+                                        agg_list.append(None)
+                                    if inst_obj.fanout_index is not None:
+                                        agg_list[inst_obj.fanout_index] = fail_output
+                                    else:
+                                        agg_list.append(fail_output)
+                                    context.nodes[inst_obj.target_node_id] = [
+                                        x for x in agg_list if x is not None
+                                    ]
+                            continue
                     any_failed = True
                     # When the failure carries a spec §5.4 code (e.g. End-node
                     # output validation), propagate it so the executor's
@@ -868,7 +971,7 @@ class _BaseGraphExecutor(ABC):
                     inst = self._fanout_instances.get(nid)
                     if inst is not None:
                         agg = context.nodes.get(inst.target_node_id)
-                        agg_list: list[NodeOutput | None] = list(agg) if isinstance(agg, list) else []  # type: ignore[arg-type]
+                        agg_list = list(agg) if isinstance(agg, list) else []  # type: ignore[arg-type]
                         target_len = (inst.fanout_index or 0) + 1
                         while len(agg_list) < target_len:
                             agg_list.append(None)
@@ -879,6 +982,18 @@ class _BaseGraphExecutor(ABC):
                         context.nodes[inst.target_node_id] = [
                             x for x in agg_list if x is not None
                         ]
+                        # Spec B §2.5 — count successful instances against the
+                        # drain state too so drain_then_fail / collect modes
+                        # know when every sibling has reported in.
+                        inst_spec_ok = self._instance_to_spec.get(nid)
+                        if inst_spec_ok is not None:
+                            fanout_id_ok, spec_ok = inst_spec_ok
+                            drain_key_ok = (
+                                f"{fanout_id_ok}__{inst.target_node_id}"
+                            )
+                            drain_ok = self._fanout_drain_state.get(drain_key_ok)
+                            if drain_ok is not None:
+                                drain_ok.completed_count += 1
                 node_states[nid] = NodeRuntimeState(
                     status=NodeRuntimeStatus.ENDED,
                     last_run_iteration=context.iteration,
@@ -901,6 +1016,35 @@ class _BaseGraphExecutor(ABC):
                     ended_reason = "failed"
                 for ev in error_events:
                     yield ev  # type: ignore[misc]
+                break
+
+            # Spec B §2.5 — drain_then_fail: once every instance for a
+            # (FanOut, target) pair has reported, if any failed terminate
+            # the graph ``failed`` with ``fanin_upstream_failed``. We check
+            # every drain state because multiple FanOut specs can target
+            # different ids; the first one that signals failure wins.
+            drain_failure: tuple[str, str] | None = None
+            for drain in self._fanout_drain_state.values():
+                if (
+                    drain.on_failure == "drain_then_fail"
+                    and drain.any_failed
+                    and drain.completed_count >= drain.expected_count
+                    and drain.first_failure is not None
+                ):
+                    drain_failure = drain.first_failure
+                    break
+            if drain_failure is not None:
+                failed_nid, _failed_detail = drain_failure
+                yield _GraphErrorEvent(  # type: ignore[misc]
+                    code="fanin_upstream_failed",
+                    message=(
+                        f"fan-out worker {failed_nid!r} failed; aborting "
+                        "after draining sibling workers"
+                    ),
+                    node_id=failed_nid,
+                )
+                ended_reason = "failed"
+                ended_detail = "fanin_upstream_failed"
                 break
 
             # Compute next ready set by evaluating outgoing edges.
@@ -1012,12 +1156,16 @@ class _BaseGraphExecutor(ABC):
                 )
                 try:
                     all_instances: list[_FanoutInstance] = []
+                    # Track which spec each instance came from so the per-node
+                    # result handler can look up ``on_failure`` (Spec B §2.5).
+                    instance_specs: list[tuple[_FanoutInstance, FanOutSpec]] = []
                     for spec in node.specs:
-                        all_instances.extend(
-                            _resolve_fanout_spec(
-                                spec, context, fanout_self_output
-                            )
+                        spec_insts = _resolve_fanout_spec(
+                            spec, context, fanout_self_output
                         )
+                        all_instances.extend(spec_insts)
+                        for inst in spec_insts:
+                            instance_specs.append((inst, spec))
                 except _FanoutSourceInvalid as exc:
                     await queue.put(
                         _NodeDone(
@@ -1047,6 +1195,41 @@ class _BaseGraphExecutor(ABC):
                 for tgt, n in counts.items():
                     self._fanout_target_expected_count[tgt] = max(
                         self._fanout_target_expected_count.get(tgt, 0), n
+                    )
+                # Spec B §2.5 — populate per-instance spec lookup + per-(FanOut,
+                # target) drain state so the outer loop's result-application
+                # path can branch on ``on_failure``.
+                #
+                # When a spec is "fail_fast" we still register it so the
+                # per-node handler's lookup is consistent; the handler only
+                # consults the drain state for non-fail_fast modes, so the
+                # bookkeeping cost is one tuple per instance.
+                for inst, spec in instance_specs:
+                    self._instance_to_spec[inst.synthesized_id] = (
+                        node.id, spec,
+                    )
+                # Build / refresh one drain-state entry per (fanout, target).
+                # Key uses '__' separator since target ids are normal identifiers.
+                spec_target_counts: dict[tuple[str, str], int] = {}
+                spec_by_target: dict[tuple[str, str], FanOutSpec] = {}
+                for inst, spec in instance_specs:
+                    key = (node.id, inst.target_node_id)
+                    spec_target_counts[key] = (
+                        spec_target_counts.get(key, 0) + 1
+                    )
+                    # All instances for one (fanout, target) belong to the
+                    # same FanOutSpec by construction (each spec emits to
+                    # exactly one target id for broadcast/map; tee writes
+                    # one instance per target).
+                    spec_by_target[key] = spec
+                for (fanout_id, target_id), expected in spec_target_counts.items():
+                    drain_key = f"{fanout_id}__{target_id}"
+                    spec = spec_by_target[(fanout_id, target_id)]
+                    self._fanout_drain_state[drain_key] = _FanoutDrainState(
+                        on_failure=spec.on_failure,
+                        fanout_node_id=fanout_id,
+                        target_node_id=target_id,
+                        expected_count=expected,
                     )
                 return
             if isinstance(node, _FanInNode):
