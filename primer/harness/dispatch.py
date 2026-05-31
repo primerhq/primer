@@ -38,8 +38,20 @@ from primer.harness.git import (
     clone_at_ref,
     fetch_harness_metadata,
     ls_remote,
+    push_bundle,
 )
-from primer.harness.hashes import hash_bundle, hash_overrides, hash_schema
+from primer.harness.hashes import (
+    hash_bundle,
+    hash_overrides,
+    hash_rendered_payload,
+    hash_schema,
+    hash_template_source,
+)
+from primer.harness.outbound import (
+    BuildResult,
+    OutboundBuildError,
+    build_outbound,
+)
 from primer.harness.service import (
     BuildErrors,
     apply_install,
@@ -58,9 +70,11 @@ from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
 from primer.model.harness import (
     Harness,
+    HarnessDirection,
     HarnessOperation,
     HarnessRendering,
     HarnessStatus,
+    RenderedEntry,
     ResolvedDependency,
 )
 from primer.model.storage import OffsetPage
@@ -160,6 +174,46 @@ async def run_one_harness_operation(
         )
         return
 
+    # Direction guard: outbound rows can only run BUILD/PUSH; inbound
+    # rows can only run FETCH/INSTALL/SYNC/UNINSTALL. Mismatches release
+    # with a clear error so the user sees what went wrong rather than a
+    # cryptic stack from a downstream helper.
+    _outbound_ops = {HarnessOperation.BUILD, HarnessOperation.PUSH}
+    _inbound_ops = {
+        HarnessOperation.FETCH,
+        HarnessOperation.INSTALL,
+        HarnessOperation.SYNC,
+        HarnessOperation.UNINSTALL,
+    }
+    if (
+        harness.direction == HarnessDirection.INBOUND
+        and operation in _outbound_ops
+    ) or (
+        harness.direction == HarnessDirection.OUTBOUND
+        and operation in _inbound_ops
+    ):
+        logger.warning(
+            "harness %s direction=%s incompatible with operation %s — releasing as ERROR",
+            harness_id, harness.direction.value, operation.value,
+        )
+        error_json = json.dumps({
+            "code": "direction_mismatch",
+            "message": (
+                f"operation {operation.value!r} not allowed on "
+                f"{harness.direction.value} harness"
+            ),
+            "operation": operation.value,
+        })
+        await _release_harness(
+            harness_storage, harness_id, worker_id,
+            next_status=HarnessStatus.ERROR,
+            last_operation_error=error_json,
+        )
+        await deps.event_bus.publish(
+            f"harness:{harness_id}:done", {"harness_id": harness_id},
+        )
+        return
+
     lease_lost = asyncio.Event()
 
     heartbeat_task = asyncio.create_task(
@@ -185,6 +239,10 @@ async def run_one_harness_operation(
                     f"harness:{harness_id}:done", {"harness_id": harness_id},
                 )
                 return
+            elif operation == HarnessOperation.BUILD:
+                next_status, error_json = await _do_build(deps, harness)
+            elif operation == HarnessOperation.PUSH:
+                next_status, error_json = await _do_push(deps, harness)
             else:
                 logger.error(
                     "harness %s unknown operation %r — releasing as error",
@@ -1094,6 +1152,186 @@ async def _do_uninstall(
         )
     except Exception:
         logger.exception("_do_uninstall error for harness %s", harness.id)
+
+
+# ---------------------------------------------------------------------------
+# _do_build (outbound)
+# ---------------------------------------------------------------------------
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+async def _do_build(
+    deps: HarnessDispatchDeps,
+    harness: Harness,
+) -> tuple[HarnessStatus, str | None]:
+    """Render tracked entities → templates, persist bundle hash + rendering.
+
+    Decides next status based on whether the harness has been pushed
+    before and whether the freshly-built ``bundle_hash`` matches the
+    last-pushed one (drift detection).
+    """
+    try:
+        result: BuildResult = await build_outbound(
+            harness, storage_provider=deps.storage_provider,
+        )
+    except OutboundBuildError as exc:
+        err: dict[str, Any] = {"code": exc.code, "message": exc.message}
+        if exc.template_name:
+            err["template_name"] = exc.template_name
+        return HarnessStatus.ERROR, json.dumps(err)
+    except Exception as exc:
+        logger.exception("_do_build unhandled error for harness %s", harness.id)
+        return HarnessStatus.ERROR, json.dumps(
+            {"code": "build_failed", "message": str(exc)}
+        )
+
+    harness_storage = deps.storage_provider.get_storage(Harness)
+    rendering_storage = deps.storage_provider.get_storage(HarnessRendering)
+
+    # Decide next status: DRAFT until first push, INSTALLED when local matches
+    # last-pushed bundle, OUTDATED when local has drifted.
+    if harness.last_pushed_commit is None:
+        next_status = HarnessStatus.DRAFT
+    elif result.bundle_hash == harness.last_pushed_bundle_hash:
+        next_status = HarnessStatus.INSTALLED
+    else:
+        next_status = HarnessStatus.OUTDATED
+
+    new_schema_hash = hash_schema(result.overrides_schema)
+
+    # Persist the freshly computed hashes and schema on the harness row.
+    refreshed = await harness_storage.get(harness.id)
+    if refreshed is not None:
+        updated = refreshed.model_copy(update={
+            "bundle_hash": result.bundle_hash,
+            "overrides_schema": result.overrides_schema,
+            "schema_hash": new_schema_hash,
+            "last_operation_at": _now_utc(),
+        })
+        await harness_storage.update(updated)
+
+    # Per-entity HarnessRendering snapshot so the UI can show drift per row.
+    # Only the per-template files are interesting; harness.yaml and the
+    # overrides schema are bundle-level concerns.
+    import yaml as _yaml
+    entries: list[RenderedEntry] = []
+    for te in harness.tracked_entities:
+        tf = next(
+            (
+                f for f in result.files
+                if f.template_path == f"templates/{te.template_name}.yaml"
+            ),
+            None,
+        )
+        if tf is None:
+            continue
+        rendered_doc = _yaml.safe_load(tf.rendered_text) or {}
+        rendered_payload = rendered_doc.get("spec") or {}
+        entries.append(
+            RenderedEntry(
+                kind=te.kind,
+                template_name=te.template_name,
+                resolved_id=f"{harness.slug}__{te.template_name}",
+                template_source_hash=hash_template_source(tf.source_bytes),
+                rendered_hash=hash_rendered_payload(rendered_payload),
+                rendered_payload=rendered_payload,
+                source_dependency=None,
+                source_entity_id=te.source_id,
+            ),
+        )
+
+    rendering = HarnessRendering(
+        id=harness.id,
+        harness_id=harness.id,
+        bundle_hash=result.bundle_hash,
+        overrides_hash=hash_overrides(harness.overrides),
+        schema_hash=new_schema_hash,
+        entries=entries,
+        rendered_at=_now_utc(),
+    )
+    existing = await rendering_storage.get(harness.id)
+    if existing is None:
+        await rendering_storage.create(rendering)
+    else:
+        await rendering_storage.update(rendering)
+
+    return next_status, None
+
+
+# ---------------------------------------------------------------------------
+# _do_push (outbound)
+# ---------------------------------------------------------------------------
+
+
+async def _do_push(
+    deps: HarnessDispatchDeps,
+    harness: Harness,
+) -> tuple[HarnessStatus, str | None]:
+    """Re-render then push the bundle to the remote git repo."""
+    if not harness.tracked_entities:
+        return HarnessStatus.ERROR, json.dumps({
+            "code": "outbound_no_entities",
+            "message": "no tracked entities; cannot push",
+        })
+
+    try:
+        result = await build_outbound(
+            harness, storage_provider=deps.storage_provider,
+        )
+    except OutboundBuildError as exc:
+        err: dict[str, Any] = {"code": exc.code, "message": exc.message}
+        if exc.template_name:
+            err["template_name"] = exc.template_name
+        return HarnessStatus.ERROR, json.dumps(err)
+    except Exception as exc:
+        logger.exception("_do_push build error for harness %s", harness.id)
+        return HarnessStatus.ERROR, json.dumps(
+            {"code": "build_failed", "message": str(exc)}
+        )
+
+    files = [(f.template_path, f.source_bytes) for f in result.files]
+    token = harness.git_token.get_secret_value() if harness.git_token else None
+    commit_message = (
+        f"primer outbound: {harness.slug} @ {_now_utc().isoformat()}"
+    )
+
+    try:
+        new_sha = await push_bundle(
+            url=harness.git_url,
+            token=token,
+            ref=harness.ref,
+            files=files,
+            subpath=harness.subpath,
+            commit_message=commit_message,
+            expected_remote_sha=harness.last_pushed_commit,
+        )
+    except HarnessGitError as exc:
+        return HarnessStatus.ERROR, json.dumps(
+            {"code": exc.code, "message": exc.message}
+        )
+    except Exception as exc:
+        logger.exception("_do_push push error for harness %s", harness.id)
+        return HarnessStatus.ERROR, json.dumps(
+            {"code": "git_push_failed",
+             "message": _safe_error_message(exc, token)}
+        )
+
+    harness_storage = deps.storage_provider.get_storage(Harness)
+    refreshed = await harness_storage.get(harness.id)
+    if refreshed is not None:
+        updated = refreshed.model_copy(update={
+            "last_pushed_commit": new_sha,
+            "last_pushed_bundle_hash": result.bundle_hash,
+            "last_pushed_at": _now_utc(),
+            "bundle_hash": result.bundle_hash,
+            "last_operation_at": _now_utc(),
+        })
+        await harness_storage.update(updated)
+
+    return HarnessStatus.INSTALLED, None
 
 
 __all__ = [
