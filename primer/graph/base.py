@@ -81,6 +81,7 @@ from primer.model.graph import (
     _ToolCallNode,
 )
 from primer.model.workspace_session import SessionStatus
+from primer.model.yield_ import Yielded, YieldToWorker
 
 
 if TYPE_CHECKING:
@@ -987,6 +988,41 @@ class _BaseGraphExecutor(ABC):
         ready: set[str] = {_resolve_initial_ready_node(self._graph)}
         ended_reason: str | None = None
         ended_detail: str | None = None
+        # Phase 6 — expose mid-flight state on the executor so
+        # :meth:`snapshot_state` can capture it the moment a ToolCall
+        # yields for approval. Kept in sync after every superstep
+        # boundary (and after applying per-node results).
+        self._context = context
+        self._ready_set = ready
+        self._node_states = node_states
+
+        async for ev in self._run_superstep_loop(
+            context=context,
+            node_states=node_states,
+            ready=ready,
+            ended_reason_in=ended_reason,
+            ended_detail_in=ended_detail,
+        ):
+            yield ev
+
+    async def _run_superstep_loop(
+        self,
+        *,
+        context: GraphContext,
+        node_states: dict[str, NodeRuntimeState],
+        ready: set[str],
+        ended_reason_in: str | None,
+        ended_detail_in: str | None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Pregel superstep loop — extracted so :meth:`resume_from_checkpoint`
+        can re-enter at the same point after the approval-yield round-trip.
+
+        Spec B §2.3 step 3 / Phase 6. ``ready``, ``context``, ``node_states``
+        are passed by reference (the executor's instance attrs hold the same
+        objects) so the snapshot path always sees up-to-date state.
+        """
+        ended_reason = ended_reason_in
+        ended_detail = ended_detail_in
 
         while ready:
             # Cycle bound check. Spec §5.4 maps this to ended_reason='failed'
@@ -1074,6 +1110,13 @@ class _BaseGraphExecutor(ABC):
             error_events: list[_GraphErrorEvent] = []
             for nid in ready_ordered:
                 done = results.get(nid)
+                # Spec B §2.3 step 3 / Phase 6 — a suspended ToolCall has
+                # already been recorded into ``_pending_toolcalls``; leave
+                # its status as RUNNING (set above by the pre-run snapshot)
+                # and skip context updates. The post-superstep block
+                # detects pending entries and propagates YieldToWorker.
+                if done is not None and done.suspended:
+                    continue
                 if done is None or done.error is not None:
                     err_text = (
                         str(done.error) if done is not None else "no result"
@@ -1212,6 +1255,41 @@ class _BaseGraphExecutor(ABC):
                 node_states=node_states,
                 status=SessionStatus.RUNNING,
             )
+
+            # Spec B §2.3 step 3 / Phase 6 — if any ToolCall(s) yielded
+            # for approval this superstep, save the checkpoint via the
+            # subclass hook + raise YieldToWorker so the worker can park
+            # the session. The first pending entry's parked_event_key
+            # becomes the wake-up key; subsequent entries are drained on
+            # the resume path. ``_save_state`` is called with
+            # ``SessionStatus.WAITING`` so the persisted state reflects
+            # the paused world.
+            if self._pending_toolcalls:
+                # Keep ready set / context up to date on the executor for
+                # the snapshot.
+                self._ready_set = set(ready_ordered)
+                self._context = context
+                self._node_states = node_states
+                await self._save_state(
+                    iteration=context.iteration,
+                    node_states=node_states,
+                    status=SessionStatus.WAITING,
+                )
+                first = self._pending_toolcalls[0]
+                # Stamp the snapshot on the exception so the worker can
+                # persist it onto the session's parked-state blob without
+                # needing a separate ``snapshot_state`` round-trip.
+                yld = YieldToWorker(
+                    Yielded(
+                        tool_name="_approval",
+                        event_key=first.parked_event_key,
+                    ),
+                    tool_call_id=first.tool_call_id,
+                )
+                # Attach the snapshot payload + the full pending list so
+                # the worker / resume path has everything it needs.
+                yld.graph_checkpoint = self.snapshot_state()  # type: ignore[attr-defined]
+                raise yld
 
             if any_failed:
                 # ended_reason / ended_detail may already be set by the
@@ -1520,19 +1598,32 @@ class _BaseGraphExecutor(ABC):
                     return
                 try:
                     result = await self._dispatch_toolcall(node, args)
-                except _GraphToolCallYield as exc:
-                    # Phase 6 wires this path; until then, fail the node
-                    # so users get a clear signal rather than a silent hang.
+                except YieldToWorker as yld:
+                    # Spec B §2.3 step 3 / Phase 6 — the tool engine raised
+                    # YieldToWorker because the approval gate fired. Defer
+                    # the ToolCall: record a pending entry and post a
+                    # suspended sentinel so the outer loop knows to leave
+                    # this node's status unchanged. The executor saves a
+                    # checkpoint after the superstep settles and re-raises
+                    # YieldToWorker upward; the worker catches it, parks
+                    # the session, and resumes via
+                    # :meth:`_BaseGraphExecutor.resume_from_checkpoint`
+                    # once the operator approves.
+                    self._pending_toolcalls.append(
+                        _PendingToolCall(
+                            node_id=node_id,
+                            tool_call_id=yld.tool_call_id,
+                            parked_event_key=yld.yielded.event_key,
+                            arguments=args,
+                        )
+                    )
                     await queue.put(
                         _NodeDone(
                             node_id=node_id,
                             output=None,
-                            error=(
-                                "tool yielded for approval but "
-                                "approval-yielding is not yet enabled "
-                                "(Phase 6)"
-                            ),
-                            ended_detail="tool_execution_failed",
+                            error=None,
+                            ended_detail=None,
+                            suspended=True,
                         )
                     )
                     return
