@@ -1,4 +1,4 @@
-"""Tests for primer.graph.router (JSON-path matcher + RouterRegistry)."""
+"""Tests for primer.graph.router (first_matching_branch + RouterRegistry)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import pytest
 from primer.graph.router import (
     RouterRegistry,
     first_matching_branch,
-    match_json_path,
 )
 from primer.model.chat import Message, TextPart
 from primer.model.except_ import ConfigError
@@ -27,39 +26,8 @@ def _output(parsed: dict | None = None, text: str = "") -> NodeOutput:
 
 
 # ===========================================================================
-# match_json_path
+# first_matching_branch (legacy when= shape, translated via model validator)
 # ===========================================================================
-
-
-class TestMatchJsonPath:
-    def test_flat_match(self) -> None:
-        assert match_json_path({"next": "exit"}, {"next": "exit"})
-
-    def test_flat_mismatch(self) -> None:
-        assert not match_json_path({"next": "retry"}, {"next": "exit"})
-
-    def test_missing_key(self) -> None:
-        assert not match_json_path({}, {"next": "exit"})
-
-    def test_dotted_path(self) -> None:
-        parsed = {"meta": {"priority": "high", "owner": "alice"}}
-        assert match_json_path(parsed, {"meta.priority": "high"})
-
-    def test_dotted_path_missing(self) -> None:
-        parsed = {"meta": {"priority": "high"}}
-        assert not match_json_path(parsed, {"meta.unknown": "x"})
-
-    def test_dotted_path_intermediate_non_dict(self) -> None:
-        parsed = {"meta": "scalar"}
-        assert not match_json_path(parsed, {"meta.priority": "high"})
-
-    def test_multiple_paths_all_must_match(self) -> None:
-        parsed = {"a": 1, "b": 2, "c": 3}
-        assert match_json_path(parsed, {"a": 1, "b": 2})
-        assert not match_json_path(parsed, {"a": 1, "b": 99})
-
-    def test_empty_when_matches_anything(self) -> None:
-        assert match_json_path({"any": "thing"}, {})
 
 
 class TestFirstMatchingBranch:

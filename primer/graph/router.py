@@ -3,8 +3,9 @@
 Two router kinds are supported (per spec):
 
 * :class:`primer.model.graph._JsonPathRouter` -- branch routing by
-  matching dotted-path key/value pairs against a node's parsed
-  structured output. The matching function is :func:`match_json_path`.
+  evaluating each :class:`BranchCondition` against a node's parsed
+  structured output. The matching function is :func:`first_matching_branch`,
+  built on :func:`evaluate_branch_condition`.
 * :class:`primer.model.graph._CallableRouter` -- looks up a Python
   callable in a :class:`RouterRegistry` and delegates routing to it.
 
@@ -120,35 +121,19 @@ def evaluate_branch_condition(
     return False  # unreachable given the Literal[...] op type
 
 
-def match_json_path(parsed: dict[str, Any], when: dict[str, Any]) -> bool:
-    """Return True iff every ``(path, expected)`` pair is satisfied.
-
-    Empty ``when`` matches anything (degenerate case useful as a
-    catch-all branch).
-    """
-    for path, expected in when.items():
-        found, actual = _resolve_path(parsed, path)
-        if not found:
-            return False
-        if actual != expected:
-            return False
-    return True
-
-
 def first_matching_branch(
     parsed: dict[str, Any],
-    branches: list[JsonPathBranch],
-) -> JsonPathBranch | None:
-    """Return the first branch whose ``conditions`` all match, or :data:`None`.
+    branches: list["JsonPathBranch"],
+) -> "JsonPathBranch | None":
+    """Return the first branch whose conditions ALL hold, or None.
 
-    During the additive migration phase, conditions are still the
-    equality-only shape carried over from the legacy ``when`` field
-    (translated by JsonPathBranch._accept_legacy_when). Phase 2 Task 2.3
-    replaces this with a full operator-aware evaluator.
+    AND-of-conditions per branch; first-match-wins across branches.
+    Empty conditions => catch-all match.
     """
+    from primer.model.graph import JsonPathBranch  # local to avoid cycle
+
     for branch in branches:
-        when = {c.path: c.value for c in branch.conditions if c.op == "eq"}
-        if match_json_path(parsed, when):
+        if all(evaluate_branch_condition(parsed, c) for c in branch.conditions):
             return branch
     return None
 
@@ -230,6 +215,6 @@ class RouterRegistry:
 
 __all__ = [
     "RouterRegistry",
+    "evaluate_branch_condition",
     "first_matching_branch",
-    "match_json_path",
 ]
