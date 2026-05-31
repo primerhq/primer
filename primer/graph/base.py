@@ -75,7 +75,6 @@ from primer.model.graph import (
     _GraphNodeRef,
     _JsonPathRouter,
     _StaticEdge,
-    _TerminalNode,
 )
 from primer.model.workspace_session import SessionStatus
 
@@ -503,7 +502,7 @@ class _BaseGraphExecutor(ABC):
                         )
                     continue
                 node = self._nodes_by_id[nid]
-                if isinstance(node, (_TerminalNode, _EndNode)):
+                if isinstance(node, _EndNode):
                     terminal_reached = True
                 if done.output is not None:
                     context.nodes[nid] = done.output
@@ -639,10 +638,6 @@ class _BaseGraphExecutor(ABC):
                     output = _materialise_begin_output(
                         graph_input=gi, initial_messages=[]
                     )
-            elif isinstance(node, _TerminalNode):
-                output = NodeOutput(
-                    text="", iteration=context.iteration
-                )
             elif isinstance(node, _GraphNodeRef):
                 output = await self._stream_subgraph_node(
                     node, context, queue

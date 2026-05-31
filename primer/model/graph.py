@@ -256,16 +256,6 @@ class _GraphNodeRef(BaseModel):
     )
 
 
-class _TerminalNode(BaseModel):
-    """Sink node. Reaching one terminates the graph successfully."""
-
-    kind: Literal["terminal"] = Field(
-        default="terminal",
-        description="Discriminator tag identifying this node as a terminal sink.",
-    )
-    id: str = Field(..., min_length=1)
-
-
 class _EndNode(BaseModel):
     """Sink node carrying the graph's output contract.
 
@@ -297,7 +287,7 @@ class _EndNode(BaseModel):
 
 
 GraphNode = Annotated[
-    Union[_AgentNodeRef, _GraphNodeRef, _TerminalNode, _BeginNode, _EndNode],
+    Union[_AgentNodeRef, _GraphNodeRef, _BeginNode, _EndNode],
     Field(discriminator="kind"),
 ]
 

@@ -34,7 +34,6 @@ from primer.model.graph import (
     _GraphNodeRef,
     _JsonPathRouter,
     _StaticEdge,
-    _TerminalNode,
 )
 from primer.model.workspace_session import SessionStatus
 
@@ -60,11 +59,17 @@ class TestNodeUnionDiscrimination:
         assert isinstance(parsed, _GraphNodeRef)
         assert parsed.graph_id == "inner-graph"
 
-    def test_terminal_node_round_trip(self) -> None:
-        node = _TerminalNode(id="exit")
+    def test_begin_node_round_trip(self) -> None:
+        node = _BeginNode(id="start")
         adapter: TypeAdapter[GraphNode] = TypeAdapter(GraphNode)
         parsed = adapter.validate_python(node.model_dump())
-        assert isinstance(parsed, _TerminalNode)
+        assert isinstance(parsed, _BeginNode)
+
+    def test_end_node_round_trip(self) -> None:
+        node = _EndNode(id="exit")
+        adapter: TypeAdapter[GraphNode] = TypeAdapter(GraphNode)
+        parsed = adapter.validate_python(node.model_dump())
+        assert isinstance(parsed, _EndNode)
 
 
 class TestEdgeUnionDiscrimination:
