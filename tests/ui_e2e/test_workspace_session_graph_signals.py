@@ -285,12 +285,14 @@ def test_u0088_graph_editor_discard_reverts_unsaved_add_node(
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/graphs", json={
             "id": gid, "description": "discard probe",
-            "entry_node_id": "n1",
+            "entry_node_id": "begin",
             "nodes": [
+                {"id": "begin", "kind": "begin"},
                 {"id": "n1", "kind": "agent", "agent_id": aid},
-                {"id": "end", "kind": "terminal"},
+                {"id": "end", "kind": "end"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "n1"},
                 {"kind": "static", "from_node": "n1", "to_node": "end"},
             ],
         })
