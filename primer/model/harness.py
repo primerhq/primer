@@ -28,6 +28,40 @@ class HarnessOperation(str, Enum):
 
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
+_DEP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+
+
+class DependencyRef(BaseModel):
+    """Declared subharness dependency from a parent harness.yaml."""
+
+    name: str = Field(..., min_length=1, max_length=64)
+    git_url: str = Field(..., min_length=1)
+    ref: str = Field(default="main", min_length=1)
+    subpath: str | None = None
+    git_token: SecretStr | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        if not _DEP_NAME_RE.match(v):
+            raise ValueError(
+                "dependency name must match [a-z][a-z0-9-]{0,63}",
+            )
+        return v
+
+
+class ResolvedDependency(BaseModel):
+    """A dependency node resolved by the transitive walk."""
+
+    name: str
+    slug: str
+    git_url: str
+    ref: str
+    subpath: str | None = None
+    resolved_commit: str
+    bundle_hash: str
+    depth: int = Field(..., ge=0)
+    parent_name: str | None = None
 
 
 class Harness(Identifiable):
@@ -53,6 +87,7 @@ class Harness(Identifiable):
     pending_operation: HarnessOperation | None = None
     last_operation_at: datetime | None = None
     last_operation_error: str | None = None
+    dependencies_resolved: list[ResolvedDependency] = Field(default_factory=list)
     created_at: datetime
 
     @field_validator("slug")
@@ -74,6 +109,7 @@ class RenderedEntry(BaseModel):
     template_source_hash: str
     rendered_hash: str
     rendered_payload: dict[str, Any]
+    source_dependency: str | None = None
 
 
 class HarnessRendering(Identifiable):
@@ -86,9 +122,11 @@ class HarnessRendering(Identifiable):
 
 
 __all__ = [
+    "DependencyRef",
     "Harness",
     "HarnessOperation",
     "HarnessRendering",
     "HarnessStatus",
     "RenderedEntry",
+    "ResolvedDependency",
 ]
