@@ -1,15 +1,18 @@
 """REST router for the Harness resource.
 
 Endpoints:
-  POST   /v1/harnesses                  Create row (DRAFT).
-  GET    /v1/harnesses                  List with ?slug, ?status filters.
-  GET    /v1/harnesses/{id}             Get one. 404 on miss.
-  PUT    /v1/harnesses/{id}             Update name/description/ref/subpath/git_token.
-  DELETE /v1/harnesses/{id}             Enqueue UNINSTALL. 202.
-  PUT    /v1/harnesses/{id}/overrides   Validate + store overrides. 422 on invalid.
-  POST   /v1/harnesses/{id}/fetch       Enqueue FETCH. 202.
-  POST   /v1/harnesses/{id}/install     Enqueue INSTALL. 202.
-  POST   /v1/harnesses/{id}/sync        Enqueue SYNC. 202.
+  POST   /v1/harnesses                       Create row (DRAFT).
+  GET    /v1/harnesses                       List with ?slug, ?status, ?direction filters.
+  GET    /v1/harnesses/{id}                  Get one. 404 on miss.
+  PUT    /v1/harnesses/{id}                  Update name/description/ref/subpath/git_token.
+  DELETE /v1/harnesses/{id}                  Enqueue UNINSTALL. 202.
+  PUT    /v1/harnesses/{id}/overrides        Validate + store overrides. 422 on invalid.
+  PUT    /v1/harnesses/{id}/tracked_entities Outbound only — replace tracked_entities atomically.
+  POST   /v1/harnesses/{id}/fetch            Enqueue FETCH. 202. Inbound only.
+  POST   /v1/harnesses/{id}/install          Enqueue INSTALL. 202. Inbound only.
+  POST   /v1/harnesses/{id}/sync             Enqueue SYNC. 202. Inbound only.
+  POST   /v1/harnesses/{id}/build            Enqueue BUILD. 202. Outbound only.
+  POST   /v1/harnesses/{id}/push             Enqueue PUSH. 202. Outbound only.
 """
 
 from __future__ import annotations
@@ -27,7 +30,14 @@ from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
 from primer.harness.hashes import hash_overrides
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.harness import Harness, HarnessOperation, HarnessStatus, HarnessRendering
+from primer.model.harness import (
+    Harness,
+    HarnessDirection,
+    HarnessOperation,
+    HarnessRendering,
+    HarnessStatus,
+    TrackedEntity,
+)
 from primer.model.storage import (
     OffsetPage,
     PageRequest,
@@ -51,6 +61,8 @@ class HarnessCreateBody(BaseModel):
     subpath: str | None = None
     git_token: str | None = None
     description: str | None = Field(default=None, max_length=2000)
+    direction: HarnessDirection = HarnessDirection.INBOUND
+    tracked_entities: list[TrackedEntity] = Field(default_factory=list)
 
 
 class HarnessUpdateBody(BaseModel):
@@ -59,6 +71,10 @@ class HarnessUpdateBody(BaseModel):
     ref: str | None = Field(default=None, min_length=1)
     subpath: str | None = None
     git_token: str | None = None
+
+
+class TrackedEntitiesBody(BaseModel):
+    tracked_entities: list[TrackedEntity] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +93,6 @@ def _get_harness_storage(sp):
 
 @harness_router.post(
     "",
-    response_model=Harness,
     status_code=201,
     summary="Create a new harness (DRAFT)",
     responses=common_responses(409, 422, 500),
@@ -85,8 +100,40 @@ def _get_harness_storage(sp):
 async def create_harness(
     body: HarnessCreateBody,
     sp=Depends(get_storage_provider),
-) -> Harness:
+):
     storage = _get_harness_storage(sp)
+
+    # Direction-aware validation
+    if (
+        body.direction == HarnessDirection.INBOUND
+        and body.tracked_entities
+    ):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "code": "tracked_entities_on_inbound",
+                "detail": (
+                    "tracked_entities may only be supplied when "
+                    "direction='outbound'"
+                ),
+            },
+        )
+
+    if body.direction == HarnessDirection.OUTBOUND:
+        seen: set[str] = set()
+        for te in body.tracked_entities:
+            if te.template_name in seen:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "code": "outbound_template_name_collision",
+                        "detail": (
+                            f"duplicate template_name {te.template_name!r} "
+                            f"in tracked_entities"
+                        ),
+                    },
+                )
+            seen.add(te.template_name)
 
     # Enforce slug uniqueness
     slug_pred = Q(Harness).where("slug", body.slug).build()
@@ -110,9 +157,15 @@ async def create_harness(
         ref=body.ref or "main",
         subpath=body.subpath,
         status=HarnessStatus.DRAFT,
+        direction=body.direction,
+        tracked_entities=list(body.tracked_entities),
         created_at=datetime.now(timezone.utc),
     )
-    return await storage.create(harness)
+    created = await storage.create(harness)
+    return JSONResponse(
+        status_code=201,
+        content=_harness_to_json(created),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,12 +184,16 @@ async def list_harnesses(
         HarnessStatus | None,
         Query(alias="status", description="Filter by status."),
     ] = None,
+    direction: Annotated[
+        HarnessDirection | None,
+        Query(description="Filter by direction."),
+    ] = None,
     page: PageRequest = Depends(parse_page),
     sp=Depends(get_storage_provider),
 ):
     storage = _get_harness_storage(sp)
 
-    if slug is None and status_filter is None:
+    if slug is None and status_filter is None and direction is None:
         return await storage.list(page)
 
     q = Q(Harness)
@@ -144,6 +201,8 @@ async def list_harnesses(
         q = q.where("slug", slug)
     if status_filter is not None:
         q = q.where("status", status_filter.value)
+    if direction is not None:
+        q = q.where("direction", direction.value)
     return await storage.find(q.build(), page)
 
 
@@ -330,6 +389,18 @@ async def fetch_harness(
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
 
+    if harness.direction == HarnessDirection.OUTBOUND:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "direction_mismatch",
+                "detail": (
+                    f"Harness {harness_id!r} is outbound; "
+                    "fetch is an inbound operation"
+                ),
+            },
+        )
+
     if harness.pending_operation is not None:
         raise ConflictError(
             f"Harness {harness_id!r} already has a pending operation: "
@@ -369,6 +440,18 @@ async def install_harness(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+
+    if harness.direction == HarnessDirection.OUTBOUND:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "direction_mismatch",
+                "detail": (
+                    f"Harness {harness_id!r} is outbound; "
+                    "install is an inbound operation"
+                ),
+            },
+        )
 
     if harness.pending_operation is not None:
         raise ConflictError(
@@ -445,6 +528,18 @@ async def sync_harness(
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
 
+    if harness.direction == HarnessDirection.OUTBOUND:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "direction_mismatch",
+                "detail": (
+                    f"Harness {harness_id!r} is outbound; "
+                    "sync is an inbound operation"
+                ),
+            },
+        )
+
     if harness.pending_operation is not None:
         raise ConflictError(
             f"Harness {harness_id!r} already has a pending operation: "
@@ -471,6 +566,198 @@ async def sync_harness(
     updated = await storage.update(harness)
     await event_bus.publish("harness-claimable", {"harness_id": harness_id})
     # Also notify the ClaimEngine (forward-compat; no-op when not wired).
+    if engine is not None:
+        from primer.int.claim import ClaimKind
+        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=10)
+    return JSONResponse(
+        status_code=202,
+        content=_harness_to_json(updated),
+    )
+
+
+# ---------------------------------------------------------------------------
+# PUT /v1/harnesses/{id}/tracked_entities  — outbound only
+# ---------------------------------------------------------------------------
+
+
+@harness_router.put(
+    "/{harness_id}/tracked_entities",
+    summary="Replace tracked_entities on an outbound harness",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def put_tracked_entities(
+    body: TrackedEntitiesBody,
+    harness_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+):
+    storage = _get_harness_storage(sp)
+    harness = await storage.get(harness_id)
+    if harness is None:
+        raise NotFoundError(f"Harness {harness_id!r} does not exist")
+
+    if harness.direction != HarnessDirection.OUTBOUND:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "direction_mismatch",
+                "detail": (
+                    f"Harness {harness_id!r} is inbound; "
+                    "tracked_entities can only be edited on outbound harnesses"
+                ),
+            },
+        )
+
+    seen: set[str] = set()
+    for te in body.tracked_entities:
+        if te.template_name in seen:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "code": "outbound_template_name_collision",
+                    "detail": (
+                        f"duplicate template_name {te.template_name!r} "
+                        f"in tracked_entities"
+                    ),
+                },
+            )
+        seen.add(te.template_name)
+
+    # Tracked set changed → re-BUILD required. Clear bundle_hash and
+    # bring status back to DRAFT so the worker re-renders before the
+    # next push.
+    harness.tracked_entities = list(body.tracked_entities)
+    harness.bundle_hash = None
+    harness.status = HarnessStatus.DRAFT
+    updated = await storage.update(harness)
+    return JSONResponse(
+        status_code=200,
+        content=_harness_to_json(updated),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/harnesses/{id}/build  — enqueue BUILD (outbound only)
+# ---------------------------------------------------------------------------
+
+
+@harness_router.post(
+    "/{harness_id}/build",
+    summary="Enqueue BUILD for an outbound harness (202)",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def build_harness(
+    harness_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+    event_bus=Depends(get_event_bus),
+    engine=Depends(get_claim_engine),
+):
+    storage = _get_harness_storage(sp)
+    harness = await storage.get(harness_id)
+    if harness is None:
+        raise NotFoundError(f"Harness {harness_id!r} does not exist")
+
+    if harness.direction != HarnessDirection.OUTBOUND:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "direction_mismatch",
+                "detail": (
+                    f"Harness {harness_id!r} is inbound; "
+                    "build is an outbound operation"
+                ),
+            },
+        )
+
+    if harness.pending_operation is not None:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "operation_in_flight",
+                "detail": (
+                    f"Harness {harness_id!r} already has a pending operation: "
+                    f"{harness.pending_operation.value!r}"
+                ),
+            },
+        )
+
+    if not harness.tracked_entities:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "code": "outbound_no_entities",
+                "detail": "No tracked entities; nothing to build",
+            },
+        )
+
+    harness.pending_operation = HarnessOperation.BUILD
+    updated = await storage.update(harness)
+    await event_bus.publish("harness-claimable", {"harness_id": harness_id})
+    if engine is not None:
+        from primer.int.claim import ClaimKind
+        await engine.upsert(ClaimKind.HARNESS, harness_id, priority=10)
+    return JSONResponse(
+        status_code=202,
+        content=_harness_to_json(updated),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/harnesses/{id}/push  — enqueue PUSH (outbound only)
+# ---------------------------------------------------------------------------
+
+
+@harness_router.post(
+    "/{harness_id}/push",
+    summary="Enqueue PUSH for an outbound harness (202)",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def push_harness(
+    harness_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+    event_bus=Depends(get_event_bus),
+    engine=Depends(get_claim_engine),
+):
+    storage = _get_harness_storage(sp)
+    harness = await storage.get(harness_id)
+    if harness is None:
+        raise NotFoundError(f"Harness {harness_id!r} does not exist")
+
+    if harness.direction != HarnessDirection.OUTBOUND:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "direction_mismatch",
+                "detail": (
+                    f"Harness {harness_id!r} is inbound; "
+                    "push is an outbound operation"
+                ),
+            },
+        )
+
+    if harness.pending_operation is not None:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "operation_in_flight",
+                "detail": (
+                    f"Harness {harness_id!r} already has a pending operation: "
+                    f"{harness.pending_operation.value!r}"
+                ),
+            },
+        )
+
+    if not harness.tracked_entities:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "code": "outbound_no_entities",
+                "detail": "No tracked entities; nothing to push",
+            },
+        )
+
+    harness.pending_operation = HarnessOperation.PUSH
+    updated = await storage.update(harness)
+    await event_bus.publish("harness-claimable", {"harness_id": harness_id})
     if engine is not None:
         from primer.int.claim import ClaimKind
         await engine.upsert(ClaimKind.HARNESS, harness_id, priority=10)
