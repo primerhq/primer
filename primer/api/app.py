@@ -945,6 +945,12 @@ def _mount_routers(
     # being captured as toolset_id="builtin" by the CRUD GET-by-id.
     app.include_router(providers.builtin_toolsets_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(providers.toolset_router, prefix=prefix, dependencies=auth_dep)
+    # Spec B §3.4 — flat tool catalogue for the graph editor's ToolCall
+    # picker. Sibling of providers.builtin_toolsets_router's nested
+    # ``GET /tools`` (which the operator console's tool/agent pages use);
+    # mounted at the disambiguated ``/tools/catalogue`` path.
+    from primer.api.routers.tools import tools_router
+    app.include_router(tools_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(semantic_search_router, prefix=prefix, dependencies=auth_dep)
     # Phase 2 — compute (Agent + Graph)
     app.include_router(compute.agent_router, prefix=prefix, dependencies=auth_dep)
