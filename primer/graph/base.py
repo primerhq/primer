@@ -223,6 +223,19 @@ def _resolve_initial_ready_node(graph: "Graph") -> str:
     return graph.entry_node_id
 
 
+class _RoutingFailed(Exception):
+    """Raised when a conditional edge matches no branch and has no default.
+
+    Carries the source node id so the executor's outer loop can emit a
+    :class:`_GraphErrorEvent` with ``code='routing_failed'`` and the
+    right ``node_id`` payload (spec §5.4).
+    """
+
+    def __init__(self, source_node_id: str, message: str) -> None:
+        super().__init__(message)
+        self.source_node_id = source_node_id
+
+
 @dataclass(frozen=True)
 class _GraphErrorEvent:
     """Terminal error event yielded immediately before the graph ends ``failed``.
@@ -491,6 +504,23 @@ class _BaseGraphExecutor(ABC):
                 next_ready = await self._compute_next_ready(
                     set(ready_ordered), context
                 )
+            except _RoutingFailed as exc:
+                logger.warning(
+                    "GraphExecutor: routing failed",
+                    extra={
+                        "graph_id": self._graph.id,
+                        "node_id": exc.source_node_id,
+                        "error": str(exc),
+                    },
+                )
+                yield _GraphErrorEvent(  # type: ignore[misc]
+                    code="routing_failed",
+                    message=str(exc),
+                    node_id=exc.source_node_id,
+                )
+                ended_reason = "failed"
+                ended_detail = "routing_failed"
+                break
             except ConfigError as exc:
                 logger.warning(
                     "GraphExecutor: edge evaluation failed",
@@ -752,9 +782,10 @@ class _BaseGraphExecutor(ABC):
             elif router.default_to is not None:
                 target = router.default_to
             else:
-                raise ConfigError(
+                raise _RoutingFailed(
+                    edge.from_node,
                     f"json_path router on edge from {edge.from_node!r} "
-                    "matched no branch and has no default_to"
+                    "matched no branch and has no default_to",
                 )
         elif isinstance(router, _CallableRouter):
             target = await self._router_registry.resolve(
