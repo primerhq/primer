@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -285,4 +286,166 @@ async def fetch_harness_metadata(
         return harness_yaml, overrides_schema, bundle_hash, resolved_commit
 
 
-__all__ = ["HarnessGitError", "clone_at_ref", "fetch_harness_metadata", "ls_remote"]
+async def _get_head_sha(clone_dir: str) -> str:
+    """Return ``git rev-parse HEAD`` for ``clone_dir`` or empty string on failure."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-C", clone_dir, "rev-parse", "HEAD",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_b, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (asyncio.TimeoutError, FileNotFoundError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    sha = stdout_b.decode("utf-8", errors="replace").strip()
+    if len(sha) != 40:
+        return ""
+    return sha
+
+
+async def _run_checked(args: list[str], *, token: str | None = None, cwd: str | None = None,
+                       error_code: str = "git_push_failed") -> tuple[str, str]:
+    """Run a git command and raise HarnessGitError on non-zero exit.
+
+    Returns (stdout, stderr) as strings on success. Token is redacted from
+    any raised error message.
+    """
+    returncode, stdout, stderr = await _run(args, cwd=cwd)
+    if returncode != 0:
+        msg = (stderr or stdout or "git command failed").strip()
+        raise HarnessGitError(error_code, _redact(msg, token))
+    return stdout, stderr
+
+
+async def push_bundle(
+    *,
+    url: str,
+    token: str | None,
+    ref: str,
+    files: list[tuple[str, bytes]],
+    subpath: str | None,
+    commit_message: str,
+    expected_remote_sha: str | None,
+) -> str:
+    """Clone ``url`` at ``ref``, write ``files`` under ``subpath``, commit, push.
+
+    Returns the new commit SHA. Raises
+    ``HarnessGitError(code='push_remote_diverged')`` when ``expected_remote_sha``
+    is set and the remote has moved, or when the remote rejects the push as
+    non-fast-forward. Returns the current HEAD SHA without a new commit when
+    the working tree is unchanged (no-op).
+    """
+    auth_url = _inject_token(url, token)
+    with tempfile.TemporaryDirectory() as td:
+        clone_dir = os.path.join(td, "repo")
+        # Try a shallow clone first; fall back to init+remote when the
+        # remote is empty or the ref doesn't exist yet.
+        try:
+            await _run_checked(
+                ["git", "clone", "--depth=1", "--branch", ref, auth_url, clone_dir],
+                token=token, error_code="git_clone_failed",
+            )
+        except HarnessGitError:
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            await _run_checked(
+                ["git", "init", "-b", ref, clone_dir],
+                token=token, error_code="git_clone_failed",
+            )
+            await _run_checked(
+                ["git", "-C", clone_dir, "remote", "add", "origin", auth_url],
+                token=token, error_code="git_clone_failed",
+            )
+
+        # Remote-divergence check: if the caller said the remote SHOULD be at
+        # ``expected_remote_sha``, confirm it before we touch anything.
+        if expected_remote_sha is not None:
+            try:
+                actual = await ls_remote(url=url, token=token, ref=ref)
+            except HarnessGitError as exc:
+                # We expected the ref to exist; if ls-remote can't find it
+                # the remote diverged (or someone deleted the ref).
+                raise HarnessGitError(
+                    "push_remote_diverged",
+                    f"remote {ref} unavailable (expected {expected_remote_sha}): {exc.message}",
+                ) from exc
+            if actual != expected_remote_sha:
+                raise HarnessGitError(
+                    "push_remote_diverged",
+                    f"remote {ref} moved (expected {expected_remote_sha}, found {actual})",
+                )
+
+        # Write files into the subpath subtree.
+        base = os.path.join(clone_dir, subpath) if subpath else clone_dir
+        os.makedirs(base, exist_ok=True)
+        for entry in os.listdir(base):
+            if entry == ".git":
+                continue
+            p = os.path.join(base, entry)
+            if os.path.isdir(p):
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
+        for rel, data in files:
+            target = os.path.join(base, rel)
+            parent = os.path.dirname(target) or base
+            os.makedirs(parent, exist_ok=True)
+            with open(target, "wb") as fh:
+                fh.write(data)
+
+        # Stage all changes.
+        await _run_checked(
+            ["git", "-C", clone_dir,
+             "-c", "user.email=primer@primer",
+             "-c", "user.name=primer",
+             "add", "-A"],
+            token=token,
+        )
+
+        # No-op detection: if `git status --porcelain` is empty, skip commit.
+        returncode, status_out, status_err = await _run(
+            ["git", "-C", clone_dir, "status", "--porcelain"],
+        )
+        if returncode != 0:
+            raise HarnessGitError(
+                "git_push_failed",
+                _redact((status_err or "git status failed").strip(), token),
+            )
+        if not status_out.strip():
+            return await _get_head_sha(clone_dir)
+
+        await _run_checked(
+            ["git", "-C", clone_dir,
+             "-c", "user.email=primer@primer",
+             "-c", "user.name=primer",
+             "commit", "-m", commit_message],
+            token=token,
+        )
+
+        try:
+            await _run_checked(
+                ["git", "-C", clone_dir, "push", "origin", ref],
+                token=token,
+            )
+        except HarnessGitError as exc:
+            if "non-fast-forward" in exc.message or "non-fast-forward" in str(exc):
+                raise HarnessGitError(
+                    "push_remote_diverged",
+                    "remote rejected non-fast-forward push",
+                ) from exc
+            # Already redacted by _run_checked.
+            raise
+
+        return await _get_head_sha(clone_dir)
+
+
+__all__ = [
+    "HarnessGitError",
+    "clone_at_ref",
+    "fetch_harness_metadata",
+    "ls_remote",
+    "push_bundle",
+]
