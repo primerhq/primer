@@ -1789,17 +1789,244 @@ function GR_SelectedNodeForm({
   );
 }
 
-// Edge form — stub here; conditional-edge BranchEditor lands in Task 8.5.
+// Edge form — static edges show a target picker; conditional edges
+// render the full BranchEditor (operator-based predicates + default_to).
 function GR_SelectedEdgeForm({ edge, edgeIdx, nodes, onUpdateEdge, onDeleteEdge }) {
+  const nodeIds = nodes.map((n) => n.id);
   return (
     <div className="col" style={{ gap: 10 }}>
       <div className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
         {edge.kind} edge
       </div>
       <div className="mono text-sm">
-        {edge.from_node} → {edge.kind === "static" ? edge.to_node : "(conditional)"}
+        <span className="muted">from</span> {edge.from_node}
       </div>
+
+      {edge.kind === "static" && (
+        <div className="field">
+          <label className="field-label">to_node</label>
+          <select
+            className="select"
+            value={edge.to_node || ""}
+            onChange={(e) => onUpdateEdge(edgeIdx, { ...edge, to_node: e.target.value })}
+            style={{ width: "100%" }}
+          >
+            <option value="">— pick a target —</option>
+            {nodeIds.map((id) => (
+              <option key={id} value={id}>{id}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {edge.kind === "conditional" && (edge.router?.kind === "json_path") && (
+        <GR_BranchEditor
+          edge={edge}
+          nodeIds={nodeIds}
+          onChange={(nextEdge) => onUpdateEdge(edgeIdx, nextEdge)}
+        />
+      )}
+
       <Btn size="sm" kind="danger" icon="trash" onClick={onDeleteEdge}>Delete edge</Btn>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// GR_BranchEditor — conditional-edge json_path router editor.
+// Each branch: a conditions sub-table (path / op / value) + target dropdown.
+// Operators (BranchCondition.op): eq, ne, gt, gte, lt, lte, in, not_in, exists.
+// ----------------------------------------------------------------------------
+
+const GR_BRANCH_OPS = ["eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "exists"];
+
+function GR_parseBranchValue(text, op) {
+  if (op === "in" || op === "not_in") {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) return parsed;
+      return [parsed];
+    } catch {
+      return text.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    }
+  }
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+function GR_formatBranchValue(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) || typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function GR_BranchEditor({ edge, nodeIds, onChange }) {
+  const router = edge.router || { kind: "json_path", branches: [], default_to: null };
+  const branches = router.branches || [];
+
+  function setBranches(next) {
+    onChange({ ...edge, router: { ...router, branches: next } });
+  }
+  function setDefaultTo(v) {
+    onChange({ ...edge, router: { ...router, default_to: v || null } });
+  }
+  function updateCondition(branchIdx, condIdx, patch) {
+    const next = branches.map((b, i) => {
+      if (i !== branchIdx) return b;
+      const conds = (b.conditions || []).map((c, j) => j === condIdx ? { ...c, ...patch } : c);
+      return { ...b, conditions: conds };
+    });
+    setBranches(next);
+  }
+  function deleteCondition(branchIdx, condIdx) {
+    const next = branches.map((b, i) => {
+      if (i !== branchIdx) return b;
+      return { ...b, conditions: (b.conditions || []).filter((_, j) => j !== condIdx) };
+    });
+    setBranches(next);
+  }
+  function addCondition(branchIdx) {
+    const next = branches.map((b, i) => {
+      if (i !== branchIdx) return b;
+      return { ...b, conditions: [...(b.conditions || []), { path: "", op: "eq", value: "" }] };
+    });
+    setBranches(next);
+  }
+  function setBranchTarget(branchIdx, to_node) {
+    setBranches(branches.map((b, i) => i === branchIdx ? { ...b, to_node } : b));
+  }
+  function deleteBranch(branchIdx) {
+    setBranches(branches.filter((_, i) => i !== branchIdx));
+  }
+  function addBranch() {
+    setBranches([...branches, { conditions: [], to_node: "" }]);
+  }
+
+  return (
+    <div className="col" style={{ gap: 10 }}>
+      <div className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
+        branches ({branches.length})
+      </div>
+      {branches.length === 0 && <div className="muted text-sm">— no branches —</div>}
+      {branches.map((b, i) => (
+        <div
+          key={i}
+          className="branch-card"
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            padding: 8,
+            background: "var(--bg-1)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+            <span className="muted text-sm mono">branch {i + 1}</span>
+            <a
+              onClick={() => deleteBranch(i)}
+              style={{ cursor: "pointer", color: "var(--red)", fontSize: 12 }}
+              title="Delete branch"
+            >
+              × delete
+            </a>
+          </div>
+          <table className="conds" style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+            <tbody>
+              {(b.conditions || []).map((c, j) => (
+                <tr key={j}>
+                  <td style={{ paddingRight: 4, paddingBottom: 4 }}>
+                    <input
+                      className="input"
+                      value={c.path || ""}
+                      placeholder="$.path"
+                      onChange={(e) => updateCondition(i, j, { path: e.target.value })}
+                      style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 11.5 }}
+                    />
+                  </td>
+                  <td style={{ paddingRight: 4, paddingBottom: 4, width: 80 }}>
+                    <select
+                      className="select"
+                      value={c.op || "eq"}
+                      onChange={(e) => {
+                        const nextOp = e.target.value;
+                        const patch = { op: nextOp };
+                        if (nextOp === "exists") patch.value = null;
+                        updateCondition(i, j, patch);
+                      }}
+                      style={{ width: "100%", fontSize: 11.5 }}
+                    >
+                      {GR_BRANCH_OPS.map((op) => (
+                        <option key={op} value={op}>{op}</option>
+                      ))}
+                    </select>
+                  </td>
+                  {c.op !== "exists" ? (
+                    <td style={{ paddingRight: 4, paddingBottom: 4 }}>
+                      <input
+                        className="input"
+                        value={GR_formatBranchValue(c.value)}
+                        placeholder={c.op === "in" || c.op === "not_in" ? "a,b,c or [\"a\",\"b\"]" : "value"}
+                        onChange={(e) => updateCondition(i, j, { value: GR_parseBranchValue(e.target.value, c.op) })}
+                        style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 11.5 }}
+                      />
+                    </td>
+                  ) : (
+                    <td style={{ paddingRight: 4, paddingBottom: 4 }}>
+                      <span className="muted text-sm">(presence only)</span>
+                    </td>
+                  )}
+                  <td style={{ paddingBottom: 4, width: 20 }}>
+                    <a
+                      onClick={() => deleteCondition(i, j)}
+                      style={{ cursor: "pointer", color: "var(--red)" }}
+                      title="Delete condition"
+                    >
+                      ×
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <Btn size="sm" kind="ghost" icon="plus" onClick={() => addCondition(i)}>
+              Condition
+            </Btn>
+          </div>
+          <div className="field" style={{ marginTop: 8 }}>
+            <label className="field-label">to_node</label>
+            <select
+              className="select"
+              value={b.to_node || ""}
+              onChange={(e) => setBranchTarget(i, e.target.value)}
+              style={{ width: "100%" }}
+            >
+              <option value="">— pick a target —</option>
+              {nodeIds.map((id) => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      ))}
+      <div>
+        <Btn size="sm" kind="ghost" icon="plus" onClick={addBranch}>
+          Branch
+        </Btn>
+      </div>
+      <div className="field">
+        <label className="field-label">default_to (when no branch matches)</label>
+        <select
+          className="select"
+          value={router.default_to || ""}
+          onChange={(e) => setDefaultTo(e.target.value)}
+          style={{ width: "100%" }}
+        >
+          <option value="">— none —</option>
+          {nodeIds.map((id) => (
+            <option key={id} value={id}>{id}</option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
