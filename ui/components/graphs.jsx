@@ -574,6 +574,19 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
     (s) => apiFetch("GET", "/graphs?limit=200", null, { signal: s }),
     {},
   );
+  // Tool catalogue: same cache key as GR_ToolCallForm so the picker and
+  // the toolcall_unknown_tool violation share one fetch. If the fetch
+  // hasn't completed (or failed), the violation check is skipped — the
+  // server-side validator still owns the ground truth.
+  const toolsCatalogue = useResource(
+    "graphs-editor:tools-catalogue",
+    (s) => apiFetch("GET", "/tools/catalogue", null, { signal: s }),
+    {},
+  );
+  const knownToolIds = React.useMemo(() => {
+    if (!toolsCatalogue.data?.items) return null;
+    return new Set(toolsCatalogue.data.items.map((it) => it.id));
+  }, [toolsCatalogue.data]);
 
   // Augment server payload with UI-only x/y coordinates (server
   // doesn't store them). Re-applies auto-layout on first load.
@@ -808,7 +821,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   if (!draft) return null;
   const selected = draft.nodes.find((n) => n.id === selectedNodeId);
   const hasBegin = (draft.nodes || []).some((n) => n.kind === "begin");
-  const violations = GR_localViolations(draft);
+  const violations = GR_localViolations(draft, { knownToolIds });
   const hardViolation = violations.some((v) => v.kind === "hard");
 
   return (
@@ -1084,14 +1097,24 @@ function GR_ViolationsBanner({ violations }) {
 //   - all End nodes reachable from Begin (forward-reachable via edges)
 //   - no duplicate node ids
 //   - every edge endpoint references a known node id
+//   - Spec B §1.3:
+//       * fanout_has_outgoing_edges — FanOut as edge.from_node
+//       * fanout_unknown_target     — spec target_node_id(s) missing
+//       * fanin_no_incoming_edges   — FanIn with no edge.to_node match
 // Soft rules:
 //   - orphan nodes (in-degree == 0 && kind != "begin")
 //   - Begin without a description
+//   - toolcall_unknown_tool — only checked when the catalogue is loaded;
+//     soft because the server is the source of truth
+//
+// opts.knownToolIds: optional Set<string> of catalogue tool ids. When
+// absent, toolcall_unknown_tool is not checked.
 // ----------------------------------------------------------------------------
 
-function GR_localViolations(g) {
+function GR_localViolations(g, opts) {
   const out = [];
   if (!g || !Array.isArray(g.nodes)) return out;
+  const knownToolIds = opts && opts.knownToolIds ? opts.knownToolIds : null;
 
   const nodes = g.nodes;
   const edges = Array.isArray(g.edges) ? g.edges : [];
@@ -1186,6 +1209,81 @@ function GR_localViolations(g) {
   // Soft: Begin without a description.
   if (begins.length === 1 && !begins[0].description) {
     out.push({ kind: "soft", text: "Begin node has no description" });
+  }
+
+  // ===== Spec B §1.3 hard rules =====
+  const fanoutIds = new Set(nodes.filter((n) => n.kind === "fan_out").map((n) => n.id));
+
+  // fanout_has_outgoing_edges: a FanOut must never appear as edge.from_node.
+  for (const e of edges) {
+    if (fanoutIds.has(e.from_node)) {
+      out.push({
+        kind: "hard",
+        text:
+          `FanOut node \`${e.from_node}\` has outgoing edges; remove them — `
+          + "FanOut uses implicit edges via its specs.",
+      });
+    }
+  }
+
+  // fanout_unknown_target: every FanOut spec target_node_id / target_node_ids
+  // must reference an existing node id.
+  for (const n of nodes) {
+    if (n.kind !== "fan_out") continue;
+    const specs = Array.isArray(n.specs) ? n.specs : [];
+    for (const spec of specs) {
+      const targets = [];
+      if (spec.kind === "broadcast" || spec.kind === "map") {
+        if (spec.target_node_id) targets.push(spec.target_node_id);
+      } else if (spec.kind === "tee") {
+        for (const tid of (spec.target_node_ids || [])) targets.push(tid);
+      }
+      for (const t of targets) {
+        if (!nodeIds.has(t)) {
+          out.push({
+            kind: "hard",
+            text: `FanOut node \`${n.id}\` references target \`${t}\` which doesn't exist.`,
+          });
+        }
+      }
+    }
+  }
+
+  // fanin_no_incoming_edges: every FanIn must have at least one incoming edge.
+  for (const n of nodes) {
+    if (n.kind !== "fan_in") continue;
+    let hasIncoming = false;
+    for (const e of edges) {
+      const targets = edgeTargets(e);
+      if (targets.includes(n.id)) {
+        hasIncoming = true;
+        break;
+      }
+    }
+    if (!hasIncoming) {
+      out.push({
+        kind: "hard",
+        text: `FanIn node \`${n.id}\` has no incoming edges.`,
+      });
+    }
+  }
+
+  // toolcall_unknown_tool: ToolCall.tool_id should be in the catalogue.
+  // Only checked when the catalogue is available (knownToolIds is a Set);
+  // soft so the operator can still save (the server validates at runtime).
+  if (knownToolIds) {
+    for (const n of nodes) {
+      if (n.kind !== "tool_call") continue;
+      if (!n.tool_id) continue;  // empty tool_id is already flagged elsewhere
+      if (!knownToolIds.has(n.tool_id)) {
+        out.push({
+          kind: "soft",
+          text:
+            `ToolCall node \`${n.id}\` references tool \`${n.tool_id}\` `
+            + "which isn't in the platform catalogue.",
+        });
+      }
+    }
   }
 
   return out;
