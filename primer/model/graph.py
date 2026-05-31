@@ -337,6 +337,61 @@ class _EndNode(BaseModel):
     )
 
 
+class FanOutSpec(BaseModel):
+    """One downstream-target configuration on a `_FanOutNode`.
+
+    Spec B §1.1. Three kinds:
+    - ``broadcast`` produces N synthesized instances of one target.
+    - ``tee`` runs each named target once with the FanOut's input.
+    - ``map`` parses a source list and runs one instance per item.
+    """
+
+    kind: Literal["broadcast", "tee", "map"]
+    target_node_id: str | None = Field(default=None, description="broadcast + map")
+    target_node_ids: list[str] | None = Field(default=None, description="tee")
+    count: int | None = Field(default=None, ge=1, description="broadcast")
+    source_node_id: str | None = Field(default=None, description="map")
+    source_path: str | None = Field(
+        default=None,
+        description="map (dotted path + bracket indices, like BranchCondition.path)",
+    )
+    on_failure: Literal["fail_fast", "drain_then_fail", "collect"] = "fail_fast"
+
+    @model_validator(mode="after")
+    def _validate_kind(self) -> "FanOutSpec":
+        if self.kind == "broadcast":
+            if not self.target_node_id or self.count is None:
+                raise ValueError("broadcast requires target_node_id + count")
+            if self.target_node_ids or self.source_node_id or self.source_path:
+                raise ValueError(
+                    "broadcast forbids tee/map fields "
+                    "(target_node_ids/source_node_id/source_path)"
+                )
+        elif self.kind == "tee":
+            if not self.target_node_ids:
+                raise ValueError("tee requires target_node_ids")
+            if (
+                self.target_node_id
+                or self.count is not None
+                or self.source_node_id
+                or self.source_path
+            ):
+                raise ValueError(
+                    "tee forbids broadcast/map fields "
+                    "(target_node_id/count/source_node_id/source_path)"
+                )
+        else:  # "map"
+            if not self.target_node_id or not self.source_node_id or not self.source_path:
+                raise ValueError(
+                    "map requires target_node_id + source_node_id + source_path"
+                )
+            if self.target_node_ids or self.count is not None:
+                raise ValueError(
+                    "map forbids tee/broadcast fields (target_node_ids/count)"
+                )
+        return self
+
+
 GraphNode = Annotated[
     Union[_AgentNodeRef, _GraphNodeRef, _BeginNode, _EndNode],
     Field(discriminator="kind"),
