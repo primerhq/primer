@@ -2002,6 +2002,31 @@ function GR_SelectedNodeForm({
         />
       )}
 
+      {node.kind === "fan_in" && (
+        <>
+          <GR_TextAreaField
+            label="aggregate_template (Jinja2)"
+            value={node.aggregate_template || ""}
+            onChange={(v) => onUpdateNode({ aggregate_template: v })}
+            rows={6}
+            placeholder={"{\n  \"items\": {{ inputs | map(attribute='parsed') | list | tojson }}\n}"}
+            help={
+              "Aggregator scope: `inputs` is a list of upstream NodeOutputs "
+              + "(each with `.parsed`, `.text`, `.error`). Template must "
+              + "render to JSON."
+            }
+          />
+          <GR_JsonField
+            label="output_schema"
+            value={node.output_schema}
+            onChange={(v) => onUpdateNode({ output_schema: v })}
+            onError={onReportJsonError}
+            errorKey={`${errBase}:output_schema`}
+            help="Optional JSON Schema validated against the rendered aggregate."
+          />
+        </>
+      )}
+
       <div className="muted text-sm">x: {Math.round(node.x || 0)} · y: {Math.round(node.y || 0)}</div>
       <div className="mt-2 muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
         edges in ({edgesIn.length})
