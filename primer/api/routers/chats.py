@@ -708,6 +708,7 @@ async def chat_ws(
                     _recv_loop(
                         websocket, chat_id, chats_storage, messages_storage, event_bus,
                         claim_engine=claim_engine,
+                        storage_provider=sp,
                     )
                 )
                 send_task = asyncio.ensure_future(
@@ -762,6 +763,7 @@ async def _recv_loop(
     event_bus,
     *,
     claim_engine=None,
+    storage_provider=None,
 ) -> None:
     """Read client frames and dispatch them.
 
@@ -863,8 +865,14 @@ async def _recv_loop(
             note="superseded by new user input",
         )
         # Persist the user_message row + update chat.last_seq / title.
-        await _append_user_message_row(
-            chat, messages_storage, chats_storage, user_parts,
+        # Delegate to the canonical service helper so the WS path and
+        # the trigger dispatcher write user_messages identically.
+        from primer.chat.enqueue import append_user_message
+
+        await append_user_message(
+            chat=chat,
+            parts=user_parts,
+            storage_provider=storage_provider,
         )
         # Flip turn_status to claimable and wake workers.
         latest = await chats_storage.get(chat_id)
@@ -960,46 +968,6 @@ async def _send_loop_instrumented(
             except WebSocketDisconnect:
                 return
             last_sent_seq = row.seq
-
-
-async def _append_user_message_row(
-    chat,
-    messages_storage,
-    chats_storage,
-    parts: list,
-) -> None:
-    """Persist a ``user_message`` ChatMessage row and update the chat row.
-
-    Sets ``chat.last_seq``, derives the title on the first turn, and
-    persists both. The title derivation mirrors the ChatTurnRunner path
-    so the chat list label is set even before the worker processes the
-    message.
-    """
-    from primer.model.chat import TextPart
-
-    flat_text = "\n".join(
-        p.text for p in parts if isinstance(p, TextPart) and p.text
-    )
-    payload: dict[str, Any] = {
-        "parts": [p.model_dump(mode="json") for p in parts],
-    }
-    if flat_text:
-        payload["content"] = flat_text
-    next_seq = chat.last_seq + 1
-    row = ChatMessage(
-        id=ChatMessage.make_id(chat.id, next_seq),
-        chat_id=chat.id,
-        seq=next_seq,
-        kind="user_message",
-        payload=payload,
-        created_at=datetime.now(timezone.utc),
-    )
-    await messages_storage.create(row)
-    if chat.title is None:
-        from primer.chat.executor import _derive_chat_title
-        chat.title = _derive_chat_title(parts)
-    chat.last_seq = next_seq
-    await chats_storage.update(chat)
 
 
 async def _maybe_auto_reject_pending_approval(
