@@ -161,6 +161,7 @@ class WorkerPool:
             ClaimKind.SESSION: self._run_engine_session,
             ClaimKind.CHAT:    self._run_engine_chat,
             ClaimKind.HARNESS: self._run_engine_harness,
+            ClaimKind.TRIGGER: self._run_engine_trigger,
         }
 
         # Engine path: one claim loop + one bus loop.
@@ -580,6 +581,102 @@ class WorkerPool:
             await self._engine.release(
                 engine_lease,
                 outcome=ReleaseOutcome(success=success, drop_lease=True),
+            )
+
+    async def _run_engine_trigger(self, engine_lease: ClaimLease) -> None:
+        """Handle a TRIGGER claim from the engine.
+
+        Routes the lease to :func:`primer.trigger.dispatch.fire_trigger`,
+        which fans out to each enabled subscription's dispatcher. The
+        ``TriggerClaimAdapter.on_release`` hook advances ``next_fire_at``
+        (cron tick for ``scheduled``, null/disabled for ``delayed``) so
+        the engine's next claim window is correct.
+
+        Catchup handling (spec §8): when the trigger's ``catchup`` is
+        ``'all'`` and the row has a ``last_fired_at``, enumerate every
+        missed cron tick between then and now (bounded to 64 to avoid
+        runaway) and fire each one with the historical ``scheduled_for``
+        instant. After replaying the backlog we fire the current tick
+        with ``scheduled_for=None``. ``'one'`` and ``'none'`` (and all
+        non-scheduled kinds) fire exactly once with ``scheduled_for=None``.
+        """
+        from datetime import datetime, timezone
+
+        from primer.int.claim import ReleaseOutcome
+        from primer.model.trigger import Trigger
+        from primer.trigger.cron import iter_missed_fires
+        from primer.trigger.dispatch import fire_trigger
+        from primer.trigger.subscribers import DispatchDeps
+
+        deps = DispatchDeps(
+            storage_provider=self._storage,
+            claim_engine=self._engine,
+            scheduler=self._scheduler,
+            workspace_registry=getattr(self, "_workspace_registry", None),
+            event_bus=self._event_bus,
+        )
+
+        success = False
+        try:
+            # Catchup replay for scheduled triggers with catchup='all'.
+            # Best-effort: any failure in the backlog walk falls through
+            # to the current-tick fire so a malformed cron / tz doesn't
+            # silently block normal firing. The current tick's own
+            # errors are still raised to the outer except.
+            triggers_storage = self._storage.get_storage(Trigger)
+            trigger = await triggers_storage.get(engine_lease.entity_id)
+            if (
+                trigger is not None
+                and trigger.enabled
+                and trigger.config.kind == "scheduled"
+                and getattr(trigger.config, "catchup", "one") == "all"
+                and trigger.last_fired_at is not None
+            ):
+                now = datetime.now(timezone.utc)
+                try:
+                    missed = list(iter_missed_fires(
+                        trigger.config.cron,
+                        trigger.config.timezone,
+                        from_=trigger.last_fired_at,
+                        now=now,
+                        limit=64,
+                    ))
+                except Exception:
+                    logger.exception(
+                        "trigger %s: catchup enumeration failed; "
+                        "continuing to current-tick fire",
+                        engine_lease.entity_id,
+                    )
+                    missed = []
+                for missed_ts in missed:
+                    try:
+                        await fire_trigger(
+                            trigger_id=engine_lease.entity_id,
+                            scheduled_for=missed_ts,
+                            deps=deps,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "trigger %s: catchup fire at %s raised; "
+                            "skipping to next",
+                            engine_lease.entity_id, missed_ts.isoformat(),
+                        )
+
+            await fire_trigger(
+                trigger_id=engine_lease.entity_id,
+                scheduled_for=None,
+                deps=deps,
+            )
+            success = True
+        except Exception:
+            logger.exception(
+                "engine trigger fire for %s raised",
+                engine_lease.entity_id,
+            )
+        finally:
+            await self._engine.release(
+                engine_lease,
+                outcome=ReleaseOutcome(success=success, drop_lease=False),
             )
 
     async def _cancel_loop(self) -> None:
