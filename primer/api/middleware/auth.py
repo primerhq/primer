@@ -1,34 +1,53 @@
-"""Cookie-based auth middleware.
+"""Cookie- and bearer-based auth middleware.
 
 Pure-ASGI implementation so the same auth logic runs for both ``http``
-and ``websocket`` scopes. Reads the ``primer_session`` cookie, verifies
-its signature + age, re-fetches the user from storage, and populates:
+and ``websocket`` scopes. Two paths populate the same scope state:
 
-* ``scope["state"]["user"]``      → :class:`primer.model.user.User`
-* ``scope["state"]["principal"]`` → ``user.username`` (string)
+1. **Cookie** (primary, existing): Reads the signed ``primer_session``
+   cookie, re-fetches the user from storage, populates
+   ``scope.state.user`` + ``.principal``. Cookie sessions implicitly
+   carry full user authority — ``scope.state.api_token`` stays ``None``.
+
+2. **Bearer fallback**: If the cookie path didn't authenticate, look for
+   ``Authorization: Bearer <token>``. The token is hashed (sha256) and
+   looked up in :class:`ApiToken` storage. Revoked / expired tokens are
+   rejected. On success, populates ``scope.state.user`` + ``.principal``
+   AND ``.api_token`` (so :func:`primer.api.deps.require_scope` can
+   distinguish bearer from cookie auth).
 
 Both ``request.state.user`` (HTTP) and ``websocket.state.user`` (WS) read
 through the same scope state, so handlers see a consistent view.
 
 We re-fetch the user every request so a deleted/disabled account can't
-keep using a still-valid cookie. The hot-path cost is one indexed read.
+keep using a still-valid cookie or token. The hot-path cost is one
+indexed read per auth path.
+
+The ``last_used_at`` update on bearer auth is fire-and-forget via
+:func:`asyncio.create_task` — best-effort, doesn't block the request.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import datetime, timezone
 from http.cookies import SimpleCookie
 
 from starlette.datastructures import State
 
+from primer.auth.api_tokens import PLAINTEXT_PREFIX, hash_token
 from primer.auth.tokens import verify_session
 
 
 logger = logging.getLogger(__name__)
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class AuthMiddleware:
-    """Pure-ASGI middleware. Populates scope state from the session cookie.
+    """Pure-ASGI middleware. Populates scope state from cookie or bearer.
 
     Does NOT itself short-circuit on unauth — routers / WS handlers use
     :func:`primer.api.deps.require_auth` (HTTP) or a manual close (WS).
@@ -52,6 +71,7 @@ class AuthMiddleware:
             scope["state"] = state
         state.user = None
         state.principal = None
+        state.api_token = None
 
         app_state = scope.get("app").state if scope.get("app") is not None else None
         if app_state is None:
@@ -59,21 +79,7 @@ class AuthMiddleware:
             return
 
         config = getattr(app_state, "config", None)
-        secret = getattr(app_state, "session_secret", None)
-        if config is None or not config.auth.enabled or not secret:
-            await self.app(scope, receive, send)
-            return
-
-        token = _read_cookie(scope, config.auth.cookie_name)
-        if not token:
-            await self.app(scope, receive, send)
-            return
-
-        max_age = config.auth.session_ttl_days * 86400
-        payload = verify_session(
-            token=token, secret=secret, max_age_seconds=max_age,
-        )
-        if payload is None:
+        if config is None or not config.auth.enabled:
             await self.app(scope, receive, send)
             return
 
@@ -82,22 +88,117 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # 1. Cookie path (primary).
+        user = await self._try_cookie_auth(scope, app_state, config, storage_provider)
+        api_token = None
+
+        # 2. Bearer fallback — only when cookie didn't authenticate.
+        if user is None:
+            user, api_token = await self._try_bearer_auth(scope, storage_provider)
+
+        if user is not None:
+            state.user = user
+            state.principal = user.username
+            state.api_token = api_token
+
+        await self.app(scope, receive, send)
+
+    async def _try_cookie_auth(self, scope, app_state, config, storage_provider):
+        """Existing cookie path. Returns the User or None."""
+        secret = getattr(app_state, "session_secret", None)
+        if not secret:
+            return None
+
+        token = _read_cookie(scope, config.auth.cookie_name)
+        if not token:
+            return None
+
+        max_age = config.auth.session_ttl_days * 86400
+        payload = verify_session(
+            token=token, secret=secret, max_age_seconds=max_age,
+        )
+        if payload is None:
+            return None
+
         try:
             from primer.model.user import User
             user_storage = storage_provider.get_storage(User)
             user = await user_storage.get(payload.user_id)
         except Exception:  # noqa: BLE001
             logger.exception("auth middleware: user lookup failed")
-            await self.app(scope, receive, send)
-            return
+            return None
 
-        if user is None:
-            await self.app(scope, receive, send)
-            return
+        return user
 
-        state.user = user
-        state.principal = user.username
-        await self.app(scope, receive, send)
+    async def _try_bearer_auth(self, scope, storage_provider):
+        """Bearer fallback. Returns (User, ApiToken) or (None, None)."""
+        bearer = _read_bearer(scope.get("headers", ()))
+        if not bearer or not bearer.startswith(PLAINTEXT_PREFIX):
+            return None, None
+
+        try:
+            from primer.model.api_token import ApiToken
+            from primer.model.user import User
+
+            th = hash_token(bearer)
+            api_token = await self._find_by_hash(storage_provider, th)
+            if api_token is None:
+                return None, None
+            if api_token.revoked_at is not None:
+                return None, None
+            if (
+                api_token.expires_at is not None
+                and api_token.expires_at <= _utcnow()
+            ):
+                return None, None
+
+            user_storage = storage_provider.get_storage(User)
+            user = await user_storage.get(api_token.user_id)
+            if user is None:
+                return None, None
+        except Exception:  # noqa: BLE001
+            logger.exception("auth middleware: bearer lookup failed")
+            return None, None
+
+        # Fire-and-forget last_used_at update.
+        try:
+            asyncio.create_task(
+                self._touch_last_used(storage_provider, api_token)
+            )
+        except RuntimeError:
+            # No running loop — extremely rare in ASGI; silently skip.
+            logger.debug(
+                "touch_last_used skipped: no running event loop",
+            )
+
+        return user, api_token
+
+    async def _find_by_hash(self, storage_provider, token_hash: str):
+        """Look up an ApiToken by its sha256 hash. Returns the row or None."""
+        from primer.model.api_token import ApiToken
+        from primer.model.storage import OffsetPage, Op
+        from primer.storage.q import Q
+
+        storage = storage_provider.get_storage(ApiToken)
+        predicate = Q(ApiToken).where_op("token_hash", Op.EQ, token_hash).build()
+        page = await storage.find(predicate, OffsetPage(offset=0, length=1))
+        items = list(page.items)
+        return items[0] if items else None
+
+    async def _touch_last_used(self, storage_provider, api_token) -> None:
+        """Best-effort update of api_token.last_used_at. Never raises."""
+        from primer.model.api_token import ApiToken
+
+        try:
+            updated = api_token.model_copy(update={"last_used_at": _utcnow()})
+            storage = storage_provider.get_storage(ApiToken)
+            await storage.update(updated)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "touch_last_used failed for %s",
+                getattr(api_token, "id", "?"),
+                exc_info=True,
+            )
 
 
 def _read_cookie(scope, name: str) -> str | None:
@@ -111,4 +212,25 @@ def _read_cookie(scope, name: str) -> str | None:
                 return None
             morsel = jar.get(name)
             return morsel.value if morsel is not None else None
+    return None
+
+
+def _read_bearer(headers) -> str | None:
+    """Pull an ``Authorization: Bearer <token>`` value out of ASGI headers.
+
+    Works for both http and websocket scopes (both pass the same
+    raw-headers tuple shape). Returns the token string (no scheme
+    prefix, trimmed) or None.
+    """
+    for k, v in headers:
+        if k == b"authorization":
+            try:
+                decoded = v.decode("latin-1")
+            except Exception:
+                return None
+            parts = decoded.split(None, 1)
+            if len(parts) == 2 and parts[0].lower() == "bearer":
+                token = parts[1].strip()
+                return token or None
+            return None
     return None
