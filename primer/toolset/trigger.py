@@ -1,8 +1,8 @@
 """``trigger`` internal toolset — mirrors the Trigger REST API.
 
-Spec §11.1 (management tools). Each tool delegates to
-:mod:`primer.trigger.service` so the toolset and the REST router
-share one mutation path.
+Spec §11.1 (management tools) + §11.2 (yielding tool). Management
+tools delegate to :mod:`primer.trigger.service` so the toolset and
+the REST router share one mutation path.
 
 Management tools (one-to-one with ``/v1/triggers/*`` endpoints):
 
@@ -18,8 +18,12 @@ Management tools (one-to-one with ``/v1/triggers/*`` endpoints):
 * ``trigger__update_subscription`` — partial sub update.
 * ``trigger__delete_subscription`` — delete a sub.
 
-The yielding ``subscribe_to_trigger`` tool (Spec §11.2 / §9) lands in
-a follow-up commit alongside this management surface.
+Plus the yielding tool (Spec §9 / §11.2):
+
+* ``subscribe_to_trigger`` — park the calling session until the
+  trigger fires next. Resumes with the fire context as the tool
+  result. Persists a one-shot ``parked_session`` Subscription which
+  the matching dispatcher consumes on fire.
 
 Each tool translates typed service exceptions to ``ToolCallResult`` error
 envelopes using the spec §14 error codes. Argument validation errors
@@ -30,15 +34,21 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.model.chat import Tool, ToolCallResult
 from primer.model.trigger import (
+    ParkedSessionSubConfig,
+    Subscription,
     SubscriptionConfig,
+    Trigger,
     TriggerConfig,
 )
+from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.service import (
@@ -175,6 +185,10 @@ class _SubUpdateArgs(BaseModel):
     description: str | None = None
 
 
+class _SubscribeArgs(BaseModel):
+    trigger_id: str = Field(..., min_length=1, description="Trigger id to subscribe to.")
+
+
 # ---------------------------------------------------------------------------
 # Tool descriptors
 # ---------------------------------------------------------------------------
@@ -301,6 +315,21 @@ TOOL_DELETE_SUB = Tool(
         "``{ok: true}`` on success or ``type=subscription_not_found``."
     ),
     args_schema=_SubIdArgs.model_json_schema(),
+)
+
+TOOL_SUBSCRIBE = Tool(
+    id="subscribe_to_trigger",
+    toolset_id=TRIGGER_TOOLSET_ID,
+    description=(
+        "Yielding tool. Park the calling session until ``trigger_id`` "
+        "next fires. Resumes with the fire context dict as the tool "
+        "result. Validates the trigger exists and is enabled — "
+        "otherwise returns ``type=trigger_not_found_or_disabled``. "
+        "Persists a one-shot ``parked_session`` Subscription bound to "
+        "the caller's (session_id, tool_call_id); the matching "
+        "dispatcher deletes the row after delivering the resume payload."
+    ),
+    args_schema=_SubscribeArgs.model_json_schema(),
 )
 
 
@@ -609,6 +638,79 @@ def _make_delete_sub_handler(
     return _handler
 
 
+def _make_subscribe_handler(
+    storage_provider: "StorageProvider",
+) -> ToolHandler:
+    """Yielding-tool handler for ``subscribe_to_trigger``.
+
+    The :class:`InternalToolsetProvider` injects a :class:`ToolContext`
+    because this handler declares ``ctx`` as a keyword argument. We
+    use ``ctx.session_id`` + ``ctx.tool_call_id`` to populate the
+    ``parked_session`` Subscription config — those identify which park
+    the dispatcher will reach on fire.
+
+    The Subscription row is written BEFORE returning :class:`Yielded`
+    so a fire racing the park still finds the row. The dispatcher's
+    park-state check then guards against a stale fire (it verifies the
+    target session is actually parked on the matching tool_call_id
+    before publishing the resume payload).
+    """
+
+    async def _handler(
+        arguments: dict[str, Any],
+        *,
+        ctx: ToolContext,
+    ) -> ToolCallResult | Yielded:
+        try:
+            args = _SubscribeArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_validation(exc)
+
+        trigger_storage = storage_provider.get_storage(Trigger)
+        trigger = await trigger_storage.get(args.trigger_id)
+        if trigger is None or not trigger.enabled:
+            return _err(
+                f"trigger {args.trigger_id!r} does not exist or is disabled",
+                error_type="trigger_not_found_or_disabled",
+            )
+
+        # Chat-only callers have no session to park; refuse rather than
+        # write an orphan row the dispatcher would just skip on fire.
+        if ctx.session_id is None:
+            return _err(
+                "subscribe_to_trigger requires a session-bound caller; "
+                "chat-only invocations have no session to park",
+                error_type="trigger_not_found_or_disabled",
+            )
+
+        sub_id = f"sb-{uuid4().hex[:12]}"
+        sub = Subscription(
+            id=sub_id,
+            trigger_id=args.trigger_id,
+            config=ParkedSessionSubConfig(
+                session_id=ctx.session_id,
+                tool_call_id=ctx.tool_call_id,
+                parked_at=datetime.now(timezone.utc),
+            ),
+            payload_template=None,
+            parallelism="skip",  # field unused for parked_session
+            enabled=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        await storage_provider.get_storage(Subscription).create(sub)
+        return Yielded(
+            tool_name="subscribe_to_trigger",
+            event_key=f"trigger:{args.trigger_id}",
+            timeout=None,  # honour the global yield cap
+            resume_metadata={
+                "subscription_id": sub_id,
+                "trigger_id": args.trigger_id,
+            },
+        )
+
+    return _handler
+
+
 # ---------------------------------------------------------------------------
 # Public factory
 # ---------------------------------------------------------------------------
@@ -666,6 +768,10 @@ def build_trigger_toolset_provider(
         "trigger__delete_subscription": (
             TOOL_DELETE_SUB,
             _make_delete_sub_handler(storage_provider, claim_engine, event_bus),
+        ),
+        "subscribe_to_trigger": (
+            TOOL_SUBSCRIBE,
+            _make_subscribe_handler(storage_provider),
         ),
     }
     logger.info(

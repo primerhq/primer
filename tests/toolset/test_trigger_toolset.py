@@ -80,6 +80,7 @@ class TestCatalogue:
             "trigger__create_subscription",
             "trigger__update_subscription",
             "trigger__delete_subscription",
+            "subscribe_to_trigger",
         }
         assert names == expected
 
