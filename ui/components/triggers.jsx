@@ -295,6 +295,328 @@ function TR_TriggerCard({ trigger, onOpen }) {
 }
 
 // ============================================================================
+// TR_CreateTriggerDialog — three-step wizard for POST /v1/triggers
+//
+// Step 1: kind picker (delayed | scheduled)
+// Step 2: per-kind config
+//   delayed   -> datetime-local input for fire_at (default now + 1 hour)
+//   scheduled -> cron expression + IANA timezone dropdown + catchup
+// Step 3: slug (validated client-side), name, description
+// Submits POST /v1/triggers with {slug, name, description, config, enabled: true}
+// then navigates to /triggers/{id} via window.primerApi.useRouter().navigate.
+// ============================================================================
+
+function TR_CreateTriggerDialog({ onClose, onCreated }) {
+  const { apiFetch } = window.primerApi;
+
+  const [step, setStep] = React.useState(1);
+
+  // Step 1
+  const [kind, setKind] = React.useState("delayed");
+
+  // Step 2 — delayed
+  const [fireAtLocal, setFireAtLocal] = React.useState(TR_defaultFireAtLocal());
+
+  // Step 2 — scheduled
+  const [cron, setCron] = React.useState("0 * * * *");
+  const [timezone, setTimezone] = React.useState(TR_browserTimezone());
+  const [catchup, setCatchup] = React.useState("one");
+  const timezones = React.useMemo(() => TR_supportedTimezones(), []);
+
+  // Step 3
+  const [slug, setSlug] = React.useState("");
+  const [name, setName] = React.useState("");
+  const [description, setDescription] = React.useState("");
+  const [slugError, setSlugError] = React.useState("");
+
+  // Submit state
+  const [submitError, setSubmitError] = React.useState(null); // {code, message} | string
+  const [busy, setBusy] = React.useState(false);
+
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const onNameChange = (v) => {
+    setName(v);
+    if (!slug || slug === TR_autoSlug(name)) {
+      setSlug(TR_autoSlug(v));
+    }
+  };
+
+  const step1Valid = kind === "delayed" || kind === "scheduled";
+  const step2Valid = (
+    kind === "delayed"
+      ? !!fireAtLocal
+      : (kind === "scheduled" ? (!!cron && !!timezone && !!catchup) : false)
+  );
+  const step3Valid = !TR_validateSlug(slug) && !!name;
+
+  // Build the trigger config payload for POST /v1/triggers.
+  const buildConfig = () => {
+    if (kind === "delayed") {
+      // datetime-local has no timezone — interpret as the browser's
+      // local time and emit a UTC ISO8601 instant so the server stores
+      // a tz-aware timestamp.
+      const dt = new Date(fireAtLocal);
+      const fireAtIso = isNaN(dt.getTime()) ? fireAtLocal : dt.toISOString();
+      return { kind: "delayed", fire_at: fireAtIso };
+    }
+    return {
+      kind: "scheduled",
+      cron,
+      timezone,
+      catchup,
+    };
+  };
+
+  const submit = async () => {
+    const slugErr = TR_validateSlug(slug);
+    if (slugErr) { setSlugError(slugErr); return; }
+    setSlugError("");
+    setSubmitError(null);
+    setBusy(true);
+    try {
+      const body = {
+        slug,
+        name: name || slug,
+        description: description || null,
+        config: buildConfig(),
+        enabled: true,
+      };
+      // POST /v1/triggers — see primer/api/routers/triggers.py:create_trigger_endpoint
+      const created = await apiFetch("POST", "/triggers", body);
+      if (!mountedRef.current) return;
+      onCreated(created);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      // Server error shape: {detail: {code, message}} (see _raise_code).
+      // FastAPI unwraps `detail` into envelope.detail when status != 422.
+      // The ApiError stores envelope.detail as `detail` directly, which
+      // may be an object {code, message} or a string.
+      const env = err && err.envelope;
+      const envDetail = env && env.detail;
+      let code = null;
+      let msg = null;
+      if (envDetail && typeof envDetail === "object") {
+        code = envDetail.code || null;
+        msg = envDetail.message || null;
+      }
+      if (!msg && typeof err.detail === "string") msg = err.detail;
+      if (!msg) msg = err.title || err.message || "Request failed";
+      setSubmitError({ code, message: msg });
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  };
+
+  const stepTitle = step === 1
+    ? "Create trigger — Step 1: Kind"
+    : step === 2
+      ? `Create trigger — Step 2: ${kind === "delayed" ? "Delay" : "Schedule"}`
+      : "Create trigger — Step 3: Details";
+
+  return (
+    <Modal
+      title={stepTitle}
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          {step > 1 && (
+            <Btn kind="ghost" icon="chevron-left" onClick={() => setStep(step - 1)} disabled={busy}>Back</Btn>
+          )}
+          {step < 3 && (
+            <Btn
+              kind="primary"
+              icon="chevron-right"
+              onClick={() => setStep(step + 1)}
+              disabled={step === 1 ? !step1Valid : !step2Valid}
+            >
+              Next
+            </Btn>
+          )}
+          {step === 3 && (
+            <Btn
+              kind="primary"
+              icon="check"
+              onClick={submit}
+              disabled={busy || !step3Valid}
+            >
+              {busy ? "Creating…" : "Create"}
+            </Btn>
+          )}
+        </>
+      }
+    >
+      {step === 1 && (
+        <div data-testid="tr-step-kind">
+          <div className="field-help" style={{ marginBottom: 10 }}>
+            Pick the trigger kind. Delayed triggers fire once at a chosen instant; scheduled
+            triggers fire on a cron schedule.
+          </div>
+          <div className="field">
+            <label
+              className="row"
+              style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 0", cursor: "pointer" }}
+            >
+              <input
+                type="radio"
+                name="tr-kind"
+                value="delayed"
+                checked={kind === "delayed"}
+                onChange={() => setKind("delayed")}
+              />
+              <div>
+                <div style={{ fontWeight: 600 }}>Delayed</div>
+                <div className="muted text-sm">One-off. Fires once at a chosen UTC instant.</div>
+              </div>
+            </label>
+            <label
+              className="row"
+              style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 0", cursor: "pointer" }}
+            >
+              <input
+                type="radio"
+                name="tr-kind"
+                value="scheduled"
+                checked={kind === "scheduled"}
+                onChange={() => setKind("scheduled")}
+              />
+              <div>
+                <div style={{ fontWeight: 600 }}>Scheduled</div>
+                <div className="muted text-sm">Recurring cron expression evaluated in a chosen timezone.</div>
+              </div>
+            </label>
+          </div>
+        </div>
+      )}
+
+      {step === 2 && kind === "delayed" && (
+        <div data-testid="tr-step-delayed">
+          <div className="field">
+            <label className="field-label" htmlFor="tr-fire-at">
+              Fire at <span className="hint">browser local time · converted to UTC on submit</span>
+            </label>
+            <input
+              id="tr-fire-at"
+              className="input mono"
+              type="datetime-local"
+              value={fireAtLocal}
+              onChange={(e) => setFireAtLocal(e.target.value)}
+              style={{ width: "100%" }}
+            />
+            <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+              Defaults to one hour from now.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {step === 2 && kind === "scheduled" && (
+        <div data-testid="tr-step-scheduled">
+          <div className="field">
+            <label className="field-label" htmlFor="tr-cron">
+              Cron expression <span className="hint">standard 5-field cron (m h dom mon dow)</span>
+            </label>
+            <input
+              id="tr-cron"
+              className="input mono"
+              value={cron}
+              onChange={(e) => setCron(e.target.value)}
+              placeholder="0 * * * *"
+              style={{ width: "100%" }}
+            />
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="tr-timezone">
+              Timezone <span className="hint">IANA tz name</span>
+            </label>
+            <select
+              id="tr-timezone"
+              className="input mono"
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              style={{ width: "100%" }}
+            >
+              {timezones.map((tz) => (
+                <option key={tz} value={tz}>{tz}</option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="tr-catchup">
+              Catchup policy <span className="hint">behaviour after downtime</span>
+            </label>
+            <select
+              id="tr-catchup"
+              className="input"
+              value={catchup}
+              onChange={(e) => setCatchup(e.target.value)}
+              style={{ width: "100%" }}
+            >
+              {TR_CATCHUP_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div data-testid="tr-step-meta">
+          <div className="field">
+            <label className="field-label" htmlFor="tr-name">Name</label>
+            <input
+              id="tr-name"
+              className="input"
+              value={name}
+              onChange={(e) => onNameChange(e.target.value)}
+              placeholder="My trigger"
+              style={{ width: "100%" }}
+            />
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="tr-slug">
+              Slug <span className="hint">^[a-z][a-z0-9-]{1,63}$</span>
+            </label>
+            <input
+              id="tr-slug"
+              className="input mono"
+              value={slug}
+              onChange={(e) => { setSlug(e.target.value); setSlugError(TR_validateSlug(e.target.value)); }}
+              placeholder="my-trigger"
+              style={{ width: "100%" }}
+            />
+            {slugError && <div className="field-help" style={{ color: "var(--red)" }}>{slugError}</div>}
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="tr-description">Description <span className="hint">optional</span></label>
+            <textarea
+              id="tr-description"
+              className="input"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              style={{ width: "100%", resize: "vertical" }}
+            />
+          </div>
+          {submitError && (
+            <Banner
+              kind="error"
+              title={submitError.code ? `Create failed (${submitError.code})` : "Create failed"}
+              detail={submitError.message || ""}
+            />
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ============================================================================
 // TR_TriggerDetail — placeholder stub (real implementation lands in Phase 10).
 // ============================================================================
 
@@ -327,3 +649,4 @@ window.TR_TriggersPage = TR_TriggersPage;
 window.TR_TriggerList = TR_TriggerList;
 window.TR_TriggerCard = TR_TriggerCard;
 window.TR_TriggerDetail = TR_TriggerDetail;
+window.TR_CreateTriggerDialog = TR_CreateTriggerDialog;
