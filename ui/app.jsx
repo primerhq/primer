@@ -85,6 +85,10 @@ function App() {
     }
     if (root === "harnesses") return "harnesses";
     if (root === "triggers") return params.id ? "trigger-detail" : "triggers";
+    if (root === "settings") {
+      if (path.startsWith("/settings/api-tokens")) return "api-tokens";
+      return root;
+    }
     return root;
   })();
 
@@ -364,6 +368,7 @@ function App() {
       "harness-detail": (e) => `/harnesses/${e}`,
       triggers: "/triggers",
       "trigger-detail": (e) => `/triggers/${e}`,
+      "api-tokens": "/settings/api-tokens",
     };
     const route = ROUTES[target];
     const url = typeof route === "function" ? route(extra) : (route || "/");
@@ -1010,6 +1015,24 @@ function App() {
     );
     const Comp = window.TR_TriggersPage;
     pageBody = Comp ? <Comp triggerId={triggerId} /> : null;
+  } else if (page === "api-tokens") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("dashboard")}>Account</a>
+            <span className="sep">/</span>
+            <span style={{ color: "var(--text)" }}>API tokens</span>
+          </div>
+          <h1 className="page-title">API tokens</h1>
+          <div className="page-sub">
+            Bearer credentials for programmatic clients · scoped, revocable, audit-logged
+          </div>
+        </div>
+      </>
+    );
+    const Comp = window.AT_ApiTokensPage;
+    pageBody = Comp ? <Comp /> : null;
   } else if (page === "sessions") {
     pageHeader = (
       <>

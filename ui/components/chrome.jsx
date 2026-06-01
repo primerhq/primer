@@ -74,6 +74,12 @@ const NAV = [
       { id: "health", label: "Health", icon: "heart" },
     ],
   },
+  {
+    group: "Account",
+    items: [
+      { id: "api-tokens", label: "API tokens", icon: "key" },
+    ],
+  },
 ];
 
 function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapsed, onCollapseToggle }) {
