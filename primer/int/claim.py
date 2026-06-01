@@ -10,6 +10,7 @@ class ClaimKind(StrEnum):
     SESSION = "session"
     CHAT = "chat"
     HARNESS = "harness"
+    TRIGGER = "trigger"
 
 
 @dataclass(frozen=True)
