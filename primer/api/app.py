@@ -949,6 +949,12 @@ def _mount_routers(
     # to change (Commit 6).
     auth_dep = [Depends(require_auth)]
 
+    # API token CRUD — sibling of the auth router under /v1/auth/tokens.
+    # Cookie-only by router-internal check; bearer-authenticated callers
+    # are rejected so a bearer token can't mint or manage other tokens.
+    from primer.api.routers.api_tokens import api_tokens_router
+    app.include_router(api_tokens_router, prefix=prefix, dependencies=auth_dep)
+
     # Phase 1 — providers + tools
     app.include_router(providers.llm_provider_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(providers.embedding_provider_router, prefix=prefix, dependencies=auth_dep)
