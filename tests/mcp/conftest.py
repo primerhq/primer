@@ -12,11 +12,11 @@ would shadow the third-party ``mcp`` SDK package on the import path.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
-from primer.model.chat import Tool
+from primer.model.chat import Tool, ToolCallResult
 
 
 class FakeToolsetProvider:
@@ -34,11 +34,14 @@ class FakeToolsetProvider:
         *,
         yielding: set[str] | None = None,
         sessioned: set[str] | None = None,
+        call_handler: Callable[..., ToolCallResult] | None = None,
     ) -> None:
         self.toolset_id = toolset_id
         self._tools = tools
         self._yielding = yielding or set()
         self._sessioned = sessioned or set()
+        self._call_handler = call_handler
+        self.calls: list[dict[str, Any]] = []
 
     async def list_tools(
         self, *, principal: str | None = None,
@@ -46,6 +49,37 @@ class FakeToolsetProvider:
         del principal  # unused
         for tool in self._tools:
             yield tool
+
+    async def call(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        principal: str | None = None,
+        ctx: Any = None,
+    ) -> ToolCallResult:
+        """Record the invocation and delegate to ``call_handler``.
+
+        Defaults to echoing the bare tool name + arguments so the
+        dispatch tests can assert end-to-end plumbing without wiring
+        up a per-test handler.
+        """
+        self.calls.append({
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "principal": principal,
+            "ctx": ctx,
+        })
+        if self._call_handler is not None:
+            return self._call_handler(
+                tool_name=tool_name,
+                arguments=arguments,
+                principal=principal,
+                ctx=ctx,
+            )
+        return ToolCallResult(
+            output=f"{tool_name}:{arguments}", is_error=False,
+        )
 
     def is_yielding(self, tool_name: str) -> bool:
         return tool_name in self._yielding
