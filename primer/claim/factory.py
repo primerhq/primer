@@ -15,6 +15,7 @@ from primer.bus.in_memory import InMemoryEventBus
 from primer.claim.adapters.chats import ChatClaimAdapter
 from primer.claim.adapters.harnesses import HarnessClaimAdapter
 from primer.claim.adapters.sessions import SessionClaimAdapter
+from primer.claim.adapters.triggers import TriggerClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind
 from primer.int.event_bus import EventBus
@@ -46,6 +47,7 @@ class ClaimEngineFactory:
         from primer.model.workspace_session import WorkspaceSession
         from primer.model.chats import Chat
         from primer.model.harness import Harness
+        from primer.model.trigger import Trigger
 
         adapters = {
             ClaimKind.SESSION: SessionClaimAdapter(
@@ -56,6 +58,9 @@ class ClaimEngineFactory:
             ),
             ClaimKind.HARNESS: HarnessClaimAdapter(
                 harness_storage=storage_provider.get_storage(Harness),
+            ),
+            ClaimKind.TRIGGER: TriggerClaimAdapter(
+                storage=storage_provider.get_storage(Trigger),
             ),
         }
 
