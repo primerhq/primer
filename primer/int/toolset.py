@@ -138,6 +138,36 @@ class ToolsetProvider(ABC):
             parked-state blob and releases the lease.
         """
 
+    def is_yielding(self, tool_name: str) -> bool:
+        """Return True if this tool yields control (raises :class:`YieldToWorker`).
+
+        Used by the MCP server endpoint to filter out tools it cannot
+        round-trip — MCP has no park/resume protocol in v1, so yielding
+        tools cannot be exposed.
+
+        Default: ``False``. Providers that host yielding handlers
+        override this and return ``True`` for the relevant names. The
+        ``tool_name`` is the bare wire name (matches :attr:`Tool.id`),
+        NOT the ``toolset_id__name`` scoped form.
+        """
+        del tool_name
+        return False
+
+    def requires_session(self, tool_name: str) -> bool:
+        """Return True if this tool requires :class:`AgentSession` context.
+
+        Used by the MCP server endpoint to exclude workspace-style
+        tools that only make sense inside a running agent loop (they
+        depend on ``ctx.session_id`` / ``ctx.workspace_id`` injected
+        by the worker).
+
+        Default: ``False``. Providers whose handlers read
+        ``ctx.session_id`` override this and return ``True`` for the
+        relevant names.
+        """
+        del tool_name
+        return False
+
     async def aclose(self) -> None:
         """Release backend resources held by this provider. Default no-op."""
         return
