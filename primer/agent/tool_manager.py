@@ -39,7 +39,7 @@ from primer.agent.approval import (
     evaluate_approval_gate,
 )
 from primer.int.toolset import ToolsetProvider
-from primer.model.chat import Tool, ToolCallPart, ToolResultPart
+from primer.model.chat import Tool, ToolCallPart, ToolCallResult, ToolResultPart
 from primer.model.except_ import (
     AuthRequiredError,
     ConfigError,
@@ -519,4 +519,73 @@ def _workspace_tool_descriptor(
     )
 
 
-__all__ = ["ToolExecutionManager", "WORKSPACE_TOOLSET_ID"]
+async def invoke_one(
+    *,
+    provider: ToolsetProvider,
+    tool_name: str,
+    arguments: dict,
+    principal: str | None,
+) -> ToolCallResult:
+    """Invoke a single tool against ``provider`` — no approval, no workspace branch.
+
+    Used by the MCP server endpoint to call tools directly without an
+    agent context. Wraps the call in the same OTel span + Prometheus
+    counters as :meth:`ToolExecutionManager.execute` so traces and
+    metrics stay unified across agent-driven and MCP-driven invocations.
+
+    Parameters
+    ----------
+    provider
+        The :class:`ToolsetProvider` that owns ``tool_name``.
+    tool_name
+        Bare tool name (e.g. ``"uuid_v4"``), not a scoped id
+        (``"misc__uuid_v4"``). Resolution from scoped id back to
+        (provider, bare_name) is the caller's responsibility.
+    arguments
+        Pre-parsed argument dict forwarded to ``provider.call``.
+    principal
+        Caller identity, propagated to the provider for upstream
+        auth-binding (MCP toolsets) and audit. ``None`` for unauthenticated
+        callers; providers tolerate this where their backend permits.
+
+    Caller is responsible for:
+
+    * **Allowlist filtering** — e.g. the MCP exposure config's
+      ``allowed_tools`` set. This helper does not consult any allowlist.
+    * **Hard-deny enforcement** — e.g.
+      :func:`primer.mcp.safety.is_exposable`. This helper does not check
+      hard-deny lists.
+    * **Approval-policy filtering** — MCP excludes approval-gated tools
+      from its allowlist; this function does not invoke
+      :class:`ApprovalResolver` or raise :class:`YieldToWorker`.
+
+    Errors raised by ``provider.call`` propagate unchanged. The caller
+    decides how to translate them into a protocol-level error response.
+    """
+    import time as _time
+
+    _tracer = _tracing.get_tracer("primer.tool")
+    _t0 = _time.monotonic()
+    with _tracer.start_as_current_span("tool.exec") as _span:
+        _span.set_attribute("tool.name", tool_name)
+        _span.set_attribute("tool.via", "mcp")
+        try:
+            result = await provider.call(
+                tool_name=tool_name,
+                arguments=arguments,
+                principal=principal,
+                ctx=None,
+            )
+            _metrics.tool_calls_total.labels(tool_name, "ok").inc()
+            return result
+        except Exception as _exc:
+            _span.record_exception(_exc)
+            _metrics.tool_calls_total.labels(tool_name, "fail").inc()
+            raise
+        finally:
+            _metrics.tool_duration_seconds.labels(tool_name).observe(
+                _time.monotonic() - _t0
+            )
+
+
+__all__ = ["ToolExecutionManager", "WORKSPACE_TOOLSET_ID", "invoke_one"]
