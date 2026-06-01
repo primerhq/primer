@@ -33,6 +33,7 @@ from primer.api.deps import (
     get_graph_storage,
     get_scheduler,
     get_session_storage,
+    get_storage_provider,
     get_workspace_registry,
     get_workspace_storage,
 )
@@ -116,6 +117,7 @@ async def create_session(
     scheduler=Depends(get_scheduler),
     workspace_registry=Depends(get_workspace_registry),
     engine=Depends(get_claim_engine),
+    storage_provider=Depends(get_storage_provider),
 ) -> WorkspaceSession:
     """Create a session bound to an agent or graph on this workspace.
 
@@ -201,34 +203,12 @@ async def create_session(
             # initial_instructions-as-JSON fallback path).
             body.graph_input = resolved_input
 
+    # Pre-generate the sid so we can allocate the on-disk slot BEFORE
+    # the factory's auto_start path makes the row claimable. Spec §12.5
+    # (Plan §3.2): persist + auto-start + claim registration live in
+    # primer.workspace.session_factory so the trigger dispatcher and
+    # this REST handler share one canonical create path.
     sid = f"sess-{uuid.uuid4().hex[:12]}"
-    now = datetime.now(timezone.utc)
-    session = WorkspaceSession(
-        id=sid,
-        workspace_id=workspace_id,
-        binding=body.binding,
-        status=SessionStatus.CREATED,
-        parent_session_id=body.parent_session_id,
-        initial_instructions=body.initial_instructions,
-        metadata=body.metadata,
-        created_at=now,
-    )
-    await sessions.create(session)
-
-    # Graph bindings: persist ``graph_input`` onto session metadata so
-    # the workspace graph executor can read it as the initial input
-    # (see ``primer/graph/workspace_executor.py`` —
-    # ``session.metadata['graph_input']`` is the source of truth for
-    # the initial graph input).
-    if (
-        isinstance(body.binding, GraphSessionBinding)
-        and body.graph_input is not None
-    ):
-        session.metadata = {
-            **(session.metadata or {}),
-            "graph_input": body.graph_input,
-        }
-        await sessions.update(session)
 
     # Allocate the on-disk session slot inside the workspace so the
     # scheduler-visible Session row and the workspace's
@@ -271,17 +251,29 @@ async def create_session(
             parent_session_id=body.parent_session_id,
         )
 
-    if body.auto_start:
-        session.status = SessionStatus.RUNNING
-        session.started_at = now
-        await sessions.update(session)
-        await scheduler.enqueue(sid)
+    # Persist the row + (optionally) auto-start + always register a
+    # forward-compat ClaimEngine upsert via the shared service helper.
+    from primer.workspace.session_factory import (
+        SessionFactoryDeps,
+        create_session as _persist_session,
+    )
 
-    # Register with the ClaimEngine (forward-compat; no-op when not wired).
-    if engine is not None:
-        from primer.int.claim import ClaimKind
-        await engine.upsert(ClaimKind.SESSION, sid)
-
+    session = await _persist_session(
+        workspace_id=workspace_id,
+        binding=body.binding,
+        initial_instructions=body.initial_instructions,
+        graph_input=body.graph_input,
+        auto_start=body.auto_start,
+        metadata=body.metadata,
+        parent_session_id=body.parent_session_id,
+        session_id=sid,
+        deps=SessionFactoryDeps(
+            storage_provider=storage_provider,
+            claim_engine=engine,
+            scheduler=scheduler,
+            workspace_registry=None,
+        ),
+    )
     return session
 
 
