@@ -14,6 +14,23 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
+
+class _GZipExceptMcp(GZipMiddleware):
+    """Bypass gzip for paths under ``/v1/mcp``.
+
+    The global :class:`GZipMiddleware` buffers + compresses response
+    bodies, which breaks the chunked SSE stream the MCP
+    StreamableHTTP transport relies on (no flush boundaries; the
+    client never sees an event until the body completes). Other
+    endpoints continue to benefit from compression unchanged.
+    """
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "").startswith("/v1/mcp"):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
 from primer.api.config import AppConfig
 from primer.api.errors import register_error_handlers
 from primer.api._jsx_bundle import build_jsx_bundle
@@ -760,6 +777,22 @@ def _make_lifespan(config: AppConfig):
             "Ensure the corresponding router modules register their kinds."
         )
 
+        # --- MCP server mount (/v1/mcp) ----------------------------------
+        # Spec §4-5: StreamableHTTP MCP transport exposed at /v1/mcp,
+        # gated by AuthMiddleware-populated scope state. The session
+        # manager's run() is an async context that owns an anyio task
+        # group; we enter it here and tear it down in the finally
+        # block alongside the other long-lived services. Late mount
+        # (after _mount_routers ran during create_app) is fine —
+        # Starlette permits mid-lifespan mounts and the gate looks up
+        # the session manager off app.state at request time.
+        mcp_teardown = await _start_mcp_mount(
+            app,
+            storage_provider=storage_provider,
+            provider_registry=provider_registry,
+        )
+        logger.info("lifespan: MCP /v1/mcp mounted")
+
         logger.info(
             "primer API ready",
             extra={"version": APP_VERSION, "host": config.host, "port": config.port},
@@ -767,6 +800,12 @@ def _make_lifespan(config: AppConfig):
         try:
             yield
         finally:
+            # Drain the MCP session manager early — its anyio task
+            # group depends on the asyncio loop being alive.
+            try:
+                await mcp_teardown()
+            except Exception:
+                logger.exception("mcp session manager teardown failed")
             # Order matters: drain the pool first so in-flight turns get
             # a chance to settle while the scheduler is still alive,
             # then close the scheduler, then the rest of the
@@ -1044,7 +1083,7 @@ def create_app(config: AppConfig) -> FastAPI:
     # JSON envelopes, and skips WebSockets entirely (different ASGI
     # scope). Binary downloads (application/octet-stream) pass through
     # with a small CPU hit but no corruption.
-    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    app.add_middleware(_GZipExceptMcp, minimum_size=1024)
     _install_security_headers(app)
     _install_console_csp(app)
     _install_request_id(app)
@@ -1107,6 +1146,165 @@ def _install_auth_middleware(app: FastAPI) -> None:
     from primer.api.middleware.auth import AuthMiddleware
 
     app.add_middleware(AuthMiddleware)
+
+
+async def _mcp_send_simple_response(send, status, body, extra_headers=None):
+    """Emit a minimal JSON response from the MCP auth gate.
+
+    The gate runs before the SDK's session manager touches the scope,
+    so we cannot lean on FastAPI's exception machinery to render
+    errors. A hand-rolled ASGI start+body pair keeps the surface
+    tight and avoids accidentally inheriting any of the SDK's own
+    response shaping.
+    """
+    import json
+    body_bytes = json.dumps(body).encode("utf-8")
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body_bytes)).encode("ascii")),
+    ]
+    if extra_headers:
+        headers.extend(extra_headers)
+    await send({
+        "type": "http.response.start",
+        "status": status,
+        "headers": headers,
+    })
+    await send({"type": "http.response.body", "body": body_bytes})
+
+
+def _make_mcp_auth_gate(app: FastAPI):
+    """Build the ASGI gate that fronts ``StreamableHTTPSessionManager``.
+
+    Reads scope state populated by :class:`AuthMiddleware`
+    (``state.user`` / ``state.principal`` / ``state.api_token``),
+    rejects anonymous callers with 401 + ``WWW-Authenticate``, and
+    enforces the ``mcp`` scope on bearer tokens with 403. Cookie
+    sessions carry full user authority (``api_token is None``) and
+    pass through without a scope check.
+
+    On success the principal + api_token id are stashed in the
+    module-level :class:`ContextVar`s :data:`current_principal` and
+    :data:`current_api_token_id` (from :mod:`primer.mcp.server`) so
+    the MCP request handlers see the authenticated caller. The
+    ContextVars are reset in a ``finally`` so concurrent requests on
+    the same worker do not leak identities.
+    """
+    from primer.mcp.server import (
+        current_api_token_id as _current_api_token_id,
+        current_principal as _current_principal,
+    )
+    from starlette.datastructures import State
+
+    async def _mcp_auth_gate(scope, receive, send):
+        if scope["type"] != "http":
+            # WebSocket / lifespan scopes are not part of the MCP
+            # surface; reject quietly so a stray probe doesn't crash.
+            await _mcp_send_simple_response(
+                send, 400, {"detail": {"code": "unsupported_scope"}},
+            )
+            return
+
+        state = scope.get("state")
+        # AuthMiddleware sets ``state`` to a Starlette ``State`` object;
+        # support both that and a plain dict for defensive callers.
+        if isinstance(state, State):
+            user = getattr(state, "user", None)
+            principal = getattr(state, "principal", None)
+            api_token = getattr(state, "api_token", None)
+        elif isinstance(state, dict):
+            user = state.get("user")
+            principal = state.get("principal")
+            api_token = state.get("api_token")
+        else:
+            user = principal = api_token = None
+
+        if user is None:
+            await _mcp_send_simple_response(
+                send, 401,
+                {"detail": {"code": "auth_required"}},
+                extra_headers=[
+                    (b"www-authenticate", b'Bearer realm="primer"'),
+                ],
+            )
+            return
+
+        if api_token is not None and "mcp" not in api_token.scopes:
+            await _mcp_send_simple_response(
+                send, 403,
+                {"detail": {"code": "scope_required", "scope": "mcp"}},
+            )
+            return
+
+        session_manager = getattr(app.state, "mcp_session_manager", None)
+        if session_manager is None:
+            # Should never happen in a well-configured app — surface a
+            # 503 rather than crash, so the failure is visible to ops.
+            await _mcp_send_simple_response(
+                send, 503,
+                {"detail": {"code": "mcp_unavailable"}},
+            )
+            return
+
+        principal_tok = _current_principal.set(principal)
+        api_token_id_tok = _current_api_token_id.set(
+            api_token.id if api_token is not None else None
+        )
+        try:
+            await session_manager.handle_request(scope, receive, send)
+        finally:
+            _current_principal.reset(principal_tok)
+            _current_api_token_id.reset(api_token_id_tok)
+
+    return _mcp_auth_gate
+
+
+async def _start_mcp_mount(
+    app: FastAPI,
+    *,
+    storage_provider,
+    provider_registry,
+):
+    """Build the MCP session manager, mount /v1/mcp, return a teardown.
+
+    The session manager's ``run()`` is an async context manager that
+    spins an anyio task group; entered here, exited by the returned
+    coroutine. Callers (the production lifespan + the test factory)
+    are responsible for invoking the teardown during shutdown so the
+    task group can drain.
+    """
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from primer.mcp.exposure import ExposureDeps
+    from primer.mcp.server import build_mcp_server
+
+    def _deps_factory():
+        return ExposureDeps(
+            storage_provider=storage_provider,
+            provider_registry=provider_registry,
+        )
+
+    mcp_server = build_mcp_server(_deps_factory)
+    mcp_session_manager = StreamableHTTPSessionManager(
+        app=mcp_server,
+        json_response=False,
+        stateless=False,
+    )
+    _ctx = mcp_session_manager.run()
+    await _ctx.__aenter__()
+    app.state.mcp_session_manager = mcp_session_manager
+    # Mount once. The gate closure captures ``app`` so it can read
+    # the session manager off ``app.state`` at request time; this
+    # also keeps the mount survivable across hot-reloads in tests
+    # that rebuild the manager without re-mounting.
+    app.mount("/v1/mcp", _make_mcp_auth_gate(app))
+
+    async def _teardown() -> None:
+        try:
+            await _ctx.__aexit__(None, None, None)
+        finally:
+            app.state.mcp_session_manager = None
+
+    return _teardown
 
 
 def _install_security_headers(app: FastAPI) -> None:
@@ -1569,6 +1767,32 @@ def create_test_app(
     app.state.channel_dispatcher = _test_channel_dispatcher
     _mount_routers(app)
     register_error_handlers(app)
+
+    # MCP mount helpers. ASGITransport doesn't drive the lifespan, so
+    # we expose explicit start/stop coroutines and let the test
+    # fixture call them around the yield. Mirrors the
+    # start_chat_tick_forwarder pattern above.
+    app.state.mcp_session_manager = None
+    _mcp_teardown_holder: dict[str, object] = {"fn": None}
+
+    async def _start_mcp() -> None:
+        if _mcp_teardown_holder["fn"] is not None:
+            return
+        _mcp_teardown_holder["fn"] = await _start_mcp_mount(
+            app,
+            storage_provider=storage_provider,
+            provider_registry=provider_registry,
+        )
+
+    async def _stop_mcp() -> None:
+        fn = _mcp_teardown_holder["fn"]
+        if fn is None:
+            return
+        _mcp_teardown_holder["fn"] = None
+        await fn()  # type: ignore[misc]
+
+    app.state.start_mcp_mount = _start_mcp
+    app.state.stop_mcp_mount = _stop_mcp
 
     # When start_chat_worker=True, attach a lifespan so SyncTestClient
     # (which drives the ASGI lifespan) starts the forwarder + worker pool

@@ -50,9 +50,21 @@ async def app(
     if getattr(_app.state, "start_worker_pool", None) is not None:
         await _app.state.start_worker_pool()
 
+    # Start the MCP /v1/mcp mount so tests that hit the endpoint
+    # see the real auth gate + session manager surface.
+    if getattr(_app.state, "start_mcp_mount", None) is not None:
+        await _app.state.start_mcp_mount()
+
     try:
         yield _app
     finally:
+        # Stop the MCP mount first — its anyio task group depends on
+        # the asyncio loop being alive.
+        if getattr(_app.state, "stop_mcp_mount", None) is not None:
+            try:
+                await _app.state.stop_mcp_mount()
+            except Exception:
+                pass
         # Stop the worker pool before cancelling the forwarder.
         if getattr(_app.state, "stop_worker_pool", None) is not None:
             try:
