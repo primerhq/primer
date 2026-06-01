@@ -991,6 +991,9 @@ def _mount_routers(
     # Harness REST router.
     from primer.api.routers.harness import harness_router
     app.include_router(harness_router, dependencies=auth_dep)
+    # Triggers REST router (Spec §10).
+    from primer.api.routers.triggers import triggers_router
+    app.include_router(triggers_router, dependencies=auth_dep)
     # Instrumentation endpoints — only mounted when the env var is set.
     # Public to keep the distributed test harness simple; the env var
     # itself is the access gate.
