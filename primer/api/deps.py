@@ -388,6 +388,34 @@ def require_auth_ws(websocket) -> User | None:
     return user if isinstance(user, User) else None
 
 
+def require_scope(scope: str):
+    """FastAPI dep factory enforcing a bearer-token scope.
+
+    Cookie sessions bypass this check (``request.state.api_token is
+    None`` for cookie auth — they carry full user authority). Bearer
+    tokens MUST include ``scope`` in their ``scopes`` list or the
+    dep raises 403 with ``{"code": "scope_required", "scope": <scope>}``.
+
+    Usage::
+
+        @router.get(
+            "/x",
+            dependencies=[Depends(require_auth), require_scope("mcp")],
+        )
+        async def handler(...): ...
+    """
+    async def _dep(request: Request) -> None:
+        api_token = getattr(request.state, "api_token", None)
+        if api_token is None:
+            return  # cookie session: bypass scope check
+        if scope not in api_token.scopes:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "scope_required", "scope": scope},
+            )
+    return Depends(_dep)
+
+
 __all__ = [
     "get_approval_resolver",
     "get_agent_storage",
@@ -411,6 +439,7 @@ __all__ = [
     "get_provider_registry",
     "require_auth",
     "require_auth_ws",
+    "require_scope",
     "get_scheduler",
     "get_semantic_search_registry",
     "get_semantic_search_storage",
