@@ -1366,6 +1366,461 @@ function TR_TriggerDetail({ id }) {
 }
 
 // ============================================================================
+// TR_SubscriptionDialog — create / edit a subscription (Phase 10.2).
+//
+// Spec §13.5. Three creatable kinds:
+//   * chat_message            — chat picker
+//   * agent_fresh_session     — workspace + agent pickers
+//   * graph_fresh_session     — workspace + graph pickers
+//
+// parked_session is intentionally EXCLUDED — it is created only by the
+// subscribe_to_trigger yielding tool (see Spec §5.4 and the
+// `parked_session_only_from_yield` error code §14). The dialog enforces
+// this client-side by omitting it from the kind picker; the server is
+// the source of truth.
+//
+// Common fields: payload_template (Jinja2), parallelism (skip|queue),
+// description, enabled. Edit mode pre-populates everything from `initial`
+// and locks the kind + config (config is immutable on PUT — only
+// payload_template, parallelism, enabled, description are sent).
+// ============================================================================
+
+const TR_SUB_KIND_OPTIONS = [
+  { value: "chat_message", label: "chat_message", description: "Append a user message to an existing chat." },
+  { value: "agent_fresh_session", label: "agent_fresh_session", description: "Start a fresh workspace session bound to an agent." },
+  { value: "graph_fresh_session", label: "graph_fresh_session", description: "Start a fresh workspace session bound to a graph." },
+];
+
+// Help text shown beneath the payload_template textarea. Echoes Spec §3.3.
+const TR_SUB_FIRE_CONTEXT_HELP = (
+  "Fire context variables available: "
+  + "{{ trigger_id }}, {{ trigger_slug }}, {{ kind }}, "
+  + "{{ fired_at }}, {{ scheduled_for }}, {{ fire_id }}"
+);
+
+function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
+  const { apiFetch, useResource } = window.primerApi;
+  const isEdit = mode === "edit" && initial != null;
+
+  // Lock the kind in edit mode; default to chat_message in create mode.
+  const initialKind = isEdit ? (initial?.config?.kind || "chat_message") : "chat_message";
+  const [kind, setKind] = React.useState(initialKind);
+
+  // Per-kind config state.
+  const [chatId, setChatId] = React.useState(
+    isEdit && initial?.config?.kind === "chat_message" ? (initial.config.chat_id || "") : "",
+  );
+  const [workspaceId, setWorkspaceId] = React.useState(
+    isEdit && initial?.config?.workspace_id ? initial.config.workspace_id : "",
+  );
+  const [agentId, setAgentId] = React.useState(
+    isEdit && initial?.config?.kind === "agent_fresh_session" ? (initial.config.agent_id || "") : "",
+  );
+  const [graphId, setGraphId] = React.useState(
+    isEdit && initial?.config?.kind === "graph_fresh_session" ? (initial.config.graph_id || "") : "",
+  );
+
+  // Common fields.
+  const [payloadTemplate, setPayloadTemplate] = React.useState(
+    isEdit && initial?.payload_template != null ? initial.payload_template : "",
+  );
+  const [parallelism, setParallelism] = React.useState(
+    isEdit && initial?.parallelism ? initial.parallelism : "skip",
+  );
+  const [description, setDescription] = React.useState(
+    isEdit && initial?.description ? initial.description : "",
+  );
+  const [enabled, setEnabled] = React.useState(
+    isEdit ? !!initial?.enabled : true,
+  );
+
+  // Submit state.
+  const [submitError, setSubmitError] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  // Picker data (always queried so hook count stays fixed; the form
+  // only renders the relevant picker for the selected kind). We use the
+  // standard `?limit=200` pattern adopted by the chats / agents / graphs
+  // pages so the dropdown isn't capped to a default page size.
+  const chats = useResource(
+    "tr-sub-chats",
+    (signal) => apiFetch("GET", "/chats?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+  const workspaces = useResource(
+    "tr-sub-workspaces",
+    (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+  const agents = useResource(
+    "tr-sub-agents",
+    (signal) => apiFetch("GET", "/agents?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+  const graphs = useResource(
+    "tr-sub-graphs",
+    (signal) => apiFetch("GET", "/graphs?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+
+  const chatItems = chats.data?.items ?? [];
+  const workspaceItems = workspaces.data?.items ?? [];
+  // Filter agents/graphs by workspace if the workspace picker is set.
+  // Many agent/graph rows carry a workspace_id; if not, show the full list.
+  const agentItems = (agents.data?.items ?? []).filter((a) => (
+    !workspaceId || !a.workspace_id || a.workspace_id === workspaceId
+  ));
+  const graphItems = (graphs.data?.items ?? []).filter((g) => (
+    !workspaceId || !g.workspace_id || g.workspace_id === workspaceId
+  ));
+
+  // Validation gates.
+  const configValid = (
+    kind === "chat_message" ? !!chatId
+      : kind === "agent_fresh_session" ? (!!workspaceId && !!agentId)
+        : kind === "graph_fresh_session" ? (!!workspaceId && !!graphId)
+          : false
+  );
+  const canSubmit = isEdit ? !busy : (!busy && configValid);
+
+  const buildConfig = () => {
+    if (kind === "chat_message") {
+      return { kind: "chat_message", chat_id: chatId };
+    }
+    if (kind === "agent_fresh_session") {
+      return { kind: "agent_fresh_session", workspace_id: workspaceId, agent_id: agentId };
+    }
+    return { kind: "graph_fresh_session", workspace_id: workspaceId, graph_id: graphId };
+  };
+
+  const submit = async () => {
+    setSubmitError(null);
+    setBusy(true);
+    try {
+      const tpl = payloadTemplate.trim() === "" ? null : payloadTemplate;
+      const desc = description.trim() === "" ? null : description;
+      let sub;
+      if (isEdit) {
+        // config is immutable per Spec §13.5 — only mutable fields sent.
+        const body = {
+          payload_template: tpl,
+          parallelism,
+          enabled,
+          description: desc,
+        };
+        sub = await apiFetch(
+          "PUT",
+          "/triggers/" + encodeURIComponent(triggerId)
+            + "/subscriptions/" + encodeURIComponent(initial.id),
+          body,
+        );
+      } else {
+        const body = {
+          config: buildConfig(),
+          payload_template: tpl,
+          parallelism,
+          description: desc,
+          enabled,
+        };
+        sub = await apiFetch(
+          "POST",
+          "/triggers/" + encodeURIComponent(triggerId) + "/subscriptions",
+          body,
+        );
+      }
+      if (!mountedRef.current) return;
+      onSaved(sub);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      const env = err && err.envelope;
+      const envDetail = env && env.detail;
+      let code = null;
+      let msg = null;
+      if (envDetail && typeof envDetail === "object") {
+        code = envDetail.code || null;
+        msg = envDetail.message || null;
+      }
+      if (!msg && typeof err.detail === "string") msg = err.detail;
+      if (!msg) msg = err.title || err.message || "Request failed";
+      setSubmitError({ code, message: msg });
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={isEdit ? `Edit subscription · ${initial.id}` : "Add subscription"}
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn
+            kind="primary"
+            icon={isEdit ? "check" : "plus"}
+            onClick={submit}
+            disabled={!canSubmit}
+          >
+            {busy
+              ? (isEdit ? "Saving…" : "Adding…")
+              : (isEdit ? "Save changes" : "Add subscription")}
+          </Btn>
+        </>
+      }
+    >
+      <div data-testid="tr-sub-dialog">
+        {/* Kind picker — create mode only; locked in edit mode. */}
+        <div className="field">
+          <label className="field-label">
+            Kind
+            {isEdit && <span className="hint"> locked — config is immutable</span>}
+          </label>
+          {isEdit ? (
+            <div className="mono" style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--surface-1)" }}>
+              {kind}
+            </div>
+          ) : (
+            <div data-testid="tr-sub-kind-picker">
+              {TR_SUB_KIND_OPTIONS.map((opt) => (
+                <label
+                  key={opt.value}
+                  className="row"
+                  style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0", cursor: "pointer" }}
+                >
+                  <input
+                    type="radio"
+                    name="tr-sub-kind"
+                    value={opt.value}
+                    checked={kind === opt.value}
+                    onChange={() => setKind(opt.value)}
+                  />
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{opt.label}</div>
+                    <div className="muted text-sm">{opt.description}</div>
+                  </div>
+                </label>
+              ))}
+              <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+                Note: <span className="mono">parked_session</span> subscriptions are created
+                only by the <span className="mono">subscribe_to_trigger</span> yielding tool
+                and cannot be added here.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Per-kind config */}
+        {kind === "chat_message" && !isEdit && (
+          <div className="field">
+            <label className="field-label" htmlFor="tr-sub-chat">Chat</label>
+            <select
+              id="tr-sub-chat"
+              className="input mono"
+              value={chatId}
+              onChange={(e) => setChatId(e.target.value)}
+              style={{ width: "100%" }}
+            >
+              <option value="">Select a chat…</option>
+              {chatItems.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.title ? `${c.title} · ${c.id}` : c.id}
+                </option>
+              ))}
+            </select>
+            {chats.loading && (
+              <div className="field-help muted text-sm">Loading chats…</div>
+            )}
+          </div>
+        )}
+
+        {(kind === "agent_fresh_session" || kind === "graph_fresh_session") && !isEdit && (
+          <div className="field">
+            <label className="field-label" htmlFor="tr-sub-workspace">Workspace</label>
+            <select
+              id="tr-sub-workspace"
+              className="input mono"
+              value={workspaceId}
+              onChange={(e) => {
+                setWorkspaceId(e.target.value);
+                // Reset agent/graph when workspace changes.
+                setAgentId("");
+                setGraphId("");
+              }}
+              style={{ width: "100%" }}
+            >
+              <option value="">Select a workspace…</option>
+              {workspaceItems.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name ? `${w.name} · ${w.id}` : w.id}
+                </option>
+              ))}
+            </select>
+            {workspaces.loading && (
+              <div className="field-help muted text-sm">Loading workspaces…</div>
+            )}
+          </div>
+        )}
+
+        {kind === "agent_fresh_session" && !isEdit && (
+          <div className="field">
+            <label className="field-label" htmlFor="tr-sub-agent">Agent</label>
+            <select
+              id="tr-sub-agent"
+              className="input mono"
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              disabled={!workspaceId}
+              style={{ width: "100%" }}
+            >
+              <option value="">Select an agent…</option>
+              {agentItems.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name ? `${a.name} · ${a.id}` : a.id}
+                </option>
+              ))}
+            </select>
+            {agents.loading && (
+              <div className="field-help muted text-sm">Loading agents…</div>
+            )}
+          </div>
+        )}
+
+        {kind === "graph_fresh_session" && !isEdit && (
+          <div className="field">
+            <label className="field-label" htmlFor="tr-sub-graph">Graph</label>
+            <select
+              id="tr-sub-graph"
+              className="input mono"
+              value={graphId}
+              onChange={(e) => setGraphId(e.target.value)}
+              disabled={!workspaceId}
+              style={{ width: "100%" }}
+            >
+              <option value="">Select a graph…</option>
+              {graphItems.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name ? `${g.name} · ${g.id}` : g.id}
+                </option>
+              ))}
+            </select>
+            {graphs.loading && (
+              <div className="field-help muted text-sm">Loading graphs…</div>
+            )}
+            <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+              The rendered payload must be JSON that validates against the
+              graph&apos;s Begin <span className="mono">input_schema</span>.
+            </div>
+          </div>
+        )}
+
+        {/* In edit mode, display the locked config summary in lieu of pickers. */}
+        {isEdit && (
+          <div className="field">
+            <label className="field-label">Target <span className="hint">locked</span></label>
+            <div className="mono" style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--surface-1)" }}>
+              <TR_SubTargetLabel sub={initial} />
+            </div>
+          </div>
+        )}
+
+        {/* Payload template */}
+        <div className="field">
+          <label className="field-label" htmlFor="tr-sub-payload-template">
+            Payload template <span className="hint">Jinja2 · optional</span>
+          </label>
+          <textarea
+            id="tr-sub-payload-template"
+            name="payload_template"
+            className="input mono"
+            value={payloadTemplate}
+            onChange={(e) => setPayloadTemplate(e.target.value)}
+            rows={5}
+            placeholder={kind === "graph_fresh_session"
+              ? '{"task": "Fired at {{ fired_at }}"}'
+              : 'Heads up — trigger {{ trigger_slug }} fired at {{ fired_at }}.'}
+            style={{ width: "100%", resize: "vertical" }}
+          />
+          <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+            {TR_SUB_FIRE_CONTEXT_HELP}
+          </div>
+        </div>
+
+        {/* Parallelism */}
+        <div className="field">
+          <label className="field-label">Parallelism</label>
+          <div data-testid="tr-sub-parallelism" style={{ display: "flex", gap: 12 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input
+                type="radio"
+                name="tr-sub-parallelism"
+                value="skip"
+                checked={parallelism === "skip"}
+                onChange={() => setParallelism("skip")}
+              />
+              <span><span className="mono">skip</span> — no-op if the previous fire&apos;s unit is still in-flight</span>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input
+                type="radio"
+                name="tr-sub-parallelism"
+                value="queue"
+                checked={parallelism === "queue"}
+                onChange={() => setParallelism("queue")}
+              />
+              <span><span className="mono">queue</span> — always fire</span>
+            </label>
+          </div>
+        </div>
+
+        {/* Description */}
+        <div className="field">
+          <label className="field-label" htmlFor="tr-sub-description">
+            Description <span className="hint">optional</span>
+          </label>
+          <textarea
+            id="tr-sub-description"
+            className="input"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={2}
+            style={{ width: "100%", resize: "vertical" }}
+          />
+        </div>
+
+        {/* Enabled */}
+        <div className="field">
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+            />
+            <span>Enabled</span>
+          </label>
+          <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+            Disabled subscriptions are skipped when the trigger fires.
+          </div>
+        </div>
+
+        {submitError && (
+          <Banner
+            kind="error"
+            title={submitError.code ? `${isEdit ? "Save" : "Create"} failed (${submitError.code})` : `${isEdit ? "Save" : "Create"} failed`}
+            detail={submitError.message || ""}
+          />
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
 // Exports
 // ============================================================================
 
@@ -1375,4 +1830,5 @@ window.TR_TriggerCard = TR_TriggerCard;
 window.TR_TriggerDetail = TR_TriggerDetail;
 window.TR_TriggerEditDialog = TR_TriggerEditDialog;
 window.TR_SubscriptionsPanel = TR_SubscriptionsPanel;
+window.TR_SubscriptionDialog = TR_SubscriptionDialog;
 window.TR_CreateTriggerDialog = TR_CreateTriggerDialog;
