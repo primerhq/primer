@@ -62,6 +62,12 @@ const NAV = [
     items: [{ id: "harnesses", label: "Harnesses", icon: "box" }],
   },
   {
+    group: "Automation",
+    items: [
+      { id: "triggers", label: "Triggers", icon: "clock" },
+    ],
+  },
+  {
     group: "Operations",
     items: [
       { id: "workers", label: "Workers", icon: "worker", countKey: "workers" },

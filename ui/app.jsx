@@ -84,6 +84,7 @@ function App() {
       return "internal-collections";
     }
     if (root === "harnesses") return "harnesses";
+    if (root === "triggers") return params.id ? "trigger-detail" : "triggers";
     return root;
   })();
 
@@ -361,6 +362,8 @@ function App() {
       "chat-detail": (e) => `/chats/${e}`,
       harnesses: "/harnesses",
       "harness-detail": (e) => `/harnesses/${e}`,
+      triggers: "/triggers",
+      "trigger-detail": (e) => `/triggers/${e}`,
     };
     const route = ROUTES[target];
     const url = typeof route === "function" ? route(extra) : (route || "/");
@@ -974,6 +977,39 @@ function App() {
       </>
     );
     pageBody = <HarnessesPage harnessId={harnessId} />;
+  } else if (page === "triggers" || page === "trigger-detail") {
+    const triggerId = params.id || null;
+    const isDetail = page === "trigger-detail" && triggerId;
+    pageHeader = (
+      <>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="crumb">
+            <a onClick={() => navigate("dashboard")}>Automation</a>
+            <span className="sep">/</span>
+            {isDetail ? (
+              <>
+                <a onClick={() => navigate("triggers")}>Triggers</a>
+                <span className="sep">/</span>
+                <span className="mono" style={{ color: "var(--text)" }}>{triggerId}</span>
+              </>
+            ) : (
+              <span style={{ color: "var(--text)" }}>Triggers</span>
+            )}
+          </div>
+          <h1 className="page-title">{isDetail ? <span className="mono">{triggerId}</span> : "Triggers"}</h1>
+          {!isDetail && (
+            <div className="page-sub">Delayed and scheduled fires that dispatch to subscriptions</div>
+          )}
+        </div>
+        {isDetail && (
+          <div className="page-actions">
+            <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("triggers")}>Back</Btn>
+          </div>
+        )}
+      </>
+    );
+    const Comp = window.TR_TriggersPage;
+    pageBody = Comp ? <Comp triggerId={triggerId} /> : null;
   } else if (page === "sessions") {
     pageHeader = (
       <>
@@ -1046,6 +1082,7 @@ function App() {
           : page === "chat-detail" ? "chats"
           : page === "channel-provider-detail" ? "channel-providers"
           : page === "toolset-detail" ? "toolsets"
+          : page === "trigger-detail" ? "triggers"
           : page
         );
         const sidebarProps = {
