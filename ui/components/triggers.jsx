@@ -617,26 +617,750 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
 }
 
 // ============================================================================
-// TR_TriggerDetail — placeholder stub (real implementation lands in Phase 10).
+// TR_TriggerEditDialog — edit name / description / enabled.
+//
+// Per Spec §13.4: the detail page exposes an Edit affordance for the
+// trigger metadata. `config` is mostly immutable here — the kind cannot
+// change (server returns 409 trigger_kind_immutable) and the kind-specific
+// payload (fire_at / cron / timezone / catchup) is intentionally NOT
+// editable in this dialog to keep the surface tight. Operators that need
+// to change schedule should delete + recreate.
+// ============================================================================
+
+function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
+  const { apiFetch } = window.primerApi;
+  const [name, setName] = React.useState(trigger.name || "");
+  const [description, setDescription] = React.useState(trigger.description || "");
+  const [enabled, setEnabled] = React.useState(!!trigger.enabled);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await apiFetch(
+        "PUT",
+        "/triggers/" + encodeURIComponent(trigger.id),
+        { name: name || trigger.slug, description: description || null, enabled },
+      );
+      if (!mountedRef.current) return;
+      onSaved(updated);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      const env = err && err.envelope;
+      const envDetail = env && env.detail;
+      let code = null;
+      let msg = null;
+      if (envDetail && typeof envDetail === "object") {
+        code = envDetail.code || null;
+        msg = envDetail.message || null;
+      }
+      if (!msg && typeof err.detail === "string") msg = err.detail;
+      if (!msg) msg = err.title || err.message || "Request failed";
+      setError({ code, message: msg });
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Edit trigger · ${trigger.slug}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="primary" icon="check" onClick={submit} disabled={busy}>
+            {busy ? "Saving…" : "Save changes"}
+          </Btn>
+        </>
+      }
+    >
+      <div data-testid="tr-edit-form">
+        <div className="field">
+          <label className="field-label" htmlFor="tr-edit-name">Name</label>
+          <input
+            id="tr-edit-name"
+            className="input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            style={{ width: "100%" }}
+          />
+        </div>
+        <div className="field">
+          <label className="field-label" htmlFor="tr-edit-description">
+            Description <span className="hint">optional</span>
+          </label>
+          <textarea
+            id="tr-edit-description"
+            className="input"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+            style={{ width: "100%", resize: "vertical" }}
+          />
+        </div>
+        <div className="field">
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+            />
+            <span>Enabled</span>
+          </label>
+          <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+            Disabled triggers never fire. The claim engine will not schedule them.
+          </div>
+        </div>
+        <div className="field-help muted text-sm">
+          Kind, schedule, and other config fields are immutable. To change them, delete this
+          trigger and create a new one.
+        </div>
+        {error && (
+          <Banner
+            kind="error"
+            title={error.code ? `Save failed (${error.code})` : "Save failed"}
+            detail={error.message || ""}
+          />
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// TR_FireErrorChip — small red chip rendering a {code, message} or plain string.
+// ============================================================================
+
+function TR_FireErrorChip({ error, testId }) {
+  if (!error) return null;
+  let code = null;
+  let msg = null;
+  if (typeof error === "string") {
+    msg = error;
+  } else if (error && typeof error === "object") {
+    code = error.code || error.error_code || null;
+    msg = error.message || error.error_message || error.detail || null;
+    if (!msg) {
+      try { msg = JSON.stringify(error); } catch (_e) { msg = String(error); }
+    }
+  }
+  const title = code ? `${code}: ${msg || ""}` : (msg || "");
+  return (
+    <span
+      data-testid={testId}
+      className="pill pill-failed"
+      title={title}
+      style={{ fontSize: 10.5 }}
+    >
+      {code || "error"}
+      {msg ? <span style={{ marginLeft: 6, fontWeight: 400, opacity: 0.85 }}>{msg}</span> : null}
+    </span>
+  );
+}
+
+// ============================================================================
+// TR_SubTargetLabel — human-readable target for a subscription row.
+//
+// Per Spec §13.4: chat id / agent name / graph name / "(dynamic) session-{id}"
+// for parked_session. We fetch by id when available (workspace + agent/graph
+// or chat) so we can show a friendly name; falls back to the raw id.
+// ============================================================================
+
+function TR_SubTargetLabel({ sub }) {
+  const cfg = sub?.config || {};
+  const kind = cfg.kind;
+  if (kind === "chat_message") {
+    return <span className="mono">{cfg.chat_id || "—"}</span>;
+  }
+  if (kind === "agent_fresh_session") {
+    return (
+      <span className="mono" title={`workspace ${cfg.workspace_id || ""}`}>
+        {cfg.agent_id || "—"}
+      </span>
+    );
+  }
+  if (kind === "graph_fresh_session") {
+    return (
+      <span className="mono" title={`workspace ${cfg.workspace_id || ""}`}>
+        {cfg.graph_id || "—"}
+      </span>
+    );
+  }
+  if (kind === "parked_session") {
+    return (
+      <span className="muted">
+        <span style={{ marginRight: 4 }}>(dynamic)</span>
+        <span className="mono">session-{cfg.session_id || "?"}</span>
+      </span>
+    );
+  }
+  return <span className="muted">—</span>;
+}
+
+// ============================================================================
+// TR_SubscriptionsPanel — table of subscriptions with inline toggles + actions.
+//
+// One row per subscription. The parked_session rows are read-only per
+// Spec §13.6 — operators cannot toggle enabled / parallelism (the agent
+// owns the lifecycle); only the delete button is offered, which the
+// server treats as cancel-and-unpark.
+// ============================================================================
+
+function TR_SubscriptionsPanel({ trigger, subs, onChanged, onAdd, onEdit }) {
+  const { apiFetch } = window.primerApi;
+  const [busyId, setBusyId] = React.useState(null);
+  const [error, setError] = React.useState(null);
+
+  const setEnabled = async (sub, enabled) => {
+    setBusyId(sub.id);
+    setError(null);
+    try {
+      await apiFetch(
+        "PUT",
+        "/triggers/" + encodeURIComponent(trigger.id)
+          + "/subscriptions/" + encodeURIComponent(sub.id),
+        { enabled },
+      );
+      onChanged();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const setParallelism = async (sub, parallelism) => {
+    setBusyId(sub.id);
+    setError(null);
+    try {
+      await apiFetch(
+        "PUT",
+        "/triggers/" + encodeURIComponent(trigger.id)
+          + "/subscriptions/" + encodeURIComponent(sub.id),
+        { parallelism },
+      );
+      onChanged();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const remove = async (sub) => {
+    if (!window.confirm(
+      sub.config?.kind === "parked_session"
+        ? "Cancel this dynamic subscription? The parked session will be unparked."
+        : "Delete this subscription? This cannot be undone."
+    )) return;
+    setBusyId(sub.id);
+    setError(null);
+    try {
+      await apiFetch(
+        "DELETE",
+        "/triggers/" + encodeURIComponent(trigger.id)
+          + "/subscriptions/" + encodeURIComponent(sub.id),
+      );
+      onChanged();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-h">
+        <Icon name="link" size={13} />
+        <span>Subscriptions</span>
+        <span className="muted text-sm" style={{ marginLeft: 6 }}>({subs.length})</span>
+        <div style={{ marginLeft: "auto" }}>
+          <Btn
+            size="sm"
+            kind="primary"
+            icon="plus"
+            data-testid="add-subscription-btn"
+            onClick={onAdd}
+          >
+            Add subscription
+          </Btn>
+        </div>
+      </div>
+      <div className="panel-body" style={{ padding: 0 }}>
+        {error && (
+          <div style={{ padding: "8px 14px" }}>
+            <Banner
+              kind="error"
+              title={error.title || "Subscription update failed"}
+              detail={error.detail || error.message || ""}
+            />
+          </div>
+        )}
+        {subs.length === 0 ? (
+          <div className="muted text-sm" style={{ padding: "20px 14px", textAlign: "center" }}>
+            No subscriptions yet. Add one to dispatch when this trigger fires.
+          </div>
+        ) : (
+          <table
+            className="table"
+            data-testid="subscriptions-table"
+            style={{ width: "100%", fontSize: 12 }}
+          >
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", padding: "6px 12px" }}>Kind</th>
+                <th style={{ textAlign: "left", padding: "6px 12px" }}>Target</th>
+                <th style={{ textAlign: "left", padding: "6px 12px" }}>Parallelism</th>
+                <th style={{ textAlign: "left", padding: "6px 12px" }}>Enabled</th>
+                <th style={{ textAlign: "left", padding: "6px 12px" }}>Last fired</th>
+                <th style={{ textAlign: "left", padding: "6px 12px" }}>Status</th>
+                <th style={{ textAlign: "right", padding: "6px 12px" }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {subs.map((sub) => {
+                const kind = sub?.config?.kind || "—";
+                const isDynamic = kind === "parked_session";
+                const rowBusy = busyId === sub.id;
+                return (
+                  <tr
+                    key={sub.id}
+                    data-testid={`sub-row-${sub.id}`}
+                    style={{ borderTop: "1px solid var(--border)" }}
+                  >
+                    <td style={{ padding: "8px 12px" }}>
+                      <span
+                        className="pill pill-paused"
+                        title={isDynamic ? "Dynamic subscription created by the yielding tool" : `Subscription kind: ${kind}`}
+                        style={{ fontSize: 10.5 }}
+                      >
+                        {kind}
+                      </span>
+                    </td>
+                    <td style={{ padding: "8px 12px" }}>
+                      <TR_SubTargetLabel sub={sub} />
+                      {sub.description && (
+                        <div className="muted text-sm" style={{ fontSize: 11, marginTop: 2 }}>
+                          {sub.description}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: "8px 12px" }}>
+                      {isDynamic ? (
+                        <span className="muted text-sm">n/a</span>
+                      ) : (
+                        <select
+                          className="input"
+                          value={sub.parallelism || "skip"}
+                          disabled={rowBusy}
+                          onChange={(e) => setParallelism(sub, e.target.value)}
+                          style={{ fontSize: 11, padding: "2px 6px" }}
+                        >
+                          <option value="skip">skip</option>
+                          <option value="queue">queue</option>
+                        </select>
+                      )}
+                    </td>
+                    <td style={{ padding: "8px 12px" }}>
+                      {isDynamic ? (
+                        <span className="muted text-sm">n/a</span>
+                      ) : (
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                          <input
+                            type="checkbox"
+                            checked={!!sub.enabled}
+                            disabled={rowBusy}
+                            onChange={(e) => setEnabled(sub, e.target.checked)}
+                          />
+                        </label>
+                      )}
+                    </td>
+                    <td style={{ padding: "8px 12px" }} title={sub.last_fired_at || ""}>
+                      <span className="mono">{TR_relTime(sub.last_fired_at)}</span>
+                    </td>
+                    <td style={{ padding: "8px 12px" }}>
+                      {sub.last_fire_error ? (
+                        <TR_FireErrorChip
+                          error={sub.last_fire_error}
+                          testId={`sub-row-${sub.id}-error`}
+                        />
+                      ) : (
+                        <span className="muted text-sm" style={{ fontSize: 11 }}>—</span>
+                      )}
+                    </td>
+                    <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      {!isDynamic && (
+                        <button
+                          className="icon-btn"
+                          style={{ width: 22, height: 22, marginRight: 4 }}
+                          title="Edit subscription"
+                          onClick={() => onEdit(sub)}
+                          disabled={rowBusy}
+                        >
+                          <Icon name="edit" size={10} />
+                        </button>
+                      )}
+                      <button
+                        className="icon-btn"
+                        style={{ width: 22, height: 22 }}
+                        title={isDynamic ? "Cancel dynamic subscription" : "Delete subscription"}
+                        onClick={() => remove(sub)}
+                        disabled={rowBusy}
+                      >
+                        <Icon name="trash" size={10} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// TR_TriggerDetail — real Phase 10.1 implementation.
+//
+// Layout (Spec §13.4):
+//   * Action bar with name + slug + kind + enabled status + Edit / Delete / Back
+//   * Metadata panel (slug, name, description, config summary)
+//   * Status panel (next_fire_at, last_fired_at, last_fire_error, Fire now)
+//   * Subscriptions table (+ Add subscription)
+//
+// Polling: useResource with pollMs 2000 keeps next_fire_at / last_fired_at
+// fresh while operators are watching things land.
 // ============================================================================
 
 function TR_TriggerDetail({ id }) {
-  const { useRouter } = window.primerApi;
+  const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
-  return (
-    <div className="col" style={{ gap: 14 }}>
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("/triggers")}>Back</Btn>
+
+  const detail = useResource(
+    "trigger-detail:" + id,
+    (signal) => apiFetch("GET", "/triggers/" + encodeURIComponent(id), null, { signal }),
+    { pollMs: 2000, deps: [id] },
+  );
+
+  const subs = useResource(
+    "trigger-subs:" + id,
+    (signal) => apiFetch(
+      "GET",
+      "/triggers/" + encodeURIComponent(id) + "/subscriptions",
+      null,
+      { signal },
+    ),
+    { pollMs: 2000, deps: [id] },
+  );
+
+  const [editOpen, setEditOpen] = React.useState(false);
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const [deleteBusy, setDeleteBusy] = React.useState(false);
+  const [deleteError, setDeleteError] = React.useState(null);
+  const [fireBusy, setFireBusy] = React.useState(false);
+  const [fireError, setFireError] = React.useState(null);
+  const [fireResult, setFireResult] = React.useState(null);
+  const [subDialog, setSubDialog] = React.useState(null); // {mode:"create"|"edit", sub?}
+
+  const refetchAll = React.useCallback(() => {
+    detail.refetch();
+    subs.refetch();
+  }, [detail, subs]);
+
+  const fireNow = async () => {
+    setFireBusy(true);
+    setFireError(null);
+    setFireResult(null);
+    try {
+      const res = await apiFetch(
+        "POST",
+        "/triggers/" + encodeURIComponent(id) + "/fire_now",
+        {},
+      );
+      setFireResult(res);
+      refetchAll();
+    } catch (err) {
+      const env = err && err.envelope;
+      const envDetail = env && env.detail;
+      let code = null;
+      let msg = null;
+      if (envDetail && typeof envDetail === "object") {
+        code = envDetail.code || null;
+        msg = envDetail.message || null;
+      }
+      if (!msg) msg = err.title || err.message || "Fire failed";
+      setFireError({ code, message: msg });
+    } finally {
+      setFireBusy(false);
+    }
+  };
+
+  const doDelete = async () => {
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await apiFetch("DELETE", "/triggers/" + encodeURIComponent(id));
+      navigate("/triggers");
+    } catch (err) {
+      setDeleteError(err);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  if (detail.loading && !detail.data) {
+    return (
+      <div className="col" style={{ gap: 14 }}>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("/triggers")}>Back</Btn>
+        </div>
+        <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>
       </div>
-      <div className="panel">
-        <div className="panel-h"><Icon name="clock" size={13} /><span>Trigger</span></div>
-        <div className="panel-body" style={{ padding: "12px 14px" }}>
-          <div className="muted text-sm">
-            Trigger detail view is coming in Phase 10. Trigger id:{" "}
-            <span className="mono">{id}</span>.
-          </div>
+    );
+  }
+  if (detail.error && !detail.data) {
+    return (
+      <div className="col" style={{ gap: 14 }}>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("/triggers")}>Back</Btn>
+        </div>
+        <Banner
+          kind="error"
+          title={detail.error.title || "Couldn't load trigger"}
+          detail={detail.error.detail || detail.error.message}
+          actions={<Btn size="sm" icon="chevron-left" onClick={() => navigate("/triggers")}>Back to list</Btn>}
+        />
+      </div>
+    );
+  }
+
+  const t = detail.data;
+  const kind = t?.config?.kind || "—";
+  const subItems = subs.data?.items ?? [];
+
+  return (
+    <div className="col" data-testid="trigger-detail" style={{ gap: 14 }}>
+      {/* Action bar */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "space-between", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>{t.name || t.slug}</span>
+          <span className="mono muted text-sm">{t.slug}</span>
+          <span
+            className="pill pill-paused"
+            title={`Trigger kind: ${kind}`}
+            style={{ fontSize: 10.5 }}
+          >
+            {kind}
+          </span>
+          <span
+            className={`pill ${t.enabled ? "pill-claimed" : "pill-ended"}`}
+            title={t.enabled ? "Trigger is enabled" : "Trigger is disabled"}
+            style={{ fontSize: 10.5 }}
+          >
+            {t.enabled ? "enabled" : "disabled"}
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <Btn size="sm" kind="ghost" icon="edit" onClick={() => setEditOpen(true)}>Edit</Btn>
+          <Btn
+            size="sm"
+            kind="danger"
+            icon="trash"
+            onClick={() => setConfirmDelete(true)}
+          >
+            Delete trigger
+          </Btn>
+          <Btn size="sm" kind="ghost" icon="chevron-left" onClick={() => navigate("/triggers")}>Back</Btn>
         </div>
       </div>
+
+      {/* Metadata panel */}
+      <div className="panel">
+        <div className="panel-h"><Icon name="info" size={13} /><span>Metadata</span></div>
+        <div className="panel-body" style={{ padding: "8px 14px" }}>
+          <dl className="kv" style={{ gridTemplateColumns: "160px 1fr", rowGap: 4 }}>
+            <dt>Slug</dt>
+            <dd className="mono">{t.slug}</dd>
+            <dt>Name</dt>
+            <dd>{t.name || <span className="muted">—</span>}</dd>
+            <dt>Kind</dt>
+            <dd className="mono">{kind}</dd>
+            {kind === "delayed" && t.config?.fire_at && (
+              <>
+                <dt>Fire at</dt>
+                <dd className="mono" title={t.config.fire_at}>{t.config.fire_at}</dd>
+              </>
+            )}
+            {kind === "scheduled" && (
+              <>
+                <dt>Cron</dt>
+                <dd className="mono">{t.config?.cron || "—"}</dd>
+                <dt>Timezone</dt>
+                <dd className="mono">{t.config?.timezone || "—"}</dd>
+                <dt>Catchup</dt>
+                <dd className="mono">{t.config?.catchup || "—"}</dd>
+              </>
+            )}
+            {t.description && (
+              <>
+                <dt>Description</dt>
+                <dd>{t.description}</dd>
+              </>
+            )}
+          </dl>
+        </div>
+      </div>
+
+      {/* Status panel */}
+      <div className="panel" data-testid="trigger-status-panel">
+        <div className="panel-h">
+          <Icon name="clock" size={13} />
+          <span>Status</span>
+          <div style={{ marginLeft: "auto" }}>
+            <Btn
+              size="sm"
+              kind="primary"
+              icon="zap"
+              data-testid="fire-now-btn"
+              onClick={fireNow}
+              disabled={fireBusy}
+              title="Fire this trigger immediately, bypassing the schedule"
+            >
+              {fireBusy ? "Firing…" : "Fire now"}
+            </Btn>
+          </div>
+        </div>
+        <div className="panel-body" style={{ padding: "8px 14px" }}>
+          <dl className="kv" style={{ gridTemplateColumns: "160px 1fr", rowGap: 4 }}>
+            <dt>Next fire</dt>
+            <dd>
+              <span className="mono" title={t.next_fire_at || ""}>
+                {TR_relTime(t.next_fire_at)}
+              </span>
+              {t.next_fire_at && (
+                <span className="muted text-sm" style={{ marginLeft: 8 }}>
+                  ({t.next_fire_at})
+                </span>
+              )}
+            </dd>
+            <dt>Last fired</dt>
+            <dd>
+              <span className="mono" title={t.last_fired_at || ""}>
+                {TR_relTime(t.last_fired_at)}
+              </span>
+              {t.last_fired_at && (
+                <span className="muted text-sm" style={{ marginLeft: 8 }}>
+                  ({t.last_fired_at})
+                </span>
+              )}
+            </dd>
+            {t.last_fire_error && (
+              <>
+                <dt>Last error</dt>
+                <dd>
+                  <TR_FireErrorChip
+                    error={t.last_fire_error}
+                    testId="trigger-last-fire-error"
+                  />
+                </dd>
+              </>
+            )}
+          </dl>
+          {fireError && (
+            <div style={{ marginTop: 8 }}>
+              <Banner
+                kind="error"
+                title={fireError.code ? `Fire failed (${fireError.code})` : "Fire failed"}
+                detail={fireError.message || ""}
+              />
+            </div>
+          )}
+          {fireResult && (
+            <div style={{ marginTop: 8 }} className="muted text-sm">
+              Fired{fireResult.fire_id ? <> · fire id <span className="mono">{fireResult.fire_id}</span></> : null}
+              {Array.isArray(fireResult.results) && fireResult.results.length > 0 && (
+                <> · {fireResult.results.length} {fireResult.results.length === 1 ? "subscription" : "subscriptions"} dispatched</>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Subscriptions */}
+      <TR_SubscriptionsPanel
+        trigger={t}
+        subs={subItems}
+        onChanged={refetchAll}
+        onAdd={() => setSubDialog({ mode: "create" })}
+        onEdit={(sub) => setSubDialog({ mode: "edit", sub })}
+      />
+
+      {/* Edit dialog */}
+      {editOpen && (
+        <TR_TriggerEditDialog
+          trigger={t}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => { setEditOpen(false); refetchAll(); }}
+        />
+      )}
+
+      {/* Subscription create/edit dialog */}
+      {subDialog && window.TR_SubscriptionDialog && (
+        <window.TR_SubscriptionDialog
+          triggerId={t.id}
+          mode={subDialog.mode}
+          initial={subDialog.sub}
+          onClose={() => setSubDialog(null)}
+          onSaved={() => { setSubDialog(null); refetchAll(); }}
+        />
+      )}
+
+      {/* Confirm delete */}
+      {confirmDelete && (
+        <Modal
+          title={`Delete trigger ${t.name || t.slug}?`}
+          danger
+          onClose={() => setConfirmDelete(false)}
+          footer={
+            <>
+              <Btn kind="ghost" onClick={() => setConfirmDelete(false)} disabled={deleteBusy}>Cancel</Btn>
+              <Btn
+                kind="danger"
+                icon="trash"
+                disabled={deleteBusy}
+                onClick={doDelete}
+              >
+                {deleteBusy ? "Deleting…" : "Delete trigger"}
+              </Btn>
+            </>
+          }
+        >
+          <ul>
+            <li>This deletes the trigger and cascades to all its subscriptions.</li>
+            <li>In-flight fires complete; future fires are cancelled.</li>
+            <li>This action cannot be undone.</li>
+          </ul>
+          {deleteError && (
+            <Banner
+              kind="error"
+              title={deleteError.title || "Delete failed"}
+              detail={deleteError.detail || deleteError.message || ""}
+            />
+          )}
+        </Modal>
+      )}
     </div>
   );
 }
@@ -649,4 +1373,6 @@ window.TR_TriggersPage = TR_TriggersPage;
 window.TR_TriggerList = TR_TriggerList;
 window.TR_TriggerCard = TR_TriggerCard;
 window.TR_TriggerDetail = TR_TriggerDetail;
+window.TR_TriggerEditDialog = TR_TriggerEditDialog;
+window.TR_SubscriptionsPanel = TR_SubscriptionsPanel;
 window.TR_CreateTriggerDialog = TR_CreateTriggerDialog;
