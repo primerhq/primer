@@ -159,6 +159,7 @@ _MISC_TOOLSET_ID = "misc"
 # `web` has always been prefix-less; unchanged.
 _WEB_TOOLSET_ID = "web"
 _HARNESS_TOOLSET_ID = "harness"
+_TRIGGER_TOOLSET_ID = "trigger"
 
 # Public: ids that are always resolvable by the live registry (built-in
 # providers), so external reference-integrity checks can skip the
@@ -170,6 +171,7 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _MISC_TOOLSET_ID,
     _WEB_TOOLSET_ID,
     _HARNESS_TOOLSET_ID,
+    _TRIGGER_TOOLSET_ID,
 })
 
 # ---------------------------------------------------------------------------
@@ -277,6 +279,7 @@ class ProviderRegistry:
         misc_toolset_provider: ToolsetProvider | None = None,
         web_toolset_provider: ToolsetProvider | None = None,
         harness_toolset_provider: ToolsetProvider | None = None,
+        trigger_toolset_provider: ToolsetProvider | None = None,
         rate_limiter: RateLimiter | None = None,
         trace_llm_io: bool = False,
     ) -> None:
@@ -322,6 +325,11 @@ class ProviderRegistry:
         # toolset built at app startup. Agents can manage harnesses
         # (register, fetch, install, sync, uninstall) via this toolset.
         self._harness_toolset_provider = harness_toolset_provider
+        # Reserved id ``trigger`` resolves to the trigger management
+        # toolset built at app startup. Agents can manage triggers /
+        # subscriptions and call the ``subscribe_to_trigger`` yielding
+        # tool through it.
+        self._trigger_toolset_provider = trigger_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -421,6 +429,13 @@ class ProviderRegistry:
             and toolset_id == _HARNESS_TOOLSET_ID
         ):
             return self._harness_toolset_provider
+        # Reserved id `trigger` resolves to the trigger management +
+        # yielding toolset built at app startup.
+        if (
+            self._trigger_toolset_provider is not None
+            and toolset_id == _TRIGGER_TOOLSET_ID
+        ):
+            return self._trigger_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -488,6 +503,7 @@ class ProviderRegistry:
             _MISC_TOOLSET_ID,
             _WEB_TOOLSET_ID,
             _HARNESS_TOOLSET_ID,
+            _TRIGGER_TOOLSET_ID,
         ):
             return
         async with self._lock:

@@ -52,6 +52,7 @@ from primer.toolset.harness import build_harness_toolset_provider
 from primer.toolset.misc import build_misc_toolset
 from primer.toolset.search import build_search_toolset
 from primer.toolset.system import build_system_toolset
+from primer.toolset.trigger import build_trigger_toolset_provider
 from primer.toolset.web import build_web_toolset
 from primer.toolset.workspaces import build_workspaces_toolset
 from primer.workspace.probe import WorkspaceProbeTask
@@ -571,6 +572,17 @@ def _make_lifespan(config: AppConfig):
         provider_registry._harness_toolset_provider = harness_toolset  # noqa: SLF001
         app.state.harness_toolset = harness_toolset
 
+        # Build the always-on ``trigger`` toolset (Phase 8). Like harness
+        # it tolerates a None event_bus / claim_engine — the service
+        # layer treats those collaborators as best-effort.
+        trigger_toolset = build_trigger_toolset_provider(
+            storage_provider=storage_provider,
+            claim_engine=claim_engine,
+            event_bus=event_bus,
+        )
+        provider_registry._trigger_toolset_provider = trigger_toolset  # noqa: SLF001
+        app.state.trigger_toolset = trigger_toolset
+
         # Process-local router for chat tick events. One bus subscription
         # per process feeds it; WS handlers subscribe per-chat.
         from primer.chat.tick_router import ChatTickRouter, Tick
@@ -721,6 +733,7 @@ def _make_lifespan(config: AppConfig):
                     "misc": misc_toolset,
                     "web": web_toolset,
                     "harness": harness_toolset,
+                    "trigger": trigger_toolset,
                 },
             )
             search_toolset = build_search_toolset(ic_subsystem)
