@@ -78,6 +78,7 @@ const NAV = [
     group: "Account",
     items: [
       { id: "api-tokens", label: "API tokens", icon: "key" },
+      { id: "mcp", label: "MCP server", icon: "code" },
     ],
   },
 ];

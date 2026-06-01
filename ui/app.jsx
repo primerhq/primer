@@ -87,6 +87,7 @@ function App() {
     if (root === "triggers") return params.id ? "trigger-detail" : "triggers";
     if (root === "settings") {
       if (path.startsWith("/settings/api-tokens")) return "api-tokens";
+      if (path.startsWith("/settings/mcp")) return "mcp";
       return root;
     }
     return root;
@@ -369,6 +370,7 @@ function App() {
       triggers: "/triggers",
       "trigger-detail": (e) => `/triggers/${e}`,
       "api-tokens": "/settings/api-tokens",
+      mcp: "/settings/mcp",
     };
     const route = ROUTES[target];
     const url = typeof route === "function" ? route(extra) : (route || "/");
@@ -1032,6 +1034,24 @@ function App() {
       </>
     );
     const Comp = window.AT_ApiTokensPage;
+    pageBody = Comp ? <Comp /> : null;
+  } else if (page === "mcp") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("dashboard")}>Account</a>
+            <span className="sep">/</span>
+            <span style={{ color: "var(--text)" }}>MCP server</span>
+          </div>
+          <h1 className="page-title">MCP server</h1>
+          <div className="page-sub">
+            Expose a UI-managed subset of primer's tools to MCP clients · streamable-HTTP at <span className="mono">/v1/mcp</span>
+          </div>
+        </div>
+      </>
+    );
+    const Comp = window.MC_McpPage;
     pageBody = Comp ? <Comp /> : null;
   } else if (page === "sessions") {
     pageHeader = (
