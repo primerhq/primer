@@ -1052,6 +1052,10 @@ def _mount_routers(
     # Triggers REST router (Spec §10).
     from primer.api.routers.triggers import triggers_router
     app.include_router(triggers_router, dependencies=auth_dep)
+    # MCP exposure CRUD — Spec §10. Cookie-gated for writes (the
+    # router itself rejects bearer-token PUTs); reads pass through.
+    from primer.api.routers.mcp_exposure import mcp_exposure_router
+    app.include_router(mcp_exposure_router, prefix=prefix, dependencies=auth_dep)
     # Instrumentation endpoints — only mounted when the env var is set.
     # Public to keep the distributed test harness simple; the env var
     # itself is the access gate.
