@@ -55,6 +55,10 @@
     { pattern: "/chats/:id",                       page: "ChatDetailPage" },
     { pattern: "/harnesses",                       page: "HarnessesPage" },
     { pattern: "/harnesses/:id",                   page: "HarnessesPage" },
+    { pattern: "/triggers",                        page: "TriggersListPage" },
+    { pattern: "/triggers/:id",                    page: "TriggerDetailPage" },
+    { pattern: "/settings/api-tokens",             page: "ApiTokensPage" },
+    { pattern: "/settings/mcp",                    page: "McpPage" },
   ];
 
   function splitSegments(path) {
