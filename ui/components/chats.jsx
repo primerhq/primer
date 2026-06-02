@@ -897,7 +897,28 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   const chatTitle = chatRow?.title || null;
 
   return (
-    <div className="col" style={{ gap: 14, height: "calc(100vh - 180px)", display: "flex", flexDirection: "column" }}>
+    <div
+      className="col"
+      style={{
+        gap: 14,
+        // On mobile use 100dvh (dynamic viewport height) so the
+        // container shrinks when the browser address bar slides in;
+        // 100vh on iOS/Android Chrome is the *large* viewport that
+        // ignores the address bar, which makes the inner scroll
+        // container overflow the visible area and the BODY scrolls
+        // instead of `scrollRef.current` — breaking pull-up-to-load-
+        // older and lazy-prepend.
+        //
+        // Mobile deduction is just the global topbar (48px) plus a
+        // few px of breathing room; the chat panel renders its own
+        // mobile header inside this container so there's no separate
+        // page-header above us. Desktop keeps the original 180px
+        // (topbar + page-header chrome).
+        height: isMobile ? "calc(100dvh - 56px)" : "calc(100vh - 180px)",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
       <div className="panel" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
         {isMobile ? (
           <div className="chat-mobile-header">

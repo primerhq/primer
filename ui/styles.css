@@ -114,7 +114,11 @@ input, textarea, select { font: inherit; color: inherit; }
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
   grid-template-rows: var(--topbar-h) 1fr;
-  height: 100vh;
+  /* 100dvh = dynamic viewport height. On mobile browsers this shrinks
+     when the address bar is visible (unlike 100vh which is the "large"
+     viewport that ignores the bar), so the app grid always matches
+     visible area and nested scrollers stop overflowing the body. */
+  height: 100dvh;
   background: var(--bg);
   transition: grid-template-columns 0.18s ease;
 }
