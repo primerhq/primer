@@ -504,6 +504,21 @@ function WS_FilesTab({ wid, pushToast }) {
   const [selected, setSelected] = React.useState(null);
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState("");
+  // "raw" | "rendered". Only meaningful for files where the renderer
+  // can do something useful (today: .md). For everything else the
+  // toggle isn't shown and this stays at "raw".
+  const [viewMode, setViewMode] = React.useState("raw");
+  // Reset to "rendered" whenever a fresh markdown file is selected —
+  // that's the natural default for .md (the operator can flip to raw
+  // if they want the source). For non-md files force "raw" so the
+  // toggle state doesn't leak between selections.
+  React.useEffect(() => {
+    if (selected && selected.toLowerCase().endsWith(".md")) {
+      setViewMode("rendered");
+    } else {
+      setViewMode("raw");
+    }
+  }, [selected]);
 
   const toggleDir = (path) => {
     setOpenDirs((prev) => {
@@ -616,6 +631,17 @@ function WS_FilesTab({ wid, pushToast }) {
                   </>
                 ) : (
                   <>
+                    {selected && selected.toLowerCase().endsWith(".md") && (
+                      <Btn
+                        size="sm"
+                        kind="ghost"
+                        onClick={() => setViewMode((m) => (m === "rendered" ? "raw" : "rendered"))}
+                        title={viewMode === "rendered" ? "Show raw markdown source" : "Render the markdown"}
+                        data-testid="ws-file-md-toggle"
+                      >
+                        {viewMode === "rendered" ? "Raw" : "Rendered"}
+                      </Btn>
+                    )}
                     <a
                       href={`/v1/workspaces/${encodeURIComponent(wid)}/files/download?path=${encodeURIComponent(selected)}`}
                       download
@@ -649,6 +675,20 @@ function WS_FilesTab({ wid, pushToast }) {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
             />
+          ) : selected && selected.toLowerCase().endsWith(".md") && viewMode === "rendered" ? (
+            <div
+              className="md-rendered"
+              style={{ padding: 14, fontSize: 13, lineHeight: 1.6, color: "var(--text)" }}
+              data-testid="ws-file-md-rendered"
+            >
+              {typeof window.renderMarkdown === "function"
+                ? window.renderMarkdown(fileContent.data?.content || "")
+                : (
+                  <pre className="mono" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                    {fileContent.data?.content || ""}
+                  </pre>
+                )}
+            </div>
           ) : (
             <pre className="mono" style={{ margin: 0, padding: 14, fontSize: 12, lineHeight: 1.55, color: "var(--text-2)", whiteSpace: "pre-wrap" }}>
               <WS_CodeHighlight code={fileContent.data?.content || ""} lang={_wsGuessLang(selected)} />
