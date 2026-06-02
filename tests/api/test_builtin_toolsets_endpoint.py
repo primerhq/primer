@@ -6,13 +6,13 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_builtin_toolsets_returns_five_items(client):
+async def test_builtin_toolsets_returns_seven_items(client):
     r = await client.get("/v1/toolsets/builtin")
     assert r.status_code == 200, r.text
     body = r.json()
     items = body["items"]
     ids = [it["id"] for it in items]
-    assert ids == ["system", "workspaces", "search", "misc", "web"]
+    assert ids == ["system", "workspaces", "search", "misc", "web", "harness", "trigger"]
 
 
 @pytest.mark.asyncio

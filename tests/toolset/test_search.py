@@ -86,9 +86,13 @@ class TestCatalog:
     @pytest.mark.asyncio
     async def test_toolset_id_and_tool_count(self, toolset) -> None:
         names = [t.id async for t in toolset.list_tools()]
-        assert sorted(names) == sorted(
-            ["search_agents", "search_graphs", "search_collections", "search_tools"]
-        )
+        assert sorted(names) == sorted([
+            "search_agents",
+            "search_graphs",
+            "search_collections",
+            "search_tools",
+            "search_ai_docs",
+        ])
         async for tool in toolset.list_tools():
             assert tool.toolset_id == SEARCH_TOOLSET_ID
             assert "Semantic search" in tool.description
