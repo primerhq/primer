@@ -117,6 +117,55 @@ def _make_search_handler(
     return _handler
 
 
+def _make_ai_docs_handler(
+    subsystem: "InternalCollectionsSubsystem",
+) -> ToolHandler:
+    """Handler for ``search_ai_docs`` — wraps subsystem.search_ai_docs().
+
+    Distinct from :func:`_make_search_handler` because the AI docs
+    collection isn't keyed off a CDC entity type — it has its own
+    disk-sourced ingest path and its own subsystem method.
+    """
+    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+        try:
+            args = _SearchArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err(
+                "argument validation failed: "
+                + json.dumps(exc.errors(), default=str),
+                error_type="validation-error",
+            )
+        try:
+            hits = await subsystem.search_ai_docs(
+                query=args.query, top_k=args.top_k,
+            )
+        except ConfigError as exc:
+            return _err(str(exc), error_type="subsystem-inactive")
+        except NotFoundError as exc:
+            return _err(getattr(exc, "message", str(exc)), error_type="not-found")
+        except PrimerError as exc:
+            return _err(
+                getattr(exc, "message", str(exc)),
+                error_type="storage-error",
+            )
+        return _ok(
+            {
+                "hits": [
+                    {
+                        "document_id": hit.record.document_id,
+                        "chunk_id": hit.record.chunk_id,
+                        "score": hit.score,
+                        "text": hit.record.text,
+                        "meta": hit.record.meta,
+                    }
+                    for hit in hits
+                ]
+            }
+        )
+
+    return _handler
+
+
 def _descriptor(name: str, pretty: str) -> Tool:
     return Tool(
         id=name,
@@ -137,6 +186,22 @@ def _descriptor(name: str, pretty: str) -> Tool:
     )
 
 
+_AI_DOCS_DESCRIPTION = (
+    "Semantic search over agent-facing platform documentation. "
+    "Returns ranked chunks of the markdown docs shipped in "
+    "``primer.ai_docs`` — each one a section (e.g. 'Overview', "
+    "'Gotchas') of a single capability doc. Each hit carries "
+    "``document_id`` (the doc's slug, e.g. ``agents`` or ``chats``), "
+    "``chunk_id``, similarity ``score``, the chunk ``text`` that "
+    "matched, and the parent doc's metadata (title, summary, "
+    "mcp_tools list). Pair with ``system::get_document_content`` to "
+    "fetch the whole doc once a relevant slug is identified, or call "
+    "``system::get_document`` for the metadata row only. Returns "
+    "``is_error=true`` ``type=subsystem-inactive`` when the internal "
+    "collections subsystem has not been bootstrapped."
+)
+
+
 def build_search_toolset(
     subsystem: "InternalCollectionsSubsystem",
     *,
@@ -154,6 +219,19 @@ def build_search_toolset(
             _descriptor(name, pretty),
             _make_search_handler(subsystem, entity_type),
         )
+    # Fifth tool — the agent-facing docs collection. Lives alongside
+    # the four entity-keyed searches because it's still semantic
+    # search via the same vector store + embedder. Pair with
+    # system::get_document_content for full-doc retrieval.
+    registry["search_ai_docs"] = (
+        Tool(
+            id="search_ai_docs",
+            description=_AI_DOCS_DESCRIPTION,
+            toolset_id=toolset_id,
+            args_schema=_SearchArgs.model_json_schema(),
+        ),
+        _make_ai_docs_handler(subsystem),
+    )
     logger.info(
         "search toolset assembled with %d tools (id=%s)",
         len(registry),
