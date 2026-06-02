@@ -425,7 +425,11 @@ class ToolExecutionManager:
             )
             return ToolResultPart(
                 id=call.id,
-                output=f"invalid arguments for {call.name}: {exc}",
+                output=(
+                    f"invalid arguments for {call.name}: the arguments you "
+                    f"sent didn't match this tool's input schema. Fix the "
+                    f"arguments and retry. Validation error:\n{exc}"
+                ),
                 error=True,
             )
         except Exception:
