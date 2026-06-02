@@ -1029,20 +1029,33 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           )}
 
           {/* Thinking indicator — local flag for the freshly-sent
-              turn, plus a reload-time fallback driven by the chat's
-              turn_status when the most recent persisted row is still
-              a user_message (worker is processing). */}
+              turn, plus a turn-status fallback driven by the chat row.
+              Visible whenever the turn is in flight AND the last
+              persisted row is NOT itself the agent's active response
+              or a terminal close-out. This covers the gap between a
+              tool_call landing and the next assistant_token streaming
+              — without it the operator sees the indicator vanish at
+              the first tool call even though the worker is still busy
+              processing the result. */}
           {(() => {
             const lastRow = messages.length > 0 ? messages[messages.length - 1] : null;
-            const reloadThinking =
-              !waitingForReply
-              && chatRow
-              && (chatRow.turn_status === "claimable" || chatRow.turn_status === "running")
-              && lastRow
-              && lastRow.kind === "user_message";
-            return (waitingForReply || reloadThinking)
-              ? <CT_ThinkingBubble />
-              : null;
+            const turnInFlight = chatRow
+              && (chatRow.turn_status === "claimable" || chatRow.turn_status === "running");
+            // Rows that mean "agent is currently producing visible
+            // output, no thinking placeholder needed" or "turn closed
+            // out, definitely no placeholder."
+            const QUIET_LAST_KINDS = new Set([
+              "assistant_token",  // currently streaming a response
+              "done",
+              "error",
+              "cancelled",
+              "yielded",
+            ]);
+            const lastIsQuiet = lastRow && QUIET_LAST_KINDS.has(lastRow.kind);
+            const showThinking =
+              waitingForReply
+              || (turnInFlight && !lastIsQuiet);
+            return showThinking ? <CT_ThinkingBubble /> : null;
           })()}
 
           {/* Inline approval card — sits ABOVE the composer when pending */}
@@ -1219,7 +1232,17 @@ function CT_coalesceMessages(messages) {
   const out = [];
   let buffer = null;
   const flushBuffer = () => {
-    if (buffer) { out.push(buffer); buffer = null; }
+    // Skip text-only buffers whose content is whitespace-only. LLMs
+    // commonly emit one or more empty/zero-delta assistant_token rows
+    // alongside a tool_call (the protocol uses the token row as the
+    // carrier for an empty `content` field when the model's reply is
+    // *all* tool calls). Without this guard, every tool call produces
+    // a blank assistant_message bubble above it — exactly what the
+    // operator reported as "two empty agent messages".
+    if (buffer && buffer.text.trim().length > 0) {
+      out.push(buffer);
+    }
+    buffer = null;
   };
   for (const m of messages) {
     if (m.kind === "assistant_token") {
