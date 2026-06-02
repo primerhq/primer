@@ -482,12 +482,23 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     { pollMs: 10000, deps: [cid] }
   );
 
-  // Initial REST load — fetches the TAIL of the history (latest N) so
-  // the renderer can scroll straight to the bottom without dragging
+  // Initial REST load — fetches the TAIL of the history so the
+  // renderer can scroll straight to the bottom without dragging
   // through thousands of older rows. The WS then opens with
   // cursor=<lastSeq> below so it streams only new messages, not a
   // redundant full replay. Older rows lazy-load on scroll-up.
-  const TAIL_PAGE_SIZE = 50;
+  //
+  // Page size is 200 (the server pagination cap) and we keep paging
+  // BACKWARDS until either:
+  //   - we've crossed at least one `user_message` (so the operator
+  //     sees the prior turn, not just the tail of one long response —
+  //     each LLM token streams as its own assistant_token row, so a
+  //     single reply can span 100+ rows and a naive single-page
+  //     tail-load returns only fragments of that one message); OR
+  //   - we've exhausted the chat; OR
+  //   - we've hit the safety cap of TAIL_MAX_PAGES iterations.
+  const TAIL_PAGE_SIZE = 200;
+  const TAIL_MAX_PAGES = 6; // ~1200 rows max on initial load
   // Pagination ceiling is 2**53 - 1; the server caps int Query at the
   // 64-bit boundary, but Number.MAX_SAFE_INTEGER is unambiguous and
   // matches every persisted seq.
@@ -501,27 +512,47 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     setInitialLoadedSeq(null);
     (async () => {
       try {
-        const data = await apiFetch(
-          "GET",
-          `/chats/${encodeURIComponent(cid)}/messages?before_seq=${SENTINEL_TAIL_SEQ}&limit=${TAIL_PAGE_SIZE}`,
-        );
-        if (cancelled) return;
-        const items = (data && data.items) || [];
-        // REST returns ChatMessage rows with kind-specific fields
-        // nested under `payload`. WS frames spread payload into the
-        // top-level (see chats router _message_to_wire). Flatten on
-        // load to keep both sources homogeneous.
-        const flat = items.map((row) => {
-          const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
-          return { ...payload, ...row };
-        });
-        setMessages(flat);
-        if (flat.length > 0) {
-          const last = flat[flat.length - 1].seq || 0;
-          const first = flat[0].seq || 0;
+        let collected = []; // prepended each iteration so it stays ASC
+        let cursor = SENTINEL_TAIL_SEQ;
+        let hasMore = true;
+        let foundUserMsg = false;
+        for (let i = 0; i < TAIL_MAX_PAGES; i++) {
+          const data = await apiFetch(
+            "GET",
+            `/chats/${encodeURIComponent(cid)}/messages?before_seq=${cursor}&limit=${TAIL_PAGE_SIZE}`,
+          );
+          if (cancelled) return;
+          const items = (data && data.items) || [];
+          if (items.length === 0) {
+            hasMore = false;
+            break;
+          }
+          // REST returns ChatMessage rows with kind-specific fields
+          // nested under `payload`. WS frames spread payload into the
+          // top-level (see chats router _message_to_wire). Flatten on
+          // load to keep both sources homogeneous.
+          const flat = items.map((row) => {
+            const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+            return { ...payload, ...row };
+          });
+          collected = [...flat, ...collected];
+          foundUserMsg = foundUserMsg || flat.some((r) => r.kind === "user_message");
+          if (items.length < TAIL_PAGE_SIZE) {
+            hasMore = false;
+            break;
+          }
+          if (foundUserMsg) {
+            break; // We've reached at least one full turn — operator can see context.
+          }
+          cursor = flat[0].seq || cursor;
+        }
+        setMessages(collected);
+        if (collected.length > 0) {
+          const last = collected[collected.length - 1].seq || 0;
+          const first = collected[0].seq || 0;
           setLastSeq(last);
           setOldestSeq(first);
-          setHasMoreOlder(items.length === TAIL_PAGE_SIZE);
+          setHasMoreOlder(hasMore);
           setInitialLoadedSeq(last);
         } else {
           // Empty chat — open WS with cursor 0 to catch the very

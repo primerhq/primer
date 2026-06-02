@@ -28,8 +28,15 @@ def _src() -> str:
 
 def test_initial_fetch_uses_before_seq_sentinel() -> None:
     src = _src()
-    assert "before_seq=${SENTINEL_TAIL_SEQ}" in src, (
-        "initial REST load must target the tail via before_seq sentinel"
+    # Tail-load loop walks pages backwards using ?before_seq=${cursor}
+    # where the initial cursor is the SENTINEL_TAIL_SEQ; the sentinel
+    # constant itself stays unchanged.
+    assert "SENTINEL_TAIL_SEQ" in src, "tail sentinel constant must be defined"
+    assert "before_seq=${cursor}" in src, (
+        "initial REST load must page backwards using before_seq=${cursor}"
+    )
+    assert "cursor = SENTINEL_TAIL_SEQ" in src, (
+        "loop must start the cursor at SENTINEL_TAIL_SEQ"
     )
     assert "Number.MAX_SAFE_INTEGER" in src, (
         "SENTINEL_TAIL_SEQ must be defined from MAX_SAFE_INTEGER"
@@ -38,6 +45,8 @@ def test_initial_fetch_uses_before_seq_sentinel() -> None:
 
 def test_old_full_history_loop_is_gone() -> None:
     src = _src()
+    # Old after_seq=0 / after_seq=${cursor} paged-from-the-start loop
+    # must not return — we always page BACKWARDS from the tail now.
     assert "after_seq=0" not in src, (
         "after_seq=0 paginated full-history loop must not return"
     )
