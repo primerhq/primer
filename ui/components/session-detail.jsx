@@ -30,6 +30,7 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
 
   const [steer, setSteer] = React.useState("");
   const [showCancel, setShowCancel] = React.useState(false);
+  const [showDelete, setShowDelete] = React.useState(false);
   const [queuedInstructions, setQueuedInstructions] = React.useState([]);
   const [errorOpen, setErrorOpen] = React.useState(true);
   const [metaOpen, setMetaOpen] = React.useState(false);
@@ -105,6 +106,36 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
         detail: "Picked up at the next turn boundary.",
       }),
       onError: _sdToastErr(pushToast, "Steer failed"),
+    }
+  );
+  const deleteMut = useMutation(
+    ({ force = false } = {}) => apiFetch(
+      "DELETE",
+      `/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}${force ? "?force=true" : ""}`,
+    ),
+    {
+      invalidates: ["sessions", "sessions:list", `session-detail:${sid}`],
+      onSuccess: () => {
+        setShowDelete(false);
+        pushToast && pushToast({
+          kind: "success",
+          title: "Session deleted",
+          detail: sid,
+        });
+        navigate("/sessions");
+      },
+      onError: (err) => {
+        // 409 on RUNNING — offer the force path inline (the modal stays open).
+        if (err && err.status === 409) {
+          pushToast && pushToast({
+            kind: "warning",
+            title: "Session is running",
+            detail: "Cancel it first, or use Force delete to evict an orphaned row.",
+          });
+        } else {
+          _sdToastErr(pushToast, "Delete failed")(err);
+        }
+      },
     }
   );
 
@@ -324,6 +355,13 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
                 icon="stop"
                 onClick={() => setShowCancel(true)}
               >Cancel</Btn>
+              <Btn
+                kind="danger"
+                disabled={deleteMut.loading}
+                icon="trash"
+                onClick={() => setShowDelete(true)}
+                data-testid="session-delete-btn"
+              >Delete</Btn>
               <div style={{ borderTop: "1px solid var(--border)", margin: "4px -14px 0" }} />
 
               <div className="field-label mt-2" style={{ marginBottom: 4 }}>
@@ -517,6 +555,50 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
             <li>Any queued steer instructions will be discarded.</li>
             <li>The workspace and its <span className="mono" style={{ fontSize: 11 }}>.state</span> are not affected.</li>
           </ul>
+        </Modal>
+      )}
+      {showDelete && (
+        <Modal
+          title="Delete session?"
+          danger
+          onClose={() => setShowDelete(false)}
+          footer={
+            <>
+              <Btn kind="ghost" onClick={() => setShowDelete(false)}>Keep</Btn>
+              {session.status === "running" ? (
+                <Btn
+                  kind="danger"
+                  icon="trash"
+                  disabled={deleteMut.loading}
+                  onClick={() => deleteMut.mutate({ force: true })}
+                  data-testid="session-force-delete-confirm"
+                >Force delete</Btn>
+              ) : (
+                <Btn
+                  kind="danger"
+                  icon="trash"
+                  disabled={deleteMut.loading}
+                  onClick={() => deleteMut.mutate({})}
+                  data-testid="session-delete-confirm"
+                >Delete</Btn>
+              )}
+            </>
+          }
+        >
+          Removing <strong className="mono" style={{ fontFamily: "inherit" }}>{session.id}</strong>.
+          {session.status === "running" ? (
+            <ul>
+              <li><strong>Session is RUNNING.</strong> Force delete evicts the row without waiting for the worker — use only if the worker is stuck/orphaned.</li>
+              <li>Otherwise cancel the session first, then delete it normally.</li>
+              <li>The workspace and its <span className="mono" style={{ fontSize: 11 }}>.state</span> are not affected.</li>
+            </ul>
+          ) : (
+            <ul>
+              <li>The server auto-cancels CREATED / WAITING / PAUSED sessions before deletion.</li>
+              <li>Any queued steer instructions are discarded.</li>
+              <li>The workspace and its <span className="mono" style={{ fontSize: 11 }}>.state</span> are not affected.</li>
+            </ul>
+          )}
         </Modal>
       )}
     </div>
