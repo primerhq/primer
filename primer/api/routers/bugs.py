@@ -8,10 +8,10 @@ three files:
 - ``screenshot.png`` — PNG decoded from base64 (optional)
 - ``meta.json``     — ``{id, created_at, status, page_url, viewport, captured_at}``
 
-The bugs directory defaults to ``<project_root>/bugs/`` (resolved by
-walking up from this file to the nearest ``pyproject.toml``); operators
-can override via ``config.bugs.directory`` when an explicit AppConfig
-field exists.
+The bugs directory defaults to ``~/.primer/bugs/`` (out-of-tree, in the
+operator's home so reports survive repo wipes and stay out of source
+control). Operators can override via ``config.bugs.directory`` when an
+explicit AppConfig field exists.
 """
 
 from __future__ import annotations
@@ -39,9 +39,11 @@ class ViewportBody(BaseModel):
 
 class BugReportBody(BaseModel):
     description: str = Field(..., min_length=1, max_length=20000)
-    # ~20MB before base64 → ~15MB image once decoded. Generous; the
-    # operator console captures a single viewport, not the whole page.
-    screenshot_b64: str | None = Field(default=None, max_length=20_000_000)
+    # Generous: an HDR viewport at devicePixelRatio=2 with html2canvas's
+    # default lossless PNG can clear 20MB. Cap at 64MB before base64 (so
+    # ~48MB decoded) so a Retina/4K capture isn't silently rejected by
+    # the schema validator and dropped.
+    screenshot_b64: str | None = Field(default=None, max_length=64_000_000)
     page_url: str = Field(default="", max_length=2000)
     viewport: ViewportBody | None = None
     captured_at: str | None = None  # ISO8601 from the browser
@@ -65,6 +67,7 @@ async def create_bug(request: Request, body: BugReportBody) -> dict:
 
     (bug_dir / "description.md").write_text(body.description, encoding="utf-8")
 
+    screenshot_bytes_written: int | None = None
     if body.screenshot_b64:
         try:
             img_bytes = base64.b64decode(_strip_data_url(body.screenshot_b64))
@@ -74,6 +77,7 @@ async def create_bug(request: Request, body: BugReportBody) -> dict:
                 detail={"code": "screenshot_invalid", "message": str(exc)},
             )
         (bug_dir / "screenshot.png").write_bytes(img_bytes)
+        screenshot_bytes_written = len(img_bytes)
 
     meta = {
         "id": bug_id,
@@ -90,9 +94,20 @@ async def create_bug(request: Request, body: BugReportBody) -> dict:
 
     logger.info(
         "bug_reported",
-        extra={"bug_id": bug_id, "dir": str(bug_dir)},
+        extra={
+            "bug_id": bug_id,
+            "dir": str(bug_dir),
+            "had_screenshot": body.screenshot_b64 is not None,
+            "screenshot_b64_len": len(body.screenshot_b64 or ""),
+            "screenshot_bytes": screenshot_bytes_written,
+            "description_len": len(body.description),
+        },
     )
-    return {"id": bug_id, "path": str(bug_dir)}
+    return {
+        "id": bug_id,
+        "path": str(bug_dir),
+        "screenshot_bytes": screenshot_bytes_written,
+    }
 
 
 def _strip_data_url(s: str) -> str:
@@ -102,7 +117,13 @@ def _strip_data_url(s: str) -> str:
 
 
 def _resolve_bugs_dir(cfg) -> Path:
-    """Default: ``<project_root>/bugs/``. Override via ``cfg.bugs.directory``."""
+    """Default: ``~/.primer/bugs/``. Override via ``cfg.bugs.directory``.
+
+    Out-of-tree on purpose: bug reports are operator artefacts that
+    should outlive a `git clean -fdx`, stay out of source control, and
+    not pollute the repo's working tree (the fix loop has to commit
+    against a clean tree).
+    """
     bugs_setting = None
     try:
         bugs_section = getattr(cfg, "bugs", None)
@@ -112,11 +133,14 @@ def _resolve_bugs_dir(cfg) -> Path:
         bugs_setting = None
     if bugs_setting:
         return Path(bugs_setting).expanduser().resolve()
-    return _find_project_root() / "bugs"
+    return (Path.home() / ".primer" / "bugs").resolve()
 
 
 def _find_project_root() -> Path:
-    """Walk up from this file until ``pyproject.toml`` is found."""
+    """Walk up from this file until ``pyproject.toml`` is found.
+
+    Retained for callers that may still want the repo root (none today).
+    """
     here = Path(__file__).resolve()
     for parent in here.parents:
         if (parent / "pyproject.toml").exists():

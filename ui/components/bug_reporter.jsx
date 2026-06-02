@@ -27,22 +27,35 @@ function BG_BugButton({ pushToast }) {
     setCapturing(true);
     setError(null);
     try {
+      // Clamp scale at 1: Retina/4K (DPR=2+) blows the PNG to 4-16x and
+      // can blow the server's body-size limit silently — better to ship
+      // a 1x screenshot than no screenshot.
       const canvas = await window.html2canvas(document.body, {
         useCORS: true,
         logging: false,
-        scale: window.devicePixelRatio || 1,
+        scale: 1,
+        backgroundColor: getComputedStyle(document.body).backgroundColor || "#111",
       });
-      setScreenshot(canvas.toDataURL("image/png"));
+      const dataUrl = canvas.toDataURL("image/png");
+      // eslint-disable-next-line no-console
+      console.log("[bug-report] screenshot captured", {
+        canvasW: canvas.width,
+        canvasH: canvas.height,
+        dataUrlLen: dataUrl.length,
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+        dpr: window.devicePixelRatio,
+      });
+      setScreenshot(dataUrl);
     } catch (err) {
       // html2canvas failures are usually CORS/CSP related; surface a
       // toast but still open the modal so the operator can submit a
       // text-only report.
       // eslint-disable-next-line no-console
-      console.error("html2canvas failed", err);
+      console.error("[bug-report] html2canvas failed", err);
       pushToast?.({
         kind: "warning",
         title: "Screenshot failed",
-        detail: "Continuing with description only.",
+        detail: String(err?.message || err || "see console"),
       });
       setScreenshot(null);
     } finally {

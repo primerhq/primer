@@ -95,3 +95,13 @@ async def test_post_unauthenticated_rejected(raw_client) -> None:
     """Without a session cookie, /v1/bugs rejects."""
     resp = await raw_client.post("/v1/bugs", json={"description": "x"})
     assert resp.status_code in (401, 403)
+
+
+def test_default_bugs_dir_is_under_user_home() -> None:
+    """Default resolver returns ~/.primer/bugs — out-of-tree on purpose."""
+    from pathlib import Path
+    from primer.api.routers import bugs as _bugs_mod
+
+    resolved = _bugs_mod._resolve_bugs_dir(cfg=None)
+    expected = (Path.home() / ".primer" / "bugs").resolve()
+    assert resolved == expected
