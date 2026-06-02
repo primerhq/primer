@@ -1206,10 +1206,9 @@ function GR_localViolations(g, opts) {
     }
   }
 
-  // Soft: Begin without a description.
-  if (begins.length === 1 && !begins[0].description) {
-    out.push({ kind: "soft", text: "Begin node has no description" });
-  }
+  // (Begin without a description used to be a soft warning, but the
+  // description field is explicitly optional per the spec — operators
+  // who skip it are doing nothing wrong. Removed.)
 
   // ===== Spec B §1.3 hard rules =====
   const fanoutIds = new Set(nodes.filter((n) => n.kind === "fan_out").map((n) => n.id));
