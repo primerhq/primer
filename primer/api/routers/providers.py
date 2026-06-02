@@ -580,6 +580,18 @@ _BUILTIN_TOOLSETS: list[dict] = [
         "icon": "external",
         "always_on": True,
     },
+    {
+        "id": "harness",
+        "tagline": "Harness lifecycle: register, fetch, install, sync, uninstall",
+        "icon": "package",
+        "always_on": True,
+    },
+    {
+        "id": "trigger",
+        "tagline": "Trigger + subscription CRUD and the subscribe_to_trigger yield",
+        "icon": "clock",
+        "always_on": True,
+    },
 ]
 
 # A dedicated router registered BEFORE toolset_router in app.py so that
@@ -627,6 +639,61 @@ async def list_builtin_toolsets(
             "available": available,
         })
     return {"items": items}
+
+
+@builtin_toolsets_router.get(
+    "/toolsets/{toolset_id}",
+    summary="Get a toolset (built-in synthesised, user-defined from storage)",
+    responses=common_responses(404, 500),
+)
+async def get_toolset_with_builtin_shim(
+    toolset_id: str = Path(..., description="Toolset id"),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """GET /v1/toolsets/{id}.
+
+    Reserved (built-in) toolsets don't have rows in the ``Toolset``
+    storage backend — they're singletons on the ProviderRegistry — so
+    a naive CRUD .get() returns 404 for them, breaking the console's
+    detail page. This shim synthesises a Toolset-shaped response for
+    every id in ``RESERVED_TOOLSET_IDS`` and falls back to the
+    storage row for everything else.
+
+    Registered on ``builtin_toolsets_router`` which is included BEFORE
+    the CRUD-generated ``toolset_router`` in ``primer/api/app.py``, so
+    this route shadows the CRUD GET-by-id. User-defined ids fall
+    through here too (we delegate to storage), so the CRUD route is
+    effectively never hit for GET-by-id; that's intentional.
+    """
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+    from primer.model.provider import Toolset
+
+    if toolset_id in RESERVED_TOOLSET_IDS:
+        spec = next(
+            (s for s in _BUILTIN_TOOLSETS if s["id"] == toolset_id),
+            None,
+        )
+        tagline = spec["tagline"] if spec else f"Built-in {toolset_id!r} toolset."
+        return {
+            "id": toolset_id,
+            "provider": "internal",
+            "config": None,
+            "description": tagline,
+            "tagline": tagline,
+            "icon": spec["icon"] if spec else "box",
+            "builtin": True,
+            "harness_id": None,
+        }
+
+    row = await storage_provider.get_storage(Toolset).get(toolset_id)
+    if row is None:
+        from primer.model.except_ import NotFoundError
+        raise NotFoundError(
+            f"Toolset {toolset_id!r} does not exist"
+        )
+    body = row.model_dump(mode="json")
+    body["builtin"] = False
+    return body
 
 
 @builtin_toolsets_router.get(
