@@ -12,6 +12,7 @@
 //   * Horizontal rules (---)
 //   * Paragraphs separated by blank lines; soft newlines become <br/>
 //   * Blockquotes (> line)
+//   * GFM tables (| col | col | + separator row | --- | --- |)
 //
 // Designed to be safe against XSS — output is composed of React
 // elements, never dangerouslySetInnerHTML. URLs in links are
@@ -182,6 +183,100 @@
         continue;
       }
 
+      // GFM table — header row + separator row + data rows.
+      //   | col1 | col2 |
+      //   |------|:----:|
+      //   | a    | b    |
+      // The separator row must be all dashes (with optional colons for
+      // alignment). Tables can be wider than the viewport — the wrapper
+      // uses overflow-x: auto so the operator can pan instead of having
+      // text wrap into unreadable columns.
+      if (line.includes("|") && i + 1 < lines.length) {
+        const sepLine = lines[i + 1];
+        const isSeparator = /^\s*\|?(\s*:?-{2,}:?\s*\|)+\s*(:?-{2,}:?\s*\|?)?\s*$/.test(sepLine);
+        if (isSeparator) {
+          const parseRow = (l) => {
+            let s = l.trim();
+            if (s.startsWith("|")) s = s.slice(1);
+            if (s.endsWith("|")) s = s.slice(0, -1);
+            return s.split("|").map((c) => c.trim());
+          };
+          const headerCells = parseRow(line);
+          const sepCells = parseRow(sepLine);
+          const aligns = sepCells.map((c) => {
+            const left = c.startsWith(":");
+            const right = c.endsWith(":");
+            if (left && right) return "center";
+            if (right) return "right";
+            if (left) return "left";
+            return null;
+          });
+          i += 2;
+          const rows = [];
+          while (
+            i < lines.length
+            && lines[i].includes("|")
+            && !/^\s*$/.test(lines[i])
+          ) {
+            rows.push(parseRow(lines[i]));
+            i++;
+          }
+          pushBlock(
+            <div className="md-table-wrap" style={{ overflowX: "auto", marginBottom: 12 }}>
+              <table
+                className="md-table"
+                style={{
+                  borderCollapse: "collapse",
+                  fontSize: "inherit",
+                  minWidth: "100%",
+                }}
+              >
+                <thead>
+                  <tr>
+                    {headerCells.map((c, idx) => (
+                      <th
+                        key={`mdth-${idx}`}
+                        style={{
+                          textAlign: aligns[idx] || "left",
+                          borderBottom: "2px solid var(--border, #444)",
+                          padding: "6px 10px",
+                          fontWeight: 600,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {renderInline(c, `mdth-${idx}`)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, ri) => (
+                    <tr
+                      key={`mdtr-${ri}`}
+                      style={{ borderBottom: "1px solid var(--border, #333)" }}
+                    >
+                      {row.map((c, ci) => (
+                        <td
+                          key={`mdtd-${ri}-${ci}`}
+                          style={{
+                            textAlign: aligns[ci] || "left",
+                            padding: "6px 10px",
+                            verticalAlign: "top",
+                          }}
+                        >
+                          {renderInline(c, `mdtd-${ri}-${ci}`)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+          continue;
+        }
+      }
+
       // Blockquote — collapse consecutive '>' lines into one block.
       if (/^\s*>\s?/.test(line)) {
         const buf = [];
@@ -249,7 +344,14 @@
         !/^(#{1,6})\s+/.test(lines[i]) &&
         !/^\s*[*\-+]\s+/.test(lines[i]) &&
         !/^\s*\d+\.\s+/.test(lines[i]) &&
-        !/^\s*>\s?/.test(lines[i])
+        !/^\s*>\s?/.test(lines[i]) &&
+        // Don't swallow a table header (current line contains `|` AND
+        // the NEXT line is a separator) — let the table block claim it.
+        !(
+          lines[i].includes("|") &&
+          i + 1 < lines.length &&
+          /^\s*\|?(\s*:?-{2,}:?\s*\|)+\s*(:?-{2,}:?\s*\|?)?\s*$/.test(lines[i + 1])
+        )
       ) {
         buf.push(lines[i]);
         i++;
