@@ -76,10 +76,41 @@ function WorkersPage({ sessions, pushToast }) {
     <div className="col" style={{ gap: 14 }}>
       {/* Summary strip */}
       <div className={`metric-grid ${isMobile ? "metric-grid-mobile" : ""}`} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <SummaryStat label="Total" value={workers.length} sub="registered workers" />
-        <SummaryStat label="Active" value={totals.active} sub={`${totals.draining} draining`} accent={totals.active === 0 ? "red" : "green"} />
-        <SummaryStat label="In flight" value={`${totals.flight} / ${totals.cap}`} sub="claim utilization" accent={totals.cap > 0 && totals.flight / totals.cap > 0.8 ? "amber" : "green"} />
-        <SummaryStat label="Scheduler" value="alive" sub="last claim 2s ago" accent="green" />
+        <SummaryStat
+          label="Total"
+          value={workers.length}
+          sub="registered workers"
+          title="Every worker process the pool knows about, including ones currently draining."
+        />
+        <SummaryStat
+          label="Active"
+          value={totals.active}
+          sub={`${totals.draining} draining`}
+          accent={totals.active === 0 ? "red" : "green"}
+          title="Workers ready to accept new work. Draining workers finish their in-flight leases but won't pick up new ones."
+        />
+        <SummaryStat
+          label="Running now"
+          value={`${totals.flight} / ${totals.cap}`}
+          sub={`${totals.flight} task${totals.flight === 1 ? "" : "s"} · ${totals.cap} parallel slot${totals.cap === 1 ? "" : "s"}`}
+          accent={totals.cap > 0 && totals.flight / totals.cap > 0.8 ? "amber" : "green"}
+          title={
+            "Left number: how many leases (agent turns, graph runs, harness ops, "
+            + "trigger fires) are being processed right now across all active workers.\n"
+            + "Right number: total capacity — sum of every active worker's parallel slot "
+            + "count.\n"
+            + "When the left side hits the right side the pool is saturated and new work "
+            + "queues until a slot frees up. Pre-saturation, idle slots are fine — it just "
+            + "means nothing's currently due."
+          }
+        />
+        <SummaryStat
+          label="Scheduler"
+          value="alive"
+          sub="last claim 2s ago"
+          accent="green"
+          title="The claim engine is polling and ready to hand work to workers."
+        />
       </div>
 
       <div className="filter-bar">
@@ -237,10 +268,10 @@ function CapacityBar({ inFlight, capacity }) {
   );
 }
 
-function SummaryStat({ label, value, sub, accent }) {
+function SummaryStat({ label, value, sub, accent, title }) {
   const color = accent === "red" ? "var(--red)" : accent === "amber" ? "var(--amber)" : accent === "green" ? "var(--green)" : undefined;
   return (
-    <div className="panel">
+    <div className="panel" title={title}>
       <div className="panel-body" style={{ padding: "12px 14px" }}>
         <div className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>{label}</div>
         <div className="mono tabular" style={{ fontSize: 22, fontWeight: 600, marginTop: 4, letterSpacing: "-0.02em", color }}>{value}</div>
