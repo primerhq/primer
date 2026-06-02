@@ -538,6 +538,57 @@ def _make_lifespan(config: AppConfig):
             except Exception:  # noqa: BLE001 -- never break startup
                 logger.exception("lifespan: session recovery failed")
 
+        # --- Chat recovery on startup --------------------------------------
+        # Same shape as session recovery above but for the chat surface.
+        # A chat row at turn_status='claimable' or 'running' with no
+        # lease (because the worker died between writing a chat message
+        # and releasing) would otherwise sit stuck forever — see
+        # bug-2026-06-02T192011Z-8feeba2a. ChatClaimAdapter's
+        # eligibility predicate requires turn_status in {claimable,
+        # resumable}, parked_status IS NULL, and chat.status='active',
+        # so we only re-arm rows that match.
+        if claim_engine is not None:
+            try:
+                from primer.int.claim import ClaimKind as _ClaimKind
+                from primer.model.chats import Chat as _Chat
+                from primer.model.storage import OffsetPage as _OffsetPage
+
+                _chats_storage = storage_provider.get_storage(_Chat)
+                _recovered_chats = 0
+                _chat_offset = 0
+                while True:
+                    _page = await _chats_storage.list(
+                        _OffsetPage(offset=_chat_offset, length=200)
+                    )
+                    _items = list(_page.items)
+                    for _chat in _items:
+                        # Skip anything the adapter wouldn't accept.
+                        if getattr(_chat, "status", None) != "active":
+                            continue
+                        if getattr(_chat, "parked_status", None) is not None:
+                            continue
+                        _ts = getattr(_chat, "turn_status", None)
+                        if _ts not in ("claimable", "resumable", "running"):
+                            continue
+                        try:
+                            await claim_engine.upsert(_ClaimKind.CHAT, _chat.id)
+                            _recovered_chats += 1
+                        except Exception:
+                            logger.exception(
+                                "chat recovery: failed to upsert lease for %s",
+                                _chat.id,
+                            )
+                    if len(_items) < 200:
+                        break
+                    _chat_offset += 200
+                if _recovered_chats:
+                    logger.info(
+                        "lifespan: chat recovery — re-armed %d chat lease(s) "
+                        "from persisted state", _recovered_chats,
+                    )
+            except Exception:  # noqa: BLE001 -- never break startup
+                logger.exception("lifespan: chat recovery failed")
+
         # --- Observability: claim queue-depth sampler ----------------------
         # Runs every 10s when the claim engine is Postgres-backed and
         # metrics are enabled.  In-memory engine doesn't need it (the
