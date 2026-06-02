@@ -1181,6 +1181,10 @@ function App() {
         ))}
       </div>
 
+      {/* Floating bug reporter — bottom-left, always-on once the
+          operator is past <AuthGate>. */}
+      <window.BG_BugButton pushToast={pushToast} />
+
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} onNavigate={navigate} sessions={sessions} />}
 
       {newSessionOpen && (

@@ -31,6 +31,10 @@
      scripts in ui/vendor/MANIFEST.md. -->
 <script src="vendor/react.min.js"></script>
 <script src="vendor/react-dom.min.js"></script>
+<!-- html2canvas: ships as a plain UMD bundle and registers
+     window.html2canvas synchronously. Loaded before _app.js so the
+     bug reporter (compiled into _app.js) sees it on first render. -->
+<script src="vendor/html2canvas.min.js"></script>
 <script src="_app.js"></script>
 
 <!-- The text/babel script tags below are the single source of truth
@@ -66,6 +70,7 @@
 <script type="text/babel" src="components/shared/floating-action.jsx"></script>
 <script type="text/babel" src="components/mock-data.jsx"></script>
 <script type="text/babel" src="components/predicate-builder.jsx"></script>
+<script type="text/babel" src="components/bug_reporter.jsx"></script>
 
 <!-- Chrome + page components -->
 <script type="text/babel" src="components/auth.jsx"></script>

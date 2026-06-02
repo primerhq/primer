@@ -21,6 +21,7 @@ transitive resolution, no surprise additions.
 | react.min.js        | https://unpkg.com/react@18.3.1/umd/react.production.min.js | 18.3.1 (production build) | `d949f1c3687aedadcedac85261865f29b17cd273997e7f6b2bfc53b2f9d4c4dd` | MIT | 2026-05-29 |
 | react-dom.min.js    | https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js | 18.3.1 (production build) | `35f4f974f4b2bcd44da73963347f8952e341f83909e4498227d4e26b98f66f0d` | MIT | 2026-05-29 |
 | babel.min.js        | https://unpkg.com/@babel/standalone@7.29.0/babel.min.js | 7.29.0 | `2623a9e22809915ce789b4461154e277ddce520d5a4320c14d44332a5d0dcea0` | MIT | 2026-05-29 |
+| html2canvas.min.js  | https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js | 1.4.1 | `e87e550794322e574a1fda0c1549a3c70dae5a93d9113417a429016838eab8cb` | MIT | 2026-06-02 |
 | fonts/IBMPlexSans-VF-latin.woff2 | Google Fonts subset of @ibm/plex@v23 (latin, variable weight 100-700) | v23 | `e2291e842cf5af167122a22881a740c7f2dda7716f1e8cd76680264f4a859470` | SIL OFL 1.1 | 2026-05-29 |
 | fonts/IBMPlexMono-Regular-latin.woff2 | Google Fonts subset of @ibm/plex@v20 (latin, weight 400) | v20 | `08949f728dc52d528e69b1667d15c89a5686a4ee9a296ff90983985f99c380f7` | SIL OFL 1.1 | 2026-05-29 |
 | fonts/IBMPlexMono-Medium-latin.woff2  | Google Fonts subset of @ibm/plex@v20 (latin, weight 500) | v20 | `01d285447409c8a588692162439a038b8cbd7871309ee20267b0d2d91c6e8e22` | SIL OFL 1.1 | 2026-05-29 |
