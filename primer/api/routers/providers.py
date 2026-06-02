@@ -764,6 +764,7 @@ async def list_all_tools(
                     "id": tool.id,
                     "scoped_id": f"{tid}__{tool.id}",
                     "description": tool.description or "",
+                    "input_schema": tool.args_schema or {},
                 })
         except Exception as exc:  # noqa: BLE001
             entry["available"] = False
@@ -801,6 +802,7 @@ async def list_all_tools(
                         "id": tool.id,
                         "scoped_id": f"{row.id}__{tool.id}",
                         "description": tool.description or "",
+                        "input_schema": tool.args_schema or {},
                     })
             except Exception as exc:  # noqa: BLE001
                 entry["available"] = False

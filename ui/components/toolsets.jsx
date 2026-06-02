@@ -956,6 +956,9 @@ function ToolsPage({ pushToast }) {
   const [textFilter, setTextFilter] = React.useState("");
   const [policyFilter, setPolicyFilter] = React.useState("");
   const [editing, setEditing] = React.useState(null); // {tool_id, toolset_id, builtin, policy?}
+  const [detail, setDetail] = React.useState(null);   // tool row clicked open
+  const [page, setPage] = React.useState(0);
+  const PAGE_SIZE = 25;
 
   // (toolset_id, tool_name) → policy row.
   const policyIndex = React.useMemo(() => {
@@ -978,6 +981,7 @@ function ToolsPage({ pushToast }) {
           builtin: !!ts.builtin,
           available: !!ts.available,
           description: t.description || "",
+          input_schema: t.input_schema || null,
           policy: policyIndex[`${ts.id}::${t.id}`] || null,
         });
       }
@@ -998,6 +1002,16 @@ function ToolsPage({ pushToast }) {
     if (policyFilter === "without") arr = arr.filter((r) => !r.policy);
     return arr;
   }, [rows, textFilter, policyFilter]);
+
+  // Reset to first page whenever the filtered set changes (filter typed,
+  // policy dropdown flipped, catalogue refreshed).
+  const filteredLen = filtered.length;
+  React.useEffect(() => { setPage(0); }, [textFilter, policyFilter, filteredLen]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredLen / PAGE_SIZE));
+  const pageStart = page * PAGE_SIZE;
+  const pageEnd = Math.min(pageStart + PAGE_SIZE, filteredLen);
+  const visible = filtered.slice(pageStart, pageEnd);
 
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -1051,7 +1065,7 @@ function ToolsPage({ pushToast }) {
               </td></tr>
             ) : filtered.length === 0 ? (
               <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>No tools match.</td></tr>
-            ) : filtered.map((r) => {
+            ) : visible.map((r) => {
               const type = r.policy?.approval?.type;
               const typeColor = type === "required" ? "var(--amber)"
                 : type === "policy" ? "var(--blue)"
@@ -1059,7 +1073,16 @@ function ToolsPage({ pushToast }) {
                 : "var(--text-4)";
               return (
                 <tr key={r.scoped_id}>
-                  <td className="mono">{r.tool_id}</td>
+                  <td>
+                    <a
+                      className="mono"
+                      style={{ cursor: "pointer", color: "var(--accent)", textDecoration: "none" }}
+                      onClick={() => setDetail(r)}
+                      title="Show tool details"
+                    >
+                      {r.tool_id}
+                    </a>
+                  </td>
                   <td className="mono muted text-sm">{r.toolset_id}</td>
                   <td>
                     <span className="pill" style={{
@@ -1095,6 +1118,41 @@ function ToolsPage({ pushToast }) {
         </table>
       </div>
 
+      {filteredLen > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
+          <span className="muted text-sm">
+            {pageStart + 1}–{pageEnd} of {filteredLen}
+          </span>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+            <Btn
+              size="sm"
+              kind="ghost"
+              icon="chevron-left"
+              disabled={page <= 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+            >
+              Prev
+            </Btn>
+            <span className="muted text-sm" style={{ alignSelf: "center" }}>
+              Page {page + 1} / {pageCount}
+            </span>
+            <Btn
+              size="sm"
+              kind="ghost"
+              icon="chevron-right"
+              disabled={page >= pageCount - 1}
+              onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+            >
+              Next
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      {detail && (
+        <ToolDetailModal row={detail} onClose={() => setDetail(null)} />
+      )}
+
       {editing && (
         <AP_NewPolicyModal
           existing={editing.policy || _seedPolicy(editing)}
@@ -1106,6 +1164,63 @@ function ToolsPage({ pushToast }) {
         />
       )}
     </div>
+  );
+}
+
+// Read-only details for one tool row from the /v1/tools catalogue.
+// Description and input_schema come straight from the row — no extra
+// fetch — so it pops instantly. Schema is pretty-printed JSON.
+function ToolDetailModal({ row, onClose }) {
+  const schemaText = React.useMemo(() => {
+    if (!row.input_schema || Object.keys(row.input_schema).length === 0) {
+      return "(no input schema published by this tool)";
+    }
+    try {
+      return JSON.stringify(row.input_schema, null, 2);
+    } catch (_e) {
+      return String(row.input_schema);
+    }
+  }, [row.input_schema]);
+
+  return (
+    <Modal
+      title={row.scoped_id}
+      onClose={onClose}
+      footer={<Btn kind="ghost" onClick={onClose}>Close</Btn>}
+    >
+      <div className="kv" style={{ gridTemplateColumns: "120px 1fr", marginBottom: 12 }}>
+        <dt>tool</dt><dd className="mono">{row.tool_id}</dd>
+        <dt>toolset</dt><dd className="mono">{row.toolset_id}</dd>
+        <dt>kind</dt><dd>{row.builtin ? "built-in" : "user"}</dd>
+        {row.policy && (
+          <>
+            <dt>approval</dt>
+            <dd>
+              {row.policy.approval?.type || "—"}
+              {row.policy.enabled === false && <span className="muted text-sm"> · off</span>}
+            </dd>
+          </>
+        )}
+      </div>
+      <div style={{ marginBottom: 6 }}>
+        <div className="muted text-sm" style={{ marginBottom: 4 }}>Description</div>
+        <div className="text-sm" style={{ whiteSpace: "pre-wrap" }}>
+          {row.description || <span className="muted">(no description)</span>}
+        </div>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <div className="muted text-sm" style={{ marginBottom: 4 }}>Input schema</div>
+        <pre className="mono" style={{
+          background: "var(--bg-2)",
+          padding: 10,
+          borderRadius: 4,
+          fontSize: 11.5,
+          maxHeight: 360,
+          overflow: "auto",
+          margin: 0,
+        }}>{schemaText}</pre>
+      </div>
+    </Modal>
   );
 }
 
