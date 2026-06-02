@@ -504,6 +504,7 @@ function WS_FilesTab({ wid, pushToast }) {
   const [selected, setSelected] = React.useState(null);
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState("");
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
   // "raw" | "rendered". Only meaningful for files where the renderer
   // can do something useful (today: .md). For everything else the
   // toggle isn't shown and this stays at "raw".
@@ -572,6 +573,26 @@ function WS_FilesTab({ wid, pushToast }) {
         }
       },
       onError: _wsToastErr(pushToast, "Save failed"),
+    }
+  );
+
+  const deleteFile = useMutation(
+    () => apiFetch(
+      "DELETE",
+      `/workspaces/${encodeURIComponent(wid)}/files?path=${encodeURIComponent(selected)}`
+    ),
+    {
+      invalidates: [`workspace-files:${wid}`],
+      onSuccess: () => {
+        const deleted = selected;
+        setConfirmDelete(false);
+        setSelected(null);
+        setEditing(false);
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "warning", title: "File deleted", detail: deleted });
+        }
+      },
+      onError: _wsToastErr(pushToast, "Delete failed"),
     }
   );
 
@@ -650,12 +671,36 @@ function WS_FilesTab({ wid, pushToast }) {
                       <Btn size="sm" kind="ghost" icon="external">Download</Btn>
                     </a>
                     <Btn size="sm" kind="ghost" icon="copy" onClick={() => setEditing(true)}>Edit</Btn>
+                    <Btn
+                      size="sm"
+                      kind="danger"
+                      icon="trash"
+                      disabled={deleteFile.loading}
+                      onClick={() => setConfirmDelete(true)}
+                    >
+                      Delete
+                    </Btn>
                   </>
                 )}
               </>
             )}
           </div>
         </div>
+        {confirmDelete && (
+          <Modal
+            title={`Delete ${selected}?`}
+            danger
+            onClose={() => setConfirmDelete(false)}
+            footer={
+              <>
+                <Btn kind="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Btn>
+                <Btn kind="danger" icon="trash" disabled={deleteFile.loading} onClick={() => deleteFile.mutate()}>Delete file</Btn>
+              </>
+            }
+          >
+            <p>This removes the file from the workspace. The operation cannot be undone from the console.</p>
+          </Modal>
+        )}
         <div style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}>
           {!selected ? (
             <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>
