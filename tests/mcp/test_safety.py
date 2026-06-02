@@ -1,4 +1,11 @@
-"""HARD_DENY + is_exposable — Spec §7."""
+"""is_exposable — Spec §7 (revised).
+
+HARD_DENY is now empty: the operator owns the exposure decision.
+This file pins that the runtime constraints (yielding tools, workspace
+tools that need an AgentSession) still filter, and that previously
+hard-denied tools (``system__call_tool``, ``web__http-request``) are
+now exposable when the operator opts them in.
+"""
 
 from __future__ import annotations
 
@@ -29,23 +36,26 @@ def _make_tool(toolset_id: str, name: str, descr: str = "") -> Tool:
     )
 
 
-def test_hard_deny_contains_meta_dispatcher_and_ssrf() -> None:
-    assert "system__call_tool" in HARD_DENY
-    assert "web__http-request" in HARD_DENY
+def test_hard_deny_is_now_empty() -> None:
+    # Retained as an empty frozenset for back-compatibility with
+    # callers that imported the name; operators own the policy floor.
+    assert HARD_DENY == frozenset()
 
 
-def test_hard_deny_blocks_call_tool() -> None:
+def test_previously_hard_denied_call_tool_now_exposable() -> None:
+    """``system__call_tool`` was hard-denied; now the operator opts in."""
     tool = _make_tool("system", "call_tool")
     ok, reason = is_exposable(tool, provider=_StubProvider())
-    assert ok is False
-    assert reason == "hard_denied"
+    assert ok is True
+    assert reason is None
 
 
-def test_hard_deny_blocks_http_request() -> None:
+def test_previously_hard_denied_http_request_now_exposable() -> None:
+    """``web__http-request`` was hard-denied; now the operator opts in."""
     tool = _make_tool("web", "http-request")
     ok, reason = is_exposable(tool, provider=_StubProvider())
-    assert ok is False
-    assert reason == "hard_denied"
+    assert ok is True
+    assert reason is None
 
 
 def test_yielding_tool_blocked() -> None:
@@ -87,9 +97,13 @@ def test_tool_scoped_id_helper() -> None:
     assert tool_scoped_id(tool) == "search__search_agents"
 
 
-def test_hard_deny_precedes_yielding_check() -> None:
-    """Hard-deny membership wins even if the provider also flags yielding."""
+def test_yielding_still_blocks_previously_hard_denied_tool() -> None:
+    """Runtime constraints survived the policy floor removal.
+
+    A tool that was once on HARD_DENY AND is yielding still surfaces
+    ``yielding_unsupported`` — the technical constraint is real.
+    """
     tool = _make_tool("system", "call_tool")
     ok, reason = is_exposable(tool, provider=_StubProvider(yielding=True))
     assert ok is False
-    assert reason == "hard_denied"
+    assert reason == "yielding_unsupported"

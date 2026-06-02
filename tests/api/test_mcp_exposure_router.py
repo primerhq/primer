@@ -6,7 +6,7 @@ Cover:
 * PUT flips ``enabled``.
 * PUT accepts a known-safe scoped id (``misc__uuid_v4``).
 * PUT rejects an unknown scoped id with 422 ``tool_unknown``.
-* PUT rejects a HARD_DENY id (``system__call_tool``) with
+* PUT accepts a previously hard-denied id (``system__call_tool``) with
   422 ``tool_not_exposable``.
 * GET /available returns rows enriched with the documented fields.
 * PUT with a bearer token (no cookie) is rejected with 403
@@ -80,17 +80,15 @@ async def test_put_rejects_unknown_id(client):
 
 
 @pytest.mark.asyncio
-async def test_put_rejects_hard_denied_id(client):
-    """``system__call_tool`` is in HARD_DENY — not_exposable."""
+async def test_put_accepts_previously_hard_denied_id(client):
+    """``system__call_tool`` is no longer hard-denied — operator owns the
+    exposure decision. PUT should accept it as an opt-in."""
     resp = await client.put(
         "/v1/mcp_exposure",
         json={"allowed_tools": ["system__call_tool"]},
     )
-    assert resp.status_code == 422, resp.text
-    # The detail body carries ``code: tool_not_exposable`` AND
-    # ``reason: hard_denied``; assert both surface to the client.
-    assert "tool_not_exposable" in resp.text
-    assert "hard_denied" in resp.text
+    assert resp.status_code == 200, resp.text
+    assert "system__call_tool" in resp.json().get("allowed_tools", [])
 
 
 @pytest.mark.asyncio

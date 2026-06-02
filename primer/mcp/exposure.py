@@ -181,9 +181,10 @@ async def _validate_allowed_tools(
     """Raise :class:`ToolUnknown` or :class:`ToolNotExposable` on bad ids.
 
     Builds the catalogue once, then probes every requested scoped id.
-    The probe consults :func:`is_exposable` so HARD_DENY + yielding +
-    needs-session denials surface uniformly at write time (defence in
-    depth: the dispatcher re-runs the same check on every call).
+    The probe consults :func:`is_exposable` so the runtime constraints
+    (yielding tools, workspace tools needing an AgentSession) surface
+    uniformly at write time. Defence in depth: the dispatcher re-runs
+    the same check on every call.
     """
     catalogue: dict[str, tuple[Tool, Any]] = {}
     async for tool, provider in _iter_catalogue(deps):

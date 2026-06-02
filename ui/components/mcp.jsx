@@ -117,7 +117,8 @@ function MC_isSafeDefault(scoped_id) {
   const bare = scoped_id.slice(idx + 2);
   // Anything in the search toolset is read-only by construction.
   if (toolset === "search") return true;
-  // Web search (but NOT web__http-request — that's HARD_DENY'd anyway).
+  // Web search is safe to recommend by default; web__http-request is
+  // still exposable but the operator has to opt-in explicitly.
   if (scoped_id === "web__web-search") return true;
   // Cherry-picked misc tools (pure-functions / lookups).
   const MISC_SAFE = new Set([
