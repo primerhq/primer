@@ -45,6 +45,7 @@ from primer.model.collection import Collection, CollectionEmbedder
 from primer.model.except_ import ConfigError, PrimerError, NotFoundError
 from primer.model.graph import Graph
 from primer.model.internal import (
+    AI_DOCS_COLLECTION_ID,
     BootstrapPhase,
     INTERNAL_COLLECTION_IDS,
     INTERNAL_COLLECTIONS_CONFIG_ID,
@@ -392,6 +393,7 @@ class InternalCollectionsSubsystem:
         """
         counts: dict[str, int] = {
             "agents": 0, "graphs": 0, "collections": 0, "tools": 0,
+            "docs": 0,
         }
 
         async def _emit(phase: BootstrapPhase, done: int, total: int | None) -> None:
@@ -420,6 +422,8 @@ class InternalCollectionsSubsystem:
             # already exists. If the store doesn't support exists_ok,
             # we catch + swallow the "already exists" path.
             await self._ensure_collection(store, INTERNAL_COLLECTION_IDS[entity_type], embed_dim)
+        # 5th reserved collection — agent-facing platform docs.
+        await self._ensure_collection(store, AI_DOCS_COLLECTION_ID, embed_dim)
 
         logger.info("ic bootstrap: phase=ingest_agents")
         counts["agents"] = await self._ingest_persisted_with_progress(
@@ -444,6 +448,10 @@ class InternalCollectionsSubsystem:
             "ingest_tools", _emit, counts,
         )
         logger.info("ic bootstrap: tools=%d", counts["tools"])
+
+        logger.info("ic bootstrap: phase=ingest_ai_docs")
+        counts["docs"] = await self._ingest_ai_docs(_emit, counts)
+        logger.info("ic bootstrap: docs=%d", counts["docs"])
 
         logger.info("ic bootstrap: phase=finalize")
         await _emit("finalize", 0, None)
@@ -616,6 +624,25 @@ class InternalCollectionsSubsystem:
                 await collections.create(row)
             else:
                 await collections.update(row)
+        # Fifth reserved collection — agent-facing platform docs.
+        # Multi-chunk records produced by DocumentIngester at ingest
+        # time; row only carries identity + provider linkage.
+        ai_docs_row = Collection(
+            id=AI_DOCS_COLLECTION_ID,
+            description=(
+                "Reserved internal collection holding agent-facing "
+                "platform documentation. Sourced from the markdown "
+                "files shipped in primer.ai_docs."
+            ),
+            embedder=embedder,
+            system=True,
+            search_provider_id=self._config.search_provider_id,
+        )
+        existing = await collections.get(AI_DOCS_COLLECTION_ID)
+        if existing is None:
+            await collections.create(ai_docs_row)
+        else:
+            await collections.update(ai_docs_row)
 
     async def _probe_embedding_dim(self) -> int:
         vec = await self._embed_text("dimensionality probe")
@@ -716,6 +743,260 @@ class InternalCollectionsSubsystem:
             )
         return n
 
+    # ---- AI docs ingest (5th reserved collection) --------------------
+
+    # Default location of the agent-facing markdown source files. Lives
+    # inside the primer package so the docs ship with the wheel; the
+    # path is resolved relative to ``primer/__init__.py`` so it works
+    # under both editable installs and packaged ones.
+    @staticmethod
+    def _default_ai_docs_path() -> "Path":
+        from pathlib import Path
+        import primer
+
+        pkg_root = Path(primer.__file__).resolve().parent
+        return pkg_root / "ai_docs"
+
+    async def _ingest_ai_docs(
+        self,
+        emit: Callable[[BootstrapPhase, int, int | None], Awaitable[None]],
+        counts: dict[str, int],
+        *,
+        ai_docs_path: "Path | None" = None,
+        ingester_factory: Callable[..., Any] | None = None,
+    ) -> int:
+        """Walk markdown files, embed via DocumentIngester, content-hash skip.
+
+        Each ``primer/ai_docs/<slug>.md`` becomes one
+        :class:`~primer.model.collection.Document` (id=``<slug>``) under
+        the reserved ``_internal_ai_docs`` collection. Multi-chunk
+        records are produced by :class:`~primer.ingest.DocumentIngester`
+        — its Docling-backed default splitter cuts on Markdown headings,
+        so retrieval returns the specific subsection (e.g.
+        ``yields → Gotchas``) rather than the whole doc.
+
+        Skips re-embedding files whose ``content_hash`` in
+        ``Document.meta`` matches the file's current sha256.
+        Re-embedded files replace prior chunks via ``replace=True``.
+
+        Failures per file log a WARN + IngestFailure row; one bad doc
+        doesn't fail the bootstrap.
+        """
+        import hashlib
+        import re
+        from pathlib import Path
+
+        from primer.ingest.ingester import DocumentIngester
+        from primer.model.collection import Collection as CollectionModel
+        from primer.model.collection import Document
+
+        root = ai_docs_path or self._default_ai_docs_path()
+        await emit("ingest_ai_docs", 0, None)
+        if not root.exists() or not root.is_dir():
+            logger.info(
+                "ic bootstrap: ai_docs directory not present at %s, "
+                "skipping ingest_ai_docs phase",
+                root,
+            )
+            counts["docs"] = 0
+            await emit("ingest_ai_docs", 0, 0)
+            return 0
+
+        files = sorted(p for p in root.glob("*.md") if p.is_file())
+        # Skip files starting with "_" to allow internal notes (e.g.
+        # _design.md, _README.md) that shouldn't be ingested.
+        files = [f for f in files if not f.name.startswith("_")]
+        total = len(files)
+        await emit("ingest_ai_docs", 0, total)
+
+        if total == 0:
+            counts["docs"] = 0
+            return 0
+
+        documents = self._sp.get_storage(Document)
+        collections = self._sp.get_storage(CollectionModel)
+        ai_docs_collection = await collections.get(AI_DOCS_COLLECTION_ID)
+        if ai_docs_collection is None:
+            # Should not happen — _materialise_collection_rows runs first
+            logger.warning(
+                "ic bootstrap: _internal_ai_docs collection row missing; "
+                "ingest_ai_docs phase skipped"
+            )
+            return 0
+
+        store = await self._semantic_search_registry.get_store(
+            self._config.search_provider_id
+        )
+        embedder = await self._pr.get_embedder(
+            self._config.embedding_provider_id
+        )
+        if ingester_factory is None:
+            ingester = DocumentIngester(
+                collection=ai_docs_collection,
+                embedder=embedder,
+                vector_store=store,
+            )
+        else:
+            ingester = ingester_factory(
+                collection=ai_docs_collection,
+                embedder=embedder,
+                vector_store=store,
+            )
+
+        # Lightweight frontmatter extractor — YAML between leading
+        # ``---`` lines. Keeps doc metadata (title/summary/related)
+        # available on the Document.meta payload for richer search
+        # results without pulling pyyaml into the import path.
+        _fm_re = re.compile(
+            r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL,
+        )
+
+        def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+            m = _fm_re.match(text)
+            if not m:
+                return {}, text
+            block = m.group(1)
+            body = text[m.end():]
+            meta: dict[str, Any] = {}
+            current_key: str | None = None
+            list_items: list[str] | None = None
+            for raw in block.splitlines():
+                line = raw.rstrip()
+                if not line or line.lstrip().startswith("#"):
+                    continue
+                if line.startswith("- ") and current_key is not None:
+                    if list_items is None:
+                        list_items = []
+                        meta[current_key] = list_items
+                    list_items.append(line[2:].strip())
+                    continue
+                if ":" in line and not line.startswith(" "):
+                    key, _, val = line.partition(":")
+                    key = key.strip()
+                    val = val.strip()
+                    current_key = key
+                    list_items = None
+                    if val == "":
+                        meta[key] = None
+                    elif val.startswith("[") and val.endswith("]"):
+                        inner = val[1:-1].strip()
+                        meta[key] = (
+                            [piece.strip() for piece in inner.split(",") if piece.strip()]
+                            if inner else []
+                        )
+                    else:
+                        # Strip simple quotes.
+                        if (
+                            (val.startswith("\"") and val.endswith("\""))
+                            or (val.startswith("'") and val.endswith("'"))
+                        ):
+                            val = val[1:-1]
+                        meta[key] = val
+            return meta, body
+
+        ingested = 0
+        skipped = 0
+        for idx, path in enumerate(files, start=1):
+            slug = path.stem
+            try:
+                raw_bytes = path.read_bytes()
+                content_hash = hashlib.sha256(raw_bytes).hexdigest()
+                raw_text = raw_bytes.decode("utf-8", errors="replace")
+                frontmatter, body = _parse_frontmatter(raw_text)
+                title = frontmatter.get("title") or slug.replace("-", " ").title()
+                summary = frontmatter.get("summary") or ""
+
+                # Skip path: existing Document with matching content hash.
+                existing = await documents.get(slug)
+                if (
+                    existing is not None
+                    and existing.meta.get("content_hash") == content_hash
+                ):
+                    skipped += 1
+                    counts["docs"] = ingested + skipped
+                    await emit("ingest_ai_docs", idx, total)
+                    continue
+
+                doc_meta: dict[str, Any] = {
+                    "slug": slug,
+                    "title": title,
+                    "summary": summary,
+                    "content_hash": content_hash,
+                    "source_path": str(path),
+                }
+                related = frontmatter.get("related")
+                if related:
+                    doc_meta["related"] = related
+                mcp_tools = frontmatter.get("mcp_tools")
+                if mcp_tools:
+                    doc_meta["mcp_tools"] = mcp_tools
+
+                doc = Document(
+                    id=slug,
+                    collection_id=AI_DOCS_COLLECTION_ID,
+                    name=title,
+                    meta=doc_meta,
+                )
+                if existing is None:
+                    await documents.create(doc)
+                else:
+                    await documents.update(doc)
+
+                # Run the chunking + embedding pipeline. ``replace=True``
+                # drops any previously-indexed chunks for this doc so a
+                # content edit doesn't leave stale chunks behind.
+                await ingester.ingest(doc, Path(path), replace=True)
+                ingested += 1
+            except Exception as exc:  # noqa: BLE001 — one bad doc shouldn't fail bootstrap
+                logger.warning(
+                    "ic bootstrap: ai_docs ingest failed for %s: %s: %s",
+                    path,
+                    type(exc).__name__,
+                    exc,
+                )
+                event = IngestEvent(
+                    op="upsert",
+                    entity_type="tool",  # closest enum value; meta carries real type
+                    entity_id=f"_internal_ai_docs::{slug}",
+                    payload={"source_path": str(path), "kind": "ai_doc"},
+                )
+                await self._log_failure(event, exc)
+            counts["docs"] = ingested + skipped
+            await emit("ingest_ai_docs", idx, total)
+
+        logger.info(
+            "ic bootstrap: ai_docs ingested=%d skipped=%d (total files=%d)",
+            ingested,
+            skipped,
+            total,
+        )
+        return ingested + skipped
+
+    async def search_ai_docs(
+        self,
+        *,
+        query: str,
+        top_k: int = 10,
+    ) -> list[SearchResult]:
+        """Semantic search over agent-facing platform docs.
+
+        Separate entry point from :meth:`search` because the docs
+        collection isn't keyed off a per-entity-type CDC pipeline —
+        records here come from disk-based ingest only.
+        """
+        if not self.is_activated:
+            raise ConfigError(
+                "internal collections subsystem is configured but has "
+                "not been bootstrapped yet; POST "
+                "/v1/internal_collections/bootstrap to populate the "
+                "collections."
+            )
+        store = await self._semantic_search_registry.get_store(
+            self._config.search_provider_id
+        )
+        vector = await self._embed_text(query, task_type="retrieval_query")
+        return await store.search(AI_DOCS_COLLECTION_ID, vector, top_k)
+
     async def _upsert_config_row(
         self, cfg: InternalCollectionsConfig
     ) -> None:
@@ -782,6 +1063,7 @@ def build_subsystem(
 
 
 __all__ = [
+    "AI_DOCS_COLLECTION_ID",
     "INTERNAL_COLLECTION_IDS",
     "InternalCollectionsSubsystem",
     "IngestEvent",

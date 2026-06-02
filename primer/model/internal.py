@@ -48,6 +48,15 @@ INTERNAL_COLLECTION_IDS: dict[str, str] = {
     "tool": "_internal_tools",
 }
 
+# Reserved id for the agent-facing platform docs collection. Distinct
+# from the four entity-keyed collections above: it does NOT track
+# storage rows. Its records are produced by walking
+# :mod:`primer.ai_docs` markdown files at bootstrap, chunking via the
+# Docling-backed :class:`primer.ingest.DocumentIngester`, and embedding
+# each chunk. Search-only from the agent side; no CDC events are ever
+# enqueued for this collection.
+AI_DOCS_COLLECTION_ID = "_internal_ai_docs"
+
 
 class InternalCollectionsConfig(Identifiable):
     """Activation config for the internal collections subsystem.
@@ -121,6 +130,7 @@ BootstrapPhase = Literal[
     "ingest_graphs",
     "ingest_collections",
     "ingest_tools",
+    "ingest_ai_docs",
     "finalize",
 ]
 
@@ -262,6 +272,7 @@ class IngestFailure(Identifiable):
 
 
 __all__ = [
+    "AI_DOCS_COLLECTION_ID",
     "BootstrapPhase",
     "INTERNAL_COLLECTION_IDS",
     "INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID",
