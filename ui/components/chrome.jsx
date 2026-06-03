@@ -344,22 +344,70 @@ function UserMenu() {
   );
 }
 
+// Flat, search-friendly page list derived from NAV so the palette
+// stays in lockstep with whatever the sidebar advertises. Each entry
+// carries: id (used by navigate), label (the display string), group
+// (the sidebar section name, also searchable), and an icon for the
+// row. Adding a new page to NAV automatically surfaces it here.
+const NAV_PAGES = (() => {
+  const out = [];
+  for (const section of NAV) {
+    for (const item of section.items || []) {
+      out.push({
+        id: item.id,
+        label: item.label,
+        group: section.group || "",
+        icon: item.icon || "chevron-right",
+      });
+    }
+  }
+  return out;
+})();
+
+
 function CommandPalette({ onClose, onNavigate, sessions }) {
   const [q, setQ] = React.useState("");
   const [active, setActive] = React.useState(0);
   const inputRef = React.useRef(null);
   React.useEffect(() => { inputRef.current && inputRef.current.focus(); }, []);
 
-  const ql = q.toLowerCase();
-  const matches = [
-    ...["dashboard", "sessions", "workspaces", "workspace-templates", "workspace-providers", "agents", "graphs", "collections", "documents", "toolsets-user", "toolsets-builtin", "llm", "embedding", "rerank", "semantic-search", "internal-collections", "workers", "health"]
-      .filter((p) => p.includes(ql))
-      .map((p) => ({ kind: "page", id: p, label: `Go to ${p.replace(/-/g, " ").replace(/^\w/, (c) => c.toUpperCase())}` })),
-    ...sessions
-      .filter((s) => s.id.toLowerCase().includes(ql) || (s.agent_id && s.agent_id.toLowerCase().includes(ql)))
-      .slice(0, 6)
-      .map((s) => ({ kind: "session", id: s.id, label: s.id, sub: s.agent_id || s.graph_id, status: s.status })),
-  ].slice(0, 12);
+  const ql = q.toLowerCase().trim();
+
+  // Pages: match against id, label, AND group so "compute" surfaces
+  // sessions/agents/graphs/chats, "tokens" surfaces API tokens, etc.
+  // No query → show every page so the palette doubles as a directory.
+  const pageHits = NAV_PAGES.filter((p) => {
+    if (!ql) return true;
+    return (
+      p.id.toLowerCase().includes(ql)
+      || p.label.toLowerCase().includes(ql)
+      || (p.group && p.group.toLowerCase().includes(ql))
+    );
+  }).map((p) => ({
+    kind: "page",
+    id: p.id,
+    label: p.label,
+    sub: p.group || null,
+    icon: p.icon,
+  }));
+
+  // Sessions: only when a query is typed (otherwise empty queries
+  // would dump the entire session list above the page list).
+  const sessionHits = !ql
+    ? []
+    : (sessions || [])
+        .filter((s) => s.id.toLowerCase().includes(ql) || (s.agent_id && s.agent_id.toLowerCase().includes(ql)))
+        .slice(0, 6)
+        .map((s) => ({
+          kind: "session",
+          id: s.id,
+          label: s.id,
+          sub: s.agent_id || s.graph_id || null,
+          status: s.status,
+          icon: "zap",
+        }));
+
+  const matches = [...pageHits, ...sessionHits].slice(0, 20);
 
   React.useEffect(() => { setActive(0); }, [q]);
 
@@ -392,7 +440,7 @@ function CommandPalette({ onClose, onNavigate, sessions }) {
             ref={inputRef}
             className="input"
             style={{ border: "none", flex: 1, padding: 0, background: "transparent", fontSize: 14 }}
-            placeholder="Go to page or session id…"
+            placeholder="Search pages, sections, or session ids…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
@@ -410,7 +458,7 @@ function CommandPalette({ onClose, onNavigate, sessions }) {
                 onMouseEnter={() => setActive(i)}
                 onClick={() => { onClose(); onNavigate(m.kind === "session" ? "session-detail" : m.id, m.id); }}
               >
-                <Icon name={m.kind === "session" ? "zap" : "chevron-right"} className="icon" size={13} />
+                <Icon name={m.icon || (m.kind === "session" ? "zap" : "chevron-right")} className="icon" size={13} />
                 <span className="label mono" style={{ fontSize: 12.5 }}>{m.label}</span>
                 {m.sub && <span className="muted mono" style={{ fontSize: 11 }}>{m.sub}</span>}
               </div>
