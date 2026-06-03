@@ -2,7 +2,7 @@
 
 Two tools live here:
 
-* ``web-search`` — delegates to a :class:`WebSearchBackend` and returns
+* ``web-search`` — delegates to a :class:`WebSearchService` and returns
   a JSON-serialised ``[{title, url, snippet}, …]`` array.
 * ``http-request`` — wraps :class:`httpx.AsyncClient` and returns a
   JSON-serialised ``{status, headers, body, truncated}`` object,
