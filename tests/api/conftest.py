@@ -49,6 +49,30 @@ async def app(
     from primer.api.app import _bootstrap_web_search
     await _bootstrap_web_search(fake_storage_provider)
 
+    # Construct the web-search registry + service from the bootstrapped rows.
+    from primer.api.registries.web_search_registry import (
+        WebSearchRegistry,
+        default_web_search_factory,
+    )
+    from primer.model.web_search import (
+        ActiveWebSearchConfig,
+        WebSearchProvider,
+    )
+    from primer.web_search.service import WebSearchService
+
+    ws_registry = WebSearchRegistry(
+        storage=fake_storage_provider.get_storage(WebSearchProvider),
+        factory=default_web_search_factory,
+    )
+    ws_service = WebSearchService(
+        registry=ws_registry,
+        active_config_storage=fake_storage_provider.get_storage(
+            ActiveWebSearchConfig
+        ),
+    )
+    _app.state.web_search_registry = ws_registry
+    _app.state.web_search_service = ws_service
+
     forwarder = await _app.state.start_chat_tick_forwarder()
 
     # Start the worker pool if the app was built with one.

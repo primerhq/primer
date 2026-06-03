@@ -285,6 +285,30 @@ def _make_lifespan(config: AppConfig):
         # Bootstrap web-search reserved rows BEFORE building the toolset.
         await _bootstrap_web_search(storage_provider)
         logger.info("bootstrap: web-search rows materialised")
+        # Construct the web-search registry + service from the bootstrapped rows.
+        from primer.api.registries.web_search_registry import (
+            WebSearchRegistry,
+            default_web_search_factory,
+        )
+        from primer.model.web_search import (
+            ActiveWebSearchConfig,
+            WebSearchProvider,
+        )
+        from primer.web_search.service import WebSearchService
+
+        web_search_registry = WebSearchRegistry(
+            storage=storage_provider.get_storage(WebSearchProvider),
+            factory=default_web_search_factory,
+        )
+        web_search_service = WebSearchService(
+            registry=web_search_registry,
+            active_config_storage=storage_provider.get_storage(
+                ActiveWebSearchConfig,
+            ),
+        )
+        app.state.web_search_registry = web_search_registry
+        app.state.web_search_service = web_search_service
+        logger.info("lifespan: web-search registry + service constructed")
         # Build the always-on `web` toolset (DuckDuckGo search +
         # http-request primitives). Reserved id without underscore.
         logger.info("lifespan: building web toolset")
@@ -994,6 +1018,10 @@ def _make_lifespan(config: AppConfig):
                     logger.exception(
                         "internal_collections.aclose failed"
                     )
+            try:
+                await web_search_registry.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("lifespan: web_search_registry aclose failed: %s", exc)
             try:
                 await channel_registry.aclose()
             except Exception:
