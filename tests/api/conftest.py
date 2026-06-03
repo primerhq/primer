@@ -44,6 +44,11 @@ async def app(
         storage_provider=fake_storage_provider,  # type: ignore[arg-type]
         provider_registry=fake_provider_registry,
     )
+    # Bootstrap web-search reserved rows (DDG provider + active config
+    # singleton) at test startup. Matches the production lifespan.
+    from primer.api.app import _bootstrap_web_search
+    await _bootstrap_web_search(fake_storage_provider)
+
     forwarder = await _app.state.start_chat_tick_forwarder()
 
     # Start the worker pool if the app was built with one.

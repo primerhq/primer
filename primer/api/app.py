@@ -87,6 +87,46 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def _bootstrap_web_search(storage_provider) -> None:
+    """Idempotent: ensure the reserved DDG provider row + active
+    config singleton exist. Called from the lifespan handler before
+    the web toolset is built.
+
+    Order matters: the DDG row must exist before the active config
+    singleton, because the singleton's reference validation runs at
+    write time."""
+    from primer.model.web_search import (
+        ACTIVE_WEB_SEARCH_CONFIG_ID,
+        ActiveWebSearchConfig,
+        DuckDuckGoConfig,
+        SingleProviderConfig,
+        WebSearchProvider,
+        WebSearchProviderType,
+    )
+
+    ws_storage = storage_provider.get_storage(WebSearchProvider)
+    if await ws_storage.get("DuckDuckGo") is None:
+        await ws_storage.create(WebSearchProvider(
+            id="DuckDuckGo",
+            provider_type=WebSearchProviderType.DUCKDUCKGO,
+            config=DuckDuckGoConfig(),
+        ))
+        logger.info(
+            "bootstrap: created reserved web-search provider DuckDuckGo"
+        )
+
+    ac_storage = storage_provider.get_storage(ActiveWebSearchConfig)
+    if await ac_storage.get(ACTIVE_WEB_SEARCH_CONFIG_ID) is None:
+        await ac_storage.create(ActiveWebSearchConfig(
+            id=ACTIVE_WEB_SEARCH_CONFIG_ID,
+            config=SingleProviderConfig(provider_id="DuckDuckGo"),
+        ))
+        logger.info(
+            "bootstrap: created reserved active web-search config "
+            "(single -> DuckDuckGo)"
+        )
+
+
 def _make_lifespan(config: AppConfig):
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -242,6 +282,9 @@ def _make_lifespan(config: AppConfig):
         # Build the always-on _misc toolset (stateless utilities).
         misc_toolset = build_misc_toolset()
         provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
+        # Bootstrap web-search reserved rows BEFORE building the toolset.
+        await _bootstrap_web_search(storage_provider)
+        logger.info("bootstrap: web-search rows materialised")
         # Build the always-on `web` toolset (DuckDuckGo search +
         # http-request primitives). Reserved id without underscore.
         logger.info("lifespan: building web toolset")
