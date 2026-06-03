@@ -571,17 +571,20 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   }, [cid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lazy-load older messages on scroll-up. Captures scroll geometry
-  // before the prepend and restores it after layout so the visible
-  // content doesn't jump.
+  // before the prepend; a useLayoutEffect (below) restores the
+  // visible position synchronously between React's commit and the
+  // browser's paint, so the user never sees the intermediate
+  // (wrong-scroll) frame.
   const loadingOlderRef = React.useRef(false);
+  // When non-null, the next layout effect should snap scrollTop so
+  // the previously-visible content stays put. Shape:
+  // { oldScrollHeight: number, oldScrollTop: number }.
+  const pendingPrependRef = React.useRef(null);
   const loadOlder = React.useCallback(async () => {
     if (loadingOlderRef.current) return;
     if (!hasMoreOlder || oldestSeq == null || oldestSeq <= 1) return;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
-    const el = scrollRef.current;
-    const oldScrollHeight = el ? el.scrollHeight : 0;
-    const oldScrollTop = el ? el.scrollTop : 0;
     try {
       const data = await apiFetch(
         "GET",
@@ -596,18 +599,20 @@ function ChatDetail({ chatId, onBack, pushToast }) {
         const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
         return { ...payload, ...row };
       });
+      // Capture scroll geometry RIGHT before triggering the prepend
+      // re-render. The layout effect (keyed on messages.length) reads
+      // this ref synchronously after React commits and adjusts
+      // scrollTop before the browser paints — no visible jump.
+      const el = scrollRef.current;
+      if (el) {
+        pendingPrependRef.current = {
+          oldScrollHeight: el.scrollHeight,
+          oldScrollTop: el.scrollTop,
+        };
+      }
       setMessages((prev) => [...flat, ...prev]);
       setOldestSeq(flat[0].seq || oldestSeq);
       setHasMoreOlder(items.length === TAIL_PAGE_SIZE);
-      // Restore visual scroll position after React commits + browser
-      // re-lays out the prepended rows. Two rAFs: one to wait for the
-      // commit's paint, one to measure post-layout.
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        const el2 = scrollRef.current;
-        if (!el2) return;
-        const delta = el2.scrollHeight - oldScrollHeight;
-        el2.scrollTop = oldScrollTop + delta;
-      }));
     } catch (err) {
       if (typeof pushToast === "function") {
         pushToast({ kind: "error", title: "Load older failed", detail: err?.message || "" });
@@ -617,6 +622,20 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       loadingOlderRef.current = false;
     }
   }, [cid, oldestSeq, hasMoreOlder, apiFetch, pushToast]);
+
+  // Synchronous scroll-position restoration after a prepend. Runs
+  // post-commit, pre-paint — so the browser paints exactly once with
+  // the correct scrollTop, and the previously-visible content stays
+  // pinned to the same on-screen pixel row.
+  React.useLayoutEffect(() => {
+    const pending = pendingPrependRef.current;
+    if (pending == null) return;
+    pendingPrependRef.current = null;
+    const el = scrollRef.current;
+    if (!el) return;
+    const delta = el.scrollHeight - pending.oldScrollHeight;
+    el.scrollTop = pending.oldScrollTop + delta;
+  }, [messages.length]);
 
   // WS lifecycle — opens once the initial REST tail-load has settled,
   // using the tail's highest seq as the cursor so the server only
