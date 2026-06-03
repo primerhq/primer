@@ -73,6 +73,7 @@ function App() {
       return "toolsets";
     }
     if (root === "tools") return "tools";
+    if (root === "web-search") return "web-search";
     if (root === "providers") {
       if (path.startsWith("/providers/llm")) return "llm";
       if (path.startsWith("/providers/embedding")) return "embedding";
@@ -352,6 +353,7 @@ function App() {
       toolsets: "/toolsets",
       "toolset-detail": (e) => `/toolsets/${e}`,
       tools: "/tools",
+      "web-search": "/web-search",
       llm: "/providers/llm",
       embedding: "/providers/embedding",
       rerank: "/providers/cross_encoder",
@@ -632,6 +634,19 @@ function App() {
       </>
     );
     pageBody = <ToolsPage pushToast={pushToast} />;
+  } else if (page === "web-search") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("dashboard")}>Providers</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Web search</span>
+          </div>
+          <h1 className="page-title">Web search</h1>
+          <div className="page-sub">Active config + providers · DuckDuckGo built-in · Tavily configurable</div>
+        </div>
+      </>
+    );
+    pageBody = <window.WebSearchPage pushToast={pushToast} />;
   } else if (page === "toolset-detail" && currentToolsetId) {
     pageHeader = (
       <>
