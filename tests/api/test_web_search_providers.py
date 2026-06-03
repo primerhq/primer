@@ -57,7 +57,6 @@ class TestProviderCrud:
         assert r.status_code == 403, r.text
 
 
-@pytest.mark.skip(reason="depends on Task 6.2's singleton PUT route")
 class TestCascadeBlockOnDelete:
     @pytest.mark.asyncio
     async def test_delete_blocked_when_referenced_by_active_config(
