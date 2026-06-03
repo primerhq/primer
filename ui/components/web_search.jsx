@@ -136,23 +136,153 @@ function ActiveConfigCard({ active, providers, onEdit }) {
 }
 
 
-function ProvidersTable({
-  providers, loading, error, onCreate, onEdit, onDelete, onTest, pushToast,
-}) {
-  // Filled in in Task 8.2.
+function ProvidersTable({ providers, loading, error, onCreate, onEdit, onDelete, onTest }) {
   return (
     <div className="card">
-      <h2>Providers</h2>
-      <button className="btn" onClick={onCreate}>+ Add provider</button>
-      {/* Table body in Task 8.2 */}
+      <div className="card-header">
+        <h2>Providers</h2>
+        <button className="btn btn-primary" onClick={onCreate}>+ Add provider</button>
+      </div>
+      {error && <div className="error">{error.message}</div>}
+      {loading && providers.length === 0 && <div>Loading…</div>}
+      <table className="table">
+        <thead>
+          <tr><th>ID</th><th>Type</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+          {providers.map((p) => {
+            const reserved = p.id === "DuckDuckGo";
+            return (
+              <tr key={p.id}>
+                <td><code>{p.id}</code></td>
+                <td>{p.provider_type}</td>
+                <td>
+                  {reserved && <span className="badge">built-in</span>}
+                  {!reserved && <span>configured</span>}
+                </td>
+                <td className="row-actions">
+                  <button onClick={() => onTest(p)}>Test</button>
+                  {!reserved && (
+                    <>
+                      <button onClick={() => onEdit(p)}>Edit</button>
+                      <button onClick={() => onDelete(p)} className="btn-danger">Delete</button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
 
 
-// Stub modals — bodies in Task 8.2 / 8.3.
 function ProviderEditModal({ row, onClose, onSaved, pushToast }) {
-  return <div className="modal"><button onClick={onClose}>Close</button></div>;
+  const { useResource, useMutation, apiFetch } = window.primerApi;
+  const isEdit = row !== null;
+
+  const types = useResource(
+    WS_CACHE_TYPES,
+    (s) => apiFetch("GET", "/web_search_providers/_types", null, { signal: s }),
+  );
+
+  const [id, setId] = React.useState(isEdit ? row.id : "");
+  const [providerType, setProviderType] = React.useState(
+    isEdit ? row.provider_type : "duckduckgo",
+  );
+  const [apiKey, setApiKey] = React.useState("");
+  const [testResult, setTestResult] = React.useState(null);
+
+  const fields = types.data?.[providerType]?.config_fields ?? [];
+
+  const buildBody = () => ({
+    id,
+    provider_type: providerType,
+    config: { type: providerType, ...(providerType === "tavily" ? { api_key: apiKey } : {}) },
+  });
+
+  const save = useMutation(
+    () => {
+      const body = buildBody();
+      if (isEdit) {
+        return apiFetch("PUT", `/web_search_providers/${encodeURIComponent(id)}`, body);
+      }
+      return apiFetch("POST", "/web_search_providers", body);
+    },
+    {
+      invalidates: [WS_CACHE_LIST],
+      onSuccess: () => {
+        pushToast({ kind: "success", message: `Provider ${id} saved.` });
+        onSaved();
+      },
+      onError: (err) => {
+        pushToast({ kind: "error", message: err.message });
+      },
+    },
+  );
+
+  const testDraft = useMutation(
+    () => apiFetch("POST", "/web_search_providers/_test", buildBody()),
+    { onSuccess: (resp) => setTestResult(resp) },
+  );
+
+  return (
+    <div className="modal">
+      <h3>{isEdit ? `Edit ${row.id}` : "New web search provider"}</h3>
+
+      <label>ID
+        <input
+          value={id}
+          onChange={(e) => setId(e.target.value)}
+          disabled={isEdit}
+          placeholder="my-tavily"
+        />
+      </label>
+
+      <label>Type
+        <select
+          value={providerType}
+          onChange={(e) => setProviderType(e.target.value)}
+          disabled={isEdit}
+        >
+          <option value="duckduckgo">duckduckgo</option>
+          <option value="tavily">tavily</option>
+        </select>
+      </label>
+
+      {fields.includes("api_key") && (
+        <label>API key
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={isEdit ? "(unchanged)" : "tvly-..."}
+          />
+        </label>
+      )}
+
+      {testResult && (
+        <div className={testResult.ok ? "test-ok" : "test-fail"}>
+          {testResult.ok
+            ? `Test OK -- first hit: ${testResult.hits[0]?.title ?? "(no hits)"}`
+            : `Test failed: ${testResult.error}`
+          }
+        </div>
+      )}
+
+      <div className="modal-actions">
+        <button onClick={onClose}>Cancel</button>
+        <button onClick={() => testDraft.mutate()}>Test</button>
+        <button
+          className="btn-primary"
+          onClick={() => save.mutate()}
+          disabled={save.loading || !id}
+        >Save</button>
+      </div>
+    </div>
+  );
 }
 function ActiveConfigModal({ active, providers, onClose, onSaved, pushToast }) {
   return <div className="modal"><button onClick={onClose}>Close</button></div>;
