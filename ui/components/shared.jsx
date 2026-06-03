@@ -55,6 +55,8 @@ const Icon = ({ name, size = 14, ...rest }) => {
     case "git-commit": return <svg {...props}><circle cx="12" cy="12" r="3.5" /><path d="M2 12h6M16 12h6" /></svg>;
     case "fork": return <svg {...props}><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="12" cy="18" r="2.5" /><path d="M6 8.5v3a3 3 0 003 3h6a3 3 0 003-3v-3M12 14.5v.5" /></svg>;
     case "compress": return <svg {...props}><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5M9 9l-5-5M15 9l5-5M9 15l-5 5M15 15l5 5" /></svg>;
+    case "sun": return <svg {...props}><circle cx="12" cy="12" r="4" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" /></svg>;
+    case "moon": return <svg {...props}><path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z" /></svg>;
     default: return <svg {...props}><circle cx="12" cy="12" r="8" /></svg>;
   }
 };

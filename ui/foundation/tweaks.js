@@ -26,11 +26,56 @@
     instanceLabel: "primer · localhost:8765",
   };
 
+  // Subset of keys whose user choice we persist across reloads via
+  // localStorage. Currently just `theme` (operator-toggleable from
+  // the topbar). Adding more keys is a one-line addition here; we
+  // deliberately don't persist demo-state knobs like `demoState` /
+  // `subsystemOn` since those are mockup leftovers, not real
+  // operator preferences.
+  const PERSISTED_KEYS = new Set(["theme"]);
+  const STORAGE_KEY = "primer.tweaks";
+
+  function _readPersisted() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return {};
+      const out = {};
+      for (const k of PERSISTED_KEYS) {
+        if (k in parsed) out[k] = parsed[k];
+      }
+      return out;
+    } catch (_e) {
+      return {};
+    }
+  }
+
+  function _writePersisted(values) {
+    try {
+      const subset = {};
+      for (const k of PERSISTED_KEYS) {
+        if (k in values) subset[k] = values[k];
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(subset));
+    } catch (_e) { /* private mode, quota, etc. — non-fatal */ }
+  }
+
+  const _persistedInitial = _readPersisted();
   const state = {
-    values: { ...DEFAULT_DEFAULTS },
+    values: { ...DEFAULT_DEFAULTS, ..._persistedInitial },
     listeners: new Set(),
     seeded: false,
   };
+  // Apply the persisted theme to the document root SYNCHRONOUSLY at
+  // script load — before React mounts and the app.jsx effect runs —
+  // so a reloaded page in light mode doesn't flash dark for a few
+  // hundred ms.
+  try {
+    if (_persistedInitial.theme) {
+      document.documentElement.setAttribute("data-theme", _persistedInitial.theme);
+    }
+  } catch (_e) { /* defensive: no document yet, etc. */ }
 
   function setTweak(keyOrEdits, val) {
     const edits = typeof keyOrEdits === "object" && keyOrEdits !== null
@@ -38,6 +83,10 @@
       : { [keyOrEdits]: val };
     state.values = { ...state.values, ...edits };
     state.listeners.forEach((cb) => cb(state.values));
+    // Persist the persistent-key subset so refreshes preserve the
+    // operator's choice (currently: theme).
+    const touchedPersistent = Object.keys(edits).some((k) => PERSISTED_KEYS.has(k));
+    if (touchedPersistent) _writePersisted(state.values);
     try {
       window.parent.postMessage({ type: "__edit_mode_set_keys", edits }, "*");
     } catch (_e) { /* no-op outside an iframe host */ }
@@ -52,7 +101,10 @@
     // any user changes made since seed). Calls without arguments just
     // subscribe.
     if (defaults && !state.seeded) {
-      state.values = { ...DEFAULT_DEFAULTS, ...defaults };
+      // Persisted values win over both DEFAULT_DEFAULTS and any
+      // first-caller `defaults` so the operator's saved theme isn't
+      // clobbered on the first render.
+      state.values = { ...DEFAULT_DEFAULTS, ...defaults, ..._readPersisted() };
       state.seeded = true;
     }
     const [snap, setSnap] = React.useState(state.values);

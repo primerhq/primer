@@ -1,4 +1,4 @@
-/* global React, Icon */
+/* global React, Icon, useTweaks, setTweak */
 
 const NAV = [
   {
@@ -240,9 +240,33 @@ function Topbar({ workerStats, onNavigate, onOpenPalette, onOpenDrawer }) {
             <Icon name="bell" size={14} />
           </button>
         )}
+        <ThemeToggle />
         <UserMenu />
       </div>
     </header>
+  );
+}
+
+
+function ThemeToggle() {
+  // Operator-facing light/dark switch. Reads + writes the same tweaks
+  // store the (design-only, hidden in production) TweaksPanel uses,
+  // so the existing app.jsx effect that sets
+  // `document.documentElement.data-theme` keeps driving the CSS
+  // variable swap. No new wiring path: just a visible affordance for
+  // the existing mechanism.
+  const [tweaks, setTweak] = useTweaks();
+  const isDark = (tweaks?.theme || "dark") !== "light";
+  const toggle = () => setTweak("theme", isDark ? "light" : "dark");
+  return (
+    <button
+      className="icon-btn"
+      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      onClick={toggle}
+    >
+      <Icon name={isDark ? "sun" : "moon"} size={14} />
+    </button>
   );
 }
 
