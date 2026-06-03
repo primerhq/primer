@@ -54,6 +54,7 @@ from primer.api.routers import (
 )
 from primer.api.routers.auth import auth_router
 from primer.api.routers.semantic_search import semantic_search_router
+from primer.api.routers.web_search import web_search_providers_router
 from primer.api.version import API_VERSION, APP_VERSION
 from primer.internal_collections import build_subsystem, load_config_or_none
 
@@ -1061,6 +1062,7 @@ def _mount_routers(
     from primer.api.routers.tools import tools_router
     app.include_router(tools_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(semantic_search_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(web_search_providers_router, prefix=prefix, dependencies=auth_dep)
     # Phase 2 — compute (Agent + Graph)
     app.include_router(compute.agent_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(compute.graph_router, prefix=prefix, dependencies=auth_dep)
