@@ -37,6 +37,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
   const [description, setDescription] = React.useState("");
   const [seedAgentId, setSeedAgentId] = React.useState("");
   const [fieldErrors, setFieldErrors] = React.useState({});
+  const [creatingAgent, setCreatingAgent] = React.useState(false);
 
   React.useEffect(() => {
     if (!seedAgentId && agents.data?.items?.length) {
@@ -147,21 +148,47 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
             required · the new graph starts with Begin → agent → End
           </span>
         </label>
-        <select
-          className="select"
-          value={seedAgentId}
-          onChange={(e) => setSeedAgentId(e.target.value)}
-          style={{ width: "100%" }}
-        >
-          <option value="">-- pick an agent --</option>
-          {(agents.data?.items ?? []).map((a) => (
-            <option key={a.id} value={a.id}>{a.id}</option>
-          ))}
-        </select>
+        <div style={{ display: "flex", gap: 6 }}>
+          <select
+            className="select"
+            value={seedAgentId}
+            onChange={(e) => setSeedAgentId(e.target.value)}
+            style={{ flex: 1, minWidth: 0 }}
+          >
+            <option value="">-- pick an agent --</option>
+            {(agents.data?.items ?? []).map((a) => (
+              <option key={a.id} value={a.id}>{a.id}</option>
+            ))}
+          </select>
+          {typeof window.AG_NewAgentModal === "function" && (
+            <Btn
+              size="sm"
+              kind="ghost"
+              icon="plus"
+              onClick={() => setCreatingAgent(true)}
+              title="Create a new agent without leaving this dialog"
+            >
+              New
+            </Btn>
+          )}
+        </div>
         {(agents.data?.items ?? []).length === 0 && !agents.loading && (
           <div className="field-help" style={{ color: "var(--amber)" }}>
-            No agents configured. Create one at{" "}
-            <span className="mono">/agents</span> first.
+            No agents configured.
+            {typeof window.AG_NewAgentModal === "function" ? (
+              <>
+                {" "}
+                <a
+                  onClick={() => setCreatingAgent(true)}
+                  style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
+                >
+                  Create one inline
+                </a>{" "}
+                — no need to leave this dialog.
+              </>
+            ) : (
+              <> Create one at <span className="mono">/agents</span> first.</>
+            )}
           </div>
         )}
         <div className="field-help">
@@ -172,6 +199,25 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
           git repo.
         </div>
       </div>
+
+      {creatingAgent && typeof window.AG_NewAgentModal === "function" && (
+        <window.AG_NewAgentModal
+          onClose={() => setCreatingAgent(false)}
+          pushToast={pushToast}
+          onCreate={(row) => {
+            setCreatingAgent(false);
+            agents.refetch();
+            setSeedAgentId(row.id);
+            if (typeof pushToast === "function") {
+              pushToast({
+                kind: "success",
+                title: "Agent created",
+                detail: `${row.id} — selected as the seed for this graph`,
+              });
+            }
+          }}
+        />
+      )}
     </Modal>
   );
 }
@@ -610,6 +656,11 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   const [edgeMode, setEdgeMode] = React.useState("static");  // "static" | "conditional"
   const [dragging, setDragging] = React.useState(null);
   const [showAddMenu, setShowAddMenu] = React.useState(false);
+  // Inline-create-agent flow. Holds the node id the user was editing
+  // when they clicked '+ New agent' so the freshly-created agent can
+  // be pinned to exactly that node on success — even if the user
+  // clicks around the canvas while the modal is open.
+  const [createAgentForNodeId, setCreateAgentForNodeId] = React.useState(null);
   const canvasRef = React.useRef(null);
 
   // Sync draft when server payload changes.
@@ -1025,8 +1076,37 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
           onNavigateSubgraph={(gid) => navigate("/graphs/" + gid)}
           onSetGraph={(patch) => setDraft((d) => ({ ...d, ...patch }))}
           onReportJsonError={reportJsonError}
+          onCreateAgent={() => setCreateAgentForNodeId(selectedNodeId)}
         />
       </div>
+
+      {createAgentForNodeId !== null && typeof window.AG_NewAgentModal === "function" && (
+        <window.AG_NewAgentModal
+          onClose={() => setCreateAgentForNodeId(null)}
+          pushToast={pushToast}
+          onCreate={(row) => {
+            // Pin the freshly-created agent to whichever node the
+            // user was editing when they opened the modal — captured
+            // in createAgentForNodeId so it survives canvas clicks.
+            const targetNodeId = createAgentForNodeId;
+            setCreateAgentForNodeId(null);
+            agents.refetch();
+            setDraft((d) => ({
+              ...d,
+              nodes: (d.nodes || []).map((n) =>
+                n.id === targetNodeId ? { ...n, agent_id: row.id } : n,
+              ),
+            }));
+            if (typeof pushToast === "function") {
+              pushToast({
+                kind: "success",
+                title: "Agent created",
+                detail: `${row.id} → node ${targetNodeId}`,
+              });
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1871,6 +1951,7 @@ function GR_SidePanel({
   onReportJsonError,
   agentsList,
   graphsList,
+  onCreateAgent,
 }) {
   const selectedEdge = selectedEdgeIdx != null ? (draft.edges || [])[selectedEdgeIdx] : null;
   return (
@@ -1889,6 +1970,7 @@ function GR_SidePanel({
           onReportJsonError={onReportJsonError}
           agentsList={agentsList}
           graphsList={graphsList}
+          onCreateAgent={onCreateAgent}
         />
       ) : selectedEdge ? (
         <GR_SelectedEdgeForm
@@ -2005,6 +2087,7 @@ function GR_SelectedNodeForm({
   onReportJsonError,
   agentsList,
   graphsList,
+  onCreateAgent,
 }) {
   const edgesIn = edges.map((e, i) => ({ e, i })).filter(({ e }) => {
     if (e.kind === "static") return e.to_node === node.id;
@@ -2078,28 +2161,55 @@ function GR_SelectedNodeForm({
       {node.kind === "agent" && (
         <>
           <div className="field">
-            <label className="field-label">agent_id</label>
-            {agentsList && Array.isArray(agentsList) ? (
-              <select
-                className="select"
-                value={node.agent_id || ""}
-                onChange={(e) => onUpdateNode({ agent_id: e.target.value })}
-                style={{ width: "100%" }}
-              >
-                <option value="">— pick an agent —</option>
-                {agentsList.map((a) => (
-                  <option key={a.id} value={a.id}>{a.id}</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                className="input"
-                value={node.agent_id || ""}
-                onChange={(e) => onUpdateNode({ agent_id: e.target.value })}
-                placeholder="(none)"
-                style={{ width: "100%" }}
-              />
-            )}
+            <label className="field-label">
+              agent_id
+              {typeof onCreateAgent === "function" && (
+                <span className="hint">
+                  no agent for this role yet?{" "}
+                  <a
+                    onClick={onCreateAgent}
+                    style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
+                    data-testid="gr-new-agent-inline"
+                  >
+                    create one inline
+                  </a>
+                </span>
+              )}
+            </label>
+            <div style={{ display: "flex", gap: 6 }}>
+              {agentsList && Array.isArray(agentsList) ? (
+                <select
+                  className="select"
+                  value={node.agent_id || ""}
+                  onChange={(e) => onUpdateNode({ agent_id: e.target.value })}
+                  style={{ flex: 1, minWidth: 0 }}
+                >
+                  <option value="">— pick an agent —</option>
+                  {agentsList.map((a) => (
+                    <option key={a.id} value={a.id}>{a.id}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="input"
+                  value={node.agent_id || ""}
+                  onChange={(e) => onUpdateNode({ agent_id: e.target.value })}
+                  placeholder="(none)"
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+              )}
+              {typeof onCreateAgent === "function" && (
+                <Btn
+                  size="sm"
+                  kind="ghost"
+                  icon="plus"
+                  onClick={onCreateAgent}
+                  title="Create a new agent without leaving this page"
+                >
+                  New
+                </Btn>
+              )}
+            </div>
           </div>
           <GR_TextAreaField
             label="input_template (Jinja2)"

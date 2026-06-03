@@ -1695,3 +1695,6 @@ function AG_NewSessionModal({ onClose, defaultAgentId, pushToast }) {
 
 window.AgentsPage = AgentsPage;
 window.AgentDetail = AgentDetail;
+// Exposed so other components (graphs.jsx) can offer inline
+// agent creation without juggling pages.
+window.AG_NewAgentModal = AG_NewAgentModal;
