@@ -3,8 +3,10 @@
 Construct with :func:`build_web_toolset`; the returned
 :class:`InternalToolsetProvider` exposes two tools:
 
-* ``web-search`` — backed by :class:`WebSearchBackend` (default
-  :class:`DuckDuckGoBackend`, no API key).
+* ``web-search`` — dispatches through a
+  :class:`~primer.web_search.service.WebSearchService` (which consults
+  the active-config singleton and routes to the appropriate adapter
+  via the :class:`WebSearchRegistry`).
 * ``http-request`` — backed by :class:`httpx.AsyncClient`.
 
 The toolset is "internal" in two senses:
@@ -21,15 +23,11 @@ mark internally-built providers with a flag preventing ``delete()``.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import httpx
 
 from primer.toolset.internal import InternalToolsetProvider
-from primer.toolset.web.backends import (
-    DuckDuckGoBackend,
-    SafeSearchLevel,
-    SearchHit,
-    WebSearchBackend,
-)
 from primer.toolset.web.tools import (
     HttpMethod,
     HttpRequestArgs,
@@ -41,28 +39,40 @@ from primer.toolset.web.tools import (
 )
 
 
+if TYPE_CHECKING:
+    from primer.web_search.service import WebSearchService
+
+
 _DEFAULT_RESPONSE_BODY_BYTE_CAP = 1_000_000  # 1 MB
 
 
 def build_web_toolset(
     *,
+    web_search_service: "WebSearchService",
     toolset_id: str = "web",
-    backend: WebSearchBackend | None = None,
     http_client: httpx.AsyncClient | None = None,
     response_body_byte_cap: int = _DEFAULT_RESPONSE_BODY_BYTE_CAP,
 ) -> InternalToolsetProvider:
-    """Build the immutable ``web`` toolset provider.
+    """Construct the always-on ``web`` toolset.
+
+    Wires the web-search tool to the supplied WebSearchService (which
+    itself routes through the active-config singleton); the http-request
+    tool to a long-lived :class:`httpx.AsyncClient`.
+
+    Callers MUST supply ``web_search_service``. The previous ``backend``
+    kwarg with default-None behaviour is removed: there's no in-process
+    construction of a backend any more; the registry + service own all
+    adapter lifecycles.
 
     Parameters
     ----------
+    web_search_service
+        :class:`~primer.web_search.service.WebSearchService` the
+        ``web-search`` handler delegates to. Required.
     toolset_id
         Wire id stamped onto every :class:`Tool` descriptor and used by
         the :class:`ToolExecutionManager` to route calls back here.
         Defaults to ``"web"``.
-    backend
-        Optional :class:`WebSearchBackend` for the ``web-search`` tool.
-        When ``None``, defaults to a fresh :class:`DuckDuckGoBackend`
-        (no API key, pure Python).
     http_client
         Optional :class:`httpx.AsyncClient` used by the ``http-request``
         tool. When ``None``, the factory constructs a default async
@@ -79,15 +89,14 @@ def build_web_toolset(
         A ready-to-register provider with ``web-search`` and
         ``http-request`` tools wired in.
     """
-    chosen_backend: WebSearchBackend = backend or DuckDuckGoBackend()
     chosen_client: httpx.AsyncClient = (
-        http_client if http_client is not None else httpx.AsyncClient()
+        http_client if http_client is not None else httpx.AsyncClient(timeout=30.0)
     )
 
     registry: dict[str, tuple] = {
         "web-search": (
             make_web_search_descriptor(toolset_id),
-            make_web_search_handler(chosen_backend),
+            make_web_search_handler(web_search_service),
         ),
         "http-request": (
             make_http_request_descriptor(toolset_id),
@@ -101,12 +110,8 @@ def build_web_toolset(
 
 
 __all__ = [
-    "DuckDuckGoBackend",
     "HttpMethod",
     "HttpRequestArgs",
-    "SafeSearchLevel",
-    "SearchHit",
     "WebSearchArgs",
-    "WebSearchBackend",
     "build_web_toolset",
 ]

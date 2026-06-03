@@ -309,10 +309,13 @@ def _make_lifespan(config: AppConfig):
         app.state.web_search_registry = web_search_registry
         app.state.web_search_service = web_search_service
         logger.info("lifespan: web-search registry + service constructed")
-        # Build the always-on `web` toolset (DuckDuckGo search +
-        # http-request primitives). Reserved id without underscore.
+        # Build the always-on `web` toolset (web-search dispatching via
+        # the WebSearchService + http-request primitives). Reserved id
+        # without underscore.
         logger.info("lifespan: building web toolset")
-        web_toolset = build_web_toolset()
+        web_toolset = build_web_toolset(
+            web_search_service=web_search_service,
+        )
         logger.info("lifespan: web toolset built")
         provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001
         app.state.storage_provider = storage_provider
@@ -1745,7 +1748,33 @@ def create_test_app(
     if misc_toolset is None:
         misc_toolset = build_misc_toolset()
     if web_toolset is None:
-        web_toolset = build_web_toolset()
+        # Build a real WebSearchService over the test storage so the
+        # web-search tool can dispatch in tests. Note: tests that
+        # exercise the tool end-to-end must seed the active-config row
+        # and at least one provider; tests that don't will see
+        # WebSearchProviderError surfaced as a tool error envelope.
+        from primer.api.registries.web_search_registry import (
+            WebSearchRegistry as _WSR,
+            default_web_search_factory as _default_factory,
+        )
+        from primer.model.web_search import (
+            ActiveWebSearchConfig as _ActiveCfg,
+            WebSearchProvider as _WSP,
+        )
+        from primer.web_search.service import WebSearchService as _WSS
+        _test_ws_registry = _WSR(
+            storage=storage_provider.get_storage(_WSP),
+            factory=_default_factory,
+        )
+        _test_ws_service = _WSS(
+            registry=_test_ws_registry,
+            active_config_storage=storage_provider.get_storage(_ActiveCfg),
+        )
+        app.state.web_search_registry = _test_ws_registry
+        app.state.web_search_service = _test_ws_service
+        web_toolset = build_web_toolset(
+            web_search_service=_test_ws_service,
+        )
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001
     provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001

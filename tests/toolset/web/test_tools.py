@@ -4,6 +4,8 @@ Covers:
 
 * Argument validation (Pydantic -> BadRequestError on bad input).
 * ``web-search`` handler dispatch + JSON shape.
+* ``web-search`` handler distinguishes WebSearchProviderError vs
+  WebSearchUnavailable in its failure envelope.
 * ``http-request`` handler success / truncation / transport-error
   paths against an :class:`httpx.MockTransport`.
 """
@@ -17,11 +19,6 @@ import httpx
 import pytest
 
 from primer.model.except_ import BadRequestError
-from primer.toolset.web.backends.base import (
-    SafeSearchLevel,
-    SearchHit,
-    WebSearchBackend,
-)
 from primer.toolset.web.tools import (
     HttpRequestArgs,
     WebSearchArgs,
@@ -30,6 +27,12 @@ from primer.toolset.web.tools import (
     make_web_search_descriptor,
     make_web_search_handler,
 )
+from primer.web_search.adapter import (
+    SafeSearchLevel,
+    SearchHit,
+    WebSearchProviderError,
+    WebSearchUnavailable,
+)
 
 
 # ===========================================================================
@@ -37,15 +40,22 @@ from primer.toolset.web.tools import (
 # ===========================================================================
 
 
-class _FakeBackend(WebSearchBackend):
+class _FakeService:
+    """Programmable stand-in for WebSearchService.
+
+    ``plan`` is either None (return canned hits) or a BaseException
+    instance — in which case search() raises it. Either way, calls
+    are recorded.
+    """
+
     def __init__(
         self,
         *,
         hits: list[SearchHit] | None = None,
-        raise_exc: Exception | None = None,
+        plan: BaseException | None = None,
     ) -> None:
         self._hits = list(hits or [])
-        self._raise_exc = raise_exc
+        self._plan = plan
         self.calls: list[dict[str, Any]] = []
 
     async def search(
@@ -58,8 +68,8 @@ class _FakeBackend(WebSearchBackend):
         self.calls.append(
             {"query": query, "count": count, "safe_search": safe_search}
         )
-        if self._raise_exc is not None:
-            raise self._raise_exc
+        if self._plan is not None:
+            raise self._plan
         return list(self._hits[:count])
 
 
@@ -135,14 +145,14 @@ class TestDescriptors:
 
 class TestWebSearchHandler:
     @pytest.mark.asyncio
-    async def test_dispatches_to_backend_and_returns_json(self) -> None:
-        backend = _FakeBackend(
+    async def test_dispatches_to_service_and_returns_json(self) -> None:
+        service = _FakeService(
             hits=[
                 SearchHit(title="Paris", url="https://e/p", snippet="city"),
                 SearchHit(title="Berlin", url="https://e/b", snippet="city"),
             ]
         )
-        handler = make_web_search_handler(backend)
+        handler = make_web_search_handler(service)
         result = await handler({"query": "capital", "count": 2})
         assert not result.is_error
         payload = json.loads(result.output)
@@ -150,26 +160,36 @@ class TestWebSearchHandler:
             {"title": "Paris", "url": "https://e/p", "snippet": "city"},
             {"title": "Berlin", "url": "https://e/b", "snippet": "city"},
         ]
-        assert backend.calls == [
+        assert service.calls == [
             {"query": "capital", "count": 2, "safe_search": "moderate"}
         ]
 
     @pytest.mark.asyncio
     async def test_invalid_arguments_raises_bad_request(self) -> None:
-        backend = _FakeBackend()
-        handler = make_web_search_handler(backend)
+        service = _FakeService()
+        handler = make_web_search_handler(service)
         with pytest.raises(BadRequestError, match="invalid arguments"):
             await handler({"query": ""})
-        # Backend is never called when args fail validation.
-        assert backend.calls == []
+        # Service is never called when args fail validation.
+        assert service.calls == []
 
     @pytest.mark.asyncio
-    async def test_backend_failure_returns_is_error_true(self) -> None:
-        backend = _FakeBackend(raise_exc=RuntimeError("upstream is down"))
-        handler = make_web_search_handler(backend)
+    async def test_unavailable_maps_to_failed_envelope(self) -> None:
+        service = _FakeService(plan=WebSearchUnavailable("upstream is down"))
+        handler = make_web_search_handler(service)
         result = await handler({"query": "x", "count": 5})
         assert result.is_error is True
-        assert "upstream is down" in result.output
+        # WebSearchUnavailable -> "web-search failed: <msg>"
+        assert result.output == "web-search failed: upstream is down"
+
+    @pytest.mark.asyncio
+    async def test_provider_error_maps_to_not_available_envelope(self) -> None:
+        service = _FakeService(plan=WebSearchProviderError("auth missing"))
+        handler = make_web_search_handler(service)
+        result = await handler({"query": "x", "count": 5})
+        assert result.is_error is True
+        # WebSearchProviderError -> "web-search not available: <msg>"
+        assert result.output == "web-search not available: auth missing"
 
 
 # ===========================================================================

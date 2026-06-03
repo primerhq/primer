@@ -19,14 +19,22 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
 from primer.model.chat import Tool, ToolCallResult
 from primer.model.except_ import BadRequestError
-from primer.toolset.web.backends.base import SearchHit, WebSearchBackend
+from primer.web_search.adapter import (
+    SearchHit,
+    WebSearchProviderError,
+    WebSearchUnavailable,
+)
+
+
+if TYPE_CHECKING:
+    from primer.web_search.service import WebSearchService
 
 
 logger = logging.getLogger(__name__)
@@ -134,11 +142,13 @@ def make_http_request_descriptor(toolset_id: str) -> Tool:
 # ---- Handlers --------------------------------------------------------------
 
 
-def make_web_search_handler(backend: WebSearchBackend) -> ToolHandler:
+def make_web_search_handler(service: "WebSearchService") -> ToolHandler:
     """Build the async handler for the ``web-search`` tool.
 
-    Closes over the supplied backend so the same handler can be reused
-    across calls without re-resolving the backend.
+    Dispatches via the WebSearchService — the service consults the
+    active config singleton, resolves the active provider (or walks
+    the aggregated fallback chain), and returns hits. Wire schema
+    unchanged from prior versions; only the dispatch internals moved.
     """
 
     async def _handle(arguments: dict[str, Any]) -> ToolCallResult:
@@ -150,14 +160,24 @@ def make_web_search_handler(backend: WebSearchBackend) -> ToolHandler:
             ) from exc
 
         try:
-            hits: list[SearchHit] = await backend.search(
+            hits: list[SearchHit] = await service.search(
                 query=args.query,
                 count=args.count,
                 safe_search=args.safe_search,
             )
-        except Exception as exc:  # noqa: BLE001 -- surface as tool error
+        except WebSearchProviderError as exc:
             logger.warning(
-                "web-search backend failed", extra={"error": str(exc)}
+                "web-search service misconfigured",
+                extra={"error": str(exc)},
+            )
+            return ToolCallResult(
+                output=f"web-search not available: {exc}",
+                is_error=True,
+            )
+        except WebSearchUnavailable as exc:
+            logger.info(
+                "web-search all providers exhausted",
+                extra={"error": str(exc)},
             )
             return ToolCallResult(
                 output=f"web-search failed: {exc}",
