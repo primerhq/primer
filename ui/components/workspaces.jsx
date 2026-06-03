@@ -607,9 +607,23 @@ function WS_FilesTab({ wid, pushToast }) {
   };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", minHeight: 480, fontSize: 12.5 }}>
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "300px 1fr",
+      // Bound the grid to the viewport so the tree pane + the editor
+      // pane both scroll internally (`overflow: auto` below) instead
+      // of pushing the page-level scrollbar. Without this, opening
+      // a long markdown file expanded the grid to fit the rendered
+      // content and the whole page scrolled. Matches the pattern
+      // chats.jsx uses for its chat-detail pane. The 220px offset
+      // covers the global topbar + the workspace page-header + the
+      // tab strip; minHeight keeps a reasonable floor on tiny viewports.
+      height: "calc(100vh - 220px)",
+      minHeight: 480,
+      fontSize: 12.5,
+    }}>
       {/* Tree */}
-      <div style={{ borderRight: "1px solid var(--border)", overflow: "auto", padding: "10px 0" }}>
+      <div style={{ borderRight: "1px solid var(--border)", overflow: "auto", padding: "10px 0", minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", padding: "0 12px 8px", gap: 6 }}>
           <span className="mono muted text-sm">/ root</span>
           <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
@@ -635,7 +649,7 @@ function WS_FilesTab({ wid, pushToast }) {
       </div>
 
       {/* Editor pane */}
-      <div style={{ display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+      <div style={{ display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0, minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", padding: "8px 12px", borderBottom: "1px solid var(--border)", gap: 8 }}>
           <Icon name="doc" size={12} className="muted" />
           <span className="mono" style={{ fontSize: 12 }}>{selected || <span className="muted">no file selected</span>}</span>
