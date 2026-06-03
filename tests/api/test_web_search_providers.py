@@ -81,3 +81,66 @@ class TestCascadeBlockOnDelete:
         body = r.json()
         assert body["detail"]["error"] == "cascade_blocked"
         assert body["detail"]["referenced_by"] == "_active_web_search_config"
+
+
+class TestTestRoute:
+    @pytest.mark.asyncio
+    async def test_test_endpoint_with_valid_duckduckgo_draft_returns_ok(
+        self, client, monkeypatch
+    ) -> None:
+        from primer.web_search.duckduckgo import DuckDuckGoAdapter
+        from primer.web_search.adapter import SearchHit
+
+        async def _fake_search(self, *, query, count, safe_search):
+            return [SearchHit(title="ok", url="https://example/", snippet="")]
+
+        monkeypatch.setattr(DuckDuckGoAdapter, "search", _fake_search)
+
+        r = await client.post(
+            "/v1/web_search_providers/_test",
+            json={
+                "id": "ignored-draft-id",
+                "provider_type": "duckduckgo",
+                "config": {"type": "duckduckgo"},
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True
+        assert len(body["hits"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_test_endpoint_with_tavily_bad_key_reports_error(
+        self, client, monkeypatch
+    ) -> None:
+        from primer.web_search.tavily import TavilyAdapter
+        from primer.web_search.adapter import WebSearchProviderError
+
+        async def _fake_search(self, *, query, count, safe_search):
+            raise WebSearchProviderError("tavily auth failed")
+
+        monkeypatch.setattr(TavilyAdapter, "search", _fake_search)
+
+        r = await client.post(
+            "/v1/web_search_providers/_test",
+            json={
+                "id": "ignored",
+                "provider_type": "tavily",
+                "config": {"type": "tavily", "api_key": "bad"},
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is False
+        assert "tavily auth" in body["error"]
+
+
+class TestTypesRoute:
+    @pytest.mark.asyncio
+    async def test_types_returns_duckduckgo_and_tavily(self, client) -> None:
+        r = await client.get("/v1/web_search_providers/_types")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert set(body.keys()) == {"duckduckgo", "tavily"}
+        assert body["duckduckgo"]["config_fields"] == []
+        assert body["tavily"]["config_fields"] == ["api_key"]

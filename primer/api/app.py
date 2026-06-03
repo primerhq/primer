@@ -56,6 +56,7 @@ from primer.api.routers.auth import auth_router
 from primer.api.routers.semantic_search import semantic_search_router
 from primer.api.routers.web_search import (
     web_search_active_config_router,
+    web_search_providers_helpers_router,
     web_search_providers_router,
 )
 from primer.api.version import API_VERSION, APP_VERSION
@@ -1065,6 +1066,11 @@ def _mount_routers(
     from primer.api.routers.tools import tools_router
     app.include_router(tools_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(semantic_search_router, prefix=prefix, dependencies=auth_dep)
+    # web_search_providers_helpers_router MUST be registered before
+    # web_search_providers_router so GET /web_search_providers/_types is
+    # matched by the literal route rather than being captured as id="_types"
+    # by the CRUD GET-by-id. Same for POST /_test.
+    app.include_router(web_search_providers_helpers_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(web_search_providers_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(web_search_active_config_router, prefix=prefix, dependencies=auth_dep)
     # Phase 2 — compute (Agent + Graph)

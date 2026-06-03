@@ -142,6 +142,84 @@ async def _invalidate_registry(entity_id: str, request: Request) -> None:
 # ---------- Routers ----------------------------------------------
 
 
+# ---------- _test and _types helpers before CRUD ---------------------------
+#
+# These routes must be registered on a separate router and mounted
+# BEFORE the CRUD router in app.py so that the specific literal paths
+# (/web_search_providers/_test, /web_search_providers/_types) are
+# matched before the catch-all /{id} pattern.
+#
+# Route order matters: FastAPI matches routes in the order they appear
+# in the router's routes list. More specific literal routes must come
+# before catch-all parameter patterns.
+
+
+class _ProviderDraft(BaseModel):
+    id: str
+    provider_type: str
+    config: Any
+
+
+web_search_providers_helpers_router = APIRouter(tags=["web-search"])
+
+
+@web_search_providers_helpers_router.post(
+    "/web_search_providers/_test",
+    responses=common_responses(500),
+    summary=(
+        "Test a draft provider config by performing a one-shot search. "
+        "Builds a transient adapter, runs search(query='primer', count=1, "
+        "safe_search='moderate'), then discards. Returns {ok, hits} or "
+        "{ok=false, error}."
+    ),
+)
+async def test_provider(body: _ProviderDraft) -> dict[str, Any]:
+    from primer.api.registries.web_search_registry import (
+        default_web_search_factory,
+    )
+    from primer.web_search.adapter import (
+        WebSearchProviderError,
+        WebSearchUnavailable,
+    )
+
+    # Reconstruct a draft WebSearchProvider (does discriminator validation).
+    try:
+        draft = WebSearchProvider.model_validate(body.model_dump())
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"invalid draft: {exc}"}
+
+    adapter = default_web_search_factory(draft)
+    try:
+        hits = await adapter.search(
+            query="primer", count=1, safe_search="moderate",
+        )
+    except (WebSearchUnavailable, WebSearchProviderError) as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — diagnostic-only path
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        try:
+            await adapter.aclose()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("test_provider: aclose failed: %s", exc)
+
+    return {"ok": True, "hits": [h.model_dump() for h in hits]}
+
+
+@web_search_providers_helpers_router.get(
+    "/web_search_providers/_types",
+    summary=(
+        "Provider-type metadata for the UI form. Returns the field shape "
+        "the operator needs to fill in per provider type."
+    ),
+)
+async def list_provider_types() -> dict[str, dict[str, Any]]:
+    return {
+        "duckduckgo": {"config_fields": []},
+        "tavily": {"config_fields": ["api_key"]},
+    }
+
+
 web_search_providers_router = make_crud_router(
     model_cls=WebSearchProvider,
     storage_dep=_web_search_provider_storage,
@@ -261,5 +339,6 @@ async def put_active_config(
 
 __all__ = [
     "web_search_active_config_router",
+    "web_search_providers_helpers_router",
     "web_search_providers_router",
 ]
