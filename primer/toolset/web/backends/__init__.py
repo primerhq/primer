@@ -1,9 +1,10 @@
-"""Backends for the ``web-search`` tool.
+"""Compatibility shim — re-exports from primer.web_search.
 
-The default is :class:`DuckDuckGoBackend` (no API key). Future Brave /
-Tavily / Serper / Exa adapters slot in alongside it as additional
-:class:`WebSearchBackend` implementations.
+This module is preserved so existing callers keep working until
+Phase 9's cleanup deletes it.
 """
+
+from __future__ import annotations
 
 from primer.toolset.web.backends.base import (
     SafeSearchLevel,
