@@ -185,3 +185,31 @@ class TestDefaultFactory:
         )
         adapter = default_web_search_factory(row)
         assert isinstance(adapter, TavilyAdapter)
+
+    def test_factory_constructs_firecrawl_adapter(self) -> None:
+        from pydantic import SecretStr
+
+        from primer.model.web_search import FirecrawlConfig
+        from primer.web_search.firecrawl import FirecrawlAdapter
+
+        row = WebSearchProvider(
+            id="firecrawl-prod",
+            provider_type=WebSearchProviderType.FIRECRAWL,
+            config=FirecrawlConfig(api_key=SecretStr("fc-x")),
+        )
+        adapter = default_web_search_factory(row)
+        assert isinstance(adapter, FirecrawlAdapter)
+
+    def test_factory_constructs_exa_adapter(self) -> None:
+        from pydantic import SecretStr
+
+        from primer.model.web_search import ExaConfig
+        from primer.web_search.exa import ExaAdapter
+
+        row = WebSearchProvider(
+            id="exa-prod",
+            provider_type=WebSearchProviderType.EXA,
+            config=ExaConfig(api_key=SecretStr("exa-x")),
+        )
+        adapter = default_web_search_factory(row)
+        assert isinstance(adapter, ExaAdapter)

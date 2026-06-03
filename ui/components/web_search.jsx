@@ -45,6 +45,8 @@ function _wspProviderTypeColor(type) {
   switch (type) {
     case "duckduckgo": return "var(--blue)";
     case "tavily": return "var(--violet)";
+    case "firecrawl": return "var(--amber)";
+    case "exa": return "var(--green)";
     default: return "var(--text-3)";
   }
 }
@@ -446,12 +448,11 @@ function WSP_ProviderEditModal({ row, onClose, onSaved, pushToast }) {
   const buildBody = () => ({
     id,
     provider_type: providerType,
-    config: { type: providerType, ...(providerType === "tavily" ? { api_key: apiKey } : {}) },
+    config: { type: providerType, ...(fields.includes("api_key") ? { api_key: apiKey } : {}) },
   });
 
-  const canSubmit = !!id && (
-    providerType === "duckduckgo" || (providerType === "tavily" && (isEdit || apiKey.length > 0))
-  );
+  const requiresApiKey = fields.includes("api_key");
+  const canSubmit = !!id && (!requiresApiKey || isEdit || apiKey.length > 0);
 
   const save = useMutation(
     () => {
@@ -542,6 +543,8 @@ function WSP_ProviderEditModal({ row, onClose, onSaved, pushToast }) {
         >
           <option value="duckduckgo">duckduckgo</option>
           <option value="tavily">tavily</option>
+          <option value="firecrawl">firecrawl</option>
+          <option value="exa">exa</option>
         </select>
       </div>
 

@@ -116,8 +116,9 @@ def default_web_search_factory(
 ) -> WebSearchAdapter:
     """Construct the right adapter for the provider's type.
 
-    Lazy imports keep the optional Tavily httpx dep out of the
-    import graph for installs that don't use it.
+    Lazy imports keep the optional API-key-bearing adapters (Tavily,
+    Firecrawl, Exa) out of the import graph for installs that don't
+    use them.
     """
     match provider.provider_type:
         case WebSearchProviderType.DUCKDUCKGO:
@@ -126,6 +127,12 @@ def default_web_search_factory(
         case WebSearchProviderType.TAVILY:
             from primer.web_search.tavily import TavilyAdapter
             return TavilyAdapter(provider.config)
+        case WebSearchProviderType.FIRECRAWL:
+            from primer.web_search.firecrawl import FirecrawlAdapter
+            return FirecrawlAdapter(provider.config)
+        case WebSearchProviderType.EXA:
+            from primer.web_search.exa import ExaAdapter
+            return ExaAdapter(provider.config)
 
 
 __all__ = ["WebSearchRegistry", "default_web_search_factory"]

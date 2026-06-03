@@ -217,6 +217,8 @@ async def list_provider_types() -> dict[str, dict[str, Any]]:
     return {
         "duckduckgo": {"config_fields": []},
         "tavily": {"config_fields": ["api_key"]},
+        "firecrawl": {"config_fields": ["api_key"]},
+        "exa": {"config_fields": ["api_key"]},
     }
 
 

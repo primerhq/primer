@@ -52,6 +52,8 @@ ACTIVE_WEB_SEARCH_CONFIG_ID = "_active_web_search_config"
 class WebSearchProviderType(str, Enum):
     DUCKDUCKGO = "duckduckgo"
     TAVILY = "tavily"
+    FIRECRAWL = "firecrawl"
+    EXA = "exa"
 
 
 class DuckDuckGoConfig(BaseModel):
@@ -85,8 +87,45 @@ class TavilyConfig(BaseModel):
     )
 
 
+class FirecrawlConfig(BaseModel):
+    """Firecrawl REST adapter config. The API key authenticates against
+    ``api.firecrawl.dev``; carried as a SecretStr for the same redaction
+    behaviour as :class:`TavilyConfig`.
+    """
+
+    type: Literal[WebSearchProviderType.FIRECRAWL] = Field(
+        default=WebSearchProviderType.FIRECRAWL,
+    )
+    api_key: SecretStr = Field(
+        ...,
+        description=(
+            "Firecrawl API key (``fc-...``). Stored as SecretStr so "
+            "list/get responses redact the value; the storage round-trip "
+            "preserves plaintext."
+        ),
+    )
+
+
+class ExaConfig(BaseModel):
+    """Exa REST adapter config. The API key authenticates against
+    ``api.exa.ai`` via the ``x-api-key`` header; carried as a SecretStr.
+    """
+
+    type: Literal[WebSearchProviderType.EXA] = Field(
+        default=WebSearchProviderType.EXA,
+    )
+    api_key: SecretStr = Field(
+        ...,
+        description=(
+            "Exa API key. Stored as SecretStr so list/get responses "
+            "redact the value; the storage round-trip preserves "
+            "plaintext."
+        ),
+    )
+
+
 WebSearchProviderConfig = Annotated[
-    Union[DuckDuckGoConfig, TavilyConfig],
+    Union[DuckDuckGoConfig, TavilyConfig, FirecrawlConfig, ExaConfig],
     Field(discriminator="type"),
 ]
 
@@ -116,6 +155,8 @@ class WebSearchProvider(Identifiable):
         expected = {
             WebSearchProviderType.DUCKDUCKGO: DuckDuckGoConfig,
             WebSearchProviderType.TAVILY: TavilyConfig,
+            WebSearchProviderType.FIRECRAWL: FirecrawlConfig,
+            WebSearchProviderType.EXA: ExaConfig,
         }[self.provider_type]
         if not isinstance(self.config, expected):
             raise ValueError(
@@ -192,6 +233,8 @@ __all__ = [
     "ActiveProviderConfig",
     "AggregatedProviderConfig",
     "DuckDuckGoConfig",
+    "ExaConfig",
+    "FirecrawlConfig",
     "RESERVED_WEB_SEARCH_IDS",
     "SingleProviderConfig",
     "TavilyConfig",

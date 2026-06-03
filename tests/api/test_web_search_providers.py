@@ -137,10 +137,12 @@ class TestTestRoute:
 
 class TestTypesRoute:
     @pytest.mark.asyncio
-    async def test_types_returns_duckduckgo_and_tavily(self, client) -> None:
+    async def test_types_returns_all_supported_providers(self, client) -> None:
         r = await client.get("/v1/web_search_providers/_types")
         assert r.status_code == 200, r.text
         body = r.json()
-        assert set(body.keys()) == {"duckduckgo", "tavily"}
+        assert set(body.keys()) == {"duckduckgo", "tavily", "firecrawl", "exa"}
         assert body["duckduckgo"]["config_fields"] == []
         assert body["tavily"]["config_fields"] == ["api_key"]
+        assert body["firecrawl"]["config_fields"] == ["api_key"]
+        assert body["exa"]["config_fields"] == ["api_key"]

@@ -91,6 +91,69 @@ class TestWebSearchProvider:
     def test_provider_type_enum_values(self) -> None:
         assert WebSearchProviderType.DUCKDUCKGO.value == "duckduckgo"
         assert WebSearchProviderType.TAVILY.value == "tavily"
+        assert WebSearchProviderType.FIRECRAWL.value == "firecrawl"
+        assert WebSearchProviderType.EXA.value == "exa"
+
+    def test_firecrawl_provider_round_trip_redacts_secret(self) -> None:
+        from primer.model.web_search import FirecrawlConfig
+
+        row = WebSearchProvider(
+            id="firecrawl-prod",
+            provider_type=WebSearchProviderType.FIRECRAWL,
+            config=FirecrawlConfig(api_key=SecretStr("fc-secret-XXXX")),
+        )
+        dumped = row.model_dump(mode="json")
+        assert "fc-secret-XXXX" not in str(dumped)
+        assert dumped["config"]["type"] == "firecrawl"
+        # python mode preserves the SecretStr.
+        as_python = row.model_dump()
+        assert as_python["config"]["api_key"].get_secret_value() == "fc-secret-XXXX"
+
+    def test_exa_provider_round_trip_redacts_secret(self) -> None:
+        from primer.model.web_search import ExaConfig
+
+        row = WebSearchProvider(
+            id="exa-prod",
+            provider_type=WebSearchProviderType.EXA,
+            config=ExaConfig(api_key=SecretStr("exa-secret-XXXX")),
+        )
+        dumped = row.model_dump(mode="json")
+        assert "exa-secret-XXXX" not in str(dumped)
+        assert dumped["config"]["type"] == "exa"
+        as_python = row.model_dump()
+        assert as_python["config"]["api_key"].get_secret_value() == "exa-secret-XXXX"
+
+    def test_firecrawl_discriminator_dispatch(self) -> None:
+        from primer.model.web_search import FirecrawlConfig
+
+        body = {
+            "id": "fc",
+            "provider_type": "firecrawl",
+            "config": {"type": "firecrawl", "api_key": "fc-x"},
+        }
+        row = WebSearchProvider.model_validate(body)
+        assert isinstance(row.config, FirecrawlConfig)
+
+    def test_exa_discriminator_dispatch(self) -> None:
+        from primer.model.web_search import ExaConfig
+
+        body = {
+            "id": "exa",
+            "provider_type": "exa",
+            "config": {"type": "exa", "api_key": "exa-x"},
+        }
+        row = WebSearchProvider.model_validate(body)
+        assert isinstance(row.config, ExaConfig)
+
+    def test_firecrawl_provider_type_mismatch_raises(self) -> None:
+        from primer.model.web_search import FirecrawlConfig
+
+        with pytest.raises(ValidationError):
+            WebSearchProvider(
+                id="bad",
+                provider_type=WebSearchProviderType.EXA,
+                config=FirecrawlConfig(api_key=SecretStr("fc-x")),
+            )
 
 
 # ---------- Active-config singleton -------------------------------
