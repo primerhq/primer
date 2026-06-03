@@ -115,29 +115,35 @@ function WebSearchPage({ pushToast }) {
     },
   );
 
-  const testExisting = useMutation(
-    (row) => apiFetch("POST", "/web_search_providers/_test", row),
-    {
-      onSuccess: (resp, row) => {
-        if (resp?.ok) {
-          if (pushToast) {
-            pushToast({
-              kind: "success",
-              title: `${row.id}: probe OK`,
-              detail: resp.hits?.[0]?.title || "(no hits)",
-            });
-          }
-        } else if (pushToast) {
+  // Per-row test action. useMutation's onSuccess receives only the
+  // server response — not the body — so we close over the row inside
+  // this handler instead of relying on a second arg.
+  const [testingId, setTestingId] = React.useState(null);
+  const testExisting = React.useCallback(async (row) => {
+    setTestingId(row.id);
+    try {
+      const resp = await apiFetch("POST", "/web_search_providers/_test", row);
+      if (resp?.ok) {
+        if (pushToast) {
           pushToast({
-            kind: "error",
-            title: `${row.id}: probe failed`,
-            detail: resp?.error || "(no error)",
+            kind: "success",
+            title: `${row.id}: probe OK`,
+            detail: resp.hits?.[0]?.title || "(no hits)",
           });
         }
-      },
-      onError: _wspToastErr(pushToast, "Test failed"),
-    },
-  );
+      } else if (pushToast) {
+        pushToast({
+          kind: "error",
+          title: `${row.id}: probe failed`,
+          detail: resp?.error || "(no error)",
+        });
+      }
+    } catch (err) {
+      _wspToastErr(pushToast, `${row.id}: probe failed`)(err);
+    } finally {
+      setTestingId(null);
+    }
+  }, [apiFetch, pushToast]);
 
   const providerRows = providers.data?.items ?? [];
 
@@ -156,7 +162,8 @@ function WebSearchPage({ pushToast }) {
           onCreate={() => setEditing({ row: null })}
           onEdit={(row) => setEditing({ row })}
           onDelete={(row) => { setDeleteTarget(row); setDeleteError(null); }}
-          onTest={(row) => testExisting.mutate(row)}
+          onTest={testExisting}
+          testingId={testingId}
           onRetry={providers.refetch}
         />
       </div>
@@ -329,7 +336,7 @@ function WSP_ActiveConfigCard({ active, onEdit }) {
 // ----------------------------------------------------------------------
 
 
-function WSP_ProvidersPanel({ providers, loading, error, onCreate, onEdit, onDelete, onTest, onRetry }) {
+function WSP_ProvidersPanel({ providers, loading, error, onCreate, onEdit, onDelete, onTest, testingId, onRetry }) {
   return (
     <>
       <div className="filter-bar">
@@ -385,7 +392,13 @@ function WSP_ProvidersPanel({ providers, loading, error, onCreate, onEdit, onDel
                     </td>
                     <td style={{ textAlign: "right", paddingRight: 12 }}>
                       <div style={{ display: "inline-flex", gap: 6 }}>
-                        <Btn size="sm" kind="ghost" icon="play" onClick={() => onTest(p)}>Test</Btn>
+                        <Btn
+                          size="sm" kind="ghost" icon="play"
+                          onClick={() => onTest(p)}
+                          disabled={testingId === p.id}
+                        >
+                          {testingId === p.id ? "Probing…" : "Test"}
+                        </Btn>
                         {!reserved && (
                           <>
                             <Btn size="sm" kind="ghost" icon="edit" onClick={() => onEdit(p)}>Edit</Btn>
