@@ -59,6 +59,7 @@
     { pattern: "/triggers/:id",                    page: "TriggerDetailPage" },
     { pattern: "/settings/api-tokens",             page: "ApiTokensPage" },
     { pattern: "/settings/mcp",                    page: "McpPage" },
+    { pattern: "/web-search",                      page: "WebSearchPage" },
   ];
 
   function splitSegments(path) {
