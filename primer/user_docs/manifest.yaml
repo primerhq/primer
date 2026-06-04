@@ -71,3 +71,9 @@ sections:
     order: 5
     docs:
       - rest-api-overview
+      - rest-api-agents-graphs-sessions
+      - rest-api-channels-triggers
+      - rest-api-knowledge-workspaces
+      - mcp-server-reference
+      - env-vars
+      - cli

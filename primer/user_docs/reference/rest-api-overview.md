@@ -67,3 +67,29 @@ Every error response uses the same envelope:
 The HTTP status is the canonical signal; the `error` discriminator
 gives the SDK an exception kind to raise. Status 422 maps to
 Pydantic validation failures and includes the path that failed.
+
+## Per-surface enumeration
+
+```ref:reference/rest-api-agents-graphs-sessions
+Compute surface: agents, graphs, sessions, chats.
+```
+
+```ref:reference/rest-api-channels-triggers
+Integrations + ops: channels, triggers, tool approval.
+```
+
+```ref:reference/rest-api-knowledge-workspaces
+Knowledge + workspaces + semantic search.
+```
+
+```ref:reference/mcp-server-reference
+The MCP server tool catalogue and result envelope.
+```
+
+```ref:reference/env-vars
+Every PRIMER_ env var and its default.
+```
+
+```ref:reference/cli
+The CLI subcommands and exit codes.
+```
