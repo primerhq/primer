@@ -18,7 +18,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl, PositiveInt, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, PositiveInt, SecretStr, model_validator
 
 from primer.model.common import Identifiable
 
@@ -35,6 +35,7 @@ class LLMProviderType(str, Enum):
     GEMINI = "gemini"
     ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
+    OPENROUTER = "openrouter"
 
 
 class EmbeddingProviderType(str, Enum):
@@ -241,6 +242,56 @@ class OllamaConfig(BaseModel):
     )
 
 
+class OpenRouterConfig(BaseModel):
+    """OpenRouter provider configuration.
+
+    OpenRouter is a unified gateway in front of many upstream LLM
+    providers (Anthropic, OpenAI, Google, Mistral, ...) exposing a
+    drop-in OpenAI-compatible /chat/completions endpoint. The base
+    URL is fixed (https://openrouter.ai/api/v1); only the API key is
+    required. The two attribution fields are optional; when set, the
+    adapter sends them as HTTP-Referer and X-Title on every request
+    so the deploy shows up on OpenRouter's app leaderboard.
+
+    Does NOT inherit from ``_HttpApiKeyConfig`` because OpenRouter's
+    shape is different: no ``url`` field (hard-coded), and ``api_key``
+    is required (the upstream is always remote and always
+    authenticated).
+
+    Uses ``extra='forbid'`` so a config dict shaped for a different
+    provider (e.g. one carrying a ``url`` field) is rejected by the
+    LLMProvider validator instead of silently coercing into an
+    OpenRouter config with the extra field dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: SecretStr = Field(
+        ...,
+        description=(
+            "OpenRouter API key. Required (the OpenRouter base URL is "
+            "always remote and always authenticated; a null key is "
+            "meaningless)."
+        ),
+    )
+    app_name: str | None = Field(
+        default=None,
+        description=(
+            "Sent as the `X-Title` HTTP header on every request for "
+            "OpenRouter app attribution. Optional. When unset the "
+            "header is omitted; calls still succeed but do not show "
+            "up on OpenRouter's leaderboard surface."
+        ),
+    )
+    app_url: HttpUrl | None = Field(
+        default=None,
+        description=(
+            "Sent as the `HTTP-Referer` HTTP header for OpenRouter "
+            "app attribution. Optional. Symmetric to ``app_name``."
+        ),
+    )
+
+
 class OAuthClientCredentials(BaseModel):
     """Static OAuth client credentials, for servers that don't support DCR.
 
@@ -410,6 +461,7 @@ class LLMProvider(Identifiable):
         | GoogleConfig
         | AnthropicConfig
         | OllamaConfig
+        | OpenRouterConfig
     ) = Field(
         ...,
         description="Backend-specific connection configuration; must match ``provider``.",
@@ -448,6 +500,7 @@ class LLMProvider(Identifiable):
             LLMProviderType.GEMINI: GoogleConfig,
             LLMProviderType.ANTHROPIC: AnthropicConfig,
             LLMProviderType.OLLAMA: OllamaConfig,
+            LLMProviderType.OPENROUTER: OpenRouterConfig,
         }.get(provider_enum)
         if config_cls is None:
             return data
