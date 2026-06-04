@@ -133,6 +133,32 @@ const PROVIDER_KINDS_FIELDS = {
         { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
       ],
     },
+    openrouter: {
+      label: "OpenRouter",
+      config: [
+        { key: "api_key", label: "API key", type: "password", required: true,
+          help: "OpenRouter API key. Required; the upstream is always remote and always authenticated." },
+        { key: "app_name", label: "App name (optional)", type: "text",
+          placeholder: "primer-staging",
+          help: "Sent as X-Title for OpenRouter app attribution. Optional." },
+        { key: "app_url", label: "App URL (optional)", type: "url",
+          placeholder: "https://primer.example",
+          help: "Sent as HTTP-Referer for OpenRouter attribution. Optional." },
+      ],
+      discoverable: true,
+      suggestedModels: [
+        { name: "anthropic/claude-3.5-sonnet", context_length: 200000 },
+        { name: "openai/gpt-4o", context_length: 128000 },
+        { name: "google/gemini-2.5-pro", context_length: 2000000 },
+      ],
+      modelFields: [
+        { key: "name", label: "Model name", type: "text", flex: 2 },
+        { key: "context_length", label: "Context", type: "number", flex: 1, min: 1 },
+      ],
+      // OpenRouter-specific picker hint; consumed by the picker
+      // component in Task 5.2 to render the richer variant.
+      pickerVariant: "openrouter",
+    },
   },
   embedding: {
     openai: {
