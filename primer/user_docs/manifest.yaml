@@ -1,0 +1,26 @@
+sections:
+  - id: getting-started
+    title: Getting Started
+    icon: zap
+    order: 1
+    docs: []
+  - id: concepts
+    title: Concepts
+    icon: graph
+    order: 2
+    docs: []
+  - id: features
+    title: Features
+    icon: tools
+    order: 3
+    docs: []
+  - id: cookbook
+    title: Cookbook
+    icon: code
+    order: 4
+    docs: []
+  - id: reference
+    title: Reference
+    icon: doc
+    order: 5
+    docs: []
