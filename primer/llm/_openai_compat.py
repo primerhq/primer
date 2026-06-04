@@ -14,11 +14,15 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel
 
+from primer.llm._openai_common import (
+    build_sampling_params as _build_sampling_params_impl,
+)
 from primer.model.chat import (
     AudioPart,
     DocumentPart,
@@ -43,6 +47,69 @@ from primer.model.chat import (
     VideoPart,
 )
 from primer.model.except_ import ConfigError, UnsupportedContentError
+
+
+logger = logging.getLogger(__name__)
+
+
+def _build_sampling_params(
+    *,
+    temperature: float | None,
+    top_p: float | None,
+    max_output_tokens: int | None,
+    stop: list[str] | None,
+) -> dict[str, Any]:
+    """Forward sampling knobs to the Chat Completions wire format.
+
+    Delegates to the shared builder with ``target="chat_completions"`` —
+    ``max_tokens`` is the cap key, ``stop`` is passed through natively.
+    """
+    return _build_sampling_params_impl(
+        temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=max_output_tokens,
+        stop=stop,
+        target="chat_completions",
+    )
+
+
+_RECOGNISED_EXTENDED_PASSTHROUGH: frozenset[str] = frozenset({
+    "parallel_tool_calls",
+    "presence_penalty",
+    "frequency_penalty",
+    "logprobs",
+    "top_logprobs",
+    "seed",
+    "user",
+})
+
+
+def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
+    """Project the universal ``extended`` dict onto Chat Completions kwargs.
+
+    Recognised keys are forwarded; unknown keys are dropped with a
+    single DEBUG log line listing them. Chat Completions has no
+    reasoning channel, so ``reasoning_effort`` and
+    ``reasoning_summary`` are treated as unknown and dropped.
+    """
+    if not extended:
+        return {}
+
+    out: dict[str, Any] = {}
+    dropped: list[str] = []
+
+    for key, value in extended.items():
+        if key in _RECOGNISED_EXTENDED_PASSTHROUGH:
+            out[key] = value
+        else:
+            dropped.append(key)
+
+    if dropped:
+        logger.debug(
+            "OpenChat adapter dropped unknown extended kwargs: %s",
+            ", ".join(sorted(dropped)),
+        )
+    return out
 
 
 def _part_to_content(part: Part) -> dict[str, Any]:

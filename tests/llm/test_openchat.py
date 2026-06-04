@@ -482,7 +482,7 @@ class TestExtendedKwargs:
     def test_unknown_keys_dropped_with_debug_log(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.openchat")
+        caplog.set_level(logging.DEBUG, logger="primer.llm._openai_compat")
         out = _extract_extended_kwargs({"frobnicate": True, "foobar": 42})
         assert out == {}
         debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
@@ -494,7 +494,7 @@ class TestExtendedKwargs:
     def test_reasoning_effort_dropped_as_unknown(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.openchat")
+        caplog.set_level(logging.DEBUG, logger="primer.llm._openai_compat")
         assert _extract_extended_kwargs({"reasoning_effort": "high"}) == {}
 
     def test_none_returns_empty(self) -> None:

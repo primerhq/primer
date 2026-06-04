@@ -17,7 +17,9 @@ import pytest
 from pydantic import BaseModel as PydanticBaseModel
 
 from primer.llm._openai_compat import (
+    _build_sampling_params,
     _build_usage,
+    _extract_extended_kwargs,
     _map_finish_reason,
     _messages_to_chat,
     _response_format_to_param,
@@ -506,3 +508,72 @@ class TestStreamStateDefaults:
         assert state.tool_calls == {}
         assert state.request_id is None
         assert state.model == ""
+
+
+class TestBuildSamplingParams:
+    def test_all_none_returns_empty(self) -> None:
+        out = _build_sampling_params(
+            temperature=None,
+            top_p=None,
+            max_output_tokens=None,
+            stop=None,
+        )
+        assert out == {}
+
+    def test_temperature_and_top_p_pass_through(self) -> None:
+        out = _build_sampling_params(
+            temperature=0.7,
+            top_p=0.9,
+            max_output_tokens=None,
+            stop=None,
+        )
+        assert out["temperature"] == 0.7
+        assert out["top_p"] == 0.9
+
+    def test_max_output_tokens_maps_to_max_tokens(self) -> None:
+        out = _build_sampling_params(
+            temperature=None,
+            top_p=None,
+            max_output_tokens=512,
+            stop=None,
+        )
+        assert out == {"max_tokens": 512}
+
+    def test_stop_passes_through_natively(self) -> None:
+        out = _build_sampling_params(
+            temperature=None,
+            top_p=None,
+            max_output_tokens=None,
+            stop=["END", "\n\n"],
+        )
+        assert out == {"stop": ["END", "\n\n"]}
+
+
+class TestExtractExtendedKwargs:
+    def test_none_returns_empty(self) -> None:
+        assert _extract_extended_kwargs(None) == {}
+
+    def test_empty_dict_returns_empty(self) -> None:
+        assert _extract_extended_kwargs({}) == {}
+
+    @pytest.mark.parametrize(
+        "key, value",
+        [
+            ("parallel_tool_calls", False),
+            ("presence_penalty", 0.5),
+            ("seed", 7),
+            ("user", "u-123"),
+        ],
+    )
+    def test_recognised_keys_pass_through(self, key: str, value: Any) -> None:
+        assert _extract_extended_kwargs({key: value}) == {key: value}
+
+    def test_unknown_keys_dropped(self) -> None:
+        assert _extract_extended_kwargs({"frobnicate": True, "foobar": 1}) == {}
+
+    def test_reasoning_keys_dropped_on_chat_completions(self) -> None:
+        # Chat Completions has no reasoning channel; both reasoning_*
+        # keys are unknown and dropped.
+        assert _extract_extended_kwargs(
+            {"reasoning_effort": "high", "reasoning_summary": "concise"}
+        ) == {}
