@@ -396,6 +396,7 @@ function App() {
       "trigger-detail": (e) => `/triggers/${e}`,
       "api-tokens": "/settings/api-tokens",
       mcp: "/settings/mcp",
+      docs: "/docs",
     };
     const route = ROUTES[target];
     const url = typeof route === "function" ? route(extra) : (route || "/");
