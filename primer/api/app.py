@@ -350,6 +350,7 @@ def _make_lifespan(config: AppConfig):
             "graph-canvas-three-nodes",
             "channels-prompt",
             "docs-callout-demo",
+            "workspace-empty",
         ]
         app.state.user_docs_embeds = _user_docs_embed_ids
         user_docs_service.set_embeds_manifest(_user_docs_embed_ids)
@@ -1865,6 +1866,7 @@ def create_test_app(
         "graph-canvas-three-nodes",
         "channels-prompt",
         "docs-callout-demo",
+        "workspace-empty",
     ]
     app.state.user_docs_embeds = _test_embed_ids
     _test_user_docs_service.set_embeds_manifest(_test_embed_ids)

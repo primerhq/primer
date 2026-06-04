@@ -18,6 +18,13 @@ sections:
     order: 2
     docs:
       - what-is-an-agent
+      - sessions
+      - chats
+      - workspaces
+      - toolsets-and-tools
+      - triggers-and-subscriptions
+      - tool-approval
+      - yielding-and-claims
       - troubleshooting
   - id: features
     title: Features

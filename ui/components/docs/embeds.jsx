@@ -18,6 +18,7 @@ const EMBEDS = {
   "graph-canvas-three-nodes": window.GraphCanvasThreeNodesMockup,
   "channels-prompt":          window.ChannelsPromptMockup,
   "docs-callout-demo":        window.DocsCalloutDemoMockup,
+  "workspace-empty":          window.WorkspaceEmptyMockup,
 };
 
 window.DocsEmbeds = EMBEDS;
