@@ -10,14 +10,11 @@ if (window.MarkdownDirectives) {
     const href = `/docs/_ai/${slug}`;
     const onClick = (e) => {
       e.preventDefault();
-      const router = window.primerApi && window.primerApi.useRouter
-        ? window.primerApi.useRouter()
-        : null;
-      if (router && router.navigate) {
-        router.navigate(href);
-      } else {
-        window.location.hash = `#${href}`;
-      }
+      // Setting window.location.hash directly is the safe path here:
+      // window.primerApi.useRouter() is a React hook that can only be
+      // called inside a render. The router listens for hashchange
+      // events and re-renders the page accordingly.
+      window.location.hash = `#${href}`;
     };
     return (
       <a
