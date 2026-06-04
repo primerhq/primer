@@ -143,7 +143,11 @@
       const line = lines[i];
 
       // Fenced code block: ```lang ... ```
-      const fence = line.match(/^```(\w*)\s*$/);
+      // Info-string may include ':' and '-' so directives like
+      // ``mockup:agent-create-modal`` or ``code-tabs:python,curl``
+      // match. Directive dispatch runs first; unknown info-strings
+      // fall through to the plain <pre><code> renderer.
+      const fence = line.match(/^```([\w:./,-]*)\s*$/);
       if (fence) {
         const lang = fence[1] || "";
         const buf = [];
@@ -153,6 +157,20 @@
           i++;
         }
         if (i < lines.length) i++; // consume closing fence
+        if (lang && window.MarkdownDirectives) {
+          const handler = window.MarkdownDirectives.lookup(lang);
+          if (handler) {
+            const block = handler({
+              directive: lang,
+              body: buf.join("\n"),
+              renderMarkdown,
+            });
+            if (block != null) {
+              pushBlock(block);
+              continue;
+            }
+          }
+        }
         pushBlock(
           <pre className={`md-pre lang-${lang || "plain"}`}>
             <code>{buf.join("\n")}</code>
@@ -174,8 +192,12 @@
         const level = h[1].length;
         const text = h[2];
         const Tag = `h${level}`;
+        const anchorId = text
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "section";
         pushBlock(
-          <Tag className={`md-h md-h${level}`}>
+          <Tag id={anchorId} className={`md-h md-h${level}`}>
             {renderInline(text, `md-h${level}`)}
           </Tag>
         );
@@ -367,6 +389,33 @@
 
     return blocks;
   }
+
+  // ----- Directive registry -----------------------------------------
+  // Directives register here; the fenced-block branch above looks them
+  // up. Each handler receives { directive, body, renderMarkdown } and
+  // returns either a React node or null (null means fall through to
+  // the plain code-block renderer).
+
+  const DIRECTIVES = {};
+
+  function registerDirective(prefix, handler) {
+    DIRECTIVES[prefix] = handler;
+  }
+
+  function lookupDirective(directive) {
+    if (DIRECTIVES[directive]) return DIRECTIVES[directive];
+    const colonIdx = directive.indexOf(":");
+    if (colonIdx > 0) {
+      const prefix = directive.slice(0, colonIdx + 1);
+      if (DIRECTIVES[prefix]) return DIRECTIVES[prefix];
+    }
+    return null;
+  }
+
+  window.MarkdownDirectives = {
+    register: registerDirective,
+    lookup: lookupDirective,
+  };
 
   window.renderMarkdown = renderMarkdown;
 })();

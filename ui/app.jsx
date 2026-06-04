@@ -74,6 +74,7 @@ function App() {
     }
     if (root === "tools") return "tools";
     if (root === "web-search") return "web-search";
+    if (root === "docs") return "docs";
     if (root === "providers") {
       if (path.startsWith("/providers/llm")) return "llm";
       if (path.startsWith("/providers/embedding")) return "embedding";
@@ -186,6 +187,28 @@ function App() {
     (signal) => window.primerApi.apiFetch("GET", "/channels?limit=1", null, { signal }),
     { pollMs: 5000 }
   );
+  // Docs manifest for the command palette + future widgets. One-shot
+  // fetch (pollMs null) — the manifest changes only on doc-source
+  // edits, which require a process restart in production.
+  const docsManifest = window.primerApi.useResource(
+    "palette:docs",
+    (signal) => window.primerApi.apiFetch("GET", "/user_docs/manifest", null, { signal }),
+    { pollMs: null }
+  );
+  const docsListForPalette = React.useMemo(() => {
+    const out = [];
+    for (const sec of (docsManifest.data && docsManifest.data.sections) || []) {
+      for (const doc of sec.docs || []) {
+        out.push({
+          slug: doc.slug,
+          title: doc.title,
+          summary: doc.summary,
+          sectionTitle: sec.title,
+        });
+      }
+    }
+    return out;
+  }, [docsManifest.data]);
   // Approvals_pending — client-side aggregation: parked sessions
   // (`/sessions/find` with parked_status=parked predicate) +
   // parked chats (no /chats/find route; GET + client filter, matching
@@ -647,6 +670,19 @@ function App() {
       </>
     );
     pageBody = <window.WebSearchPage pushToast={pushToast} />;
+  } else if (page === "docs") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("dashboard")}>Help</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Docs</span>
+          </div>
+          <h1 className="page-title">Documentation</h1>
+          <div className="page-sub">Operator-facing user guide and recipes</div>
+        </div>
+      </>
+    );
+    pageBody = <window.DocsPage section={params.section} slug={params.slug} pushToast={pushToast} />;
   } else if (page === "toolset-detail" && currentToolsetId) {
     pageHeader = (
       <>
@@ -1200,7 +1236,7 @@ function App() {
           operator is past <AuthGate>. */}
       <window.BG_BugButton pushToast={pushToast} />
 
-      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} onNavigate={navigate} sessions={sessions} />}
+      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} onNavigate={navigate} sessions={sessions} docs={docsListForPalette} />}
 
       {newSessionOpen && (
         <NewSessionModal

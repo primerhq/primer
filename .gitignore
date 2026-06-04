@@ -221,6 +221,11 @@ __marimo__/
 .idea
 docs/
 !docs/testing/
+# The in-UI documentation components live under ui/components/docs/
+# and the operator-facing markdown source lives under primer/user_docs/;
+# both are tracked frontend/source, not the gitignored docs/ spec area.
+!ui/components/docs/
+!ui/components/docs/**
 research/
 
 # E2E test harness runtime scratch (logs, rendered config, pidfile).

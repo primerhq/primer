@@ -340,8 +340,19 @@ def _make_lifespan(config: AppConfig):
         user_docs_service = UserDocsService(_user_docs_root)
         user_docs_service.reload_index()
         app.state.user_docs_service = user_docs_service
-        # Phase 5 wires the live embed-id registry; empty for now.
-        app.state.user_docs_embeds = []
+        # Hand-maintained mirror of ui/components/docs/embeds.jsx's
+        # EMBEDS map. The list seeds lint rule 3 (unknown_embed_id) and
+        # the /v1/user_docs/embeds/manifest response.
+        _user_docs_embed_ids = [
+            "topbar",
+            "sessions-list-empty",
+            "agent-create-modal",
+            "graph-canvas-three-nodes",
+            "channels-prompt",
+            "docs-callout-demo",
+        ]
+        app.state.user_docs_embeds = _user_docs_embed_ids
+        user_docs_service.set_embeds_manifest(_user_docs_embed_ids)
         logger.info("lifespan: user-docs service initialised")
         # Dev-mode lint gate. Set PRIMER_USER_DOCS_STRICT=1 to refuse
         # startup on lint errors. Production logs them and excludes
@@ -1847,7 +1858,16 @@ def create_test_app(
     _test_user_docs_service = _UDS(_user_docs_root)
     _test_user_docs_service.reload_index()
     app.state.user_docs_service = _test_user_docs_service
-    app.state.user_docs_embeds = []
+    _test_embed_ids = [
+        "topbar",
+        "sessions-list-empty",
+        "agent-create-modal",
+        "graph-canvas-three-nodes",
+        "channels-prompt",
+        "docs-callout-demo",
+    ]
+    app.state.user_docs_embeds = _test_embed_ids
+    _test_user_docs_service.set_embeds_manifest(_test_embed_ids)
     # Auth: tests get a fixed test secret so cookies are deterministic
     # across the suite. Real lifespan uses resolve_session_secret().
     from primer.api.config import AppConfig

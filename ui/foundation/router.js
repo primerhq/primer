@@ -60,6 +60,9 @@
     { pattern: "/settings/api-tokens",             page: "ApiTokensPage" },
     { pattern: "/settings/mcp",                    page: "McpPage" },
     { pattern: "/web-search",                      page: "WebSearchPage" },
+    { pattern: "/docs",                             page: "DocsPage" },
+    { pattern: "/docs/:section",                    page: "DocsPage" },
+    { pattern: "/docs/:section/:slug",              page: "DocsPage" },
   ];
 
   function splitSegments(path) {

@@ -87,6 +87,12 @@ const NAV = [
       { id: "mcp", label: "MCP Server", icon: "code" },
     ],
   },
+  {
+    group: "Help",
+    items: [
+      { id: "docs", label: "Docs", icon: "doc" },
+    ],
+  },
 ];
 
 function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapsed, onCollapseToggle }) {
@@ -365,7 +371,7 @@ const NAV_PAGES = (() => {
 })();
 
 
-function CommandPalette({ onClose, onNavigate, sessions }) {
+function CommandPalette({ onClose, onNavigate, sessions, docs }) {
   const [q, setQ] = React.useState("");
   const [active, setActive] = React.useState(0);
   const inputRef = React.useRef(null);
@@ -407,7 +413,26 @@ function CommandPalette({ onClose, onNavigate, sessions }) {
           icon: "zap",
         }));
 
-  const matches = [...pageHits, ...sessionHits].slice(0, 20);
+  // Docs: only when a query is typed; capped at 6 so doc hits do not
+  // crowd out page hits. Subtitle is the section title.
+  const docHits = !ql
+    ? []
+    : (docs || [])
+        .filter((d) =>
+          d.title.toLowerCase().includes(ql)
+          || (d.summary || "").toLowerCase().includes(ql)
+          || (d.sectionTitle || "").toLowerCase().includes(ql)
+        )
+        .slice(0, 6)
+        .map((d) => ({
+          kind: "doc",
+          id: d.slug,
+          label: d.title,
+          sub: `${d.sectionTitle || "docs"} · docs`,
+          icon: "doc",
+        }));
+
+  const matches = [...pageHits, ...docHits, ...sessionHits].slice(0, 20);
 
   React.useEffect(() => { setActive(0); }, [q]);
 
@@ -420,7 +445,16 @@ function CommandPalette({ onClose, onNavigate, sessions }) {
         e.preventDefault();
         const m = matches[active];
         onClose();
-        onNavigate(m.kind === "session" ? "session-detail" : m.id, m.id);
+        if (m.kind === "session") {
+          onNavigate("session-detail", m.id);
+        } else if (m.kind === "doc") {
+          const router = window.primerApi && window.primerApi.useRouter
+            ? window.primerApi.useRouter()
+            : null;
+          if (router && router.navigate) router.navigate(`/docs/${m.id}`);
+        } else {
+          onNavigate(m.id);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -456,7 +490,19 @@ function CommandPalette({ onClose, onNavigate, sessions }) {
                 className={`nav-item ${i === active ? "active" : ""}`}
                 style={{ borderRadius: 6, margin: 2 }}
                 onMouseEnter={() => setActive(i)}
-                onClick={() => { onClose(); onNavigate(m.kind === "session" ? "session-detail" : m.id, m.id); }}
+                onClick={() => {
+                  onClose();
+                  if (m.kind === "session") {
+                    onNavigate("session-detail", m.id);
+                  } else if (m.kind === "doc") {
+                    const router = window.primerApi && window.primerApi.useRouter
+                      ? window.primerApi.useRouter()
+                      : null;
+                    if (router && router.navigate) router.navigate(`/docs/${m.id}`);
+                  } else {
+                    onNavigate(m.id);
+                  }
+                }}
               >
                 <Icon name={m.icon || (m.kind === "session" ? "zap" : "chevron-right")} className="icon" size={13} />
                 <span className="label mono" style={{ fontSize: 12.5 }}>{m.label}</span>

@@ -59,6 +59,24 @@ async def get_embeds_manifest(request: Request) -> dict[str, Any]:
 
 
 @user_docs_router.get(
+    "/user_docs/_ai/{slug}",
+    summary="Mirror an agent-facing doc as if it were a user doc",
+)
+async def get_ai_doc_mirror(slug: str, request: Request) -> dict[str, Any]:
+    svc = _service(request)
+    data = svc.get_ai_doc(slug)
+    if data is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "not_found",
+                "message": f"no AI doc at primer/ai_docs/{slug}.md",
+            },
+        )
+    return data
+
+
+@user_docs_router.get(
     "/user_docs/{slug:path}",
     summary="One doc's source + parsed frontmatter + headings",
 )
