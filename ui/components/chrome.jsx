@@ -36,7 +36,7 @@ const NAV = [
   {
     group: "Web",
     items: [
-      { id: "web-search", label: "Web search", icon: "search" },
+      { id: "web-search", label: "Web Search", icon: "search" },
     ],
   },
   {
@@ -83,8 +83,8 @@ const NAV = [
   {
     group: "Account",
     items: [
-      { id: "api-tokens", label: "API tokens", icon: "key" },
-      { id: "mcp", label: "MCP server", icon: "code" },
+      { id: "api-tokens", label: "API Tokens", icon: "key" },
+      { id: "mcp", label: "MCP Server", icon: "code" },
     ],
   },
 ];
