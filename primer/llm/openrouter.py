@@ -111,7 +111,7 @@ class OpenRouterLLM(LLM):
         self._trace_llm_io = trace_llm_io
 
         logger.info(
-            "OpenRouter adapter initialised",
+            "OpenRouter adapter initialized",
             extra={
                 "provider_id": provider.id,
                 "models": [m.name for m in provider.models],

@@ -351,3 +351,26 @@ class TestDiscoverHelper:
         assert row.get("output_price_per_million") is None
         # modality has a default of "text" per spec §6.2
         assert row.get("modality") == "text"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_4xx_raises_http_status_error(self):
+        """Pins the discover helper's error contract.
+
+        OpenRouter's most common Fetch-Models failure mode is a bad
+        API key, which returns 401. The helper calls raise_for_status,
+        so callers see httpx.HTTPStatusError. The Phase 4 REST route
+        wraps this into a structured response.
+        """
+        respx.get(f"{OPENROUTER_BASE_URL}/models").mock(
+            return_value=httpx.Response(
+                401,
+                json={"error": {"message": "invalid api key",
+                                "code": "unauthorized"}},
+            ),
+        )
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await _discover_openrouter_models(
+                OpenRouterConfig(api_key=SecretStr("sk-or-v1-bad")),
+            )
+        assert exc_info.value.response.status_code == 401
