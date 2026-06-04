@@ -36,7 +36,7 @@ from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router
 from primer.model.chat import TextPart
 from primer.model.collection import Collection, Document
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import BadRequestError, NotFoundError
 from primer.model.provider import SemanticSearchProvider
 
 
@@ -235,7 +235,19 @@ async def list_indexed_documents(
         raise NotFoundError(f"Collection {collection_id!r} does not exist")
 
     store = await ssr.get_store(coll.search_provider_id)
-    records = await store.search_by_meta(collection_id, meta={})
+    # SSP registration is lazy: VectorStore.create_collection runs only
+    # when the first document is ingested. A freshly-created Collection
+    # row is therefore unknown to the vector store's catalogue until
+    # then, and search_by_meta raises BadRequestError("...is not
+    # registered..."). Treat that as "no indexed entries yet" so the UI
+    # surfaces an empty list instead of an error on the very first
+    # click after creating the collection.
+    try:
+        records = await store.search_by_meta(collection_id, meta={})
+    except BadRequestError as exc:
+        if "is not registered" not in str(exc):
+            raise
+        records = []
     total = len(records)
     window = records[offset:offset + limit]
     items = [
