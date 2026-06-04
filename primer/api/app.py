@@ -54,6 +54,7 @@ from primer.api.routers import (
 )
 from primer.api.routers.auth import auth_router
 from primer.api.routers.semantic_search import semantic_search_router
+from primer.api.routers.user_docs import user_docs_router
 from primer.api.routers.web_search import (
     web_search_active_config_router,
     web_search_providers_helpers_router,
@@ -328,6 +329,20 @@ def _make_lifespan(config: AppConfig):
         app.state.internal_collections = None
         app.state.search_toolset = None
         app.state.config = config
+
+        # Construct the user-docs service. Walks primer/user_docs/ once
+        # at startup; the service handles its own mtime-based hot-reload
+        # from then on. Stash on app.state so the router can reach it.
+        import primer
+        from primer.user_docs_service import UserDocsService
+
+        _user_docs_root = Path(primer.__file__).resolve().parent / "user_docs"
+        user_docs_service = UserDocsService(_user_docs_root)
+        user_docs_service.reload_index()
+        app.state.user_docs_service = user_docs_service
+        # Phase 5 wires the live embed-id registry; empty for now.
+        app.state.user_docs_embeds = []
+        logger.info("lifespan: user-docs service initialised")
 
         # Workspace health-probe loop. Pings each running/failed
         # workspace at ``workspace_probe_interval_seconds`` cadence,
@@ -1147,6 +1162,7 @@ def _mount_routers(
     app.include_router(web_search_providers_helpers_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(web_search_providers_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(web_search_active_config_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(user_docs_router, prefix=prefix, dependencies=auth_dep)
     # Phase 2 — compute (Agent + Graph)
     app.include_router(compute.agent_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(compute.graph_router, prefix=prefix, dependencies=auth_dep)
@@ -1790,6 +1806,18 @@ def create_test_app(
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
     app.state.search_toolset = None
+    # Wire the user-docs service over the real primer/user_docs/ tree;
+    # tests that exercise /v1/user_docs see the live manifest + docs on
+    # disk. Hot-reload via mtime still works in tests.
+    import primer as _primer_pkg
+    from primer.user_docs_service import UserDocsService as _UDS
+    _user_docs_root = (
+        Path(_primer_pkg.__file__).resolve().parent / "user_docs"
+    )
+    _test_user_docs_service = _UDS(_user_docs_root)
+    _test_user_docs_service.reload_index()
+    app.state.user_docs_service = _test_user_docs_service
+    app.state.user_docs_embeds = []
     # Auth: tests get a fixed test secret so cookies are deterministic
     # across the suite. Real lifespan uses resolve_session_secret().
     from primer.api.config import AppConfig
