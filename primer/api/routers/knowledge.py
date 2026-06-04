@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Body, Depends, Path, Query, Request
+from fastapi import Body, Depends, File, Path, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
@@ -269,6 +269,53 @@ async def list_indexed_documents(
 
 
 # ---- Document router -------------------------------------------------------
+
+
+@collection_router.post(
+    "/documents/_convert_file",
+    summary="Convert an uploaded file to markdown via docling",
+    responses=common_responses(400, 500),
+)
+async def convert_uploaded_file(
+    file: UploadFile = File(...),
+) -> dict:
+    """Convert an uploaded file to markdown using the docling loader and
+    return the result. The endpoint is non-destructive: it does NOT
+    persist a Document row. Operators upload, see the converted text in
+    the document-create form, optionally edit, then POST /documents
+    through the normal CRUD path.
+
+    Supports every format docling supports: PDF, DOCX, PPTX, XLSX, HTML,
+    images with OCR, etc. The response carries the markdown plus a few
+    metadata fields the UI uses to pre-fill the create form.
+    """
+    from primer.ingest.loaders.docling import DoclingLoader
+    from primer.model.except_ import UnsupportedContentError
+
+    raw = await file.read()
+    if not raw:
+        raise BadRequestError("uploaded file is empty")
+    # 32 MB cap; raise to a bigger value once the worker pool can
+    # absorb the conversion cost.
+    if len(raw) > 32 * 1024 * 1024:
+        raise BadRequestError(
+            f"uploaded file is too large ({len(raw)} bytes); cap is "
+            f"32 MB. Split the file or paste the extracted text."
+        )
+
+    loader = DoclingLoader()
+    try:
+        loaded = await loader.load(raw)
+    except UnsupportedContentError as exc:
+        raise BadRequestError(str(exc)) from exc
+
+    return {
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "bytes_loaded": len(raw),
+        "text": loaded.text,
+    }
+
 
 document_router = make_crud_router(
     model_cls=Document,

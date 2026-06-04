@@ -103,8 +103,15 @@
       credentials: "same-origin",
     };
     if (body !== undefined && body !== null) {
-      headers["Content-Type"] = "application/json";
-      init.body = JSON.stringify(body);
+      if (typeof FormData !== "undefined" && body instanceof FormData) {
+        // FormData uploads (multipart/form-data). Let fetch synthesise
+        // the Content-Type header itself - it carries the multipart
+        // boundary the server needs to parse the body.
+        init.body = body;
+      } else {
+        headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(body);
+      }
     }
     if (opts.signal) init.signal = opts.signal;
 

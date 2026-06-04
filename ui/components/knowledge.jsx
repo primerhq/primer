@@ -1037,6 +1037,38 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
   const [metaJson, setMetaJson] = React.useState(_initialMeta);
   const [fieldErrors, setFieldErrors] = React.useState({});
 
+  // File-upload conversion state. The Upload-file button POSTs the
+  // file to /v1/documents/_convert_file, which runs docling and
+  // returns markdown. We pre-fill the text field so the operator can
+  // review or edit before saving; if they don't pick a name, we use
+  // the source filename.
+  const [convertingFile, setConvertingFile] = React.useState(false);
+  const [convertedFileName, setConvertedFileName] = React.useState(null);
+  const [convertError, setConvertError] = React.useState(null);
+
+  const handleConvertFile = async (f) => {
+    setConvertingFile(true);
+    setConvertError(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      const resp = await apiFetch(
+        "POST",
+        "/documents/_convert_file",
+        fd,
+      );
+      setText(resp.text || "");
+      setConvertedFileName(resp.filename || f.name);
+      if (!name) setName(resp.filename || f.name);
+    } catch (err) {
+      setConvertError(
+        (err && (err.detail || err.message)) || "Conversion failed",
+      );
+    } finally {
+      setConvertingFile(false);
+    }
+  };
+
   React.useEffect(() => {
     if (!collectionId && collections.length > 0) setCollectionId(collections[0].id);
   }, [collections, collectionId]);
@@ -1124,12 +1156,49 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
         {fieldErrors["body.name"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.name"]}</div>}
       </div>
       <div className="field">
-        <label className="field-label">Text <span className="hint">stored under meta.text for v1</span></label>
+        <label className="field-label">
+          Text <span className="hint">stored under meta.text for v1</span>
+        </label>
+        <div style={{
+          display: "flex", gap: 8, alignItems: "center",
+          marginBottom: 6,
+        }}>
+          <label
+            className="btn"
+            style={{ cursor: convertingFile ? "wait" : "pointer", fontSize: 12 }}
+            title="Upload a file (PDF, DOCX, PPTX, XLSX, HTML, image, ...) - docling converts it to markdown, pre-fills the textarea, and you can edit before saving"
+          >
+            <input
+              type="file"
+              accept=".pdf,.docx,.pptx,.xlsx,.html,.htm,.md,.txt,.png,.jpg,.jpeg"
+              disabled={convertingFile}
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files && e.target.files[0];
+                if (!f) return;
+                handleConvertFile(f);
+                // Reset the input so re-selecting the same file fires again.
+                e.target.value = "";
+              }}
+            />
+            {convertingFile ? "Converting..." : "Upload file"}
+          </label>
+          {convertedFileName && !convertingFile && (
+            <span className="muted text-sm" title={convertedFileName}>
+              from: {convertedFileName}
+            </span>
+          )}
+          {convertError && (
+            <span style={{ color: "var(--red)", fontSize: 11 }}>
+              {convertError}
+            </span>
+          )}
+        </div>
         <textarea
           className="textarea"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          rows={4}
+          rows={6}
         />
       </div>
       <div className="field">
