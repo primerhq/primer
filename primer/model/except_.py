@@ -41,7 +41,7 @@ class PrimerError(Exception):
         if self.status_code is not None:
             prefix_parts.append(str(self.status_code))
         if self.code is not None:
-            prefix_parts.append(self.code)
+            prefix_parts.append(str(self.code))
         prefix = f"[{' '.join(prefix_parts)}] " if prefix_parts else ""
         return f"{prefix}{self.message}"
 

@@ -29,8 +29,11 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Request
 from pydantic import BaseModel, Field, ValidationError
+
+from primer.llm.openrouter import _discover_openrouter_models
 
 from primer.api.deps import (
     get_cross_encoder_provider_storage,
@@ -55,6 +58,7 @@ from primer.model.provider import (
     CrossEncoderProvider,
     EmbeddingProvider,
     LLMProvider,
+    OpenRouterConfig,
     Toolset,
 )
 from primer.api.routers._references import ReferenceCheck
@@ -251,10 +255,6 @@ async def discover_llm_models(
     elif body.provider == "openresponses":
         result = await _probe_openai_compatible_models(body.config)
     elif body.provider == "openrouter":
-        import httpx
-
-        from primer.llm.openrouter import _discover_openrouter_models
-        from primer.model.provider import OpenRouterConfig
         try:
             draft = OpenRouterConfig.model_validate(body.config)
         except ValidationError as exc:
@@ -267,6 +267,12 @@ async def discover_llm_models(
             raise BadRequestError(
                 f"OpenRouter discover failed: HTTP {exc.response.status_code} "
                 f"{exc.response.text[:200]}",
+            ) from exc
+        except httpx.RequestError as exc:
+            # Connect / timeout / read errors that are not HTTP responses.
+            raise BadRequestError(
+                f"OpenRouter discover network error: {type(exc).__name__}: "
+                f"{exc}",
             ) from exc
         result = {"models": catalogue}
     else:
