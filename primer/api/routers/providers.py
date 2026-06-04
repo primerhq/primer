@@ -819,7 +819,10 @@ async def list_all_tools(
                 "id": row.id,
                 "builtin": False,
                 "label": row.id,
-                "tagline": row.description or "",
+                # Toolset rows inherit Identifiable (no `description`
+                # field); use a getattr-guard so we don't 500 when the
+                # row is built-in-style (id only).
+                "tagline": getattr(row, "description", "") or "",
                 "available": True,
                 "tools": [],
             }

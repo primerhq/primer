@@ -688,9 +688,12 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       }
 
       // Compaction envelope (no seq). Server tells us a compaction
-      // pass just happened; surface in three places so the operator
-      // sees it: an in-stream marker row, a success toast, and a
-      // token-meter update reflecting the new prompt size.
+      // pass just happened; surface as an in-stream marker row plus
+      // a success toast. The TokenMeter stays put: the next assistant
+      // turn's `usage` envelope updates it with the real post-compaction
+      // prompt size (summary + retained tail). Pinning the meter to
+      // `after_tokens` here was wrong — that number is the compacted
+      // payload's size, not what the next prompt will weigh.
       if (msg.kind === "compaction" && typeof msg.seq !== "number") {
         const beforeT = Number(msg.before_tokens) || 0;
         const afterT = Number(msg.after_tokens) || 0;
@@ -701,16 +704,6 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           after_tokens: afterT,
           reason: msg.reason || "",
         }]);
-        // Reflect post-compaction prompt size in the topbar meter
-        // immediately. Without this update the meter keeps the
-        // pre-compaction count from the last `usage` envelope until
-        // the next assistant turn lands.
-        if (afterT > 0) {
-          setUsage((prev) => ({
-            ...prev,
-            input_tokens: afterT,
-          }));
-        }
         if (typeof pushToast === "function") {
           const saved = beforeT > 0 ? Math.max(0, beforeT - afterT) : 0;
           pushToast({

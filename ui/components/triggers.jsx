@@ -306,6 +306,23 @@ function TR_TriggerCard({ trigger, onOpen }) {
 // then navigates to /triggers/{id} via window.primerApi.useRouter().navigate.
 // ============================================================================
 
+// Kind registry — single source of truth for the Step 1 dropdown.
+// To add a new trigger kind: append an entry here and add a render
+// branch in Step 2 (the existing `delayed`/`scheduled` blocks
+// below are the template).
+const TR_KIND_OPTIONS = [
+  {
+    value: "delayed",
+    label: "Delayed",
+    help: "One-off. Fires once at a chosen UTC instant.",
+  },
+  {
+    value: "scheduled",
+    label: "Scheduled",
+    help: "Recurring cron expression evaluated in a chosen timezone.",
+  },
+];
+
 function TR_CreateTriggerDialog({ onClose, onCreated }) {
   const { apiFetch } = window.primerApi;
 
@@ -454,42 +471,25 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
       {step === 1 && (
         <div data-testid="tr-step-kind">
           <div className="field-help" style={{ marginBottom: 10 }}>
-            Pick the trigger kind. Delayed triggers fire once at a chosen instant; scheduled
-            triggers fire on a cron schedule.
+            Pick the trigger kind. The list below grows as new kinds
+            land; their config form lands on Step 2 once selected.
           </div>
           <div className="field">
-            <label
-              className="row"
-              style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 0", cursor: "pointer" }}
+            <label className="field-label" htmlFor="tr-kind-select">Kind</label>
+            <select
+              id="tr-kind-select"
+              className="select"
+              value={kind}
+              onChange={(e) => setKind(e.target.value)}
+              style={{ width: "100%" }}
             >
-              <input
-                type="radio"
-                name="tr-kind"
-                value="delayed"
-                checked={kind === "delayed"}
-                onChange={() => setKind("delayed")}
-              />
-              <div>
-                <div style={{ fontWeight: 600 }}>Delayed</div>
-                <div className="muted text-sm">One-off. Fires once at a chosen UTC instant.</div>
-              </div>
-            </label>
-            <label
-              className="row"
-              style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 0", cursor: "pointer" }}
-            >
-              <input
-                type="radio"
-                name="tr-kind"
-                value="scheduled"
-                checked={kind === "scheduled"}
-                onChange={() => setKind("scheduled")}
-              />
-              <div>
-                <div style={{ fontWeight: 600 }}>Scheduled</div>
-                <div className="muted text-sm">Recurring cron expression evaluated in a chosen timezone.</div>
-              </div>
-            </label>
+              {TR_KIND_OPTIONS.map((k) => (
+                <option key={k.value} value={k.value}>{k.label}</option>
+              ))}
+            </select>
+            <div className="field-help muted text-sm" style={{ marginTop: 6 }}>
+              {TR_KIND_OPTIONS.find((k) => k.value === kind)?.help || ""}
+            </div>
           </div>
         </div>
       )}

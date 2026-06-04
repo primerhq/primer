@@ -60,6 +60,11 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
     (signal) => apiFetch("GET", "/embedding_providers?limit=200", null, { signal }),
     { pollMs: null },
   );
+  const sspProviders = useResource(
+    "collections:ssp",
+    (signal) => apiFetch("GET", "/ssp?limit=200", null, { signal }),
+    { pollMs: null },
+  );
 
   const [selected, setSelected] = React.useState(null);
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -164,6 +169,7 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
             c={sel}
             pushToast={pushToast}
             embedProviders={embedProviders.data?.items ?? []}
+            sspProviders={sspProviders.data?.items ?? []}
             onOpenDocs={() => {
               if (typeof onOpen === "function") onOpen(sel.id);
               else navigate("/knowledge/documents", { collection: sel.id });
@@ -182,6 +188,7 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
       {createOpen && (
         <KN_NewCollectionModal
           embedProviders={embedProviders.data?.items ?? []}
+          sspProviders={sspProviders.data?.items ?? []}
           pushToast={pushToast}
           onClose={() => setCreateOpen(false)}
           onCreate={(c) => {
@@ -197,7 +204,7 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
   );
 }
 
-function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onNavigate, embedProviders }) {
+function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onNavigate, embedProviders, sspProviders }) {
   const { useResource, apiFetch } = window.primerApi;
   const isSystem = !!c.system;
   const isManaged = !!c.harness_id;
@@ -277,6 +284,7 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onN
         <KN_NewCollectionModal
           existing={c}
           embedProviders={embedProviders || []}
+          sspProviders={sspProviders || []}
           pushToast={pushToast}
           onClose={() => setEditOpen(false)}
           onCreate={() => {
@@ -556,18 +564,22 @@ function KN_CollectionSearchModal({ collection, pushToast, onClose }) {
   );
 }
 
-function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate, existing }) {
+function KN_NewCollectionModal({ embedProviders, sspProviders = [], pushToast, onClose, onCreate, existing }) {
   const isEdit = !!existing;
   const { useMutation, apiFetch } = window.primerApi;
   const [id, setId] = React.useState(existing?.id || "");
   const [description, setDescription] = React.useState(existing?.description || "");
   const [providerId, setProviderId] = React.useState(existing?.embedder?.provider_id || "");
   const [model, setModel] = React.useState(existing?.embedder?.model || "");
+  const [searchProviderId, setSearchProviderId] = React.useState(existing?.search_provider_id || "");
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   React.useEffect(() => {
     if (!providerId && embedProviders.length > 0) setProviderId(embedProviders[0].id);
   }, [embedProviders, providerId]);
+  React.useEffect(() => {
+    if (!searchProviderId && sspProviders.length > 0) setSearchProviderId(sspProviders[0].id);
+  }, [sspProviders, searchProviderId]);
 
   // Model options come from the selected provider's row (T0025 — no live
   // introspection; the provider stores its declared model list).
@@ -613,6 +625,7 @@ function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate, e
       ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       description: description || null,
       embedder: { provider_id: providerId, model },
+      search_provider_id: searchProviderId,
     };
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
@@ -624,7 +637,7 @@ function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate, e
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!providerId || !model || create.loading}>
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!providerId || !model || !searchProviderId || create.loading}>
             {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
           </Btn>
         </>
@@ -686,6 +699,30 @@ function KN_NewCollectionModal({ embedProviders, pushToast, onClose, onCreate, e
         </select>
         <div className="field-help">Model list comes from the provider row, not a live introspection (T0025).</div>
         {fieldErrors["body.embedder.model"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.embedder.model"]}</div>}
+      </div>
+      <div className="field">
+        <label className="field-label">Search provider</label>
+        <select
+          className="select"
+          value={searchProviderId}
+          onChange={(e) => setSearchProviderId(e.target.value)}
+          disabled={isEdit}
+          style={{ width: "100%" }}
+        >
+          <option value="">-- pick a search provider --</option>
+          {sspProviders.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+        </select>
+        {sspProviders.length === 0 && (
+          <div className="field-help" style={{ color: "var(--amber)" }}>
+            No semantic-search providers configured. Create one at /ssp first.
+          </div>
+        )}
+        <div className="field-help">
+          {isEdit
+            ? "Bound at create; immutable thereafter."
+            : "Backs this collection's vector index. Immutable after create."}
+        </div>
+        {fieldErrors["body.search_provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.search_provider_id"]}</div>}
       </div>
     </Modal>
   );
