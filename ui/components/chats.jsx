@@ -688,16 +688,40 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       }
 
       // Compaction envelope (no seq). Server tells us a compaction
-      // pass just happened; surface as an in-stream marker row so the
-      // operator sees where context was summarised.
+      // pass just happened; surface in three places so the operator
+      // sees it: an in-stream marker row, a success toast, and a
+      // token-meter update reflecting the new prompt size.
       if (msg.kind === "compaction" && typeof msg.seq !== "number") {
+        const beforeT = Number(msg.before_tokens) || 0;
+        const afterT = Number(msg.after_tokens) || 0;
         setMessages((prev) => [...prev, {
           kind: "compaction_marker",
           seq: `compaction-${Date.now()}`,
-          before_tokens: Number(msg.before_tokens) || 0,
-          after_tokens: Number(msg.after_tokens) || 0,
+          before_tokens: beforeT,
+          after_tokens: afterT,
           reason: msg.reason || "",
         }]);
+        // Reflect post-compaction prompt size in the topbar meter
+        // immediately. Without this update the meter keeps the
+        // pre-compaction count from the last `usage` envelope until
+        // the next assistant turn lands.
+        if (afterT > 0) {
+          setUsage((prev) => ({
+            ...prev,
+            input_tokens: afterT,
+          }));
+        }
+        if (typeof pushToast === "function") {
+          const saved = beforeT > 0 ? Math.max(0, beforeT - afterT) : 0;
+          pushToast({
+            kind: "success",
+            title: "Compaction complete",
+            detail: beforeT > 0
+              ? `${beforeT.toLocaleString()} -> ${afterT.toLocaleString()} tokens`
+                + (saved > 0 ? ` (saved ${saved.toLocaleString()})` : "")
+              : null,
+          });
+        }
         return;
       }
 
@@ -1750,18 +1774,21 @@ function CompactionMarker({ m }) {
         display: "flex",
         alignItems: "center",
         gap: 10,
-        margin: "12px 0",
-        padding: "6px 10px",
-        borderTop: "1px dashed var(--border)",
-        borderBottom: "1px dashed var(--border)",
-        fontSize: 11,
-        color: "var(--text-3)",
+        margin: "16px 0",
+        padding: "8px 12px",
+        borderTop: "2px solid var(--accent)",
+        borderBottom: "2px solid var(--accent)",
+        background: "var(--bg-2)",
+        fontSize: 12,
+        color: "var(--text-2)",
         fontFamily: "IBM Plex Mono, monospace",
       }}
       title={m.reason || "Conversation was compacted to fit the context window."}
     >
-      <Icon name="compress" size={11} />
-      <span>conversation compacted</span>
+      <Icon name="compress" size={13} className="muted" />
+      <span style={{ fontWeight: 600, color: "var(--accent)" }}>
+        Conversation compacted
+      </span>
       {before > 0 && (
         <span className="muted">
           · {before.toLocaleString()} → {after.toLocaleString()} tokens
