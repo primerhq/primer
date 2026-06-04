@@ -967,9 +967,11 @@ function ChatDetail({ chatId, onBack, pushToast }) {
         height: isMobile ? "calc(100dvh - 56px)" : "calc(100vh - 180px)",
         display: "flex",
         flexDirection: "column",
+        minWidth: 0,
+        overflowX: "hidden",
       }}
     >
-      <div className="panel" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <div className="panel" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, minWidth: 0 }}>
         {isMobile ? (
           <div className="chat-mobile-header">
             <button
@@ -1024,7 +1026,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           </div>
         </div>
         )}
-        <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0 }}>
+        <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0, minWidth: 0 }}>
           {(loadingOlder || hasMoreOlder) && messages.length > 0 && (
             <div
               className="muted text-sm"
@@ -1646,7 +1648,7 @@ function Message({ m }) {
           paddingTop: 2,
         }}>agent</div>
         <div className="md-body" style={{
-          flex: 1, fontSize: 13, lineHeight: 1.55, color: "var(--text)",
+          flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.55, color: "var(--text)",
           borderLeft: "2px solid var(--accent)", paddingLeft: 12,
         }}>
           {typeof window.renderMarkdown === "function"
@@ -1677,8 +1679,8 @@ function Message({ m }) {
         fontWeight: 600,
         paddingTop: 2,
       }}>{isUser ? "user" : "agent"}</div>
-      <div style={{ flex: 1, fontSize: 13, lineHeight: 1.55, color: "var(--text)", borderLeft: `2px solid ${isUser ? "var(--border)" : "var(--accent)"}`, paddingLeft: 12 }}>
-        {CT_textOf(m) && <div style={{ whiteSpace: "pre-wrap" }}>{CT_textOf(m)}</div>}
+      <div style={{ flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.55, color: "var(--text)", borderLeft: `2px solid ${isUser ? "var(--border)" : "var(--accent)"}`, paddingLeft: 12 }}>
+        {CT_textOf(m) && <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{CT_textOf(m)}</div>}
         {attachmentParts.length > 0 && (
           <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
             {attachmentParts.map((p, i) => <CT_AttachmentPart key={i} part={p} />)}

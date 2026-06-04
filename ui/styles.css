@@ -953,6 +953,10 @@ input, textarea, select { font: inherit; color: inherit; }
   padding: 1px 5px;
   color: var(--text);
 }
+.md-body {
+  min-width: 0;
+  max-width: 100%;
+}
 .md-body .md-pre {
   margin: 0 0 8px;
   padding: 10px 12px;
@@ -960,9 +964,16 @@ input, textarea, select { font: inherit; color: inherit; }
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow-x: auto;
+  max-width: 100%;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.5;
+}
+.md-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
 }
 .md-body .md-pre code {
   background: none;
