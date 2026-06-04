@@ -19,6 +19,9 @@ const EMBEDS = {
   "channels-prompt":          window.ChannelsPromptMockup,
   "docs-callout-demo":        window.DocsCalloutDemoMockup,
   "workspace-empty":          window.WorkspaceEmptyMockup,
+  "session-detail-panel":     window.SessionDetailPanelMockup,
+  "chat-stream":              window.ChatStreamMockup,
+  "harness-wizard-step":      window.HarnessWizardStepMockup,
 };
 
 window.DocsEmbeds = EMBEDS;

@@ -75,6 +75,16 @@ const r = await fetch("/v1/agents", {
 console.log((await r.json()).id);
 ```
 
+## Going further
+
+For model selection, prompt templates, fine-grained binding, the
+retry loop, and evaluations:
+
+```ref:features/agents-advanced
+The advanced page covers what you reach for once the basic flow
+works.
+```
+
 ## Agent-facing reference
 
 For the dense MCP-tool view used by LLM agents, follow the link

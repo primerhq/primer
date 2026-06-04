@@ -32,6 +32,11 @@ sections:
     order: 3
     docs:
       - agents
+      - agents-advanced
+      - graphs
+      - sessions
+      - chats
+      - harnesses
   - id: cookbook
     title: Cookbook
     icon: code

@@ -1,5 +1,5 @@
 ---
-slug: sessions
+slug: sessions-concept
 title: Sessions
 section: concepts
 summary: Headless agent runs inside a workspace, with pause + resume control and a transcript that survives restarts.

@@ -1,5 +1,5 @@
 ---
-slug: chats
+slug: chats-concept
 title: Chats
 section: concepts
 summary: Multi-turn conversations with an agent, persisted as ordered message rows and streamed to the client over WebSocket.
