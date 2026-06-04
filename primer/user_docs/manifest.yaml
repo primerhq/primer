@@ -55,6 +55,16 @@ sections:
     order: 4
     docs:
       - scheduled-summariser
+      - slack-question-answerer
+      - telegram-personal-assistant
+      - pr-reviewer-on-cron
+      - discord-moderation-helper
+      - daily-incident-digest
+      - workspace-as-build-env
+      - multi-agent-graph-research
+      - internal-tool-via-mcp
+      - event-driven-data-pipeline
+      - approval-gated-deploy-bot
   - id: reference
     title: Reference
     icon: doc
