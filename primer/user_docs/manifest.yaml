@@ -7,12 +7,18 @@ sections:
       - welcome
       - install
       - first-login
+      - first-agent
+      - configuration
+      - environments
+      - dashboard-tour
+      - upgrading
   - id: concepts
     title: Concepts
     icon: graph
     order: 2
     docs:
       - what-is-an-agent
+      - troubleshooting
   - id: features
     title: Features
     icon: tools
