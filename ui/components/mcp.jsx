@@ -420,6 +420,47 @@ function MC_ToolsPanel({ exposure, available }) {
     });
   };
 
+  // Select-all checkbox state. Operates over the CURRENTLY-VISIBLE
+  // exposable rows so it respects the filter chips and the
+  // exposable/allowed-only toggles. Non-exposable rows are never
+  // affected (the server would reject the id anyway).
+  const visibleExposable = React.useMemo(
+    () => visibleItems.filter((it) => it.exposable),
+    [visibleItems],
+  );
+  const visibleSelectedCount = React.useMemo(
+    () => visibleExposable.reduce((n, it) => n + (draft.has(it.scoped_id) ? 1 : 0), 0),
+    [visibleExposable, draft],
+  );
+  const allVisibleSelected =
+    visibleExposable.length > 0 && visibleSelectedCount === visibleExposable.length;
+  const someVisibleSelected =
+    visibleSelectedCount > 0 && visibleSelectedCount < visibleExposable.length;
+
+  const toggleAllVisible = () => {
+    if (visibleExposable.length === 0) return;
+    setDraft((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        // Deselect everything currently visible.
+        for (const it of visibleExposable) next.delete(it.scoped_id);
+      } else {
+        // Select every visible exposable row (also covers the
+        // indeterminate → all-selected transition).
+        for (const it of visibleExposable) next.add(it.scoped_id);
+      }
+      return next;
+    });
+  };
+
+  // indeterminate is a DOM property, not an attribute, so set it via ref.
+  const selectAllRef = React.useRef(null);
+  React.useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someVisibleSelected;
+    }
+  }, [someVisibleSelected]);
+
   const toggleToolsetFilter = (tsid) => {
     setToolsetFilter((prev) => prev.includes(tsid)
       ? prev.filter((x) => x !== tsid)
@@ -584,7 +625,26 @@ function MC_ToolsPanel({ exposure, available }) {
         >
           <thead>
             <tr>
-              <th style={{ textAlign: "left", padding: "8px 12px", width: 36 }}></th>
+              <th style={{ textAlign: "left", padding: "8px 12px", width: 36 }}>
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleAllVisible}
+                  disabled={visibleExposable.length === 0}
+                  title={
+                    visibleExposable.length === 0
+                      ? "No exposable tools in the current filter"
+                      : allVisibleSelected
+                      ? `Deselect all ${visibleExposable.length} visible tools`
+                      : someVisibleSelected
+                      ? `Select all ${visibleExposable.length} visible tools (${visibleSelectedCount} currently selected)`
+                      : `Select all ${visibleExposable.length} visible tools`
+                  }
+                  aria-label="Select all visible tools"
+                  data-testid="mcp-select-all"
+                />
+              </th>
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Tool</th>
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Toolset</th>
               <th style={{ textAlign: "left", padding: "8px 12px" }}>Description</th>
