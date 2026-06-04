@@ -76,6 +76,11 @@ def _build_default_llm_factory(
                 return OllamaLLM(
                     provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
                 )
+            case LLMProviderType.OPENROUTER:
+                from primer.llm.openrouter import OpenRouterLLM
+                return OpenRouterLLM(
+                    provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
+                )
             case _:
                 raise ConfigError(
                     f"unknown LLM provider type {provider.provider!r}"

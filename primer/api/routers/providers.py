@@ -250,6 +250,25 @@ async def discover_llm_models(
         result = await _probe_ollama_models(body.config)
     elif body.provider == "openresponses":
         result = await _probe_openai_compatible_models(body.config)
+    elif body.provider == "openrouter":
+        import httpx
+
+        from primer.llm.openrouter import _discover_openrouter_models
+        from primer.model.provider import OpenRouterConfig
+        try:
+            draft = OpenRouterConfig.model_validate(body.config)
+        except ValidationError as exc:
+            raise BadRequestError(
+                f"invalid OpenRouter config: {exc}",
+            ) from exc
+        try:
+            catalogue = await _discover_openrouter_models(draft)
+        except httpx.HTTPStatusError as exc:
+            raise BadRequestError(
+                f"OpenRouter discover failed: HTTP {exc.response.status_code} "
+                f"{exc.response.text[:200]}",
+            ) from exc
+        result = {"models": catalogue}
     else:
         raise BadRequestError(
             f"live model discovery is not supported for provider "
@@ -259,8 +278,11 @@ async def discover_llm_models(
     # Neither Ollama's /api/tags nor OpenAI's /v1/models exposes a
     # per-model context window. LLMModel requires context_length, so
     # seed a sane default the operator can override in the form.
-    for m in result.get("models", []):
-        m.setdefault("context_length", _DEFAULT_LLM_CONTEXT_LENGTH)
+    # OpenRouter's catalogue carries context_length verbatim, so skip
+    # the default for that branch.
+    if body.provider in ("ollama", "openresponses"):
+        for m in result.get("models", []):
+            m.setdefault("context_length", _DEFAULT_LLM_CONTEXT_LENGTH)
     return result
 
 
