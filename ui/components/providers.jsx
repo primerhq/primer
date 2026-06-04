@@ -226,6 +226,15 @@ const PROVIDER_KINDS_FIELDS = {
 // Normalize the kind prop / URL segment to the PROVIDER_KINDS_FIELDS key.
 const _normKind = (k) => (k === "cross_encoder" ? "rerank" : k);
 
+// OpenRouter slug shape: provider/model[:tag]. Used by the rich picker's
+// "Add by id" input to reject obvious typos before they hit the backend.
+const OPENROUTER_SLUG_RE = /^[a-z0-9-]+\/[a-z0-9._-]+(:[a-z0-9-]+)?$/;
+// Fallback context length when the operator adds an id manually and we
+// don't have a discovered row to source it from. 128k is a safe lower
+// bound for almost every OpenRouter-routed model in 2026; the operator
+// can always tighten it in the per-row inputs below the picker.
+const OPENROUTER_DEFAULT_LLM_CONTEXT = 128000;
+
 // ============================================================================
 // Top-level page — list view vs detail view dispatched on the router's id.
 // ============================================================================
@@ -383,6 +392,183 @@ function ProvidersList({ kindProp, pushToast }) {
 }
 
 // ============================================================================
+// OpenRouterModelPicker — rich picker activated when the form's
+// pickerVariant is "openrouter". Reads the discovered catalogue (rich
+// rows with id, name, context_length, pricing, modality), provides a
+// debounced filter + 50-row paged grid + Add-by-id input. Selection
+// state lives on the parent form (the standard `models` array of
+// {name, context_length}); this component only fires onSelect /
+// onDeselect callbacks to mutate it.
+// ============================================================================
+
+function OpenRouterModelPicker({ discovered, selected, onSelect, onDeselect }) {
+  const [q, setQ] = React.useState("");
+  const [debouncedQ, setDebouncedQ] = React.useState("");
+  const [page, setPage] = React.useState(0);
+  const [byIdInput, setByIdInput] = React.useState("");
+  const [byIdError, setByIdError] = React.useState(null);
+  const PAGE_SIZE = 50;
+
+  // Debounce filter input by 200ms so a fast typist doesn't trigger a
+  // re-render and slice() on every keystroke against a ~300-row catalogue.
+  React.useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(q), 200);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const selectedIds = React.useMemo(
+    () => new Set((selected || []).map((m) => m.name)),
+    [selected],
+  );
+
+  const filtered = React.useMemo(() => {
+    const ql = (debouncedQ || "").toLowerCase().trim();
+    if (!ql) return discovered;
+    return discovered.filter((row) =>
+      (row.id || "").toLowerCase().includes(ql)
+      || (row.name || "").toLowerCase().includes(ql)
+    );
+  }, [discovered, debouncedQ]);
+
+  const total = filtered.length;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const safePage = Math.min(page, pages - 1);
+  const start = safePage * PAGE_SIZE;
+  const rows = filtered.slice(start, start + PAGE_SIZE);
+
+  // Reset to page 1 whenever the filter changes, otherwise a filter that
+  // collapses the result set to <safePage*50 rows lands on an empty page.
+  React.useEffect(() => { setPage(0); }, [debouncedQ]);
+
+  const addById = () => {
+    const slug = byIdInput.trim();
+    if (!OPENROUTER_SLUG_RE.test(slug)) {
+      setByIdError("Invalid slug. Expected provider/model[:tag].");
+      return;
+    }
+    if (selectedIds.has(slug)) {
+      setByIdError("Already selected.");
+      return;
+    }
+    onSelect({
+      id: slug,
+      name: slug,
+      context_length: OPENROUTER_DEFAULT_LLM_CONTEXT,
+    });
+    setByIdInput("");
+    setByIdError(null);
+  };
+
+  return (
+    <div style={{
+      marginTop: 8,
+      border: "1px solid var(--border)",
+      borderRadius: 6,
+      padding: 10,
+    }}>
+      <div style={{
+        display: "flex", gap: 8, alignItems: "center", marginBottom: 8,
+      }}>
+        <input
+          className="input"
+          placeholder="Filter (id, name, provider prefix)…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{ flex: 1, fontSize: 12 }}
+        />
+        <span className="muted text-sm">
+          Selected: {selectedIds.size}
+        </span>
+      </div>
+      <div style={{
+        maxHeight: 320,
+        overflow: "auto",
+        border: "1px solid var(--border)",
+        borderRadius: 4,
+      }}>
+        {rows.map((row) => {
+          const isSel = selectedIds.has(row.id);
+          return (
+            <div
+              key={row.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "20px 1.5fr 1fr 1fr 80px",
+                alignItems: "center",
+                gap: 8,
+                padding: "6px 10px",
+                borderBottom: "1px solid var(--border)",
+                fontSize: 12,
+                background: isSel ? "var(--bg-2)" : "transparent",
+                cursor: "pointer",
+              }}
+              onClick={() => isSel ? onDeselect(row.id) : onSelect(row)}
+            >
+              <input type="checkbox" checked={isSel} readOnly />
+              <div>
+                <div style={{ fontFamily: "var(--mono)" }}>{row.id}</div>
+                <div className="muted text-sm">{row.name}</div>
+              </div>
+              <div className="muted text-sm">{row.context_length ?? "?"} ctx</div>
+              <div className="muted text-sm">
+                ${row.input_price_per_million ?? "?"} / ${row.output_price_per_million ?? "?"} per M
+              </div>
+              <div className="muted text-sm">{row.modality || "text"}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{
+        display: "flex",
+        gap: 8,
+        alignItems: "center",
+        marginTop: 8,
+      }}>
+        <Btn
+          size="sm"
+          kind="ghost"
+          onClick={() => setPage(Math.max(0, safePage - 1))}
+          disabled={safePage === 0}
+        >
+          ← Prev
+        </Btn>
+        <span className="muted text-sm">
+          Page {safePage + 1} of {pages} · {total} models
+        </span>
+        <Btn
+          size="sm"
+          kind="ghost"
+          onClick={() => setPage(Math.min(pages - 1, safePage + 1))}
+          disabled={safePage >= pages - 1}
+        >
+          Next →
+        </Btn>
+      </div>
+      <div style={{
+        display: "flex",
+        gap: 6,
+        alignItems: "center",
+        marginTop: 12,
+      }}>
+        <input
+          className="input mono"
+          placeholder="Add by id: anthropic/claude-3.5-sonnet"
+          value={byIdInput}
+          onChange={(e) => { setByIdInput(e.target.value); setByIdError(null); }}
+          style={{ flex: 1, fontSize: 12 }}
+        />
+        <Btn size="sm" kind="primary" onClick={addById}>Add</Btn>
+      </div>
+      {byIdError && (
+        <div style={{ color: "var(--red)", fontSize: 11, marginTop: 4 }}>
+          {byIdError}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 // Create modal — provider-pattern with rich per-provider controls.
 // ============================================================================
 
@@ -422,6 +608,11 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
   const [models, setModels] = React.useState(
     () => isEdit ? (existing?.models || []).map((m) => ({ ...m })) : []
   );
+  // Rich catalogue from a discovery probe — populated only for providers
+  // whose pickerVariant routes through OpenRouterModelPicker (currently
+  // just "openrouter"). For other providers discovery still flows into
+  // `models` directly via the legacy onSuccess branch below.
+  const [discovered, setDiscovered] = React.useState([]);
   const [maxConcurrency, setMaxConcurrency] = React.useState(
     existing?.limits?.max_concurrency ?? 1
   );
@@ -447,6 +638,7 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
     }
     setConfigValues(seeded);
     setModels([]);
+    setDiscovered([]);
     setFieldErrors({});
   }, [provider]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -483,7 +675,18 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
     {
       onSuccess: (r) => {
         if (Array.isArray(r?.models) && r.models.length > 0) {
-          setModels(r.models.map((m) => ({ ...m })));
+          // For pickerVariant === "openrouter" the response is a rich
+          // catalogue (pricing, modality, etc.) and we don't auto-select
+          // hundreds of rows — we hand it to OpenRouterModelPicker and
+          // let the operator pick. For every other provider we keep the
+          // legacy behaviour where discovered rows go straight into the
+          // models table.
+          const curDef = providers[provider];
+          if (curDef?.pickerVariant === "openrouter") {
+            setDiscovered(r.models.map((m) => ({ ...m })));
+          } else {
+            setModels(r.models.map((m) => ({ ...m })));
+          }
           _push({
             kind: "success",
             title: "Models fetched",
@@ -656,6 +859,26 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
         </div>
         {models.length === 0 && (
           <div className="field-help muted">— no models — add at least one before saving (or use the buttons above).</div>
+        )}
+        {def && def.pickerVariant === "openrouter" && discovered.length > 0 && (
+          <OpenRouterModelPicker
+            discovered={discovered}
+            selected={models}
+            onSelect={(row) => {
+              const slug = row.id || row.name;
+              if (models.some((m) => m.name === slug)) return;
+              setModels([
+                ...models,
+                {
+                  name: slug,
+                  context_length: row.context_length || OPENROUTER_DEFAULT_LLM_CONTEXT,
+                },
+              ]);
+            }}
+            onDeselect={(slug) => {
+              setModels(models.filter((m) => m.name !== slug));
+            }}
+          />
         )}
         {def && models.map((m, i) => (
           <div key={i} style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
