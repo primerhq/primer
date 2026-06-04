@@ -13,7 +13,9 @@ and SSE-chunk translation live in :mod:`primer.llm._openai_compat`.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -37,6 +39,7 @@ from primer.llm._openai_compat import (
     _tool_to_chat,
     _translate_chunk,
 )
+from primer.llm._trace import _serialize_messages
 from primer.model.chat import (
     Error as ChatError,
     Message,
@@ -50,6 +53,7 @@ from primer.model.provider import (
     OpenChatConfig,
     OpenChatFlavor,
 )
+from primer.observability import tracing as _tracing
 
 
 logger = logging.getLogger(__name__)
@@ -158,6 +162,13 @@ class OpenChatLLM(LLM):
             )
         return self._client
 
+    async def aclose(self) -> None:
+        """Close the openai SDK client (releases the httpx pool).
+        Idempotent (safe to call twice)."""
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
+
     async def stream(  # type: ignore[override]
         self,
         *,
@@ -213,42 +224,59 @@ class OpenChatLLM(LLM):
             },
         )
 
-        async with await self._rate_limiter.acquire(
-            self._rate_limit_key, max_concurrency=self._max_concurrency,
-        ):
-            client = self._get_client()
-            try:
-                sdk_stream = await client.chat.completions.create(**request)
-            except Exception as exc:
-                err = classify_openai_exception(exc)
-                logger.error(
-                    "OpenChat request failed before stream opened",
-                    extra={
-                        "provider_id": self._provider.id,
-                        "model": model,
-                        "exception": type(exc).__name__,
-                    },
+        _provider_kind = self._provider.provider.value
+        _tracer = _tracing.get_tracer("primer.llm")
+        _t0 = time.monotonic()
+        with _tracer.start_as_current_span("llm.stream") as _span:
+            _span.set_attribute("llm.provider", _provider_kind)
+            _span.set_attribute("llm.model", model)
+            if max_output_tokens is not None:
+                _span.set_attribute("llm.request.max_tokens", max_output_tokens)
+            if self._trace_llm_io:
+                _span.set_attribute(
+                    "llm.request.messages",
+                    json.dumps(_serialize_messages(messages)),
                 )
-                raise err from exc
+            async with await self._rate_limiter.acquire(
+                self._rate_limit_key, max_concurrency=self._max_concurrency,
+            ):
+                client = self._get_client()
+                try:
+                    sdk_stream = await client.chat.completions.create(**request)
+                except Exception as exc:
+                    err = classify_openai_exception(exc)
+                    logger.error(
+                        "OpenChat request failed before stream opened",
+                        extra={
+                            "provider_id": self._provider.id,
+                            "model": model,
+                            "exception": type(exc).__name__,
+                        },
+                    )
+                    raise err from exc
 
-            state = _StreamState()
-            try:
-                async for raw in sdk_stream:
-                    for event in _translate_chunk(raw, state):
-                        yield event
-            except Exception as exc:
-                err = classify_openai_exception(exc)
-                logger.error(
-                    "OpenChat stream aborted",
-                    extra={
-                        "provider_id": self._provider.id,
-                        "model": model,
-                        "exception": type(exc).__name__,
-                    },
-                )
-                yield ChatError(
-                    fatal=True,
-                    code=err.code,
-                    message=err.message,
-                )
-                return
+                state = _StreamState()
+                try:
+                    async for raw in sdk_stream:
+                        for event in _translate_chunk(raw, state):
+                            yield event
+                except Exception as exc:
+                    err = classify_openai_exception(exc)
+                    logger.error(
+                        "OpenChat stream aborted",
+                        extra={
+                            "provider_id": self._provider.id,
+                            "model": model,
+                            "exception": type(exc).__name__,
+                        },
+                    )
+                    yield ChatError(
+                        fatal=True,
+                        code=err.code,
+                        message=err.message,
+                    )
+                    return
+            _span.set_attribute(
+                "llm.duration_ms",
+                int((time.monotonic() - _t0) * 1000),
+            )

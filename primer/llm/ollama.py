@@ -394,18 +394,7 @@ def _translate_chunk(
 # --------------------------------------------------------------------------- #
 
 
-def _serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:
-    """Serialize a list of universal Messages to a JSON-safe structure."""
-    out: list[dict[str, Any]] = []
-    for msg in messages:
-        parts: list[dict[str, Any]] = []
-        for part in msg.parts:
-            if isinstance(part, TextPart):
-                parts.append({"type": "text", "text": part.text})
-            else:
-                parts.append({"type": type(part).__name__})
-        out.append({"role": msg.role, "parts": parts})
-    return out
+from primer.llm._trace import _serialize_messages  # noqa: E402
 
 
 class OllamaLLM(LLM):
@@ -476,6 +465,13 @@ class OllamaLLM(LLM):
                 headers=headers or None,
             )
         return self._client
+
+    async def aclose(self) -> None:
+        """Close the ollama SDK client (releases the httpx pool).
+        Idempotent (safe to call twice)."""
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
 
     async def stream(  # type: ignore[override]
         self,
