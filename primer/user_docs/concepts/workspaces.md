@@ -1,5 +1,5 @@
 ---
-slug: workspaces
+slug: workspaces-concept
 title: Workspaces
 section: concepts
 summary: Sandboxed execution environments with a filesystem + git history, scoped to one or more sessions.

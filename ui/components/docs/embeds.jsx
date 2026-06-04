@@ -22,6 +22,9 @@ const EMBEDS = {
   "session-detail-panel":     window.SessionDetailPanelMockup,
   "chat-stream":              window.ChatStreamMockup,
   "harness-wizard-step":      window.HarnessWizardStepMockup,
+  "workspace-template-form":  window.WorkspaceTemplateFormMockup,
+  "collection-list-empty":    window.CollectionListEmptyMockup,
+  "ssp-list":                 window.SspListMockup,
 };
 
 window.DocsEmbeds = EMBEDS;

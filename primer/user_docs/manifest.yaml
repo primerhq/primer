@@ -37,6 +37,11 @@ sections:
       - sessions
       - chats
       - harnesses
+      - workspaces
+      - knowledge-collections
+      - knowledge-documents
+      - semantic-search
+      - internal-collections
   - id: cookbook
     title: Cookbook
     icon: code
