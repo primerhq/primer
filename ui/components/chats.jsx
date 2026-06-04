@@ -688,22 +688,35 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       }
 
       // Compaction envelope (no seq). Server tells us a compaction
-      // pass just happened; surface as an in-stream marker row plus
-      // a success toast. The TokenMeter stays put: the next assistant
-      // turn's `usage` envelope updates it with the real post-compaction
-      // prompt size (summary + retained tail). Pinning the meter to
-      // `after_tokens` here was wrong — that number is the compacted
-      // payload's size, not what the next prompt will weigh.
+      // pass just happened; surface in three places so the operator
+      // sees it: an in-stream marker row, a success toast, and an
+      // immediate TokenMeter update reflecting the new prompt size.
+      //
+      // Field names mirror the server envelope shape
+      // (tokens_before, tokens_after) per
+      // primer/api/routers/chats.py::_compaction_envelope.
+      //
+      // tokens_after IS the post-compaction context size — per
+      // primer/agent/compaction.py::_full_compact + _estimate_tokens,
+      // it is computed over the FULL new history (summary + retained
+      // tail), not just the summary payload. Pinning the meter to it
+      // is correct: that's the prompt the next assistant turn carries.
       if (msg.kind === "compaction" && typeof msg.seq !== "number") {
-        const beforeT = Number(msg.before_tokens) || 0;
-        const afterT = Number(msg.after_tokens) || 0;
+        const beforeT = Number(msg.tokens_before) || 0;
+        const afterT = Number(msg.tokens_after) || 0;
         setMessages((prev) => [...prev, {
           kind: "compaction_marker",
           seq: `compaction-${Date.now()}`,
-          before_tokens: beforeT,
-          after_tokens: afterT,
+          tokens_before: beforeT,
+          tokens_after: afterT,
           reason: msg.reason || "",
         }]);
+        if (afterT > 0) {
+          setUsage((prev) => ({
+            ...prev,
+            input_tokens: afterT,
+          }));
+        }
         if (typeof pushToast === "function") {
           const saved = beforeT > 0 ? Math.max(0, beforeT - afterT) : 0;
           pushToast({
@@ -1757,8 +1770,14 @@ function CT_AttachmentPart({ part }) {
 // ============================================================================
 
 function CompactionMarker({ m }) {
-  const before = Number(m.before_tokens) || 0;
-  const after = Number(m.after_tokens) || 0;
+  // The marker row can arrive two ways:
+  // - From the WS `compaction` envelope (lifted to the top-level row).
+  // - From REST history replay (server's compaction_marker ChatMessage
+  //   with the token counts nested under `payload`).
+  // Read both shapes; whichever has a value wins.
+  const payload = m.payload || {};
+  const before = Number(m.tokens_before ?? payload.tokens_before) || 0;
+  const after = Number(m.tokens_after ?? payload.tokens_after) || 0;
   const saved = before > 0 ? Math.max(0, before - after) : 0;
   return (
     <div
