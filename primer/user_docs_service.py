@@ -128,6 +128,8 @@ class UserDocsService:
         self._entries: dict[str, DocEntry] = {}
         self._manifest: dict[str, Any] = {"sections": []}
         self._manifest_mtime: float = 0.0
+        self._lint_issues: list = []
+        self._embeds_manifest: list[str] = []
 
     def reload_index(self) -> None:
         """Re-walk the tree from scratch. Called at startup and from
@@ -135,6 +137,7 @@ class UserDocsService:
         self._manifest = self._load_manifest()
         self._entries.clear()
         if not self._root.exists():
+            self._lint_issues = []
             return
         for path in sorted(self._root.rglob("*.md")):
             try:
@@ -146,6 +149,55 @@ class UserDocsService:
                 )
                 continue
             self._entries[entry.slug] = entry
+        # Run lint after every reload. The embeds_manifest is initialised
+        # empty; the lifespan handler calls set_embeds_manifest() once
+        # the registry is wired so rule 3 (unknown_embed_id) sees the
+        # live allowlist.
+        try:
+            from primer.user_docs_lint import run_lint
+            self._lint_issues = run_lint(
+                self, embeds_manifest=self._embeds_manifest,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("user_docs: lint runner failed: %s", exc)
+            self._lint_issues = []
+
+    def lint_issues(self) -> list:
+        """Return the most recent lint pass's findings."""
+        return list(self._lint_issues)
+
+    def set_embeds_manifest(self, ids: list[str]) -> None:
+        """Update the embed-id allowlist used by lint rule 3 and re-run
+        lint. Called from the lifespan handler once the live React
+        embed registry is wired."""
+        self._embeds_manifest = list(ids)
+        try:
+            from primer.user_docs_lint import run_lint
+            self._lint_issues = run_lint(
+                self, embeds_manifest=self._embeds_manifest,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("user_docs: re-lint failed: %s", exc)
+
+    def get_ai_doc(self, slug: str) -> dict[str, Any] | None:
+        """Return the AI-doc at primer/ai_docs/<slug>.md, parsed the
+        same way as a user doc. Returns None when the file does not
+        exist. Used by the /v1/user_docs/_ai/<slug> mirror route."""
+        ai_root = self._root.parent / "ai_docs"
+        path = ai_root / f"{slug}.md"
+        if not path.exists():
+            return None
+        src = path.read_text(encoding="utf-8")
+        fm, body = parse_frontmatter(src)
+        return {
+            "slug": slug,
+            "title": fm.get("title", slug),
+            "summary": fm.get("summary", ""),
+            "section": "_ai",
+            "source": body,
+            "frontmatter": fm,
+            "headings": _extract_headings(body),
+        }
 
     def _load_manifest(self) -> dict[str, Any]:
         mpath = self._root / "manifest.yaml"

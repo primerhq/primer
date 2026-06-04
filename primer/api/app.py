@@ -343,6 +343,36 @@ def _make_lifespan(config: AppConfig):
         # Phase 5 wires the live embed-id registry; empty for now.
         app.state.user_docs_embeds = []
         logger.info("lifespan: user-docs service initialised")
+        # Dev-mode lint gate. Set PRIMER_USER_DOCS_STRICT=1 to refuse
+        # startup on lint errors. Production logs them and excludes
+        # the offending docs from the manifest.
+        _ud_errors = [
+            i for i in user_docs_service.lint_issues()
+            if i.severity == "error"
+        ]
+        _ud_warnings = [
+            i for i in user_docs_service.lint_issues()
+            if i.severity == "warning"
+        ]
+        if _ud_warnings:
+            logger.warning(
+                "user_docs: %d lint warning(s); see /docs/_lint",
+                len(_ud_warnings),
+            )
+        if _ud_errors:
+            _ud_summary = "\n".join(
+                f"  {i.file}:{i.line or '?'} [{i.rule}] {i.message}"
+                for i in _ud_errors[:20]
+            )
+            if os.environ.get("PRIMER_USER_DOCS_STRICT") == "1":
+                raise RuntimeError(
+                    f"user_docs: {len(_ud_errors)} lint error(s); "
+                    f"refusing to start.\n{_ud_summary}"
+                )
+            logger.error(
+                "user_docs: %d lint error(s).\n%s",
+                len(_ud_errors), _ud_summary,
+            )
 
         # Workspace health-probe loop. Pings each running/failed
         # workspace at ``workspace_probe_interval_seconds`` cadence,
