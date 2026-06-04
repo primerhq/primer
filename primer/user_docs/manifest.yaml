@@ -3,24 +3,31 @@ sections:
     title: Getting Started
     icon: zap
     order: 1
-    docs: []
+    docs:
+      - welcome
+      - install
+      - first-login
   - id: concepts
     title: Concepts
     icon: graph
     order: 2
-    docs: []
+    docs:
+      - what-is-an-agent
   - id: features
     title: Features
     icon: tools
     order: 3
-    docs: []
+    docs:
+      - agents
   - id: cookbook
     title: Cookbook
     icon: code
     order: 4
-    docs: []
+    docs:
+      - scheduled-summariser
   - id: reference
     title: Reference
     icon: doc
     order: 5
-    docs: []
+    docs:
+      - rest-api-overview
