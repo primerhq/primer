@@ -25,6 +25,10 @@ const EMBEDS = {
   "workspace-template-form":  window.WorkspaceTemplateFormMockup,
   "collection-list-empty":    window.CollectionListEmptyMockup,
   "ssp-list":                 window.SspListMockup,
+  "trigger-create":           window.TriggerCreateMockup,
+  "worker-stats":             window.WorkerStatsMockup,
+  "api-token-create":         window.ApiTokenCreateMockup,
+  "bug-reporter-modal":       window.BugReporterModalMockup,
 };
 
 window.DocsEmbeds = EMBEDS;

@@ -42,6 +42,13 @@ sections:
       - knowledge-documents
       - semantic-search
       - internal-collections
+      - channels
+      - triggers
+      - tool-approval
+      - mcp-server
+      - workers-and-health
+      - auth-and-tokens
+      - bug-reporter
   - id: cookbook
     title: Cookbook
     icon: code

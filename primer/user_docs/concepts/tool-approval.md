@@ -1,5 +1,5 @@
 ---
-slug: tool-approval
+slug: tool-approval-concept
 title: Tool approval
 section: concepts
 summary: Pre-dispatch gates that pause a tool call until an operator, policy, or LLM judge says yes.
