@@ -19,8 +19,6 @@ from pydantic import ValidationError
 from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
-    Limits,
-    LLMModel,
     OpenRouterConfig,
 )
 
@@ -39,7 +37,7 @@ class TestOpenRouterConfig:
             app_url="https://primer.example",
         )
         assert cfg.app_name == "primer-staging"
-        assert str(cfg.app_url).startswith("https://primer.example")
+        assert str(cfg.app_url) == "https://primer.example/"
 
     def test_rejects_missing_api_key(self):
         with pytest.raises(ValidationError):

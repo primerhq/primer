@@ -261,9 +261,15 @@ class OpenRouterConfig(BaseModel):
     Uses ``extra='forbid'`` so a config dict shaped for a different
     provider (e.g. one carrying a ``url`` field) is rejected by the
     LLMProvider validator instead of silently coercing into an
-    OpenRouter config with the extra field dropped.
+    OpenRouter config with the extra field dropped. Sibling LLM
+    configs do not need this because their ``url``/``flavor`` fields
+    already distinguish them; ``OpenRouterConfig``'s only field that
+    overlaps with another arm is ``api_key``, which is present on
+    every config.
     """
 
+    # extra='forbid': see class docstring. Defends the validator
+    # against mismatched-shape config dicts.
     model_config = ConfigDict(extra="forbid")
 
     api_key: SecretStr = Field(
