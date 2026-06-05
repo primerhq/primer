@@ -458,38 +458,28 @@ class WorkerPool:
             return await self._build_session_executor(session)
 
         def _turn_log_factory(workspace_io, session_id):
-            """Build a WorkspaceTurnLogWriter pointed at
-            ``.state/sessions/<sid>/turns.jsonl`` via the shim."""
+            """Build a WorkspaceTurnLogWriter that writes to
+            ``<workspace.state_path>/sessions/<sid>/turns.jsonl`` via
+            the shim. The shim handles state_path resolution so the
+            writer / reader / route all agree even when an operator
+            has overridden the default ``.state`` on the template."""
             from primer.session.turn_log_writer import (
                 NoopTurnLogWriter,
                 WorkspaceTurnLogWriter,
             )
 
-            workspace_id = io_shim._session_to_workspace.get(session_id)
+            workspace_id = io_shim.workspace_id_for(session_id)
             if workspace_id is None:
                 return NoopTurnLogWriter()
-            rel_path = f".state/sessions/{session_id}/turns.jsonl"
+            # Path is workspace-state-relative; the shim prepends the
+            # workspace's own state_path before delegating.
+            rel = f"sessions/{session_id}/turns.jsonl"
 
             async def _append(line: bytes) -> None:
-                await io_shim.append_state_line(
-                    workspace_id, rel_path, line,
-                )
+                await io_shim.append_state_line(workspace_id, rel, line)
 
             async def _read_existing() -> bytes:
-                """Read the on-disk turns.jsonl so the writer can seed
-                its seq counter. Returns empty bytes when the workspace
-                handle is gone or the file doesn't exist."""
-                if self._workspace_registry is None:
-                    return b""
-                ws = await self._workspace_registry.get_workspace(
-                    workspace_id,
-                )
-                if ws is None:
-                    return b""
-                try:
-                    return await ws.read_file(rel_path)
-                except Exception:  # noqa: BLE001
-                    return b""
+                return await io_shim.read_state_file(workspace_id, rel)
 
             return WorkspaceTurnLogWriter(
                 append_line=_append,
@@ -1940,15 +1930,27 @@ class _WorkspaceIOShim:
 
         await workspace.append_message_line(session_id, line)
 
-    async def append_state_line(
-        self, workspace_id: str, relative_path: str, line: bytes,
-    ) -> None:
-        """Append ``line`` to ``relative_path`` inside ``workspace_id``.
+    def workspace_id_for(self, session_id: str) -> str | None:
+        """Public lookup for the workspace id bound to a session.
 
-        Resolves the workspace via the registry; logs and drops the
-        bytes if either the registry is absent or the workspace can't
-        be resolved (mirroring ``append_message_line``'s best-effort
-        policy for the turn-log path).
+        Replaces direct reads of the private ``_session_to_workspace``
+        dict by call sites that need to resolve a session's workspace
+        (e.g. dispatch's turn-log factory closure).
+        """
+        return self._session_to_workspace.get(session_id)
+
+    async def append_state_line(
+        self, workspace_id: str, state_relative_path: str, line: bytes,
+    ) -> None:
+        """Append ``line`` to ``<workspace.state_path>/<state_relative_path>``.
+
+        Resolves the workspace via the registry, prepends the workspace's
+        own ``state_path`` (so operators can override the default
+        ``.state`` via :class:`WorkspaceTemplate` without losing the
+        writer/reader path agreement), then delegates to the backend's
+        ``append_state_line``. Logs and drops the bytes if the registry
+        is absent or the workspace can't be resolved (mirroring
+        ``append_message_line``'s best-effort policy).
         """
         if self._registry is None:
             logger.warning(
@@ -1965,8 +1967,10 @@ class _WorkspaceIOShim:
                 workspace_id, len(line),
             )
             return
+        state_path = getattr(workspace, "state_path", ".state")
+        full_path = f"{state_path}/{state_relative_path}"
         try:
-            await workspace.append_state_line(relative_path, line)
+            await workspace.append_state_line(full_path, line)
         except NotImplementedError:
             # Backend without turn-log support; silently no-op so
             # the dispatch doesn't bubble the failure.
@@ -1974,3 +1978,25 @@ class _WorkspaceIOShim:
                 "_WorkspaceIOShim: workspace %r has no append_state_line; "
                 "dropping %d bytes", workspace_id, len(line),
             )
+
+    async def read_state_file(
+        self, workspace_id: str, state_relative_path: str,
+    ) -> bytes:
+        """Read ``<workspace.state_path>/<state_relative_path>`` from the workspace.
+
+        Returns ``b""`` when the workspace is gone, the path doesn't
+        exist, or any other backend error fires. Used by the turn-log
+        writer's lazy bootstrap so the same path-resolution rule
+        applies to both reads and writes.
+        """
+        if self._registry is None:
+            return b""
+        workspace = await self._registry.get_workspace(workspace_id)
+        if workspace is None:
+            return b""
+        state_path = getattr(workspace, "state_path", ".state")
+        full_path = f"{state_path}/{state_relative_path}"
+        try:
+            return await workspace.read_file(full_path)
+        except Exception:  # noqa: BLE001
+            return b""

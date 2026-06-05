@@ -354,6 +354,18 @@ class Workspace(ABC):
             f"{type(self).__name__} does not implement append_message_line"
         )
 
+    @property
+    def state_path(self) -> str:
+        """The configured state subdirectory inside the workspace root.
+
+        Convenience accessor that resolves the active template's
+        ``state_path`` (typically ``".state"`` but operators can
+        override it via :class:`WorkspaceTemplate`). Use this instead
+        of poking the private ``_template`` attribute so consumer code
+        works against the public ABC surface.
+        """
+        return self.template.state_path
+
     async def append_state_line(self, relative_path: str, line: bytes) -> None:
         """Append ``line`` to ``<workspace_root>/<relative_path>``.
 

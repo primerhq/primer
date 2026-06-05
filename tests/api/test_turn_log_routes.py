@@ -19,16 +19,18 @@ def _now() -> datetime:
     return datetime(2026, 6, 5, 10, 0, 0, tzinfo=timezone.utc)
 
 
-class _FakeWorkspaceTemplate:
-    state_path = ".state"
-
-
 class _FakeWorkspace:
-    """A workspace double whose `read_file` returns scripted bytes."""
+    """A workspace double whose `read_file` returns scripted bytes.
+
+    Exposes the public ``state_path`` property the route uses to build
+    JSONL paths. Real backends resolve this via
+    ``self.template.state_path`` (default ``.state``).
+    """
+
+    state_path = ".state"
 
     def __init__(self) -> None:
         self._files: dict[str, bytes] = {}
-        self._template = _FakeWorkspaceTemplate()
 
     def write(self, path: str, content: str) -> None:
         self._files[path] = content.encode("utf-8")
@@ -131,6 +133,49 @@ async def test_session_turn_log_since_seq(
     # Only seq=3 has seq > 2
     assert body["total"] == 1
     assert body["items"][0]["seq"] == 3
+
+
+@pytest.mark.asyncio
+async def test_session_turn_log_honours_custom_state_path(
+    client: httpx.AsyncClient, app, fake_storage_provider,
+):
+    """Operators can override the default `.state` via WorkspaceTemplate;
+    the route MUST honour the workspace's state_path so writer + reader
+    agree on the file location."""
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        SessionStatus,
+        WorkspaceSession,
+    )
+
+    sess = WorkspaceSession(
+        id="sess-custom-state",
+        workspace_id="ws-custom",
+        binding=AgentSessionBinding(agent_id="ag1"),
+        status=SessionStatus.RUNNING,
+        created_at=_now(),
+        turn_status="running",
+    )
+    await fake_storage_provider.get_storage(WorkspaceSession).create(sess)
+
+    class _CustomWorkspace(_FakeWorkspace):
+        state_path = ".meta/state"
+
+    ws = _CustomWorkspace()
+    ws.write(
+        ".meta/state/sessions/sess-custom-state/turns.jsonl",
+        '{"seq":1,"kind":"started","ts":"2026-06-05T10:00:00Z","model":"m","input_message_count":1}\n',
+    )
+
+    async def _get(workspace_id):
+        return ws if workspace_id == "ws-custom" else None
+
+    app.state.workspace_registry.get_workspace = _get  # type: ignore[assignment]
+    r = await client.get("/v1/sessions/sess-custom-state/turn_log")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 1
+    assert body["items"][0]["kind"] == "started"
 
 
 @pytest.mark.asyncio

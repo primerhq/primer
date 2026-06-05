@@ -250,9 +250,7 @@ async def _serve_graph_turn_log(
                 "items": [], "total": 0,
                 "offset": offset, "limit": limit,
             }
-        state_path = getattr(
-            getattr(workspace, "_template", None), "state_path", ".state",
-        )
+        state_path = getattr(workspace, "state_path", ".state")
         if node_id is None:
             rel = f"{state_path}/graphs/{run_id}/turns.jsonl"
         else:

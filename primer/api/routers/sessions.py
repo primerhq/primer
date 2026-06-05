@@ -745,9 +745,7 @@ async def get_session_turn_log(
         # Workspace gone (deleted, lost). Surface an empty log instead
         # of 5xx so the UI can still render the tab.
         return {"items": [], "total": 0, "offset": offset, "limit": limit}
-    state_path = getattr(
-        getattr(workspace, "_template", None), "state_path", ".state",
-    )
+    state_path = getattr(workspace, "state_path", ".state")
     rel = f"{state_path}/sessions/{session_id}/turns.jsonl"
     return await _read_workspace_turn_log(
         workspace=workspace,
@@ -823,7 +821,7 @@ async def _session_replay_since_cursor(
     """
     from primer.model.except_ import NotFoundError as _NotFoundError
 
-    state_path = getattr(getattr(workspace, "_template", None), "state_path", ".state")
+    state_path = getattr(workspace, "state_path", ".state")
     jsonl_path = f"{state_path}/sessions/{session_id}/messages.jsonl"
 
     try:
@@ -1101,9 +1099,7 @@ async def _session_send_loop(
         if workspace is None:
             last_sent_seq = tick.seq
             continue
-        state_path = getattr(
-            getattr(workspace, "_template", None), "state_path", ".state"
-        )
+        state_path = getattr(workspace, "state_path", ".state")
         jsonl_path = (
             f"{state_path}/sessions/{session_id}/messages.jsonl"
         )
@@ -1147,9 +1143,7 @@ async def _session_send_loop_instrumented(
         if workspace is None:
             last_sent_seq = tick.seq
             continue
-        state_path = getattr(
-            getattr(workspace, "_template", None), "state_path", ".state"
-        )
+        state_path = getattr(workspace, "state_path", ".state")
         jsonl_path = (
             f"{state_path}/sessions/{session_id}/messages.jsonl"
         )
