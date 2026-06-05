@@ -33,12 +33,25 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
+from primer.model.turn_log import (
+    TurnLogCancelled,
+    TurnLogCompleted,
+    TurnLogFailed,
+    TurnLogResumed,
+    TurnLogStarted,
+    TurnLogYielded,
+)
 from primer.model.yield_ import YieldToWorker
 from primer.session.persistence import (
     WorkspaceIO,
     WorkspaceMessageWriter,
     _CoalesceState,
     translate_stream_event,
+)
+from primer.session.turn_log_writer import (
+    NoopTurnLogWriter,
+    TurnLogWriter,
+    to_problem_details,
 )
 
 
@@ -48,6 +61,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Public dataclass
 # ---------------------------------------------------------------------------
+
+
+def _default_turn_log_factory(
+    workspace_io: WorkspaceIO, session_id: str,
+) -> TurnLogWriter:
+    return NoopTurnLogWriter()
 
 
 @dataclass
@@ -62,6 +81,15 @@ class SessionDispatchDeps:
     # whose ``invoke(messages)`` is an async generator of StreamEvents.
     # Type: Callable[[WorkspaceSession], Awaitable[Any]]
     build_executor: Callable[[WorkspaceSession], Awaitable[Any]]
+
+    # Factory for the per-turn TurnLogWriter. Receives the workspace IO
+    # and the session id so the production wiring can build a path-bound
+    # writer pointed at .state/sessions/<sid>/turns.jsonl. Default is the
+    # Noop writer so legacy callers (and existing tests that don't care
+    # about turn-log emission) keep working.
+    turn_log_writer_factory: Callable[
+        [WorkspaceIO, str], TurnLogWriter,
+    ] = _default_turn_log_factory
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +157,34 @@ async def run_one_session_turn(
         workspace_io=deps.workspace_io,
         session_id=session_id,
     )
+    turn_log = deps.turn_log_writer_factory(deps.workspace_io, session_id)
+
+    # If the row carries parked_at, this turn is resuming a previously
+    # parked session. Emit a `resumed` event before `started` so the UI
+    # can show the wait latency.
+    if session.parked_at is not None:
+        wait_ms = max(
+            0,
+            int((_now() - session.parked_at).total_seconds() * 1000),
+        )
+        await _safe_turn_log(turn_log, TurnLogResumed(
+            seq=0,
+            ts=_now(),
+            turn_no=session.turn_no,
+            wait_ms=wait_ms,
+            resume_kind="event_fired",
+        ))
+
+    # `started` marks the boundary just before the executor begins streaming.
+    _turn_started_at = _now()
+    await _safe_turn_log(turn_log, TurnLogStarted(
+        seq=0,
+        ts=_turn_started_at,
+        turn_no=session.turn_no,
+        model=None,
+        input_message_count=0,
+    ))
+
     cancel_requested = False
     cancel_reason: str = "operator_interrupt"
 
@@ -176,19 +232,37 @@ async def run_one_session_turn(
         # ------------------------------------------------------------------
         # 5a. Parked turn — write YIELDED record, flush, publish tick, park
         # ------------------------------------------------------------------
+        await _safe_turn_log(turn_log, TurnLogYielded(
+            seq=0,
+            ts=_now(),
+            turn_no=session.turn_no,
+            yield_kind=_classify_yield_kind(park),
+            event_key=park.yielded.event_key,
+        ))
         rec = _yielded_record(park)
         seq = await writer.append(rec)
         await writer.flush()
         await deps.event_bus.publish(
             f"session:{session_id}:tick", {"seq": seq}
         )
+        await turn_log.aclose()
         return ReleaseOutcome(success=True, drop_lease=False)
 
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "session %s executor raised unexpected error; releasing claim",
             session_id,
         )
+        await _safe_turn_log(turn_log, TurnLogFailed(
+            seq=0,
+            ts=_now(),
+            turn_no=session.turn_no,
+            duration_ms=max(
+                0,
+                int((_now() - _turn_started_at).total_seconds() * 1000),
+            ),
+            error=to_problem_details(exc),
+        ))
         error_rec = SessionMessageRecord(
             seq=1,
             kind=SessionMessageKind.ERROR,
@@ -206,6 +280,7 @@ async def run_one_session_turn(
             new_status=SessionStatus.ENDED,
             ended_reason="failed",
         )
+        await turn_log.aclose()
         return ReleaseOutcome(success=False, drop_lease=True)
 
     finally:
@@ -219,6 +294,12 @@ async def run_one_session_turn(
     # 5b. Cancel path — write CANCELLED record, transition row to ENDED
     # ------------------------------------------------------------------
     if cancel_requested:
+        await _safe_turn_log(turn_log, TurnLogCancelled(
+            seq=0,
+            ts=_now(),
+            turn_no=session.turn_no,
+            reason=cancel_reason,
+        ))
         rec = _cancelled_record(cancel_reason)
         seq = await writer.append(rec)
         await writer.flush()
@@ -231,6 +312,7 @@ async def run_one_session_turn(
             new_status=SessionStatus.ENDED,
             ended_reason="cancelled",
         )
+        await turn_log.aclose()
         return ReleaseOutcome(success=True, drop_lease=True)
 
     # ------------------------------------------------------------------
@@ -250,6 +332,17 @@ async def run_one_session_turn(
         ended_reason=ended_reason,
     )
 
+    await _safe_turn_log(turn_log, TurnLogCompleted(
+        seq=0,
+        ts=_now(),
+        turn_no=session.turn_no,
+        duration_ms=max(
+            0,
+            int((_now() - _turn_started_at).total_seconds() * 1000),
+        ),
+        finish_reason=last_done_reason,
+    ))
+    await turn_log.aclose()
     return ReleaseOutcome(success=True, drop_lease=True)
 
 
@@ -260,6 +353,40 @@ async def run_one_session_turn(
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _safe_turn_log(writer: TurnLogWriter, event) -> None:
+    """Append `event` via `writer`; swallow + log any IO failure.
+
+    Turn logging is best-effort observability, not a correctness primitive.
+    A disk-full or other transient IO error must not abort the live dispatch.
+    """
+    try:
+        await writer.append(event)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "turn_log append failed (kind=%s); continuing",
+            getattr(event, "kind", "?"),
+        )
+
+
+_YIELD_KIND_PREFIXES = (
+    ("ask_user", "ask_user"),
+    ("approval", "approval"),
+)
+
+
+def _classify_yield_kind(park: YieldToWorker) -> str:
+    """Map a YieldToWorker.event_key prefix to the turn-log yield_kind enum.
+
+    Falls back to "subscribe_to_trigger" for everything else (timers, mcp_task,
+    watch:*, etc.) since those all subscribe to an external event source.
+    """
+    key = park.yielded.event_key or ""
+    for prefix, kind in _YIELD_KIND_PREFIXES:
+        if key.startswith(prefix):
+            return kind
+    return "subscribe_to_trigger"
 
 
 def _yielded_record(park: YieldToWorker) -> SessionMessageRecord:
