@@ -51,6 +51,7 @@ from primer.session.persistence import (
 from primer.session.turn_log_writer import (
     NoopTurnLogWriter,
     TurnLogWriter,
+    safe_append as _safe_turn_log,
     to_problem_details,
 )
 
@@ -353,21 +354,6 @@ async def run_one_session_turn(
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-async def _safe_turn_log(writer: TurnLogWriter, event) -> None:
-    """Append `event` via `writer`; swallow + log any IO failure.
-
-    Turn logging is best-effort observability, not a correctness primitive.
-    A disk-full or other transient IO error must not abort the live dispatch.
-    """
-    try:
-        await writer.append(event)
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "turn_log append failed (kind=%s); continuing",
-            getattr(event, "kind", "?"),
-        )
 
 
 _YIELD_KIND_PREFIXES = (

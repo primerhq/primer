@@ -47,6 +47,10 @@ from primer.graph.router import RouterRegistry
 from primer.model.chat import Message, StreamEvent, ToolResultPart
 from primer.model.graph import Graph, NodeRuntimeState, _GraphNodeRef, _ToolCallNode
 from primer.model.workspace_session import SessionStatus
+from primer.session.turn_log_writer import (
+    TurnLogWriter,
+    WorkspaceTurnLogWriter,
+)
 
 
 if TYPE_CHECKING:
@@ -114,6 +118,37 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         self._state_repo = state_repo
         self._graph_session_id = graph_session_id
         self._workspace_session = workspace_session
+
+        # Turn-log writers: bypass the git-backed state_repo.commit
+        # path and write directly to .state/graphs/<gsid>/turns.jsonl
+        # (graph-level) and .state/graphs/<gsid>/nodes/<nid>/turns.jsonl
+        # (per-node). Turn logs are observability data — high write rate,
+        # no audit-trail value, so they live outside the git history.
+        state_root = state_repo.path / "graphs" / graph_session_id
+
+        def _make_append_line(rel_path: Path):
+            target = rel_path
+
+            async def _append(line: bytes) -> None:
+                def _do() -> None:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with target.open("ab") as fh:
+                        fh.write(line)
+
+                await asyncio.to_thread(_do)
+
+            return _append
+
+        def _factory(node_id: str) -> TurnLogWriter:
+            target = state_root / "nodes" / node_id / "turns.jsonl"
+            return WorkspaceTurnLogWriter(
+                append_line=_make_append_line(target),
+            )
+
+        self._turn_log_factory = _factory
+        self._graph_turn_log = WorkspaceTurnLogWriter(
+            append_line=_make_append_line(state_root / "turns.jsonl"),
+        )
         # Spec §4.3 — when set (typically by pool.py from
         # ``session.metadata['graph_input']``), this overrides the
         # ``messages`` list passed to :meth:`invoke` and becomes

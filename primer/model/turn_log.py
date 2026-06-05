@@ -15,8 +15,8 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from primer.api.errors import ProblemDetails
 from primer.model.common import Identifiable
+from primer.model.problem_details import ProblemDetails
 
 
 class TurnLogKind(str, Enum):

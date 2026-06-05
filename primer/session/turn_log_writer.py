@@ -29,7 +29,6 @@ import traceback
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from primer.api.errors import ProblemDetails
 from primer.model.except_ import (
     AuthenticationError,
     AuthRequiredError,
@@ -46,6 +45,7 @@ from primer.model.except_ import (
     UnsupportedContentError,
     ValidationError,
 )
+from primer.model.problem_details import ProblemDetails
 from primer.model.turn_log import (
     TurnLogEvent,
     TurnLogRecord,
@@ -240,11 +240,28 @@ class StorageTurnLogWriter(TurnLogWriter):
         self._closed = True
 
 
+async def safe_append(writer: TurnLogWriter, event: TurnLogEvent) -> None:
+    """Append `event` via `writer`; swallow + log any IO failure.
+
+    Turn logging is best-effort observability, not a correctness primitive.
+    Disk-full or other transient errors must not abort the live dispatch /
+    graph executor.
+    """
+    try:
+        await writer.append(event)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "turn_log append failed (kind=%s); continuing",
+            getattr(event, "kind", "?"),
+        )
+
+
 __all__ = [
     "AppendLine",
     "NoopTurnLogWriter",
     "StorageTurnLogWriter",
     "TurnLogWriter",
     "WorkspaceTurnLogWriter",
+    "safe_append",
     "to_problem_details",
 ]

@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -80,8 +81,22 @@ from primer.model.graph import (
     _StaticEdge,
     _ToolCallNode,
 )
+from primer.model.problem_details import ProblemDetails
+from primer.model.turn_log import (
+    TurnLogCompleted,
+    TurnLogFailed,
+    TurnLogStarted,
+    TurnLogSuperstepEnded,
+    TurnLogSuperstepStarted,
+)
 from primer.model.workspace_session import SessionStatus
 from primer.model.yield_ import Yielded, YieldToWorker
+from primer.session.turn_log_writer import (
+    NoopTurnLogWriter,
+    TurnLogWriter,
+    safe_append as _safe_graph_turn_log,
+    to_problem_details,
+)
 
 
 if TYPE_CHECKING:
@@ -751,6 +766,18 @@ class _BaseGraphExecutor(ABC):
         self._ready_set: set[str] = set()
         self._node_states: dict[str, NodeRuntimeState] = {}
 
+        # Turn-log emission. Subclasses (WorkspaceGraphExecutor /
+        # GraphExecutor) override these in their __init__ to wire real
+        # writers; the base defaults emit no-ops so legacy callers and
+        # graph unit tests run without any side effect.
+        self._turn_log_factory: Callable[[str], TurnLogWriter] = (
+            lambda node_id: NoopTurnLogWriter()
+        )
+        self._graph_turn_log: TurnLogWriter = NoopTurnLogWriter()
+        # Set by `_run_superstep_loop` at each iteration boundary so
+        # `_stream_node` can stamp the active superstep on its events.
+        self._current_superstep_id: str | None = None
+
     @property
     def graph(self) -> Graph:
         return self._graph
@@ -1317,6 +1344,23 @@ class _BaseGraphExecutor(ABC):
                 status=SessionStatus.RUNNING,
             )
 
+            # Emit superstep_started + open per-node writers. Stamped on
+            # ``self._current_superstep_id`` so child node writers can
+            # carry the same id.
+            superstep_id = f"ss-{context.iteration}-{uuid.uuid4().hex[:6]}"
+            self._current_superstep_id = superstep_id
+            ss_started_at = datetime.now(timezone.utc)
+            await _safe_graph_turn_log(
+                self._graph_turn_log,
+                TurnLogSuperstepStarted(
+                    seq=0,
+                    ts=ss_started_at,
+                    iteration=context.iteration,
+                    superstep_id=superstep_id,
+                    ready_node_ids=sorted(ready),
+                ),
+            )
+
             # Run all ready nodes concurrently. Each pushes its events
             # live to the shared queue; we drain them as they arrive
             # and yield to the caller. _NodeDone sentinels track
@@ -1330,6 +1374,30 @@ class _BaseGraphExecutor(ABC):
             # purely for deterministic stream ordering.
             ready_ordered = sorted(ready)
             queue: "asyncio.Queue[StreamEvent | _NodeDone]" = asyncio.Queue()
+
+            # Per-node turn-log writers + start timestamps. Opened
+            # before we spawn the tasks so the `started` event lands
+            # before any node event. Closed in the finally block.
+            node_turn_logs: dict[str, TurnLogWriter] = {}
+            node_started_at: dict[str, datetime] = {}
+            for nid in ready_ordered:
+                w = self._turn_log_factory(nid)
+                node_turn_logs[nid] = w
+                started_at = datetime.now(timezone.utc)
+                node_started_at[nid] = started_at
+                await _safe_graph_turn_log(
+                    w,
+                    TurnLogStarted(
+                        seq=0,
+                        ts=started_at,
+                        node_id=nid,
+                        iteration=context.iteration,
+                        superstep_id=superstep_id,
+                        model=None,
+                        input_message_count=0,
+                    ),
+                )
+
             tasks: list[asyncio.Task] = [
                 asyncio.create_task(
                     self._stream_node(nid, context, queue)
@@ -1344,6 +1412,58 @@ class _BaseGraphExecutor(ABC):
                     if isinstance(item, _NodeDone):
                         results[item.node_id] = item
                         done_count += 1
+                        # Emit completed / failed for this node as soon as
+                        # its _NodeDone lands. The error path uses the
+                        # str(error) we already have on _NodeDone; we
+                        # wrap it in a generic ProblemDetails since the
+                        # node-level error is already a string by the
+                        # time it reaches the queue.
+                        w = node_turn_logs.get(item.node_id)
+                        started_at = node_started_at.get(
+                            item.node_id, datetime.now(timezone.utc),
+                        )
+                        if w is not None:
+                            duration_ms = max(
+                                0,
+                                int((
+                                    datetime.now(timezone.utc) - started_at
+                                ).total_seconds() * 1000),
+                            )
+                            if item.error is None:
+                                await _safe_graph_turn_log(
+                                    w,
+                                    TurnLogCompleted(
+                                        seq=0,
+                                        ts=datetime.now(timezone.utc),
+                                        node_id=item.node_id,
+                                        iteration=context.iteration,
+                                        superstep_id=superstep_id,
+                                        duration_ms=duration_ms,
+                                    ),
+                                )
+                            else:
+                                await _safe_graph_turn_log(
+                                    w,
+                                    TurnLogFailed(
+                                        seq=0,
+                                        ts=datetime.now(timezone.utc),
+                                        node_id=item.node_id,
+                                        iteration=context.iteration,
+                                        superstep_id=superstep_id,
+                                        duration_ms=duration_ms,
+                                        error=ProblemDetails(
+                                            type="/errors/graph-node-failed",
+                                            title="Graph node failed",
+                                            status=500,
+                                            detail=str(item.error),
+                                            extensions={
+                                                "ended_detail": (
+                                                    item.ended_detail
+                                                ),
+                                            },
+                                        ),
+                                    ),
+                                )
                     else:
                         yield item
             finally:
@@ -1357,6 +1477,41 @@ class _BaseGraphExecutor(ABC):
                         await t
                     except (asyncio.CancelledError, BaseException):
                         pass
+                # Emit superstep_ended + close per-node writers.
+                # Happens BEFORE the per-node results loop / termination
+                # decisions so the graph-level log captures every
+                # superstep even on a break that follows.
+                completed_node_ids = sorted(
+                    nid for nid, d in results.items()
+                    if d.error is None and not d.suspended
+                )
+                failed_node_ids = sorted(
+                    nid for nid, d in results.items()
+                    if d.error is not None
+                )
+                await _safe_graph_turn_log(
+                    self._graph_turn_log,
+                    TurnLogSuperstepEnded(
+                        seq=0,
+                        ts=datetime.now(timezone.utc),
+                        iteration=context.iteration,
+                        superstep_id=superstep_id,
+                        completed_node_ids=completed_node_ids,
+                        failed_node_ids=failed_node_ids,
+                        duration_ms=max(
+                            0,
+                            int((
+                                datetime.now(timezone.utc) - ss_started_at
+                            ).total_seconds() * 1000),
+                        ),
+                    ),
+                )
+                for _w in node_turn_logs.values():
+                    try:
+                        await _w.aclose()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("turn_log aclose failed; continuing")
+                self._current_superstep_id = None
 
             # Apply per-node results to the supersteps' node_states +
             # graph context, decide whether to terminate.
