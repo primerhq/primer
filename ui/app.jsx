@@ -1161,6 +1161,72 @@ function App() {
     );
   }
 
+  // Full-page docs view: the docs renderer has its own left-nav and
+  // benefits from owning the full viewport (no console chrome, no
+  // sidebar collapse-toggle, no breadcrumbs). A thin top bar exposes
+  // a back-to-console button so the operator never gets stuck.
+  if (page === "docs") {
+    return (
+      <div className="docs-fullpage" style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100vh",
+        background: "var(--bg)",
+      }}>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "8px 16px",
+          borderBottom: "1px solid var(--border)",
+          background: "var(--bg-1, var(--bg))",
+          flexShrink: 0,
+        }}>
+          <Btn
+            kind="ghost"
+            size="sm"
+            icon="chevron-left"
+            onClick={() => navigate("dashboard")}
+          >Back to console</Btn>
+          <div style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: "var(--text-1, var(--text))",
+          }}>Documentation</div>
+          <div style={{ flex: 1 }} />
+          <Btn
+            kind="ghost"
+            size="sm"
+            icon="external-link"
+            onClick={() => window.open("/v1/docs", "_blank", "noopener,noreferrer")}
+            title="Open the static docs in a new tab"
+          >REST API</Btn>
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+          <window.DocsPage section={params.section} slug={params.slug} pushToast={pushToast} />
+        </div>
+        {/* Floating bug reporter still available on full-page views */}
+        <window.BG_BugButton pushToast={pushToast} />
+        <div className="toast-stack">
+          {toasts.map((t) => (
+            <div key={t.id} className={`toast toast-${t.kind || "info"}`}>
+              <Icon
+                name={t.kind === "success" ? "check-circle" : t.kind === "error" ? "x-circle" : t.kind === "warning" ? "alert" : "info"}
+                size={14}
+                className="ico"
+              />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="title">{t.title}</div>
+                {t.detail && <div className="detail">{t.detail}</div>}
+              </div>
+              <button className="close" onClick={() => removeToast(t.id)}><Icon name="x" size={12} /></button>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <Topbar workerStats={workerStats} onNavigate={navigate} onOpenPalette={() => setPaletteOpen(true)} onOpenDrawer={() => setDrawerOpen(true)} />

@@ -61,8 +61,11 @@ function DocsPage({ section, slug, pushToast }) {
     <div style={{
       display: "grid",
       gridTemplateColumns: "260px 1fr",
-      height: "calc(100vh - 220px)",
-      minHeight: 480,
+      // Fill the parent container (the full-page docs shell wraps us
+      // in a flex:1 minHeight:0 box; legacy embedded callers should
+      // wrap in a similarly-sized box).
+      height: "100%",
+      minHeight: 0,
       fontSize: 12.5,
     }}>
       <WSP_DocsLeftNav
