@@ -717,6 +717,87 @@ async def get_session_by_id(
     return s
 
 
+@top_session_router.get(
+    "/sessions/{session_id}/turn_log",
+    summary="Read the session's per-turn structured log",
+    responses=common_responses(404, 500),
+)
+async def get_session_turn_log(
+    session_id: str = Path(..., description="Session id"),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    since_seq: int | None = Query(default=None, ge=0),
+    sessions=Depends(get_session_storage),
+    workspace_registry=Depends(get_workspace_registry),
+) -> dict:
+    """Return the JSONL-encoded turn-log events for this session.
+
+    Reads ``<state_path>/sessions/<session_id>/turns.jsonl`` via the
+    workspace runtime's :meth:`read_file`. Pagination is offset-based;
+    ``since_seq`` skips events with ``seq <= since_seq`` so polling
+    clients can ask for "everything new since the last frame".
+    """
+    sess = await sessions.get(session_id)
+    if sess is None:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    workspace = await workspace_registry.get_workspace(sess.workspace_id)
+    if workspace is None:
+        # Workspace gone (deleted, lost). Surface an empty log instead
+        # of 5xx so the UI can still render the tab.
+        return {"items": [], "total": 0, "offset": offset, "limit": limit}
+    state_path = getattr(
+        getattr(workspace, "_template", None), "state_path", ".state",
+    )
+    rel = f"{state_path}/sessions/{session_id}/turns.jsonl"
+    return await _read_workspace_turn_log(
+        workspace=workspace,
+        relative_path=rel,
+        limit=limit,
+        offset=offset,
+        since_seq=since_seq,
+    )
+
+
+async def _read_workspace_turn_log(
+    *,
+    workspace,
+    relative_path: str,
+    limit: int,
+    offset: int,
+    since_seq: int | None,
+) -> dict:
+    """JSONL-parse the file at ``relative_path`` inside ``workspace``.
+
+    Missing file is treated as an empty log (a fresh session that's
+    written nothing yet). Bogus lines are skipped silently — the turn
+    log is observability data, not a contract.
+    """
+    try:
+        raw = await workspace.read_file(relative_path)
+    except Exception:  # noqa: BLE001 — NotFoundError / IO / decode
+        raw = b""
+    items: list[dict] = []
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if since_seq is not None and int(obj.get("seq", 0)) <= since_seq:
+            continue
+        items.append(obj)
+    total = len(items)
+    window = items[offset:offset + limit]
+    return {
+        "items": window,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }
+
+
 # ===========================================================================
 # WebSocket: live session stream + interrupt / tool_approval / ping
 # ===========================================================================

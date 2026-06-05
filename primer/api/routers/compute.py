@@ -19,13 +19,16 @@ already supports out of the box.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Path, Query
 
 from primer.api.deps import (
     get_agent_storage,
     get_graph_storage,
     get_llm_provider_storage,
+    get_session_storage,
+    get_storage_provider,
     get_toolset_storage,
+    get_workspace_registry,
 )
 from primer.api.errors import common_responses
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
@@ -33,6 +36,7 @@ from primer.api.routers._crud import make_crud_router
 from primer.model.agent import Agent
 from primer.model.except_ import NotFoundError
 from primer.model.graph import Graph
+from primer.model.workspace_session import GraphSessionBinding, WorkspaceSession
 
 
 # ---- Agent router ----------------------------------------------------------
@@ -151,6 +155,223 @@ async def graph_status(
                 )
 
     return {"ok": not issues, "issues": issues}
+
+
+# ---- Graph run turn-log routes ---------------------------------------------
+
+
+@graph_router.get(
+    "/graphs/{graph_id}/runs/{run_id}/turn_log",
+    summary="Read graph-level turn log (superstep events)",
+    responses=common_responses(404, 500),
+)
+async def get_graph_run_turn_log(
+    graph_id: str = Path(..., description="Graph id"),
+    run_id: str = Path(..., description="Run id (WorkspaceSession or GraphThread id)"),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    since_seq: int | None = Query(default=None, ge=0),
+    sessions=Depends(get_session_storage),
+    workspace_registry=Depends(get_workspace_registry),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Read the per-run graph-level turn log.
+
+    Resolution order:
+    1. ``run_id`` matches a WorkspaceSession bound to a graph → read
+       ``<state_path>/graphs/<run_id>/turns.jsonl`` via the workspace.
+    2. ``run_id`` matches a GraphThread → query TurnLogRecord storage
+       for ``run_id == run_id`` AND ``node_id IS NULL``.
+    3. Neither → 404.
+    """
+    return await _serve_graph_turn_log(
+        run_id=run_id,
+        node_id=None,
+        limit=limit,
+        offset=offset,
+        since_seq=since_seq,
+        sessions=sessions,
+        workspace_registry=workspace_registry,
+        storage_provider=storage_provider,
+    )
+
+
+@graph_router.get(
+    "/graphs/{graph_id}/runs/{run_id}/nodes/{node_id}/turn_log",
+    summary="Read a single node's turn log within a graph run",
+    responses=common_responses(404, 500),
+)
+async def get_graph_node_turn_log(
+    graph_id: str = Path(..., description="Graph id"),
+    run_id: str = Path(..., description="Run id (WorkspaceSession or GraphThread id)"),
+    node_id: str = Path(..., description="Node id"),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    since_seq: int | None = Query(default=None, ge=0),
+    sessions=Depends(get_session_storage),
+    workspace_registry=Depends(get_workspace_registry),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Same dispatch as the graph-level route but scoped to a single
+    node. For workspace runs this reads
+    ``<state_path>/graphs/<run_id>/nodes/<node_id>/turns.jsonl``.
+    For storage runs it filters on ``node_id == node_id``."""
+    return await _serve_graph_turn_log(
+        run_id=run_id,
+        node_id=node_id,
+        limit=limit,
+        offset=offset,
+        since_seq=since_seq,
+        sessions=sessions,
+        workspace_registry=workspace_registry,
+        storage_provider=storage_provider,
+    )
+
+
+async def _serve_graph_turn_log(
+    *,
+    run_id: str,
+    node_id: str | None,
+    limit: int,
+    offset: int,
+    since_seq: int | None,
+    sessions,
+    workspace_registry,
+    storage_provider,
+) -> dict:
+    # 1. WorkspaceSession (workspace-backed graph)
+    sess: WorkspaceSession | None = await sessions.get(run_id)
+    if sess is not None and isinstance(sess.binding, GraphSessionBinding):
+        # Lazy import to defer the sessions-router dependency.
+        from primer.api.routers.sessions import _read_workspace_turn_log
+        workspace = await workspace_registry.get_workspace(sess.workspace_id)
+        if workspace is None:
+            return {
+                "items": [], "total": 0,
+                "offset": offset, "limit": limit,
+            }
+        state_path = getattr(
+            getattr(workspace, "_template", None), "state_path", ".state",
+        )
+        if node_id is None:
+            rel = f"{state_path}/graphs/{run_id}/turns.jsonl"
+        else:
+            rel = f"{state_path}/graphs/{run_id}/nodes/{node_id}/turns.jsonl"
+        return await _read_workspace_turn_log(
+            workspace=workspace,
+            relative_path=rel,
+            limit=limit,
+            offset=offset,
+            since_seq=since_seq,
+        )
+
+    # 2. GraphThread (storage-backed graph)
+    from primer.model.graph import GraphThread
+    from primer.model.turn_log import TurnLogRecord
+
+    thread_storage = storage_provider.get_storage(GraphThread)
+    thread = await thread_storage.get(run_id)
+    if thread is not None:
+        log_storage = storage_provider.get_storage(TurnLogRecord)
+        return await _query_storage_turn_log(
+            storage=log_storage,
+            run_id=run_id,
+            node_id=node_id,
+            limit=limit,
+            offset=offset,
+            since_seq=since_seq,
+        )
+
+    raise NotFoundError(f"Graph run {run_id!r} does not exist")
+
+
+async def _query_storage_turn_log(
+    *,
+    storage,
+    run_id: str,
+    node_id: str | None,
+    limit: int,
+    offset: int,
+    since_seq: int | None,
+) -> dict:
+    """Build a Predicate for (run_id [, node_id [, since_seq]]) and
+    fetch one offset page of TurnLogRecord rows."""
+    from primer.model.storage import (
+        FieldRef,
+        OffsetPage,
+        Op,
+        Predicate,
+        Value,
+    )
+
+    predicate: Predicate = Predicate(
+        left=FieldRef(name="run_id"),
+        op=Op.EQ,
+        right=Value(value=run_id),
+    )
+    # node_id filter: workspace-backed uses 'IS NULL' semantics by
+    # comparing against Python None via EQ (the backend should map this
+    # to IS NULL in SQL or `.eq null` semantics).
+    if node_id is None:
+        predicate = Predicate(
+            left=predicate,
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="node_id"),
+                op=Op.EQ,
+                right=Value(value=None),
+            ),
+        )
+    else:
+        predicate = Predicate(
+            left=predicate,
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="node_id"),
+                op=Op.EQ,
+                right=Value(value=node_id),
+            ),
+        )
+    if since_seq is not None:
+        predicate = Predicate(
+            left=predicate,
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="seq"),
+                op=Op.GT,
+                right=Value(value=since_seq),
+            ),
+        )
+    page = OffsetPage(offset=offset, length=limit)
+    response = await storage.find(predicate, page)
+    items = [_record_to_event_dict(r) for r in response.items]
+    return {
+        "items": items,
+        "total": response.total,
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+def _record_to_event_dict(rec) -> dict:
+    """Flatten a TurnLogRecord back into a TurnLogEvent-shaped dict.
+
+    The storage row's flat columns (seq, kind, ts/created_at, node_id,
+    iteration, superstep_id) plus the payload blob round-trip to the
+    same wire shape the JSONL writer emits, so the UI renderer doesn't
+    need to know which backend served the row.
+    """
+    base = {
+        "seq": rec.seq,
+        "kind": rec.kind.value if hasattr(rec.kind, "value") else rec.kind,
+        "ts": rec.created_at.isoformat()
+            if hasattr(rec.created_at, "isoformat") else rec.created_at,
+        "node_id": rec.node_id,
+        "iteration": rec.iteration,
+        "superstep_id": rec.superstep_id,
+    }
+    base.update(rec.payload or {})
+    return base
 
 
 __all__ = ["agent_router", "graph_router"]
