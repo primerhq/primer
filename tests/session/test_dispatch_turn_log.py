@@ -271,6 +271,48 @@ async def test_resumed_fires_before_started_when_parked(
 
 
 @pytest.mark.asyncio
+async def test_yielded_tool_approval_maps_to_approval_kind(
+    fake_workspace_io, fake_event_bus, fake_storage_provider,
+):
+    """Real tool-approval yields land with event_key prefix
+    'tool_approval:...'; the turn-log yield_kind must be 'approval'."""
+    sess = await _seed_session(fake_storage_provider)
+    yielded = Yielded(
+        tool_name="_approval",
+        event_key="tool_approval:s1:tc1",
+    )
+    park = YieldToWorker(yielded, tool_call_id="tc1")
+    executor = _FakeExecutor([park])
+    writer = _CapturingTurnLogWriter()
+    deps = _build_deps(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        executor, turn_log_writer=writer,
+    )
+    await run_one_session_turn(_make_lease(sess.id), deps)
+    y = next(e for e in writer.events if e.kind == TurnLogKind.YIELDED)
+    assert y.yield_kind == "approval"
+    assert y.event_key == "tool_approval:s1:tc1"
+
+
+@pytest.mark.asyncio
+async def test_yielded_timer_maps_to_subscribe_to_trigger(
+    fake_workspace_io, fake_event_bus, fake_storage_provider,
+):
+    sess = await _seed_session(fake_storage_provider)
+    yielded = Yielded(tool_name="sleep", event_key="timer:tc1")
+    park = YieldToWorker(yielded, tool_call_id="tc1")
+    executor = _FakeExecutor([park])
+    writer = _CapturingTurnLogWriter()
+    deps = _build_deps(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        executor, turn_log_writer=writer,
+    )
+    await run_one_session_turn(_make_lease(sess.id), deps)
+    y = next(e for e in writer.events if e.kind == TurnLogKind.YIELDED)
+    assert y.yield_kind == "subscribe_to_trigger"
+
+
+@pytest.mark.asyncio
 async def test_default_writer_is_noop_when_factory_not_supplied(
     fake_workspace_io, fake_event_bus, fake_storage_provider,
 ):

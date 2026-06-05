@@ -1412,12 +1412,14 @@ class _BaseGraphExecutor(ABC):
                     if isinstance(item, _NodeDone):
                         results[item.node_id] = item
                         done_count += 1
-                        # Emit completed / failed for this node as soon as
-                        # its _NodeDone lands. The error path uses the
-                        # str(error) we already have on _NodeDone; we
-                        # wrap it in a generic ProblemDetails since the
-                        # node-level error is already a string by the
-                        # time it reaches the queue.
+                        # Emit completed / failed for this node as soon
+                        # as its _NodeDone lands. Skip emission for the
+                        # suspended sentinel (approval-yield path,
+                        # Spec B §2.3 step 3): the node is parked, not
+                        # done; its real completion event lands on the
+                        # resume-from-checkpoint path.
+                        if item.suspended:
+                            continue
                         w = node_turn_logs.get(item.node_id)
                         started_at = node_started_at.get(
                             item.node_id, datetime.now(timezone.utc),
@@ -1442,6 +1444,36 @@ class _BaseGraphExecutor(ABC):
                                     ),
                                 )
                             else:
+                                # Two shapes reach here: a real
+                                # BaseException (line ~2112) or a
+                                # pre-stringified error (FanOut /
+                                # template / End nodes). Route the
+                                # former through to_problem_details so
+                                # NetworkError -> 504, AuthenticationError
+                                # -> 401, etc., land in the UI; keep
+                                # the latter wrapped in a generic 500.
+                                if isinstance(item.error, BaseException):
+                                    error_envelope = to_problem_details(
+                                        item.error,
+                                    )
+                                    if item.ended_detail and (
+                                        error_envelope.extensions is not None
+                                    ):
+                                        error_envelope.extensions[
+                                            "ended_detail"
+                                        ] = item.ended_detail
+                                else:
+                                    error_envelope = ProblemDetails(
+                                        type="/errors/graph-node-failed",
+                                        title="Graph node failed",
+                                        status=500,
+                                        detail=str(item.error),
+                                        extensions={
+                                            "ended_detail": (
+                                                item.ended_detail
+                                            ),
+                                        },
+                                    )
                                 await _safe_graph_turn_log(
                                     w,
                                     TurnLogFailed(
@@ -1451,17 +1483,7 @@ class _BaseGraphExecutor(ABC):
                                         iteration=context.iteration,
                                         superstep_id=superstep_id,
                                         duration_ms=duration_ms,
-                                        error=ProblemDetails(
-                                            type="/errors/graph-node-failed",
-                                            title="Graph node failed",
-                                            status=500,
-                                            detail=str(item.error),
-                                            extensions={
-                                                "ended_detail": (
-                                                    item.ended_detail
-                                                ),
-                                            },
-                                        ),
+                                        error=error_envelope,
                                     ),
                                 )
                     else:

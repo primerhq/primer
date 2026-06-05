@@ -185,7 +185,9 @@ async def test_superstep_events_land_in_graph_level_file(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_node_failed_carries_problem_details(tmp_path: Path):
     """A failing agent node lands a `failed` event with structured error
-    details in the node's turn-log file."""
+    details (NetworkError -> 504 / Network Error) in the node's turn-log
+    file. Verifies the BaseException path uses to_problem_details rather
+    than the generic 500 wrap."""
     graph = Graph(
         id="g-fail",
         description="A -> exit",
@@ -224,8 +226,11 @@ async def test_node_failed_carries_problem_details(tmp_path: Path):
     failed_rows = [r for r in rows if r["kind"] == TurnLogKind.FAILED.value]
     assert len(failed_rows) >= 1
     f = failed_rows[0]
-    # The error envelope is a ProblemDetails-shaped dict.
+    # The error envelope is a ProblemDetails-shaped dict with the real
+    # NetworkError mapping (not the generic graph-node-failed wrap).
     assert isinstance(f["error"], dict)
-    assert "status" in f["error"]
-    assert "title" in f["error"]
-    assert "detail" in f["error"]
+    assert f["error"]["status"] == 504, f["error"]
+    assert f["error"]["title"] == "Network Error"
+    assert "provider down" in f["error"]["detail"]
+    assert f["error"]["type"] == "/errors/network-error"
+    assert f["error"]["extensions"]["exception_class"] == "NetworkError"

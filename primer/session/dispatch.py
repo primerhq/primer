@@ -356,17 +356,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Maps the actual event_key prefixes emitted by the toolset / tool_manager
+# / graph paths to the three turn-log yield_kind enum values. Sources:
+#   primer/toolset/misc.py:336        "ask_user:<sid>:<tcid>"
+#   primer/agent/tool_manager.py:342  "tool_approval:<sid_or_chat>:<call.id>"
+#   primer/graph/base.py:1702         approval-yield key (also tool_approval:)
+#   primer/toolset/misc.py:212        "timer:<tcid>"
+#   primer/toolset/workspaces.py:511  "watch:<sid>:<tcid>"
+#   primer/toolset/mcp.py:223         "mcp_task:<tsid>:<task_id>"
+#   primer/toolset/trigger.py:703     "trigger:<tid>"
+# Order matches the most-specific prefix-first principle so "tool_approval:"
+# doesn't accidentally match an earlier shorter prefix.
 _YIELD_KIND_PREFIXES = (
-    ("ask_user", "ask_user"),
-    ("approval", "approval"),
+    ("tool_approval:", "approval"),
+    ("ask_user:", "ask_user"),
 )
 
 
 def _classify_yield_kind(park: YieldToWorker) -> str:
     """Map a YieldToWorker.event_key prefix to the turn-log yield_kind enum.
 
-    Falls back to "subscribe_to_trigger" for everything else (timers, mcp_task,
-    watch:*, etc.) since those all subscribe to an external event source.
+    Returns "approval" for tool-approval yields, "ask_user" for the
+    ask_user tool, and "subscribe_to_trigger" for every other source
+    (timers, watch, mcp_task, trigger, ...) since they all subscribe to
+    an external event-bus key.
     """
     key = park.yielded.event_key or ""
     for prefix, kind in _YIELD_KIND_PREFIXES:
