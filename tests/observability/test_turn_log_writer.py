@@ -13,7 +13,7 @@ from primer.model.turn_log import (
     TurnLogRecord,
     TurnLogStarted,
 )
-from primer.session.turn_log_writer import (
+from primer.observability.turn_log_writer import (
     NoopTurnLogWriter,
     StorageTurnLogWriter,
     WorkspaceTurnLogWriter,

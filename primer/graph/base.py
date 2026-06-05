@@ -91,7 +91,7 @@ from primer.model.turn_log import (
 )
 from primer.model.workspace_session import SessionStatus
 from primer.model.yield_ import Yielded, YieldToWorker
-from primer.session.turn_log_writer import (
+from primer.observability.turn_log_writer import (
     NoopTurnLogWriter,
     TurnLogWriter,
     safe_append as _safe_graph_turn_log,

@@ -48,7 +48,7 @@ from primer.session.persistence import (
     _CoalesceState,
     translate_stream_event,
 )
-from primer.session.turn_log_writer import (
+from primer.observability.turn_log_writer import (
     NoopTurnLogWriter,
     TurnLogWriter,
     safe_append as _safe_turn_log,

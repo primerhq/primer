@@ -27,7 +27,7 @@ from primer.model.workspace_session import (
 )
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
-from primer.session.turn_log_writer import TurnLogWriter
+from primer.observability.turn_log_writer import TurnLogWriter
 
 
 def _now() -> datetime:

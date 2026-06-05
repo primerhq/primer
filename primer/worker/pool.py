@@ -463,7 +463,7 @@ class WorkerPool:
             the shim. The shim handles state_path resolution so the
             writer / reader / route all agree even when an operator
             has overridden the default ``.state`` on the template."""
-            from primer.session.turn_log_writer import (
+            from primer.observability.turn_log_writer import (
                 NoopTurnLogWriter,
                 WorkspaceTurnLogWriter,
             )

@@ -47,7 +47,7 @@ from primer.graph.router import RouterRegistry
 from primer.model.chat import Message, StreamEvent, ToolResultPart
 from primer.model.graph import Graph, NodeRuntimeState, _GraphNodeRef, _ToolCallNode
 from primer.model.workspace_session import SessionStatus
-from primer.session.turn_log_writer import (
+from primer.observability.turn_log_writer import (
     TurnLogWriter,
     WorkspaceTurnLogWriter,
 )

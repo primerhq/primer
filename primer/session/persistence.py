@@ -60,7 +60,7 @@ class WorkspaceIO(Protocol):
     ) -> None:
         """Append ``line`` to ``relative_path`` inside the named workspace.
 
-        Used by :class:`primer.session.turn_log_writer.WorkspaceTurnLogWriter`
+        Used by :class:`primer.observability.turn_log_writer.WorkspaceTurnLogWriter`
         to persist per-turn structured events at operator-controlled
         paths (typically ``.state/sessions/<sid>/turns.jsonl``).
         Implementations MUST be safe for concurrent callers writing
