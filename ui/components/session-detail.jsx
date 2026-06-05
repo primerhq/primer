@@ -303,10 +303,25 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
                   <div className="code-block">
                     {JSON.stringify(lastError, null, 2)}
                   </div>
+                  {session?.ended_reason === "workspace_lost" && session?.workspace_id && (
+                    <WorkspaceFailureChip workspaceId={session.workspace_id} />
+                  )}
                 </div>
               )}
             </div>
-  ) : null;
+  ) : (
+    session?.ended_reason === "workspace_lost" && session?.workspace_id ? (
+      <div className="panel" style={{ borderColor: "oklch(0.7 0.2 25 / 0.4)" }}>
+        <div className="panel-h" style={{ background: "var(--red-dim)" }}>
+          <Icon name="x-circle" size={13} style={{ color: "var(--red)" }} />
+          <span style={{ color: "var(--red)" }}>Workspace lost</span>
+        </div>
+        <div className="panel-body">
+          <WorkspaceFailureChip workspaceId={session.workspace_id} />
+        </div>
+      </div>
+    ) : null
+  );
 
   const metadataPanel = (metadata && Object.keys(metadata).length > 0) ? (
             <div className="panel">
@@ -501,6 +516,11 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
       id: "files",
       label: "Files",
       content: filesPanel,
+    },
+    {
+      id: "turnlog",
+      label: "Turn log",
+      content: <TurnLogTab sessionId={sid} sessionStatus={session?.status} />,
     },
   ];
 
@@ -1484,7 +1504,148 @@ function ApprovalBannerPanel({ sid, sessionStatus, pushToast }) {
   );
 }
 
+// =============================================================================
+// Turn log tab + workspace-correlation chip
+// =============================================================================
+
+const _TURN_LOG_KIND_META = {
+  started:           { color: "var(--blue, #38bdf8)",   label: "STARTED" },
+  completed:         { color: "var(--green, #4ade80)",  label: "COMPLETED" },
+  failed:            { color: "var(--red, #ef4444)",    label: "FAILED" },
+  yielded:           { color: "var(--amber, #fbbf24)",  label: "YIELDED" },
+  resumed:           { color: "var(--violet, #a78bfa)", label: "RESUMED" },
+  cancelled:         { color: "var(--text-3, #9ca3af)", label: "CANCELLED" },
+  superstep_started: { color: "var(--blue, #38bdf8)",   label: "SUPERSTEP START" },
+  superstep_ended:   { color: "var(--green, #4ade80)",  label: "SUPERSTEP END" },
+};
+
+function TurnLogRow({ e }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const meta = _TURN_LOG_KIND_META[e.kind] || { color: "var(--text-3)", label: (e.kind || "").toUpperCase() };
+  const onToggle = () => setExpanded((v) => !v);
+  return (
+    <div
+      onClick={onToggle}
+      style={{
+        padding: "8px 12px",
+        border: "1px solid var(--border)",
+        borderLeft: `3px solid ${meta.color}`,
+        borderRadius: 4,
+        background: "var(--bg-1, var(--bg))",
+        cursor: "pointer",
+        fontSize: 12,
+      }}
+    >
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, color: meta.color,
+          letterSpacing: "0.06em",
+        }}>{meta.label}</span>
+        <span className="muted text-sm">seq {e.seq}</span>
+        {e.node_id && <span className="muted text-sm mono">node: {e.node_id}</span>}
+        {typeof e.iteration === "number" && (
+          <span className="muted text-sm">iter {e.iteration}</span>
+        )}
+        {typeof e.duration_ms === "number" && (
+          <span className="muted text-sm">{e.duration_ms} ms</span>
+        )}
+        {typeof e.input_tokens === "number" && (
+          <span className="muted text-sm">in {e.input_tokens}</span>
+        )}
+        {typeof e.output_tokens === "number" && (
+          <span className="muted text-sm">out {e.output_tokens}</span>
+        )}
+        {e.kind === "yielded" && (
+          <span className="muted text-sm mono">{e.yield_kind}: {e.event_key}</span>
+        )}
+        {e.kind === "resumed" && typeof e.wait_ms === "number" && (
+          <span className="muted text-sm">waited {e.wait_ms} ms</span>
+        )}
+        {e.kind === "failed" && e.error && (
+          <span style={{ color: "var(--red)" }}>{e.error.title}</span>
+        )}
+        {e.ts && <span className="muted text-sm" style={{ marginLeft: "auto" }}>{e.ts}</span>}
+      </div>
+      {e.kind === "failed" && e.error && !expanded && (
+        <div className="muted text-sm" style={{ marginTop: 4 }}>
+          {e.error.detail}
+        </div>
+      )}
+      {expanded && (
+        <pre style={{
+          fontSize: 11, marginTop: 8, padding: 8,
+          background: "var(--bg-0, var(--bg))",
+          border: "1px solid var(--border)",
+          borderRadius: 4, overflow: "auto", maxHeight: 240,
+          fontFamily: "IBM Plex Mono, monospace",
+        }}>{JSON.stringify(e, null, 2)}</pre>
+      )}
+    </div>
+  );
+}
+
+function TurnLogTab({ sessionId, sessionStatus }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const isTerminal = SESSION_TERMINAL.has(sessionStatus);
+  const log = useResource(
+    `session-turn-log:${sessionId}`,
+    (signal) => apiFetch("GET", `/sessions/${encodeURIComponent(sessionId)}/turn_log?limit=200`, null, { signal }),
+    {
+      pollMs: isTerminal ? 0 : 5000,
+      deps: [sessionId, sessionStatus],
+    },
+  );
+  if (log.loading && !log.data) {
+    return <div className="muted text-sm" style={{ padding: 16 }}>Loading turn log…</div>;
+  }
+  if (log.error) {
+    return <Banner kind="error" title="Could not load turn log" detail={log.error.message || log.error.title || ""} />;
+  }
+  const items = log.data?.items || [];
+  if (items.length === 0) {
+    return (
+      <div className="muted text-sm" style={{ padding: 16 }}>
+        No turn-log entries yet. Events are written as the session runs.
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 12 }}>
+      {items.map((e, i) => <TurnLogRow key={`${e.seq}-${i}`} e={e} />)}
+    </div>
+  );
+}
+
+function WorkspaceFailureChip({ workspaceId }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const ws = useResource(
+    `ws-fail:${workspaceId}`,
+    (signal) => apiFetch("GET", `/workspaces/${encodeURIComponent(workspaceId)}`, null, { signal }),
+    { pollMs: 0, deps: [workspaceId] },
+  );
+  const failureReason = ws.data?.failure_reason;
+  if (!failureReason) return null;
+  return (
+    <div style={{
+      marginTop: 8, padding: "8px 12px",
+      borderLeft: "3px solid var(--red)",
+      background: "var(--bg-2, var(--bg))",
+      borderRadius: 4, fontSize: 12,
+    }}>
+      <div className="muted text-sm" style={{ marginBottom: 4 }}>
+        Workspace <span className="mono">{workspaceId}</span> failure_reason:
+      </div>
+      <div className="mono" style={{ wordBreak: "break-word" }}>
+        {failureReason}
+      </div>
+    </div>
+  );
+}
+
 window.AskUserPanel = AskUserPanel;
 window.WatchFilesPanel = WatchFilesPanel;
 window.SleepPanel = SleepPanel;
 window.ApprovalBannerPanel = ApprovalBannerPanel;
+window.TurnLogTab = TurnLogTab;
+window.TurnLogRow = TurnLogRow;
+window.WorkspaceFailureChip = WorkspaceFailureChip;
