@@ -190,6 +190,42 @@ async def test_failed_carries_problem_details(
 
 
 @pytest.mark.asyncio
+async def test_failed_message_record_carries_problem_details(
+    fake_workspace_io, fake_event_bus, fake_storage_provider,
+):
+    """The messages.jsonl ERROR record now carries the same structured
+    error info as the turn-log event -- no more generic
+    'unexpected executor error' string. Operators on the Messages tab
+    see exception type/title/detail/status without having to switch."""
+    import json
+
+    sess = await _seed_session(fake_storage_provider)
+    executor = _FakeExecutor([NetworkError("Connection reset by peer")])
+    writer = _CapturingTurnLogWriter()
+    deps = _build_deps(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        executor, turn_log_writer=writer,
+    )
+    await run_one_session_turn(_make_lease(sess.id), deps)
+
+    raw = fake_workspace_io._data[sess.id]
+    lines = [
+        json.loads(line)
+        for line in raw.decode().splitlines()
+        if line.strip()
+    ]
+    error_recs = [r for r in lines if r["kind"] == "error"]
+    assert len(error_recs) == 1
+    payload = error_recs[0]["payload"]
+    # New fields populated from the ProblemDetails envelope.
+    assert payload["title"] == "Network Error"
+    assert payload["status"] == 504
+    assert payload["code"] == "/errors/network-error"
+    assert "Connection reset by peer" in payload["message"]
+    assert payload["extensions"]["exception_class"] == "NetworkError"
+
+
+@pytest.mark.asyncio
 async def test_yielded_event_fires_before_park(
     fake_workspace_io, fake_event_bus, fake_storage_provider,
 ):

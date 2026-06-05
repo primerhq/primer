@@ -254,6 +254,14 @@ async def run_one_session_turn(
             "session %s executor raised unexpected error; releasing claim",
             session_id,
         )
+        # Build the ProblemDetails envelope once and reuse it for BOTH
+        # the structured turn-log event and the messages.jsonl ERROR
+        # record. Operators looking at the Messages tab now see the
+        # real exception type/title/detail (matching what the Turn log
+        # tab shows) instead of the legacy "unexpected executor error"
+        # generic string. Spec §6.1 called for the legacy string to go
+        # away once the turn-log existed; this is that cutover.
+        problem = to_problem_details(exc)
         await _safe_turn_log(turn_log, TurnLogFailed(
             seq=0,
             ts=_now(),
@@ -262,12 +270,22 @@ async def run_one_session_turn(
                 0,
                 int((_now() - _turn_started_at).total_seconds() * 1000),
             ),
-            error=to_problem_details(exc),
+            error=problem,
         ))
         error_rec = SessionMessageRecord(
             seq=1,
             kind=SessionMessageKind.ERROR,
-            payload={"message": "unexpected executor error", "code": "executor_error"},
+            payload={
+                # Keep `message` + `code` for backwards-compat with any
+                # operator tooling that consumed the legacy shape; the
+                # values now reflect the real exception instead of the
+                # generic fallback.
+                "message": problem.detail,
+                "code": problem.type,
+                "title": problem.title,
+                "status": problem.status,
+                "extensions": problem.extensions or {},
+            },
             created_at=_now(),
         )
         seq = await writer.append(error_rec)
