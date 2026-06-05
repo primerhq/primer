@@ -457,11 +457,32 @@ class WorkerPool:
             io_shim.register_session(session.id, session.workspace_id)
             return await self._build_session_executor(session)
 
+        def _turn_log_factory(workspace_io, session_id):
+            """Build a WorkspaceTurnLogWriter pointed at
+            ``.state/sessions/<sid>/turns.jsonl`` via the shim."""
+            from primer.session.turn_log_writer import (
+                NoopTurnLogWriter,
+                WorkspaceTurnLogWriter,
+            )
+
+            workspace_id = io_shim._session_to_workspace.get(session_id)
+            if workspace_id is None:
+                return NoopTurnLogWriter()
+            rel_path = f".state/sessions/{session_id}/turns.jsonl"
+
+            async def _append(line: bytes) -> None:
+                await io_shim.append_state_line(
+                    workspace_id, rel_path, line,
+                )
+
+            return WorkspaceTurnLogWriter(append_line=_append)
+
         deps = SessionDispatchDeps(
             storage_provider=self._storage,
             workspace_io=io_shim,
             event_bus=self._event_bus,
             build_executor=_build_executor_with_shim_registration,
+            turn_log_writer_factory=_turn_log_factory,
         )
 
         outcome = ReleaseOutcome(success=False, drop_lease=True)
@@ -1899,3 +1920,38 @@ class _WorkspaceIOShim:
             return
 
         await workspace.append_message_line(session_id, line)
+
+    async def append_state_line(
+        self, workspace_id: str, relative_path: str, line: bytes,
+    ) -> None:
+        """Append ``line`` to ``relative_path`` inside ``workspace_id``.
+
+        Resolves the workspace via the registry; logs and drops the
+        bytes if either the registry is absent or the workspace can't
+        be resolved (mirroring ``append_message_line``'s best-effort
+        policy for the turn-log path).
+        """
+        if self._registry is None:
+            logger.warning(
+                "_WorkspaceIOShim: no workspace_registry configured; "
+                "dropping %d state bytes for workspace %s",
+                len(line), workspace_id,
+            )
+            return
+        workspace = await self._registry.get_workspace(workspace_id)
+        if workspace is None:
+            logger.warning(
+                "_WorkspaceIOShim: workspace %r not found; "
+                "dropping %d state bytes",
+                workspace_id, len(line),
+            )
+            return
+        try:
+            await workspace.append_state_line(relative_path, line)
+        except NotImplementedError:
+            # Backend without turn-log support; silently no-op so
+            # the dispatch doesn't bubble the failure.
+            logger.debug(
+                "_WorkspaceIOShim: workspace %r has no append_state_line; "
+                "dropping %d bytes", workspace_id, len(line),
+            )

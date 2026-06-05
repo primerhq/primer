@@ -461,6 +461,39 @@ class LocalWorkspace(Workspace):
 
         await asyncio.to_thread(_append)
 
+    async def append_state_line(self, relative_path: str, line: bytes) -> None:
+        """Append ``line`` to ``<root>/<relative_path>``.
+
+        Path is constrained to live under the workspace root (the same
+        check used by ``_resolve_path``); writes outside it raise
+        :class:`BadRequestError`. Uses ``open(path, 'ab')`` for an
+        O_APPEND write, which is atomic at the OS level for distinct
+        files; concurrent callers writing to the SAME path are not
+        expected (the turn-log writer is per-session / per-node) but
+        the append would still interleave at the line level.
+        """
+        if not line:
+            return
+        if not line.endswith(b"\n"):
+            line = line + b"\n"
+
+        root_resolved = self._root.resolve()
+        candidate = (root_resolved / relative_path).resolve()
+        try:
+            candidate.relative_to(root_resolved)
+        except ValueError as exc:
+            raise BadRequestError(
+                f"turn-log path resolves outside workspace: "
+                f"{relative_path!r}"
+            ) from exc
+
+        def _append() -> None:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            with candidate.open("ab") as fh:
+                fh.write(line)
+
+        await asyncio.to_thread(_append)
+
     async def aclose(self) -> None:
         """End any non-ENDED sessions, then release backend resources."""
         async with self._lock:

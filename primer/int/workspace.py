@@ -354,6 +354,26 @@ class Workspace(ABC):
             f"{type(self).__name__} does not implement append_message_line"
         )
 
+    async def append_state_line(self, relative_path: str, line: bytes) -> None:
+        """Append ``line`` to ``<workspace_root>/<relative_path>``.
+
+        Used by the turn-log writer to persist structured per-turn events
+        under ``<state_path>/sessions/<sid>/turns.jsonl`` (agent sessions)
+        or ``<state_path>/graphs/<gsid>/turns.jsonl`` (graph runs).
+
+        Path is interpreted relative to the workspace root and MUST stay
+        inside it. Unlike ``append_message_line``, the caller controls the
+        exact path so the workspace can append to any operator-visible
+        observability file (turn logs, future per-tool audit trails, etc.).
+
+        Default raises :class:`NotImplementedError`. Concrete backends
+        that want turn-log emission override this; backends that don't
+        leave it unimplemented and the dispatch silently no-ops.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement append_state_line"
+        )
+
     @abstractmethod
     async def aclose(self) -> None:
         """Tear down the workspace.

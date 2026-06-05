@@ -55,6 +55,19 @@ class WorkspaceIO(Protocol):
         """Append a complete jsonl line (with trailing ``\\n``) to the session store."""
         ...
 
+    async def append_state_line(
+        self, workspace_id: str, relative_path: str, line: bytes,
+    ) -> None:
+        """Append ``line`` to ``relative_path`` inside the named workspace.
+
+        Used by :class:`primer.session.turn_log_writer.WorkspaceTurnLogWriter`
+        to persist per-turn structured events at operator-controlled
+        paths (typically ``.state/sessions/<sid>/turns.jsonl``).
+        Implementations MUST be safe for concurrent callers writing
+        to distinct paths.
+        """
+        ...
+
 
 class WorkspaceMessageWriter:
     """Buffered jsonl appender for session messages.

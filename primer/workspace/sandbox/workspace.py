@@ -418,6 +418,19 @@ class SandboxWorkspace(Workspace):
         )
         await self._sandbox.append_file(path, line)
 
+    async def append_state_line(self, relative_path: str, line: bytes) -> None:
+        """Append ``line`` to ``<workspace_root>/<relative_path>``.
+
+        Delegates to :meth:`Sandbox.append_file`. Mirrors the
+        ``append_message_line`` shape but with operator-controlled path.
+        """
+        if not line:
+            return
+        if not line.endswith(b"\n"):
+            line = line + b"\n"
+        path = f"{self._workspace_root}/{relative_path}"
+        await self._sandbox.append_file(path, line)
+
     async def aclose(self) -> None:
         """Tear down every live session. Errors from any one session must
         not skip the rest -- log and continue, mirroring
