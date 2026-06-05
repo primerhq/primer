@@ -139,15 +139,31 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
 
             return _append
 
+        def _make_read_existing(rel_path: Path):
+            target = rel_path
+
+            async def _read() -> bytes:
+                def _do() -> bytes:
+                    if not target.exists():
+                        return b""
+                    return target.read_bytes()
+
+                return await asyncio.to_thread(_do)
+
+            return _read
+
         def _factory(node_id: str) -> TurnLogWriter:
             target = state_root / "nodes" / node_id / "turns.jsonl"
             return WorkspaceTurnLogWriter(
                 append_line=_make_append_line(target),
+                read_existing=_make_read_existing(target),
             )
 
         self._turn_log_factory = _factory
+        graph_target = state_root / "turns.jsonl"
         self._graph_turn_log = WorkspaceTurnLogWriter(
-            append_line=_make_append_line(state_root / "turns.jsonl"),
+            append_line=_make_append_line(graph_target),
+            read_existing=_make_read_existing(graph_target),
         )
         # Spec §4.3 — when set (typically by pool.py from
         # ``session.metadata['graph_input']``), this overrides the

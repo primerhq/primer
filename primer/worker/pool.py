@@ -475,7 +475,26 @@ class WorkerPool:
                     workspace_id, rel_path, line,
                 )
 
-            return WorkspaceTurnLogWriter(append_line=_append)
+            async def _read_existing() -> bytes:
+                """Read the on-disk turns.jsonl so the writer can seed
+                its seq counter. Returns empty bytes when the workspace
+                handle is gone or the file doesn't exist."""
+                if self._workspace_registry is None:
+                    return b""
+                ws = await self._workspace_registry.get_workspace(
+                    workspace_id,
+                )
+                if ws is None:
+                    return b""
+                try:
+                    return await ws.read_file(rel_path)
+                except Exception:  # noqa: BLE001
+                    return b""
+
+            return WorkspaceTurnLogWriter(
+                append_line=_append,
+                read_existing=_read_existing,
+            )
 
         deps = SessionDispatchDeps(
             storage_provider=self._storage,

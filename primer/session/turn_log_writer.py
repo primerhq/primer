@@ -24,6 +24,7 @@ upward into the api layer.
 
 from __future__ import annotations
 
+import json
 import logging
 import traceback
 from abc import ABC, abstractmethod
@@ -127,6 +128,7 @@ def _truncate_traceback(exc: BaseException, max_bytes: int = 4096) -> str:
 
 
 AppendLine = Callable[[bytes], Awaitable[None]]
+ReadExisting = Callable[[], Awaitable[bytes]]
 
 
 class TurnLogWriter(ABC):
@@ -163,19 +165,57 @@ class WorkspaceTurnLogWriter(TurnLogWriter):
     closure that calls ``workspace.append_state_line(<rel_path>, line)``
     or similar). Tests inject a list-capturing fake.
 
-    Seq counter is in-memory per writer instance. A restart mid-session
-    would restart the counter at 1 — that is acceptable for v1; events
-    remain readable in arrival order thanks to the ``ts`` field.
+    When a ``read_existing`` callable is supplied, the writer lazily
+    bootstraps its seq counter on the first append by reading the file
+    and finding ``max(seq)``. This makes the seq stream monotonic
+    across worker restarts mid-session -- without it, a restart would
+    write seq=1 on top of disk's existing seq space and break
+    ``since_seq`` pagination.
     """
 
-    def __init__(self, *, append_line: AppendLine) -> None:
+    def __init__(
+        self,
+        *,
+        append_line: AppendLine,
+        read_existing: ReadExisting | None = None,
+    ) -> None:
         self._append = append_line
+        self._read = read_existing
         self._seq = 0
         self._closed = False
+        self._bootstrapped = read_existing is None
+
+    async def _bootstrap(self) -> None:
+        """Read existing file (if any) and seed ``_seq`` to ``max(seq)``."""
+        if self._bootstrapped:
+            return
+        self._bootstrapped = True  # set first so an exception still pins it
+        if self._read is None:
+            return
+        try:
+            raw = await self._read()
+        except Exception:  # noqa: BLE001 -- missing-file / IO / decode
+            raw = b""
+        if not raw:
+            return
+        max_seq = 0
+        for line in raw.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                seq = int(obj.get("seq", 0))
+            except Exception:  # noqa: BLE001 -- bogus line
+                continue
+            if seq > max_seq:
+                max_seq = seq
+        self._seq = max_seq
 
     async def append(self, event: TurnLogEvent) -> int:
         if self._closed:
             raise RuntimeError("append on closed TurnLogWriter")
+        await self._bootstrap()
         self._seq += 1
         event_with_seq = event.model_copy(update={"seq": self._seq})
         line = event_with_seq.model_dump_json().encode() + b"\n"

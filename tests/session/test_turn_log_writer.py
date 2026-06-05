@@ -98,6 +98,94 @@ class TestWorkspaceTurnLogWriter:
             ))
 
     @pytest.mark.asyncio
+    async def test_bootstrap_seeds_seq_from_existing_file(self):
+        """A worker restart mid-session should resume with seq=max+1,
+        not seq=1, so the JSONL stream stays monotonic."""
+        captured: list[bytes] = []
+
+        async def fake_append(line: bytes) -> None:
+            captured.append(line)
+
+        async def fake_read() -> bytes:
+            return (
+                b'{"seq":1,"kind":"started","ts":"2026-06-05T10:00:00Z"}\n'
+                b'{"seq":2,"kind":"completed","ts":"2026-06-05T10:00:05Z","duration_ms":0}\n'
+            )
+
+        w = WorkspaceTurnLogWriter(
+            append_line=fake_append, read_existing=fake_read,
+        )
+        seq = await w.append(TurnLogStarted(
+            seq=0, ts=_now(), model="m", input_message_count=1,
+        ))
+        assert seq == 3
+        obj = json.loads(captured[0].decode())
+        assert obj["seq"] == 3
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_handles_missing_file_silently(self):
+        captured: list[bytes] = []
+
+        async def fake_append(line: bytes) -> None:
+            captured.append(line)
+
+        async def fake_read() -> bytes:
+            from primer.model.except_ import NotFoundError
+            raise NotFoundError("file gone")
+
+        w = WorkspaceTurnLogWriter(
+            append_line=fake_append, read_existing=fake_read,
+        )
+        seq = await w.append(TurnLogStarted(
+            seq=0, ts=_now(), model="m", input_message_count=1,
+        ))
+        assert seq == 1
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_skips_bogus_lines(self):
+        captured: list[bytes] = []
+
+        async def fake_append(line: bytes) -> None:
+            captured.append(line)
+
+        async def fake_read() -> bytes:
+            return (
+                b'{"seq":1,"kind":"started"}\n'
+                b'not even json\n'
+                b'{"seq":5,"kind":"completed"}\n'
+            )
+
+        w = WorkspaceTurnLogWriter(
+            append_line=fake_append, read_existing=fake_read,
+        )
+        seq = await w.append(TurnLogStarted(
+            seq=0, ts=_now(), model="m", input_message_count=1,
+        ))
+        assert seq == 6  # max(1, 5) + 1
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_runs_only_once(self):
+        """Subsequent appends MUST NOT re-read the file (perf + races)."""
+        read_count = 0
+
+        async def fake_append(line: bytes) -> None:
+            pass
+
+        async def fake_read() -> bytes:
+            nonlocal read_count
+            read_count += 1
+            return b""
+
+        w = WorkspaceTurnLogWriter(
+            append_line=fake_append, read_existing=fake_read,
+        )
+        for _ in range(3):
+            await w.append(TurnLogStarted(
+                seq=0, ts=_now(), model="m", input_message_count=1,
+            ))
+        assert read_count == 1
+
+    @pytest.mark.asyncio
     async def test_io_failure_does_not_corrupt_seq(self):
         """If the backing append raises, the writer's seq still advances.
 
