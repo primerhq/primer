@@ -43,6 +43,11 @@ from primer.model.storage import (
     Predicate,
     Value,
 )
+from primer.model.turn_log import TurnLogRecord
+from primer.session.turn_log_writer import (
+    StorageTurnLogWriter,
+    TurnLogWriter,
+)
 
 
 if TYPE_CHECKING:
@@ -76,6 +81,7 @@ class GraphExecutor(_BaseGraphExecutor):
         tool_dispatcher: Callable[
             ["_ToolCallNode", dict], Awaitable[ToolResultPart]
         ] | None = None,
+        turn_log_storage: "Storage[TurnLogRecord] | None" = None,
     ) -> None:
         super().__init__(
             graph=graph,
@@ -94,6 +100,28 @@ class GraphExecutor(_BaseGraphExecutor):
         # :class:`WorkspaceGraphExecutor` (which has the real workspace
         # ToolExecutionManager) or wire one explicitly.
         self._tool_dispatcher = tool_dispatcher
+
+        # Turn-log writers. When ``turn_log_storage`` is supplied,
+        # per-node + graph-level StorageTurnLogWriter instances are
+        # constructed and wired onto the base class's hook attributes.
+        # When omitted (existing callers), the Noop default carried
+        # by the base class leaves emission silent.
+        if turn_log_storage is not None:
+            run_id = graph_thread_id
+
+            def _factory(node_id: str) -> TurnLogWriter:
+                return StorageTurnLogWriter(
+                    storage=turn_log_storage,
+                    run_id=run_id,
+                    node_id=node_id,
+                )
+
+            self._turn_log_factory = _factory
+            self._graph_turn_log = StorageTurnLogWriter(
+                storage=turn_log_storage,
+                run_id=run_id,
+                node_id=None,
+            )
 
     @property
     def thread_id(self) -> str:
