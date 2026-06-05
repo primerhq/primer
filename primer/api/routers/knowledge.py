@@ -271,6 +271,41 @@ async def list_indexed_documents(
 # ---- Document router -------------------------------------------------------
 
 
+# Extensions / content types whose content IS already markdown or plain
+# text. We short-circuit docling for these because (a) docling can't
+# reliably detect the format from raw bytes with no filename hint and
+# fails on .md; (b) running text through a markdown converter just to
+# get markdown back is wasteful.
+_TEXT_PASSTHROUGH_EXTENSIONS = (".md", ".markdown", ".txt", ".text")
+_TEXT_PASSTHROUGH_CONTENT_TYPES = (
+    "text/markdown",
+    "text/x-markdown",
+    "text/plain",
+)
+
+
+def _is_text_passthrough(
+    filename: str | None, content_type: str | None,
+) -> bool:
+    """True when the upload is already text and needs no docling pass.
+
+    Filename extension wins (operators sometimes mislabel the
+    content-type by uploading a `.md` with `application/octet-stream`).
+    Content-type is the fallback when there is no extension.
+    """
+    if filename:
+        lower = filename.lower()
+        for ext in _TEXT_PASSTHROUGH_EXTENSIONS:
+            if lower.endswith(ext):
+                return True
+    if content_type:
+        # Strip any charset / boundary parameters: "text/markdown; charset=utf-8".
+        primary = content_type.split(";", 1)[0].strip().lower()
+        if primary in _TEXT_PASSTHROUGH_CONTENT_TYPES:
+            return True
+    return False
+
+
 @collection_router.post(
     "/documents/_convert_file",
     summary="Convert an uploaded file to markdown via docling",
@@ -279,15 +314,19 @@ async def list_indexed_documents(
 async def convert_uploaded_file(
     file: UploadFile = File(...),
 ) -> dict:
-    """Convert an uploaded file to markdown using the docling loader and
-    return the result. The endpoint is non-destructive: it does NOT
-    persist a Document row. Operators upload, see the converted text in
-    the document-create form, optionally edit, then POST /documents
-    through the normal CRUD path.
+    """Convert an uploaded file to markdown and return the result.
 
-    Supports every format docling supports: PDF, DOCX, PPTX, XLSX, HTML,
-    images with OCR, etc. The response carries the markdown plus a few
-    metadata fields the UI uses to pre-fill the create form.
+    For binary formats (PDF, DOCX, PPTX, XLSX, HTML, images with OCR,
+    ...) we round-trip through docling. For already-textual formats
+    (``.md`` / ``.markdown`` / ``.txt`` / ``text/markdown`` /
+    ``text/plain``) we decode the bytes as UTF-8 and return them
+    verbatim - docling can't reliably detect a markdown source from
+    raw bytes without a filename hint and previously raised
+    UnsupportedContentError.
+
+    The endpoint is non-destructive: it does NOT persist a Document
+    row. Operators upload, see the converted text in the create form,
+    optionally edit, then POST /documents through the normal CRUD path.
     """
     from primer.ingest.loaders.docling import DoclingLoader
     from primer.model.except_ import UnsupportedContentError
@@ -302,6 +341,20 @@ async def convert_uploaded_file(
             f"uploaded file is too large ({len(raw)} bytes); cap is "
             f"32 MB. Split the file or paste the extracted text."
         )
+
+    if _is_text_passthrough(file.filename, file.content_type):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise BadRequestError(
+                f"text upload is not valid UTF-8: {exc}"
+            ) from exc
+        return {
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "bytes_loaded": len(raw),
+            "text": text,
+        }
 
     loader = DoclingLoader()
     try:

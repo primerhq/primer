@@ -1037,14 +1037,21 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
   const [metaJson, setMetaJson] = React.useState(_initialMeta);
   const [fieldErrors, setFieldErrors] = React.useState({});
 
-  // File-upload conversion state. The Upload-file button POSTs the
-  // file to /v1/documents/_convert_file, which runs docling and
-  // returns markdown. We pre-fill the text field so the operator can
-  // review or edit before saving; if they don't pick a name, we use
-  // the source filename.
+  // Content-input mode: "paste" -> direct textarea editing,
+  // "upload" -> drag-and-drop / file-picker that converts via
+  // docling (or short-circuits for already-text formats like .md / .txt)
+  // and then hands the result to the textarea. Default to upload on
+  // create (operators usually have a file ready) and paste on edit
+  // (no file to re-upload).
+  const [contentMode, setContentMode] = React.useState(
+    isEdit ? "paste" : "upload",
+  );
+
+  // File-upload conversion state.
   const [convertingFile, setConvertingFile] = React.useState(false);
   const [convertedFileName, setConvertedFileName] = React.useState(null);
   const [convertError, setConvertError] = React.useState(null);
+  const [isDragOver, setIsDragOver] = React.useState(false);
 
   const handleConvertFile = async (f) => {
     setConvertingFile(true);
@@ -1060,6 +1067,11 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
       setText(resp.text || "");
       setConvertedFileName(resp.filename || f.name);
       if (!name) setName(resp.filename || f.name);
+      // Switch to paste mode so the operator can review + edit the
+      // converted text immediately. The "from: <filename>" caption
+      // shows alongside the textarea so the upload provenance is
+      // still visible.
+      setContentMode("paste");
     } catch (err) {
       setConvertError(
         (err && (err.detail || err.message)) || "Conversion failed",
@@ -1067,6 +1079,26 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
     } finally {
       setConvertingFile(false);
     }
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragOver) setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    const f = e.dataTransfer?.files?.[0];
+    if (f) handleConvertFile(f);
   };
 
   React.useEffect(() => {
@@ -1159,47 +1191,124 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
         <label className="field-label">
           Text <span className="hint">stored under meta.text for v1</span>
         </label>
+        {/* Sub-tabs: paste-text vs drag-and-drop upload */}
         <div style={{
-          display: "flex", gap: 8, alignItems: "center",
-          marginBottom: 6,
+          display: "flex", gap: 0, marginBottom: 8,
+          borderBottom: "1px solid var(--border)",
         }}>
-          <label
-            className="btn"
-            style={{ cursor: convertingFile ? "wait" : "pointer", fontSize: 12 }}
-            title="Upload a file (PDF, DOCX, PPTX, XLSX, HTML, image, ...) - docling converts it to markdown, pre-fills the textarea, and you can edit before saving"
-          >
-            <input
-              type="file"
-              accept=".pdf,.docx,.pptx,.xlsx,.html,.htm,.md,.txt,.png,.jpg,.jpeg"
-              disabled={convertingFile}
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const f = e.target.files && e.target.files[0];
-                if (!f) return;
-                handleConvertFile(f);
-                // Reset the input so re-selecting the same file fires again.
-                e.target.value = "";
-              }}
-            />
-            {convertingFile ? "Converting..." : "Upload file"}
-          </label>
-          {convertedFileName && !convertingFile && (
-            <span className="muted text-sm" title={convertedFileName}>
+          <button
+            type="button"
+            onClick={() => setContentMode("paste")}
+            style={{
+              padding: "6px 14px", fontSize: 12,
+              background: contentMode === "paste" ? "var(--bg-1, var(--bg))" : "transparent",
+              border: "none",
+              borderBottom: contentMode === "paste"
+                ? "2px solid var(--accent, #38bdf8)"
+                : "2px solid transparent",
+              color: contentMode === "paste" ? "var(--text-1, var(--text))" : "var(--text-3)",
+              cursor: "pointer", fontWeight: contentMode === "paste" ? 600 : 400,
+            }}
+          >Paste text</button>
+          <button
+            type="button"
+            onClick={() => setContentMode("upload")}
+            style={{
+              padding: "6px 14px", fontSize: 12,
+              background: contentMode === "upload" ? "var(--bg-1, var(--bg))" : "transparent",
+              border: "none",
+              borderBottom: contentMode === "upload"
+                ? "2px solid var(--accent, #38bdf8)"
+                : "2px solid transparent",
+              color: contentMode === "upload" ? "var(--text-1, var(--text))" : "var(--text-3)",
+              cursor: "pointer", fontWeight: contentMode === "upload" ? 600 : 400,
+            }}
+          >Upload file</button>
+          {convertedFileName && !convertingFile && contentMode === "paste" && (
+            <span className="muted text-sm" style={{
+              marginLeft: "auto", alignSelf: "center", padding: "0 6px",
+            }} title={convertedFileName}>
               from: {convertedFileName}
             </span>
           )}
-          {convertError && (
-            <span style={{ color: "var(--red)", fontSize: 11 }}>
-              {convertError}
-            </span>
-          )}
         </div>
-        <textarea
-          className="textarea"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={6}
-        />
+
+        {contentMode === "paste" ? (
+          <textarea
+            className="textarea"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={8}
+            placeholder="Paste or type your document text here. Markdown is preserved as-is when saved under meta.text."
+          />
+        ) : (
+          <div
+            onDragOver={handleDragOver}
+            onDragEnter={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            style={{
+              border: isDragOver
+                ? "2px dashed var(--accent, #38bdf8)"
+                : "2px dashed var(--border)",
+              borderRadius: 6,
+              padding: "32px 16px",
+              textAlign: "center",
+              background: isDragOver
+                ? "var(--accent-dim, rgba(56, 189, 248, 0.08))"
+                : "var(--bg-1, var(--bg))",
+              minHeight: 160,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              transition: "background 80ms, border-color 80ms",
+            }}
+          >
+            {convertingFile ? (
+              <div className="muted text-sm">Converting…</div>
+            ) : (
+              <>
+                <div style={{ fontSize: 13, marginBottom: 4 }}>
+                  {isDragOver ? "Release to upload" : "Drag and drop a file here"}
+                </div>
+                <div className="muted text-sm">or</div>
+                <label
+                  className="btn"
+                  style={{ cursor: "pointer", fontSize: 12 }}
+                  title="PDF, DOCX, PPTX, XLSX, HTML, .md, .txt, images, ... - text formats are stored as-is; docling converts binary formats to markdown"
+                >
+                  <input
+                    type="file"
+                    accept=".pdf,.docx,.pptx,.xlsx,.html,.htm,.md,.markdown,.txt,.png,.jpg,.jpeg"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const f = e.target.files && e.target.files[0];
+                      if (!f) return;
+                      handleConvertFile(f);
+                      e.target.value = "";
+                    }}
+                  />
+                  Choose a file
+                </label>
+                <div className="muted text-sm" style={{ marginTop: 6, fontSize: 11 }}>
+                  PDF · DOCX · PPTX · XLSX · HTML · .md · .txt · images · ≤ 32 MB
+                </div>
+                {convertedFileName && (
+                  <div className="muted text-sm" style={{ marginTop: 4 }} title={convertedFileName}>
+                    last uploaded: {convertedFileName}
+                  </div>
+                )}
+                {convertError && (
+                  <div style={{ color: "var(--red)", fontSize: 11, marginTop: 6 }}>
+                    {convertError}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
       <div className="field">
         <label className="field-label">Meta (JSON)</label>

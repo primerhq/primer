@@ -86,3 +86,63 @@ class TestDocumentRouter:
         assert post.status_code == 201, post.text
         get = await client.get("/v1/documents/doc-1")
         assert get.status_code == 200
+
+
+class TestConvertUploadedFile:
+    """The /documents/_convert_file endpoint short-circuits docling for
+    already-text formats (.md / .txt). Regression test for the upload
+    failing on markdown source files."""
+
+    @pytest.mark.asyncio
+    async def test_markdown_extension_returns_text_verbatim(self, client):
+        body = b"# Hello\n\nThis is *markdown*.\n"
+        resp = await client.post(
+            "/v1/documents/_convert_file",
+            files={"file": ("note.md", body, "text/markdown")},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["filename"] == "note.md"
+        assert data["bytes_loaded"] == len(body)
+        assert data["text"] == body.decode("utf-8")
+
+    @pytest.mark.asyncio
+    async def test_plain_text_extension_returns_text_verbatim(self, client):
+        body = b"plain text content"
+        resp = await client.post(
+            "/v1/documents/_convert_file",
+            files={"file": ("note.txt", body, "text/plain")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["text"] == "plain text content"
+
+    @pytest.mark.asyncio
+    async def test_markdown_via_content_type_only(self, client):
+        """A file without a known extension but tagged
+        text/markdown still goes through the passthrough path."""
+        body = b"# heading\nbody\n"
+        resp = await client.post(
+            "/v1/documents/_convert_file",
+            files={"file": ("blob", body, "text/markdown")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["text"] == body.decode("utf-8")
+
+    @pytest.mark.asyncio
+    async def test_empty_file_rejected(self, client):
+        resp = await client.post(
+            "/v1/documents/_convert_file",
+            files={"file": ("empty.md", b"", "text/markdown")},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_non_utf8_text_rejected_with_clear_message(self, client):
+        # Latin-1 byte outside ASCII / UTF-8.
+        body = b"\xff\xfe garbage"
+        resp = await client.post(
+            "/v1/documents/_convert_file",
+            files={"file": ("bad.md", body, "text/markdown")},
+        )
+        assert resp.status_code == 400
+        assert "UTF-8" in resp.json().get("detail", "")
