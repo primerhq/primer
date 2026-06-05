@@ -143,6 +143,14 @@ def _eval_predicate(entity: Any, node: Any) -> bool:
             left = _eval_predicate(entity, node.left)
             right = _eval_predicate(entity, node.right)
             return (left and right) if node.op == Op.AND else (left or right)
+        # Unary null check: only the left FieldRef matters.
+        if node.op in (Op.IS_NULL, Op.IS_NOT_NULL):
+            if not isinstance(node.left, FieldRef):
+                return True
+            actual = _resolve_field(entity, node.left.name)
+            if node.op == Op.IS_NULL:
+                return actual is None
+            return actual is not None
         # Comparison: left is a FieldRef, right is a Value.
         if isinstance(node.left, FieldRef) and isinstance(node.right, Value):
             actual = _resolve_field(entity, node.left.name)

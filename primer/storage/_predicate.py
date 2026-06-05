@@ -233,10 +233,28 @@ class _PredicateTranslator:
         if p.op == Op.IN:
             return self._render_in(p)
 
+        if p.op in (Op.IS_NULL, Op.IS_NOT_NULL):
+            return self._render_null_check(p)
+
         if p.op in _COMPARISON_OPS:
             return self._render_comparison(p)
 
         raise BadRequestError(f"unsupported operator {p.op.value!r}")
+
+    def _render_null_check(self, p: Predicate) -> str:
+        """Render IS NULL / IS NOT NULL against a FieldRef.
+
+        Right operand is ignored. The canonical caller passes
+        ``Value(value=None)`` as a placeholder so the Operand union
+        stays satisfied; the value never reaches SQL.
+        """
+        if not isinstance(p.left, FieldRef):
+            raise BadRequestError(
+                f"operator {p.op.value!r} requires a FieldRef on the left"
+            )
+        left_sql = _render_field_expr(self._model, p.left.name)
+        keyword = "IS NULL" if p.op == Op.IS_NULL else "IS NOT NULL"
+        return f"({left_sql} {keyword})"
 
     def _render_in(self, p: Predicate) -> str:
         if not isinstance(p.left, FieldRef):

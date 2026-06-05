@@ -134,6 +134,48 @@ def test_unknown_field_raises_bad_request():
         )
 
 
+def test_is_null_renders_keyword_not_equality():
+    """`= NULL` is always UNKNOWN in SQL; Op.IS_NULL MUST render
+    `IS NULL` so a row with the field unset (or stored as JSON null)
+    actually matches."""
+    t = _T()
+    sql, params = t.translate(
+        Predicate(
+            left=FieldRef(name="name"),
+            op=Op.IS_NULL,
+            # Right operand ignored; passed as a placeholder.
+            right=Value(value=None),
+        )
+    )
+    assert sql == "(json_extract(data, '$.name') IS NULL)"
+    assert params == []
+
+
+def test_is_not_null_renders_keyword():
+    t = _T()
+    sql, params = t.translate(
+        Predicate(
+            left=FieldRef(name="name"),
+            op=Op.IS_NOT_NULL,
+            right=Value(value=None),
+        )
+    )
+    assert sql == "(json_extract(data, '$.name') IS NOT NULL)"
+    assert params == []
+
+
+def test_is_null_rejects_non_field_left():
+    t = _T()
+    with pytest.raises(BadRequestError):
+        t.translate(
+            Predicate(
+                left=Value(value="x"),
+                op=Op.IS_NULL,
+                right=Value(value=None),
+            )
+        )
+
+
 def test_render_order_by_appends_implicit_id_asc():
     clause = render_order_by_sqlite(
         _Row,

@@ -309,16 +309,15 @@ async def _query_storage_turn_log(
         op=Op.EQ,
         right=Value(value=run_id),
     )
-    # node_id filter: workspace-backed uses 'IS NULL' semantics by
-    # comparing against Python None via EQ (the backend should map this
-    # to IS NULL in SQL or `.eq null` semantics).
+    # node_id filter: graph-level events have node_id NULL; the SQL
+    # `= NULL` predicate is always UNKNOWN, so use IS_NULL explicitly.
     if node_id is None:
         predicate = Predicate(
             left=predicate,
             op=Op.AND,
             right=Predicate(
                 left=FieldRef(name="node_id"),
-                op=Op.EQ,
+                op=Op.IS_NULL,
                 right=Value(value=None),
             ),
         )

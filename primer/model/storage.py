@@ -48,6 +48,13 @@ class Op(str, Enum):
     optimise to a native IN clause (SQL ``IN``, MongoDB ``$in``) but
     MUST evaluate the same set-membership semantics.
 
+    ``IS_NULL`` / ``IS_NOT_NULL`` are unary; they expect a
+    :class:`FieldRef` on the left and the right operand is ignored.
+    Match the SQL semantics: ``IS NULL`` is the only way to compare
+    against NULL (``= NULL`` is always UNKNOWN). The canonical shape
+    sets ``right=Value(value=None)`` as a placeholder so the existing
+    ``Operand`` discriminated-union shape stays satisfied.
+
     Logical operators (``AND``, ``OR``) require :class:`Predicate` on
     both sides. The tree is binary; for multi-operand expressions, nest:
     ``a AND b AND c`` -> ``Predicate(AND, Predicate(AND, a, b), c)``.
@@ -65,6 +72,8 @@ class Op(str, Enum):
     GE = ">="
     LE = "<="
     IN = "in"
+    IS_NULL = "is_null"
+    IS_NOT_NULL = "is_not_null"
     AND = "and"
     OR = "or"
 
