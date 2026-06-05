@@ -767,13 +767,20 @@ class _BaseGraphExecutor(ABC):
         self._node_states: dict[str, NodeRuntimeState] = {}
 
         # Turn-log emission. Subclasses (WorkspaceGraphExecutor /
-        # GraphExecutor) override these in their __init__ to wire real
-        # writers; the base defaults emit no-ops so legacy callers and
-        # graph unit tests run without any side effect.
+        # GraphExecutor) override the factory and graph-level writer in
+        # their __init__ to wire real backends; the base defaults emit
+        # no-ops so legacy callers and graph unit tests run without
+        # side effect.
         self._turn_log_factory: Callable[[str], TurnLogWriter] = (
             lambda node_id: NoopTurnLogWriter()
         )
         self._graph_turn_log: TurnLogWriter = NoopTurnLogWriter()
+        # Per-node writers are cached for the lifetime of the executor
+        # so a node that runs across multiple supersteps keeps writing
+        # to the same monotonic seq stream. Without this cache, every
+        # superstep restarts seq=1 -- breaks since_seq pagination and
+        # collides StorageTurnLogWriter.id which embeds the seq.
+        self._node_turn_logs: dict[str, TurnLogWriter] = {}
         # Set by `_run_superstep_loop` at each iteration boundary so
         # `_stream_node` can stamp the active superstep on its events.
         self._current_superstep_id: str | None = None
@@ -1375,14 +1382,17 @@ class _BaseGraphExecutor(ABC):
             ready_ordered = sorted(ready)
             queue: "asyncio.Queue[StreamEvent | _NodeDone]" = asyncio.Queue()
 
-            # Per-node turn-log writers + start timestamps. Opened
-            # before we spawn the tasks so the `started` event lands
-            # before any node event. Closed in the finally block.
-            node_turn_logs: dict[str, TurnLogWriter] = {}
+            # Per-node turn-log writers + start timestamps. Writers
+            # are cached on self._node_turn_logs so a node that fires
+            # in multiple supersteps keeps the same monotonic seq
+            # stream; the cache miss path is the only one that calls
+            # the factory. Closing is deferred to end-of-run.
             node_started_at: dict[str, datetime] = {}
             for nid in ready_ordered:
-                w = self._turn_log_factory(nid)
-                node_turn_logs[nid] = w
+                w = self._node_turn_logs.get(nid)
+                if w is None:
+                    w = self._turn_log_factory(nid)
+                    self._node_turn_logs[nid] = w
                 started_at = datetime.now(timezone.utc)
                 node_started_at[nid] = started_at
                 await _safe_graph_turn_log(
@@ -1420,7 +1430,7 @@ class _BaseGraphExecutor(ABC):
                         # resume-from-checkpoint path.
                         if item.suspended:
                             continue
-                        w = node_turn_logs.get(item.node_id)
+                        w = self._node_turn_logs.get(item.node_id)
                         started_at = node_started_at.get(
                             item.node_id, datetime.now(timezone.utc),
                         )
@@ -1528,11 +1538,8 @@ class _BaseGraphExecutor(ABC):
                         ),
                     ),
                 )
-                for _w in node_turn_logs.values():
-                    try:
-                        await _w.aclose()
-                    except Exception:  # noqa: BLE001
-                        logger.exception("turn_log aclose failed; continuing")
+                # Per-node writers stay open across supersteps -- they
+                # are closed by _close_turn_logs() when the run ends.
                 self._current_superstep_id = None
 
             # Apply per-node results to the supersteps' node_states +
@@ -1824,6 +1831,25 @@ class _BaseGraphExecutor(ABC):
             ended_reason=ended_reason,
             ended_detail=ended_detail,
         )
+
+        # Close every per-node writer + the graph-level writer now that
+        # the run has ended. A subsequent invoke() on the same executor
+        # is not supported (graph executors are single-shot), so this
+        # is safe to do here rather than in __aexit__-style cleanup.
+        await self._close_turn_logs()
+
+    async def _close_turn_logs(self) -> None:
+        """Close every node + graph-level turn-log writer. Idempotent."""
+        for w in list(self._node_turn_logs.values()):
+            try:
+                await w.aclose()
+            except Exception:  # noqa: BLE001
+                logger.exception("turn_log aclose failed; continuing")
+        self._node_turn_logs.clear()
+        try:
+            await self._graph_turn_log.aclose()
+        except Exception:  # noqa: BLE001
+            logger.exception("graph turn_log aclose failed; continuing")
 
     # ---- Per-node streaming ----------------------------------------------
 

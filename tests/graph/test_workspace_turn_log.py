@@ -140,6 +140,60 @@ async def test_per_node_started_completed_lands_in_node_file(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_node_writers_cached_across_supersteps(tmp_path: Path):
+    """The per-node writer cache MUST hold the SAME writer instance
+    across supersteps so a node appearing in N supersteps keeps a
+    single monotonic seq stream. Without the cache, the per-superstep
+    restart would reset seq=1 every iteration -- broken since_seq
+    pagination AND colliding StorageTurnLogWriter ids."""
+    graph = Graph(
+        id="g-ws",
+        description="A -> exit",
+        nodes=[
+            _BeginNode(id="begin"),
+            _AgentNodeRef(id="A", agent_id="x"),
+            _EndNode(id="exit"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="A"),
+            _StaticEdge(from_node="A", to_node="exit"),
+        ],
+    )
+    llm = _FakeLLM(scripts=[[
+        TextDelta(text="hi", index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ]])
+    repo = await _make_repo(tmp_path)
+    executor = await _build_executor(
+        graph=graph, llm=llm, repo=repo, gsid="gsid-cache",
+        agents={"x": _agent("x")},
+    )
+
+    # Pre-populate the cache for node "A" with a sentinel writer, then
+    # run the graph. The superstep-loop's writer lookup must reuse the
+    # pre-existing entry -- never call the factory for "A".
+    factory_calls: list[str] = []
+    original_factory = executor._turn_log_factory
+
+    def _tracking_factory(nid: str):
+        factory_calls.append(nid)
+        return original_factory(nid)
+
+    executor._turn_log_factory = _tracking_factory  # type: ignore[assignment]
+    sentinel = original_factory("A")
+    executor._node_turn_logs["A"] = sentinel
+
+    await _drain(executor.invoke([]))
+
+    # Factory was NOT called for "A" (cache hit), but was for "begin"
+    # and "exit" (cache misses). After the run, _close_turn_logs has
+    # cleared the cache.
+    assert "A" not in factory_calls
+    assert "begin" in factory_calls or "exit" in factory_calls
+    assert executor._node_turn_logs == {}
+
+
+@pytest.mark.asyncio
 async def test_superstep_events_land_in_graph_level_file(tmp_path: Path):
     graph = Graph(
         id="g-ws",
