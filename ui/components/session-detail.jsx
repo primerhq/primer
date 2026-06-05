@@ -520,7 +520,13 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
     {
       id: "turnlog",
       label: "Turn log",
-      content: <TurnLogTab sessionId={sid} sessionStatus={session?.status} />,
+      content: (
+        <TurnLogTab
+          sessionId={sid}
+          sessionStatus={session?.status}
+          binding={session?.binding}
+        />
+      ),
     },
   ];
 
@@ -1584,17 +1590,42 @@ function TurnLogRow({ e }) {
   );
 }
 
-function TurnLogTab({ sessionId, sessionStatus }) {
+function _turnLogEndpoint({ sessionId, binding, scope }) {
+  // For agent sessions: /sessions/{sid}/turn_log
+  // For graph sessions: /graphs/{gid}/runs/{sid}/turn_log (scope=graph)
+  //                 or  /graphs/{gid}/runs/{sid}/nodes/{nid}/turn_log (scope=node:<nid>)
+  const isGraph = binding?.kind === "graph";
+  if (!isGraph) {
+    return `/sessions/${encodeURIComponent(sessionId)}/turn_log?limit=200`;
+  }
+  const gid = encodeURIComponent(binding.graph_id);
+  const rid = encodeURIComponent(sessionId);
+  if (typeof scope === "string" && scope.startsWith("node:")) {
+    const nid = encodeURIComponent(scope.slice("node:".length));
+    return `/graphs/${gid}/runs/${rid}/nodes/${nid}/turn_log?limit=200`;
+  }
+  return `/graphs/${gid}/runs/${rid}/turn_log?limit=200`;
+}
+
+function TurnLogTab({ sessionId, sessionStatus, binding }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = SESSION_TERMINAL.has(sessionStatus);
+  const isGraph = binding?.kind === "graph";
+  // For graph runs, expose a small scope switcher: graph-level events
+  // (default) or a single node's events. The node list is derived from
+  // the graph-level events themselves (every node_id we've seen).
+  const [scope, setScope] = React.useState("graph");
+  const path = _turnLogEndpoint({ sessionId, binding, scope });
+  const cacheKey = `session-turn-log:${sessionId}:${scope}`;
   const log = useResource(
-    `session-turn-log:${sessionId}`,
-    (signal) => apiFetch("GET", `/sessions/${encodeURIComponent(sessionId)}/turn_log?limit=200`, null, { signal }),
+    cacheKey,
+    (signal) => apiFetch("GET", path, null, { signal }),
     {
       pollMs: isTerminal ? 0 : 5000,
-      deps: [sessionId, sessionStatus],
+      deps: [sessionId, sessionStatus, scope],
     },
   );
+
   if (log.loading && !log.data) {
     return <div className="muted text-sm" style={{ padding: 16 }}>Loading turn log…</div>;
   }
@@ -1602,16 +1633,62 @@ function TurnLogTab({ sessionId, sessionStatus }) {
     return <Banner kind="error" title="Could not load turn log" detail={log.error.message || log.error.title || ""} />;
   }
   const items = log.data?.items || [];
+
+  // Build the set of known node ids from the items so the picker is
+  // populated as soon as we have at least one event.
+  const nodeIds = React.useMemo(() => {
+    if (!isGraph) return [];
+    const set = new Set();
+    for (const ev of items) {
+      if (ev.node_id) set.add(ev.node_id);
+      if (Array.isArray(ev.ready_node_ids)) {
+        for (const nid of ev.ready_node_ids) set.add(nid);
+      }
+      if (Array.isArray(ev.completed_node_ids)) {
+        for (const nid of ev.completed_node_ids) set.add(nid);
+      }
+      if (Array.isArray(ev.failed_node_ids)) {
+        for (const nid of ev.failed_node_ids) set.add(nid);
+      }
+    }
+    return Array.from(set).sort();
+  }, [items, isGraph]);
+
+  const scopePicker = isGraph ? (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "0 12px 8px" }}>
+      <span className="muted text-sm">Scope:</span>
+      <Btn
+        size="sm"
+        kind={scope === "graph" ? "primary" : "ghost"}
+        onClick={() => setScope("graph")}
+      >Graph-level</Btn>
+      {nodeIds.map((nid) => (
+        <Btn
+          key={nid}
+          size="sm"
+          kind={scope === `node:${nid}` ? "primary" : "ghost"}
+          onClick={() => setScope(`node:${nid}`)}
+        >{nid}</Btn>
+      ))}
+    </div>
+  ) : null;
+
   if (items.length === 0) {
     return (
-      <div className="muted text-sm" style={{ padding: 16 }}>
-        No turn-log entries yet. Events are written as the session runs.
+      <div className="col">
+        {scopePicker}
+        <div className="muted text-sm" style={{ padding: 16 }}>
+          No turn-log entries yet. Events are written as the session runs.
+        </div>
       </div>
     );
   }
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 12 }}>
-      {items.map((e, i) => <TurnLogRow key={`${e.seq}-${i}`} e={e} />)}
+    <div className="col">
+      {scopePicker}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 12 }}>
+        {items.map((e, i) => <TurnLogRow key={`${e.seq}-${i}`} e={e} />)}
+      </div>
     </div>
   );
 }
