@@ -241,6 +241,51 @@ async def test_node_failed_persists_problem_details_payload():
 
 
 @pytest.mark.asyncio
+async def test_turn_log_storage_propagates_to_subgraph_child():
+    """The storage executor's _build_sub_executor must thread the
+    turn_log_storage through to the child so subgraph events land
+    in the same TurnLogRecord table (under the child run_id).
+    Without propagation, subgraphs run silent."""
+    graph = Graph(
+        id="g-parent", description="A -> exit",
+        nodes=[
+            _BeginNode(id="begin"),
+            _AgentNodeRef(id="A", agent_id="x"),
+            _EndNode(id="exit"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="A"),
+            _StaticEdge(from_node="A", to_node="exit"),
+        ],
+    )
+    llm = _FakeLLM(scripts=[[
+        TextDelta(text="hi", index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ]])
+    turn_log_storage: _InMemoryStorage[TurnLogRecord] = _InMemoryStorage(
+        TurnLogRecord,
+    )
+    executor, _ = await _build(
+        graph=graph, llm=llm, agents={"x": _agent("x")},
+        turn_log_storage=turn_log_storage,
+    )
+
+    # Build a child executor by calling the protected hook directly
+    # with a tiny sub-graph; assert it carries the same storage.
+    sub_graph = Graph(
+        id="g-sub", description="b -> exit",
+        nodes=[_BeginNode(id="begin"), _EndNode(id="exit")],
+        edges=[_StaticEdge(from_node="begin", to_node="exit")],
+    )
+
+    class _FakeRef:
+        id = "parentnode"
+
+    child = await executor._build_sub_executor(_FakeRef(), sub_graph)
+    assert child._turn_log_storage is turn_log_storage
+
+
+@pytest.mark.asyncio
 async def test_no_turn_log_storage_keeps_executor_silent():
     """Backwards compat: when ``turn_log_storage`` is not passed, the
     executor still runs normally and writes zero rows."""

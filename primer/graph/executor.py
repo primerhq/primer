@@ -101,6 +101,14 @@ class GraphExecutor(_BaseGraphExecutor):
         # ToolExecutionManager) or wire one explicitly.
         self._tool_dispatcher = tool_dispatcher
 
+        # Cache the optional turn_log_storage so the subgraph builder
+        # can pass it through to children. Without this, every
+        # subgraph runs with silent (Noop) turn-log emission even
+        # when the parent has structured emission wired.
+        self._turn_log_storage: "Storage[TurnLogRecord] | None" = (
+            turn_log_storage
+        )
+
         # Turn-log writers. When ``turn_log_storage`` is supplied,
         # per-node + graph-level StorageTurnLogWriter instances are
         # constructed and wired onto the base class's hook attributes.
@@ -368,6 +376,11 @@ class GraphExecutor(_BaseGraphExecutor):
             graph_resolver=self._graph_resolver,
             principal=self._principal,
             tool_dispatcher=self._tool_dispatcher,
+            # Propagate the turn-log storage so the subgraph's events
+            # land in the same TurnLogRecord table under the sub-thread's
+            # run_id. Without this, subgraphs run with the base-class
+            # Noop default and the operator gets a partial timeline.
+            turn_log_storage=self._turn_log_storage,
         )
 
     async def _load_node_messages_full(
