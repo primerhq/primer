@@ -24,7 +24,11 @@ class SessionClaimAdapter(ClaimAdapter):
         self._workspace_io = workspace_io
 
     def eligibility_sql(self) -> str:
-        return "e.parked_status IS NULL"
+        # parked_status lives inside the entity's JSONB ``data`` column, not as
+        # a top-level column. Use the JSONB accessor (matching the chat/harness/
+        # trigger adapters); ``e.parked_status`` raises UndefinedColumnError on
+        # Postgres and breaks the claim loop so no session ever runs.
+        return "e.data->>'parked_status' IS NULL"
 
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
         if self._storage is None:

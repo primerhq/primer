@@ -24,7 +24,10 @@ def test_session_adapter_kind():
 def test_session_eligibility_sql():
     a = SessionClaimAdapter(session_storage=None)
     sql = a.eligibility_sql()
-    assert "parked_status IS NULL" in sql
+    # parked_status lives in the JSONB ``data`` column; a bare ``e.parked_status``
+    # reference raises UndefinedColumnError on Postgres and breaks the claim loop.
+    assert sql == "e.data->>'parked_status' IS NULL"
+    assert "e.parked_status" not in sql
 
 
 # ---------------------------------------------------------------------------
