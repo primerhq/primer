@@ -78,6 +78,10 @@ def unique_suffix() -> str:
 
 from tests._support.testconfig import Caps, load_config  # noqa: E402
 from tests._support.mock_llm_fixtures import mock_llm  # noqa: E402,F401
+from tests._support.mcp_fixtures import (  # noqa: E402,F401
+    mcp_http_url,
+    mcp_stdio_command,
+)
 from tests._support.seeding import (  # noqa: E402,F401
     local_workspace,
     scripted_provider,
