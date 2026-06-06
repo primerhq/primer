@@ -999,6 +999,15 @@ class Workspace(Identifiable):
     re-PUTing the row.
     """
 
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Optional human-readable label for the workspace. Operator-"
+            "facing only; the id remains the stable handle used by every "
+            "API. Set at create time or via the rename route; the console "
+            "shows it in place of the id where present."
+        ),
+    )
     template_id: str = Field(
         ...,
         min_length=1,

@@ -761,6 +761,43 @@ class TestWorkspaceRouter:
         assert get2.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_name_on_create_and_rename(self, client) -> None:
+        """Workspaces accept an optional human-readable name at create
+        time, and PATCH /v1/workspaces/{id} renames an existing one."""
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+
+        post = await client.post(
+            "/v1/workspaces",
+            json={"template_id": "tpl-1", "name": "Investing research"},
+        )
+        assert post.status_code == 201, post.text
+        wid = post.json()["id"]
+        assert post.json()["name"] == "Investing research"
+
+        # Rename it.
+        patch = await client.patch(
+            f"/v1/workspaces/{wid}", json={"name": "Renamed box"}
+        )
+        assert patch.status_code == 200, patch.text
+        assert patch.json()["name"] == "Renamed box"
+        assert (await client.get(f"/v1/workspaces/{wid}")).json()["name"] == "Renamed box"
+
+        # Clearing the name falls back to null.
+        cleared = await client.patch(f"/v1/workspaces/{wid}", json={"name": "  "})
+        assert cleared.status_code == 200
+        assert cleared.json()["name"] is None
+
+    @pytest.mark.asyncio
+    async def test_rename_404_when_missing(self, client) -> None:
+        resp = await client.patch("/v1/workspaces/nope", json={"name": "x"})
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
     async def test_create_404_when_template_missing(self, client) -> None:
         await client.post(
             "/v1/workspace_providers", json=_provider().model_dump(mode="json")

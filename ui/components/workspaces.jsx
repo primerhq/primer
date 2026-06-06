@@ -58,6 +58,7 @@ function WorkspacesPage({ onOpen, pushToast }) {
   const { isMobile } = useViewport();
 
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [renaming, setRenaming] = React.useState(null);
   const [textQuery, setTextQuery] = React.useState("");
   const [templateFilter, setTemplateFilter] = React.useState("");
   const [providerFilter, setProviderFilter] = React.useState("");
@@ -76,6 +77,7 @@ function WorkspacesPage({ onOpen, pushToast }) {
     if (textQuery) {
       const q = textQuery.toLowerCase();
       arr = arr.filter((w) =>
+        (w.name || "").toLowerCase().includes(q) ||
         (w.id || "").toLowerCase().includes(q) ||
         (w.template_id || "").toLowerCase().includes(q) ||
         (w.provider_id || "").toLowerCase().includes(q)
@@ -173,8 +175,8 @@ function WorkspacesPage({ onOpen, pushToast }) {
           }
           renderCard={(w) => (
             <Card
-              title={w.id}
-              subtitle={`${w.template_id || "—"} · ${w.provider_id || "—"}`}
+              title={w.name || w.id}
+              subtitle={`${w.name ? w.id + " · " : ""}${w.template_id || "—"} · ${w.provider_id || "—"}`}
               pill={<WS_PhasePill phase={w.phase} />}
               meta={w.created_at ? relativeTime(_wsAgeSec(w.created_at)) : "—"}
               onClick={() => openRow(w.id)}
@@ -186,6 +188,7 @@ function WorkspacesPage({ onOpen, pushToast }) {
           <table className="tbl">
             <thead>
               <tr>
+                <th>Name</th>
                 <th>ID</th>
                 <th>Template</th>
                 <th>Provider</th>
@@ -196,7 +199,7 @@ function WorkspacesPage({ onOpen, pushToast }) {
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+                <tr><td colSpan={7} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
                   No workspaces match the current filter{textQuery ? ` "${textQuery}"` : ""}.
                   {" · "}<a
                     onClick={() => { setTextQuery(""); setTemplateFilter(""); setProviderFilter(""); }}
@@ -205,12 +208,24 @@ function WorkspacesPage({ onOpen, pushToast }) {
                 </td></tr>
               ) : filtered.map((w) => (
                 <tr key={w.id} onClick={() => openRow(w.id)} style={{ cursor: "pointer" }}>
-                  <td className="mono">{w.id}</td>
+                  <td>
+                    {w.name
+                      ? <span>{w.name}</span>
+                      : <span className="muted text-sm" style={{ fontStyle: "italic" }}>unnamed</span>}
+                  </td>
+                  <td className="mono muted text-sm">{w.id}</td>
                   <td className="mono">{w.template_id}</td>
                   <td className="mono muted">{w.provider_id}</td>
                   <td><WS_PhasePill phase={w.phase} /></td>
                   <td className="mono muted">{w.created_at ? relativeTime(_wsAgeSec(w.created_at)) : "—"}</td>
-                  <td style={{ textAlign: "right", paddingRight: 12 }}>
+                  <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }}>
+                    <Btn
+                      size="sm"
+                      kind="ghost"
+                      icon="edit"
+                      title="Rename workspace"
+                      onClick={(e) => { e.stopPropagation(); setRenaming(w); }}
+                    />
                     <Icon name="chevron-right" size={12} className="muted" />
                   </td>
                 </tr>
@@ -230,7 +245,64 @@ function WorkspacesPage({ onOpen, pushToast }) {
           pushToast={pushToast}
         />
       )}
+      {renaming && (
+        <WS_RenameWorkspaceModal
+          workspace={renaming}
+          onClose={() => setRenaming(null)}
+          onRenamed={() => { setRenaming(null); list.refetch(); }}
+          pushToast={pushToast}
+        />
+      )}
     </div>
+  );
+}
+
+function WS_RenameWorkspaceModal({ workspace, onClose, onRenamed, pushToast }) {
+  const { useMutation, apiFetch } = window.primerApi;
+  const [name, setName] = React.useState(workspace.name || "");
+
+  const rename = useMutation(
+    (body) => apiFetch("PATCH", "/workspaces/" + encodeURIComponent(workspace.id), body),
+    {
+      invalidates: ["workspaces:list", "workspace-detail:" + workspace.id],
+      onSuccess: () => {
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "success", title: "Workspace renamed", detail: workspace.id });
+        }
+        onRenamed();
+      },
+      onError: _wsToastErr(pushToast, "Rename failed"),
+    }
+  );
+
+  return (
+    <Modal
+      title="Rename workspace"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose} disabled={rename.loading}>Cancel</Btn>
+          <Btn kind="primary" icon="check" disabled={rename.loading} onClick={() => rename.mutate({ name })}>
+            {rename.loading ? "Saving…" : "Save"}
+          </Btn>
+        </>
+      }
+    >
+      <div className="field">
+        <label className="field-label">
+          Name <span className="hint">for <span className="mono">{workspace.id}</span> · clear to remove the label</span>
+        </label>
+        <input
+          className="input"
+          style={{ width: "100%" }}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Investing research"
+          autoFocus
+          onKeyDown={(e) => { if (e.key === "Enter" && !rename.loading) rename.mutate({ name }); }}
+        />
+      </div>
+    </Modal>
   );
 }
 
@@ -246,6 +318,7 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
   const tplItems = templates.data?.items ?? [];
 
   const [templateId, setTemplateId] = React.useState("");
+  const [name, setName] = React.useState("");
   const [templateCreateOpen, setTemplateCreateOpen] = React.useState(false);
 
   // Auto-pick the first template once it lands so a happy-path submission
@@ -273,7 +346,9 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
 
   const onCreate = () => {
     if (!templateId) return;
-    create.mutate({ template_id: templateId });
+    const body = { template_id: templateId };
+    if (name.trim()) body.name = name.trim();
+    create.mutate(body);
   };
 
   return (
@@ -292,6 +367,16 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
         </>
       }
     >
+      <div className="field">
+        <label className="field-label">Name <span className="hint">optional - a human-readable label</span></label>
+        <input
+          className="input"
+          style={{ width: "100%" }}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Investing research"
+        />
+      </div>
       <div className="field">
         <label className="field-label">Template</label>
         {templates.loading && tplItems.length === 0 ? (

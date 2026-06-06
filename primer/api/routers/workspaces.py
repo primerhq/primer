@@ -81,6 +81,13 @@ class WorkspaceCreateBody(BaseModel):
             "backend allocates one."
         ),
     )
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Optional human-readable label shown in the console in place "
+            "of the id. Does not affect the workspace id or any handle."
+        ),
+    )
     template_id: str = Field(
         ...,
         min_length=1,
@@ -443,6 +450,7 @@ async def create_workspace(
     # would sit at the default "pending" forever and the probe skips it.
     row = WorkspaceRow(
         id=row_id,
+        name=body.name,
         template_id=body.template_id,
         provider_id=template.provider_id,
         overrides=body.overrides,
@@ -452,6 +460,45 @@ async def create_workspace(
     )
     await workspace_storage.create(row)
     return row
+
+
+class WorkspaceRenameBody(BaseModel):
+    """Body of ``PATCH /v1/workspaces/{id}``."""
+
+    name: str | None = Field(
+        default=None,
+        description=(
+            "New human-readable label. Pass null or an empty string to "
+            "clear the name and fall back to the id in the console."
+        ),
+    )
+
+
+@workspace_router.patch(
+    "/workspaces/{workspace_id}",
+    response_model=WorkspaceRow,
+    summary="Rename a Workspace (set its human-readable label)",
+    responses=common_responses(404, 422, 500),
+)
+async def rename_workspace(
+    workspace_id: str = Path(..., description="Workspace id"),
+    body: WorkspaceRenameBody = Body(...),
+    storage=Depends(get_workspace_storage),
+) -> WorkspaceRow:
+    """Update only the workspace's human-readable name.
+
+    Workspaces have no general update route (their contents are mutated
+    through the files / sessions sub-APIs, not by re-PUTing the row).
+    This focused PATCH lets operators label an existing workspace. An
+    empty or null name clears the label.
+    """
+    row = await storage.get(workspace_id)
+    if row is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    new_name = (body.name or "").strip() or None
+    updated = row.model_copy(update={"name": new_name})
+    await storage.update(updated)
+    return updated
 
 
 @workspace_router.delete(
