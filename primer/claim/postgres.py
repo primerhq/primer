@@ -81,6 +81,33 @@ class PostgresClaimEngine(ClaimEngine):
             self._table,
             schema=storage_provider.schema,
         )
+        # Entity tables are created lazily by the storage layer on first write.
+        # The claim query JOINs them unconditionally, so on a fresh DB (before
+        # any chat/harness/trigger exists) the JOIN target is missing and the
+        # whole query fails with UndefinedTableError. Ensure they exist once,
+        # on the first claim, with the same standard (id, data jsonb, ...) shape
+        # the storage layer uses.
+        self._entity_tables = sorted(
+            {a.entity_table for a in adapters.values()}
+        )
+        self._entity_tables_ensured = False
+
+    def _qualified_entity(self, table: str) -> str:
+        schema = self._storage.schema
+        return f'"{schema}"."{table}"' if schema else f'"{table}"'
+
+    async def _ensure_entity_tables(self, conn: Any) -> None:
+        for table in self._entity_tables:
+            qualified = self._qualified_entity(table)
+            await conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {qualified} ("
+                "id text PRIMARY KEY, "
+                "data jsonb NOT NULL, "
+                "created_at timestamptz NOT NULL DEFAULT now(), "
+                "updated_at timestamptz NOT NULL DEFAULT now()"
+                ")"
+            )
+        self._entity_tables_ensured = True
 
     # ------------------------------------------------------------------
     # upsert
@@ -146,6 +173,8 @@ class PostgresClaimEngine(ClaimEngine):
         _tracer = _tracing.get_tracer("primer.claim")
         with _tracer.start_as_current_span("claim.due") as _span:
             async with self._storage.pool.acquire() as conn:
+                if not self._entity_tables_ensured:
+                    await self._ensure_entity_tables(conn)
                 rows = await conn.fetch(
                     self._claim_query,
                     max_count,

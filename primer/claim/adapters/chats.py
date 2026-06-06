@@ -6,7 +6,10 @@ from primer.int.storage import Storage
 
 class ChatClaimAdapter(ClaimAdapter):
     kind = ClaimKind.CHAT
-    entity_table = "chats"
+    # Must match _table_name_for(Chat) in primer.storage.postgres ("chat",
+    # the lowercased class name). A plural "chats" JOINs a table that never
+    # matches storage and 404s the claim query on a fresh Postgres DB.
+    entity_table = "chat"
 
     def __init__(self, *, chat_storage: Storage | None) -> None:
         self._storage = chat_storage

@@ -28,7 +28,7 @@ def _now() -> datetime:
 def test_trigger_adapter_kind():
     a = TriggerClaimAdapter(storage=None)
     assert a.kind == ClaimKind.TRIGGER
-    assert a.entity_table == "triggers"
+    assert a.entity_table == "trigger"
 
 
 def test_trigger_adapter_eligibility_sql_filters_time_kinds():

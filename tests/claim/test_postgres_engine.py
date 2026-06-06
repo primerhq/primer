@@ -287,7 +287,7 @@ def test_build_claim_query_single_adapter():
     sql = build_claim_query(adapters, '"test"."leases"')
 
     assert "chat_cand" in sql
-    assert "chats" in sql
+    assert "chat" in sql
     # Only one CTE — no union needed.
     assert "UNION ALL" not in sql
 
@@ -310,7 +310,7 @@ def test_build_claim_query_schema_qualifies_entity_tables():
     adapters = {ClaimKind.CHAT: ChatClaimAdapter(chat_storage=None)}
     sql = build_claim_query(adapters, '"myschema"."leases"', schema="myschema")
 
-    assert '"myschema"."chats"' in sql
+    assert '"myschema"."chat"' in sql
 
 
 # ---------------------------------------------------------------------------
@@ -674,3 +674,42 @@ async def test_postgres_watch_ready_yields_on_mark_resumable(pg_engine):
     assert result == (ClaimKind.CHAT, "wr-mr-1")
 
     await gen.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Regression: claim_due must work on a fresh DB where entity tables for the
+# claim kinds have not been created yet (lazily-created by storage on first
+# write). The engine ensures them; the adapter table names match the storage
+# convention (chat/harness/trigger/sessions, not plural).
+# ---------------------------------------------------------------------------
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_claim_due_on_fresh_schema_ensures_entity_tables(pg_storage):
+    from primer.claim.adapters.harnesses import HarnessClaimAdapter
+    from primer.claim.adapters.triggers import TriggerClaimAdapter
+
+    schema = pg_storage.schema
+    # Simulate a fresh DB: drop the per-kind entity tables.
+    async with pg_storage.pool.acquire() as conn:
+        for t in ("chat", "harness", "trigger", "sessions"):
+            await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{t}" CASCADE')
+
+    adapters = {
+        ClaimKind.SESSION: SessionClaimAdapter(session_storage=None),
+        ClaimKind.CHAT: ChatClaimAdapter(chat_storage=None),
+        ClaimKind.HARNESS: HarnessClaimAdapter(harness_storage=None),
+        ClaimKind.TRIGGER: TriggerClaimAdapter(storage=None),
+    }
+    engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+
+    # Must NOT raise UndefinedTableError even though no entity exists yet.
+    leases = await engine.claim_due("w-fresh", max_count=5)
+    assert leases == []
+
+    # The engine created each entity table with the storage-convention name.
+    async with pg_storage.pool.acquire() as conn:
+        for t in ("chat", "harness", "trigger", "sessions"):
+            reg = await conn.fetchval("SELECT to_regclass($1)", f"{schema}.{t}")
+            assert reg is not None, f"entity table {t!r} was not ensured"
