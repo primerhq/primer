@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Any
 
 
 class ClaimKind(StrEnum):
@@ -25,11 +26,29 @@ class Lease:
 
 
 @dataclass(frozen=True)
+class ParkRequest:
+    """Request to park an entity instead of completing/failing its turn.
+
+    Set on :class:`ReleaseOutcome` when a session turn hits a yielding
+    tool. The claim adapter's ``on_release`` writes these into the
+    entity row's park columns (parked_status='parked') and the engine
+    drops the lease, so the parked entity is not re-claimed until the
+    resume event re-arms it.
+    """
+
+    parked_state: dict[str, Any]
+    parked_event_key: str
+    parked_until: datetime | None
+    parked_at: datetime
+
+
+@dataclass(frozen=True)
 class ReleaseOutcome:
     success: bool
     requeue_after: timedelta | None = None
     last_error: str | None = None
     drop_lease: bool = False
+    park: ParkRequest | None = None
 
 
 class ClaimAdapter(ABC):
