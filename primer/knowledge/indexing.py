@@ -186,7 +186,103 @@ async def remove_document_index(
         pass
 
 
+async def backfill_missing_document_vectors(
+    *,
+    storage_provider,
+    provider_registry,
+    semantic_search_registry,
+) -> int:
+    """Index every user document that has no vector chunks yet.
+
+    The embed-on-ingest hook only fires when a Document is created or
+    updated. Documents that were stored before that hook existed (or whose
+    embedding failed at ingest time, since indexing is best-effort) keep a
+    storage row but never land in the vector store, so per-collection search
+    and the "view chunks" UI return nothing for them. This startup pass
+    closes that gap and is the system's self-healing path for any document
+    whose embedding was missed.
+
+    The check is cheap and idempotent: for each non-system collection we ask
+    the vector store once for the set of document ids that already have
+    chunks (``search_by_meta(meta={})``), then index only the documents
+    missing from that set. A collection that has never been registered in
+    the store raises, which we treat as "no documents indexed yet". On a
+    healthy boot where everything is already indexed, no embeds run.
+
+    Returns the number of documents (re)indexed. Best-effort throughout:
+    a failure on one collection or document is logged and skipped so a bad
+    embedder never blocks startup.
+    """
+    from primer.model.collection import Collection, Document
+    from primer.model.storage import OffsetPage
+
+    doc_storage = storage_provider.get_storage(Document)
+    coll_storage = storage_provider.get_storage(Collection)
+
+    # Group documents by collection so the "already indexed" lookup runs
+    # once per collection rather than once per document.
+    docs_by_collection: dict[str, list[Document]] = {}
+    offset = 0
+    page_size = 200
+    while True:
+        page = await doc_storage.list(OffsetPage(offset=offset, length=page_size))
+        for doc in page.items:
+            docs_by_collection.setdefault(doc.collection_id, []).append(doc)
+        if len(page.items) < page_size:
+            break
+        offset += page_size
+
+    indexed = 0
+    for collection_id, docs in docs_by_collection.items():
+        try:
+            collection = await coll_storage.get(collection_id)
+        except PrimerError:
+            collection = None
+        if collection is None or collection.system:
+            continue
+
+        # Which documents already have chunks? One query per collection.
+        # An unregistered collection (never embedded) raises; treat as empty.
+        try:
+            store = await semantic_search_registry.get_store(
+                collection.search_provider_id
+            )
+            existing = await store.search_by_meta(collection.id, meta={})
+            indexed_doc_ids = {r.document_id for r in existing}
+        except PrimerError:
+            indexed_doc_ids = set()
+        except Exception:
+            logger.exception(
+                "backfill: failed to read existing chunks for collection %s",
+                collection_id,
+            )
+            continue
+
+        for doc in docs:
+            if doc.id in indexed_doc_ids:
+                continue
+            try:
+                n = await index_document(
+                    document=doc,
+                    collection=collection,
+                    provider_registry=provider_registry,
+                    semantic_search_registry=semantic_search_registry,
+                )
+                if n:
+                    indexed += 1
+            except Exception:
+                logger.exception(
+                    "backfill: failed to index document %s in collection %s",
+                    doc.id, collection_id,
+                )
+
+    if indexed:
+        logger.info("backfill: indexed %d previously unindexed document(s)", indexed)
+    return indexed
+
+
 __all__ = [
+    "backfill_missing_document_vectors",
     "chunk_text",
     "index_document",
     "remove_document_index",

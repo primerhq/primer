@@ -970,6 +970,24 @@ def _make_lifespan(config: AppConfig):
             "Ensure the corresponding router modules register their kinds."
         )
 
+        # --- Document vector backfill ------------------------------------
+        # Index any user document whose vector chunks are missing (stored
+        # before the embed-on-ingest hook existed, or whose embedding failed
+        # at ingest time). Cheap and idempotent: on a healthy boot where
+        # everything is already indexed, no embeds run. Best-effort so a bad
+        # embedder never blocks startup.
+        try:
+            from primer.knowledge.indexing import (  # noqa: PLC0415
+                backfill_missing_document_vectors,
+            )
+            await backfill_missing_document_vectors(
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+            )
+        except Exception:
+            logger.exception("lifespan: document vector backfill failed")
+
         # --- MCP server mount (/v1/mcp) ----------------------------------
         # Spec §4-5: StreamableHTTP MCP transport exposed at /v1/mcp,
         # gated by AuthMiddleware-populated scope state. The session
