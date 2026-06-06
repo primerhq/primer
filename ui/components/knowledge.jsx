@@ -479,6 +479,82 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
 }
 
 
+// Modal: view all indexed chunks of a single document. Pulls from
+// /collections/{id}/indexed_documents?document_id=X. A document whose
+// row exists but has not been vectorised yet has no chunks; the modal
+// says so rather than showing an empty void.
+function KN_DocumentChunksModal({ collectionId, doc, onClose }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const docId = doc.id;
+  const chunks = useResource(
+    `doc-chunks:${collectionId}:${docId}`,
+    (signal) => apiFetch(
+      "GET",
+      `/collections/${encodeURIComponent(collectionId)}/indexed_documents?document_id=${encodeURIComponent(docId)}&limit=500`,
+      null,
+      { signal },
+    ),
+    { pollMs: null, deps: [collectionId, docId] },
+  );
+  const items = (chunks.data?.items || []).map((r) => ({
+    document_id: r.document_id,
+    chunk_id: r.chunk_id,
+    text: r.text,
+    meta: r.meta,
+    score: null,
+  }));
+  const total = chunks.data?.total ?? null;
+
+  return (
+    <Modal
+      title={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Icon name="doc" size={13} className="muted" />
+          <span>Chunks of <span className="mono">{doc.name || docId}</span></span>
+        </span>
+      }
+      onClose={onClose}
+      footer={
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
+          <span className="muted text-sm tabular">
+            {total == null ? (chunks.loading ? "Loading…" : "—") : `${total} chunk${total === 1 ? "" : "s"}`}
+          </span>
+          <div style={{ marginLeft: "auto" }}>
+            <Btn kind="ghost" onClick={onClose}>Close</Btn>
+          </div>
+        </div>
+      }
+    >
+      <div style={{ width: "min(80vw, 880px)", maxWidth: "100%", minWidth: 0, overflowX: "hidden" }}>
+        <div className="muted text-sm mb-3" style={{ overflowWrap: "anywhere" }}>
+          <span className="mono">GET /v1/collections/{collectionId}/indexed_documents?document_id={docId}</span>
+        </div>
+        {chunks.loading && items.length === 0 && (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
+        )}
+        {chunks.error && (
+          <Banner kind="error" title={chunks.error.title || "Failed to load chunks"} detail={chunks.error.detail || chunks.error.message} />
+        )}
+        {!chunks.loading && items.length === 0 && !chunks.error && (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+            This document has no indexed chunks yet. Vector indexing runs
+            separately from document ingestion; until it runs, the stored
+            text is available on the document row but not chunked for search.
+          </div>
+        )}
+        {items.length > 0 && (
+          <div style={{ maxHeight: 480, overflow: "auto", overflowX: "hidden" }}>
+            {items.map((entry, i) => (
+              <KN_EntryRow key={i} entry={entry} index={i} />
+            ))}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+
 // Modal: search the collection. Search box at the top; results
 // underneath (still inside the modal, but separated from the inline
 // detail view so the chrome stays clean).
@@ -821,6 +897,7 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
   const [textFilter, setTextFilter] = React.useState("");
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editing, setEditing] = React.useState(null);
+  const [viewingChunks, setViewingChunks] = React.useState(null);
 
   // Normalise to a single row shape. /documents returns Document
   // storage rows {id, collection_id, name, meta}; /indexed_documents
@@ -913,7 +990,7 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
               title={d.id}
               subtitle={d.name || ""}
               meta={d.collection_id}
-              onClick={() => { if (!d._indexed) setEditing(d); }}
+              onClick={() => setViewingChunks({ collectionId: d.collection_id, doc: d })}
             />
           )}
         />
@@ -956,7 +1033,13 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
               const orphan = d.collection_id && !knownCollections.has(d.collection_id);
               return (
                 <tr key={d.id}>
-                  <td className="mono">{d.id}</td>
+                  <td className="mono">
+                    <a
+                      style={{ cursor: "pointer", color: "var(--accent)" }}
+                      title="View this document's indexed chunks"
+                      onClick={() => setViewingChunks({ collectionId: d.collection_id, doc: d })}
+                    >{d.id}</a>
+                  </td>
                   <td className="mono muted text-sm">
                     {d.collection_id}
                     {orphan && (
@@ -972,7 +1055,8 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
                       ? <span style={{ color: "var(--text-4)" }}>—</span>
                       : Object.keys(d.meta).join(", ")}
                   </td>
-                  <td style={{ textAlign: "right", paddingRight: 12 }}>
+                  <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }}>
+                    <Btn size="sm" kind="ghost" icon="list" onClick={() => setViewingChunks({ collectionId: d.collection_id, doc: d })} title="View chunks" />
                     {!d._indexed && (
                       <Btn size="sm" kind="ghost" icon="edit" onClick={() => setEditing(d)} title="Edit document" />
                     )}
@@ -1048,6 +1132,13 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
             }
             list.refetch();
           }}
+        />
+      )}
+      {viewingChunks && (
+        <KN_DocumentChunksModal
+          collectionId={viewingChunks.collectionId}
+          doc={viewingChunks.doc}
+          onClose={() => setViewingChunks(null)}
         />
       )}
     </div>

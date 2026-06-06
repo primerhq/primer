@@ -222,6 +222,13 @@ async def list_indexed_documents(
     collection_id: str = Path(..., description="Collection id"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    document_id: str | None = Query(
+        default=None,
+        description=(
+            "When set, return only the chunks belonging to this document "
+            "id. Used by the 'view chunks of a document' UI."
+        ),
+    ),
     collections=Depends(get_collection_storage),
     ssr: SemanticSearchRegistry = Depends(get_semantic_search_registry),
 ) -> dict:
@@ -238,6 +245,10 @@ async def list_indexed_documents(
     Works for user-owned collections too; just returns whatever has been
     ingested into the vector store regardless of whether Document rows
     also exist in storage.
+
+    When ``document_id`` is supplied, the result is filtered to that
+    single document's chunks before the offset/limit window is applied,
+    so the UI can show "all chunks of this document".
 
     Pagination today is in-process (the vector-store ABC has no native
     offset/limit). The records list is sorted deterministically by
@@ -261,6 +272,8 @@ async def list_indexed_documents(
         if "is not registered" not in str(exc):
             raise
         records = []
+    if document_id is not None:
+        records = [r for r in records if r.document_id == document_id]
     total = len(records)
     window = records[offset:offset + limit]
     items = [

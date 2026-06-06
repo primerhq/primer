@@ -168,6 +168,58 @@ class TestSearchUnregisteredCollection:
             )
 
 
+class TestIndexedDocumentsDocumentIdFilter:
+    """list_indexed_documents filters to a single document's chunks when
+    document_id is supplied, backing the 'view chunks of a document' UI."""
+
+    @pytest.mark.asyncio
+    async def test_filters_by_document_id(self):
+        from unittest.mock import AsyncMock
+
+        from primer.api.routers.knowledge import list_indexed_documents
+
+        coll = _collection(id="kb-chunks")
+        collections = AsyncMock()
+        collections.get = AsyncMock(return_value=coll)
+
+        def _rec(doc_id, chunk_id):
+            return type(
+                "R", (), {
+                    "document_id": doc_id,
+                    "chunk_id": chunk_id,
+                    "text": f"{doc_id}:{chunk_id}",
+                    "meta": {},
+                },
+            )()
+
+        records = [
+            _rec("doc-a", "0"), _rec("doc-a", "1"),
+            _rec("doc-b", "0"),
+        ]
+
+        class _Store:
+            async def search_by_meta(self, cid, meta):
+                return records
+
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=_Store())
+
+        # No filter: all 3 chunks.
+        full = await list_indexed_documents(
+            collection_id="kb-chunks", limit=50, offset=0,
+            document_id=None, collections=collections, ssr=ssr,
+        )
+        assert full["total"] == 3
+
+        # Filtered to doc-a: 2 chunks.
+        scoped = await list_indexed_documents(
+            collection_id="kb-chunks", limit=50, offset=0,
+            document_id="doc-a", collections=collections, ssr=ssr,
+        )
+        assert scoped["total"] == 2
+        assert {i["document_id"] for i in scoped["items"]} == {"doc-a"}
+
+
 class TestSystemCollectionGuard:
     """Documents cannot be hand-ingested into system collections."""
 
