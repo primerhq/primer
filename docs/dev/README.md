@@ -181,6 +181,13 @@ flowchart TD
   repeating list-and-detail page shapes, the loader and confirmation conventions, and a
   page-by-page route index.
 
+### Vision and motivation
+
+- [vision/](vision/README.md) - the origin story and design philosophy: why Primer
+  exists, the hypothesis that context quality can substitute for model scale, and a
+  chapter-by-chapter walk from a 16 GB VRAM constraint to a microagents platform, with
+  worked examples. Read this for the "why" behind the subsystems.
+
 ### Contributing and deferred work
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) - the required reading order and the five-track
