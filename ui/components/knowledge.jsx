@@ -1140,6 +1140,7 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
             }
             list.refetch();
           }}
+          onBatchDone={() => { setCreateOpen(false); list.refetch(); }}
         />
       )}
       {editing && (
@@ -1194,7 +1195,7 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
   );
 }
 
-function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClose, onCreate, existing }) {
+function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClose, onCreate, onBatchDone, existing }) {
   const isEdit = !!existing;
   const { useMutation, apiFetch } = window.primerApi;
   const _initialMeta = () => {
@@ -1256,6 +1257,56 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
     }
   };
 
+  // Batch ingest: dropping or selecting MORE THAN ONE file creates one
+  // document per file directly (convert -> POST /documents), bypassing
+  // the single-file textarea edit. batch is null when not batching, or
+  // { files: [{name, status, error}], done } while/after running.
+  const [batch, setBatch] = React.useState(null);
+
+  const processBatchFiles = async (fileList) => {
+    const arr = Array.from(fileList);
+    if (!collectionId) {
+      setConvertError("Pick a collection before uploading multiple files.");
+      return;
+    }
+    setConvertError(null);
+    setBatch({ files: arr.map((f) => ({ name: f.name, status: "pending" })), done: false });
+    const setStatus = (i, status, error) =>
+      setBatch((b) => b && ({ ...b, files: b.files.map((x, j) => j === i ? { ...x, status, error } : x) }));
+    let created = 0;
+    for (let i = 0; i < arr.length; i++) {
+      setStatus(i, "converting");
+      try {
+        const fd = new FormData();
+        fd.append("file", arr[i]);
+        const conv = await apiFetch("POST", "/documents/_convert_file", fd);
+        const docId = "doc-" + Math.random().toString(16).slice(2, 10);
+        await apiFetch("POST", "/documents", {
+          id: docId,
+          collection_id: collectionId,
+          name: conv.filename || arr[i].name,
+          meta: { text: conv.text || "" },
+        });
+        created += 1;
+        setStatus(i, "done");
+      } catch (err) {
+        setStatus(i, "error", (err && (err.detail || err.message)) || "Failed");
+      }
+    }
+    setBatch((b) => b && ({ ...b, done: true }));
+    if (created > 0 && typeof pushToast === "function") {
+      pushToast({ kind: "success", title: `Ingested ${created} document${created === 1 ? "" : "s"}`, detail: collectionId });
+    }
+  };
+
+  // Route a FileList to the right handler: one file uses the existing
+  // convert-to-textarea edit flow; multiple files batch-ingest.
+  const handleFiles = (fileList) => {
+    if (!fileList || fileList.length === 0) return;
+    if (fileList.length === 1) handleConvertFile(fileList[0]);
+    else processBatchFiles(fileList);
+  };
+
   const handleDragOver = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1272,8 +1323,7 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
-    const f = e.dataTransfer?.files?.[0];
-    if (f) handleConvertFile(f);
+    handleFiles(e.dataTransfer?.files);
   };
 
   React.useEffect(() => {
@@ -1324,6 +1374,44 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
     if (text) body.meta = { ...meta, text };
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
+
+  // Batch mode renders a dedicated progress view instead of the form.
+  if (batch) {
+    const allDone = batch.done;
+    const okCount = batch.files.filter((f) => f.status === "done").length;
+    const errCount = batch.files.filter((f) => f.status === "error").length;
+    return (
+      <Modal
+        title={`Ingesting ${batch.files.length} files into ${collectionId}`}
+        onClose={allDone ? () => (onBatchDone ? onBatchDone() : onClose()) : undefined}
+        footer={
+          <Btn
+            kind="primary"
+            icon="check"
+            disabled={!allDone}
+            onClick={() => (onBatchDone ? onBatchDone() : onClose())}
+          >{allDone ? `Done (${okCount} created${errCount ? `, ${errCount} failed` : ""})` : "Working…"}</Btn>
+        }
+      >
+        <div style={{ width: "min(70vw, 560px)", maxWidth: "100%" }}>
+          {batch.files.map((f, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderTop: i ? "1px solid var(--border)" : "none" }}>
+              <span style={{ width: 18, textAlign: "center" }}>
+                {f.status === "done" ? <Icon name="check-circle" size={13} style={{ color: "var(--green)" }} />
+                  : f.status === "error" ? <Icon name="x-circle" size={13} style={{ color: "var(--red)" }} />
+                  : f.status === "converting" ? <Icon name="zap" size={13} style={{ color: "var(--accent)" }} />
+                  : <span className="muted">·</span>}
+              </span>
+              <span className="mono text-sm" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{f.name}</span>
+              <span className="muted text-sm">
+                {f.status === "converting" ? "converting…" : f.status === "done" ? "created" : f.status === "error" ? (f.error || "failed") : "queued"}
+              </span>
+            </div>
+          ))}
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
@@ -1446,29 +1534,28 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
             ) : (
               <>
                 <div style={{ fontSize: 13, marginBottom: 4 }}>
-                  {isDragOver ? "Release to upload" : "Drag and drop a file here"}
+                  {isDragOver ? "Release to upload" : "Drag and drop one or more files here"}
                 </div>
                 <div className="muted text-sm">or</div>
                 <label
                   className="btn"
                   style={{ cursor: "pointer", fontSize: 12 }}
-                  title="PDF, DOCX, PPTX, XLSX, HTML, .md, .txt, images, ... - text formats are stored as-is; docling converts binary formats to markdown"
+                  title="PDF, DOCX, PPTX, XLSX, HTML, .md, .txt, images, ... - text formats are stored as-is; docling converts binary formats to markdown. Select multiple files to ingest each as a separate document."
                 >
                   <input
                     type="file"
+                    multiple
                     accept=".pdf,.docx,.pptx,.xlsx,.html,.htm,.md,.markdown,.txt,.png,.jpg,.jpeg"
                     style={{ display: "none" }}
                     onChange={(e) => {
-                      const f = e.target.files && e.target.files[0];
-                      if (!f) return;
-                      handleConvertFile(f);
+                      handleFiles(e.target.files);
                       e.target.value = "";
                     }}
                   />
-                  Choose a file
+                  Choose file(s)
                 </label>
                 <div className="muted text-sm" style={{ marginTop: 6, fontSize: 11 }}>
-                  PDF · DOCX · PPTX · XLSX · HTML · .md · .txt · images · ≤ 32 MB
+                  PDF · DOCX · PPTX · XLSX · HTML · .md · .txt · images · ≤ 32 MB · multiple = one document each
                 </div>
                 {convertedFileName && (
                   <div className="muted text-sm" style={{ marginTop: 4 }} title={convertedFileName}>
