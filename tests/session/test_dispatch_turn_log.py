@@ -240,7 +240,10 @@ async def test_yielded_event_fires_before_park(
     )
     outcome = await run_one_session_turn(_make_lease(sess.id), deps)
     assert outcome.success
-    assert outcome.drop_lease is False
+    # F10c fix: park outcome drops the lease so the session isn't re-claimed.
+    assert outcome.drop_lease is True
+    assert outcome.park is not None
+    assert outcome.park.parked_event_key == "ask_user:s1:tc1"
     kinds = [e.kind for e in writer.events]
     assert TurnLogKind.STARTED in kinds
     assert TurnLogKind.YIELDED in kinds

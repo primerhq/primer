@@ -13,7 +13,9 @@ Return value:
   A :class:`ReleaseOutcome` the caller passes to
   ``engine.release(lease, outcome=...)``:
   - Normal completion: ``ReleaseOutcome(success=True, drop_lease=True)``
-  - Parked (YieldToWorker): ``ReleaseOutcome(success=True, drop_lease=False)``
+  - Parked (YieldToWorker): ``ReleaseOutcome(success=True, drop_lease=True,
+    park=ParkRequest(...))`` - lease dropped, park columns written by
+    the session adapter's on_release.
 """
 
 from __future__ import annotations
@@ -21,10 +23,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
-from primer.int.claim import ClaimKind, Lease, ReleaseOutcome
+from primer.int.claim import ClaimKind, Lease, ParkRequest, ReleaseOutcome
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
 from primer.model.workspace_session import (
@@ -231,8 +233,18 @@ async def run_one_session_turn(
 
     except YieldToWorker as park:
         # ------------------------------------------------------------------
-        # 5a. Parked turn — write YIELDED record, flush, publish tick, park
+        # 5a. Parked turn - write YIELDED record, flush, publish tick, then
+        # return a park outcome. The engine drops the lease (drop_lease=True)
+        # and the session adapter's on_release writes the park columns
+        # (parked_status='parked'). No lease while parked => no re-claim loop.
         # ------------------------------------------------------------------
+        # Function-local import: a module-level import of yield_runtime here
+        # creates a circular import (primer.worker.__init__ -> pool -> this
+        # module) that only resolves because pool happens to load first.
+        # Importing inside the park branch (which runs rarely) avoids that
+        # fragility entirely.
+        from primer.worker.yield_runtime import ParkedState
+
         await _safe_turn_log(turn_log, TurnLogYielded(
             seq=0,
             ts=_now(),
@@ -247,7 +259,65 @@ async def run_one_session_turn(
             f"session:{session_id}:tick", {"seq": seq}
         )
         await turn_log.aclose()
-        return ReleaseOutcome(success=True, drop_lease=False)
+
+        yielded = park.yielded
+        parked_at = _now()
+        # Per-yield timeout takes precedence; fall back to the global yield
+        # cap (60 min default).
+        timeout = yielded.timeout if yielded.timeout is not None else 3600.0
+        parked_until = parked_at + timedelta(seconds=timeout)
+
+        # Stamp parked_at_iso into resume_metadata so the resume hook can
+        # compute elapsed without a separate read.
+        resume_metadata = dict(yielded.resume_metadata)
+        resume_metadata["parked_at_iso"] = parked_at.isoformat()
+        yielded_stamped = type(yielded)(
+            tool_name=yielded.tool_name,
+            event_key=yielded.event_key,
+            timeout=yielded.timeout,
+            resume_metadata=resume_metadata,
+        )
+
+        # The executor stamps YieldToWorker.llm_messages with the in-progress
+        # turn history (the assistant message that emitted the tool_use).
+        # Round-trip through model_dump so the JSONB column carries canonical
+        # Primer message-dicts; ParkedState.from_jsonable rebuilds typed
+        # Messages on resume.
+        captured_messages = park.llm_messages or []
+        llm_message_dicts = [m.model_dump(mode="json") for m in captured_messages]
+
+        # Graph-bound ToolCalls stamp the mid-flight executor snapshot on
+        # YieldToWorker.graph_checkpoint at park time; carry it through so the
+        # resume dispatch can route to the graph resume adapter.
+        graph_checkpoint = getattr(park, "graph_checkpoint", None)
+
+        parked_state = ParkedState(
+            yielded=yielded_stamped,
+            llm_messages=llm_message_dicts,
+            turn_no=session.turn_no,
+            # started_at is the true turn start (for resume latency reporting),
+            # not the park moment; _turn_started_at was captured before the
+            # executor began streaming.
+            started_at=_turn_started_at,
+            tool_call_id=park.tool_call_id,
+            graph_checkpoint=graph_checkpoint,
+        )
+
+        logger.info(
+            "session %s parking on tool %r (event_key=%r, timeout=%.1fs)",
+            session_id, yielded.tool_name, yielded.event_key, timeout,
+        )
+
+        return ReleaseOutcome(
+            success=True,
+            drop_lease=True,
+            park=ParkRequest(
+                parked_state=parked_state.to_jsonable(),
+                parked_event_key=yielded.event_key,
+                parked_until=parked_until,
+                parked_at=parked_at,
+            ),
+        )
 
     except Exception as exc:
         logger.exception(

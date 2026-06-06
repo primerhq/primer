@@ -277,7 +277,7 @@ async def test_yield_to_worker_writes_yielded_and_returns_no_drop(
     fake_event_bus: InMemoryEventBus,
     fake_storage_provider,
 ) -> None:
-    """YieldToWorker exception → YIELDED record; drop_lease=False."""
+    """YieldToWorker exception -> YIELDED record; drop_lease=True, park populated."""
     import json
 
     yielded = Yielded(tool_name="wait_tool", event_key="timer:tc1")
@@ -302,7 +302,11 @@ async def test_yield_to_worker_writes_yielded_and_returns_no_drop(
     outcome = await run_one_session_turn(lease, deps)
 
     assert outcome.success is True
-    assert outcome.drop_lease is False
+    # F10c fix: lease must be dropped and park columns populated so the
+    # session is not re-claimed in an infinite loop.
+    assert outcome.drop_lease is True
+    assert outcome.park is not None
+    assert outcome.park.parked_event_key == "timer:tc1"
 
     lines = fake_workspace_io.read_lines(seeded_session.id)
     kinds = [json.loads(ln)["kind"] for ln in lines]
