@@ -171,6 +171,14 @@ mcp_stdio_allowed_commands:
   - python
   - uv
 EOF
+
+# Merge storage/vector backend choice from tests/testconfig.yaml (if present).
+# render-server-config prints nothing when sqlite/lance are selected, so this
+# is a no-op for the default hermetic run.
+if [ -f "$ROOT/tests/testconfig.yaml" ]; then
+  uv run python -m tests._support.testconfig render-server-config >> "$CONFIG" || {
+    echo "[bringup] FATAL: testconfig render-server-config failed" >&2; exit 1; }
+fi
 echo "[bringup] rendered $CONFIG" >&2
 
 # ---- 4. Defensive: stop the docker-compose primer-app container if it's
