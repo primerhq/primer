@@ -231,7 +231,7 @@ class CompactionStrategy:
             self._estimate_tokens([*history, *new_messages]),
             last_known_input_tokens or 0,
         )
-        budget = max(0, model.context_length - self.reserved_output_tokens)
+        budget = self._effective_budget(model)
         trigger = int(self.trigger_ratio * budget)
         if before < trigger:
             return None
@@ -316,6 +316,22 @@ class CompactionStrategy:
             estimated_tokens_before=before,
             estimated_tokens_after=after,
         )
+
+    def _effective_budget(self, model: "LLMModel") -> int:
+        """Token budget for live history before compaction triggers.
+
+        Clamp the reserved-output allowance to at most half the model's
+        context so the trigger cannot collapse to 0 for a small-context
+        model. With the default 8192 reserved, an 8192-context model would
+        otherwise get ``budget = 0`` -> ``trigger = 0`` -> compaction firing
+        on EVERY turn (repeatedly summarising even a tiny history, which
+        mangles short runs). Large-context models are unaffected
+        (``min(8192, context//2) == 8192``).
+        """
+        reserved = min(
+            self.reserved_output_tokens, max(1, model.context_length // 2)
+        )
+        return max(0, model.context_length - reserved)
 
     # ---- Token estimator --------------------------------------------------
 
