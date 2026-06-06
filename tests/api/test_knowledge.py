@@ -268,6 +268,24 @@ class TestDocumentRouter:
         get = await client.get("/v1/documents/doc-1")
         assert get.status_code == 200
 
+    @pytest.mark.asyncio
+    async def test_delete_document(self, client) -> None:
+        """Documents are deletable through the standard CRUD DELETE route
+        (the console exposes this as a per-row trash action)."""
+        await client.post(
+            "/v1/documents",
+            json=_document(id="doc-del").model_dump(mode="json"),
+        )
+        delete = await client.delete("/v1/documents/doc-del")
+        assert delete.status_code in (200, 204), delete.text
+        gone = await client.get("/v1/documents/doc-del")
+        assert gone.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_missing_document_404(self, client) -> None:
+        resp = await client.delete("/v1/documents/nope")
+        assert resp.status_code == 404
+
 
 class TestConvertUploadedFile:
     """The /documents/_convert_file endpoint short-circuits docling for

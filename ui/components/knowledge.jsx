@@ -898,6 +898,26 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editing, setEditing] = React.useState(null);
   const [viewingChunks, setViewingChunks] = React.useState(null);
+  const [deleting, setDeleting] = React.useState(null);
+
+  const del = window.primerApi.useMutation(
+    (docId) => apiFetch("DELETE", "/documents/" + encodeURIComponent(docId)),
+    {
+      onSuccess: () => {
+        const removed = deleting?.id;
+        setDeleting(null);
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "success", title: "Document deleted", detail: removed || "" });
+        }
+        list.refetch();
+      },
+      onError: (err) => {
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "error", title: err?.title || "Delete failed", detail: err?.detail || err?.message, requestId: err?.requestId });
+        }
+      },
+    },
+  );
 
   // Normalise to a single row shape. /documents returns Document
   // storage rows {id, collection_id, name, meta}; /indexed_documents
@@ -1060,6 +1080,9 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
                     {!d._indexed && (
                       <Btn size="sm" kind="ghost" icon="edit" onClick={() => setEditing(d)} title="Edit document" />
                     )}
+                    {!d._indexed && (
+                      <Btn size="sm" kind="ghost" icon="trash" onClick={() => setDeleting(d)} title="Delete document" />
+                    )}
                   </td>
                 </tr>
               );
@@ -1140,6 +1163,32 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
           doc={viewingChunks.doc}
           onClose={() => setViewingChunks(null)}
         />
+      )}
+      {deleting && (
+        <Modal
+          title="Delete document"
+          onClose={() => { if (!del.loading) setDeleting(null); }}
+          footer={
+            <>
+              <Btn kind="ghost" onClick={() => setDeleting(null)} disabled={del.loading}>Cancel</Btn>
+              <Btn kind="danger" icon="trash" onClick={() => del.mutate(deleting.id)} disabled={del.loading}>
+                {del.loading ? "Deleting…" : "Delete"}
+              </Btn>
+            </>
+          }
+        >
+          <div style={{ maxWidth: 460 }}>
+            <p style={{ marginTop: 0 }}>
+              Delete document <span className="mono">{deleting.id}</span>
+              {deleting.name ? <> (<span className="mono">{deleting.name}</span>)</> : null} from
+              collection <span className="mono">{deleting.collection_id}</span>?
+            </p>
+            <p className="muted text-sm">
+              This removes the document storage row. Any vector chunks
+              already indexed for it are not pruned by this action.
+            </p>
+          </div>
+        </Modal>
       )}
     </div>
   );
