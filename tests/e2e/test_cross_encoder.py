@@ -14,6 +14,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from tests._support.smk import smk
+
 
 # ============================================================================
 # T0234 — CrossEncoderProvider /models echoes configured names
@@ -96,6 +98,7 @@ async def test_t0235_cross_encoder_invalidate_and_models_asymmetry(
 # ============================================================================
 
 
+@smk("SMK-PRV-05")
 @pytest.mark.asyncio
 async def test_t0263_put_cross_encoder_replaces_models_list(
     client: httpx.AsyncClient, unique_suffix: str,

@@ -22,6 +22,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from tests._support.smk import smk
+
 
 def _bad_url_provider_body(entity_id: str) -> dict:
     """LLMProvider with an unreachable upstream URL but a populated
@@ -43,6 +45,7 @@ def _bad_url_provider_body(entity_id: str) -> dict:
     }
 
 
+@smk("SMK-PRV-02", status="partial")
 @pytest.mark.asyncio
 async def test_t0025_provider_models_endpoint_returns_configured_models(
     client: httpx.AsyncClient, unique_suffix: str,
@@ -130,6 +133,7 @@ async def test_t0175_embedding_provider_models_endpoint_is_row_cached(
 # ============================================================================
 
 
+@smk("SMK-PRV-04")
 @pytest.mark.asyncio
 async def test_t0262_put_embedding_provider_replaces_models_list(
     client: httpx.AsyncClient, unique_suffix: str,

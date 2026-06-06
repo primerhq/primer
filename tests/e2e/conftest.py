@@ -52,16 +52,36 @@ def api_prefix() -> str:
 
 
 @pytest_asyncio.fixture
-async def client(base_url: str) -> AsyncIterator[httpx.AsyncClient]:
-    """Per-test async HTTP client.
+async def anon_client(base_url: str) -> AsyncIterator[httpx.AsyncClient]:
+    """Per-test async HTTP client with NO authentication.
 
-    Scoped per-test (not per-session) so a test that mutates connection
-    state (cookies, follow_redirects override, etc.) cannot pollute its
-    neighbours.
+    For tests that exercise the unauthenticated / 401 path or the auth
+    flow itself. Most tests should use ``client`` (authenticated).
     """
     async with httpx.AsyncClient(
         base_url=base_url, timeout=httpx.Timeout(30.0, connect=10.0),
     ) as c:
+        yield c
+
+
+@pytest_asyncio.fixture
+async def client(base_url: str) -> AsyncIterator[httpx.AsyncClient]:
+    """Per-test async HTTP client, AUTHENTICATED by default.
+
+    Every ``/v1`` route is auth-guarded, so the shared client registers
+    (idempotent) + logs in the operator user before yielding. Scoped
+    per-test so cookie/connection mutations (e.g. a logout in an
+    auth-flow test) cannot leak between tests. Tests that need an
+    unauthenticated client use the ``anon_client`` fixture instead.
+    """
+    import contextlib
+
+    async with httpx.AsyncClient(
+        base_url=base_url, timeout=httpx.Timeout(30.0, connect=10.0),
+    ) as c:
+        with contextlib.suppress(Exception):
+            await c.post("/v1/auth/register", json=_E2E_USER)
+            await c.post("/v1/auth/login", json=_E2E_USER)
         yield c
 
 
@@ -108,10 +128,6 @@ _E2E_USER = {"username": "e2e", "password": "e2e-password-123"}
 
 @pytest_asyncio.fixture
 async def authed_client(client):
-    import contextlib
-
-    with contextlib.suppress(Exception):
-        await client.post("/v1/auth/register", json=_E2E_USER)
-    r = await client.post("/v1/auth/login", json=_E2E_USER)
-    assert r.status_code in (200, 204), r.text
+    # Back-compat alias: ``client`` is now authenticated by default. Retained
+    # so the many modules that request ``authed_client`` keep working.
     return client

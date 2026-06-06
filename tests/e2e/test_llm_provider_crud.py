@@ -9,6 +9,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from tests._support.smk import smk
+
 
 def _llm_body(entity_id: str) -> dict:
     """Minimal valid LLMProvider request body (Anthropic flavour)."""
@@ -21,6 +23,7 @@ def _llm_body(entity_id: str) -> dict:
     }
 
 
+@smk("SMK-PRV-01")
 @pytest.mark.asyncio
 async def test_t0004_llm_provider_crud_round_trip(
     client: httpx.AsyncClient, unique_suffix: str,
@@ -231,6 +234,7 @@ async def test_t0105_invalidate_does_not_delete_row(
         await client.delete(f"{base}/{entity_id}")
 
 
+@smk("SMK-PRV-03")
 @pytest.mark.asyncio
 async def test_t0032_put_then_invalidate_reflects_update(
     client: httpx.AsyncClient, unique_suffix: str,
