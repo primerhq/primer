@@ -78,6 +78,96 @@ class TestCollectionRouter:
         assert resp.status_code == 404
 
 
+class TestSearchUnregisteredCollection:
+    """Search against a collection that exists but was never indexed in
+    the vector store returns empty hits, not a 400. A user collection
+    with Document rows but no vectorised chunks yet is the common case."""
+
+    @pytest.mark.asyncio
+    async def test_search_returns_empty_when_not_registered(self):
+        from unittest.mock import AsyncMock
+
+        from primer.api.routers.knowledge import (
+            _CollectionSearchBody,
+            search_collection,
+        )
+        from primer.model.except_ import BadRequestError as _BRE
+
+        coll = _collection(id="kb-unindexed")
+
+        collections = AsyncMock()
+        collections.get = AsyncMock(return_value=coll)
+
+        # Embedder returns a one-vector response.
+        class _Emb:
+            async def embed(self, *, model, inputs):
+                class _R:
+                    embeddings = [type("V", (), {"vector": [0.1, 0.2, 0.3]})()]
+                return _R()
+
+        registry = AsyncMock()
+        registry.get_embedder = AsyncMock(return_value=_Emb())
+
+        # Store raises the lazy-registration error the way a real backend
+        # does when nothing has been indexed for the collection yet.
+        class _Store:
+            async def search(self, cid, vector, top_k):
+                raise _BRE(f"collection {cid!r} is not registered")
+
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=_Store())
+
+        result = await search_collection(
+            collection_id="kb-unindexed",
+            body=_CollectionSearchBody(query="anything", top_k=5),
+            collections=collections,
+            registry=registry,
+            ssr=ssr,
+        )
+        assert result == {"hits": []}
+
+    @pytest.mark.asyncio
+    async def test_search_reraises_other_bad_requests(self):
+        from unittest.mock import AsyncMock
+
+        import pytest as _pytest
+
+        from primer.api.routers.knowledge import (
+            _CollectionSearchBody,
+            search_collection,
+        )
+        from primer.model.except_ import BadRequestError as _BRE
+
+        coll = _collection(id="kb-x")
+        collections = AsyncMock()
+        collections.get = AsyncMock(return_value=coll)
+
+        class _Emb:
+            async def embed(self, *, model, inputs):
+                class _R:
+                    embeddings = [type("V", (), {"vector": [0.1]})()]
+                return _R()
+
+        registry = AsyncMock()
+        registry.get_embedder = AsyncMock(return_value=_Emb())
+
+        class _Store:
+            async def search(self, cid, vector, top_k):
+                raise _BRE("dimension mismatch: expected 384 got 1")
+
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=_Store())
+
+        with _pytest.raises(_BRE):
+            await search_collection(
+                collection_id="kb-x",
+                body=_CollectionSearchBody(query="q", top_k=5),
+                collections=collections,
+                registry=registry,
+                ssr=ssr,
+            )
+
+
 class TestSystemCollectionGuard:
     """Documents cannot be hand-ingested into system collections."""
 

@@ -324,8 +324,12 @@ function KN_EntryRow({ entry, index }) {
       }}>
         <span className="mono num tabular muted">#{index + 1}</span>
         <span className="mono" style={{ overflowWrap: "anywhere", minWidth: 0 }}>{entry.document_id}</span>
-        <span className="muted">·</span>
-        <span className="mono muted" style={{ overflowWrap: "anywhere", minWidth: 0 }}>{entry.chunk_id}</span>
+        {entry.chunk_id != null && entry.chunk_id !== "" && (
+          <>
+            <span className="muted">·</span>
+            <span className="mono muted" style={{ overflowWrap: "anywhere", minWidth: 0 }}>{entry.chunk_id}</span>
+          </>
+        )}
         {entry.score != null && (
           <span className="muted" style={{ marginLeft: "auto" }}>score {Number(entry.score).toFixed(4)}</span>
         )}
@@ -352,30 +356,48 @@ function KN_EntryRow({ entry, index }) {
 }
 
 
-// Modal: list every indexed entry for a collection. Pulls from
-// /collections/{id}/indexed_documents which walks the vector store
-// (works for both user-owned and system collections).
+// Modal: list a collection's documents. System (internal) collections
+// have no Document storage rows - their content lives in the vector
+// store - so those pull from /indexed_documents. User collections store
+// Document rows (which may not be vectorised yet), so those pull from
+// /documents and render one row per document.
 function KN_CollectionListModal({ collection, pushToast, onClose }) {
   const { useResource, apiFetch } = window.primerApi;
+  const isSystem = !!collection.system;
   const PAGE_SIZE = 25;
   const [offset, setOffset] = React.useState(0);
+  const endpoint = isSystem ? "indexed_documents" : "documents";
   const indexed = useResource(
-    `collection-indexed-list:${collection.id}:${offset}`,
+    `collection-list:${collection.id}:${endpoint}:${offset}`,
     (signal) => apiFetch(
       "GET",
-      `/collections/${encodeURIComponent(collection.id)}/indexed_documents?limit=${PAGE_SIZE}&offset=${offset}`,
+      `/collections/${encodeURIComponent(collection.id)}/${endpoint}?limit=${PAGE_SIZE}&offset=${offset}`,
       null,
       { signal },
     ),
-    { pollMs: null, deps: [collection.id, offset] },
+    { pollMs: null, deps: [collection.id, isSystem, offset] },
   );
-  const items = (indexed.data?.items || []).map((r) => ({
-    document_id: r.document_id,
-    chunk_id: r.chunk_id,
-    text: r.text,
-    meta: r.meta,
-    score: null,
-  }));
+  // Normalise to the shared entry-row shape. Vector entries arrive as
+  // {document_id, chunk_id, text, meta}; Document storage rows arrive as
+  // {id, name, meta:{text,...}} and map onto the same row (no chunk_id;
+  // text falls back to the stored meta.text or the name).
+  const items = (indexed.data?.items || []).map((r) => isSystem
+    ? {
+        document_id: r.document_id,
+        chunk_id: r.chunk_id,
+        text: r.text,
+        meta: r.meta,
+        score: null,
+      }
+    : {
+        document_id: r.id,
+        chunk_id: null,
+        text: (r.meta && r.meta.text) || r.name || "",
+        meta: Object.fromEntries(
+          Object.entries(r.meta || {}).filter(([k]) => k !== "text"),
+        ),
+        score: null,
+      });
   const total = indexed.data?.total ?? null;
   const showingFrom = total != null && total > 0 ? offset + 1 : 0;
   const showingTo = total != null
@@ -424,7 +446,12 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
         overflowX: "hidden",
       }}>
         <div className="muted text-sm mb-3" style={{ overflowWrap: "anywhere" }}>
-          <span className="mono">GET /v1/collections/{collection.id}/indexed_documents</span>
+          <span className="mono">GET /v1/collections/{collection.id}/{endpoint}</span>
+          {!isSystem && (
+            <span className="muted text-sm" style={{ marginLeft: 8 }}>
+              Document rows; vector indexing is a separate step.
+            </span>
+          )}
         </div>
         {indexed.loading && items.length === 0 && (
           <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
@@ -434,7 +461,9 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
         )}
         {!indexed.loading && items.length === 0 && !indexed.error && (
           <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
-            {offset === 0 ? "No entries indexed yet." : "No more entries."}
+            {offset === 0
+              ? (isSystem ? "No entries indexed yet." : "No documents in this collection yet.")
+              : "No more entries."}
           </div>
         )}
         {items.length > 0 && (

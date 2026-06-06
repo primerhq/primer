@@ -185,7 +185,20 @@ async def search_collection(
 
     # Resolve the vector store via the collection's search_provider_id.
     store = await ssr.get_store(coll.search_provider_id)
-    hits = await store.search(collection_id, vector, body.top_k)
+    # SSP registration is lazy: the vector store's collection is created
+    # only when the first chunk is indexed. A collection that has Document
+    # rows but no indexed vectors yet (live embedding on create is a
+    # follow-up) is therefore unknown to the store's catalogue, and
+    # search raises BadRequestError("...is not registered..."). Treat
+    # that as "nothing indexed yet" and return an empty hits list rather
+    # than surfacing a 400, matching list_indexed_documents and the
+    # docstring's empty-collection contract.
+    try:
+        hits = await store.search(collection_id, vector, body.top_k)
+    except BadRequestError as exc:
+        if "is not registered" not in str(exc):
+            raise
+        hits = []
     return {
         "hits": [
             {
