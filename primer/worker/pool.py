@@ -530,10 +530,16 @@ class WorkerPool:
             "WorkerPool._run_engine_chat requires a chat_tick_router"
         )
 
-        # Transition turn_status to 'running' before dispatching.
+        # Transition turn_status to 'running' before dispatching. 'running'
+        # is accepted here for crash recovery: the claim engine only hands us
+        # a 'running' chat when its prior worker's lease expired (died/stalled
+        # past the TTL), so we re-run the interrupted turn. Fencing
+        # (attempt_id / lease loss) stops the dead worker from double-writing.
         chat_storage = self._storage.get_storage(Chat)
         chat = await chat_storage.get(engine_lease.entity_id)
-        if chat is None or chat.turn_status not in ("claimable", "resumable"):
+        if chat is None or chat.turn_status not in (
+            "claimable", "resumable", "running",
+        ):
             await self._engine.release(
                 engine_lease,
                 outcome=ReleaseOutcome(success=False, drop_lease=True),

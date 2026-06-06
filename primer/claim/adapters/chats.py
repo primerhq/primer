@@ -15,10 +15,18 @@ class ChatClaimAdapter(ClaimAdapter):
         self._storage = chat_storage
 
     def eligibility_sql(self) -> str:
+        # 'running' is included for crash recovery: the claim query only ever
+        # returns a row whose lease is unclaimed OR expired
+        # (``claimed_by IS NULL OR expires_at < now()``), so a 'running' chat
+        # is reclaimable ONLY when its worker died/stalled past the lease TTL
+        # -- a live worker keeps the lease heartbeated and is never stolen.
+        # This mirrors how harnesses recover (their eligibility stays true
+        # while pending_operation is set). Without it a dead worker's chat is
+        # stranded at turn_status='running' forever (see FINDINGS F9).
         return (
             "e.data->>'status' = 'active' "
             "AND e.data->>'parked_status' IS NULL "
-            "AND e.data->>'turn_status' IN ('claimable','resumable')"
+            "AND e.data->>'turn_status' IN ('claimable','resumable','running')"
         )
 
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
