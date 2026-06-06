@@ -42,6 +42,11 @@ from datetime import datetime
 from typing import Any, TypeVar
 
 import asyncpg
+
+from primer.storage._ddl import (
+    CONCURRENT_CREATE_RACE,
+    execute_create_idempotent,
+)
 from pydantic import BaseModel
 
 from primer.int.storage import Storage
@@ -204,37 +209,47 @@ class PostgresStorageProvider(StorageProvider):
         # Make sure the target schema exists. This is the only DDL the
         # provider runs eagerly; per-model tables are deferred to first
         # use of the handle.
+        # All CREATE statements below run as autocommit (no enclosing
+        # transaction) and tolerate the cold-start race -- when several
+        # processes boot against a fresh schema at once they contend on the
+        # system catalogs even with IF NOT EXISTS (see primer.storage._ddl).
+        # Each statement is attempted independently so a race on one does
+        # not skip the rest.
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                f'CREATE SCHEMA IF NOT EXISTS "{self._schema}"'
+            await execute_create_idempotent(
+                conn, f'CREATE SCHEMA IF NOT EXISTS "{self._schema}"'
             )
             # Coordinator lease tables live in the same schema as the
             # rest of primer so two deployments sharing a Postgres
             # cluster with distinct db_schema settings keep their
             # leases isolated. Coordinator backends read these names
             # off the provider via .rate_limit_lease_table / .leader_lease_table.
-            await conn.execute(
+            await execute_create_idempotent(
+                conn,
                 f'CREATE TABLE IF NOT EXISTS "{self._schema}"."rate_limit_lease" ('
                 f'  lease_id   TEXT PRIMARY KEY,'
                 f'  key        TEXT NOT NULL,'
                 f'  owner_id   TEXT NOT NULL,'
                 f'  claimed_at TIMESTAMPTZ NOT NULL,'
                 f'  expires_at TIMESTAMPTZ NOT NULL'
-                f')'
+                f')',
             )
-            await conn.execute(
+            await execute_create_idempotent(
+                conn,
                 f'CREATE INDEX IF NOT EXISTS rate_limit_lease_key_active '
-                f'ON "{self._schema}"."rate_limit_lease" (key, expires_at)'
+                f'ON "{self._schema}"."rate_limit_lease" (key, expires_at)',
             )
-            await conn.execute(
+            await execute_create_idempotent(
+                conn,
                 f'CREATE TABLE IF NOT EXISTS "{self._schema}"."leader_lease" ('
                 f'  role       TEXT PRIMARY KEY,'
                 f'  owner_id   TEXT NOT NULL,'
                 f'  claimed_at TIMESTAMPTZ NOT NULL,'
                 f'  expires_at TIMESTAMPTZ NOT NULL'
-                f')'
+                f')',
             )
-            await conn.execute(
+            await execute_create_idempotent(
+                conn,
                 f'CREATE TABLE IF NOT EXISTS "{self._schema}"."leases" ('
                 f'  kind              TEXT NOT NULL,'
                 f'  entity_id         TEXT NOT NULL,'
@@ -247,21 +262,23 @@ class PostgresStorageProvider(StorageProvider):
                 f'  attempt_count     INTEGER NOT NULL DEFAULT 0,'
                 f'  last_error        TEXT,'
                 f'  PRIMARY KEY (kind, entity_id)'
-                f')'
+                f')',
             )
-            await conn.execute(
+            await execute_create_idempotent(
+                conn,
                 f'CREATE INDEX IF NOT EXISTS leases_claim_order '
                 f'ON "{self._schema}"."leases" (priority_score, next_attempt_at) '
-                f'WHERE claimed_by IS NULL'
+                f'WHERE claimed_by IS NULL',
             )
-            await conn.execute(
+            await execute_create_idempotent(
+                conn,
                 f'CREATE TABLE IF NOT EXISTS "{self._schema}"."system_state" ('
                 f'  id                     TEXT PRIMARY KEY DEFAULT \'singleton\','
                 f'  bootstrap_completed_at TIMESTAMPTZ,'
                 f'  schema_version         INTEGER NOT NULL DEFAULT 1,'
                 f'  last_migration_at      TIMESTAMPTZ,'
                 f'  session_secret         TEXT'
-                f')'
+                f')',
             )
             # Schema-evolution: add session_secret column on pre-existing
             # tables. Idempotent: only adds when missing.
@@ -388,6 +405,15 @@ class PostgresStorage(Storage[ModelT]):
                 async with conn.transaction():
                     await conn.execute(ddl_table)
                     await conn.execute(ddl_index)
+        except CONCURRENT_CREATE_RACE as exc:
+            # Concurrent-creation race (see primer.storage._ddl): another
+            # process won the race and created the table + index atomically
+            # in one transaction, so the object exists now -- treat as
+            # ensured rather than crashing startup.
+            logger.debug(
+                "ensure_table race on %s (%s); treating as already created",
+                self._qualified, type(exc).__name__,
+            )
         except Exception as exc:
             raise ProviderError(
                 f"failed to create table {self._qualified}: {exc}",

@@ -47,6 +47,7 @@ from typing import Any
 
 from primer.int.claim import ClaimAdapter, ClaimEngine, ClaimKind, Lease, ReleaseOutcome
 from primer.claim.sql import build_claim_query
+from primer.storage._ddl import CONCURRENT_CREATE_RACE
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
 
@@ -99,14 +100,21 @@ class PostgresClaimEngine(ClaimEngine):
     async def _ensure_entity_tables(self, conn: Any) -> None:
         for table in self._entity_tables:
             qualified = self._qualified_entity(table)
-            await conn.execute(
-                f"CREATE TABLE IF NOT EXISTS {qualified} ("
-                "id text PRIMARY KEY, "
-                "data jsonb NOT NULL, "
-                "created_at timestamptz NOT NULL DEFAULT now(), "
-                "updated_at timestamptz NOT NULL DEFAULT now()"
-                ")"
-            )
+            try:
+                await conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {qualified} ("
+                    "id text PRIMARY KEY, "
+                    "data jsonb NOT NULL, "
+                    "created_at timestamptz NOT NULL DEFAULT now(), "
+                    "updated_at timestamptz NOT NULL DEFAULT now()"
+                    ")"
+                )
+            except CONCURRENT_CREATE_RACE:
+                # A peer process is creating the same entity table; treat
+                # as already created (see primer.storage._ddl). Each execute
+                # is its own autocommit statement, so a race on one table
+                # does not poison the others.
+                pass
         self._entity_tables_ensured = True
 
     # ------------------------------------------------------------------

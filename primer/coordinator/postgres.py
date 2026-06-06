@@ -162,18 +162,31 @@ class PostgresRateLimiter(RateLimiter):
     ) -> RateLimiterLease | None:
         lease_id = uuid.uuid4().hex
         async with self._storage.pool.acquire() as conn:
-            row = await conn.fetchval(
-                f"""
-                INSERT INTO {self._table} (lease_id, key, owner_id, claimed_at, expires_at)
-                SELECT $1, $2, $3, now(), now() + ($4 || ' seconds')::interval
-                 WHERE (
-                    SELECT COUNT(*) FROM {self._table}
-                     WHERE key = $2 AND expires_at > now()
-                 ) < $5
-                RETURNING lease_id
-                """,
-                lease_id, key, self._owner_id, str(_LEASE_TTL_SECONDS), max_concurrency,
-            )
+            # The admit decision is COUNT-then-INSERT. Under READ COMMITTED
+            # the COUNT subquery does not see other transactions' as-yet
+            # uncommitted inserts and does not lock the counted rows, so a
+            # burst of concurrent acquires for the same key all read the
+            # same sub-limit count and over-admit (observed peak >> cap).
+            # Serialise per-key admits with a transaction-scoped advisory
+            # lock so the count reflects every committed holder. The lock
+            # is keyed by the rate-limit key (hashtext -> int4) and is
+            # released automatically at COMMIT/ROLLBACK.
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", key
+                )
+                row = await conn.fetchval(
+                    f"""
+                    INSERT INTO {self._table} (lease_id, key, owner_id, claimed_at, expires_at)
+                    SELECT $1, $2, $3, now(), now() + ($4 || ' seconds')::interval
+                     WHERE (
+                        SELECT COUNT(*) FROM {self._table}
+                         WHERE key = $2 AND expires_at > now()
+                     ) < $5
+                    RETURNING lease_id
+                    """,
+                    lease_id, key, self._owner_id, str(_LEASE_TTL_SECONDS), max_concurrency,
+                )
         if row is None:
             return None
         return _PostgresRateLimiterLease(

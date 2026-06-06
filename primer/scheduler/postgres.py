@@ -23,6 +23,7 @@ from primer.int.scheduler import (
 )
 from primer.model.except_ import ProviderError
 from primer.model.scheduler import PostgresSchedulerConfig
+from primer.storage._ddl import CONCURRENT_CREATE_RACE
 from primer.model.workspace_session import SessionStatus
 
 if TYPE_CHECKING:
@@ -83,6 +84,15 @@ class PostgresScheduler(Scheduler):
                         "WHERE status != 'dead' "
                         "AND last_heartbeat < now() - interval '5 minutes'"
                     )
+        except CONCURRENT_CREATE_RACE as exc:
+            # Concurrent-creation race (see primer.storage._ddl): another
+            # process is creating the `workers` table at the same time. The
+            # winner creates it and runs the same boot-recovery sweep, so we
+            # can safely continue rather than crashing startup.
+            logger.debug(
+                "scheduler initialize race (%s); table created by a peer",
+                type(exc).__name__,
+            )
         except Exception as exc:
             raise ProviderError(
                 f"failed to create scheduler tables: {exc}", cause=exc,

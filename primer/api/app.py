@@ -105,27 +105,40 @@ async def _bootstrap_web_search(storage_provider) -> None:
         WebSearchProviderType,
     )
 
+    from primer.model.except_ import ConflictError
+
     ws_storage = storage_provider.get_storage(WebSearchProvider)
     if await ws_storage.get("DuckDuckGo") is None:
-        await ws_storage.create(WebSearchProvider(
-            id="DuckDuckGo",
-            provider_type=WebSearchProviderType.DUCKDUCKGO,
-            config=DuckDuckGoConfig(),
-        ))
-        logger.info(
-            "bootstrap: created reserved web-search provider DuckDuckGo"
-        )
+        try:
+            await ws_storage.create(WebSearchProvider(
+                id="DuckDuckGo",
+                provider_type=WebSearchProviderType.DUCKDUCKGO,
+                config=DuckDuckGoConfig(),
+            ))
+            logger.info(
+                "bootstrap: created reserved web-search provider DuckDuckGo"
+            )
+        except ConflictError:
+            # Cross-process bootstrap race: another primer process created
+            # the reserved row between our get() and create(). The desired
+            # end state (the row exists) holds, so this is a no-op.
+            logger.debug("bootstrap: DuckDuckGo row created concurrently")
 
     ac_storage = storage_provider.get_storage(ActiveWebSearchConfig)
     if await ac_storage.get(ACTIVE_WEB_SEARCH_CONFIG_ID) is None:
-        await ac_storage.create(ActiveWebSearchConfig(
-            id=ACTIVE_WEB_SEARCH_CONFIG_ID,
-            config=SingleProviderConfig(provider_id="DuckDuckGo"),
-        ))
-        logger.info(
-            "bootstrap: created reserved active web-search config "
-            "(single -> DuckDuckGo)"
-        )
+        try:
+            await ac_storage.create(ActiveWebSearchConfig(
+                id=ACTIVE_WEB_SEARCH_CONFIG_ID,
+                config=SingleProviderConfig(provider_id="DuckDuckGo"),
+            ))
+            logger.info(
+                "bootstrap: created reserved active web-search config "
+                "(single -> DuckDuckGo)"
+            )
+        except ConflictError:
+            logger.debug(
+                "bootstrap: active web-search config created concurrently"
+            )
 
 
 def _make_lifespan(config: AppConfig):
