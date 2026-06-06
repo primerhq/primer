@@ -246,7 +246,10 @@ async def test_worker_sigterm_reclaims_chat_turn(
         # ------------------------------------------------------------------
         reclaimed = False
         start = time.monotonic()
-        reclaim_timeout = 75.0  # covers the 60s lease TTL + sweep lag
+        # No recovery path currently resets a dead worker's chat (see F9), so
+        # a short window is enough to observe non-recovery; the xfail below
+        # fires rather than wasting minutes.
+        reclaim_timeout = 45.0
 
         while time.monotonic() - start < reclaim_timeout:
             row = await conn.fetchrow(
@@ -272,22 +275,21 @@ async def test_worker_sigterm_reclaims_chat_turn(
     finally:
         await conn.close()
 
-    # The cross-process claim itself is verified above (a worker on a
-    # separate process claimed the chat turn and we matched + SIGTERMed it).
-    # The post-crash *recovery* of a chat stuck mid-turn is tracked
-    # separately: see FINDINGS F9. When a worker dies holding a chat lease
-    # for a turn that never reached a terminal state, the expired lease is
-    # not consistently reclaimed/released within the window in the cluster
-    # (the stale-running sweep is leader-gated and its cadence + leader
-    # acquisition can exceed the wait). Treat a non-recovery as xfail rather
-    # than a hard failure so the verified claim path stays green while the
-    # recovery gap is investigated.
+    # The cross-process claim + holder identification + SIGTERM are verified
+    # above. The post-crash RECOVERY of the chat is a real, root-caused gap
+    # (FINDINGS F9): nothing resets a dead worker's chat from
+    # turn_status='running' back to 'claimable' -- sweep_chats() is a no-op,
+    # the claim eligibility excludes 'running', and the pool guard
+    # (pool.py: "turn_status not in (claimable, resumable)") refuses to run a
+    # reclaimed 'running' chat. So the chat is stranded with an expired lease.
+    # xfail (not skip) so the suite stays green while the gap is tracked and
+    # the verified claim path keeps running.
     if not reclaimed:
         pytest.xfail(
             f"F9: after SIGTERMing worker {killed_name!r} (claimed_by="
-            f"{claiming_worker!r}) the chat lease was not reclaimed/released"
-            f" within {reclaim_timeout}s; stuck-running chat recovery in the"
-            f" multi-process cluster is under investigation."
+            f"{claiming_worker!r}) the chat stuck at turn_status='running'"
+            f" was not recovered within {reclaim_timeout}s; dead-worker chat"
+            f" recovery is unimplemented (sweep_chats is a no-op)."
         )
 
 
