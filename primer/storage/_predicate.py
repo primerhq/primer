@@ -169,11 +169,19 @@ _LOGICAL_OPS: dict[Op, str] = {
     Op.OR: "OR",
 }
 
-# Comparison operators where a typed cast on the left side is desirable.
-# EQ / NE / LIKE compare on text and don't benefit from a cast (the
-# right-hand bind param is also passed as text via psycopg/asyncpg
-# parameter coercion). The four ordering ops do.
-_TYPED_COMPARISON_OPS = {Op.GT, Op.LT, Op.GE, Op.LE}
+# Comparison operators where a typed cast on the left side is required
+# when the field is non-text (bool / int / float).
+#
+# The JSONB ``->>`` operator always yields text, so a bare
+# ``data->>'enabled' = $1`` expression makes asyncpg infer ``$1`` as
+# text. asyncpg then strictly rejects a Python ``bool`` / ``int`` /
+# ``float`` bind value with ``invalid input for query argument $N:
+# ... (expected str, got bool)`` -- it does NOT coerce scalars to text.
+# Casting the left side (``(data->>'enabled')::boolean = $1``) makes the
+# inferred bind type match the Python value, so EQ / NE must be typed
+# too -- not just the four ordering ops. LIKE stays text-only (a cast to
+# boolean/numeric would be meaningless and would itself error).
+_TYPED_COMPARISON_OPS = {Op.EQ, Op.NE, Op.GT, Op.LT, Op.GE, Op.LE}
 
 
 class _PredicateTranslator:

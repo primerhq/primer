@@ -665,9 +665,13 @@ class PostgresStorage(Storage[ModelT]):
         clauses: list[str] = []
         for prefix_len in range(len(keys)):
             parts: list[str] = []
-            # Equality on the first prefix_len keys
+            # Equality on the first prefix_len keys. Use the typed
+            # expression so a non-text seek key (bool / int / float)
+            # casts the left side to match the bound Python value --
+            # asyncpg rejects a bool/int bind against a bare text
+            # ``data->>'k'`` expression (see _predicate._TYPED_COMPARISON_OPS).
             for k in keys[:prefix_len]:
-                expr = _render_field_expr(self._model, k["field"])
+                expr = _render_typed_field_expr(self._model, k["field"])
                 ph = translator.append_param(k["value"])
                 parts.append(f"({expr} = {ph})")
             # Strict inequality on the prefix_len-th key
