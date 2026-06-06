@@ -29,6 +29,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     _UserInputWaiting,
 )
+from primer.model.yield_ import YieldToWorker
 
 
 if TYPE_CHECKING:
@@ -199,6 +200,14 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 if ev.type == "done":
                     last_done_reason = ev.stop_reason  # type: ignore[union-attr]
                 yield ev
+        except YieldToWorker:
+            # A park (tool approval, ask_user, subscribe_to_trigger) is NOT a
+            # failure: the base executor raises YieldToWorker to hand the turn
+            # back to the worker, which parks the session for resume. Let it
+            # propagate WITHOUT marking the session ENDED/failed -- otherwise
+            # the session is killed at the gate and the operator can never
+            # respond (see FINDINGS F10).
+            raise
         except Exception:
             try:
                 await self._session.set_status(
