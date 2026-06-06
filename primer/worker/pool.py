@@ -496,7 +496,30 @@ class WorkerPool:
 
         outcome = ReleaseOutcome(success=False, drop_lease=True)
         try:
-            outcome = await run_one_session_turn(engine_lease, deps)
+            # Load the row first so a resumable park dispatches to the
+            # resume branch instead of a normal turn. ``self._storage`` is
+            # always present in production; some pool unit-tests construct
+            # the pool with ``storage=None`` and patch run_one_session_turn,
+            # so tolerate a missing provider by falling through to the
+            # normal-turn path.
+            session_row = None
+            if self._storage is not None:
+                session_storage = self._storage.get_storage(WorkspaceSession)
+                session_row = await session_storage.get(sid)
+            if session_row is not None and session_row.parked_status == "resumable":
+                # Cancel/end-while-parked: a cancelled or already-ended
+                # resumable session ends instead of resuming (spec error
+                # handling 5). run_one_session_turn applies the same guard
+                # for the normal path at dispatch.py:137-144; the resume
+                # branch bypasses that function, so re-check here.
+                if session_row.status == SessionStatus.ENDED:
+                    outcome = ReleaseOutcome(success=True, drop_lease=True)
+                elif session_row.cancel_requested:
+                    outcome = await self._end_session(session_row, reason="cancelled")
+                else:
+                    outcome = await self._resume_engine_session(engine_lease, session_row)
+            else:
+                outcome = await run_one_session_turn(engine_lease, deps)
         except Exception:
             logger.exception(
                 "run_one_session_turn for session %s raised unexpectedly",
@@ -511,6 +534,182 @@ class WorkerPool:
                 logger.exception(
                     "_run_engine_session: engine.release for %s failed", sid,
                 )
+
+    async def _end_session(self, session, *, reason: str):
+        """Write a terminal ENDED status to the session row and return a
+        drop-lease outcome. Mirrors dispatch.py's cancel/end pattern so the
+        engine path ends sessions without the scheduler."""
+        from primer.int.claim import ReleaseOutcome
+
+        storage = self._storage.get_storage(WorkspaceSession)
+        fresh = await storage.get(session.id)
+        if fresh is not None:
+            ended = fresh.model_copy(update={
+                "status": SessionStatus.ENDED,
+                "ended_reason": reason,
+                "ended_at": datetime.now(timezone.utc),
+            })
+            await storage.update(ended)
+        else:
+            logger.warning(
+                "end_session: row %s vanished before terminal write (reason=%r)",
+                session.id, reason,
+            )
+        # success=True so on_release does not write a terminal error record;
+        # drop_lease=True so the ended session is not re-claimed.
+        return ReleaseOutcome(success=True, drop_lease=True)
+
+    async def _resume_engine_session(self, engine_lease, session):
+        """Drive a resumable park to its conclusion on the engine path.
+
+        Adapted from the (dead) scheduler-based _handle_resume. Returns a
+        ReleaseOutcome instead of calling scheduler.clear_park/complete_turn:
+          * agent success -> ReleaseOutcome(success=True, drop_lease=False):
+            on_release clears the park columns + bumps turn_no, the lease is
+            kept so the next claim runs the continuation LLM turn.
+          * fail-closed   -> _end_session(reason='failed') (drop_lease=True).
+        """
+        import json
+        from primer.int.claim import ReleaseOutcome
+        from primer.model.chat import Message, ToolResultPart
+
+        sid = session.id
+        blob = session.parked_state or {}
+        try:
+            parked = ParkedState.from_jsonable(blob)
+        except (KeyError, ValueError, TypeError):
+            logger.exception(
+                "resume: malformed parked_state for session %s - ending failed",
+                sid,
+            )
+            return await self._end_session(session, reason="failed")
+
+        if session.binding.kind == "graph":
+            if parked.graph_checkpoint is None:
+                logger.error(
+                    "resume: graph session %s parked without a graph_checkpoint"
+                    " - ending failed", sid,
+                )
+                return await self._end_session(session, reason="failed")
+            return await self._resume_graph_engine(session, parked)
+
+        if session.binding.kind != "agent":
+            logger.error(
+                "resume: unsupported binding kind %r for session %s - ending"
+                " failed", session.binding.kind, sid,
+            )
+            return await self._end_session(session, reason="failed")
+
+        if session.parked_at is None:
+            logger.error(
+                "resume: session %s resumable but parked_at=None - ending failed",
+                sid,
+            )
+            return await self._end_session(session, reason="failed")
+
+        resume_payload = classify_resume_payload(parked, parked_at=session.parked_at)
+
+        workspace = await self._load_workspace_for_persist(session.workspace_id)
+        executor_or_driver = await self._build_agent_executor(session, workspace)
+        executor = getattr(executor_or_driver, "_executor", executor_or_driver)
+        tool_manager = getattr(executor, "_tool_manager", None)
+
+        tool_name = parked.yielded.tool_name
+        try:
+            if tool_name == "_approval":
+                tool_result_part = await _resume_tool_approval(
+                    blob=blob,
+                    payload=resume_payload.payload,
+                    tool_manager=tool_manager,
+                )
+            else:
+                hook = get_resume_hook(tool_name)
+                hook_result = hook(parked.yielded.resume_metadata, resume_payload.payload)
+                if asyncio.iscoroutine(hook_result):
+                    hook_result = await hook_result
+                tool_result_part = ToolResultPart(
+                    id=parked.tool_call_id or "unknown",
+                    output=hook_result.output,
+                    error=hook_result.is_error,
+                )
+        except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
+            logger.exception(
+                "resume: hook for tool %r on session %s raised; synthesising"
+                " error tool_result", tool_name, sid,
+            )
+            tool_result_part = ToolResultPart(
+                id=parked.tool_call_id or "unknown",
+                output=json.dumps({
+                    "rejected": True,
+                    "reason": f"resume failed: {type(exc).__name__}: {exc}",
+                    "tool_name": tool_name,
+                }),
+                error=True,
+            )
+
+        rehydrated_assistant = [Message.model_validate(m) for m in parked.llm_messages]
+        tool_result_msg = Message(role="tool", parts=[tool_result_part])
+        try:
+            await executor.inject_resume_messages(
+                [*rehydrated_assistant, tool_result_msg],
+            )
+        except Exception:
+            logger.exception(
+                "resume: persist failed for session %s - ending failed", sid,
+            )
+            return await self._end_session(session, reason="failed")
+
+        # Continuation: clear park (on_release) + keep the lease so the next
+        # claim runs the continuation LLM turn.
+        return ReleaseOutcome(success=True, drop_lease=False)
+
+    async def _resume_graph_engine(self, session, parked):
+        """Resume a graph-bound session parked at a ToolCall approval.
+
+        Adapted from the (dead) _handle_graph_resume: always terminal (graph
+        sessions run to completion in one resume), so this returns a drop-lease
+        outcome with ENDED status written to the row."""
+        from primer.worker.graph_resume import resume_graph_from_checkpoint
+
+        sid = session.id
+        assert parked.graph_checkpoint is not None
+
+        if session.parked_at is None:
+            logger.error(
+                "resume: graph session %s resumable but parked_at=None -"
+                " ending failed", sid,
+            )
+            return await self._end_session(session, reason="failed")
+
+        resume_payload = classify_resume_payload(parked, parked_at=session.parked_at)
+        workspace = await self._load_workspace_for_persist(session.workspace_id)
+        try:
+            executor_or_driver = await self._build_graph_executor(session, workspace)
+        except Exception:
+            logger.exception(
+                "resume: failed to build graph executor for session %s -"
+                " ending failed", sid,
+            )
+            return await self._end_session(session, reason="failed")
+        executor = getattr(executor_or_driver, "_executor", executor_or_driver)
+
+        reason = "completed"
+        try:
+            decision = await resume_graph_from_checkpoint(
+                executor=executor,
+                checkpoint=parked.graph_checkpoint,
+                payload=resume_payload.payload,
+            )
+            if decision != "approved":
+                reason = "failed"
+        except Exception:
+            logger.exception(
+                "resume: graph executor for session %s raised during resume"
+                " drain - ending failed", sid,
+            )
+            reason = "failed"
+
+        return await self._end_session(session, reason=reason)
 
     async def _run_engine_chat(self, engine_lease: ClaimLease) -> None:
         """Handle a CHAT claim from the engine.
