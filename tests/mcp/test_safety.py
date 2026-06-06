@@ -107,3 +107,26 @@ def test_yielding_still_blocks_previously_hard_denied_tool() -> None:
     ok, reason = is_exposable(tool, provider=_StubProvider(yielding=True))
     assert ok is False
     assert reason == "yielding_unsupported"
+
+
+def test_user_toolset_tool_is_not_exposable() -> None:
+    """System-only floor: a tool from a user-defined Toolset row (any
+    toolset id outside the reserved built-ins) is never exposable over
+    MCP, regardless of the operator allowlist."""
+    tool = _make_tool("my-custom-toolset", "do_thing")
+    ok, reason = is_exposable(tool, provider=_StubProvider())
+    assert ok is False
+    assert reason == "not_system_toolset"
+
+
+def test_reserved_system_toolsets_remain_exposable() -> None:
+    """Every reserved built-in toolset is still exposable (the
+    system-only floor lets them through)."""
+    from primer.mcp.safety import RESERVED_TOOLSET_IDS
+
+    for toolset_id in RESERVED_TOOLSET_IDS:
+        # workspaces tools that need a session are denied for a different
+        # reason; use a plain non-session tool to isolate the floor.
+        tool = _make_tool(toolset_id, "some_tool")
+        ok, reason = is_exposable(tool, provider=_StubProvider())
+        assert ok is True, f"{toolset_id} should be exposable, got {reason}"

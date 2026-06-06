@@ -32,6 +32,7 @@ Public surface:
 
 from __future__ import annotations
 
+from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.int.toolset import ToolsetProvider
 from primer.model.chat import Tool
 
@@ -74,7 +75,15 @@ def is_exposable(
     :class:`ApprovalResolver` is wired up. Keeping ``is_exposable``
     free of async dependencies lets the exposure service and the
     REST validator share the same predicate.
+
+    System-only floor: the MCP endpoint exists to expose the platform's
+    own capabilities (the reserved built-in toolsets) to external
+    agents. Tools from user-defined Toolset rows are never exposable,
+    regardless of the operator allowlist; they belong to the platform's
+    internal agents, not to outside MCP clients.
     """
+    if tool.toolset_id not in RESERVED_TOOLSET_IDS:
+        return False, "not_system_toolset"
     if provider.is_yielding(tool.id):
         return False, "yielding_unsupported"
     if tool.toolset_id == "workspaces" and provider.requires_session(tool.id):
