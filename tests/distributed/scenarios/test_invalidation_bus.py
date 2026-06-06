@@ -30,6 +30,7 @@ import pytest
 import pytest_asyncio
 
 from tests.distributed.cluster import TestCluster
+from tests._support.smk import smk
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +60,7 @@ async def cluster_2x2_bus(postgres_container: str, db_schema: str):
 # ---------------------------------------------------------------------------
 
 
+@smk("SMK-DST-07")
 @pytest.mark.distributed
 @pytest.mark.asyncio
 async def test_provider_patch_invalidates_other_api_cache(
@@ -74,6 +76,7 @@ async def test_provider_patch_invalidates_other_api_cache(
        bus has delivered the invalidation and the cache has been evicted).
     """
     cluster = cluster_2x2_bus
+    await cluster.authenticate()
     provider_id = f"test-llm-{uuid.uuid4().hex[:8]}"
 
     original_model = "original-model-v1"

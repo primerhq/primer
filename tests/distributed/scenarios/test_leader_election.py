@@ -34,6 +34,7 @@ import pytest
 import pytest_asyncio
 
 from tests.distributed.cluster import TestCluster
+from tests._support.smk import smk
 from primer.int.coordinator import ROLE_TIMER_SCHEDULER
 
 
@@ -105,6 +106,7 @@ async def cluster_with_4_workers_election(
 # ---------------------------------------------------------------------------
 
 
+@smk("SMK-DST-08")
 @pytest.mark.distributed
 @pytest.mark.asyncio
 async def test_only_one_holder_at_a_time(
@@ -199,10 +201,15 @@ async def test_only_one_holder_at_a_time(
         # naturally and the test still validates max-1 semantics.
 
         # ------------------------------------------------------------------
-        # Phase 3: wait for a NEW holder to emerge (up to 45s).
+        # Phase 3: wait for a NEW holder to emerge.
         # ------------------------------------------------------------------
         new_holder: str | None = None
-        failover_timeout = 45.0
+        # Worst-case failover is bounded by the leadership lease TTL (30s)
+        # plus the supervisor's re-acquire poll interval (15s) plus jitter,
+        # so ~45s is the *minimum* plausible bound, not a safe ceiling. Use
+        # a generous timeout so a healthy-but-slow failover is not flagged
+        # as a failure.
+        failover_timeout = 90.0
         start = time.monotonic()
 
         async def _new_holder_took_over() -> bool:

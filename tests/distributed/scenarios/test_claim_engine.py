@@ -38,6 +38,7 @@ import pytest
 import pytest_asyncio
 
 from tests.distributed.cluster import TestCluster
+from tests._support.smk import smk
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +67,7 @@ async def _insert_harness_leases(
     the ``HarnessClaimAdapter.eligibility_sql`` condition
     ``data->>'pending_operation' IS NOT NULL`` is satisfied.
     """
-    harness_table = f'"{schema}"."harnesses"'
+    harness_table = f'"{schema}"."harness"'
     leases_table = f'"{schema}"."leases"'
     harness_ids: list[str] = []
 
@@ -148,6 +149,7 @@ async def cluster_2x2_claims(postgres_container: str, db_schema: str):
 # ---------------------------------------------------------------------------
 
 
+@smk("SMK-LEASE-02", "SMK-DST-05")
 @pytest.mark.distributed
 @pytest.mark.asyncio
 async def test_no_double_claim_under_concurrency(
@@ -190,15 +192,19 @@ async def test_no_double_claim_under_concurrency(
         #    that the ``leases`` table exists before inserting.
         # ------------------------------------------------------------------
         leases_table = f'"{schema}"."leases"'
-        harness_table = f'"{schema}"."harnesses"'
+        harness_table = f'"{schema}"."harness"'
 
         async def _tables_ready() -> bool:
+            # Both the lease table (scheduler init) and the harness entity
+            # table (claim engine's _ensure_entity_tables, run on the first
+            # claim_due) must exist before we seed rows directly.
             row = await conn.fetchval(
                 "SELECT COUNT(*) FROM information_schema.tables"
-                " WHERE table_schema = $1 AND table_name = 'leases'",
+                " WHERE table_schema = $1"
+                " AND table_name IN ('leases', 'harness')",
                 schema,
             )
-            return int(row or 0) > 0
+            return int(row or 0) >= 2
 
         deadline = time.monotonic() + 30.0
         while not await _tables_ready():

@@ -45,6 +45,7 @@ import pytest
 import pytest_asyncio
 
 from tests.distributed.cluster import TestCluster
+from tests._support.smk import smk
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +68,7 @@ def _asyncpg_dsn(pg_url: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@smk("SMK-DST-08", status="partial")
 @pytest.mark.distributed
 @pytest.mark.asyncio
 async def test_only_one_bootstrap_runs_on_fresh_db(

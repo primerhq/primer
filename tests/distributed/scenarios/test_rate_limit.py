@@ -25,6 +25,7 @@ import pytest
 import pytest_asyncio
 
 from tests.distributed.cluster import TestCluster
+from tests._support.smk import smk
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,7 @@ async def cluster_2x2_with_test_endpoints(postgres_container: str, db_schema: st
 # ---------------------------------------------------------------------------
 
 
+@smk("SMK-DST-09")
 @pytest.mark.distributed
 @pytest.mark.asyncio
 async def test_rate_limit_max_concurrency_3_across_2_apis(
@@ -121,7 +123,7 @@ async def test_rate_limit_max_concurrency_3_across_2_apis(
     async def _call(api_index: int) -> None:
         async with cluster.client(api_index) as c:
             resp = await c.post(
-                "/_test/acquire_rate_limit",
+                "/v1/_test/acquire_rate_limit",
                 params={
                     "key": key,
                     "max_concurrency": max_concurrency,
@@ -145,10 +147,10 @@ async def test_rate_limit_max_concurrency_3_across_2_apis(
         # expected hold time (sleep_ms) so it catches all slots.
         monitor_duration = (sleep_ms / 1000) + 1.0  # seconds
 
-        burst_task = asyncio.create_task(
-            asyncio.gather(*tasks),
-            name="rate-limit-burst",
-        )
+        # asyncio.gather() already schedules the coroutines and returns a
+        # Future; do NOT wrap it in create_task() (which requires a
+        # coroutine and rejects a Future with "a coroutine was expected").
+        burst_task = asyncio.gather(*tasks)
         peak = await _peak_concurrency(
             conn,
             cluster.schema,

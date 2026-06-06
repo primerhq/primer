@@ -130,6 +130,10 @@ class TestCluster:
         Postgres schema to use.  Auto-generated from a UUID when None.
     """
 
+    # Not a pytest test class despite the ``Test`` prefix -- it has an
+    # __init__, so pytest would warn while trying (and failing) to collect it.
+    __test__ = False
+
     def __init__(
         self,
         *,
@@ -150,6 +154,10 @@ class TestCluster:
         self._api_handles: list[ProcessHandle] = []
         self._worker_handles: list[ProcessHandle] = []
         self._started = False
+        # Session cookie shared across APIs once authenticate() runs. Both
+        # API processes sign cookies with the same Postgres-stored
+        # session_secret, so a login on one is valid on all of them.
+        self._auth_cookies: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Public properties
@@ -352,10 +360,66 @@ class TestCluster:
 
             async with cluster.client(0) as c:
                 resp = await c.get("/v1/health")
+
+        If :meth:`authenticate` has run, the shared session cookie is
+        attached so the client can reach auth-guarded ``/v1`` routes.
         """
         handle = self._api_handles[api_index]
         base_url = f"http://127.0.0.1:{handle.port}"
-        return httpx.AsyncClient(base_url=base_url)
+        return httpx.AsyncClient(
+            base_url=base_url, cookies=dict(self._auth_cookies)
+        )
+
+    async def authenticate(
+        self,
+        *,
+        username: str = "cluster",
+        password: str = "cluster-password-123",
+        api_index: int = 0,
+    ) -> None:
+        """Register (idempotent) + log in; cache the session cookie.
+
+        Every ``/v1`` route is auth-guarded. Call this once after
+        :meth:`start` so subsequent :meth:`client` instances carry the
+        session cookie. The cookie is valid on every API in the cluster
+        because they share the Postgres-stored cookie-signing secret.
+        """
+        import contextlib
+
+        handle = self._api_handles[api_index]
+        base_url = f"http://127.0.0.1:{handle.port}"
+        creds = {"username": username, "password": password}
+        async with httpx.AsyncClient(base_url=base_url, timeout=10.0) as c:
+            with contextlib.suppress(Exception):
+                await c.post("/v1/auth/register", json=creds)
+            resp = await c.post("/v1/auth/login", json=creds)
+            if resp.status_code not in (200, 204):
+                raise RuntimeError(
+                    f"cluster auth login failed: {resp.status_code} {resp.text}"
+                )
+            self._auth_cookies = {k: v for k, v in c.cookies.items()}
+
+    async def worker_owner_id(self, handle: ProcessHandle) -> str | None:
+        """Return a worker process's runtime worker id via ``/v1/health``.
+
+        Workers identify themselves to the claim engine with a generated
+        ``wrk-<hex>`` id (surfaced as ``worker_pool.metrics.primer_worker_id``
+        on the health endpoint), NOT the ``PRIMER_OWNER_ID_PREFIX`` env var.
+        Tests that need to map a lease's ``claimed_by`` back to a specific
+        process use this to find which one to signal.
+        """
+        if handle.port is None:
+            return None
+        url = f"http://127.0.0.1:{handle.port}/v1/health"
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as c:
+                resp = await c.get(url)
+            if resp.status_code != 200:
+                return None
+            wp = resp.json().get("worker_pool") or {}
+            return (wp.get("metrics") or {}).get("primer_worker_id")
+        except Exception:
+            return None
 
     @asynccontextmanager
     async def ws(self, api_index: int, path: str):
@@ -372,7 +436,16 @@ class TestCluster:
 
         handle = self._api_handles[api_index]
         url = f"ws://127.0.0.1:{handle.port}{path}"
-        async with websockets.connect(url) as ws_conn:
+        # Forward the session cookie on the handshake so auth-guarded WS
+        # routes accept the upgrade once authenticate() has run.
+        headers = {}
+        if self._auth_cookies:
+            headers["Cookie"] = "; ".join(
+                f"{k}={v}" for k, v in self._auth_cookies.items()
+            )
+        async with websockets.connect(
+            url, additional_headers=headers or None
+        ) as ws_conn:
             yield ws_conn
 
     # ------------------------------------------------------------------
@@ -435,7 +508,12 @@ class TestCluster:
 
         async with httpx.AsyncClient(timeout=2.0) as client:
             while asyncio.get_event_loop().time() < deadline:
-                # Check if the subprocess died unexpectedly.
+                # Check if the subprocess died unexpectedly. ``poll()``
+                # refreshes ``returncode`` from the OS -- without it a
+                # crashed child looks alive (returncode stays None) and we
+                # wait the full timeout with a misleading "connection
+                # refused" instead of surfacing the child's stderr.
+                handle.popen.poll()
                 if handle.popen.returncode is not None:
                     self._collect_logs([handle])
                     raise RuntimeError(
