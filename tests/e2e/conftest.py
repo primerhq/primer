@@ -92,3 +92,22 @@ def testcfg() -> dict:
 @pytest.fixture(scope="session")
 def caps(testcfg: dict) -> Caps:
     return Caps(testcfg)
+
+
+# Every /v1 route requires auth. The first register creates the initial user
+# (later registers 4xx, ignored); login sets the session cookie on the
+# per-test client so the SMK tests are authenticated. Opt-in via the
+# `authed_client` fixture rather than autouse, so it does not perturb existing
+# e2e modules that manage their own auth.
+_E2E_USER = {"username": "e2e", "password": "e2e-password-123"}
+
+
+@pytest_asyncio.fixture
+async def authed_client(client):
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        await client.post("/v1/auth/register", json=_E2E_USER)
+    r = await client.post("/v1/auth/login", json=_E2E_USER)
+    assert r.status_code in (200, 204), r.text
+    return client

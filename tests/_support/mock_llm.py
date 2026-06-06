@@ -44,7 +44,9 @@ class Rule:
             and bool(has_tool_result) != self.when_tool_result
         ):
             return False
-        if self.when_tool_offered and self.when_tool_offered not in offered:
+        if self.when_tool_offered and not any(
+            self.when_tool_offered in (name or "") for name in offered
+        ):
             return False
         return True
 
@@ -53,6 +55,7 @@ class ScriptRegistry:
     def __init__(self) -> None:
         self._scripts: dict[str, list[Rule]] = {}
         self.strict = False
+        self.requests: list[dict] = []  # captured for debugging
 
     def register(self, scenario_id: str, rules: list[Rule]) -> None:
         self._scripts[scenario_id] = rules
@@ -64,6 +67,7 @@ class ScriptRegistry:
         return list(self._scripts.keys()) or ["scripted:default"]
 
     def resolve(self, req: dict[str, Any]) -> Rule:
+        self.requests.append(req)
         rules = self._scripts.get(req.get("model", ""), [])
         for r in rules:
             if r.matches(req):

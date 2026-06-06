@@ -46,7 +46,12 @@ async def local_workspace(client, unique_suffix, tmp_path_factory):
     assert rp.status_code in (200, 201), rp.text
     rt = await client.post(
         "/v1/workspace_templates",
-        json={"id": tpl, "provider_id": wp, "files": []},
+        json={
+            "id": tpl,
+            "description": "smk local template",
+            "provider_id": wp,
+            "backend": {"kind": "local"},
+        },
     )
     assert rt.status_code in (200, 201), rt.text
     rw = await client.post("/v1/workspaces", json={"template_id": tpl})
