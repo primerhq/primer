@@ -38,6 +38,25 @@ def run_hygiene_tests() -> int:
     return result.returncode
 
 
+def _normalize_item(item: object) -> str:
+    """Coerce a spec_says_code_lacks entry into a clean one-line string.
+
+    Triage agents emitted two shapes: plain strings, and objects of the
+    form {"item": "...", "searched": [...]}. Normalize both, drop any em
+    dash (the hygiene suite rejects them), and collapse whitespace.
+    """
+    if isinstance(item, dict):
+        text = str(item.get("item", "")).strip()
+        searched = item.get("searched")
+        if isinstance(searched, list) and searched:
+            text = f"{text} (searched: {', '.join(str(s) for s in searched)})"
+    else:
+        text = str(item).strip()
+    # Replace em dash with a hyphen so the deferred file stays hygienic.
+    text = text.replace("—", "-")
+    return " ".join(text.split())
+
+
 def generate_deferred_rollup() -> None:
     """Aggregate `spec_says_code_lacks` entries from every triage card
     into a single markdown file grouped by spec date."""
@@ -57,11 +76,15 @@ def generate_deferred_rollup() -> None:
         items = card.get("spec_says_code_lacks") or []
         if not items:
             continue
-        title = card.get("spec_title", card_path.stem)
-        spec_path = card.get("spec_path", "")
-        date = card.get("spec_date", "0000-00-00")
+        # Recover spec_path / date / title from the card; fall back to
+        # reconstructing them from the card filename stem (which mirrors
+        # the spec filename) when an agent left a field blank.
+        stem = card_path.stem
+        title = card.get("spec_title") or stem
+        spec_path = card.get("spec_path") or f"docs/superpowers/specs/{stem}.md"
+        date = card.get("spec_date") or stem[:10]
         for item in items:
-            by_date[date].append((title, spec_path, item))
+            by_date[date].append((title, spec_path, _normalize_item(item)))
 
     lines = [
         "# Deferred from Specs",

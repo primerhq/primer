@@ -109,6 +109,25 @@ def _all_tracked_docs() -> list[Path]:
     return docs
 
 
+_FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`]*`")
+
+# The generated deferred-from-specs.md rollup quotes spec text verbatim,
+# which can legitimately contain words like "TBD" or "TODO" describing a
+# spec's own deferral markers. It is machine-generated, not authored
+# prose, so it is exempt from the placeholder-token check.
+_PLACEHOLDER_EXEMPT = {"deferred-from-specs.md"}
+
+
+def _strip_code(content: str) -> str:
+    """Remove fenced code blocks (including mermaid) and inline code so
+    link-like and token-like syntax inside code is not mistaken for prose.
+    For example `self._dispatch[kind](lease)` inside a mermaid block reads
+    as a markdown link to the naive regex but is just Python syntax."""
+    without_fences = _FENCED_CODE_RE.sub("", content)
+    return _INLINE_CODE_RE.sub("", without_fences)
+
+
 # ---- Existence + layout ----------------------------------------------------
 
 
@@ -163,7 +182,10 @@ def test_no_em_dashes(doc: Path):
 def test_no_placeholder_tokens(doc: Path):
     """No 'TBD', 'FIXME', 'XXX', '???' tokens. TODO is allowed only as
     a heading word (e.g. 'TODO list'), not as a standalone marker at
-    the start of a line."""
+    the start of a line. The generated deferred rollup is exempt: it
+    quotes spec text that may legitimately mention such markers."""
+    if doc.name in _PLACEHOLDER_EXEMPT:
+        pytest.skip(f"{doc.name} is generated content exempt from placeholders")
     content = doc.read_text(encoding="utf-8")
     placeholders = _PLACEHOLDER_RE.findall(content)
     assert not placeholders, (
@@ -255,8 +277,9 @@ _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 )
 def test_internal_cross_references_resolve(doc: Path):
     """Every relative markdown link to another doc/dev/ file or to
-    AGENTS.md resolves to a file that exists."""
-    content = doc.read_text(encoding="utf-8")
+    AGENTS.md resolves to a file that exists. Link-like syntax inside
+    code or mermaid blocks is ignored (it is not a real markdown link)."""
+    content = _strip_code(doc.read_text(encoding="utf-8"))
     for label, target in _MD_LINK_RE.findall(content):
         if target.startswith(
             ("http://", "https://", "#", "/", "mailto:")
