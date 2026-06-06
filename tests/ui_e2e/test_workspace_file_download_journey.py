@@ -40,6 +40,10 @@ import pytest
 from playwright.sync_api import expect
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-06", status="partial")
+
+
 def _seed_workspace_with_file(
     base_url: str, suffix: str,
 ) -> tuple[dict[str, str], str]:

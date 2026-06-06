@@ -32,6 +32,10 @@ LIST_ROUTES = [
 ]
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-01", status="partial")
+
+
 @pytest.mark.ui_e2e
 @pytest.mark.parametrize("route", LIST_ROUTES)
 def test_mobile_no_table_on_list_route(

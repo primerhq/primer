@@ -23,6 +23,10 @@ import pytest
 from playwright.sync_api import expect
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-06")
+
+
 def _cleanup(base_url: str, provider_ids: list[str]) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         for pid in provider_ids:

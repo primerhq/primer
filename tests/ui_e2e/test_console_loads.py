@@ -46,6 +46,10 @@ _ROUTES: list[tuple[str, str]] = [
 ]
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-01")
+
+
 @pytest.mark.parametrize("hash_path,expected_title", _ROUTES, ids=[r[0] for r in _ROUTES])
 def test_route_renders_with_zero_console_errors(
     page,

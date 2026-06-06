@@ -43,6 +43,10 @@ import pytest
 from playwright.sync_api import expect
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-10")
+
+
 def _seed_llm_provider(base_url: str, pid: str, model_name: str) -> None:
     """Create an LLMProvider with one named model via the API."""
     with httpx.Client(base_url=base_url, timeout=30.0) as c:

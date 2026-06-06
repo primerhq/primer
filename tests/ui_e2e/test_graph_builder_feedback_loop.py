@@ -37,14 +37,19 @@ import os
 
 import pytest
 
+from tests._support.smk import smk
+
 # Module-level gate — even though tests/ui_e2e/conftest.py already
 # collect-ignores the whole directory when PRIMER_RUN_UI_E2E is unset,
 # the explicit ``skipif`` makes the gate visible per-test for direct
 # invocation (`uv run pytest tests/ui_e2e/test_graph_builder_feedback_loop.py`).
-pytestmark = pytest.mark.skipif(
-    os.environ.get("PRIMER_RUN_UI_E2E") != "1",
-    reason="UI e2e tests require PRIMER_RUN_UI_E2E=1 + a running primer server",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        os.environ.get("PRIMER_RUN_UI_E2E") != "1",
+        reason="UI e2e tests require PRIMER_RUN_UI_E2E=1 + a running primer server",
+    ),
+    smk("SMK-UI-04"),
+]
 
 
 def test_graph_builder_feedback_loop_journey(

@@ -62,6 +62,10 @@ _VALID_REGO = (
 )
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-10", status="partial")
+
+
 def _cleanup(base_url: str, policy_ids: list[str]) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         for pid in policy_ids:

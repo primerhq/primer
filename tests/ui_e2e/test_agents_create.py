@@ -26,6 +26,10 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-03")
+
+
 @contextmanager
 def _api(base_url: str) -> Iterator[httpx.Client]:
     """Sync httpx client bound to the live primer backend. We use sync

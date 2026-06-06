@@ -26,6 +26,10 @@ import pytest
 from playwright.sync_api import expect
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-06", status="partial")
+
+
 def _cleanup(
     base_url: str,
     workspace_ids: list[str],

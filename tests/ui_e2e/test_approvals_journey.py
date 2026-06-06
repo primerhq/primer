@@ -63,6 +63,10 @@ from playwright.sync_api import expect
 # ---------------------------------------------------------------------------
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-10")
+
+
 def _container_ws_root(suffix: str) -> str:
     return f"/tmp/u0109-{suffix}"
 

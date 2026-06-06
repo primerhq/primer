@@ -57,6 +57,10 @@ from playwright.sync_api import expect
 # ---------------------------------------------------------------------------
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-07", "SMK-UI-10")
+
+
 async def _inject_chat_approval_park_async(
     *,
     chat_id: str,

@@ -28,6 +28,10 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-02", "SMK-UI-03", "SMK-UI-04", "SMK-UI-06")
+
+
 def _seed_full_set(base_url: str, suffix: str, ws_root: Path) -> dict[str, str]:
     """Seed one of each major entity via the API. Returns the ids."""
     ids = {

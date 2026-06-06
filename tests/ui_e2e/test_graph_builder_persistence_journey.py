@@ -48,6 +48,10 @@ import pytest
 from playwright.sync_api import expect
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-04")
+
+
 def _seed_agent_with_provider(
     base_url: str, suffix: str,
 ) -> dict[str, str]:

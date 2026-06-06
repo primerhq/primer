@@ -12,6 +12,10 @@ import httpx
 import pytest
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-09")
+
+
 def _bootstrap_bare_repo(tmp_path: Path) -> str:
     work = tmp_path / "src"
     work.mkdir()

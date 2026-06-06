@@ -14,6 +14,10 @@ shape so the loop's generator + picker treat them as a cohesive batch.
 from __future__ import annotations
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-02")
+
+
 def test_u0010_llm_provider_modal_shows_t0025_static_models_helper(
     page,
     console_url: str,

@@ -20,6 +20,10 @@ import time
 import httpx
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-02", "SMK-UI-05", status="partial")
+
+
 def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
     page,
     base_url: str,

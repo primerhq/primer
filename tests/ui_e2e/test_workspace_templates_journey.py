@@ -21,6 +21,10 @@ import pytest
 from playwright.sync_api import expect
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-06", status="partial")
+
+
 def _seed_provider(base_url: str, provider_id: str) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/workspace_providers", json={

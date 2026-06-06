@@ -35,6 +35,10 @@ from playwright.sync_api import expect
 # ---------------------------------------------------------------------------
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-05")
+
+
 def _seed_embedding_provider(base_url: str, pid: str) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/embedding_providers", json={

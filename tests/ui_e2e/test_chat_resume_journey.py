@@ -37,6 +37,10 @@ _LMSTUDIO_MODEL = os.environ.get(
 )
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-07", status="partial")
+
+
 def _lmstudio_reachable() -> bool:
     if not _LMSTUDIO_TOKEN:
         return False

@@ -16,6 +16,10 @@ import time
 import httpx
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-04", status="partial")
+
+
 def _seed_llm_provider(base_url: str, pid: str) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/llm_providers", json={

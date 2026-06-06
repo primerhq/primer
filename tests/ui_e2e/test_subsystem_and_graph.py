@@ -12,6 +12,10 @@ from __future__ import annotations
 import httpx
 
 
+from tests._support.smk import smk  # noqa: E402
+pytestmark = smk("SMK-UI-04", "SMK-UI-05", status="partial")
+
+
 def _cleanup(base_url: str, urls: list[str]) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         for url in urls:
