@@ -28,6 +28,8 @@ import asyncpg
 import httpx
 import pytest
 
+from tests._support.smk import smk
+
 
 # ---------------------------------------------------------------------------
 # Postgres + seed helpers (mirrors test_yields_with_injected_park.py)
@@ -260,6 +262,7 @@ async def test_t0780_ask_user_respond_404_when_parked_on_sleep(
 # ===========================================================================
 
 
+@smk("SMK-EVT-03")
 @pytest.mark.asyncio
 async def test_t0782_ask_user_respond_422_when_response_violates_schema(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path,

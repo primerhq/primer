@@ -62,6 +62,8 @@ import asyncpg
 import httpx
 import pytest
 
+from tests._support.smk import smk
+
 
 async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
@@ -254,6 +256,7 @@ async def _cleanup(client: httpx.AsyncClient, urls: list[str]) -> None:
 # ===========================================================================
 
 
+@smk("SMK-EVT-05")
 @pytest.mark.asyncio
 async def test_t0864_cancel_yielded_tool_publishes_and_resumes_session(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path,

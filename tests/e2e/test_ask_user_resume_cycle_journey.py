@@ -59,6 +59,8 @@ import asyncpg
 import httpx
 import pytest
 
+from tests._support.smk import smk
+
 
 async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
@@ -269,6 +271,7 @@ async def _cleanup(client: httpx.AsyncClient, urls: list[str]) -> None:
 # ===========================================================================
 
 
+@smk("SMK-EVT-01", "SMK-EVT-02")
 @pytest.mark.asyncio
 async def test_t0862_ask_user_park_respond_resume_clears_park_and_advances_turn(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path,

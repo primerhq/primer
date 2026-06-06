@@ -133,6 +133,27 @@ async def start_agent_session(
     return r.json()["id"]
 
 
+async def wait_for_status(
+    client: httpx.AsyncClient,
+    session_id: str,
+    target: str,
+    *,
+    timeout_s: float = 30.0,
+    interval_s: float = 0.3,
+) -> dict:
+    """Poll the session until it reaches `target` status (or timeout)."""
+    iters = max(1, int(timeout_s / interval_s))
+    last: dict = {}
+    for _ in range(iters):
+        resp = await client.get(f"/v1/sessions/{session_id}")
+        if resp.status_code == 200:
+            last = resp.json()
+            if last.get("status") == target:
+                return last
+        await asyncio.sleep(interval_s)
+    return last
+
+
 async def wait_terminal(
     client: httpx.AsyncClient,
     session_id: str,
