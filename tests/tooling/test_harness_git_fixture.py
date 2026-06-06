@@ -13,7 +13,8 @@ def _clone(url: str, dest: Path) -> Path:
 
 
 def test_build_repo_has_bundle(tmp_path):
-    url = build_harness_repo(tmp_path / "h", name="demo-harness")
+    # agent_only=False ships the full template set.
+    url = build_harness_repo(tmp_path / "h", name="demo-harness", agent_only=False)
     assert url.startswith("file://")
     checkout = _clone(url, tmp_path / "checkout")
     manifest = (checkout / "harness.yaml").read_text(encoding="utf-8")
@@ -21,6 +22,15 @@ def test_build_repo_has_bundle(tmp_path):
     assert "name: demo-harness" in manifest
     tpls = {p.name for p in (checkout / "templates").glob("*.yaml")}
     assert tpls == {"assistant.yaml", "kb.yaml", "flow.yaml"}
+    # the overrides schema is shipped for the install flow
+    assert (checkout / "overrides.schema.json").exists()
+
+
+def test_build_repo_agent_only_default(tmp_path):
+    url = build_harness_repo(tmp_path / "h2", name="agent-only")
+    checkout = _clone(url, tmp_path / "checkout2")
+    tpls = {p.name for p in (checkout / "templates").glob("*.yaml")}
+    assert tpls == {"assistant.yaml"}
 
 
 def test_commit_present(tmp_path):
