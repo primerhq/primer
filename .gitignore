@@ -219,22 +219,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .idea
-# docs/ contains tracked subdirs (testing, dev) and gitignored ones
-# (superpowers spec/plan archive, legacy ui spec set). Exclude the
-# latter explicitly so the tracked subdirs are not blocked by a
-# parent-directory ignore (git cannot re-include a file inside an
-# excluded parent).
-docs/superpowers/
-docs/ui/
-# docs/dev/_work/ is scratch state for the consolidation run.
-docs/dev/_work/
-!AGENTS.md
 # The in-UI documentation components live under ui/components/docs/
 # and the operator-facing markdown source lives under primer/user_docs/;
 # both are tracked frontend/source, not the gitignored docs/ spec area.
 !ui/components/docs/
 !ui/components/docs/**
-research/
 
 # E2E test harness runtime scratch (logs, rendered config, pidfile).
 # Python test code under tests/e2e/ IS versioned; the .e2e/ scratch dir
