@@ -103,6 +103,13 @@ a one-line reason; it may not simply be omitted.
   uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
   ```
 
+  The suite runs in parallel by default (`-n auto --dist loadscope` is baked
+  into `addopts`), which takes the full unit sweep from roughly 7 minutes to
+  about 90 seconds. `loadscope` keeps each module's tests on one worker
+  because a few `tests/api` modules use module/class-scoped fixtures that do
+  not survive being split across workers. To debug a single test serially,
+  override with `-n0`.
+
 ### Docs
 
 - Update the relevant subsystem doc under `docs/dev/subsystems/` and any

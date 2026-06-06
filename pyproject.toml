@@ -70,6 +70,7 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.1.0",
     "pytest-playwright>=0.6.2",
+    "pytest-xdist>=3.6.0",
     "respx>=0.21.1",
     "testcontainers[postgres]>=4.0",
 ]
@@ -84,7 +85,15 @@ pythonpath = [".", "runtime"]
 # the e2e tests' need for a live server.
 # tests/distributed/ requires testcontainers + Docker; opt in with
 # `uv run pytest tests/distributed/ -m distributed`. Default runs skip them.
-addopts = "-m 'not distributed'"
+#
+# Parallel by default: `-n auto` fans the suite across all CPU cores via
+# pytest-xdist, taking the full unit sweep from ~7 min to ~90 s. We use
+# `--dist loadscope` (group a module's tests onto one worker) rather than
+# the default per-test `load`: a few tests/api modules rely on
+# module/class-scoped fixtures that break when their tests are split
+# across workers. To debug a single test serially, override with `-n0`
+# (e.g. `uv run pytest tests/api/test_chats.py -n0`).
+addopts = "-m 'not distributed' -n auto --dist loadscope"
 markers = [
     "distributed: requires testcontainers + multiprocess (deselect with -m 'not distributed')",
 ]

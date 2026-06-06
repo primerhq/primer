@@ -236,6 +236,8 @@ Standing repo rules for any change:
 - No force-push to `main`.
 - The narrowed sweep stays green at every commit:
   `uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm`.
+  It runs in parallel by default (`-n auto --dist loadscope` in `addopts`,
+  roughly 90 s instead of 7 min). Add `-n0` to run a single test serially.
 - No em dash characters anywhere in committed files (the
   `tests/docs/` hygiene suite enforces this for `docs/dev/`).
 - Restart `uv run primer api` at the end of any code-changing task and
