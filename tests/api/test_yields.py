@@ -3,9 +3,11 @@
 Covers M3 of the yielding-tools feature: the ask_user pending/respond
 endpoints + the tool-agnostic cancel-yielded-tool endpoint.
 
-The fixture wires a real in-memory EventBus + the listener so the
-end-to-end flow (POST respond → publish → listener → mark_resumable)
-actually flips the parked session in the test process.
+The fixture wires a real in-memory EventBus + the new listener so the
+end-to-end flow (POST respond -> publish -> listener -> storage flip +
+engine.mark_resumable) actually flips the parked session in the test
+process. The listener now reads from storage.find rather than the old
+scheduler path.
 """
 
 from __future__ import annotations
@@ -21,12 +23,14 @@ from httpx import ASGITransport, AsyncClient
 from primer.api.app import create_test_app
 from primer.bus.in_memory import InMemoryEventBus
 from primer.bus.listener import YieldEventListener
+from primer.claim.adapters.sessions import SessionClaimAdapter
+from primer.claim.in_memory import InMemoryClaimEngine
+from primer.int.claim import ClaimKind
 from primer.model.workspace_session import (
     AgentSessionBinding,
     WorkspaceSession,
     SessionStatus,
 )
-from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
 
 
 @pytest.fixture
@@ -42,21 +46,27 @@ def app(
 
 @pytest_asyncio.fixture
 async def bus_and_listener(app):
-    """Wire a real bus + listener to the app's scheduler.
+    """Wire a real bus + listener to the app's session storage + engine.
 
-    The endpoint POST publishes to the bus; the listener flips the
-    parked session via mark_resumable. Without this, the POST would
-    only update the bus and tests would have to read the bus to
-    verify (clumsier than asserting on the row state).
+    The endpoint POST publishes to the bus; the listener finds parked
+    sessions via storage.find, flips them resumable in storage, and
+    re-arms the engine lease via engine.mark_resumable.
     """
     bus = InMemoryEventBus()
     await bus.initialize()
     app.state.event_bus = bus
-    scheduler: InMemoryScheduler = app.state.scheduler
-    listener = YieldEventListener(bus=bus, scheduler=scheduler)
+    session_storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    engine = InMemoryClaimEngine(
+        adapters={
+            ClaimKind.SESSION: SessionClaimAdapter(session_storage=session_storage),
+        },
+    )
+    listener = YieldEventListener(
+        bus=bus, session_storage=session_storage, engine=engine,
+    )
     listener.start()
     try:
-        yield bus, listener
+        yield bus, listener, session_storage
     finally:
         await listener.stop()
         await bus.aclose()
@@ -68,7 +78,10 @@ async def client(app, bus_and_listener):
         transport=ASGITransport(app=app), base_url="http://t",
     ) as c:
         try:
-            await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            await c.post(
+                "/v1/auth/register",
+                json={"username": "testuser", "password": "testpassword"},
+            )
         except Exception:
             pass
         yield c
@@ -117,22 +130,13 @@ def _make_parked_session(
 
 
 async def _seed_session(app, sess: WorkspaceSession) -> None:
-    """Insert into both the storage row AND the in-memory scheduler dict.
+    """Insert the session row into storage.
 
-    Storage is what the GET endpoint reads; the scheduler dict is what
-    mark_resumable mutates. Production keeps them in sync via the
-    scheduler writing through to storage; tests inject directly.
+    Storage is what both the GET endpoint reads and what the new
+    YieldEventListener queries via storage.find to flip parked rows.
     """
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(sess)
-    scheduler: InMemoryScheduler = app.state.scheduler
-    scheduler._sessions[sess.id] = sess
-    scheduler._leases[sess.id] = _LeaseState(
-        worker_id=None,
-        expires_at=None,
-        runnable=False,
-        next_attempt_at=datetime.now(timezone.utc),
-    )
 
 
 # ===========================================================================
@@ -240,13 +244,18 @@ class TestAskUserRespond:
             json={"tool_call_id": "tc-r", "response": "Alice"},
         )
         assert resp.status_code == 202
-        # Let the listener observe the event + flip the row.
+        # Let the listener observe the event + flip the row in storage.
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = None
         for _ in range(50):
             await asyncio.sleep(0.02)
-            if sess.parked_status == "resumable":
+            row = await storage.get("sess-r")
+            if row is not None and row.parked_status == "resumable":
                 break
-        assert sess.parked_status == "resumable"
-        assert sess.parked_state["resume_event_payload"] == {"response": "Alice"}
+        assert row is not None
+        assert row.parked_status == "resumable"
+        assert row.parked_state is not None
+        assert row.parked_state["resume_event_payload"] == {"response": "Alice"}
 
     async def test_respond_accepts_complex_response(self, app, client):
         sess = _make_parked_session(
@@ -259,11 +268,16 @@ class TestAskUserRespond:
             json={"tool_call_id": "tc-rc", "response": {"k": "v", "n": 7}},
         )
         assert resp.status_code == 202
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = None
         for _ in range(50):
             await asyncio.sleep(0.02)
-            if sess.parked_status == "resumable":
+            row = await storage.get("sess-rc")
+            if row is not None and row.parked_status == "resumable":
                 break
-        assert sess.parked_state["resume_event_payload"] == {
+        assert row is not None
+        assert row.parked_state is not None
+        assert row.parked_state["resume_event_payload"] == {
             "response": {"k": "v", "n": 7}
         }
 
@@ -311,14 +325,17 @@ class TestAskUserRespond:
             response_schema=schema,
         )
         await _seed_session(app, sess)
-        # Response missing required "name" field — must 422 and NOT flip.
+        # Response missing required "name" field -- must 422 and NOT flip.
         resp = await client.post(
             "/v1/sessions/sess-sc/ask_user/respond",
             json={"tool_call_id": "tc-sc", "response": {"wrong": "field"}},
         )
         assert resp.status_code == 422
         await asyncio.sleep(0.1)
-        assert sess.parked_status == "parked"
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = await storage.get("sess-sc")
+        assert row is not None
+        assert row.parked_status == "parked"
 
     async def test_respond_succeeds_when_response_satisfies_schema(
         self, app, client,
@@ -360,12 +377,17 @@ class TestCancelYieldedTool:
             json={"reason": "operator skipped"},
         )
         assert resp.status_code == 202
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = None
         for _ in range(50):
             await asyncio.sleep(0.02)
-            if sess.parked_status == "resumable":
+            row = await storage.get("sess-c")
+            if row is not None and row.parked_status == "resumable":
                 break
-        assert sess.parked_status == "resumable"
-        payload = sess.parked_state["resume_event_payload"]
+        assert row is not None
+        assert row.parked_status == "resumable"
+        assert row.parked_state is not None
+        payload = row.parked_state["resume_event_payload"]
         assert payload.get("__yield_cancelled__") is True
         assert payload.get("reason") == "operator skipped"
 
@@ -379,11 +401,16 @@ class TestCancelYieldedTool:
             json={},
         )
         assert resp.status_code == 202
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = None
         for _ in range(50):
             await asyncio.sleep(0.02)
-            if sess.parked_status == "resumable":
+            row = await storage.get("sess-cn")
+            if row is not None and row.parked_status == "resumable":
                 break
-        assert sess.parked_state["resume_event_payload"].get("reason") is None
+        assert row is not None
+        assert row.parked_state is not None
+        assert row.parked_state["resume_event_payload"].get("reason") is None
 
     async def test_cancel_404_when_tool_call_id_does_not_match(
         self, app, client,
@@ -461,12 +488,17 @@ class TestCancelYieldedTool:
             json={"reason": "skip"},
         )
         assert resp.status_code == 202
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = None
         for _ in range(50):
             await asyncio.sleep(0.02)
-            if sess.parked_status == "resumable":
+            row = await storage.get("sess-slc")
+            if row is not None and row.parked_status == "resumable":
                 break
-        assert sess.parked_status == "resumable"
+        assert row is not None
+        assert row.parked_status == "resumable"
+        assert row.parked_state is not None
         assert (
-            sess.parked_state["resume_event_payload"].get("__yield_cancelled__")
+            row.parked_state["resume_event_payload"].get("__yield_cancelled__")
             is True
         )

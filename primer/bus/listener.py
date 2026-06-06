@@ -1,17 +1,16 @@
 """Background listener that flips parked sessions to resumable.
 
-Spec: ``docs/superpowers/specs/2026-05-22-yielding-tools-design.md`` §6.2.
+Spec: ``docs/superpowers/specs/2026-06-07-f10c-session-yield-park-resume-design.md``.
 
-The listener subscribes to the event bus and, for each event,
-invokes the scheduler's :meth:`mark_resumable` for every parked
-session keyed on that ``event_key``. The scheduler's atomic
-``UPDATE WHERE parked_status='parked' AND parked_event_key=...``
-guards against double-publish (only the first publisher wins).
+For each event on the bus, the listener finds every session parked on
+that ``event_key``, flips the row ``parked -> resumable`` (stamping the
+resume payload), and re-arms the engine lease so the active claim loop
+re-claims and resumes the session.
 
-One listener per app is sufficient — broadcast LISTEN/NOTIFY means
-every app sees every event, but the atomic flip means only one wins.
-The post-flip ``pg_notify('session_ready')`` wakes the worker pool
-which then claims and resumes.
+The flip is guarded so only a row still in ``'parked'`` state is
+advanced; a second event for the same key is a no-op (the payload is
+not overwritten). One listener per app is sufficient: the bus is
+broadcast, but the guarded flip means only the first publisher wins.
 """
 
 from __future__ import annotations
@@ -19,28 +18,34 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from primer.int.claim import ClaimEngine, ClaimKind
 from primer.int.event_bus import EventBus
-from primer.int.scheduler import Scheduler
+from primer.int.storage import Storage
+from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 
 
 logger = logging.getLogger(__name__)
 
 
 class YieldEventListener:
-    """Background task: subscribe to the event bus, flip parked rows.
+    """Background task: subscribe to the event bus, resume parked sessions.
 
     Lifecycle:
 
-    * ``start()`` — schedules an asyncio task that runs the
-      listener loop. Returns immediately.
-    * ``stop()`` — cancels the task and awaits its exit. Idempotent.
-
-    Wire into the app lifespan: start at startup, stop at shutdown.
+    * ``start()`` - schedules an asyncio task running the listener loop.
+    * ``stop()`` - cancels the task and awaits its exit. Idempotent.
     """
 
-    def __init__(self, *, bus: EventBus, scheduler: Scheduler) -> None:
+    def __init__(
+        self,
+        *,
+        bus: EventBus | None,
+        session_storage: Storage,
+        engine: ClaimEngine,
+    ) -> None:
         self._bus = bus
-        self._scheduler = scheduler
+        self._storage = session_storage
+        self._engine = engine
         self._task: asyncio.Task | None = None
         self._stopping = False
 
@@ -63,6 +68,8 @@ class YieldEventListener:
         self._task = None
 
     async def _run(self) -> None:
+        if self._bus is None:
+            return
         sub = self._bus.subscribe()
         try:
             async for event in sub:
@@ -73,30 +80,56 @@ class YieldEventListener:
             await sub.aclose()
 
     async def _handle_event(self, event) -> None:
-        """For each event_key, mark every parked session resumable.
+        """Flip every session parked on ``event.event_key`` to resumable and
+        re-arm its engine lease.
 
-        ``mark_resumable`` returns the number of rows flipped (0 if
-        no matching parked row exists — common, the bus is broadcast
-        so every app sees every event). Errors are logged but do
-        not break the listener; the loop continues with the next
-        event.
+        Errors are logged but do not break the listener loop; the next
+        event is processed regardless.
         """
         try:
-            n = await self._scheduler.mark_resumable(
-                event.event_key,
-                resume_event_payload=event.payload,
+            predicate = Predicate(
+                left=Predicate(
+                    left=FieldRef(name="parked_status"),
+                    op=Op.EQ,
+                    right=Value(value="parked"),
+                ),
+                op=Op.AND,
+                right=Predicate(
+                    left=FieldRef(name="parked_event_key"),
+                    op=Op.EQ,
+                    right=Value(value=event.event_key),
+                ),
             )
-            if n > 0:
+            # event_key encodes the session + tool_call (e.g.
+            # "ask_user:<session_id>:<tool_call_id>"), so in practice it
+            # matches at most one parked row; the 200 cap is a generous
+            # safety bound, not a real fan-out limit.
+            page = await self._storage.find(predicate, OffsetPage(length=200))
+            flipped = 0
+            for sess in page.items:
+                # Re-read guard: only advance rows still 'parked'.
+                if sess.parked_status != "parked":
+                    continue
+                state = dict(sess.parked_state or {})
+                state["resume_event_payload"] = dict(event.payload or {})
+                updated = sess.model_copy(update={
+                    "parked_status": "resumable",
+                    "parked_state": state,
+                })
+                await self._storage.update(updated)
+                # Re-arm the engine lease (park dropped it). mark_resumable
+                # upserts a fresh claimable lease when none exists.
+                await self._engine.mark_resumable(ClaimKind.SESSION, sess.id)
+                flipped += 1
+            if flipped:
                 logger.info(
-                    "yield-event-listener: flipped %d session(s) for "
-                    "event_key=%r",
-                    n, event.event_key,
+                    "yield-event-listener: resumed %d session(s) for "
+                    "event_key=%r", flipped, event.event_key,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
-                "yield-event-listener: mark_resumable failed for "
-                "event_key=%r: %s",
-                event.event_key, exc,
+                "yield-event-listener: handle_event failed for "
+                "event_key=%r: %s", event.event_key, exc,
             )
 
 

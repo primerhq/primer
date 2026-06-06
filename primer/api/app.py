@@ -540,8 +540,13 @@ def _make_lifespan(config: AppConfig):
             # publish path crashes with AttributeError on .publish.
             channel_inbox._event_bus = event_bus
             logger.info("lifespan: starting yield listener / timer / sweeper")
+            from primer.model.workspace_session import (
+                WorkspaceSession as _WorkspaceSession,
+            )
             yield_listener = YieldEventListener(
-                bus=event_bus, scheduler=scheduler,
+                bus=event_bus,
+                session_storage=storage_provider.get_storage(_WorkspaceSession),
+                engine=claim_engine,
             )
             yield_listener.start()
             timer_scheduler = TimerScheduler(
