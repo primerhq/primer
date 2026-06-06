@@ -61,18 +61,36 @@ def _git(cwd: Path, *args: str) -> None:
     )
 
 
-def build_harness_repo(root: Path, *, name: str = "test-harness") -> str:
-    """Create a bare git repo with a harness bundle on `main`; return file:// url."""
+def build_harness_repo(
+    root: Path, *, name: str = "test-harness", agent_only: bool = True
+) -> str:
+    """Create a bare git repo with a harness bundle on `main`; return file:// url.
+
+    agent_only (default) ships just the agent template so the bundle installs
+    hermetically (the collection/graph templates need an embedder + SSP).
+    """
     work = root / "work"
     work.mkdir(parents=True, exist_ok=True)
     (work / "harness.yaml").write_text(
         f"apiVersion: primer/v1\nkind: Harness\nname: {name}\n", encoding="utf-8"
     )
+    (work / "overrides.schema.json").write_text(
+        '{"type": "object", '
+        '"properties": {"provider_id": {"type": "string"}, '
+        '"model_name": {"type": "string"}, '
+        '"description": {"type": "string"}, '
+        '"embedder_provider_id": {"type": "string"}, '
+        '"embedder_model": {"type": "string"}, '
+        '"search_provider_id": {"type": "string"}}, '
+        '"required": ["provider_id"]}\n',
+        encoding="utf-8",
+    )
     tdir = work / "templates"
     tdir.mkdir(exist_ok=True)
     (tdir / "assistant.yaml").write_text(_AGENT_TEMPLATE, encoding="utf-8")
-    (tdir / "kb.yaml").write_text(_COLLECTION_TEMPLATE, encoding="utf-8")
-    (tdir / "flow.yaml").write_text(_GRAPH_TEMPLATE, encoding="utf-8")
+    if not agent_only:
+        (tdir / "kb.yaml").write_text(_COLLECTION_TEMPLATE, encoding="utf-8")
+        (tdir / "flow.yaml").write_text(_GRAPH_TEMPLATE, encoding="utf-8")
     _git(work, "init", "-q", "-b", "main")
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "initial harness bundle")
