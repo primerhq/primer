@@ -370,12 +370,59 @@ async def convert_uploaded_file(
     }
 
 
+async def _reject_system_collection(
+    collection_id: str, request: Request, *, verb: str,
+) -> None:
+    """Raise BadRequestError if ``collection_id`` names a system collection.
+
+    System (internal) collections are owned and maintained entirely by
+    their internal subsystem (agents / graphs / tools / collections
+    catalogs). Operators must not hand-ingest documents into them; their
+    content is reconciled from the source entities via CDC. This guard
+    backs the UI which also hides the create button for system rows.
+    """
+    storage_provider = request.app.state.storage_provider
+    collection_storage = storage_provider.get_storage(Collection)
+    coll = await collection_storage.get(collection_id)
+    # A missing collection is left to referential-integrity handling
+    # elsewhere; we only block the system-collection case here.
+    if coll is not None and getattr(coll, "system", False):
+        raise BadRequestError(
+            f"Collection {collection_id!r} is system-managed; documents "
+            f"cannot be {verb} into it. Internal collections are "
+            f"reconciled automatically from their source entities."
+        )
+
+
+async def _document_pre_create(entity: Document, request: Request) -> None:
+    """on_pre_create hook: block ingestion into system collections."""
+    await _reject_system_collection(
+        entity.collection_id, request, verb="created",
+    )
+
+
+async def _document_pre_update(
+    entity: Document, existing: Document, request: Request
+) -> None:
+    """on_pre_update hook: block edits that target a system collection
+    (covers both a system source and a system destination)."""
+    await _reject_system_collection(
+        entity.collection_id, request, verb="updated",
+    )
+    if existing.collection_id != entity.collection_id:
+        await _reject_system_collection(
+            existing.collection_id, request, verb="updated",
+        )
+
+
 document_router = make_crud_router(
     model_cls=Document,
     storage_dep=get_document_storage,
     plural="documents",
     tag="documents",
     managed_by_field="harness_id",
+    on_pre_create=_document_pre_create,
+    on_pre_update=_document_pre_update,
 )
 
 

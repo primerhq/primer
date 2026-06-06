@@ -863,9 +863,15 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
         {collectionFilter && (
           <Btn size="sm" kind="ghost" icon="x" onClick={() => setCollectionFilter("")}>Clear</Btn>
         )}
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
           <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
-          <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>Ingest document</Btn>
+          {isSystemFilter ? (
+            <span className="muted text-sm" title="System collections are maintained automatically by their internal subsystem; documents cannot be ingested by hand.">
+              System-managed (read-only)
+            </span>
+          ) : (
+            <Btn size="sm" kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>Ingest document</Btn>
+          )}
         </div>
       </div>
 
@@ -1173,7 +1179,7 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
           style={{ width: "100%" }}
         >
           <option value="">-- pick a collection --</option>
-          {collections.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
+          {collections.filter((c) => !c.system).map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
         </select>
         {fieldErrors["body.collection_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.collection_id"]}</div>}
       </div>

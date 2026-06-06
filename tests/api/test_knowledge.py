@@ -78,6 +78,45 @@ class TestCollectionRouter:
         assert resp.status_code == 404
 
 
+class TestSystemCollectionGuard:
+    """Documents cannot be hand-ingested into system collections."""
+
+    @pytest.mark.asyncio
+    async def test_create_into_system_collection_rejected(self, client) -> None:
+        await client.post("/v1/ssp", json=_SSP_BODY)
+        sys_coll = _collection(id="_internal_test", system=True).model_dump(
+            mode="json"
+        )
+        # System collections are normally created by internal subsystems;
+        # create one directly through storage for the test by posting it.
+        created = await client.post("/v1/collections", json=sys_coll)
+        assert created.status_code == 201, created.text
+
+        resp = await client.post(
+            "/v1/documents",
+            json=_document(id="doc-x", collection_id="_internal_test").model_dump(
+                mode="json"
+            ),
+        )
+        assert resp.status_code == 400, resp.text
+        assert "system-managed" in resp.json().get("detail", "")
+
+    @pytest.mark.asyncio
+    async def test_create_into_user_collection_allowed(self, client) -> None:
+        await client.post("/v1/ssp", json=_SSP_BODY)
+        await client.post(
+            "/v1/collections",
+            json=_collection(id="kb-user").model_dump(mode="json"),
+        )
+        resp = await client.post(
+            "/v1/documents",
+            json=_document(id="doc-ok", collection_id="kb-user").model_dump(
+                mode="json"
+            ),
+        )
+        assert resp.status_code == 201, resp.text
+
+
 class TestDocumentRouter:
     @pytest.mark.asyncio
     async def test_round_trip(self, client) -> None:
