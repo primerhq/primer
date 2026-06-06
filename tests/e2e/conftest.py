@@ -70,3 +70,25 @@ def unique_suffix() -> str:
     """Short randomised suffix for entity names so concurrent tests in the
     same iteration cannot collide on unique constraints."""
     return uuid.uuid4().hex[:12]
+
+
+# ---------------------------------------------------------------------------
+# testconfig + support fixtures (Phase 0 of the SMK coverage plan).
+# ---------------------------------------------------------------------------
+
+from tests._support.testconfig import Caps, load_config  # noqa: E402
+from tests._support.mock_llm_fixtures import mock_llm  # noqa: E402,F401
+from tests._support.seeding import (  # noqa: E402,F401
+    local_workspace,
+    scripted_provider,
+)
+
+
+@pytest.fixture(scope="session")
+def testcfg() -> dict:
+    return load_config()
+
+
+@pytest.fixture(scope="session")
+def caps(testcfg: dict) -> Caps:
+    return Caps(testcfg)
