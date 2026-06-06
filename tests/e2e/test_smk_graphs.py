@@ -72,7 +72,7 @@ async def test_linear_run_and_turn_logs(authed_client, mock_llm, unique_suffix, 
     assert tl.status_code == 200, tl.text
 
 
-@smk("SMK-GRF-03", "SMK-GRF-05")
+@smk("SMK-GRF-03", "SMK-GRF-05", "SMK-X-06", status="partial")
 async def test_producer_judge_feedback_loop(authed_client, mock_llm, unique_suffix, tmp_path):
     registry, base_url = mock_llm
     prod_sc = f"scripted:prod-{unique_suffix}"

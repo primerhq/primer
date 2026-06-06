@@ -32,6 +32,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
+from tests._support.smk import smk
 from primer.agent.compaction_mixin import CompactionResult
 from primer.api.app import create_test_app
 from primer.model.agent import Agent, AgentModel
@@ -298,6 +299,7 @@ class TestChatCompactJourney:
         assert markers[0]["payload"]["summary"] == "FIRST PASS", markers
         assert markers[1]["payload"]["summary"] == "SECOND PASS", markers
 
+    @smk("SMK-X-12", status="partial")
     async def test_auto_compaction_threshold_trips_on_seeded_history(
         self, app: FastAPI, fake_llm: _CompactJourneyFakeLLM,
     ) -> None:

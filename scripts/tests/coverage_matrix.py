@@ -6,14 +6,13 @@ tree. Marker present -> full|partial; absent -> none.
 """
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
 
 _ID_RE = re.compile(r"^#{2,3}\s+(SMK-[A-Z]+-\d+):", re.MULTILINE)
-_CALL_RE = re.compile(r"smk\(([^)]*)\)")
-_ID_IN_ARGS = re.compile(r"\"(SMK-[A-Z]+-\d+)\"")
-_STATUS_IN_ARGS = re.compile(r"status\s*=\s*\"(\w+)\"")
+_SMK_ID = re.compile(r"^SMK-[A-Z]+-\d+$")
 
 
 def scan_smk_ids(docs_dir: Path) -> list[str]:
@@ -23,17 +22,47 @@ def scan_smk_ids(docs_dir: Path) -> list[str]:
     return sorted(set(ids))
 
 
+def _marker_from_call(node: ast.Call) -> tuple[list[str], str]:
+    """Pull SMK ids + status from a ``smk(...)`` call node."""
+    ids = [
+        a.value
+        for a in node.args
+        if isinstance(a, ast.Constant)
+        and isinstance(a.value, str)
+        and _SMK_ID.match(a.value)
+    ]
+    status = "full"
+    for kw in node.keywords:
+        if kw.arg == "status" and isinstance(kw.value, ast.Constant):
+            status = str(kw.value.value)
+    return ids, status
+
+
 def scan_markers(tests_dir: Path) -> dict[str, str]:
+    """Find ``@smk("SMK-...", status=...)`` markers across the test tree.
+
+    Uses an AST walk rather than a text regex so that marker-shaped *string
+    literals* (e.g. the example markers inside this script's own unit test)
+    are NOT counted -- only real ``smk(...)`` call nodes are.
+    """
     found: dict[str, str] = {}
     for py in sorted(Path(tests_dir).rglob("test_*.py")):
-        text = py.read_text(encoding="utf-8")
-        for m in _CALL_RE.finditer(text):
-            args = m.group(1)
-            ids = _ID_IN_ARGS.findall(args)
-            if not ids:
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
                 continue
-            status_m = _STATUS_IN_ARGS.search(args)
-            status = status_m.group(1) if status_m else "full"
+            fn = node.func
+            name = (
+                fn.id if isinstance(fn, ast.Name)
+                else fn.attr if isinstance(fn, ast.Attribute)
+                else None
+            )
+            if name != "smk":
+                continue
+            ids, status = _marker_from_call(node)
             for raw in ids:
                 # full wins over partial if any test fully covers the id
                 if found.get(raw) != "full":
