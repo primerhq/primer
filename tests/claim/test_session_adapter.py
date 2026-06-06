@@ -26,8 +26,12 @@ def test_session_eligibility_sql():
     sql = a.eligibility_sql()
     # parked_status lives in the JSONB ``data`` column; a bare ``e.parked_status``
     # reference raises UndefinedColumnError on Postgres and breaks the claim loop.
-    assert sql == "e.data->>'parked_status' IS NULL"
+    assert "e.data->>'parked_status'" in sql
     assert "e.parked_status" not in sql
+    # Admits unparked (IS NULL) and resumable rows; excludes plain 'parked'.
+    assert "IS NULL" in sql
+    assert "'resumable'" in sql
+    assert "= 'parked'" not in sql
 
 
 # ---------------------------------------------------------------------------

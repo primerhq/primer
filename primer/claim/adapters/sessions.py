@@ -28,7 +28,20 @@ class SessionClaimAdapter(ClaimAdapter):
         # a top-level column. Use the JSONB accessor (matching the chat/harness/
         # trigger adapters); ``e.parked_status`` raises UndefinedColumnError on
         # Postgres and breaks the claim loop so no session ever runs.
-        return "e.data->>'parked_status' IS NULL"
+        #
+        # Admit two states:
+        #   * parked_status IS NULL  -> a normal, never-parked session.
+        #   * parked_status='resumable' -> a parked session the resume event
+        #     has flipped; its lease was re-armed by engine.mark_resumable.
+        # A 'parked' row is excluded so a parked session is not claimable on
+        # Postgres. The in-memory engine's claim_due ignores this filter and
+        # gates only on lease presence, so its no-loop guarantee comes from the
+        # park branch dropping the lease (primer/session/dispatch.py), not from
+        # this SQL. This filter is the Postgres-lane resume gate.
+        return (
+            "e.data->>'parked_status' IS NULL "
+            "OR e.data->>'parked_status' = 'resumable'"
+        )
 
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
         if self._storage is None:
