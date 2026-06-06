@@ -232,3 +232,6 @@ __marimo__/
 tests/.e2e/
 tests/e2e/.state/
 tests/ui_e2e/.state/
+
+# User-filled test configuration (the .example template is versioned).
+tests/testconfig.yaml

@@ -1,0 +1,152 @@
+# Primer e2e test configuration (template).
+#
+# Copy this file to tests/testconfig.yaml and fill in the values for the
+# downstream dependencies you have available. tests/testconfig.yaml is
+# gitignored; this .example file is the documented schema.
+#
+# Secrets: do NOT inline real secrets here. Use ${ENV_VAR} references and
+# export the variable in your shell. The loader interpolates ${ENV_VAR} at
+# read time. Any block you leave out (or whose `enabled` is false) causes the
+# tests that need it to be SKIPPED with a clear reason, never to fail.
+#
+# How it is consumed:
+#   - scripts/e2e/bringup.sh reads the `server` block to render the live
+#     server's AppConfig (storage + vector backend) and to seed providers.
+#   - tests/e2e/_testconfig.py loads this file and exposes a `testcfg`
+#     fixture plus per-dependency capability markers (requires("postgres"),
+#     requires("slack"), requires("mcp_stdio"), ...).
+
+# Which test lanes to run. A lane runs only if enabled AND its deps resolve.
+lanes:
+  hermetic: true        # tests with no external deps (always safe)
+  knowledge: false      # embedder + vector store required
+  web_search: false     # a web search backend required
+  channels: false       # Slack/Telegram/Discord round trips
+  mcp: false            # external MCP servers (stdio and/or http)
+  harness: false        # git remote for inbound/outbound harness
+  distributed: false    # Postgres + multiple workers (lease/claim/DST)
+  ui: false             # Playwright console journeys (tests/ui_e2e)
+
+# The live server under test.
+server:
+  # base_url overrides host/port if set; otherwise bringup uses port below.
+  base_url: ""                 # e.g. http://127.0.0.1:8765 (blank = derive)
+  port: 8765
+  storage:
+    backend: sqlite            # sqlite | postgres
+    # Used when backend: postgres. Also used by the distributed lane.
+    postgres_dsn: "${PRIMER_TEST_PG_DSN}"   # postgresql://primer:primer@127.0.0.1:5432/primer_e2e
+  vector_store:
+    backend: lance             # lance | pgvector | pgvectorscale
+    # Used when backend is a pgvector flavour (can reuse postgres_dsn).
+    postgres_dsn: "${PRIMER_TEST_PG_DSN}"
+
+# LLM behavior selector.
+#   mode: scripted -> deterministic in-repo mock LLM (no model server needed;
+#                     tests assert exact behavior). This is the default and is
+#                     always available.
+#   mode: real     -> use the `real` provider below (a real model endpoint).
+#                     Determinism tests skip; a curated smoke subset runs with
+#                     loosened invariants.
+llm:
+  mode: scripted
+  real:
+    provider_type: openchat      # the adapter type your server exposes
+    base_url: "http://127.0.0.1:8080/v1"
+    api_key: "${PRIMER_TEST_LLM_KEY}"
+    model: "qwen2.5-coder-7b-instruct"   # a chat model the endpoint serves
+    # A small/fast model for llm-judged approval policies (may equal model).
+    judge_model: "qwen2.5-coder-7b-instruct"
+
+# Embedding provider for the knowledge lane.
+embedder:
+  enabled: false
+  provider_type: openai
+  base_url: "http://127.0.0.1:8080/v1"
+  api_key: "${PRIMER_TEST_EMBED_KEY}"
+  model: "text-embedding-nomic-embed-text-v1.5"
+
+# Cross-encoder (reranker) for the rerank+MMR knowledge test.
+cross_encoder:
+  enabled: false
+  provider_type: openai
+  base_url: "http://127.0.0.1:8080/v1"
+  api_key: "${PRIMER_TEST_RERANK_KEY}"
+  model: "bge-reranker-v2-m3"
+
+# Web search backends. Enable any subset; duckduckgo needs no key.
+web_search:
+  duckduckgo:
+    enabled: false
+  tavily:
+    enabled: false
+    api_key: "${TAVILY_API_KEY}"
+  exa:
+    enabled: false
+    api_key: "${EXA_API_KEY}"
+  firecrawl:
+    enabled: false
+    api_key: "${FIRECRAWL_API_KEY}"
+
+# Chat platforms for the channels lane (ask_user / approval round trips).
+channels:
+  slack:
+    enabled: false
+    app_token: "${SLACK_APP_TOKEN}"     # xapp-...
+    bot_token: "${SLACK_BOT_TOKEN}"     # xoxb-...
+    channel_id: "${SLACK_CHANNEL_ID}"   # a channel the bot is in
+  telegram:
+    enabled: false
+    bot_token: "${TELEGRAM_BOT_TOKEN}"  # 123456:ABC...
+    chat_id: "${TELEGRAM_CHAT_ID}"
+  discord:
+    enabled: false
+    bot_token: "${DISCORD_BOT_TOKEN}"
+    channel_id: "${DISCORD_CHANNEL_ID}"
+
+# External MCP servers mounted as toolsets (Primer as MCP client).
+# If left disabled, the plan ships a tiny in-repo reference MCP server the
+# tests can launch themselves; set these to point at your own instead.
+mcp:
+  stdio:
+    enabled: false
+    # Command launched as a subprocess MCP server.
+    command: ["npx", "-y", "@modelcontextprotocol/server-everything"]
+  http:
+    enabled: false
+    url: "http://127.0.0.1:3001/mcp"    # streamable-HTTP MCP endpoint
+  # For the MCP-server-endpoint tests (Primer as server), an external client.
+  client_bearer_token: "${PRIMER_MCP_CLIENT_TOKEN}"
+
+# Git remotes for the harness lane. If left disabled, the plan uses a local
+# bare repo created in a tmp dir with a sample bundle (no network needed).
+harness:
+  inbound:
+    enabled: false
+    git_url: "${HARNESS_INBOUND_URL}"   # repo hosting harness.yaml + templates/
+    ref: "main"
+    git_token: "${HARNESS_GIT_TOKEN}"   # for private repos
+  outbound:
+    enabled: false
+    git_url: "${HARNESS_OUTBOUND_URL}"  # writable remote
+    git_token: "${HARNESS_GIT_TOKEN}"
+
+# Workspace backends beyond local.
+workspace_backends:
+  container:
+    enabled: false                      # needs a reachable Docker/Podman daemon
+  kubernetes:
+    enabled: false
+    kubeconfig: "${KUBECONFIG}"
+
+# Distributed lane sizing (reuses tests/distributed TestCluster).
+distributed:
+  api_processes: 2
+  worker_processes: 2
+  # Postgres comes from server.storage.postgres_dsn or a testcontainers
+  # Postgres if that is blank and Docker is available.
+
+# Observability assertions (optional collector/scraper).
+observability:
+  otel_collector_endpoint: ""           # blank = assert console exporter only
+  scrape_metrics: true                  # assert /metrics text exposition
