@@ -18,6 +18,7 @@ the "find collection by description" use case. The per-collection
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import Body, Depends, File, Path, Query, Request, UploadFile
@@ -46,6 +47,9 @@ from primer.model.storage import (
     OffsetPageResponse,
 )
 from primer.storage.q import Q
+
+
+logger = logging.getLogger(__name__)
 
 
 # Register Document in the CDC kinds registry so the harness service can
@@ -441,6 +445,75 @@ async def _document_pre_update(
         )
 
 
+async def _index_document_hook(document_id: str, request: Request) -> None:
+    """on_create / on_update hook: chunk, embed, and index the document.
+
+    Best-effort: an embedder/store failure is logged but does not fail
+    the CRUD write, so the Document row still persists when the embedding
+    backend is misconfigured or down. System collections are skipped by
+    the indexer itself.
+    """
+    from primer.knowledge.indexing import index_document
+
+    storage_provider = request.app.state.storage_provider
+    doc = await storage_provider.get_storage(Document).get(document_id)
+    if doc is None:
+        return
+    collection = await storage_provider.get_storage(Collection).get(
+        doc.collection_id
+    )
+    if collection is None:
+        return
+    try:
+        from primer.api.deps import (
+            get_provider_registry,
+            get_semantic_search_registry,
+        )
+
+        provider_registry = get_provider_registry(request)
+        ssr = get_semantic_search_registry(request)
+        await index_document(
+            document=doc,
+            collection=collection,
+            provider_registry=provider_registry,
+            semantic_search_registry=ssr,
+        )
+    except Exception:  # noqa: BLE001 - best-effort indexing
+        logger.exception(
+            "document %s: indexing failed; row persisted but not searchable",
+            document_id,
+        )
+
+
+async def _unindex_document_hook(
+    stored: Document, request: Request
+) -> None:
+    """on_pre_delete hook: drop the document's indexed chunks before the
+    row is removed. Best-effort."""
+    from primer.knowledge.indexing import remove_document_index
+
+    storage_provider = request.app.state.storage_provider
+    collection = await storage_provider.get_storage(Collection).get(
+        stored.collection_id
+    )
+    if collection is None:
+        return
+    try:
+        from primer.api.deps import get_semantic_search_registry
+
+        ssr = get_semantic_search_registry(request)
+        await remove_document_index(
+            document_id=stored.id,
+            collection=collection,
+            semantic_search_registry=ssr,
+        )
+    except Exception:  # noqa: BLE001 - best-effort cleanup
+        logger.exception(
+            "document %s: unindexing failed; chunks may linger",
+            stored.id,
+        )
+
+
 document_router = make_crud_router(
     model_cls=Document,
     storage_dep=get_document_storage,
@@ -449,6 +522,9 @@ document_router = make_crud_router(
     managed_by_field="harness_id",
     on_pre_create=_document_pre_create,
     on_pre_update=_document_pre_update,
+    on_create=_index_document_hook,
+    on_update=_index_document_hook,
+    on_pre_delete=_unindex_document_hook,
 )
 
 
