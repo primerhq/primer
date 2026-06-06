@@ -35,14 +35,22 @@ def _agent_body(entity_id: str, *, provider_id: str, tools: list[str]) -> dict:
 
 
 def _graph_body(entity_id: str, *, agent_id: str) -> dict:
+    # A valid graph needs exactly one Begin node and at least one End node
+    # (schema invariants); the agent node carries the (possibly-missing)
+    # reference these status tests exercise.
     return {
         "id": entity_id,
         "description": "test graph",
         "nodes": [
+            {"kind": "begin", "id": "start"},
             {"kind": "agent", "id": "n1", "agent_id": agent_id},
+            {"kind": "end", "id": "done", "output_template": "{{ nodes.n1.text }}"},
         ],
-        "edges": [],
-        "entry_node_id": "n1",
+        "edges": [
+            {"kind": "static", "from_node": "start", "to_node": "n1"},
+            {"kind": "static", "from_node": "n1", "to_node": "done"},
+        ],
+        "entry_node_id": "start",
     }
 
 
