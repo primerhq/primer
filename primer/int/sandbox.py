@@ -130,6 +130,18 @@ class Sandbox(ABC):
         await self.write_file(path, existing + line + b"\n")
         return offset
 
+    async def make_dir(self, path: str) -> None:
+        """Create the directory at ``path`` (and parents), idempotently.
+
+        Default implementation shells out to ``mkdir -p`` via :meth:`exec`,
+        which every runtime supports. Backends with a native directory op
+        may override. Raises :class:`OSError` on non-zero exit so the
+        workspace layer can map it to a clean 4xx.
+        """
+        result = await self.exec(["mkdir", "-p", path])
+        if result.exit_code != 0:
+            raise OSError(result.stderr.strip() or f"mkdir -p {path!r} failed")
+
     @abstractmethod
     async def list_dir(self, path: str) -> list[FileStat]: ...
 

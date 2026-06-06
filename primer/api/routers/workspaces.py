@@ -788,19 +788,38 @@ async def download_file(
     )
 
 
-@files_router.delete(
-    "/workspaces/{workspace_id}/files",
+@files_router.post(
+    "/workspaces/{workspace_id}/files/dir",
     status_code=204,
-    summary="Delete a file or empty directory",
+    summary="Create a directory (and any missing parents)",
     responses=common_responses(400, 404, 500),
 )
-async def delete_file(
+async def make_dir(
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> None:
     ws = await registry.get_workspace(workspace_id)
-    await ws.delete_file(path)
+    await ws.make_dir(path)
+
+
+@files_router.delete(
+    "/workspaces/{workspace_id}/files",
+    status_code=204,
+    summary="Delete a file or directory",
+    responses=common_responses(400, 404, 500),
+)
+async def delete_file(
+    workspace_id: str = Path(...),
+    path: str = Query(..., description="Workspace-relative path"),
+    recursive: bool = Query(
+        default=False,
+        description="Delete a non-empty directory and all its contents",
+    ),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+) -> None:
+    ws = await registry.get_workspace(workspace_id)
+    await ws.delete_file(path, recursive=recursive)
 
 
 @files_router.put(

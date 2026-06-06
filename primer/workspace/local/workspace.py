@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import shutil
 import tarfile
 import time
 import uuid
@@ -316,7 +317,21 @@ class LocalWorkspace(Workspace):
                 f"cannot write {path!r}: {exc.strerror or exc}"
             ) from exc
 
-    async def delete_file(self, path: str) -> None:
+    async def make_dir(self, path: str) -> None:
+        target = self._resolve_path(path)
+        # Refuse creation inside the reserved state / tmp trees so the API
+        # can't shadow the backend's bookkeeping.
+        self._refuse_reserved(target, path)
+        if await asyncio.to_thread(target.exists):
+            raise BadRequestError(f"{path!r} already exists")
+        try:
+            await asyncio.to_thread(target.mkdir, parents=True, exist_ok=False)
+        except OSError as exc:
+            raise BadRequestError(
+                f"cannot create directory {path!r}: {exc.strerror or exc}"
+            ) from exc
+
+    async def delete_file(self, path: str, *, recursive: bool = False) -> None:
         target = self._resolve_path(path)
         if not await asyncio.to_thread(target.exists):
             raise NotFoundError(f"{path!r} not found")
@@ -324,11 +339,15 @@ class LocalWorkspace(Workspace):
             raise BadRequestError("refusing to delete workspace root")
         self._refuse_reserved(target, path)
         if await asyncio.to_thread(target.is_dir):
+            if recursive:
+                await asyncio.to_thread(shutil.rmtree, target)
+                return
             try:
                 await asyncio.to_thread(target.rmdir)  # rmdir => empty-only
             except OSError as exc:
                 raise BadRequestError(
-                    f"directory {path!r} is not empty"
+                    f"directory {path!r} is not empty; pass recursive=true "
+                    f"to delete it and its contents"
                 ) from exc
         else:
             await asyncio.to_thread(target.unlink)

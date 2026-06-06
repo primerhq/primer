@@ -589,7 +589,13 @@ function WS_FilesTab({ wid, pushToast }) {
   const [selected, setSelected] = React.useState(null);
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState("");
-  const [confirmDelete, setConfirmDelete] = React.useState(false);
+  // Tree-wide delete confirm: { path, isDir } | null. A directory delete
+  // is recursive (removes its contents), so the modal warns accordingly.
+  const [pendingDelete, setPendingDelete] = React.useState(null);
+  // Create modal: "file" | "dir" | null, plus its draft fields.
+  const [createMode, setCreateMode] = React.useState(null);
+  const [createPath, setCreatePath] = React.useState("");
+  const [createContent, setCreateContent] = React.useState("");
   // "raw" | "rendered". Only meaningful for files where the renderer
   // can do something useful (today: .md). For everything else the
   // toggle isn't shown and this stays at "raw".
@@ -661,29 +667,100 @@ function WS_FilesTab({ wid, pushToast }) {
     }
   );
 
-  const deleteFile = useMutation(
-    () => apiFetch(
+  // Delete any tree entry (file or directory). Directory deletes pass
+  // recursive=true so a populated folder is removed with its contents.
+  const deleteEntry = useMutation(
+    ({ path, recursive }) => apiFetch(
       "DELETE",
-      `/workspaces/${encodeURIComponent(wid)}/files?path=${encodeURIComponent(selected)}`
+      `/workspaces/${encodeURIComponent(wid)}/files?path=${encodeURIComponent(path)}` +
+        (recursive ? "&recursive=true" : "")
     ),
     {
       invalidates: [`workspace-files:${wid}`],
       onSuccess: () => {
-        const deleted = selected;
-        setConfirmDelete(false);
-        setSelected(null);
-        setEditing(false);
+        const removed = pendingDelete;
+        setPendingDelete(null);
+        // Clear the editor if the deleted path was open (a file, or a
+        // directory that contained the open file).
+        if (selected && removed && (selected === removed.path || selected.startsWith(removed.path + "/"))) {
+          setSelected(null);
+          setEditing(false);
+        }
         if (typeof pushToast === "function") {
-          pushToast({ kind: "warning", title: "File deleted", detail: deleted });
+          pushToast({
+            kind: "warning",
+            title: removed?.isDir ? "Folder deleted" : "File deleted",
+            detail: removed?.path,
+          });
         }
       },
       onError: _wsToastErr(pushToast, "Delete failed"),
     }
   );
 
+  const createFileMut = useMutation(
+    ({ path, content }) => apiFetch(
+      "PUT",
+      `/workspaces/${encodeURIComponent(wid)}/files?path=${encodeURIComponent(path)}`,
+      { content, encoding: "text" }
+    ),
+    {
+      invalidates: [`workspace-files:${wid}`],
+      onSuccess: () => {
+        const created = createPath;
+        _wsExpandParents(setOpenDirs, created);
+        setCreateMode(null);
+        setSelected(created);
+        setEditing(false);
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "success", title: "File created", detail: created });
+        }
+      },
+      onError: _wsToastErr(pushToast, "Create failed"),
+    }
+  );
+
+  const makeDirMut = useMutation(
+    ({ path }) => apiFetch(
+      "POST",
+      `/workspaces/${encodeURIComponent(wid)}/files/dir?path=${encodeURIComponent(path)}`
+    ),
+    {
+      invalidates: [`workspace-files:${wid}`],
+      onSuccess: () => {
+        const created = createPath;
+        _wsExpandParents(setOpenDirs, created);
+        setOpenDirs((prev) => new Set(prev).add(created));
+        setCreateMode(null);
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "success", title: "Folder created", detail: created });
+        }
+      },
+      onError: _wsToastErr(pushToast, "Create failed"),
+    }
+  );
+
   const selectFile = (path) => {
     setSelected(path);
     setEditing(false);
+  };
+
+  const requestDelete = (path, isDir) => setPendingDelete({ path, isDir });
+
+  const openCreate = (mode) => {
+    setCreateMode(mode);
+    setCreatePath("");
+    setCreateContent("");
+  };
+
+  const onSubmitCreate = () => {
+    const path = createPath.trim().replace(/^\/+/, "");
+    if (!path) return;
+    if (createMode === "dir") {
+      makeDirMut.mutate({ path });
+    } else {
+      createFileMut.mutate({ path, content: createContent });
+    }
   };
 
   const onSave = () => {
@@ -712,6 +789,8 @@ function WS_FilesTab({ wid, pushToast }) {
         <div style={{ display: "flex", alignItems: "center", padding: "0 12px 8px", gap: 6 }}>
           <span className="mono muted text-sm">/ root</span>
           <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+            <button className="icon-btn" style={{ width: 22, height: 22 }} title="New file" data-testid="ws-new-file" onClick={() => openCreate("file")}><Icon name="doc" size={11} /></button>
+            <button className="icon-btn" style={{ width: 22, height: 22 }} title="New folder" data-testid="ws-new-folder" onClick={() => openCreate("dir")}><Icon name="box" size={11} /></button>
             <button className="icon-btn" style={{ width: 22, height: 22 }} title="Refresh" onClick={tree.refetch}><Icon name="refresh" size={10} /></button>
           </div>
         </div>
@@ -728,6 +807,7 @@ function WS_FilesTab({ wid, pushToast }) {
             toggleDir={toggleDir}
             selected={selected}
             selectFile={selectFile}
+            onDelete={requestDelete}
             rootEntries={tree.data?.items ?? []}
           />
         )}
@@ -774,8 +854,8 @@ function WS_FilesTab({ wid, pushToast }) {
                       size="sm"
                       kind="danger"
                       icon="trash"
-                      disabled={deleteFile.loading}
-                      onClick={() => setConfirmDelete(true)}
+                      disabled={deleteEntry.loading}
+                      onClick={() => requestDelete(selected, false)}
                     >
                       Delete
                     </Btn>
@@ -785,19 +865,80 @@ function WS_FilesTab({ wid, pushToast }) {
             )}
           </div>
         </div>
-        {confirmDelete && (
+        {pendingDelete && (
           <Modal
-            title={`Delete ${selected}?`}
+            title={`Delete ${pendingDelete.path}?`}
             danger
-            onClose={() => setConfirmDelete(false)}
+            onClose={() => setPendingDelete(null)}
             footer={
               <>
-                <Btn kind="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Btn>
-                <Btn kind="danger" icon="trash" disabled={deleteFile.loading} onClick={() => deleteFile.mutate()}>Delete file</Btn>
+                <Btn kind="ghost" onClick={() => setPendingDelete(null)}>Cancel</Btn>
+                <Btn
+                  kind="danger"
+                  icon="trash"
+                  disabled={deleteEntry.loading}
+                  onClick={() => deleteEntry.mutate({ path: pendingDelete.path, recursive: pendingDelete.isDir })}
+                >
+                  {pendingDelete.isDir ? "Delete folder" : "Delete file"}
+                </Btn>
               </>
             }
           >
-            <p>This removes the file from the workspace. The operation cannot be undone from the console.</p>
+            <p>
+              {pendingDelete.isDir
+                ? "This removes the folder and everything inside it from the workspace. The operation cannot be undone from the console."
+                : "This removes the file from the workspace. The operation cannot be undone from the console."}
+            </p>
+          </Modal>
+        )}
+        {createMode && (
+          <Modal
+            title={createMode === "dir" ? "New folder" : "New file"}
+            onClose={() => setCreateMode(null)}
+            footer={
+              <>
+                <Btn kind="ghost" onClick={() => setCreateMode(null)}>Cancel</Btn>
+                <Btn
+                  kind="primary"
+                  icon="check"
+                  disabled={!createPath.trim() || createFileMut.loading || makeDirMut.loading}
+                  onClick={onSubmitCreate}
+                >
+                  {createMode === "dir" ? "Create folder" : "Create file"}
+                </Btn>
+              </>
+            }
+          >
+            <label className="text-sm muted" style={{ display: "block", marginBottom: 4 }}>
+              {createMode === "dir" ? "Folder path (relative to workspace root)" : "File path (relative to workspace root)"}
+            </label>
+            <input
+              className="input mono"
+              autoFocus
+              data-testid="ws-create-path"
+              placeholder={createMode === "dir" ? "e.g. src/utils" : "e.g. src/main.py"}
+              value={createPath}
+              onChange={(e) => setCreatePath(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && createMode === "dir") onSubmitCreate(); }}
+              style={{ width: "100%" }}
+            />
+            {createMode === "file" && (
+              <>
+                <label className="text-sm muted" style={{ display: "block", margin: "12px 0 4px" }}>
+                  Initial contents (optional)
+                </label>
+                <textarea
+                  className="textarea mono"
+                  data-testid="ws-create-content"
+                  value={createContent}
+                  onChange={(e) => setCreateContent(e.target.value)}
+                  style={{ width: "100%", minHeight: 160, fontSize: 12, lineHeight: 1.55 }}
+                />
+              </>
+            )}
+            <p className="text-sm muted" style={{ marginTop: 10 }}>
+              Parent folders are created automatically. Paths under <span className="mono">.state</span> / <span className="mono">.tmp</span> are reserved.
+            </p>
           </Modal>
         )}
         <div style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}>
@@ -844,7 +985,7 @@ function WS_FilesTab({ wid, pushToast }) {
   );
 }
 
-function WS_DirNode({ wid, path, depth, openDirs, toggleDir, selected, selectFile, rootEntries }) {
+function WS_DirNode({ wid, path, depth, openDirs, toggleDir, selected, selectFile, onDelete, rootEntries }) {
   // The root node receives its entries pre-fetched (so the tree is one round-
   // trip when closed). Sub-directories lazy-fetch when they're opened.
   const { useResource, apiFetch } = window.primerApi;
@@ -890,6 +1031,7 @@ function WS_DirNode({ wid, path, depth, openDirs, toggleDir, selected, selectFil
           depth={depth - 1}
           system={path.startsWith(".state") || path.startsWith(".tmp")}
           onClick={() => toggleDir(path)}
+          onDelete={onDelete}
         />
       )}
       {(isRoot || open) && sorted.map((e) => {
@@ -905,6 +1047,7 @@ function WS_DirNode({ wid, path, depth, openDirs, toggleDir, selected, selectFil
               toggleDir={toggleDir}
               selected={selected}
               selectFile={selectFile}
+              onDelete={onDelete}
               rootEntries={null}
             />
           );
@@ -919,6 +1062,7 @@ function WS_DirNode({ wid, path, depth, openDirs, toggleDir, selected, selectFil
             onClick={() => selectFile(e.path)}
             size={e.size_bytes}
             system={(e.path || "").startsWith(".state") || (e.path || "").startsWith(".tmp")}
+            onDelete={onDelete}
           />
         );
       })}
@@ -926,7 +1070,10 @@ function WS_DirNode({ wid, path, depth, openDirs, toggleDir, selected, selectFil
   );
 }
 
-function WS_FileRow({ name, depth, isDir, open, isSelected, system, onClick, size }) {
+function WS_FileRow({ path, name, depth, isDir, open, isSelected, system, onClick, size, onDelete }) {
+  const [hover, setHover] = React.useState(false);
+  // Reserved/backend-managed entries are not deletable from the console.
+  const canDelete = !system && typeof onDelete === "function";
   return (
     <div
       onClick={onClick}
@@ -942,8 +1089,8 @@ function WS_FileRow({ name, depth, isDir, open, isSelected, system, onClick, siz
         fontSize: 12.5,
       }}
       title={system ? "backend-managed; do not edit directly" : undefined}
-      onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
-      onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
+      onMouseEnter={(e) => { setHover(true); if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
+      onMouseLeave={(e) => { setHover(false); if (!isSelected) e.currentTarget.style.background = "transparent"; }}
     >
       {isDir ? (
         <>
@@ -957,13 +1104,40 @@ function WS_FileRow({ name, depth, isDir, open, isSelected, system, onClick, siz
         </>
       )}
       <span className="mono" style={{ fontSize: 12 }}>{name}</span>
-      {!isDir && size != null && (
+      {!isDir && size != null && !(hover && canDelete) && (
         <span className="muted mono text-sm" style={{ marginLeft: "auto", fontSize: 10.5 }}>
           {size === 0 ? "0" : size < 1024 ? `${size}B` : `${(size / 1024).toFixed(1)}K`}
         </span>
       )}
+      {canDelete && hover && (
+        <button
+          className="icon-btn"
+          style={{ marginLeft: "auto", width: 18, height: 18 }}
+          title={isDir ? "Delete folder" : "Delete file"}
+          data-testid={`ws-row-delete:${path}`}
+          onClick={(e) => { e.stopPropagation(); onDelete(path, !!isDir); }}
+        >
+          <Icon name="trash" size={10} />
+        </button>
+      )}
     </div>
   );
+}
+
+// Expand every ancestor directory of `path` in the tree so a freshly
+// created file/folder is revealed without the operator hand-expanding.
+function _wsExpandParents(setOpenDirs, path) {
+  const parts = (path || "").split("/").filter(Boolean);
+  const ancestors = [];
+  for (let i = 1; i < parts.length; i++) {
+    ancestors.push(parts.slice(0, i).join("/"));
+  }
+  if (!ancestors.length) return;
+  setOpenDirs((prev) => {
+    const next = new Set(prev);
+    ancestors.forEach((a) => next.add(a));
+    return next;
+  });
 }
 
 function _wsGuessLang(path) {

@@ -300,12 +300,33 @@ class SandboxWorkspace(Workspace):
             )
         await self._sandbox.write_file(target, content)
 
-    async def delete_file(self, path: str) -> None:
+    async def make_dir(self, path: str) -> None:
+        self._refuse_reserved(path)
+        target = self._resolve_path(path)
+        if await self._sandbox.stat(target) is not None:
+            raise BadRequestError(f"{path!r} already exists")
+        try:
+            await self._sandbox.make_dir(target)
+        except OSError as exc:
+            raise BadRequestError(
+                f"cannot create directory {path!r}: {exc}"
+            ) from exc
+
+    async def delete_file(self, path: str, *, recursive: bool = False) -> None:
         self._refuse_reserved(path)
         target = self._resolve_path(path)
         info = await self._sandbox.stat(target)
         if info is None:
             raise NotFoundError(f"{path!r} not found")
+        # The sandbox delete is recursive; guard non-empty directories
+        # behind the recursive flag to match the local backend's contract.
+        if info.kind == "dir" and not recursive:
+            children = await self._sandbox.list_dir(target)
+            if children:
+                raise BadRequestError(
+                    f"directory {path!r} is not empty; pass recursive=true "
+                    f"to delete it and its contents"
+                )
         await self._sandbox.delete(target)
 
     async def file_info(self, path: str) -> FileEntry:

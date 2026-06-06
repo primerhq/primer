@@ -189,7 +189,10 @@ class _LiveWorkspace:
     async def write_file(self, path, content):
         self._files[path] = content
 
-    async def delete_file(self, path):
+    async def make_dir(self, path):
+        self._files.setdefault(path + "/", b"")
+
+    async def delete_file(self, path, *, recursive=False):
         if path not in self._files:
             raise NotFoundError(f"{path!r} not found")
         del self._files[path]

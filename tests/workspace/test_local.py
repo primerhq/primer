@@ -499,6 +499,55 @@ class TestWorkspaceFiles:
         with pytest.raises(BadRequestError, match="not a file"):
             await ws.read_file("subdir")
 
+    async def test_make_dir(self, provider: LocalWorkspaceBackend) -> None:
+        ws = await provider.create(_template())
+        await ws.make_dir("src/nested")
+        info = await ws.file_info("src/nested")
+        assert info.kind == "dir"
+
+    async def test_make_dir_conflict(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.make_dir("src")
+        with pytest.raises(BadRequestError, match="already exists"):
+            await ws.make_dir("src")
+
+    async def test_make_dir_rejects_reserved(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        with pytest.raises(BadRequestError):
+            await ws.make_dir(".state/sneaky")
+
+    async def test_delete_empty_dir(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.make_dir("empty")
+        await ws.delete_file("empty")
+        with pytest.raises(NotFoundError):
+            await ws.file_info("empty")
+
+    async def test_delete_nonempty_dir_refused(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.make_dir("d")
+        await ws.write_file("d/a.txt", b"x")
+        with pytest.raises(BadRequestError, match="not empty"):
+            await ws.delete_file("d")
+
+    async def test_delete_dir_recursive(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.make_dir("d")
+        await ws.write_file("d/a.txt", b"x")
+        await ws.delete_file("d", recursive=True)
+        with pytest.raises(NotFoundError):
+            await ws.file_info("d")
+
 
 # ===========================================================================
 # LocalWorkspace — download_archive

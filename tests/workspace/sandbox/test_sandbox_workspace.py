@@ -95,6 +95,53 @@ async def test_list_files_recursive(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_make_dir_then_listed(tmp_path: Path) -> None:
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-1", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    await ws.make_dir("src")
+    info = await ws.file_info("src")
+    assert info.kind == "dir"
+
+
+@pytest.mark.asyncio
+async def test_make_dir_conflict(tmp_path: Path) -> None:
+    from primer.model.except_ import BadRequestError
+
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-1", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    await ws.make_dir("src")
+    with pytest.raises(BadRequestError):
+        await ws.make_dir("src")
+
+
+@pytest.mark.asyncio
+async def test_delete_dir_recursive_vs_refused(tmp_path: Path) -> None:
+    from primer.model.except_ import BadRequestError
+
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-1", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    await ws.make_dir("src")
+    await ws.write_file("src/a.txt", b"1")
+    with pytest.raises(BadRequestError):
+        await ws.delete_file("src")  # non-empty, no recursive
+    await ws.delete_file("src", recursive=True)
+    entries = await ws.list_files(".", recursive=True)
+    assert not any(e.path.startswith("src") for e in entries)
+
+
+@pytest.mark.asyncio
 async def test_refuses_writes_under_state(tmp_path: Path) -> None:
     sb = FakeSandbox(root=tmp_path)
     ws = await SandboxWorkspace.materialise(

@@ -197,6 +197,10 @@ class FakeSandbox(Sandbox):
 
         await asyncio.to_thread(_append)
 
+    async def make_dir(self, path: str) -> None:
+        target = self._host_path(path)
+        await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
+
     async def list_dir(self, path: str) -> list[FileStat]:
         host = self._host_path(path)
         if not await asyncio.to_thread(host.is_dir):

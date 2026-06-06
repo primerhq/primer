@@ -263,8 +263,22 @@ class Workspace(ABC):
         """
 
     @abstractmethod
-    async def delete_file(self, path: str) -> None:
-        """Delete the file or empty directory at ``path``.
+    async def make_dir(self, path: str) -> None:
+        """Create the directory at ``path`` (and any missing parents).
+
+        Raises :class:`primer.model.except_.BadRequestError` for invalid
+        paths (null byte, escape-attempt) or when ``path`` already exists,
+        and refuses creation inside the reserved ``.state`` / ``.tmp``
+        trees.
+        """
+
+    @abstractmethod
+    async def delete_file(self, path: str, *, recursive: bool = False) -> None:
+        """Delete the file or directory at ``path``.
+
+        A non-empty directory is only removed when ``recursive`` is True;
+        otherwise deleting a non-empty directory raises
+        :class:`primer.model.except_.BadRequestError`.
 
         Raises :class:`primer.model.except_.NotFoundError` if absent.
         Refuses to delete the workspace root or the ``.state`` /

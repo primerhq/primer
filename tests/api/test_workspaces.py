@@ -168,6 +168,7 @@ class _FakeWorkspace:
     def __init__(self, workspace_id: str) -> None:
         self.workspace_id = workspace_id
         self._files: dict[str, bytes] = {}
+        self._dirs: set[str] = set()
         self._sessions: dict[str, _FakeAgentSession] = {}
         self._runtime_meta = WorkspaceRuntimeMeta(
             url=f"ws://fake/{workspace_id}",
@@ -206,6 +207,15 @@ class _FakeWorkspace:
                     modified_at=now,
                 )
             )
+        for d in self._dirs:
+            if not d.startswith(prefix) or d == path:
+                continue
+            tail = d[len(prefix) :]
+            if not tail or (not recursive and "/" in tail):
+                continue
+            out.append(
+                FileEntry(path=d, kind="dir", size_bytes=0, modified_at=now)
+            )
         return sorted(out, key=lambda fe: fe.path)
 
     async def file_info(self, path):
@@ -228,10 +238,31 @@ class _FakeWorkspace:
             raise BadRequestError("null byte in path")
         self._files[path] = content
 
-    async def delete_file(self, path):
-        if path not in self._files:
-            raise NotFoundError(f"{path!r} not found")
-        del self._files[path]
+    async def make_dir(self, path):
+        if "\x00" in path:
+            raise BadRequestError("null byte in path")
+        if path in self._files or path in self._dirs:
+            raise BadRequestError(f"{path!r} already exists")
+        self._dirs.add(path)
+
+    async def delete_file(self, path, *, recursive=False):
+        if path in self._files:
+            del self._files[path]
+            return
+        if path in self._dirs:
+            prefix = path.rstrip("/") + "/"
+            children = [p for p in self._files if p.startswith(prefix)] + [
+                d for d in self._dirs if d != path and d.startswith(prefix)
+            ]
+            if children and not recursive:
+                raise BadRequestError(f"directory {path!r} is not empty")
+            for p in [p for p in self._files if p.startswith(prefix)]:
+                del self._files[p]
+            self._dirs = {
+                d for d in self._dirs if d != path and not d.startswith(prefix)
+            }
+            return
+        raise NotFoundError(f"{path!r} not found")
 
     async def log(self, *, limit=50):
         from primer.model.workspace import CommitInfo
@@ -1120,6 +1151,64 @@ class TestFilesSubResource:
             f"/v1/workspaces/{wid}/files/info", params={"path": "to-delete"}
         )
         assert info.status_code == 404
+
+    async def test_make_dir_then_listed(self, client, wsr) -> None:
+        wid = await self._setup(client, wsr)
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/files/dir", params={"path": "src"}
+        )
+        assert resp.status_code == 204
+        listing = await client.get(f"/v1/workspaces/{wid}/files")
+        entries = {e["path"]: e["kind"] for e in listing.json()["items"]}
+        assert entries.get("src") == "dir"
+
+    async def test_make_dir_conflict(self, client, wsr) -> None:
+        wid = await self._setup(client, wsr)
+        await client.post(
+            f"/v1/workspaces/{wid}/files/dir", params={"path": "src"}
+        )
+        again = await client.post(
+            f"/v1/workspaces/{wid}/files/dir", params={"path": "src"}
+        )
+        assert again.status_code == 400
+
+    async def test_delete_nonempty_dir_refused_without_recursive(
+        self, client, wsr
+    ) -> None:
+        wid = await self._setup(client, wsr)
+        await client.post(
+            f"/v1/workspaces/{wid}/files/dir", params={"path": "src"}
+        )
+        await client.put(
+            f"/v1/workspaces/{wid}/files",
+            params={"path": "src/a.txt"},
+            json={"content": "x"},
+        )
+        refused = await client.delete(
+            f"/v1/workspaces/{wid}/files", params={"path": "src"}
+        )
+        assert refused.status_code == 400
+
+    async def test_delete_dir_recursive(self, client, wsr) -> None:
+        wid = await self._setup(client, wsr)
+        await client.post(
+            f"/v1/workspaces/{wid}/files/dir", params={"path": "src"}
+        )
+        await client.put(
+            f"/v1/workspaces/{wid}/files",
+            params={"path": "src/a.txt"},
+            json={"content": "x"},
+        )
+        ok = await client.delete(
+            f"/v1/workspaces/{wid}/files",
+            params={"path": "src", "recursive": "true"},
+        )
+        assert ok.status_code == 204
+        listing = await client.get(f"/v1/workspaces/{wid}/files", params={
+            "path": ".", "recursive": "true",
+        })
+        paths = {e["path"] for e in listing.json()["items"]}
+        assert "src" not in paths and "src/a.txt" not in paths
 
 
 # ===========================================================================
