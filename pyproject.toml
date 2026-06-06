@@ -96,6 +96,7 @@ pythonpath = [".", "runtime"]
 addopts = "-m 'not distributed' -n auto --dist loadscope"
 markers = [
     "distributed: requires testcontainers + multiprocess (deselect with -m 'not distributed')",
+    "smk(ids, status): map this test to one or more docs/tests SMK ids; status full|partial",
 ]
 
 [tool.coverage.run]
