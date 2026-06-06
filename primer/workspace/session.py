@@ -20,6 +20,7 @@ design.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -526,7 +527,17 @@ class AgentSession:
                     line = line.rstrip("\n")
                     if not line:
                         continue
-                    messages.append(Message.model_validate_json(line))
+                    # messages.jsonl interleaves LLM-history Messages
+                    # (role/parts) with session event-log records
+                    # (seq/kind/ts) written by the dispatch writer. Keep only
+                    # the Message-shaped lines (see FINDINGS F10b).
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not (isinstance(obj, dict) and "role" in obj and "parts" in obj):
+                        continue
+                    messages.append(Message.model_validate(obj))
             return messages
 
         all_messages = await asyncio.to_thread(_read)

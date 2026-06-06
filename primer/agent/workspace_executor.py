@@ -15,6 +15,7 @@ terminal events (RUNNING <-> WAITING <-> ENDED) based on the LLM's
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +30,6 @@ from primer.model.workspace_session import (
     SessionStatus,
     _UserInputWaiting,
 )
-from primer.model.yield_ import YieldToWorker
 
 
 if TYPE_CHECKING:
@@ -200,14 +200,6 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 if ev.type == "done":
                     last_done_reason = ev.stop_reason  # type: ignore[union-attr]
                 yield ev
-        except YieldToWorker:
-            # A park (tool approval, ask_user, subscribe_to_trigger) is NOT a
-            # failure: the base executor raises YieldToWorker to hand the turn
-            # back to the worker, which parks the session for resume. Let it
-            # propagate WITHOUT marking the session ENDED/failed -- otherwise
-            # the session is killed at the gate and the operator can never
-            # respond (see FINDINGS F10).
-            raise
         except Exception:
             try:
                 await self._session.set_status(
@@ -277,7 +269,21 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                     line = line.rstrip("\n")
                     if not line:
                         continue
-                    out.append(Message.model_validate_json(line))
+                    # messages.jsonl is shared between the LLM conversation
+                    # history (role/parts Messages, written by AgentSession +
+                    # _persist_turn) and the session event log
+                    # (seq/kind/ts SessionMessageRecords, written by the
+                    # dispatch WorkspaceMessageWriter for WS replay). Only the
+                    # Message-shaped lines are LLM history; skip the event
+                    # records so a resumed/multi-turn session can reload its
+                    # history without choking on them (see FINDINGS F10b).
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not (isinstance(obj, dict) and "role" in obj and "parts" in obj):
+                        continue
+                    out.append(Message.model_validate(obj))
             return out
 
         return await asyncio.to_thread(_read)
