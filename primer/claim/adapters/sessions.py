@@ -46,18 +46,35 @@ class SessionClaimAdapter(ClaimAdapter):
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
         if self._storage is None:
             raise RuntimeError(
-                "session_storage is None — cannot run on_release without a storage backend"
+                "session_storage is None - cannot run on_release without a storage backend"
             )
         sess = await self._storage.get(entity_id)
         if sess is None:
             return
 
-        # Only bump turn_no / stamp last_turn_at when a turn actually ran.
+        # Park branch: the turn hit a yielding tool. Write the park columns
+        # and clear the worker stamp; do NOT bump turn_no (a park is not a
+        # completed turn). The engine drops the lease (drop_lease=True), so
+        # the parked row has no lease and is not re-claimed until the resume
+        # event re-arms it via engine.mark_resumable.
+        if outcome.park is not None:
+            p = outcome.park
+            parked = sess.model_copy(update={
+                "parked_status": "parked",
+                "parked_event_key": p.parked_event_key,
+                "parked_until": p.parked_until,
+                "parked_at": p.parked_at,
+                "parked_state": p.parked_state,
+                "last_worker_id": None,
+            })
+            await self._storage.update(parked)
+            return
+
+        # Non-park release: clear any park columns. Only bump turn_no /
+        # stamp last_turn_at when a turn actually ran (outcome.success).
         # A failed release (reclaim, executor build failure, executor crash)
         # must leave the counters untouched so the next claim sees the same
-        # turn — otherwise a stuck row drifts to turn_no=N with no matching
-        # messages.jsonl entries (the symptom in
-        # docs/superpowers/specs analysis).
+        # turn.
         updates: dict[str, object | None] = {
             "parked_status": None,
             "parked_event_key": None,
