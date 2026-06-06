@@ -80,6 +80,39 @@ async def make_local_workspace(
     return rw.json()["id"]
 
 
+async def make_graph(
+    client: httpx.AsyncClient, *, suffix: str, nodes: list[dict], edges: list[dict],
+    max_iterations: int | None = None,
+) -> str:
+    gid = f"g-{suffix}"
+    body: dict = {"id": gid, "description": "smk graph", "nodes": nodes, "edges": edges}
+    if max_iterations is not None:
+        body["max_iterations"] = max_iterations
+    r = await client.post("/v1/graphs", json=body)
+    assert r.status_code in (200, 201), r.text
+    return gid
+
+
+async def start_graph_session(
+    client: httpx.AsyncClient,
+    *,
+    workspace_id: str,
+    graph_id: str,
+    instructions: str = "go",
+    auto_start: bool = True,
+) -> str:
+    r = await client.post(
+        f"/v1/workspaces/{workspace_id}/sessions",
+        json={
+            "binding": {"kind": "graph", "graph_id": graph_id},
+            "initial_instructions": instructions,
+            "auto_start": auto_start,
+        },
+    )
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
+
+
 async def start_agent_session(
     client: httpx.AsyncClient,
     *,
