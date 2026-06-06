@@ -960,7 +960,13 @@ async def _send_loop_instrumented(
             try:
                 await websocket.send_json(_message_to_wire(row))
                 _metrics.ws_frames_sent_total.labels(kind).inc()
-                if row.kind == "done":
+                # Re-emit the usage envelope after a turn closes (done) AND
+                # after each tool result lands, so the context meter tracks
+                # the conversation growing through a multi-tool turn rather
+                # than only updating once at the very end. The cached
+                # counters are refreshed per LLM call by the executor's
+                # _record_usage; this just surfaces them more often.
+                if row.kind in ("done", "tool_result"):
                     await websocket.send_json(
                         _usage_envelope(chat_id, context_length),
                     )

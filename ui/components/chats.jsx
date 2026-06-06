@@ -701,16 +701,34 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       // it is computed over the FULL new history (summary + retained
       // tail), not just the summary payload. Pinning the meter to it
       // is correct: that's the prompt the next assistant turn carries.
-      if (msg.kind === "compaction" && typeof msg.seq !== "number") {
+      // Compaction envelope. The server translates the persisted
+      // compaction_marker row into this 'compaction' envelope and sends
+      // it WITH the row's seq (primer/api/routers/chats.py::
+      // _compaction_envelope). Handle it regardless of whether a seq is
+      // present so the marker, the TokenMeter update, and the toast all
+      // fire. Earlier code required a missing seq and so silently
+      // dropped every server-sent compaction (the meter never moved and
+      // no completion marker appeared).
+      if (msg.kind === "compaction") {
         const beforeT = Number(msg.tokens_before) || 0;
         const afterT = Number(msg.tokens_after) || 0;
-        setMessages((prev) => [...prev, {
-          kind: "compaction_marker",
-          seq: `compaction-${Date.now()}`,
-          tokens_before: beforeT,
-          tokens_after: afterT,
-          reason: msg.reason || "",
-        }]);
+        const markerSeq = typeof msg.seq === "number"
+          ? msg.seq
+          : `compaction-${Date.now()}`;
+        // Clear the in-progress flag and append the completion marker
+        // (de-duped by seq against the cursor replay).
+        setCompactInFlight(false);
+        setMessages((prev) => prev.some((m) => m.seq === markerSeq)
+          ? prev
+          : [...prev, {
+              kind: "compaction_marker",
+              seq: markerSeq,
+              tokens_before: beforeT,
+              tokens_after: afterT,
+              reason: msg.reason || "",
+            }]);
+        // Update the context meter to the post-compaction prompt size so
+        // the top-right indicator reflects the smaller window immediately.
         if (afterT > 0) {
           setUsage((prev) => ({
             ...prev,
@@ -1108,6 +1126,24 @@ function ChatDetail({ chatId, onBack, pushToast }) {
               || (turnInFlight && !lastIsQuiet);
             return showThinking ? <CT_ThinkingBubble /> : null;
           })()}
+
+          {/* Compaction in-progress indicator. Shown from the moment the
+              operator clicks Compact until the server's compaction
+              envelope lands (which clears compactInFlight and appends the
+              completion marker). Without it the only feedback was the
+              disabled button in the header. */}
+          {compactInFlight && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8,
+              margin: "12px auto", padding: "6px 14px",
+              border: "1px dashed var(--border)", borderRadius: 14,
+              width: "fit-content", fontSize: 12,
+              color: "var(--text-3)", background: "var(--bg-1, var(--bg))",
+            }}>
+              <Icon name="compress" size={12} className="muted" />
+              <span>Compacting conversation history…</span>
+            </div>
+          )}
 
           {/* Inline approval card — sits ABOVE the composer when pending */}
           {pendingApproval && (
