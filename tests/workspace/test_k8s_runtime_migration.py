@@ -396,3 +396,58 @@ async def test_get_returns_sandbox_workspace_after_reattach():
     rc_kwargs = MockRC.call_args.kwargs
     assert rc_kwargs["token"] == "the-stored-token"
     mock_client.connect.assert_awaited_once()
+
+
+def test_gateway_reachability_hostname_round_trips():
+    from primer.model.workspace import (
+        K8sReachabilityGateway,
+        K8sGatewayParentRef,
+        K8sGatewayRoutingHostname,
+        KubernetesWorkspaceConfig,
+        K8sConnectionInCluster,
+    )
+    cfg = KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer-workspaces",
+        reachability=K8sReachabilityGateway(
+            gateway=K8sGatewayParentRef(name="primer-gw", namespace="primer-gateway"),
+            routing=K8sGatewayRoutingHostname(hostname_template="{workspace_id}.ws.local"),
+            external_port=32045,
+        ),
+    )
+    reparsed = KubernetesWorkspaceConfig.model_validate(cfg.model_dump())
+    assert reparsed.reachability.kind == "gateway_httproute"
+    assert reparsed.reachability.routing.kind == "hostname"
+    assert reparsed.reachability.scheme == "ws"
+    assert reparsed.reachability.backend_port == 5959
+
+
+def test_gateway_parent_ref_rejects_unknown_field():
+    from pydantic import ValidationError
+    from primer.model.workspace import K8sGatewayParentRef
+    with pytest.raises(ValidationError):
+        K8sGatewayParentRef(name="gw", typo_field="x")
+
+
+def test_gateway_reachability_path_mode_parses():
+    from primer.model.workspace import (
+        K8sReachabilityGateway,
+        K8sGatewayParentRef,
+        K8sGatewayRoutingPath,
+        KubernetesWorkspaceConfig,
+        K8sConnectionInCluster,
+    )
+    cfg = KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer-workspaces",
+        reachability=K8sReachabilityGateway(
+            gateway=K8sGatewayParentRef(name="primer-gw"),
+            routing=K8sGatewayRoutingPath(hostname="ws.local"),
+            external_port=8000,
+            scheme="wss",
+        ),
+    )
+    reparsed = KubernetesWorkspaceConfig.model_validate(cfg.model_dump())
+    assert reparsed.reachability.routing.kind == "path_prefix"
+    assert reparsed.reachability.routing.path_template == "/ws/{workspace_id}"
+    assert reparsed.reachability.scheme == "wss"

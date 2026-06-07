@@ -866,8 +866,85 @@ class K8sReachabilityIngress(BaseModel):
     )
 
 
+class K8sGatewayParentRef(BaseModel):
+    """Reference to a pre-created Gateway the per-workspace HTTPRoute attaches to."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., description="Gateway resource name.")
+    namespace: str | None = Field(
+        default=None,
+        description="Gateway namespace; null means the workspace namespace.",
+    )
+    section_name: str | None = Field(
+        default=None,
+        description="Optional listener (sectionName) on the Gateway to bind to.",
+    )
+
+
+class K8sGatewayRoutingHostname(BaseModel):
+    """Route by per-workspace hostname (Host header). Needs wildcard DNS."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["hostname"] = Field(
+        default="hostname",
+        description="Discriminator: per-workspace hostname routing.",
+    )
+    hostname_template: str = Field(
+        ...,
+        description="Hostname with {workspace_id}, e.g. '{workspace_id}.ws.local'.",
+    )
+
+
+class K8sGatewayRoutingPath(BaseModel):
+    """Route by shared hostname + path prefix, rewritten to '/'."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["path_prefix"] = Field(
+        default="path_prefix",
+        description="Discriminator: shared-host path-prefix routing.",
+    )
+    hostname: str = Field(..., description="Shared host, e.g. 'ws.local'.")
+    path_template: str = Field(
+        default="/ws/{workspace_id}",
+        description="Path prefix with {workspace_id}; stripped to '/' via URLRewrite.",
+    )
+
+
+K8sGatewayRouting = Annotated[
+    Union[K8sGatewayRoutingHostname, K8sGatewayRoutingPath],
+    Field(discriminator="kind"),
+]
+
+
+class K8sReachabilityGateway(BaseModel):
+    """Platform OUT of cluster -- backend creates a Gateway API HTTPRoute per
+    workspace pod. The operator pre-creates the Gateway (and GatewayClass);
+    this config references it."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["gateway_httproute"] = Field(
+        default="gateway_httproute",
+        description="Discriminator tag identifying this as gateway-httproute reachability.",
+    )
+    gateway: K8sGatewayParentRef = Field(
+        ..., description="The Gateway the per-workspace HTTPRoute attaches to.",
+    )
+    routing: K8sGatewayRouting = Field(
+        ..., description="Routing strategy: hostname or path_prefix.",
+    )
+    scheme: Literal["ws", "wss"] = Field(
+        default="ws", description="WebSocket scheme the platform dials.",
+    )
+    external_port: int = Field(
+        ..., ge=1, le=65535, description="Port the platform dials (Gateway/entrypoint reachable port).",
+    )
+    backend_port: int = Field(
+        default=5959, ge=1, le=65535, description="Workspace Service port the HTTPRoute targets.",
+    )
+
+
 K8sReachabilityConfig = Annotated[
-    Union[K8sReachabilityInCluster, K8sReachabilityIngress],
+    Union[K8sReachabilityInCluster, K8sReachabilityIngress, K8sReachabilityGateway],
     Field(discriminator="kind"),
 ]
 
@@ -1082,7 +1159,12 @@ __all__ = [
     "K8sConnectionInCluster",
     "K8sConnectionKubeconfig",
     "K8sConnectionServiceAccountToken",
+    "K8sGatewayParentRef",
+    "K8sGatewayRouting",
+    "K8sGatewayRoutingHostname",
+    "K8sGatewayRoutingPath",
     "K8sReachabilityConfig",
+    "K8sReachabilityGateway",
     "K8sReachabilityIngress",
     "K8sReachabilityInCluster",
     "K8sVolume",
