@@ -550,11 +550,13 @@ def _make_lifespan(config: AppConfig):
             )
             yield_listener.start()
             timer_scheduler = TimerScheduler(
-                bus=event_bus, scheduler=scheduler,
+                bus=event_bus,
+                session_storage=storage_provider.get_storage(_WorkspaceSession),
             )
             timer_scheduler.start(coordinator.leader_elector)
             timeout_sweeper = TimeoutSweeper(
-                bus=event_bus, scheduler=scheduler,
+                bus=event_bus,
+                session_storage=storage_provider.get_storage(_WorkspaceSession),
             )
             timeout_sweeper.start(coordinator.leader_elector)
 

@@ -34,6 +34,10 @@ from primer.model.workspace_session import (
     WorkspaceSession,
     SessionStatus,
 )
+from primer.bus.scheduler_tasks import (
+    _find_due_timer_keys,
+    _find_expired_non_timer_keys,
+)
 from primer.scheduler.in_memory import InMemoryScheduler, _LeaseState
 from primer.storage.sqlite import SqliteStorageProvider
 
@@ -75,9 +79,9 @@ def _make_parked_session(
 async def harness(tmp_path: Path):
     """Bus + scheduler + storage + engine + listener, all wired up.
 
-    * scheduler -- still used by TimerScheduler / TimeoutSweeper to
-      find which event_keys are due (they walk scheduler._sessions).
-    * storage / engine -- used by the new YieldEventListener to find
+    * scheduler -- kept for lease seeding in _seed_parked; TimerScheduler
+      and TimeoutSweeper now query storage directly (not scheduler._sessions).
+    * storage / engine -- used by YieldEventListener and the sweepers to find
       parked sessions via storage.find and re-arm leases via
       engine.mark_resumable.
     """
@@ -109,13 +113,13 @@ async def harness(tmp_path: Path):
 
 
 async def _seed_parked(storage, scheduler, sess: WorkspaceSession) -> None:
-    """Seed a parked session into both storage AND the scheduler's dict.
+    """Seed a parked session into storage (primary source) and the
+    scheduler's lease dict (so the claim engine can re-arm on resume).
 
-    Storage is what the new listener queries; scheduler._sessions is
-    what TimerScheduler / TimeoutSweeper walk to find due event_keys.
+    TimerScheduler and TimeoutSweeper now read from storage, not from
+    scheduler._sessions.
     """
     await storage.create(sess)
-    scheduler._sessions[sess.id] = sess
     scheduler._leases[sess.id] = _LeaseState(
         worker_id=None,
         expires_at=None,
@@ -201,7 +205,7 @@ class TestTimerScheduler:
         await _seed_parked(storage, scheduler, sess)
 
         timer = TimerScheduler(
-            bus=bus, scheduler=scheduler, poll_seconds=0.05,
+            bus=bus, session_storage=storage, poll_seconds=0.05,
         )
         timer.start()
         try:
@@ -227,7 +231,7 @@ class TestTimerScheduler:
         await _seed_parked(storage, scheduler, sess)
 
         timer = TimerScheduler(
-            bus=bus, scheduler=scheduler, poll_seconds=0.05,
+            bus=bus, session_storage=storage, poll_seconds=0.05,
         )
         timer.start()
         try:
@@ -255,7 +259,7 @@ class TestTimeoutSweeper:
         await _seed_parked(storage, scheduler, sess)
 
         sweeper = TimeoutSweeper(
-            bus=bus, scheduler=scheduler, poll_seconds=0.05,
+            bus=bus, session_storage=storage, poll_seconds=0.05,
         )
         sweeper.start()
         try:
@@ -288,7 +292,7 @@ class TestTimeoutSweeper:
         await _seed_parked(storage, scheduler, sess)
 
         sweeper = TimeoutSweeper(
-            bus=bus, scheduler=scheduler, poll_seconds=0.05,
+            bus=bus, session_storage=storage, poll_seconds=0.05,
         )
         sweeper.start()
         try:
@@ -300,3 +304,106 @@ class TestTimeoutSweeper:
             assert row.parked_status == "parked"
         finally:
             await sweeper.stop()
+
+
+@pytest.fixture
+async def storage_only(tmp_path: Path):
+    """A bare session storage with no scheduler -- proves the finders
+    work from storage alone (the post-F10c production path)."""
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "so.sqlite"))
+    await provider.initialize()
+    storage = provider.get_storage(WorkspaceSession)
+    try:
+        yield storage
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+class TestFindDueTimerKeysFromStorage:
+    """_find_due_timer_keys must query session storage, not scheduler._sessions."""
+
+    async def test_returns_due_timer_key(self, storage_only):
+        """A parked session with parked_until in the past and a timer: key is returned."""
+        sess = _make_parked_session(
+            session_id="tc1",
+            event_key="timer:tc1",
+            parked_until=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+        await storage_only.create(sess)
+
+        keys = await _find_due_timer_keys(storage_only)
+
+        assert keys == ["timer:tc1"]
+
+    async def test_not_due_timer_key_excluded(self, storage_only):
+        """A timer: park with parked_until in the future is not returned."""
+        sess = _make_parked_session(
+            session_id="tc2",
+            event_key="timer:tc2",
+            parked_until=datetime.now(timezone.utc) + timedelta(seconds=60),
+        )
+        await storage_only.create(sess)
+
+        keys = await _find_due_timer_keys(storage_only)
+
+        assert keys == []
+
+    async def test_unparked_session_excluded(self, storage_only):
+        """A session with parked_status=None is not returned."""
+        sess = WorkspaceSession(
+            id="tc3",
+            workspace_id="ws-x",
+            binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),
+            status=SessionStatus.RUNNING,
+            created_at=datetime.now(timezone.utc),
+        )
+        await storage_only.create(sess)
+
+        keys = await _find_due_timer_keys(storage_only)
+
+        assert keys == []
+
+
+@pytest.mark.asyncio
+class TestFindExpiredNonTimerKeysFromStorage:
+    """_find_expired_non_timer_keys must query session storage, not scheduler._sessions."""
+
+    async def test_returns_expired_non_timer_key(self, storage_only):
+        """A parked ask_user session whose deadline passed is returned."""
+        sess = _make_parked_session(
+            session_id="s1",
+            event_key="ask_user:s1:tc1",
+            parked_until=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+        await storage_only.create(sess)
+
+        keys = await _find_expired_non_timer_keys(storage_only)
+
+        assert keys == ["ask_user:s1:tc1"]
+
+    async def test_timer_key_excluded(self, storage_only):
+        """An expired timer: park is NOT returned by the non-timer finder."""
+        sess = _make_parked_session(
+            session_id="s2",
+            event_key="timer:tc2",
+            parked_until=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+        await storage_only.create(sess)
+
+        keys = await _find_expired_non_timer_keys(storage_only)
+
+        assert keys == []
+
+    async def test_not_yet_due_non_timer_excluded(self, storage_only):
+        """A non-timer park whose deadline is in the future is not returned."""
+        sess = _make_parked_session(
+            session_id="s3",
+            event_key="ask_user:s3:tc3",
+            parked_until=datetime.now(timezone.utc) + timedelta(seconds=60),
+        )
+        await storage_only.create(sess)
+
+        keys = await _find_expired_non_timer_keys(storage_only)
+
+        assert keys == []

@@ -37,12 +37,12 @@ from primer.int.coordinator import (
     ROLE_TIMER_SCHEDULER,
 )
 from primer.int.event_bus import EventBus
+from primer.int.storage import Storage
+from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.worker.yield_runtime import make_timeout_payload
 
 if TYPE_CHECKING:
     from primer.int.coordinator import LeaderElector
-    from primer.scheduler.in_memory import InMemoryScheduler
-    from primer.scheduler.postgres import PostgresScheduler
 
 
 logger = logging.getLogger(__name__)
@@ -172,12 +172,12 @@ class TimerScheduler(_BackgroundTask):
         self,
         *,
         bus: EventBus,
-        scheduler,
+        session_storage: Storage,
         poll_seconds: float = DEFAULT_TIMER_POLL_SECONDS,
     ) -> None:
         super().__init__(name="yield-timer-scheduler")
         self._bus = bus
-        self._scheduler = scheduler
+        self._storage = session_storage
         self._poll = poll_seconds
 
     async def _run(self) -> None:
@@ -195,7 +195,7 @@ class TimerScheduler(_BackgroundTask):
 
     async def _tick(self) -> None:
         """One iteration: find due timer parks, publish events."""
-        keys = await _find_due_timer_keys(self._scheduler)
+        keys = await _find_due_timer_keys(self._storage)
         for event_key in keys:
             await self._bus.publish(event_key, payload={})
 
@@ -215,12 +215,12 @@ class TimeoutSweeper(_BackgroundTask):
         self,
         *,
         bus: EventBus,
-        scheduler,
+        session_storage: Storage,
         poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
     ) -> None:
         super().__init__(name="yield-timeout-sweeper")
         self._bus = bus
-        self._scheduler = scheduler
+        self._storage = session_storage
         self._poll = poll_seconds
 
     async def _run(self) -> None:
@@ -238,7 +238,7 @@ class TimeoutSweeper(_BackgroundTask):
 
     async def _tick(self) -> None:
         """One iteration: find expired non-timer parks, publish."""
-        keys = await _find_expired_non_timer_keys(self._scheduler)
+        keys = await _find_expired_non_timer_keys(self._storage)
         payload = make_timeout_payload()
         for event_key in keys:
             await self._bus.publish(event_key, payload=payload)
@@ -324,92 +324,61 @@ class HarnessSweeper(_BackgroundTask):
 
 
 # ===========================================================================
-# Scheduler-flavour lookup helpers
+# Storage-based lookup helpers
 # ===========================================================================
 #
-# We avoid adding query methods to the Scheduler ABC because they
-# don't generalise across backends (in-memory walks a dict;
-# postgres runs SQL). Instead, dispatch on type inside this module
-# so the abstract interface stays minimal.
+# Both helpers query the session Storage backend directly (the same
+# source the YieldEventListener uses). This works across all backends
+# (in-memory SQLite, Postgres) without type-dispatching, and correctly
+# reflects the post-F10c world where park state is written to session
+# storage by the claim adapter, not to the scheduler's _sessions dict.
 
 
-async def _find_due_timer_keys(scheduler) -> list[str]:
+async def _find_due_timer_keys(session_storage: Storage) -> list[str]:
     """Find ``timer:*`` parked event_keys whose deadline is due."""
-    from primer.scheduler.in_memory import InMemoryScheduler
-    from primer.scheduler.postgres import PostgresScheduler
-
     now = datetime.now(timezone.utc)
-
-    if isinstance(scheduler, InMemoryScheduler):
-        keys: list[str] = []
-        async with scheduler._lock:
-            for sess in scheduler._sessions.values():
-                if (
-                    sess.parked_status == "parked"
-                    and sess.parked_event_key is not None
-                    and sess.parked_event_key.startswith("timer:")
-                    and sess.parked_until is not None
-                    and sess.parked_until <= now
-                ):
-                    keys.append(sess.parked_event_key)
-        return keys
-
-    if isinstance(scheduler, PostgresScheduler):
-        sql = """
-            SELECT data->>'parked_event_key' AS event_key
-              FROM sessions
-             WHERE data->>'parked_status' = 'parked'
-               AND data->>'parked_event_key' LIKE 'timer:%'
-               AND (data->>'parked_until')::timestamptz <= now()
-             LIMIT 200
-        """
-        async with scheduler._storage.pool.acquire() as conn:
-            rows = await conn.fetch(sql)
-        return [r["event_key"] for r in rows]
-
-    return []
+    predicate = Predicate(
+        left=FieldRef(name="parked_status"),
+        op=Op.EQ,
+        right=Value(value="parked"),
+    )
+    page = await session_storage.find(predicate, OffsetPage(length=200))
+    return [
+        sess.parked_event_key
+        for sess in page.items
+        if (
+            sess.parked_event_key is not None
+            and sess.parked_event_key.startswith("timer:")
+            and sess.parked_until is not None
+            and sess.parked_until <= now
+        )
+    ]
 
 
-async def _find_expired_non_timer_keys(scheduler) -> list[str]:
+async def _find_expired_non_timer_keys(session_storage: Storage) -> list[str]:
     """Find non-``timer:`` parked event_keys whose deadline elapsed.
 
-    These are the parks whose external event never fired — the
+    These are the parks whose external event never fired -- the
     sweeper publishes a timeout marker so the resume hook produces
     a YieldTimeout result.
     """
-    from primer.scheduler.in_memory import InMemoryScheduler
-    from primer.scheduler.postgres import PostgresScheduler
-
     now = datetime.now(timezone.utc)
-
-    if isinstance(scheduler, InMemoryScheduler):
-        keys: list[str] = []
-        async with scheduler._lock:
-            for sess in scheduler._sessions.values():
-                if (
-                    sess.parked_status == "parked"
-                    and sess.parked_event_key is not None
-                    and not sess.parked_event_key.startswith("timer:")
-                    and sess.parked_until is not None
-                    and sess.parked_until <= now
-                ):
-                    keys.append(sess.parked_event_key)
-        return keys
-
-    if isinstance(scheduler, PostgresScheduler):
-        sql = """
-            SELECT data->>'parked_event_key' AS event_key
-              FROM sessions
-             WHERE data->>'parked_status' = 'parked'
-               AND data->>'parked_event_key' NOT LIKE 'timer:%'
-               AND (data->>'parked_until')::timestamptz <= now()
-             LIMIT 200
-        """
-        async with scheduler._storage.pool.acquire() as conn:
-            rows = await conn.fetch(sql)
-        return [r["event_key"] for r in rows]
-
-    return []
+    predicate = Predicate(
+        left=FieldRef(name="parked_status"),
+        op=Op.EQ,
+        right=Value(value="parked"),
+    )
+    page = await session_storage.find(predicate, OffsetPage(length=200))
+    return [
+        sess.parked_event_key
+        for sess in page.items
+        if (
+            sess.parked_event_key is not None
+            and not sess.parked_event_key.startswith("timer:")
+            and sess.parked_until is not None
+            and sess.parked_until <= now
+        )
+    ]
 
 
 __all__ = [
