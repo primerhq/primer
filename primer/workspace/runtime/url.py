@@ -62,4 +62,9 @@ def _k8s_url(
         )
     if r.kind == "ingress":
         return r.url_template.format(workspace_id=workspace_id)
+    if r.kind == "gateway_httproute":
+        # Deferred: a top-level import creates a url -> k8s.__init__ -> backend -> url cycle.
+        from primer.workspace.k8s.httproute import render_route
+        target = render_route(r, workspace_id)
+        return f"{r.scheme}://{target.hostname}:{r.external_port}{target.path}"
     raise ValueError(f"Unknown k8s reachability kind: {r.kind}")

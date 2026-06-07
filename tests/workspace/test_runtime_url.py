@@ -83,3 +83,48 @@ def test_k8s_ingress_substitutes_template():
 def test_rejects_unknown_provider():
     with pytest.raises(TypeError):
         build_runtime_url(provider_config=object(), workspace_id="ws-1")
+
+
+def _k8s_gateway_cfg(routing, scheme="ws", port=32045):
+    from primer.model.workspace import (
+        KubernetesWorkspaceConfig,
+        K8sConnectionInCluster,
+        K8sReachabilityGateway,
+        K8sGatewayParentRef,
+    )
+    return KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer-workspaces",
+        reachability=K8sReachabilityGateway(
+            gateway=K8sGatewayParentRef(name="primer-gw"),
+            routing=routing,
+            scheme=scheme,
+            external_port=port,
+        ),
+    )
+
+
+def test_k8s_gateway_hostname_url():
+    from primer.model.workspace import K8sGatewayRoutingHostname
+    cfg = _k8s_gateway_cfg(
+        K8sGatewayRoutingHostname(hostname_template="{workspace_id}.ws.local"),
+    )
+    url = build_runtime_url(provider_config=cfg, workspace_id="ws-1")
+    assert url == "ws://ws-1.ws.local:32045/"
+
+
+def test_k8s_gateway_path_url():
+    from primer.model.workspace import K8sGatewayRoutingPath
+    cfg = _k8s_gateway_cfg(K8sGatewayRoutingPath(hostname="ws.local", path_template="/ws/{workspace_id}"))
+    url = build_runtime_url(provider_config=cfg, workspace_id="ws-1")
+    assert url == "ws://ws.local:32045/ws/ws-1"
+
+
+def test_k8s_gateway_wss_scheme():
+    from primer.model.workspace import K8sGatewayRoutingHostname
+    cfg = _k8s_gateway_cfg(
+        K8sGatewayRoutingHostname(hostname_template="{workspace_id}.ws.local"),
+        scheme="wss", port=443,
+    )
+    url = build_runtime_url(provider_config=cfg, workspace_id="ws-1")
+    assert url == "wss://ws-1.ws.local:443/"
