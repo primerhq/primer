@@ -6,6 +6,10 @@ WSP-12 (container) and WSP-13 (kubernetes) are gated on those backends.
 """
 from __future__ import annotations
 
+import asyncio
+import shutil
+import subprocess
+
 import pytest
 
 from tests._support.mock_llm import Rule
@@ -184,10 +188,130 @@ async def test_two_agents_share_files(authed_client, mock_llm, unique_suffix, tm
     assert "PRODUCED" in rd.json()["content"]
 
 
+def _docker_names(kind: str, name: str) -> list[str]:
+    """Return docker objects (containers or volumes) matching ``name``.
+
+    Returns an empty list when docker is not on PATH so the leak check
+    degrades to a no-op bonus rather than failing the test on hosts where
+    the server reaches docker over a socket the test runner cannot.
+    """
+    if shutil.which("docker") is None:
+        return []
+    args = (
+        ["docker", "ps", "-a", "--filter", f"name={name}", "--format", "{{.Names}}"]
+        if kind == "container"
+        else ["docker", "volume", "ls", "--filter", f"name={name}", "--format", "{{.Name}}"]
+    )
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [ln for ln in out.stdout.splitlines() if ln.strip()]
+
+
 @smk("SMK-WSP-12")
 @requires("workspace:container")
-async def test_container_backend():
-    pytest.skip("covered when workspace:container is configured in testconfig")
+async def test_container_backend(authed_client, unique_suffix):
+    """Materialise a workspace on the Docker container backend, prove file
+    + exec work *inside the container*, and tear it down with no leaks.
+
+    The server generates the workspace id (``ws-<hex>``) and names the
+    container/volume after THAT id, so we never send an explicit id and use
+    only the id returned by ``POST /v1/workspaces`` for every later call.
+    """
+    wp = f"wpc-{unique_suffix}"
+    tpl = f"tplc-{unique_suffix}"
+    wid: str | None = None
+
+    rp = await authed_client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp,
+            "provider": "container",
+            "config": {
+                "kind": "container",
+                "runtime": "docker",
+                "connection": {"kind": "socket", "socket_path": "/var/run/docker.sock"},
+                "reachability": {"kind": "host_port", "bind_host": "127.0.0.1"},
+            },
+        },
+    )
+    assert rp.status_code in (200, 201), rp.text
+
+    rt = await authed_client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl,
+            "description": "smk container backend",
+            "provider_id": wp,
+            "backend": {"kind": "container", "image": "primer/workspace-runtime:1.0"},
+        },
+    )
+    assert rt.status_code in (200, 201), rt.text
+
+    try:
+        # No explicit id: the server generates ws-<hex> and names the
+        # container/volume after it.
+        rw = await authed_client.post("/v1/workspaces", json={"template_id": tpl})
+        assert rw.status_code in (200, 201), rw.text
+        wid = rw.json()["id"]
+        assert wid and wid.startswith("ws-"), wid
+
+        # Poll until the container is running (real backend pull/boot timing).
+        phase = None
+        for _ in range(90):
+            got = await authed_client.get(f"/v1/workspaces/{wid}")
+            assert got.status_code == 200, got.text
+            phase = got.json().get("phase")
+            if phase == "running":
+                break
+            assert phase not in ("failed", "error"), got.text
+            await asyncio.sleep(1.0)
+        assert phase == "running", f"workspace never reached running: phase={phase!r}"
+
+        # 1) File write+read round-trip, proving the file surface targets the
+        #    container's /workspace volume.
+        marker = f"CONTAINER-MARKER-{unique_suffix}"
+        w = await authed_client.put(
+            f"/v1/workspaces/{wid}/files",
+            params={"path": "marker.txt"},
+            json={"content": marker, "encoding": "text"},
+        )
+        assert w.status_code == 204, w.text
+        rd = await authed_client.get(
+            f"/v1/workspaces/{wid}/files/read",
+            params={"path": "marker.txt", "encoding": "text"},
+        )
+        assert rd.status_code == 200, rd.text
+        assert rd.json()["content"] == marker
+
+        # 2) Exec inside the container. whoami exits 1 in this image (uid 1000
+        #    has no passwd entry), so use echo/pwd which exit 0. The file we
+        #    wrote above must also be visible to the shell, proving the file
+        #    API and exec share the same container filesystem.
+        diag = await authed_client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": "echo EXEC-OK; pwd; cat marker.txt", "timeout_seconds": 30},
+        )
+        assert diag.status_code in (200, 201), diag.text
+        body = diag.json()
+        assert body["exit_code"] == 0, body
+        assert "EXEC-OK" in body["stdout"], body
+        assert "/workspace" in body["stdout"], body
+        assert marker in body["stdout"], body
+    finally:
+        # 3) Teardown: DELETE removes the container + volume. Assert the API
+        #    contract (204 + GET 404) and, as a bonus, that docker shows no
+        #    leaked container/volume named after the workspace id.
+        if wid is not None:
+            d = await authed_client.delete(f"/v1/workspaces/{wid}")
+            assert d.status_code in (204, 404), d.text
+            gone = await authed_client.get(f"/v1/workspaces/{wid}")
+            assert gone.status_code == 404, gone.text
+            assert _docker_names("container", f"workspace-{wid}") == []
+            assert _docker_names("volume", f"workspace-{wid}-data") == []
+        await authed_client.delete(f"/v1/workspace_templates/{tpl}")
+        await authed_client.delete(f"/v1/workspace_providers/{wp}")
 
 
 @smk("SMK-WSP-13")
