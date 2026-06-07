@@ -1,0 +1,670 @@
+---
+slug: api-knowledge
+title: REST API - knowledge
+summary: Developer reference for collections, documents, semantic search, semantic-search providers, embedding providers, and the internal-collections subsystem.
+section: reference
+---
+
+Collections and documents form the knowledge surface under `/v1`. Semantic search providers (SSP) back the vector store. The internal-collections subsystem enables semantic search over agents, graphs, and collections via a CDC-driven index.
+
+```ref:concepts/toolsets-and-tools
+Toolsets and tools: how agents access knowledge collections via the knowledge toolset.
+```
+
+```ref:features/knowledge-collections
+Knowledge collections feature guide: creating collections and uploading documents from the console.
+```
+
+## Endpoints
+
+| Method | Path | What it does |
+|---|---|---|
+| POST | `/v1/ssp` | Create a semantic-search provider |
+| GET | `/v1/ssp` | List providers |
+| GET | `/v1/ssp/{id}` | Fetch one provider |
+| PUT | `/v1/ssp/{id}` | Replace a provider |
+| DELETE | `/v1/ssp/{id}` | Delete (blocked if collections reference it) |
+| POST | `/v1/ssp/find` | Predicate-based search |
+| POST | `/v1/ssp/{id}/invalidate` | Invalidate cached connections |
+| POST | `/v1/embedding_providers` | Register an embedding provider |
+| GET | `/v1/embedding_providers` | List providers |
+| GET | `/v1/embedding_providers/{id}` | Fetch one provider |
+| PUT | `/v1/embedding_providers/{id}` | Replace a provider |
+| DELETE | `/v1/embedding_providers/{id}` | Delete |
+| POST | `/v1/collections` | Create a collection |
+| GET | `/v1/collections` | List collections |
+| GET | `/v1/collections/{id}` | Fetch one collection |
+| PUT | `/v1/collections/{id}` | Replace a collection |
+| DELETE | `/v1/collections/{id}` | Delete |
+| POST | `/v1/collections/find` | Predicate-based search |
+| POST | `/v1/collections/{id}/search` | Semantic search within a collection |
+| GET | `/v1/collections/{id}/documents` | List documents in a collection |
+| GET | `/v1/collections/{id}/indexed_documents` | List indexed chunks |
+| POST | `/v1/documents` | Create (ingest) a document |
+| GET | `/v1/documents/{id}` | Fetch one document |
+| PUT | `/v1/documents/{id}` | Replace and re-index |
+| DELETE | `/v1/documents/{id}` | Delete and remove chunks |
+| POST | `/v1/documents/_convert_file` | Convert a file to indexable text |
+| PUT | `/v1/internal_collections/config` | Activate the internal-collections subsystem |
+| GET | `/v1/internal_collections/config` | Get current config |
+| DELETE | `/v1/internal_collections/config` | Deactivate the subsystem |
+| POST | `/v1/internal_collections/bootstrap` | Trigger async bootstrap (returns 202) |
+| GET | `/v1/internal_collections/bootstrap/status` | Poll bootstrap status |
+| POST | `/v1/agents/search` | Semantic search over agents |
+| POST | `/v1/collections/search` | Semantic search over collections |
+| POST | `/v1/graphs/search` | Semantic search over graphs |
+| POST | `/v1/tools/search` | Semantic search over tools |
+
+---
+
+## POST /v1/ssp
+
+Create a semantic-search provider. Supported backends: `pgvector`, `pgvector_scale`, `lance`.
+
+### pgvector
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X POST https://primer.example/v1/ssp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "pg-main",
+    "provider": "pgvector",
+    "config": {
+      "hostname": "localhost",
+      "port": 5432,
+      "database": "primer_prod",
+      "username": "primer",
+      "password": "secret",
+      "db_schema": "public",
+      "distance_metric": "cosine"
+    }
+  }'
+--- python
+import httpx
+r = httpx.post(
+    "https://primer.example/v1/ssp",
+    headers={"Authorization": f"Bearer {token}"},
+    json={
+        "id": "pg-main",
+        "provider": "pgvector",
+        "config": {
+            "hostname": "localhost",
+            "port": 5432,
+            "database": "primer_prod",
+            "username": "primer",
+            "password": "secret",
+            "db_schema": "public",
+            "distance_metric": "cosine",
+        },
+    },
+)
+r.raise_for_status()
+--- javascript
+await fetch("/v1/ssp", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    id: "pg-main",
+    provider: "pgvector",
+    config: {
+      hostname: "localhost",
+      port: 5432,
+      database: "primer_prod",
+      username: "primer",
+      password: "secret",
+      db_schema: "public",
+      distance_metric: "cosine",
+    },
+  }),
+});
+```
+
+Response `201`:
+
+```json
+{
+  "id": "pg-main",
+  "provider": "pgvector",
+  "config": { "hostname": "localhost", "port": 5432, "database": "primer_prod", "username": "primer", "db_schema": "public", "distance_metric": "cosine" }
+}
+```
+
+Deleting an SSP that is still referenced by one or more collections returns `409` with `/errors/conflict`.
+
+---
+
+## POST /v1/embedding_providers
+
+Register an embedding provider. Supported backends: `openai` (compatible with LM Studio, Azure, OpenRouter, etc.) and `huggingface`.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X POST https://primer.example/v1/embedding_providers \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "lmstudio-embed",
+    "provider": "openai",
+    "models": [{ "name": "nomic-embed-text-v1.5" }],
+    "config": {
+      "url": "http://localhost:1234/v1",
+      "api_key": "lm-studio",
+      "flavor": "lmstudio"
+    },
+    "limits": { "max_concurrency": 2 }
+  }'
+--- python
+import httpx
+r = httpx.post(
+    "https://primer.example/v1/embedding_providers",
+    headers={"Authorization": f"Bearer {token}"},
+    json={
+        "id": "lmstudio-embed",
+        "provider": "openai",
+        "models": [{"name": "nomic-embed-text-v1.5"}],
+        "config": {
+            "url": "http://localhost:1234/v1",
+            "api_key": "lm-studio",
+            "flavor": "lmstudio",
+        },
+        "limits": {"max_concurrency": 2},
+    },
+)
+r.raise_for_status()
+--- javascript
+await fetch("/v1/embedding_providers", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    id: "lmstudio-embed",
+    provider: "openai",
+    models: [{ name: "nomic-embed-text-v1.5" }],
+    config: { url: "http://localhost:1234/v1", api_key: "lm-studio", flavor: "lmstudio" },
+    limits: { max_concurrency: 2 },
+  }),
+});
+```
+
+---
+
+## POST /v1/collections
+
+Create a collection. Both `embedder.provider_id` and `search_provider_id` must reference existing rows. Passing an unknown `search_provider_id` returns `404`.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X POST https://primer.example/v1/collections \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "company-docs",
+    "description": "Internal company documentation",
+    "embedder": {
+      "provider_id": "lmstudio-embed",
+      "model": "nomic-embed-text-v1.5"
+    },
+    "search_provider_id": "pg-main",
+    "system": false
+  }'
+--- python
+import httpx
+r = httpx.post(
+    "https://primer.example/v1/collections",
+    headers={"Authorization": f"Bearer {token}"},
+    json={
+        "id": "company-docs",
+        "description": "Internal company documentation",
+        "embedder": {
+            "provider_id": "lmstudio-embed",
+            "model": "nomic-embed-text-v1.5",
+        },
+        "search_provider_id": "pg-main",
+        "system": False,
+    },
+)
+r.raise_for_status()
+--- javascript
+await fetch("/v1/collections", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    id: "company-docs",
+    description: "Internal company documentation",
+    embedder: { provider_id: "lmstudio-embed", model: "nomic-embed-text-v1.5" },
+    search_provider_id: "pg-main",
+    system: false,
+  }),
+});
+```
+
+Response `201`:
+
+```json
+{
+  "id": "company-docs",
+  "description": "Internal company documentation",
+  "embedder": { "provider_id": "lmstudio-embed", "model": "nomic-embed-text-v1.5" },
+  "search_provider_id": "pg-main",
+  "system": false,
+  "harness_id": null,
+  "search": null
+}
+```
+
+---
+
+## POST /v1/documents
+
+Ingest a document. The `meta.text` field carries the content to embed. Embedding happens synchronously on create; the document's chunks appear immediately in `GET /v1/collections/{id}/indexed_documents` once the embedder is reachable. On embedder failure the row is persisted without chunks and the startup backfill will retry.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X POST https://primer.example/v1/documents \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "doc-postmortem-001",
+    "collection_id": "company-docs",
+    "name": "Q1 post-mortem",
+    "meta": { "text": "We experienced a 30-minute outage on March 3..." }
+  }'
+--- python
+import httpx
+r = httpx.post(
+    "https://primer.example/v1/documents",
+    headers={"Authorization": f"Bearer {token}"},
+    json={
+        "id": "doc-postmortem-001",
+        "collection_id": "company-docs",
+        "name": "Q1 post-mortem",
+        "meta": {"text": "We experienced a 30-minute outage on March 3..."},
+    },
+)
+r.raise_for_status()
+--- javascript
+await fetch("/v1/documents", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    id: "doc-postmortem-001",
+    collection_id: "company-docs",
+    name: "Q1 post-mortem",
+    meta: { text: "We experienced a 30-minute outage on March 3..." },
+  }),
+});
+```
+
+---
+
+## PUT /v1/documents/{id}
+
+Replace a document and re-index it. Old chunks are removed before new chunks are written; no stale vectors linger.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X PUT https://primer.example/v1/documents/doc-postmortem-001 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "doc-postmortem-001",
+    "collection_id": "company-docs",
+    "name": "Q1 post-mortem (revised)",
+    "meta": { "text": "Updated analysis: root cause was a misconfigured timeout..." }
+  }'
+--- python
+import httpx
+r = httpx.put(
+    "https://primer.example/v1/documents/doc-postmortem-001",
+    headers={"Authorization": f"Bearer {token}"},
+    json={
+        "id": "doc-postmortem-001",
+        "collection_id": "company-docs",
+        "name": "Q1 post-mortem (revised)",
+        "meta": {"text": "Updated analysis: root cause was a misconfigured timeout..."},
+    },
+)
+r.raise_for_status()
+--- javascript
+await fetch("/v1/documents/doc-postmortem-001", {
+  method: "PUT",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    id: "doc-postmortem-001",
+    collection_id: "company-docs",
+    name: "Q1 post-mortem (revised)",
+    meta: { text: "Updated analysis: root cause was a misconfigured timeout..." },
+  }),
+});
+```
+
+---
+
+## POST /v1/collections/{id}/search
+
+Semantic search within a single collection. Returns a ranked list of matching chunks.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X POST https://primer.example/v1/collections/company-docs/search \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "what caused the outage", "top_k": 5}'
+--- python
+import httpx
+r = httpx.post(
+    "https://primer.example/v1/collections/company-docs/search",
+    headers={"Authorization": f"Bearer {token}"},
+    json={"query": "what caused the outage", "top_k": 5},
+)
+hits = r.json()["hits"]
+--- javascript
+const r = await fetch("/v1/collections/company-docs/search", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ query: "what caused the outage", top_k: 5 }),
+});
+const { hits } = await r.json();
+```
+
+Response `200`:
+
+```json
+{
+  "hits": [
+    {
+      "document_id": "doc-postmortem-001",
+      "chunk_id": "doc-postmortem-001:0",
+      "score": 0.91,
+      "text": "We experienced a 30-minute outage on March 3...",
+      "meta": {}
+    }
+  ]
+}
+```
+
+`top_k` is capped at 100. An empty collection returns `{"hits": []}` rather than an error.
+
+---
+
+## GET /v1/collections/{id}/indexed_documents
+
+List chunks that have been embedded into the vector store. Filter by `?document_id=<id>` to inspect one document's chunks.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s "https://primer.example/v1/collections/company-docs/indexed_documents?document_id=doc-postmortem-001" \
+  -H "Authorization: Bearer $TOKEN"
+--- python
+import httpx
+r = httpx.get(
+    "https://primer.example/v1/collections/company-docs/indexed_documents",
+    params={"document_id": "doc-postmortem-001"},
+    headers={"Authorization": f"Bearer {token}"},
+)
+result = r.json()
+--- javascript
+const r = await fetch(
+  "/v1/collections/company-docs/indexed_documents?document_id=doc-postmortem-001",
+  { headers: { "Authorization": `Bearer ${token}` } },
+);
+const result = await r.json();
+```
+
+Response `200`:
+
+```json
+{
+  "total": 1,
+  "items": [
+    {
+      "document_id": "doc-postmortem-001",
+      "chunk_id": "doc-postmortem-001:0",
+      "text": "We experienced a 30-minute outage on March 3..."
+    }
+  ]
+}
+```
+
+---
+
+## POST /v1/documents/_convert_file
+
+Convert an uploaded file (markdown, PDF, etc.) to plain text suitable for ingestion. Uses multipart form data.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X POST https://primer.example/v1/documents/_convert_file \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@note.md;type=text/markdown"
+--- python
+import httpx
+with open("note.md", "rb") as f:
+    r = httpx.post(
+        "https://primer.example/v1/documents/_convert_file",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("note.md", f, "text/markdown")},
+    )
+text = r.text
+--- javascript
+const fd = new FormData();
+fd.append("file", fileBlob, "note.md");
+const r = await fetch("/v1/documents/_convert_file", {
+  method: "POST",
+  headers: { "Authorization": `Bearer ${token}` },
+  body: fd,
+});
+const text = await r.text();
+```
+
+Returns `200` with the extracted plain text as the response body.
+
+---
+
+## Internal collections (SSP-backed semantic search for agents/graphs/collections/tools)
+
+The internal-collections subsystem indexes agents, graphs, collections, and tools into a shared vector store so they can be found by semantic search. Activation requires a configured embedding provider and SSP. The config stores `embedding_provider_id`, `embedding_model`, and `search_provider_id`. Once activated, vector-space-defining fields are frozen; changing `embedding_provider_id` after the first bootstrap returns `409` with `frozen_fields`.
+
+### PUT /v1/internal_collections/config
+
+Activate or update the subsystem config. Acts as an upsert before the first bootstrap. After bootstrap, changes to frozen fields return `409`.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X PUT https://primer.example/v1/internal_collections/config \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "embedding_provider_id": "lmstudio-embed",
+    "embedding_model": "nomic-embed-text-v1.5",
+    "search_provider_id": "pg-main"
+  }'
+--- python
+import httpx
+r = httpx.put(
+    "https://primer.example/v1/internal_collections/config",
+    headers={"Authorization": f"Bearer {token}"},
+    json={
+        "embedding_provider_id": "lmstudio-embed",
+        "embedding_model": "nomic-embed-text-v1.5",
+        "search_provider_id": "pg-main",
+    },
+)
+r.raise_for_status()
+--- javascript
+await fetch("/v1/internal_collections/config", {
+  method: "PUT",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    embedding_provider_id: "lmstudio-embed",
+    embedding_model: "nomic-embed-text-v1.5",
+    search_provider_id: "pg-main",
+  }),
+});
+```
+
+### POST /v1/internal_collections/bootstrap
+
+Trigger an async bootstrap that creates vector tables and indexes existing entities. Returns `202` immediately; poll `GET /v1/internal_collections/bootstrap/status` until `status == "succeeded"`. A second call while the first is running returns `409`.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X POST https://primer.example/v1/internal_collections/bootstrap \
+  -H "Authorization: Bearer $TOKEN"
+--- python
+import httpx, time
+r = httpx.post(
+    "https://primer.example/v1/internal_collections/bootstrap",
+    headers={"Authorization": f"Bearer {token}"},
+)
+assert r.status_code == 202
+
+# Poll until done
+while True:
+    s = httpx.get(
+        "https://primer.example/v1/internal_collections/bootstrap/status",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if s.json()["status"] == "succeeded":
+        break
+    time.sleep(1)
+--- javascript
+const boot = await fetch("/v1/internal_collections/bootstrap", {
+  method: "POST",
+  headers: { "Authorization": `Bearer ${token}` },
+});
+// boot.status === 202 -- poll status
+```
+
+Bootstrap `202` response body:
+
+```json
+{ "status": "pending" }
+```
+
+Status poll response `200`:
+
+```json
+{ "status": "succeeded", "indexed": 12 }
+```
+
+### DELETE /v1/internal_collections/config
+
+Deactivate the subsystem. After deletion, search routes (`/v1/agents/search`, etc.) return `503` with `/errors/subsystem-inactive`.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X DELETE https://primer.example/v1/internal_collections/config \
+  -H "Authorization: Bearer $TOKEN"
+--- python
+import httpx
+r = httpx.delete(
+    "https://primer.example/v1/internal_collections/config",
+    headers={"Authorization": f"Bearer {token}"},
+)
+r.raise_for_status()  # 204
+--- javascript
+await fetch("/v1/internal_collections/config", {
+  method: "DELETE",
+  headers: { "Authorization": `Bearer ${token}` },
+});
+```
+
+---
+
+## POST /v1/agents/search (and /collections/search, /graphs/search, /tools/search)
+
+Semantic search over the internal collections. Requires a successful bootstrap. Returns the same `SearchResponse` shape for all four routes.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X POST https://primer.example/v1/agents/search \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "data science automation", "top_k": 5}'
+--- python
+import httpx
+r = httpx.post(
+    "https://primer.example/v1/agents/search",
+    headers={"Authorization": f"Bearer {token}"},
+    json={"query": "data science automation", "top_k": 5},
+)
+hits = r.json()["hits"]
+--- javascript
+const r = await fetch("/v1/agents/search", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ query: "data science automation", top_k: 5 }),
+});
+const { hits } = await r.json();
+```
+
+Response `200`:
+
+```json
+{
+  "hits": [
+    {
+      "document_id": "agent-data-pipeline",
+      "chunk_id": "agent-data-pipeline:0",
+      "score": 0.88,
+      "text": "Automates data pipelines and runs ML experiments",
+      "meta": null
+    }
+  ]
+}
+```
+
+`query` must be non-empty (min length 1). `top_k` defaults to 10, max 100. If the subsystem is not bootstrapped, the route returns `503`:
+
+```json
+{
+  "type": "/errors/subsystem-inactive",
+  "title": "Subsystem Inactive",
+  "status": 503,
+  "detail": "internal collections subsystem is not active"
+}
+```
+
+---
+
+## Error responses
+
+All error responses follow RFC 7807:
+
+```json
+{
+  "type": "/errors/not-found",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "collection company-docs not found",
+  "instance": "/v1/collections/company-docs"
+}
+```
+
+Common status codes: `404` resource not found, `409` conflict (SSP in use, frozen field, or duplicate), `422` validation error, `503` subsystem inactive.
