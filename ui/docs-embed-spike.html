@@ -1,0 +1,154 @@
+<!doctype html>
+<!-- SPIKE (Task 1.1) standalone harness — proves the REAL window.AgentsPage
+     renders against the fixture-backed stub with NO network call, using the
+     LOCKED isolation mechanism (B: iframe).
+
+     This page is the HOST. It creates an <iframe> that:
+       1. loads the real /console/_app.js  (React + design system + the real
+          AgentsPage component + styles),
+       2. suppresses the full-app auto-boot by having NO #root div (the
+          bundle's trailing ReactDOM.createRoot(getElementById("root")).render
+          throws harmlessly — every component global is already registered),
+       3. loads ui/components/docs/embed-preview.jsx to get DocsMakeStubApi,
+       4. overrides window.primerApi with the fixture-backed stub,
+       5. renders window.AgentsPage into its own mount.
+
+     Served live from ui/ by the dev server at /console/docs-embed-spike.html.
+-->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>Docs embed spike</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+  html, body { margin: 0; height: 100%; background: var(--bg); }
+  #host { width: 100%; height: 100vh; border: 0; display: block; }
+  #spike-status { position: fixed; top: 4px; left: 4px; z-index: 9; font: 11px monospace; }
+</style>
+</head>
+<body>
+<div id="spike-status" data-state="booting">booting</div>
+<iframe id="host" title="embed-host"></iframe>
+
+<script>
+// The fixture. For the spike we inline it (a later task serves it from
+// /v1/user_docs/_fixtures/<name>.json). This is the committed fixture
+// primer/user_docs/_fixtures/agents-page.json, verbatim.
+const AGENTS_FIXTURE = {
+  "GET /agents?limit=200&offset=0": {
+    "kind": "offset", "offset": 0, "length": 1, "total": 1,
+    "items": [{
+      "id": "weekly-digest",
+      "description": "Summarises the week",
+      "model": { "provider_id": "demo-openai", "model_name": "gpt-4o" },
+      "temperature": null, "tools": [],
+      "system_prompt": ["You write concise weekly digests."],
+      "compaction_prompt": [], "harness_id": null
+    }]
+  },
+  "GET /agents/weekly-digest": {
+    "id": "weekly-digest", "description": "Summarises the week",
+    "model": { "provider_id": "demo-openai", "model_name": "gpt-4o" },
+    "temperature": null, "tools": [],
+    "system_prompt": ["You write concise weekly digests."],
+    "compaction_prompt": [], "harness_id": null
+  },
+  "GET /llm_providers?limit=200": {
+    "kind": "offset", "offset": 0, "length": 0, "total": 0, "items": []
+  }
+};
+
+const statusEl = document.getElementById("spike-status");
+function setStatus(s) { statusEl.textContent = s; statusEl.dataset.state = s; }
+
+const iframe = document.getElementById("host");
+const idoc = iframe.contentDocument;
+
+// Build the iframe document. CRITICAL: no <div id="root"> so the bundle's
+// auto-boot of the full <App/> does not run (and so it makes no live fetches).
+idoc.open();
+idoc.write(`<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="/console/styles.css" />
+<style>html,body{margin:0;background:var(--bg);} #embed-root{padding:16px;}</style>
+</head>
+<body>
+<div id="embed-root"></div>
+<script src="/console/vendor/react.min.js"><\/script>
+<script src="/console/vendor/react-dom.min.js"><\/script>
+<script src="/console/vendor/html2canvas.min.js"><\/script>
+<\/body></html>`);
+idoc.close();
+
+const iwin = iframe.contentWindow;
+
+// Load + execute a plain-JS source file inside the iframe by FETCHING it and
+// injecting an inline <script>. The static handler serves .jsx as
+// text/plain with X-Content-Type-Options: nosniff, so the browser refuses to
+// execute it via <script src> — fetch+inline sidesteps the MIME guard. (The
+// real docs app pre-transpiles + bundles these, so this only matters for the
+// raw-file spike harness.) embed-preview.jsx contains no JSX so no Babel is
+// needed.
+async function loadSourceInline(src) {
+  const res = await iframe.contentWindow.fetch(src);
+  if (!res.ok) throw new Error("failed to fetch " + src + " (" + res.status + ")");
+  const code = await res.text();
+  const s = iframe.contentDocument.createElement("script");
+  s.textContent = code;
+  iframe.contentDocument.body.appendChild(s);
+}
+
+// The bundle's trailing createRoot(null) throws because there's no #root.
+// Swallow exactly that so it doesn't mask a real failure.
+iwin.addEventListener("error", (e) => {
+  const msg = String(e && e.message || "");
+  if (/root|createRoot|null/i.test(msg)) { e.preventDefault(); return; }
+});
+
+(async () => {
+  try {
+    // 1. Wait for React to be present in the iframe.
+    await new Promise((r) => {
+      const t = setInterval(() => { if (iwin.React && iwin.ReactDOM) { clearInterval(t); r(); } }, 10);
+    });
+
+    // 2. Load the real app bundle (defines window.AgentsPage + design system).
+    setStatus("loading-bundle");
+    await loadSourceInline("/console/_app.js");
+
+    // 3. Load the stub factory (plain JS, no JSX).
+    setStatus("loading-stub");
+    await loadSourceInline("/console/components/docs/embed-preview.jsx");
+
+    if (typeof iwin.AgentsPage !== "function") throw new Error("AgentsPage not defined in iframe");
+    if (typeof iwin.DocsMakeStubApi !== "function") throw new Error("DocsMakeStubApi not defined in iframe");
+
+    // 4. Replace the live api with the fixture-backed stub. From here on,
+    //    anything the component reads comes from AGENTS_FIXTURE.
+    iwin.primerApi = iwin.DocsMakeStubApi(AGENTS_FIXTURE);
+
+    // 5. Render the REAL AgentsPage into our own mount.
+    setStatus("rendering");
+    const root = iwin.ReactDOM.createRoot(iframe.contentDocument.getElementById("embed-root"));
+    root.render(
+      iwin.React.createElement(iwin.AgentsPage, {
+        onOpen: () => {},
+        pushToast: () => {},
+      })
+    );
+
+    setStatus("done");
+  } catch (err) {
+    setStatus("error: " + (err && err.message || err));
+    // Surface inside the iframe too for screenshots.
+    try {
+      iframe.contentDocument.getElementById("embed-root").textContent =
+        "SPIKE ERROR: " + (err && err.message || err);
+    } catch (_) {}
+  }
+})();
+</script>
+</body>
+</html>
