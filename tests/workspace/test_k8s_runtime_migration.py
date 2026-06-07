@@ -451,3 +451,112 @@ def test_gateway_reachability_path_mode_parses():
     assert reparsed.reachability.routing.kind == "path_prefix"
     assert reparsed.reachability.routing.path_template == "/ws/{workspace_id}"
     assert reparsed.reachability.scheme == "wss"
+
+
+@pytest.mark.asyncio
+async def test_create_httproute_posts_custom_object():
+    from primer.model.workspace import (
+        KubernetesWorkspaceConfig,
+        K8sConnectionInCluster,
+        K8sReachabilityGateway,
+        K8sGatewayParentRef,
+        K8sGatewayRoutingHostname,
+    )
+    cfg = KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer-workspaces",
+        reachability=K8sReachabilityGateway(
+            gateway=K8sGatewayParentRef(name="primer-gw", namespace="primer-gateway"),
+            routing=K8sGatewayRoutingHostname(hostname_template="{workspace_id}.ws.local"),
+            external_port=32045,
+        ),
+    )
+    backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
+    backend._config = cfg
+    backend._custom_objects = AsyncMock()
+    backend._custom_objects.create_namespaced_custom_object = AsyncMock()
+
+    await backend._create_httproute("ws-abc", "primer-ws-ws-abc")
+
+    backend._custom_objects.create_namespaced_custom_object.assert_awaited_once()
+    kw = backend._custom_objects.create_namespaced_custom_object.call_args.kwargs
+    assert kw["group"] == "gateway.networking.k8s.io"
+    assert kw["version"] == "v1"
+    assert kw["plural"] == "httproutes"
+    assert kw["namespace"] == "primer-workspaces"
+    assert kw["body"]["spec"]["hostnames"] == ["ws-abc.ws.local"]
+
+
+@pytest.mark.asyncio
+async def test_destroy_httproute_best_effort_tolerates_404():
+    from primer.model.workspace import (
+        KubernetesWorkspaceConfig,
+        K8sConnectionInCluster,
+        K8sReachabilityGateway,
+        K8sGatewayParentRef,
+        K8sGatewayRoutingHostname,
+    )
+    cfg = KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer-workspaces",
+        reachability=K8sReachabilityGateway(
+            gateway=K8sGatewayParentRef(name="primer-gw"),
+            routing=K8sGatewayRoutingHostname(hostname_template="{workspace_id}.ws.local"),
+            external_port=32045,
+        ),
+    )
+    backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
+    backend._config = cfg
+    backend._custom_objects = AsyncMock()
+    backend._custom_objects.delete_namespaced_custom_object = AsyncMock(
+        side_effect=Exception("(404) not found"),
+    )
+    await backend._destroy_httproute("primer-ws-ws-abc")  # must not raise
+    backend._custom_objects.delete_namespaced_custom_object.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_rolls_back_on_httproute_failure(monkeypatch):
+    """create(): if the HTTPRoute POST fails, destroy() is called to roll back
+    and the original error propagates."""
+    from unittest.mock import AsyncMock
+    from primer.model.workspace import (
+        KubernetesWorkspaceConfig, K8sConnectionInCluster,
+        K8sReachabilityGateway, K8sGatewayParentRef, K8sGatewayRoutingHostname,
+        KubernetesTemplateConfig, WorkspaceTemplate,
+    )
+    cfg = KubernetesWorkspaceConfig(
+        connection=K8sConnectionInCluster(),
+        namespace="primer-workspaces",
+        reachability=K8sReachabilityGateway(
+            gateway=K8sGatewayParentRef(name="primer-gw"),
+            routing=K8sGatewayRoutingHostname(hostname_template="{workspace_id}.ws.local"),
+            external_port=32045,
+        ),
+    )
+    template = WorkspaceTemplate(
+        id="t1", provider_id="k1", description="",
+        backend=KubernetesTemplateConfig(image="python:3.13"),
+    )
+    backend = KubernetesWorkspaceBackend.__new__(KubernetesWorkspaceBackend)
+    backend._config = cfg
+    backend._initialised = True
+    import asyncio as _asyncio
+    backend._lock = _asyncio.Lock()
+    backend._workspaces = {}
+    backend._core_v1 = AsyncMock()
+    backend._apps_v1 = AsyncMock()
+    backend._custom_objects = AsyncMock()
+    # Secret returns a token; service/sts succeed; httproute POST fails.
+    backend._create_secret = AsyncMock(return_value="tok")
+    backend._create_service = AsyncMock()
+    backend._custom_objects.create_namespaced_custom_object = AsyncMock(
+        side_effect=Exception("admission webhook denied the route"),
+    )
+    backend.destroy = AsyncMock()
+
+    import pytest as _pytest
+    with _pytest.raises(Exception, match="admission webhook"):
+        await backend.create(template)
+
+    backend.destroy.assert_awaited_once()

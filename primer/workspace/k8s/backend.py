@@ -22,6 +22,7 @@ from primer.model.workspace import (
     K8sConnectionInCluster,
     K8sConnectionKubeconfig,
     K8sConnectionServiceAccountToken,
+    K8sReachabilityGateway,
     KubernetesWorkspaceConfig,
     WorkspaceRuntimeMeta,
     WorkspaceTemplate,
@@ -29,6 +30,7 @@ from primer.model.workspace import (
     KubernetesTemplateConfig,
 )
 from primer.workspace.files import resolve_file_sources
+from primer.workspace.k8s.httproute import build_httproute_manifest
 from primer.workspace.k8s.naming import k8s_object_name
 from primer.workspace.runtime.runtime_client import RuntimeClient
 from primer.workspace.runtime.url import build_runtime_url
@@ -257,11 +259,13 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         *,
         core_v1=None,
         apps_v1=None,
+        custom_objects=None,
         ws_api=None,
     ) -> None:
         self._config = config
         self._core_v1 = core_v1
         self._apps_v1 = apps_v1
+        self._custom_objects = custom_objects
         self._ws_api = ws_api
         self._workspaces: dict[str, SandboxWorkspace] = {}
         self._lock = asyncio.Lock()
@@ -270,7 +274,7 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
     async def initialize(self) -> None:
         if self._initialised:
             return
-        if self._core_v1 is None or self._apps_v1 is None:
+        if self._core_v1 is None or self._apps_v1 is None or self._custom_objects is None:
             from kubernetes_asyncio import client, config as kconfig
 
             conn = self._config.connection
@@ -302,8 +306,12 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
                 raise ConfigError(
                     f"unknown k8s connection kind {conn.kind!r}"
                 )
-            self._core_v1 = client.CoreV1Api(api_client)
-            self._apps_v1 = client.AppsV1Api(api_client)
+            if self._core_v1 is None:
+                self._core_v1 = client.CoreV1Api(api_client)
+            if self._apps_v1 is None:
+                self._apps_v1 = client.AppsV1Api(api_client)
+            if self._custom_objects is None:
+                self._custom_objects = client.CustomObjectsApi(api_client)
         self._initialised = True
 
     async def aclose(self) -> None:
@@ -369,6 +377,24 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
             namespace=self._config.namespace,
             body=manifest,
         )
+
+        # 3b. For gateway_httproute reachability, create the per-workspace
+        #     HTTPRoute so the platform can dial the pod through the Gateway.
+        #     Done before the pod-wait so a route failure surfaces fast. On
+        #     failure, roll back the Secret/Service/StatefulSet just created so
+        #     a bad route does not orphan workspace objects.
+        if isinstance(self._config.reachability, K8sReachabilityGateway):
+            try:
+                await self._create_httproute(workspace_id, obj_name)
+            except Exception:
+                try:
+                    await self.destroy(workspace_id)
+                except Exception as cleanup_exc:  # noqa: BLE001
+                    logger.warning(
+                        "rollback after httproute create failure also failed "
+                        "for %r: %s", workspace_id, cleanup_exc,
+                    )
+                raise
 
         # 4. Wait for the Pod to be Running (pod name is <sts>-0).
         pod_name = f"{obj_name}-0"
@@ -509,6 +535,45 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
             namespace=self._config.namespace,
             body=body,
         )
+
+    async def _create_httproute(
+        self, workspace_id: str, obj_name: str,
+    ) -> None:
+        """Create the per-workspace Gateway API HTTPRoute routing external
+        traffic to the workspace's headless Service (gateway_httproute mode)."""
+        assert isinstance(self._config.reachability, K8sReachabilityGateway)
+        assert self._custom_objects is not None
+        body = build_httproute_manifest(
+            reachability=self._config.reachability,
+            workspace_id=workspace_id,
+            obj_name=obj_name,
+            namespace=self._config.namespace,
+        )
+        await self._custom_objects.create_namespaced_custom_object(
+            group="gateway.networking.k8s.io",
+            version="v1",
+            namespace=self._config.namespace,
+            plural="httproutes",
+            body=body,
+        )
+
+    async def _destroy_httproute(self, obj_name: str) -> None:
+        """Best-effort delete of the per-workspace HTTPRoute; 404-tolerant."""
+        if self._custom_objects is None:
+            return
+        try:
+            await self._custom_objects.delete_namespaced_custom_object(
+                group="gateway.networking.k8s.io",
+                version="v1",
+                namespace=self._config.namespace,
+                plural="httproutes",
+                name=obj_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if "404" not in str(exc):
+                logger.warning(
+                    "destroy: httproute delete for %r failed: %s", obj_name, exc,
+                )
 
     async def _wait_for_pod_running(
         self, pod_name: str, *, timeout_seconds: float = 120.0,
@@ -716,6 +781,10 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
                         "destroy: %s delete for %r failed: %s",
                         kind, name, exc,
                     )
+
+        # Best-effort cleanup of the per-workspace HTTPRoute (gateway mode).
+        if isinstance(self._config.reachability, K8sReachabilityGateway):
+            await self._destroy_httproute(obj_name)
 
 
 __all__ = ["KubernetesWorkspaceBackend"]
