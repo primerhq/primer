@@ -60,6 +60,12 @@ async def test_create_namespaced_secret_called_with_runtime_token():
     assert (
         body["metadata"]["labels"]["app.kubernetes.io/managed-by"] == "primer"
     )
+    # The runtime container reads ``PRIMER_RUNTIME_TOKEN`` (see
+    # primer_runtime.server.build_app); ``RUNTIME_TOKEN`` is the operator-
+    # facing alias. Both must be present so the StatefulSet's ``envFrom``
+    # injects the var the runtime actually starts up against -- without the
+    # canonical key the pod crash-loops on a missing token.
+    assert body["stringData"]["PRIMER_RUNTIME_TOKEN"] == token
     assert body["stringData"]["RUNTIME_TOKEN"] == token
 
 

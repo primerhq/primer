@@ -314,7 +314,165 @@ async def test_container_backend(authed_client, unique_suffix):
         await authed_client.delete(f"/v1/workspace_providers/{wp}")
 
 
+def _kubectl_names(kind: str, name: str, namespace: str) -> list[str]:
+    """Return matching object names of ``kind`` in ``namespace`` (or []).
+
+    Used to assert the K8s backend leaves no Secret/Service/StatefulSet/PVC
+    behind after a workspace is destroyed. Mirrors ``_docker_names`` for the
+    container backend. Returns [] when kubectl is unavailable or errors so a
+    missing CLI does not masquerade as a leak.
+    """
+    try:
+        out = subprocess.run(
+            ["kubectl", "get", kind, "-n", namespace,
+             "-o", "jsonpath={.items[*].metadata.name}"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [n for n in out.stdout.split() if n == name]
+
+
 @smk("SMK-WSP-13")
 @requires("workspace:kubernetes")
-async def test_kubernetes_backend():
-    pytest.skip("covered when workspace:kubernetes is configured in testconfig")
+async def test_kubernetes_backend(authed_client, unique_suffix):
+    """Materialise a workspace on the Kubernetes (k3s) backend, prove file +
+    exec work *inside the pod* via in-cluster service DNS, and tear it down
+    with no leaked K8s objects.
+
+    Topology: this exercises the ``in_cluster`` reachability mode, which only
+    works when the primer platform itself runs inside the cluster. The test
+    therefore targets the in-cluster platform's API; point the e2e harness at
+    it via ``PRIMER_E2E_BASE_URL`` (e.g. the NodePort of the in-cluster
+    ``primer-api`` Service). The runtime image must be pullable by the cluster
+    (a cluster-local registry tag); override the default via
+    ``PRIMER_K8S_RUNTIME_IMAGE``. The workspace namespace defaults to
+    ``primer-workspaces`` and can be overridden via ``PRIMER_K8S_NAMESPACE``.
+
+    Like SMK-WSP-12 the server generates the workspace id (``ws-<hex>``) and
+    names every K8s object ``primer-ws-<id>``; we never send an explicit id and
+    use only the id returned by ``POST /v1/workspaces``.
+    """
+    import os
+
+    namespace = os.environ.get("PRIMER_K8S_NAMESPACE", "primer-workspaces")
+    runtime_image = os.environ.get(
+        "PRIMER_K8S_RUNTIME_IMAGE",
+        "127.0.0.1:30500/primer/workspace-runtime:1.0",
+    )
+    wp = f"wpk-{unique_suffix}"
+    tpl = f"tplk-{unique_suffix}"
+    wid: str | None = None
+    obj_name: str | None = None
+
+    rp = await authed_client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp,
+            "provider": "kubernetes",
+            "config": {
+                "kind": "kubernetes",
+                "connection": {"kind": "in_cluster"},
+                "namespace": namespace,
+                "reachability": {"kind": "in_cluster"},
+            },
+        },
+    )
+    assert rp.status_code in (200, 201), rp.text
+
+    rt = await authed_client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl,
+            "description": "smk k8s backend",
+            "provider_id": wp,
+            "backend": {
+                "kind": "kubernetes",
+                "image": runtime_image,
+                # The runtime image's ENTRYPOINT launches the server; the
+                # backend defaults `command` to `sleep infinity` when no
+                # entrypoint is given, so set it explicitly.
+                "entrypoint": ["python", "-m", "primer_runtime.server"],
+                "pvc_size": "1Gi",
+            },
+        },
+    )
+    assert rt.status_code in (200, 201), rt.text
+
+    try:
+        # No explicit id: the server generates ws-<hex> and names the K8s
+        # objects primer-ws-<id>.
+        rw = await authed_client.post("/v1/workspaces", json={"template_id": tpl})
+        assert rw.status_code in (200, 201), rw.text
+        body = rw.json()
+        wid = body["id"]
+        assert wid and wid.startswith("ws-"), wid
+        obj_name = body["runtime_meta"]["k8s_object_name"]
+        assert obj_name == f"primer-ws-{wid}", body
+
+        # Poll until the pod is running (real image pull + StatefulSet boot).
+        phase = None
+        for _ in range(120):
+            got = await authed_client.get(f"/v1/workspaces/{wid}")
+            assert got.status_code == 200, got.text
+            phase = got.json().get("phase")
+            if phase == "running":
+                break
+            assert phase not in ("failed", "error"), got.text
+            await asyncio.sleep(1.0)
+        assert phase == "running", f"workspace never reached running: phase={phase!r}"
+
+        # 1) File write+read round-trip, proving the file surface targets the
+        #    pod's /workspace PVC via the in-cluster runtime WebSocket.
+        marker = f"K8S-MARKER-{unique_suffix}"
+        w = await authed_client.put(
+            f"/v1/workspaces/{wid}/files",
+            params={"path": "marker.txt"},
+            json={"content": marker, "encoding": "text"},
+        )
+        assert w.status_code == 204, w.text
+        rd = await authed_client.get(
+            f"/v1/workspaces/{wid}/files/read",
+            params={"path": "marker.txt", "encoding": "text"},
+        )
+        assert rd.status_code == 200, rd.text
+        assert rd.json()["content"] == marker
+
+        # 2) Exec inside the pod. echo/pwd exit 0; the file written above must
+        #    be visible to the shell, proving file API and exec share the pod
+        #    filesystem.
+        diag = await authed_client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": "echo EXEC-OK; pwd; cat marker.txt", "timeout_seconds": 30},
+        )
+        assert diag.status_code in (200, 201), diag.text
+        db = diag.json()
+        assert db["exit_code"] == 0, db
+        assert "EXEC-OK" in db["stdout"], db
+        assert "/workspace" in db["stdout"], db
+        assert marker in db["stdout"], db
+    finally:
+        # 3) Teardown: DELETE removes the StatefulSet + Service + Secret + PVC.
+        #    Assert the API contract (204 + GET 404) and that kubectl shows no
+        #    leaked objects named after the workspace.
+        if wid is not None:
+            d = await authed_client.delete(f"/v1/workspaces/{wid}")
+            assert d.status_code in (204, 404), d.text
+            gone = await authed_client.get(f"/v1/workspaces/{wid}")
+            assert gone.status_code == 404, gone.text
+            if obj_name is not None:
+                # The StatefulSet controller deletes the pod; allow a moment
+                # for the objects to disappear before asserting no leaks.
+                for _ in range(30):
+                    leaks = (
+                        _kubectl_names("statefulset", obj_name, namespace)
+                        + _kubectl_names("service", obj_name, namespace)
+                        + _kubectl_names("secret", obj_name, namespace)
+                        + _kubectl_names("pvc", f"ws-{obj_name}-0", namespace)
+                    )
+                    if not leaks:
+                        break
+                    await asyncio.sleep(1.0)
+                assert leaks == [], f"leaked K8s objects: {leaks}"
+        await authed_client.delete(f"/v1/workspace_templates/{tpl}")
+        await authed_client.delete(f"/v1/workspace_providers/{wp}")

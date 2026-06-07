@@ -453,7 +453,16 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
                     "app.kubernetes.io/managed-by": "primer",
                 },
             },
-            "stringData": {"RUNTIME_TOKEN": token},
+            # The runtime container reads ``PRIMER_RUNTIME_TOKEN`` (see
+            # primer_runtime.server.build_app); ``RUNTIME_TOKEN`` is the
+            # operator-facing alias. The StatefulSet ``envFrom``s this Secret,
+            # so every key becomes an env var -- carry both so the runtime
+            # starts without the operator having to remap the name (mirrors
+            # primer/workspace/runtime/docker.py).
+            "stringData": {
+                "PRIMER_RUNTIME_TOKEN": token,
+                "RUNTIME_TOKEN": token,
+            },
         }
         assert self._core_v1 is not None
         await self._core_v1.create_namespaced_secret(
@@ -635,15 +644,19 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         # .string_data only.
         data = getattr(secret, "data", None) or {}
         string_data = getattr(secret, "string_data", None) or {}
-        if "RUNTIME_TOKEN" in string_data:
-            return string_data["RUNTIME_TOKEN"]
-        raw = data.get("RUNTIME_TOKEN")
-        if raw is None:
-            raise ConfigError(
-                f"Secret {obj_name!r} missing RUNTIME_TOKEN key"
-            )
+        # Prefer the canonical key the runtime reads; fall back to the alias
+        # for Secrets minted before both keys were written.
+        for key in ("PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"):
+            if key in string_data:
+                return string_data[key]
         import base64
-        return base64.b64decode(raw).decode("utf-8")
+        for key in ("PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"):
+            raw = data.get(key)
+            if raw is not None:
+                return base64.b64decode(raw).decode("utf-8")
+        raise ConfigError(
+            f"Secret {obj_name!r} missing PRIMER_RUNTIME_TOKEN key"
+        )
 
     async def list(self) -> list[str]:
         return list(self._workspaces)
