@@ -1,7 +1,13 @@
 """Fixtures that provide MCP mount config for the e2e tests.
 
-Default to the in-repo fixture servers (hermetic). testconfig.mcp.stdio /
-testconfig.mcp.http override to point at the user's own MCP servers.
+These ALWAYS resolve to the in-repo fixture MCP servers (echo / bump with a
+marker file) so the hermetic MCP journeys (SMK-X-01/X-02, toolset CRUD, the
+stdio allowlist) stay deterministic regardless of testconfig. External-MCP
+coverage against the operator's configured servers (testconfig.mcp.stdio /
+testconfig.mcp.http) lives in tests/e2e/test_smk_mcp.py, which reads
+testconfig directly rather than going through these shared fixtures -- a
+configured external server (e.g. open-websearch) has no echo/bump tools and
+would break the marker-based hermetic assertions if it leaked in here.
 """
 from __future__ import annotations
 
@@ -12,8 +18,6 @@ import time
 
 import httpx
 import pytest
-
-from tests._support.testconfig import load_config
 
 
 def _free_port() -> int:
@@ -29,21 +33,15 @@ def mcp_stdio_command() -> list[str]:
     """The stdio command the primer server launches as an MCP toolset.
 
     Uses ``uv run`` so command[0] is ``uv`` (in mcp_stdio_allowed_commands)
-    and the repo venv + PYTHONPATH resolve ``tests._support``.
+    and the repo venv + PYTHONPATH resolve ``tests._support``. Always the
+    in-repo stdio server (see module docstring).
     """
-    cfg = load_config().get("mcp", {}).get("stdio", {})
-    if cfg.get("enabled") and cfg.get("command"):
-        return list(cfg["command"])
     return ["uv", "run", "python", "-m", "tests._support.mcp.stdio_server"]
 
 
 @pytest.fixture
 def mcp_http_url():
-    """Yield the base URL of a running streamable-HTTP MCP server."""
-    cfg = load_config().get("mcp", {}).get("http", {})
-    if cfg.get("enabled") and cfg.get("url"):
-        yield cfg["url"]
-        return
+    """Yield the base URL of a running in-repo streamable-HTTP MCP server."""
     port = _free_port()
     env = dict(os.environ, PRIMER_TEST_MCP_HTTP_HOST="127.0.0.1",
                PRIMER_TEST_MCP_HTTP_PORT=str(port))
