@@ -191,19 +191,17 @@ async def test_stdio_mcp_approval_park_resume(
         final = await wait_terminal(authed_client, sid, timeout_s=90)
         assert final.get("status") == "ended", final
 
-        # ----- The real stdio MCP bump tool executed after approval -----
-        # The gated tool executed after approval. The bump counter may read
-        # >1 because the scripted mock re-offers bump and re-emits it on the
-        # post-approval continuation turn (the approval-resume continuation
-        # does not surface the prior tool result to the LLM the way the
-        # ask_user path does, so the stateless mock re-calls; a real LLM
-        # would respond instead). SMK-X-01's contract is "gated until
-        # approved, then the real stdio MCP tool runs" - i.e. >= 1. The
-        # continuation tool-result surfacing for the _approval path is a
-        # tracked follow-up.
+        # ----- The real stdio MCP bump tool executed EXACTLY ONCE -----
+        # The gated tool runs exactly once after approval: the approval-resume
+        # continuation surfaces the approved tool's result to the LLM (the
+        # injected [assistant_tool_use, tool_result] pair), so the scripted
+        # mock matches its when_tool_result=True rule and emits terminating
+        # text instead of re-calling bump. A counter of "1" proves both
+        # single resume-execution (no double-claim of the resumable lease)
+        # and that the tool result reached the continuation request.
         assert os.path.exists(marker), (
             "stdio MCP bump tool did not run after approval+resume")
-        assert int(open(marker).read().strip()) >= 1
+        assert open(marker).read().strip() == "1"
     finally:
         try:
             await authed_client.delete(f"/v1/tool_approval_policies/{pol}")

@@ -111,6 +111,21 @@ class InMemoryClaimEngine(ClaimEngine):
         row = self._leases.get(key)
         if row is None:
             return
+        # Run the adapter's on_release hook (which clears the entity's park
+        # columns) BEFORE releasing the claim, then reset the lease's claim
+        # fields. Postgres does both inside a single transaction so a
+        # concurrent claim never observes a freed lease whose entity row is
+        # still 'resumable'. The in-memory engine has no transaction, so we
+        # preserve the same invariant by ordering: while ``claimed_by`` is
+        # still set, ``claim_due`` cannot re-claim this lease, so the
+        # on_release entity-state write (e.g. parked_status -> None) is
+        # guaranteed to land before the lease becomes claimable again. The
+        # previous order (reset claim fields first, then await on_release)
+        # opened a window where a resumable session was re-claimed and its
+        # resume hook ran twice, double-executing an approved tool.
+        adapter = self._adapters.get(lease.kind)
+        if adapter is not None:
+            await adapter.on_release(conn=None, entity_id=lease.entity_id, outcome=outcome)
         row.claimed_by = None
         row.claimed_at = None
         row.last_heartbeat_at = None
@@ -123,10 +138,6 @@ class InMemoryClaimEngine(ClaimEngine):
         else:
             row.attempt_count = 0
             row.last_error = None
-        # Run adapter on_release hook
-        adapter = self._adapters.get(lease.kind)
-        if adapter is not None:
-            await adapter.on_release(conn=None, entity_id=lease.entity_id, outcome=outcome)
         self._wake.set()
 
     async def mark_resumable(self, kind: ClaimKind, entity_id: str, *, priority: int = 50) -> None:
