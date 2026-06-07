@@ -195,7 +195,7 @@ class _SubscribeArgs(BaseModel):
 
 
 TOOL_LIST = Tool(
-    id="trigger__list",
+    id="list",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "List triggers. Optional filters: ``kind`` (delayed / scheduled) "
@@ -206,7 +206,7 @@ TOOL_LIST = Tool(
 )
 
 TOOL_GET = Tool(
-    id="trigger__get",
+    id="get",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "Get one trigger by id. Returns the full Trigger row or "
@@ -216,7 +216,7 @@ TOOL_GET = Tool(
 )
 
 TOOL_CREATE = Tool(
-    id="trigger__create",
+    id="create",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "Create a new trigger. ``config`` is the discriminated union "
@@ -230,7 +230,7 @@ TOOL_CREATE = Tool(
 )
 
 TOOL_UPDATE = Tool(
-    id="trigger__update",
+    id="update",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "Partial update of a trigger. Changing ``config.kind`` is "
@@ -241,7 +241,7 @@ TOOL_UPDATE = Tool(
 )
 
 TOOL_DELETE = Tool(
-    id="trigger__delete",
+    id="delete",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "Delete a trigger and cascade-delete its subscriptions. Returns "
@@ -251,7 +251,7 @@ TOOL_DELETE = Tool(
 )
 
 TOOL_FIRE_NOW = Tool(
-    id="trigger__fire_now",
+    id="fire_now",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "Synchronously fire a trigger (operator/testing aid). Bypasses "
@@ -262,7 +262,7 @@ TOOL_FIRE_NOW = Tool(
 )
 
 TOOL_LIST_SUBS = Tool(
-    id="trigger__list_subscriptions",
+    id="list_subscriptions",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "List subscriptions bound to a trigger. Returns an array of "
@@ -273,7 +273,7 @@ TOOL_LIST_SUBS = Tool(
 )
 
 TOOL_GET_SUB = Tool(
-    id="trigger__get_subscription",
+    id="get_subscription",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "Get one subscription scoped to its trigger. Returns the full "
@@ -283,7 +283,7 @@ TOOL_GET_SUB = Tool(
 )
 
 TOOL_CREATE_SUB = Tool(
-    id="trigger__create_subscription",
+    id="create_subscription",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "Create a subscription bound to a trigger. ``config`` is the "
@@ -297,7 +297,7 @@ TOOL_CREATE_SUB = Tool(
 )
 
 TOOL_UPDATE_SUB = Tool(
-    id="trigger__update_subscription",
+    id="update_subscription",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "Partial update of a subscription. Only the fields supplied are "
@@ -308,7 +308,7 @@ TOOL_UPDATE_SUB = Tool(
 )
 
 TOOL_DELETE_SUB = Tool(
-    id="trigger__delete_subscription",
+    id="delete_subscription",
     toolset_id=TRIGGER_TOOLSET_ID,
     description=(
         "Delete a subscription by id (scoped to its trigger). Returns "
@@ -725,47 +725,47 @@ def build_trigger_toolset_provider(
 ) -> InternalToolsetProvider:
     """Construct the ``trigger`` internal toolset."""
     registry: dict[str, tuple[Tool, ToolHandler]] = {
-        "trigger__list": (
+        "list": (
             TOOL_LIST,
             _make_list_handler(storage_provider, claim_engine, event_bus),
         ),
-        "trigger__get": (
+        "get": (
             TOOL_GET,
             _make_get_handler(storage_provider, claim_engine, event_bus),
         ),
-        "trigger__create": (
+        "create": (
             TOOL_CREATE,
             _make_create_handler(storage_provider, claim_engine, event_bus),
         ),
-        "trigger__update": (
+        "update": (
             TOOL_UPDATE,
             _make_update_handler(storage_provider, claim_engine, event_bus),
         ),
-        "trigger__delete": (
+        "delete": (
             TOOL_DELETE,
             _make_delete_handler(storage_provider, claim_engine, event_bus),
         ),
-        "trigger__fire_now": (
+        "fire_now": (
             TOOL_FIRE_NOW,
             _make_fire_now_handler(storage_provider, claim_engine, event_bus),
         ),
-        "trigger__list_subscriptions": (
+        "list_subscriptions": (
             TOOL_LIST_SUBS,
             _make_list_subs_handler(storage_provider, claim_engine, event_bus),
         ),
-        "trigger__get_subscription": (
+        "get_subscription": (
             TOOL_GET_SUB,
             _make_get_sub_handler(storage_provider, claim_engine, event_bus),
         ),
-        "trigger__create_subscription": (
+        "create_subscription": (
             TOOL_CREATE_SUB,
             _make_create_sub_handler(storage_provider, claim_engine, event_bus),
         ),
-        "trigger__update_subscription": (
+        "update_subscription": (
             TOOL_UPDATE_SUB,
             _make_update_sub_handler(storage_provider, claim_engine, event_bus),
         ),
-        "trigger__delete_subscription": (
+        "delete_subscription": (
             TOOL_DELETE_SUB,
             _make_delete_sub_handler(storage_provider, claim_engine, event_bus),
         ),

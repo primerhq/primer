@@ -94,12 +94,12 @@ class TestUnknownTrigger:
     ):
         # Create then disable.
         created = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_create_args("dis-trg", "Disabled"),
         )
         trigger_id = json.loads(created.output)["id"]
         await toolset.call(
-            tool_name="trigger__update",
+            tool_name="update",
             arguments={"id": trigger_id, "enabled": False},
         )
 
@@ -129,7 +129,7 @@ class TestSubscribeYields:
         self, toolset, ctx, fake_storage_provider,
     ):
         created = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_create_args("sub-yld", "Yield Host"),
         )
         trigger_id = json.loads(created.output)["id"]
@@ -178,7 +178,7 @@ class TestChatOnlyRejected:
         self, toolset, fake_storage_provider,
     ):
         created = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_create_args("chat-only", "Chat Only"),
         )
         trigger_id = json.loads(created.output)["id"]

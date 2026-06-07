@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from primer.agent.tool_manager import ToolExecutionManager
 from primer.toolset.trigger import (
     TRIGGER_TOOLSET_ID,
     build_trigger_toolset_provider,
@@ -69,17 +70,17 @@ class TestCatalogue:
     async def test_tool_ids_match_spec(self, toolset):
         names = {t.id async for t in toolset.list_tools()}
         expected = {
-            "trigger__list",
-            "trigger__get",
-            "trigger__create",
-            "trigger__update",
-            "trigger__delete",
-            "trigger__fire_now",
-            "trigger__list_subscriptions",
-            "trigger__get_subscription",
-            "trigger__create_subscription",
-            "trigger__update_subscription",
-            "trigger__delete_subscription",
+            "list",
+            "get",
+            "create",
+            "update",
+            "delete",
+            "fire_now",
+            "list_subscriptions",
+            "get_subscription",
+            "create_subscription",
+            "update_subscription",
+            "delete_subscription",
             "subscribe_to_trigger",
         }
         assert names == expected
@@ -98,7 +99,7 @@ class TestCatalogue:
 class TestList:
     @pytest.mark.asyncio
     async def test_list_empty(self, toolset):
-        result = await toolset.call(tool_name="trigger__list", arguments={})
+        result = await toolset.call(tool_name="list", arguments={})
         assert not result.is_error, result.output
         items = json.loads(result.output)
         assert items == []
@@ -113,7 +114,7 @@ class TestCreateAndGet:
     @pytest.mark.asyncio
     async def test_create_then_get(self, toolset, fake_storage_provider):
         created = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_args(slug="cg-one", name="CG One"),
         )
         assert not created.is_error, created.output
@@ -127,7 +128,7 @@ class TestCreateAndGet:
 
         # Verify get round-trips the same row.
         got = await toolset.call(
-            tool_name="trigger__get",
+            tool_name="get",
             arguments={"id": trigger_id},
         )
         assert not got.is_error, got.output
@@ -137,7 +138,7 @@ class TestCreateAndGet:
     @pytest.mark.asyncio
     async def test_get_missing_returns_trigger_not_found(self, toolset):
         result = await toolset.call(
-            tool_name="trigger__get",
+            tool_name="get",
             arguments={"id": "tr-ghost"},
         )
         assert result.is_error
@@ -147,12 +148,12 @@ class TestCreateAndGet:
     @pytest.mark.asyncio
     async def test_duplicate_slug_rejected(self, toolset):
         first = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_args(slug="dup-slug", name="First"),
         )
         assert not first.is_error, first.output
         second = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_args(slug="dup-slug", name="Second"),
         )
         assert second.is_error
@@ -169,14 +170,14 @@ class TestUpdate:
     @pytest.mark.asyncio
     async def test_update_name(self, toolset):
         created = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_args(slug="up-slug", name="Original"),
         )
         body = _result_body(created)
         trigger_id = body["id"]
 
         updated = await toolset.call(
-            tool_name="trigger__update",
+            tool_name="update",
             arguments={"id": trigger_id, "name": "Renamed"},
         )
         assert not updated.is_error, updated.output
@@ -188,7 +189,7 @@ class TestUpdate:
     @pytest.mark.asyncio
     async def test_update_missing(self, toolset):
         result = await toolset.call(
-            tool_name="trigger__update",
+            tool_name="update",
             arguments={"id": "tr-ghost", "name": "X"},
         )
         assert result.is_error
@@ -205,14 +206,14 @@ class TestDelete:
     @pytest.mark.asyncio
     async def test_delete_removes_row(self, toolset, fake_storage_provider):
         created = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_args(slug="del-slug", name="Doomed"),
         )
         body = _result_body(created)
         trigger_id = body["id"]
 
         deleted = await toolset.call(
-            tool_name="trigger__delete",
+            tool_name="delete",
             arguments={"id": trigger_id},
         )
         assert not deleted.is_error, deleted.output
@@ -220,7 +221,7 @@ class TestDelete:
 
         # Subsequent get returns trigger_not_found.
         got = await toolset.call(
-            tool_name="trigger__get",
+            tool_name="get",
             arguments={"id": trigger_id},
         )
         assert got.is_error
@@ -229,7 +230,7 @@ class TestDelete:
     @pytest.mark.asyncio
     async def test_delete_missing(self, toolset):
         result = await toolset.call(
-            tool_name="trigger__delete",
+            tool_name="delete",
             arguments={"id": "tr-ghost"},
         )
         assert result.is_error
@@ -248,13 +249,13 @@ class TestSubscriptions:
         self, toolset, fake_storage_provider,
     ):
         created = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_args(slug="sub-host", name="Sub Host"),
         )
         trigger_id = _result_body(created)["id"]
 
         sub_result = await toolset.call(
-            tool_name="trigger__create_subscription",
+            tool_name="create_subscription",
             arguments={
                 "trigger_id": trigger_id,
                 "config": {"kind": "chat_message", "chat_id": "ch-1"},
@@ -270,7 +271,7 @@ class TestSubscriptions:
 
         # list_subscriptions surfaces the new row.
         listed = await toolset.call(
-            tool_name="trigger__list_subscriptions",
+            tool_name="list_subscriptions",
             arguments={"trigger_id": trigger_id},
         )
         assert not listed.is_error
@@ -281,13 +282,13 @@ class TestSubscriptions:
     @pytest.mark.asyncio
     async def test_parked_session_create_rejected(self, toolset):
         created = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_args(slug="ps-host", name="PS Host"),
         )
         trigger_id = _result_body(created)["id"]
 
         bad = await toolset.call(
-            tool_name="trigger__create_subscription",
+            tool_name="create_subscription",
             arguments={
                 "trigger_id": trigger_id,
                 "config": {
@@ -305,13 +306,13 @@ class TestSubscriptions:
     @pytest.mark.asyncio
     async def test_subscription_not_found(self, toolset):
         created = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_args(slug="snf-host", name="SNF Host"),
         )
         trigger_id = _result_body(created)["id"]
 
         got = await toolset.call(
-            tool_name="trigger__get_subscription",
+            tool_name="get_subscription",
             arguments={"trigger_id": trigger_id, "subscription_id": "sb-ghost"},
         )
         assert got.is_error
@@ -329,13 +330,13 @@ class TestFireNow:
         # Create a trigger with no subs — fire_now should still report
         # a fire_id and an empty results list.
         created = await toolset.call(
-            tool_name="trigger__create",
+            tool_name="create",
             arguments=_delayed_args(slug="fire-host", name="Fire Host"),
         )
         trigger_id = _result_body(created)["id"]
 
         fired = await toolset.call(
-            tool_name="trigger__fire_now",
+            tool_name="fire_now",
             arguments={"id": trigger_id},
         )
         assert not fired.is_error, fired.output
@@ -347,8 +348,45 @@ class TestFireNow:
     @pytest.mark.asyncio
     async def test_fire_now_missing(self, toolset):
         result = await toolset.call(
-            tool_name="trigger__fire_now",
+            tool_name="fire_now",
             arguments={"id": "tr-ghost"},
         )
         assert result.is_error
         assert _result_body(result)["type"] == "trigger_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Regression: bare tool ids survive ToolExecutionManager.list_tools
+# ---------------------------------------------------------------------------
+
+
+class TestToolExecutionManagerIntegration:
+    """Regression test: trigger toolset bare ids must not cause ConfigError.
+
+    Before the fix, management tools declared pre-scoped ids
+    (``trigger__list``, etc.) which contain ``__``; ``list_tools``
+    raises ``ConfigError`` on those.  After the fix the ids are bare
+    (``list``, ``get``, ...) and the manager scopes them to
+    ``trigger__list``, ``trigger__get``, ... on the way out.
+    """
+
+    @pytest.mark.asyncio
+    async def test_list_tools_does_not_raise_config_error(
+        self, fake_storage_provider,
+    ):
+        provider = build_trigger_toolset_provider(
+            storage_provider=fake_storage_provider,
+            claim_engine=None,
+            event_bus=None,
+        )
+        tm = ToolExecutionManager(
+            toolset_providers={TRIGGER_TOOLSET_ID: provider},  # type: ignore[arg-type]
+        )
+        # Must not raise ConfigError.
+        catalogue = await tm.list_tools()
+        scoped_ids = {t.id for t in catalogue}
+        # The manager scopes bare ids: bare "list" -> "trigger__list", etc.
+        assert "trigger__list" in scoped_ids
+        assert "trigger__subscribe_to_trigger" in scoped_ids
+        # All 12 tools should be present.
+        assert len(scoped_ids) == 12
