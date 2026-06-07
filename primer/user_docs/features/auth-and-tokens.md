@@ -2,93 +2,62 @@
 slug: auth-and-tokens
 title: Auth and API tokens
 section: features
-summary: The session-cookie + bearer-token model, the API tokens page, scope picking, rotation.
+summary: Register the operator account on first boot, log in, and create or revoke bearer tokens for programmatic access.
 ---
 
-## Two transports, one secret
+## Overview
 
-Primer's auth model is single-user in v1. Every authenticated
-request carries either:
+Primer is single-operator in v1. The first visit to the console presents a one-time registration screen that creates the only account. Subsequent visits show the login screen. Bearer tokens let automated clients authenticate without a browser session.
 
-- A session cookie set by the console login flow.
-- A bearer token minted on the API Tokens page.
+## Registering the operator account
 
-Both are validated against the same HMAC secret
-(`PRIMER_SESSION_SECRET`). Rotating the secret rotates every
-session and every token; rotating just one token leaves the
-secret intact.
+Registration is available only once -- the form is replaced by the login screen after the first account is created.
 
-## The topbar shows the auth state
-
-A successful login produces the username initial in the
-operator's avatar bubble in the top right:
-
-```mockup:topbar
-{ "workers": "8/8", "showThemeToggle": true, "username": "alex" }
-```
-
-A logged-out client sees the login page; bearer-token clients
-that miss auth get a clean 401.
-
-## Minting a token
-
-The API Tokens page is the only place a bearer token is created.
-Pick a label, an expiry, and a scope set:
-
-```mockup:api-token-create
-{ "phase": "form" }
-```
-
-Save. The token value is shown exactly once:
-
-```mockup:api-token-create
-{ "phase": "reveal" }
-```
-
-Copy it; primer never shows the value again. The token id (the
-short row id on the list) is retrievable; the secret is not.
-
-## Three transports for using it
-
-```code-tabs:python,curl,javascript
---- python
-import primer
-client = primer.Client(token="primer_at_...")
-# The SDK reads $PRIMER_TOKEN if the keyword arg is omitted.
---- curl
-curl -H "Authorization: Bearer $PRIMER_TOKEN" \
-  https://primer.example/v1/agents
---- javascript
-fetch("/v1/agents", {
-  headers: { "Authorization": `Bearer ${token}` },
-});
-```
-
-## Scopes
-
-Each token carries a scope set. Scopes are coarse
-(noun-level) and additive: `agents:read`, `agents:write`,
-`sessions:read`, etc. A call to a scoped endpoint returns 403
-if the token does not carry the matching scope.
+1. Open the console URL in your browser. The registration screen appears automatically when no operator account exists yet.
+2. Enter a username (lowercase letters, digits, `.`, `_`, `-`).
+3. Enter a password of at least eight characters. Confirm it in the second field.
+4. Click **Create account**. The console reloads and you are signed in.
 
 ```callout:warning
-Mint short-lived tokens for short-lived purposes. A 90-day token
-in a CI variable is harder to rotate than a 7-day token that
-gets refreshed by the CI's secret manager. The pain of frequent
-rotation is real but smaller than the pain of a leak you cannot
-quickly remediate.
+Only one account exists in v1. If a colleague creates the account before you reach the registration screen, the form is gone and you will see the login screen instead. Coordinate with whoever runs the first boot.
 ```
 
-## Rotation
+## Logging in
 
-Two rotation flows:
+1. Open the console URL. The login screen shows when an account exists but no session cookie is present.
+2. Enter your username and password.
+3. Optionally check **Keep me signed in on this device** to extend the session cookie lifetime.
+4. Click **Sign in**. The console loads and your username initial appears in the avatar bubble in the top-right corner.
 
-- **Revoke individual token**: hit the trash icon on the API
-  Tokens row. Future calls with that token return 401.
-- **Rotate the session secret**: set a new
-  `PRIMER_SESSION_SECRET` and restart. Every session cookie and
-  bearer token in existence stops working; operators log in
-  again, tokens are reminted.
+## Creating an API token
 
-The session-secret rotation is the nuclear option; reserve it
-for actual compromise.
+API tokens let scripts, the MCP bridge, and other automated clients authenticate with a bearer token instead of a browser session.
+
+1. Navigate to **API tokens** in the left nav.
+2. Click **Create token** (top-right of the filter bar).
+3. In the **Create API token** dialog, enter a unique name (for example, `mcp-bridge-prod`). Names must be unique and at most 128 characters.
+4. Under **Scopes**, check the scopes the token needs. The `mcp` scope permits calls to the MCP bridge endpoints. Tokens without any scope can authenticate but cannot reach scope-gated endpoints.
+5. Optionally set an expiry date and time under **Expires at**. Leave blank for a token that does not expire.
+6. Click **Create token**.
+
+The dialog switches to the one-time reveal view:
+
+```embed:api-token-create
+```
+
+7. Click **Copy token** to copy the plaintext to your clipboard.
+8. Click **I have saved it -- close** once you have stored the value.
+
+The token is never shown again. If you lose it, revoke it and create a new one.
+
+## Managing tokens
+
+The API tokens page lists every token with its name, prefix, scopes, last-used time, expiry, and status (active / revoked / expired).
+
+To revoke a token, click the **Revoke** button on the token's row and confirm. The token stops working immediately. Existing in-flight requests using that token complete; all future requests receive a 401. The row remains in the list for audit purposes and the Revoke button becomes disabled.
+
+## Automate this
+
+```ref:reference/api-auth-tokens
+Full token resource schema, list and create endpoints, and revoke endpoint.
+```

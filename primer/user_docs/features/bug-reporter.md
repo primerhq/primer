@@ -2,79 +2,44 @@
 slug: bug-reporter
 title: Bug reporter
 section: features
-summary: The in-UI bug-report button, the bugs/ directory layout, and the autonomous-fix loop.
+summary: Use the floating bug-report button to capture a screenshot and description and file it under bugs/ for the operator or maintainer to address.
 ---
 
-## Why it exists
+## Overview
 
-Operators using primer day to day hit UI rough edges that the
-maintainers do not see. The bug reporter button captures the
-moment the operator notices something off: it screenshots the
-current view, captures the URL, and posts a free-text
-description into the project's `bugs/` directory.
+The bug reporter is a floating button fixed to the bottom-left of every console page. Clicking it captures a screenshot of the current view, records the page URL, and opens a modal where you describe what went wrong. The report is saved to the `bugs/` directory on disk for the maintainer to read.
 
-The bugs land in git, so the next developer pass can read them
-in context. The same loop optionally runs autonomously: a
-scheduled Claude agent reads each open bug, fixes it, and
-updates the bug's status.
+## Filing a report
 
-## The modal
+1. Navigate to the page where you noticed the problem. The screenshot is taken of whatever is currently visible, so stay on the relevant screen before clicking.
+2. Click the red circular **alert** button in the bottom-left corner of the console. The button shows a wait cursor while the screenshot is being captured.
+3. The **Report a bug** modal opens. If the screenshot was captured successfully, a preview image appears at the top of the modal.
+4. Type a description of the problem in the text area. Describe what you expected to happen and what actually happened. The description field is required.
+5. Click **Submit**. A success toast confirms the report was saved to disk.
 
-The button lives in the bottom-right floating action area.
-Clicking it opens the report modal:
+The modal closes and the description field resets. You can file another report immediately if needed.
 
-```mockup:bug-reporter-modal
-{ "pageUrl": "/console/#/sessions/sess-a1b2", "hasScreenshot": true }
+```callout:warning
+Screenshots are captured at 1x scale regardless of display pixel ratio to stay within the server's upload size limit. On high-DPI screens the preview may look lower resolution than the actual display -- this is expected. If the screenshot library cannot capture the page (for example, due to CORS restrictions on embedded iframes), the modal still opens and you can submit a text-only report.
 ```
 
-The screenshot is auto-attached unless the operator unchecks
-it. The page URL captures the route + the hash so the
-maintainer can jump to the same place.
+## What gets saved
 
-## What lands in bugs/
-
-Each report writes a directory:
+Each report is written to a folder under `bugs/` on the server:
 
 ```
 bugs/
-  bug-2026-06-04-a1b2c3/
-    meta.json        # status, timestamps, page_url
-    description.md   # operator's free text
-    screenshot.png   # auto-attached (optional)
+  bug-<timestamp>-<id>/
+    meta.json        # status, page_url, viewport, captured_at
+    description.md   # the text you entered
+    screenshot.png   # attached when capture succeeded
 ```
 
-The `meta.json` carries `status: "open"`; when the issue is
-fixed the developer (or the autonomous loop) flips it to
-`fixed` with a `fixed_at` timestamp and the commit sha.
-
-## The autonomous loop
-
-For repositories that opt in, a scheduled Claude routine runs
-the bug-fix loop:
-
-```code-tabs:bash
---- bash
-# What the loop does, paraphrased:
-# 1. Read every bugs/bug-*/meta.json with status == "open".
-# 2. For each: read description.md and screenshot.png; investigate
-#    the underlying code; write the fix; run the affected tests;
-#    commit on main with a fix(...) message; update meta.json.
-# 3. If the bug is ambiguous, add meta.json.blocker and move on.
-uv run primer bugs run-fix-loop
-```
-
-```callout:info
-The autonomous loop never pushes. Every fix lands as a commit
-on main; pushing remains the operator's decision. Bugs that
-the loop cannot fix surface a blocker field with a one-line
-reason, so the next operator pass can decide what to do.
-```
+The `meta.json` carries `"status": "open"`. A maintainer or automated process marks it `"fixed"` with a `fixed_at` timestamp and commit SHA once the underlying issue is resolved.
 
 ## Privacy
 
-Screenshots can include sensitive UI state. Two safeguards:
+Screenshots can capture sensitive console state. Two things to be aware of:
 
-- The operator can uncheck Attach screenshot before sending.
-- The bugs/ directory is git-tracked, so the same review
-  discipline that catches a secret in a regular commit catches
-  a secret in a bug report.
+- If the current view contains information you do not want in the report, cancel the modal and navigate away before filing.
+- The `bugs/` directory is git-tracked. The same review that catches secrets in regular commits also catches anything in a bug report.

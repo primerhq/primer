@@ -1,80 +1,68 @@
 ---
 slug: channels
 title: Channels
+summary: Connect Slack, Telegram, or Discord to primer by configuring a provider, creating channels, and binding them to workspaces.
 section: features
-summary: Multi-platform messaging - Slack, Discord, Telegram - with providers, channels, and per-agent associations.
 ---
 
-## The three-level model
+## Overview
 
-Channels wire primer to a messaging platform. Three nouns to keep
-straight:
+Channels wire primer to a messaging platform. Three objects to keep straight:
 
-- **Channel provider**: the platform-level binding (a Slack
-  workspace, a Discord guild, a Telegram bot). One per platform
-  connection.
-- **Channel**: a specific destination inside the provider (a
-  Slack channel id, a Discord text channel, a Telegram chat).
-- **Association**: ties an agent to a channel so the agent's
-  output lands there.
+- **Channel provider**: the platform-level binding -- a Slack workspace, a Discord guild, or a Telegram bot. One per platform connection.
+- **Channel**: a specific destination inside the provider -- a Slack channel ID, a Discord text channel snowflake, or a Telegram chat ID.
+- **Association**: binds a workspace to a channel so the workspace's agents can send and receive messages there.
 
-A primer instance can have many providers, each with many
-channels, each with many associations. The agent declares the
-channels it speaks on at create time (or via PATCH later).
+A primer instance can have many providers, each with many channels, each linked to many workspaces.
 
-## What it looks like
-
-The same `ask_user` prompt renders differently per platform.
-Slack is white-card flat; Discord is dark-themed embed; Telegram
-is a bubble + inline keyboard.
-
-```mockup:channels-prompt
-{ "platform": "slack", "question": "Approve last night's deploy?", "options": ["Approve", "Roll back"], "agentName": "release-bot" }
+```embed:channels
 ```
 
-```mockup:channels-prompt
-{ "platform": "discord", "question": "Approve last night's deploy?", "options": ["Approve", "Roll back"], "agentName": "release-bot" }
-```
+## Add a channel provider
 
-```mockup:channels-prompt
-{ "platform": "telegram", "question": "Approve last night's deploy?", "options": ["Approve", "Roll back"], "agentName": "release-bot" }
-```
-
-## Adding a provider
-
-Each provider kind has its own OAuth or token-based onboarding.
-The console walks the operator through it; the REST surface is
-symmetric:
-
-```code-tabs:python,curl
---- python
-prov = client.channels.create_provider(
-    kind="slack",
-    name="ops-slack",
-    config={"bot_token": "xoxb-..."},
-)
-chan = client.channels.create(
-    provider_id=prov.id,
-    channel_id="C0123456789",
-    name="ops-alerts",
-)
-client.channels.associate(agent_id="release-bot", channel_id=chan.id)
---- curl
-curl -X POST https://primer.example/v1/channel_providers \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"kind":"slack","name":"ops-slack","config":{"bot_token":"xoxb-..."}}'
-```
-
-## Rate limits
-
-Each platform throttles app messages. Primer batches and backs
-off when the platform returns a 429; the agent does not see the
-throttle directly, but a chronically-throttled agent may take
-seconds longer per turn than it would otherwise.
+1. Navigate to **Channels** in the sidebar, then open the **Providers** tab.
+2. Click **New provider**.
+3. Select a **platform** (Slack, Telegram, or Discord). The platform field is locked after creation -- recreate the provider to switch platforms.
+4. Fill in the platform-specific credentials:
+   - **Slack**: App token (`xapp-...`) and Bot token (`xoxb-...`) are both required. The App token is found in the Basic Information panel of your Slack app. The signing secret field is optional and only needed for HTTP delivery mode.
+   - **Telegram**: Bot token in `<id>:<hash>` format (at least 20 characters), obtained from `@BotFather`. The poll timeout defaults to 25 seconds.
+   - **Discord**: Bot token from the Discord Developer Portal. Do not include the `Bot ` prefix. Enable DMs if you want the bot to handle direct messages.
+5. Optionally supply an **ID** for the provider. Leave blank for an auto-generated one.
+6. Click **Create provider**. The console navigates to the provider detail page.
 
 ```callout:warning
-Slack rate-limits app messages at ~1 per second per channel. If
-your agent posts intermediate progress lines, expect them to
-serialise. The trigger run logs surface the throttle delay so
-you can spot 'why is this agent slow' issues.
+Slack requires two tokens with distinct prefixes. The app token must start with `xapp-` and the bot token must start with `xoxb-`. Mixing them up or using a token with the wrong prefix causes authentication failures that are not obvious from the platform error message.
+```
+
+## Add a channel
+
+1. Open the **Channels** tab. The **New channel** button is disabled until at least one provider exists.
+2. Click **New channel**.
+3. Select the **provider** the channel belongs to. This field is locked after creation.
+4. Enter the **external ID** of the specific conversation:
+   - Slack: channel ID (e.g. `C0123ABC456`)
+   - Telegram: chat ID (numeric)
+   - Discord: channel snowflake
+5. Optionally enter a **label** (up to 200 characters, e.g. `#ops-alerts`) for display purposes.
+6. Click **Create channel**.
+
+## Bind a channel to a workspace
+
+1. Open the **Associations** tab.
+2. Click **New association**. Both at least one workspace and one channel must exist.
+3. Select the **workspace** and the **channel**.
+4. Configure the three flags:
+   - **Enabled**: when off, no fan-outs are routed to this channel.
+   - **Forward ask_user**: route channel-mediated user prompts to this channel.
+   - **Forward tool_approval**: route channel-mediated tool approval requests to this channel.
+5. Click **Create**. The association row appears in the table with toggle controls for each flag.
+
+## Automate this
+
+```ref reference/api-channels
+The API reference covers channel providers, channels, and workspace channel associations with full schema detail.
+```
+
+```ref concepts/chats
+Chats explains how agents interact with users through conversations, which channels can carry.
 ```

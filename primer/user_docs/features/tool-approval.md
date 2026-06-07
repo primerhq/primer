@@ -2,78 +2,71 @@
 slug: tool-approval
 title: Tool approval
 section: features
-summary: Configure required, policy, and llm gates on specific tools; the approvals queue; per-tool overrides.
+summary: Create and manage approval policies in the console -- required, Rego policy, or LLM-judge gates on specific tools, with a live queue for pending decisions.
 ---
 
-## The policy table
+## Overview
 
-The Tool Approval page shows a policy table: one row per
-`(toolset, tool)` pair that has a policy configured. Tools
-without a row dispatch immediately. The empty initial state
-means 'no policies; every tool dispatches'.
+The Approvals page has two tabs: **Pending** and **Policies**. Policies define when a tool call must stop and wait for a decision. Pending shows every parked tool call waiting for your response right now. The page polls automatically every five seconds.
 
-## Adding a policy
+Tools with no policy row dispatch immediately. Adding a policy gates every matching `(toolset, tool)` call through the approval flow.
 
-Pick a toolset, then a tool, then a kind:
+## Creating a policy
 
-| Kind | When to use |
-|---|---|
-| `required` | Operator visibility every time the tool is called |
-| `policy` | Rego rule encodes the rule; no UI prompt |
-| `llm` | Judge model decides; fast but probabilistic |
+1. Open **Approvals** in the left nav and click the **Policies** tab.
+2. Click **New policy** (top-right of the tab bar).
+3. In the modal, pick an approval type:
 
-Save the policy. The next call to that tool routes through the
-gate.
+   | Type | Behavior |
+   |---|---|
+   | Required | Every call parks and waits for a manual decision. |
+   | Policy (Rego) | A Rego rule runs against the call; `required = true` triggers a hold. |
+   | LLM judge | A configured LLM provider evaluates a judge prompt; the model decides. |
 
-```code-tabs:python,curl
---- python
-client.tool_approval.create(
-    toolset_id="system",
-    tool_name="delete_session",
-    kind="required",
-)
---- curl
-curl -X POST https://primer.example/v1/tool_approval/policies \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"toolset_id":"system","tool_name":"delete_session","kind":"required"}'
+4. Enter a unique **id** (for example, `approve-stripe-refund`).
+5. Pick the **toolset** from the dropdown or type a custom toolset id.
+6. Enter the **tool name** (for example, `fs.delete`).
+7. Optionally set a **timeout** in seconds. If omitted, the global yield cap applies.
+8. For **Policy (Rego)**, paste your Rego into the editor. The policy must define a `required` boolean in the `primer.approval` package. A starter template is pre-filled.
+9. For **LLM judge**, select a provider and model (from those already configured under LLM Providers), then write the judge prompt.
+10. Click **Create policy**. The new row appears in the Policies table with the toggle enabled.
+
+## Editing or disabling a policy
+
+In the Policies table each row has an **edit** (pencil) button and a **delete** (trash) button. Click edit to reopen the modal with all fields pre-filled. The **id** field is locked after creation; every other field is editable. Use the **Enabled** toggle in the row to pause a policy without deleting it.
+
+```callout:warning
+Deleting a policy that currently has parked sessions does not auto-resolve those sessions. The parked calls stay parked until you decide them manually, then the session continues.
 ```
 
-## The approvals queue
+## Responding to a pending approval
 
-A `required` gate parks the tool call. The prompt fires on the
-agent's configured channel; if no channel is configured, it
-lands on the IC bell in the console.
+When a tool call hits a `required` gate it parks the session and the call appears on the **Pending** tab. Each row shows:
 
-```mockup:channels-prompt
-{ "platform": "slack", "question": "Approve delete_session call on sess-a1b2?", "options": ["Approve", "Reject"], "agentName": "ops-bot" }
-```
+- The tool name and toolset.
+- Which session or chat it came from (click the link to jump to the detail view).
+- How long the call has been parked and, if a timeout is set, how much time remains.
+- The call arguments so you can review what the tool would do.
 
-Approve resolves the gate and the tool dispatches. Reject sends
-a clean error back to the agent; the session continues but the
-agent sees the deny and decides what to do next.
+To decide:
+
+1. Click **Approve** to release the call. The session resumes and the tool dispatches.
+2. Click **Reject** to open the reason field. Type a rejection reason (required) and click **Send rejection**. The agent receives a clean error and can decide how to proceed.
+
+You can also respond from inside the session or chat detail view. When a session is parked on an approval, an amber banner appears at the top of the transcript with the same Approve and Reject controls.
 
 ```callout:danger
-Rejecting a privileged tool call is not a retry. The agent gets
-an error, and if its prompt does not anticipate the deny it may
-get stuck. Test the deny path in dev before turning on a policy
-in production.
+Rejecting a tool call is not a retry. The agent receives an error message. If the agent prompt does not anticipate a rejection it may stall or end unexpectedly. Test the reject path in a development session before enabling a required policy in production.
 ```
 
-## Per-tool overrides
+## Automate this
 
-A toolset-binding can override per tool: deny a specific tool
-inside an otherwise-bound toolset. The deny is enforced at
-binding time (the agent cannot even ask to call it). Approval
-policies enforce at dispatch time (the agent can ask but may be
-blocked).
+```ref:reference/api-tool-approval
+Full schema for approval policies and the respond endpoint, including the Rego policy shape and LLM judge fields.
+```
 
-The two compose: binding decides what the agent can ask; policy
-decides what dispatches.
-
-## Where to next
+## See also
 
 ```ref:concepts/tool-approval
-The concept page covers the gate mechanic in detail, including
-the policy and llm kinds the operator hits less often than
-required.
+How the gate mechanic works under the hood, including how policy and LLM-judge types interact with the session's parked state.
 ```

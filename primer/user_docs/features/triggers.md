@@ -1,91 +1,63 @@
 ---
 slug: triggers
 title: Triggers
+summary: Create cron and delayed triggers, add subscriptions, and use subscribe_to_trigger to park and resume runs from the console.
 section: features
-summary: Cron, webhook, and channel-pattern triggers; the create flow, the detail page, and the run history.
 ---
 
-## The create flow
+## Overview
 
-The Triggers page lists every configured trigger. The Create
-button opens a modal that picks the kind first and then collects
-kind-specific config.
+A trigger fires on a schedule (cron) or at a specific instant (delayed) and dispatches to one or more subscriptions. Each subscription defines what happens when the trigger fires: send a chat message, start a fresh agent session, start a fresh graph session, or resume a parked run. The Triggers page lists every configured trigger as a card showing kind, enabled status, next fire time, and last fire time.
 
-```mockup:trigger-create
-{ "kind": "cron" }
+```embed:trigger-create
 ```
 
-Cron triggers take a five-field UTC expression. The form shows a
-human-readable preview ('Fires at 05:00 UTC weekdays') under the
-field so you catch off-by-one timezone mistakes before saving.
+## Create a trigger
 
-Webhook triggers auto-generate a secret on save. The trigger
-detail page shows the inbound POST URL and the secret for the
-operator to copy.
+The create wizard is a three-step modal.
 
-```mockup:trigger-create
-{ "kind": "webhook" }
+1. Click **Create trigger** on the Triggers page.
+2. **Step 1 -- Kind**: choose the trigger kind.
+   - **Delayed**: fires once at a chosen instant. Best for one-off scheduled tasks.
+   - **Scheduled**: recurring, based on a cron expression evaluated in a chosen timezone.
+3. **Step 2 -- Config**: fill in kind-specific fields.
+   - For **Delayed**: pick a date and time in the browser's local timezone. The console converts it to UTC on submit. Defaults to one hour from now.
+   - For **Scheduled**: enter a five-field cron expression (`m h dom mon dow`), select an IANA timezone from the dropdown (pre-seeded with your browser's current timezone), and choose a **catchup policy**: `one` fires once for the most recent missed tick after downtime, `all` fires once per missed tick, `none` drops missed ticks.
+4. **Step 3 -- Details**: enter a **Name** (required). The slug auto-generates from the name but can be overridden. The slug must match `^[a-z][a-z0-9-]{1,63}$`. Description is optional.
+5. Click **Create**. The console navigates to the trigger detail page.
+
+```callout:warning
+Trigger kind and schedule config are immutable after creation. To change the cron expression or timezone, delete the trigger and recreate it. You can edit the name, description, and enabled flag at any time using the Edit button on the detail page.
 ```
 
-Channel-pattern triggers match against inbound channel messages.
-The regex is evaluated server-side; matches fire the trigger.
+## Add subscriptions
 
-```mockup:trigger-create
-{ "kind": "channel-pattern" }
+On the trigger detail page, open the **Subscriptions** panel and click **Add subscription**.
+
+1. Choose a subscription kind (radio buttons):
+   - `chat_message` -- appends a user message to an existing chat. Select the target chat from the picker.
+   - `agent_fresh_session` -- starts a fresh workspace session bound to an agent. Select a workspace then an agent.
+   - `graph_fresh_session` -- starts a fresh workspace session bound to a graph. Select a workspace then a graph.
+2. Optionally set a **Payload template** (Jinja2). Available fire context variables: `{{ trigger_id }}`, `{{ trigger_slug }}`, `{{ kind }}`, `{{ fired_at }}`, `{{ scheduled_for }}`, `{{ fire_id }}`. For graph subscriptions the rendered template must be JSON matching the graph's Begin `input_schema`.
+3. Choose **Parallelism**: `skip` (no-op if the previous fire's unit is still in-flight) or `queue` (always dispatch).
+4. Click **Add subscription**.
+
+Subscription rows in the table show kind, target, parallelism, enabled toggle, last fired time, and last error. You can toggle enabled or change parallelism inline.
+
+## The parked_session subscription and subscribe_to_trigger
+
+A fourth subscription kind, `parked_session`, is created only by the `subscribe_to_trigger` yielding tool inside a running agent or graph -- not through the console dialog. When an agent calls `subscribe_to_trigger`, the current run pauses (parks) and registers itself as a dynamic subscription on the named trigger. The next time that trigger fires, the parked run resumes with the fire context injected. The console shows parked subscriptions as read-only rows (no enable toggle, no parallelism control); deleting such a row cancels the subscription and unparks the session.
+
+## Fire now
+
+Use the **Fire now** button on the trigger detail page to trigger an immediate dispatch outside the normal schedule. The status panel updates with the fire ID and subscription count dispatched.
+
+## Automate this
+
+```ref reference/api-triggers
+The API reference covers POST /triggers, subscriptions, and fire_now with full schema detail.
 ```
 
-## The cron expression layout
-
-Cron expressions are five whitespace-separated fields, all in
-UTC, with a one-minute minimum granularity.
-
-```mermaid
-flowchart LR
-  m[minute<br/>0 to 59]
-  h[hour<br/>0 to 23]
-  d[day<br/>1 to 31]
-  M[month<br/>1 to 12]
-  w[day-of-week<br/>0 to 6]
-```
-
-Standard cron syntax: `*` for every value, `*/N` for every Nth,
-`1,3,5` for explicit lists, `1-5` for ranges. UTC, always.
-
-## REST + Python
-
-```code-tabs:python,curl
---- python
-trig = client.triggers.create(
-    name="weekday-summary",
-    kind="cron",
-    cron_expression="0 5 * * 1-5",
-    subscription_target="start_session",
-    subscription_target_id="weekly-digest",
-)
-print(trig.id)
---- curl
-curl -X POST https://primer.example/v1/triggers \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{
-    "name":"weekday-summary",
-    "kind":"cron",
-    "cron_expression":"0 5 * * 1-5",
-    "subscription_target":"start_session",
-    "subscription_target_id":"weekly-digest"
-  }'
-```
-
-## Run history
-
-The trigger detail page lists every fire with timestamp, outcome
-(success / error / suppressed), and a link to the session that
-ran (when applicable). Use it to verify the cron expression is
-firing on the schedule you expect before relying on it for
-production work.
-
-## Where to next
-
-```ref:concepts/triggers-and-subscriptions
-The concept page covers the trigger / subscription split in
-detail.
+```ref concepts/triggers-and-subscriptions
+The concept page explains the trigger and subscription split, catchup policies, and how subscribe_to_trigger interacts with the run lifecycle.
 ```
