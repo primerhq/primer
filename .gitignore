@@ -225,6 +225,12 @@ __marimo__/
 !ui/components/docs/
 !ui/components/docs/**
 
+# docs/ spec + working areas are kept untracked (only docs/dev/ is tracked
+# dev documentation). Keeps generated/working specs, plans and findings out
+# of the repo.
+docs/tests/
+docs/superpowers/
+
 # E2E test harness runtime scratch (logs, rendered config, pidfile).
 # Python test code under tests/e2e/ IS versioned; the .e2e/ scratch dir
 # and the markdown state file under tests/e2e/.state/ are not — per the
