@@ -2,84 +2,96 @@
 slug: first-agent
 title: Build your first agent
 section: getting-started
-summary: A five-minute speedrun from install to a working agent answering a question.
+summary: End-to-end console walkthrough -- configure a provider, create an agent, and watch it run.
 ---
 
 ## Goal
 
-By the end of this page you have an agent named `helper`, bound to
-the system toolset, that can answer a single question from the
-console or the REST API.
+By the end of this page you have an agent named `helper` running its
+first session entirely from the console. No API calls required for the
+first win.
 
-## Step 1: Create the agent
+## Step 1: Configure an LLM provider
 
-Open the Agents page from the left nav, hit Create. The modal opens
-on the Basic tab.
+Before creating an agent, primer needs at least one LLM provider
+configured. Go to **Providers** in the left nav, then **LLM**, and
+click **Add provider**. Supply the provider type (for example
+`anthropic` or `openai`), a display name, and your API key. Enable
+at least one model on the provider row -- this is the model name the
+agent will reference.
 
-```mockup:agent-create-modal
-{ "tab": "basic" }
+```callout:info
+If primer was installed with auto-bootstrap enabled (the default), a
+placeholder provider entry may already exist. Edit it to fill in a
+real API key and enable a model before proceeding.
 ```
 
-Fill in:
+## Step 2: Create the agent
 
-- Name: `helper`
-- Description: anything; this only shows on the agents list.
-- Model: leave the default (`claude-opus-4-8`).
+Open **Agents** from the left nav and click **New agent**. The
+three-tab create modal opens.
 
-Then switch to the Tools tab and check `system`. Leave the prompt
-tab empty for now; the default prompt is good enough for the
-speedrun.
-
-Click Create. The modal closes and the agent shows up in the list.
-
-## Step 2: Invoke from the console
-
-Hit New session from the Sessions page. Pick `helper` from the
-agent picker, type a question into the first turn, hit Send. The
-session detail page streams the model's reply.
-
-## Step 2 alternative: Invoke from the REST API
-
-Same operation, different surface:
-
-```code-tabs:python,curl
---- python
-import primer
-client = primer.Client(token="...")
-sess = client.sessions.create(agent_id="helper")
-turn = client.sessions.turn(
-    sess.id,
-    input="What is the capital of France?",
-)
-print(turn.output)
---- curl
-SID=$(curl -s -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -X POST http://localhost:8000/v1/sessions \
-  -d '{"agent_id":"helper"}' | jq -r .id)
-
-curl -s -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -X POST http://localhost:8000/v1/sessions/$SID/turn \
-  -d '{"input":"What is the capital of France?"}'
+```embed:agents-page
 ```
 
-The session id is durable: subsequent turns against the same id
-extend the transcript.
+Fill in the **Basic** tab:
+
+- **Description** -- a short label shown in the agents table (for
+  example `My first helper`).
+- **LLM provider** -- select the provider you configured in Step 1.
+- **Model** -- the dropdown populates from the selected provider.
+  Pick the model you enabled.
+
+Switch to the **Tools** tab. Check the `system` toolset to give the
+agent shell and filesystem access inside its workspace.
+
+```callout:warning
+The `system` toolset grants shell and filesystem access. Pair it with
+a tight workspace template when prototyping; relax limits only after
+validating the prompt and tool use pattern.
+```
+
+Switch to the **Advanced** tab to enter a system prompt. The system
+prompt is a list of segments joined at runtime -- start with a single
+segment such as:
+
+> You are a concise assistant. Answer clearly and briefly.
+
+Leave compaction prompt and temperature at their defaults for now.
+Click **Create**. The modal closes and the agent row appears in the
+agents list.
+
+## Step 3: Start a session
+
+Go to **Sessions** in the left nav and click **New session**. Select
+`helper` from the agent picker. Type your first message -- for
+example, "What files are in the current directory?" -- and click
+**Send**.
+
+```embed:sessions-list
+```
+
+Primer queues the turn and the worker picks it up. The session detail
+page streams the model reply as tokens arrive.
+
+```callout:tip
+The session id is durable. Return to this session from the Sessions
+list at any time; subsequent messages extend the same transcript.
+```
 
 ## Where to next
 
 ```ref:features/agents
-The feature-level walkthrough explains every knob on the create
-modal in detail.
+The Agents feature page covers every field in the create modal,
+health checks, editing, and harness-managed agents.
 ```
 
 ```ref:concepts/what-is-an-agent
-The concepts page covers the turn loop and where state lives.
+The concept page explains the turn loop and how agents relate to
+sessions, workers, and workspaces.
 ```
 
-```callout:tip
-Once the speedrun works end to end, swap the system toolset for a
-narrower one and try a real task. The default prompt is fine for a
-demo; production prompts deserve more thought.
+```ref:reference/api-agents
+Automate this: full resource schema, list/create/update/delete
+endpoints, and the status check endpoint.
 ```

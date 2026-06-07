@@ -6,97 +6,129 @@ summary: A Discord bot that flags borderline content for a human moderator and w
 difficulty: intermediate
 time_minutes: 25
 tags: [channels, approvals, agents]
-prerequisites: [features/channels, features/tool-approval]
-features: [channel, agent, tool-approval]
 ---
 
 ## Goal
 
 Every new Discord message in a moderated channel runs through a
-classifier agent. Borderline content fires an approval prompt
-to a moderator role; clear content passes through silently;
-obviously bad content auto-deletes.
+classifier agent. Borderline content fires a tool-approval prompt
+to a moderator; clear content passes through silently; obviously
+bad content auto-deletes.
 
-## The dispatch chain
+## Prerequisites
 
-```mermaid
-sequenceDiagram
-  participant U as Discord user
-  participant D as Discord
-  participant Agent
-  participant Mod as Moderator
-  U->>D: post message
-  D->>Agent: channel pattern fires
-  Agent->>Agent: classify
-  alt clear
-    Agent-->>D: noop
-  else borderline
-    Agent->>Mod: approval prompt
-    Mod-->>Agent: approve or delete
-    Agent-->>D: act on decision
-  else bad
-    Agent-->>D: delete + ban
-  end
+- A Discord channel provider already configured under **Channels**.
+  If you have not done this yet, see the channels feature guide.
+- An agent named `moderator` bound to a toolset that includes a
+  `delete_message` tool.
+
+```ref:features/channels
+Configure a Discord provider and create a channel before following
+this recipe.
+```
+
+```ref:features/tool-approval
+Approval policies gate specific tool calls behind a manual or
+automated decision.
 ```
 
 ## Steps
 
-Create a channel-pattern trigger that fires on every message:
+### 1. Add the Discord channel provider
 
-```code-tabs:python
---- python
-trig = client.triggers.create(
-    name="mod-classifier",
-    kind="channel-pattern",
-    channel_id="discord-general",
-    pattern=".*",
-    subscription_target="start_session",
-    subscription_target_id="moderator",
-)
+1. Open **Channels** in the left nav, then the **Providers** tab.
+2. Click **New provider**, select **Discord**, and paste the bot
+   token from the Discord Developer Portal (no `Bot ` prefix).
+3. Click **Create provider**.
+
+### 2. Create the channel
+
+1. Switch to the **Channels** tab and click **New channel**.
+2. Select the Discord provider you just created.
+3. Enter the channel snowflake of the text channel to moderate.
+4. Click **Create channel**.
+
+### 3. Bind the channel to a workspace
+
+1. Open the **Associations** tab and click **New association**.
+2. Select the workspace that hosts the `moderator` agent and the
+   channel above.
+3. Enable **Forward tool_approval** so moderator approval prompts
+   arrive in Discord.
+4. Click **Create**.
+
+```embed:channels
 ```
 
-Configure the approval policy on the agent's `delete_message`
-tool:
+### 4. Create the approval policy
 
-```code-tabs:python
---- python
-client.tool_approval.create(
-    toolset_id="discord-tools",
-    tool_name="delete_message",
-    kind="required",
-)
-```
+1. Open **Approvals** in the left nav and click **Policies**.
+2. Click **New policy** (top right).
+3. Set type to **Required**, id to `require-delete-message`, toolset
+   to the Discord toolset, and tool name to `delete_message`.
+4. Leave timeout blank to use the global yield cap.
+5. Click **Create policy**.
+
+The `Required` kind means every `delete_message` call parks the
+session and waits for a manual decision.
 
 ```callout:info
-The `required` kind means every delete prompts the moderator.
-Use the `llm` kind once you trust the classifier's confidence
-calibration; the gate auto-allows when the confidence exceeds
-a threshold.
+Use the **LLM judge** approval type once you trust the classifier's
+confidence calibration. The judge prompt can auto-allow deletions
+when the classifier confidence exceeds a threshold, reducing
+moderator load.
 ```
+
+### 5. Configure the trigger subscription
+
+1. Open **Triggers** in the left nav and click **Create trigger**.
+2. Choose **Scheduled** kind if you want periodic sweeps, or skip
+   this step if the channel adapter fires the agent directly on
+   incoming messages (the association handles that routing).
+
+For immediate message-by-message moderation, the channel
+association alone routes each incoming Discord message to the
+`moderator` agent without a separate trigger.
 
 ## Verification
 
-A borderline message produces a Discord-formatted approval
-prompt:
+When a borderline message arrives, the moderator agent parks on the
+`delete_message` call and the pending approval appears in
+**Approvals > Pending**. Each row shows the tool arguments, the
+parked session link, and remaining time.
 
-```mockup:channels-prompt
-{ "platform": "discord", "question": "Delete this message? 'borderline content here'", "options": ["Delete", "Keep"], "agentName": "moderator" }
+1. Open **Approvals > Pending**.
+2. Click **Approve** to delete the message, or **Reject** with a
+   reason to keep it and let the agent receive the rejection.
+
+You can also approve or reject directly from the session transcript:
+an amber banner appears at the top when the session is parked on an
+approval.
+
+```embed:session-detail
 ```
-
-The moderator clicks; the agent executes the decision.
 
 ## Gotchas
 
 ```callout:danger
-The `pattern: ".*"` matches every message, including the
-moderator's approval clicks. Without a filter the bot loops on
-its own output. Either filter the bot's own user id out of the
-trigger, or use a more specific pattern.
+A pattern that matches every message -- including the moderator
+bot's own output -- creates a loop. Either scope the channel
+association to exclude the bot's user ID, or instruct the agent in
+its system prompt to skip messages where the author is itself.
 ```
 
 - Discord webhook delivery is slightly delayed (1 to 5 seconds
-  typical). Calibrate against the moderator's expected response
-  window.
-- The approval queue piles up if the moderator is asleep. Set
-  a TTL on the parked yield so unresponded items auto-reject
-  rather than blocking the channel-pattern fire.
+  typical). Calibrate the approval timeout against the moderator's
+  expected response window.
+- The approval queue grows if the moderator is away. Set a timeout
+  on the policy so unresponded items auto-reject rather than
+  blocking the session indefinitely.
+- Deleting an approval policy does not resolve already-parked
+  sessions. Decide them manually on the Pending tab first.
+
+## Automate it
+
+```ref:reference/api-tool-approval
+Create and manage approval policies and respond to pending calls
+programmatically via the REST API.
+```

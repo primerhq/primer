@@ -12,98 +12,101 @@ features: [mcp, agent, internal-collections]
 
 ## Goal
 
-Take an in-process toolset (a Python module under
-`primer/toolset/`) and publish it through primer's MCP server so
-claude.ai (or any MCP client) can call it as a remote tool.
+Expose primer's tool catalogue to an external MCP client (Claude Desktop,
+Claude Code, or claude.ai) so remote agents can call your internal tools
+without leaving their native interface. This recipe walks through enabling
+the MCP endpoint, selecting which tools to publish, and minting a scoped
+token for the client.
 
-## The dispatch chain
+## Prerequisites
 
-```mermaid
-sequenceDiagram
-  participant Claude as claude.ai client
-  participant MCP as primer MCP server
-  participant Toolset
-  participant DB as company db
-  Claude->>MCP: call company_query(args)
-  MCP->>Toolset: dispatch
-  Toolset->>DB: SQL or RPC
-  DB-->>Toolset: rows
-  Toolset-->>MCP: result envelope
-  MCP-->>Claude: tool result
-```
+- Primer is running and you can reach the console.
+- At least one toolset is registered and its tools appear in the tool
+  catalogue under Approvals / Policies.
 
 ## Steps
 
-Register the toolset at startup (no UI for custom toolsets in
-v1; this is a Python wiring change):
+### 1. Enable the MCP endpoint
 
-```code-tabs:python
---- python
-# In primer/toolset/_init_company.py or similar:
-from primer.toolset.harness import build_harness_toolset_provider
+1. Open the console and navigate to **MCP Server** in the left nav.
+2. In the **MCP server endpoint** panel, click **Enable**.
+   The status pill changes to `enabled`.
+3. Click **Copy URL** to copy the endpoint URL, or click
+   **Copy Claude Desktop config** to get a ready-to-paste JSON snippet.
 
-company_tools = build_harness_toolset_provider(
-    id="company",
-    tools=[query_users, query_orders, run_report],
-)
+### 2. Choose which tools to publish
 
-# Wire into the lifespan handler in primer/api/app.py:
-provider_registry._company_toolset_provider = company_tools
-```
-
-Mark the toolset as exposed via MCP:
-
-```code-tabs:bash,json
---- bash
-curl -X PUT https://primer.example/v1/mcp/exposure/company \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"exposed":true}'
---- json
-{
-  "exposed_toolsets": ["system", "search", "company"],
-  "version": "2026-06"
-}
-```
-
-Mint a bearer token with the right scopes:
-
-```mockup:api-token-create
-{ "phase": "form" }
-```
-
-## Connecting claude.ai
-
-Open claude.ai/customize/connectors. Add a new MCP server, paste
-the primer URL plus the bearer token. The connector validates,
-lists the published tools, and registers them in the model's
-tool palette.
-
-```callout:tip
-Scope the bearer token to the minimum the remote agent needs.
-The company toolset's `query_users` should not need a
-`sessions:write` scope; mint two separate tokens if different
-remote agents need different surfaces.
-```
-
-## Verification
-
-In a new claude.ai conversation, the model should be able to
-call `company_query`. The MCP server logs every call; check
-`primer.api.routers.mcp_exposure` log lines if the tool does
-not appear.
-
-## Gotchas
+1. Scroll down to the **Exposed tools** table.
+2. Use the toolset filter chips to narrow the list if you have many toolsets.
+3. Check **Exposable only** to hide tools that cannot be published.
+4. Tick the checkbox next to each tool you want to expose.
+   Use **Recommend safe defaults** to pre-select a conservative read-only
+   set (`get_*`, `list_*`, `find_*`, and a handful of pure-function tools).
+5. Click **Save**. The endpoint panel caption updates with the new tool count.
 
 ```callout:warning
-Custom toolsets ship code that runs in the primer process. A
-bug in `query_users` can crash the worker; an OOM in
-`run_report` takes down the whole pool. Test in dev before
-exposing remotely.
+Saving a new allowlist replaces the previous one atomically. Any tool you
+deselect is removed from the client's tool palette on the next request.
+Clients mid-call on a removed tool receive an error.
 ```
 
-- The MCP rate limit is per-token. Slow tools serialise on the
-  rate limit; bump
-  `PRIMER_MCP__RATE_LIMIT_PER_SECOND` for high-traffic toolsets.
-- Removing a tool from the exposed list does not invalidate
-  in-flight calls; clients see the removal on the next
-  reconnect.
+### 3. Mint a scoped API token
+
+The MCP client authenticates with a bearer token that has the `mcp` scope.
+
+1. Navigate to **API tokens** in the left nav.
+2. Click **Create token**.
+3. Name the token (for example, `claude-desktop-prod`).
+4. Under **Scopes**, check **mcp**. Add any other scopes the client needs
+   (for example, `sessions:read` if it will list sessions).
+5. Optionally set an expiry date.
+6. Click **Create token**.
+
+```embed:api-token-create
+```
+
+7. Click **Copy token** and store the value securely.
+   The token is shown only once.
+
+```callout:tip
+Mint a separate token for each MCP client and scope it to the minimum the
+client needs. A read-only assistant does not need `sessions:write`; a token
+with that scope added by mistake is the most common source of unexpected
+agent behaviour.
+```
+
+### 4. Connect the client
+
+**Claude Desktop**
+
+1. Open `~/Library/Application Support/Claude/claude_desktop_config.json`
+   (create the file if it does not exist).
+2. Paste the copied config snippet under the top-level `mcpServers` key.
+3. Replace the `<YOUR_TOKEN>` placeholder with the token you just created.
+4. Restart Claude Desktop. The published tools appear in the tool palette.
+
+**Claude Code**
+
+Run:
+
+```
+claude mcp add --transport streamable-http <your-primer-origin>/v1/mcp
+```
+
+Supply the bearer token when prompted, or add it manually to
+`~/.claude/claude_mcp_config.json`.
+
+## Result
+
+The remote client lists the tools you exposed and can call them in any
+conversation. The MCP Server page shows the last-edited timestamp and the
+published tool count. Use **Recommend safe defaults** and the per-tool
+checkboxes to adjust the allowlist at any time, then click **Save** to push
+the change live.
+
+## Automate it
+
+```ref:reference/api-toolsets
+REST endpoints for registering toolsets and managing the MCP exposure
+allowlist programmatically.
+```

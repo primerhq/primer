@@ -6,88 +6,133 @@ summary: Every hour, list new GitHub PRs, run an agent over each, post review co
 difficulty: intermediate
 time_minutes: 30
 tags: [triggers, agents, mcp, workspaces]
-prerequisites: [features/agents, features/triggers, features/mcp-server]
-features: [trigger, agent, workspace, mcp]
 ---
 
 ## Goal
 
-A scheduled cron trigger fires every hour, runs an agent that
-lists new pull requests on a configured repo, reviews each, and
-posts comments via the GitHub MCP connector.
+A scheduled trigger fires every hour. It starts an agent session in a
+workspace that has `git` and the repository available. The agent lists
+new pull requests via the GitHub MCP connector, reviews each one, and
+posts review comments back to GitHub.
 
 ## Prerequisites
 
-- A GitHub MCP server attached as a connector (the agent reaches
-  GitHub through its tools).
-- A workspace template that includes `git` and the repo cloned.
+- A GitHub MCP server configured and reachable from your primer
+  instance.
+- A workspace template that has `git` installed and the target repo
+  cloned (or the agent's system prompt instructs it to clone on first
+  run).
+- An agent already created with a review-style system prompt and the
+  MCP toolset enabled.
 
-## The dispatch chain
-
-```mermaid
-sequenceDiagram
-  participant Cron as Trigger
-  participant Svc as Trigger service
-  participant Sess as Session
-  participant Agent
-  participant GH as GitHub (via MCP)
-  Cron->>Svc: hourly fire
-  Svc->>Sess: start session
-  Sess->>Agent: run
-  Agent->>GH: list_open_prs
-  GH-->>Agent: PR list
-  Agent->>GH: review each PR
-  Agent-->>Sess: done
+```callout:info
+Pin the agent's review tone in the system prompt. Drift between hourly
+runs reads as inconsistent to PR authors.
 ```
 
 ## Steps
 
-Create the trigger:
+### 1. Prepare the workspace template
 
-```code-tabs:python,curl
---- python
-trig = client.triggers.create(
-    name="pr-review-hourly",
-    kind="cron",
-    cron_expression="0 * * * *",
-    subscription_target="start_session",
-    subscription_target_id="pr-reviewer",
-)
---- curl
-curl -X POST https://primer.example/v1/triggers \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"name":"pr-review-hourly","kind":"cron","cron_expression":"0 * * * *","subscription_target":"start_session","subscription_target_id":"pr-reviewer"}'
+1. Open **Workspaces** in the left nav.
+2. If no suitable template exists, click **New workspace** then the
+   **Create a template now** inline link.
+
+```embed:workspace-template-form
 ```
 
-The agent's system prompt:
+3. Fill in:
+   - **Name**: `pr-review-template`
+   - **Provider**: your configured workspace provider
+   - **TTL**: set to at least 60 minutes -- a batch of PRs can take a
+     while to review
+   - **Init command**: any first-run setup needed (e.g. cloning the
+     repo, installing tools)
+4. Click **Create template**, then **Create workspace** to spin up an
+   instance.
 
-```callout:tip
-Keep the agent's review tone consistent across runs. Pin the
-prompt to the wording you want. Drift between runs reads as
-flaky to PR authors.
+### 2. Create the agent
+
+1. Open **Agents** and click **New agent**.
+2. In the **Basic** tab, enter a description such as `pr-reviewer`, and
+   select your LLM provider and model.
+3. In the **Tools** tab, enable the MCP toolset that exposes your
+   GitHub MCP connector.
+4. In the **Advanced** tab, enter a system prompt that instructs the
+   agent to list open PRs, review each file diff, and post review
+   comments via the available MCP tools.
+5. Click **Create**.
+
+```embed:agents-page
 ```
 
-## Verification
+### 3. Create a scheduled trigger
 
-After one fire, check the trigger detail page run history. A
-successful fire shows the session id; clicking it opens the
-session detail with the review transcript.
+1. Open **Triggers** and click **Create trigger**.
+2. **Kind** -- choose **Scheduled**.
+3. **Config** -- enter cron expression `0 * * * *` (top of every UTC
+   hour). Select an appropriate IANA timezone. Set **Catchup policy**
+   to `skip` so missed ticks during downtime do not cause a burst of
+   review runs.
+4. **Details** -- name it `pr-review-hourly`. Click **Create**.
 
-```mockup:session-detail-panel
-{ "sessionId": "sess-pr-001", "agentId": "pr-reviewer", "status": "done", "turnCount": 8 }
+```embed:trigger-create
+```
+
+### 4. Add a subscription
+
+On the trigger detail page, click **Add subscription**.
+
+1. Choose kind **agent_fresh_session**.
+2. Select the `pr-review-template` workspace and the `pr-reviewer`
+   agent.
+3. Set **Parallelism** to `skip` -- if a review run is still in flight
+   when the next tick arrives, skip the tick rather than stacking
+   another run.
+4. Click **Add subscription**.
+
+### 5. Verify with Fire now
+
+Click **Fire now** on the trigger detail page. Navigate to **Sessions**
+and find the new session row. Click it to open the detail view and
+watch the agent's review transcript stream in.
+
+```embed:session-detail
+```
+
+A completed run shows each PR reviewed and the GitHub tool calls that
+posted comments. Check the **Sessions** tab on the workspace to confirm
+the run landed in the correct sandbox.
+
+```callout:success
+After a successful Fire now review, the hourly cron takes over.
+Subsequent runs are unattended unless the agent encounters an error or
+a tool call requires approval.
 ```
 
 ## Gotchas
 
 ```callout:warning
-GitHub's API rate limit is per-token, not per-call. An agent
-reviewing 20 PRs in one fire can exhaust a 5000-request budget
-quickly. Use the GitHub App token (15000/hr) for production
-runs.
+GitHub's API rate limit is per-token, not per-call. An agent reviewing
+20 PRs in one fire can exhaust a 5000-request budget quickly. Use a
+GitHub App token (15000 requests per hour) for production runs.
 ```
 
-- The cron expression is UTC. `0 * * * *` fires at the top of
-  every UTC hour; convert to local time for documentation.
-- A long-running review keeps the workspace alive past the
-  default 30 minute TTL. Bump the template TTL or split the
-  review into smaller sessions.
+- The cron expression `0 * * * *` fires at the top of every UTC hour.
+  Convert to local time for any documentation or runbooks you write.
+- A long review batch keeps the workspace alive past the default TTL.
+  Bump the template TTL or split reviews into smaller batches.
+- The workspace state (cloned repo) persists across agent sessions on
+  the same instance. Pull the latest changes at the start of each run
+  to avoid reviewing already-merged commits.
+
+## Automate this
+
+```ref reference/api-triggers
+The API reference covers POST /triggers, subscriptions, and fire_now
+with full schema detail.
+```
+
+```ref reference/api-sessions
+Session list, control endpoints, and transcript inspection via API.
+```

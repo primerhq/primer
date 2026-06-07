@@ -7,81 +7,103 @@ summary: The config file, environment variables, and the order primer reads them
 
 ## Three sources, one order
 
-Primer reads configuration from three places. They are merged in
-order of precedence, lowest to highest:
+Primer reads configuration from three places, merged in order of
+precedence from lowest to highest:
 
-1. Defaults baked into `primer/api/config.py` (the `AppConfig`
-   Pydantic settings class).
-2. A TOML file at `$PRIMER_CONFIG_PATH` (when set).
-3. Environment variables prefixed with `PRIMER_`.
+1. Defaults baked into the `AppConfig` Pydantic settings class.
+2. A YAML file supplied via `--config` (or `~/.primer/config.yaml`
+   when it exists). CLI-supplied YAML wins over environment variables.
+3. A TOML file at `$PRIMER_CONFIG_PATH` (same precedence layer as
+   env vars).
+4. Environment variables prefixed with `PRIMER_`.
 
-Later sources win. So an env var beats a TOML setting, which beats
-the built-in default.
+Later sources win. An env var beats a TOML setting; a CLI `--config`
+YAML beats env vars; built-in defaults lose to everything.
 
 ```callout:warning
-Secrets follow the same precedence rule. If you commit a
-`primer.toml` with a `PRIMER_SESSION_SECRET`, an operator's
-production env var will override it -- but anyone who can read the
-file still has the secret. Keep secrets in env vars or in a vault,
-not in the TOML.
+Secrets follow the same precedence rule. If you commit a config file
+containing `PRIMER_AUTH__SESSION_SECRET`, anyone who can read the
+file has the secret even if a production env var overrides it at
+runtime. Keep secrets in env vars or in a secrets manager, not in
+committed config files.
 ```
 
-## The TOML file
+## The config file
 
-Point `PRIMER_CONFIG_PATH` at a TOML file. Most operators only set
-the storage backend and the auth settings; defaults are sensible
-for everything else.
+`primer api` auto-discovers `~/.primer/config.yaml` when no explicit
+`--config` flag is given. Point to a different file explicitly:
 
-```code-tabs:yaml,bash
---- yaml
-# primer.toml
-host = "0.0.0.0"
-port = 8000
-auto_bootstrap = true
-
-[db]
-provider = "postgres"
-dsn = "postgres://primer:secret@db.example/primer"
-
-[auth]
-require_auth = true
-
-[observability]
-enabled = true
-otel_endpoint = "http://otel-collector:4318"
+```code-tabs:bash
 --- bash
-# Set the path, then run as normal.
-export PRIMER_CONFIG_PATH=/etc/primer/primer.toml
-uv run primer api
+uv run primer api --config /etc/primer/config.yaml
+```
+
+A minimal production config covers storage, auth, and the bind
+address. Everything else has a sensible default:
+
+```code-tabs:yaml
+--- yaml
+# /etc/primer/config.yaml
+host: "0.0.0.0"
+port: 8000
+
+db:
+  provider: postgres
+  config:
+    hostname: db.example
+    port: 5432
+    username: primer
+    password: secret
+    database: primer
+
+auth:
+  enabled: true
+  cookie_secure: true
 ```
 
 ## Environment variables
 
-Every `AppConfig` field is reachable via env var with the
-`PRIMER_` prefix and double-underscore nesting. Examples:
+Every `AppConfig` field is reachable via environment variable using
+the `PRIMER_` prefix. Nested fields use double-underscore as the path
+separator (pydantic-settings `env_nested_delimiter`):
 
 ```code-tabs:bash
 --- bash
 # Top-level scalar
 export PRIMER_PORT=9000
 
-# Nested struct (db.provider)
+# Nested: db.provider
 export PRIMER_DB__PROVIDER=postgres
-export PRIMER_DB__DSN=postgres://primer@localhost/primer
 
-# Auth subblock
-export PRIMER_AUTH__REQUIRE_AUTH=true
+# Nested: auth.enabled
+export PRIMER_AUTH__ENABLED=true
 ```
 
-The double underscore is Pydantic's `env_nested_delimiter`; a
-single underscore reads as a normal field-name separator.
+A single underscore is part of a field name; the double underscore is
+the nesting delimiter.
 
-## Where to look next
+## Key settings at a glance
 
-For the full enumerated list of `PRIMER_*` env vars and their
-defaults, see the reference:
+| Area | Key variable | Default |
+|---|---|---|
+| Storage | `PRIMER_DB__PROVIDER` | embedded SQLite |
+| Runtime mode | `PRIMER_RUNTIME_MODE` | `api+worker` |
+| Bind host | `PRIMER_HOST` | `0.0.0.0` |
+| Bind port | `PRIMER_PORT` | `8000` |
+| Auth | `PRIMER_AUTH__ENABLED` | `true` |
+| Session secret | `PRIMER_AUTH__SESSION_SECRET` | auto-generated |
+| Worker concurrency | `PRIMER_WORKER__CONCURRENCY` | `8` |
+| Scheduler | `PRIMER_SCHEDULER__PROVIDER` | `in_memory` |
 
-```ref:reference/rest-api-overview
-The reference section enumerates env vars in its own doc once
-Phase H of the doc rollout lands.
+```callout:info
+When `PRIMER_DB__PROVIDER` is unset, primer defaults to an embedded
+SQLite database at `~/.primer/db/data.sqlite`. This is fine for a
+single-developer install; use Postgres for anything shared or
+multi-process.
+```
+
+## Full variable reference
+
+```ref:reference/env-vars
+Every PRIMER_* variable, its default, and what it controls.
 ```

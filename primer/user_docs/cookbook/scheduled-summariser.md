@@ -6,105 +6,108 @@ summary: Wire a trigger that runs an agent every weekday morning and posts the r
 difficulty: intermediate
 time_minutes: 20
 tags: [triggers, agents, sessions, scheduled]
-prerequisites: [features/agents]
-features: [trigger, agent, session, workspace]
 ---
 
 ## Goal
 
-End-to-end recipe: every weekday at 9 AM, an agent reads yesterday's
-log files from a sandbox workspace, summarises them, and posts the
-summary to a Slack channel as an `ask_user` prompt waiting for an
-approval click.
+Every weekday at 9 AM, an agent reads yesterday's log files from a
+sandbox workspace, summarises them, and posts the summary to a Slack
+channel. An `ask_user` prompt then waits for an operator approval click
+before the session closes.
 
-The wiring touches four primer subsystems: trigger, agent, session,
+The wiring touches four primer subsystems: trigger, agent, session, and
 workspace. Each step below maps to one of them.
 
 ## Prerequisites
 
-You need an existing agent (see `features/agents`) bound to the
-`system` toolset, and a Slack channel provider already configured
-under Channels.
+- An agent already configured under Agents with a system prompt that
+  knows how to read and summarise logs. See the Agents feature doc if
+  you need to create one first.
+- A workspace template with a TTL of at least 60 minutes and access to
+  the log directory.
+- A Slack channel provider already set up under Channels, with a channel
+  bound to the workspace via an association that has **Forward ask_user**
+  enabled.
 
 ```callout:info
-This recipe assumes the agent's system prompt already knows what
-'summarise yesterday's logs' means. Tune the prompt against the
-target log volume before scheduling; debugging a noisy run on
-production data is painful.
-```
-
-## The dispatch chain
-
-The trigger is the entrypoint; from there the chain fans out
-through the trigger service into a session, which dispatches the
-agent inside a workspace. Channels delivers the final reply.
-
-```mermaid
-sequenceDiagram
-  participant Cron as Trigger
-  participant Svc as Trigger service
-  participant Agt as Agent + workspace
-  participant Ch as Channel (Slack)
-  Cron->>Svc: 09:00 weekday fire
-  Svc->>Agt: dispatch session
-  Agt->>Agt: read logs, summarise
-  Agt->>Ch: post ask_user prompt
-  Ch->>Agt: approval click
-  Agt->>Svc: session complete
+Tune the agent's system prompt against real log volume before
+scheduling. A noisy first production run is hard to diagnose
+after the fact.
 ```
 
 ## Steps
 
-Step 1: create the trigger via the REST API. The cron field uses
-the standard 5-field UTC expression; 9 AM Asia/Dubai is 05:00 UTC
-on weekdays.
+### 1. Create a scheduled trigger
 
-```code-tabs:python,curl
---- python
-client.triggers.create(
-    name="weekday-summary",
-    cron_expression="0 5 * * 1-5",
-    agent_id="weekly-digest",
-    channel_id="ops-slack",
-)
---- curl
-curl -X POST https://primer.example/v1/triggers \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"name":"weekday-summary","cron_expression":"0 5 * * 1-5","agent_id":"weekly-digest","channel_id":"ops-slack"}'
+Open **Triggers** in the left nav and click **Create trigger**.
+
+1. **Kind** -- choose **Scheduled**.
+2. **Config** -- enter the cron expression `0 5 * * 1-5` (5:00 AM UTC,
+   which is 9:00 AM Asia/Dubai on weekdays). Select your IANA timezone
+   from the dropdown. Set **Catchup policy** to `one` so a single
+   missed tick after downtime fires once on recovery.
+3. **Details** -- name the trigger `weekday-summary`. Click **Create**.
+
+```embed:trigger-create
 ```
 
-Step 2: confirm the trigger fires by hitting the Run now button on
-the trigger detail page, or by waiting for the next scheduled
-window.
+The console navigates to the trigger detail page.
 
-```callout:warning
-Slack rate-limits app messages at ~1 per second per channel. If
-your agent posts intermediate progress lines, throttle them; the
-trigger run logs will show 429s if you hit the cap.
+### 2. Add a subscription
+
+On the trigger detail page, open the **Subscriptions** panel and click
+**Add subscription**.
+
+1. Choose kind **agent_fresh_session**.
+2. Select the workspace from the picker, then select your summariser
+   agent.
+3. Set **Parallelism** to `skip` so a slow run does not stack on itself.
+4. Click **Add subscription**.
+
+### 3. Fire now to verify
+
+Click **Fire now** on the trigger detail page. The status panel shows
+the fire ID and confirms one subscription was dispatched. Navigate to
+**Sessions** to find the newly created session row.
+
+```embed:sessions-list
 ```
 
-## Verification
+Click the session row to open the detail view and watch the transcript
+stream in as the agent reads logs and builds the summary.
 
-The Slack prompt looks like this when delivered:
+### 4. Review the ask_user prompt in Slack
 
-```mockup:channels-prompt
-{ "platform": "slack", "question": "Approve yesterday's summary?", "options": ["Approve", "Reject"], "agentName": "weekday-summary" }
-```
+When the agent finishes the summary it issues an `ask_user` prompt.
+Because the workspace association has **Forward ask_user** enabled, the
+prompt is delivered to the bound Slack channel. The message looks like:
 
-Click Approve and the agent's session moves to `completed`.
-Reject sends the session back through the prompt loop so the agent
-can revise.
+> *weekday-summary* -- Approve yesterday's summary?
+> [Approve] [Reject]
+
+Click **Approve** and the session moves to `completed`. Clicking
+**Reject** sends the rejection reason back to the agent so it can
+revise.
 
 ```callout:success
-Once the verification click lands, the trigger is fully wired.
-Subsequent fires run unattended; you only see them again if
+After a successful approval click the trigger is fully wired.
+Subsequent weekday fires run unattended; you only see them again if
 approval times out or the agent returns an error.
 ```
 
 ## Gotchas
 
 - Workspace TTL must outlast the agent's longest turn. Default 30
-  minutes is usually fine; bump to 60 if the log volume is large.
-- The Slack channel provider needs the `chat:write` and
-  `chat:read` scopes; the OAuth flow surfaces this during channel
-  provider setup.
+  minutes is usually fine; bump to 60 if log volume is large.
+- The Slack channel provider needs the `chat:write` and `chat:read`
+  scopes. The OAuth flow surfaces this during provider setup.
+- Cron expressions are evaluated in the timezone you select in the
+  wizard. Double-check the IANA timezone dropdown -- it pre-seeds from
+  your browser locale.
+
+## Automate this
+
+```ref reference/api-triggers
+The API reference covers POST /triggers, subscriptions, and fire_now
+with full schema detail.
+```

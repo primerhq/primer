@@ -2,36 +2,47 @@
 slug: welcome
 title: Welcome to primer
 section: getting-started
-summary: A short tour of what primer is and where to start in these docs.
+summary: What primer is, who it is for, and how these docs are organised.
 ---
 
-## Overview
+## What is primer?
 
-Primer is a console + REST + MCP platform for running LLM agents.
-You define agents, bind tools, wire channels, and let primer
-orchestrate the work across sessions, triggers, and workspaces.
+Primer is a platform for building and running LLM agents in production. It gives operators a console, an HTTP API, and an MCP interface to:
 
-These docs live in the console itself so they can show real UI
-mockups, lazy-rendered diagrams, and copy/paste-ready code samples
-side by side.
+- **Define agents** -- configure an LLM provider, attach toolsets, set a system prompt, and version the result.
+- **Run sessions** -- every agent run is a session tracked end-to-end with tool calls, approvals, and output.
+- **Build graphs** -- wire agents together into multi-step pipelines where the output of one node feeds the next.
+- **Chat** -- expose agents as streamed chat endpoints for end-user or automated clients.
+- **Manage workspaces** -- give agents a sandboxed environment (container, k8s pod, or local directory) to operate in safely.
+- **Set up triggers** -- schedule or event-drive agent sessions so they run without manual intervention.
+- **Route with channels** -- route messages and tool results across named channels to decouple producers from consumers.
+
+Primer is aimed at operators who manage the infrastructure: install, configure providers, create agents, and connect everything. End-users and the agents themselves interact through the API and MCP surface; this doc set describes the operator view.
+
+## How the docs are organised
+
+| Section | Contents |
+|---|---|
+| **Getting started** | Install, first login, and your first agent. Start here. |
+| **Concepts** | The data model -- agents, sessions, workspaces, graphs, channels, triggers. |
+| **Features** | Detailed guides for each capability: auth, approvals, knowledge, toolsets, and more. |
+| **Cookbook** | End-to-end recipes for common setups. |
+| **Reference** | CLI flags, environment variables, and REST API surface. |
 
 ```callout:tip
-The left sidebar tracks where you are in the doc set. Hit Cmd+K to
-jump to any doc by title from anywhere in the console.
+These docs live inside the console itself. Hit Cmd+K to jump to any doc by title from anywhere in the console.
 ```
 
 ## Where to next
 
-If you have not installed primer yet, start with the install guide:
+Install primer and bring up the API server:
 
 ```ref:getting-started/install
-Pick the install path that matches your environment.
+How to install primer and start the API server.
 ```
 
-For the agent-facing reference (the dense MCP-tool view), follow
-the cross-link below. Operator docs are the right place for
-narrative; the agent-facing view is the right place for fast
-lookup of tool args and result envelopes.
+Then run through creating your first agent:
 
-```ai-doc:agents
+```ref:getting-started/first-agent
+Create an agent, run a session, and see the result.
 ```

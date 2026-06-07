@@ -2,43 +2,44 @@
 slug: first-login
 title: First login
 section: getting-started
-summary: What the console shows on your first visit and how to sign in.
+summary: Register the admin account, log in, and obtain a bearer token for automation.
 ---
 
-## The top bar
+## Registration
 
-On a fresh install the top bar carries the brand mark on the left,
-a global search on the right, and a worker-status badge that turns
-green once the worker pool is ready.
+On a fresh install the console presents a registration form. The first user who registers becomes the admin. Registration is locked for subsequent visitors -- all additional users must be created by the admin in the Users section.
 
-```mockup:topbar
-{ "workers": "0/4", "inFlight": "0 in flight", "showThemeToggle": true }
+```callout:warning
+Complete registration immediately after install. Until the admin account exists, anyone who can reach the console can claim it.
 ```
 
-## Auth
+## Logging in
 
-Primer ships an in-process session cookie backed by an HMAC secret.
-On first login you set an admin password; subsequent visits read the
-secret-signed cookie.
+After registration, subsequent visits check for a valid session cookie. Log in with the email and password set during registration. The session cookie is HMAC-signed; its lifetime defaults to 7 days (`PRIMER_AUTH__SESSION_TTL_DAYS`).
 
-```callout:info
-Auth secrets are generated on first start and persisted under
-$PRIMER_DATA/secrets/session.key. Back this file up if you want
-sticky sessions across redeploys.
+```callout:tip
+Running behind TLS? Set `PRIMER_AUTH__COOKIE_SECURE=true` so the browser will not send the session cookie over plain HTTP.
 ```
 
-## The empty session list
+## Bearer tokens for automation
 
-Right after install no sessions exist yet. Hitting the Sessions
-entry in the sidebar lands on this empty state:
+Scripts and CI pipelines should authenticate with a long-lived API token rather than a session cookie. Create one from the console:
 
-```mockup:sessions-list-empty
-{ "emptyLine": "No sessions yet", "ctaLabel": "New session" }
+```embed:api-token-create
 ```
 
-The blue New session button opens the agent picker.
+Copy the token immediately -- it is shown only once. Pass it as an `Authorization: Bearer <token>` header on every API request.
 
 ## Next steps
 
-Browse the Features section in the left nav to learn how to wire
-agents, channels, and triggers.
+For the full picture of auth configuration, token scopes, and rotation:
+
+```ref:features/auth-and-tokens
+Auth configuration, token scopes, and rotation.
+```
+
+Ready to create your first agent and run a session:
+
+```ref:getting-started/first-agent
+Create an agent, run a session, and see the result.
+```
