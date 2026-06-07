@@ -1,0 +1,11 @@
+{
+  "GET /workspace_templates?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "GET /workspace_providers?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+}

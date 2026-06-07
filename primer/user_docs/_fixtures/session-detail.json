@@ -1,0 +1,6 @@
+{
+  "GET /sessions/{id}": {
+    "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+  },
+  "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+}

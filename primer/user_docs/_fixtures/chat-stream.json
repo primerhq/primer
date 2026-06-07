@@ -1,0 +1,17 @@
+{
+  "GET /chats?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "GET /chats/{id}": {
+    "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+  },
+  "GET /chats/{id}/messages": {
+    "items": []
+  },
+  "GET /agents?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+}

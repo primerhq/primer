@@ -1,0 +1,23 @@
+{
+  "GET /triggers": {
+    "items": [],
+    "total": 0
+  },
+  "GET /agents?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "GET /graphs?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "GET /workspaces?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "GET /chats?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+}

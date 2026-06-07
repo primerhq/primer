@@ -1,0 +1,15 @@
+{
+  "GET /collections?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "GET /embedding_providers?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "GET /ssp?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "_note": "empty-valid: ingestion requires live embedding provider + auth"
+}

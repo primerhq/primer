@@ -1,0 +1,19 @@
+{
+  "GET /channel_providers?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "GET /channels?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "GET /workspace_channel_associations?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "GET /workspaces?limit=200": {
+    "items": [],
+    "total": 0
+  },
+  "_note": "channel_providers empty-valid: seeding requires live platform credentials + auth"
+}
