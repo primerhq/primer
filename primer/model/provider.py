@@ -809,8 +809,21 @@ class PoolConfig(BaseModel):
         description="Minimum number of connections kept open in the pool.",
     )
     max_size: PositiveInt = Field(
-        default=10,
-        description="Maximum number of connections the pool will open.",
+        default=25,
+        description=(
+            "Maximum number of connections the pool will open. asyncpg opens "
+            "connections lazily up to this ceiling and closes idle ones, so a "
+            "high ceiling costs nothing for a quiet process. The default "
+            "accounts for a worker/coordinator process, which pins several "
+            "long-lived LISTEN connections from this same pool (scheduler "
+            "session_ready + session_cancel, claim engine claim_ready, and one "
+            "per event-bus subscriber: yield listener, session/chat tick "
+            "forwarders, mcp-task bridge, watchers) on top of per-turn storage "
+            "and rate-limiter acquires at worker concurrency. With the old "
+            "default of 10 those persistent listeners starved per-turn acquires "
+            "and a turn could block on pool.acquire. Large deployments should "
+            "raise this further to match expected concurrency."
+        ),
     )
     acquire_timeout: float = Field(
         default=30.0,

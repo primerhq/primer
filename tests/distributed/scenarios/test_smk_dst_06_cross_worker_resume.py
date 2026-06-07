@@ -126,15 +126,13 @@ async def cluster_2x2_resume(
 ) -> TestCluster:
     """2 API + 2 worker cluster for the cross-worker resume scenario.
 
-    The default Postgres pool (max_size=10) is too small for a worker
-    running a real session turn in distributed mode: the per-process
-    background loops (Postgres event-bus LISTEN, the scheduler /
-    watcher / yield-timer / mcp-task scanners, the claim loop and its
-    heartbeats) hold connections, so the LLM rate-limiter's
-    ``pool.acquire()`` during the turn can starve and block the turn
-    before it ever reaches the LLM. Raising the pool ceiling gives the
-    turn a free connection. ``max_size`` is a tuning knob, not a
-    secret; the DSN/credentials still come from the cluster fixture.
+    Relies on the default Postgres pool ceiling (PoolConfig.max_size),
+    which is sized to cover a worker/coordinator process's long-lived
+    LISTEN connections (event bus, scheduler, claim engine) plus per-turn
+    storage + rate-limiter acquires. The old default of 10 starved the
+    turn's ``pool.acquire()`` here; the current default leaves headroom,
+    so no per-cluster override is needed (this test also guards that the
+    default stays adequate for a basic distributed deployment).
     """
     cluster = TestCluster(
         postgres_url=postgres_container,
@@ -142,7 +140,6 @@ async def cluster_2x2_resume(
         worker_count=2,
         start_port=8360,
         schema=db_schema,
-        env_overrides={"PRIMER_DB__CONFIG__POOL__MAX_SIZE": "50"},
     )
     await cluster.start()
     try:
