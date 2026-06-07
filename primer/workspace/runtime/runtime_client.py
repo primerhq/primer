@@ -283,12 +283,18 @@ class RuntimeClient:
                 if not isinstance(item, dict):
                     continue
                 event = item.get("event")
+                # The runtime serialises streaming events as the protocol
+                # Event envelope: {"event": ..., "data": {...}}. The exec
+                # payload (data_b64 / code) lives under the nested ``data``
+                # key, NOT at the top level. Fall back to the top level so a
+                # flatter future shape still works.
+                payload = item.get("data") if isinstance(item.get("data"), dict) else item
                 if event == "stdout":
-                    stdout_chunks.append(base64.b64decode(item.get("data_b64", "")))
+                    stdout_chunks.append(base64.b64decode(payload.get("data_b64", "")))
                 elif event == "stderr":
-                    stderr_chunks.append(base64.b64decode(item.get("data_b64", "")))
+                    stderr_chunks.append(base64.b64decode(payload.get("data_b64", "")))
                 elif event == "exit":
-                    exit_code = int(item.get("code", -1))
+                    exit_code = int(payload.get("code", -1))
                     break
         finally:
             self._streams.pop(req_id, None)
@@ -331,11 +337,15 @@ class RuntimeClient:
                 if event == "watch_closed":
                     return
                 if event == "change":
+                    # Change details live under the Event envelope's nested
+                    # ``data`` key (same shape as exec events); fall back to
+                    # the top level for a flatter future shape.
+                    payload = item.get("data") if isinstance(item.get("data"), dict) else item
                     yield ChangeEvent(
-                        path=item.get("path", ""),
-                        event=item.get("change_event", "modify"),
-                        mtime=item.get("mtime"),
-                        size=item.get("size"),
+                        path=payload.get("path", ""),
+                        event=payload.get("change_event", "modify"),
+                        mtime=payload.get("mtime"),
+                        size=payload.get("size"),
                     )
         finally:
             self._streams.pop(req_id, None)
