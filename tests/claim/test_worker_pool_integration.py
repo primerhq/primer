@@ -53,23 +53,6 @@ class _NullScheduler(Scheduler):
     async def enqueue(self, session_id, *, ready_at=None):
         pass
 
-    async def complete_turn(self, worker_id, session_id, **kwargs):
-        from primer.int.scheduler import CompleteTurnResult
-        return CompleteTurnResult.SUCCESS
-
-    async def park_turn(
-        self, worker_id, session_id, *, expected_turn_no,
-        parked_event_key, parked_until, parked_at, parked_state,
-    ):
-        from primer.int.scheduler import CompleteTurnResult
-        return CompleteTurnResult.SUCCESS
-
-    async def clear_park(self, session_id):
-        pass
-
-    async def mark_resumable(self, event_key, *, resume_event_payload):
-        return 0
-
     async def list_workers(self):
         return []
 

@@ -11,20 +11,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from primer.int.scheduler import (
-    CompleteTurnResult,
-    FailureRecord,
-    Lease,
     Scheduler,
     WorkerInfo,
 )
 from primer.model.except_ import ProviderError
 from primer.model.scheduler import PostgresSchedulerConfig
 from primer.storage._ddl import CONCURRENT_CREATE_RACE
-from primer.model.workspace_session import SessionStatus
 
 if TYPE_CHECKING:
     import asyncpg
@@ -48,7 +44,7 @@ CREATE TABLE IF NOT EXISTS workers (
 
 
 class PostgresScheduler(Scheduler):
-    """Postgres impl. Tasks 9-11 fill in claim/complete_turn/LISTEN."""
+    """Postgres impl. Tasks 9-11 fill in claim/LISTEN."""
 
     def __init__(
         self,
@@ -173,250 +169,6 @@ class PostgresScheduler(Scheduler):
             await conn.execute(
                 "SELECT pg_notify('session_ready', $1)", session_id,
             )
-
-    async def complete_turn(
-        self,
-        worker_id: str,
-        session_id: str,
-        *,
-        expected_turn_no: int,
-        new_status: SessionStatus,
-        ended_reason: str | None = None,
-        re_enqueue: bool,
-        backoff: timedelta | None = None,
-        record_failure: FailureRecord | None = None,
-    ) -> CompleteTurnResult:
-        return await self._complete_turn_inner(
-            worker_id, session_id,
-            expected_turn_no=expected_turn_no,
-            new_status=new_status,
-            ended_reason=ended_reason,
-            re_enqueue=re_enqueue,
-            backoff=backoff,
-            record_failure=record_failure,
-        )
-
-    async def _complete_turn_inner(
-        self, worker_id, session_id, *,
-        expected_turn_no, new_status, ended_reason,
-        re_enqueue, backoff, record_failure,
-    ):
-        backoff_seconds = (
-            int(backoff.total_seconds()) if backoff is not None else 0
-        )
-        failure_attempt = (
-            record_failure.attempt_count if record_failure is not None else 0
-        )
-        failure_text = (
-            record_failure.error_text if record_failure is not None else None
-        )
-        set_ended_at = (new_status == SessionStatus.ENDED)
-
-        update_session_sql = """
-            UPDATE sessions
-            SET data = (
-                jsonb_set(
-                  jsonb_set(
-                    jsonb_set(
-                      jsonb_set(
-                        jsonb_set(
-                          jsonb_set(
-                            jsonb_set(
-                              jsonb_set(data,
-                                '{status}', to_jsonb($3::text)),
-                              '{turn_no}', to_jsonb(($4::int))),
-                            '{last_worker_id}', to_jsonb($1::text)),
-                          '{last_turn_at}', to_jsonb(now())),
-                        '{ended_reason}',
-                        CASE WHEN $5::text IS NULL THEN 'null'::jsonb
-                             ELSE to_jsonb($5::text) END),
-                      '{ended_at}',
-                      CASE WHEN $9::bool THEN to_jsonb(now())
-                           ELSE COALESCE(data->'ended_at', 'null'::jsonb) END),
-                    '{attempt_count}', to_jsonb($6::int)),
-                  '{last_error}',
-                  CASE WHEN $7::text IS NULL THEN 'null'::jsonb
-                       ELSE to_jsonb($7::text) END
-                )
-            ),
-            updated_at = now()
-            WHERE id = $2 AND (data->>'turn_no')::int = $8
-            RETURNING id
-        """
-
-        async with self._storage.pool.acquire() as conn:
-            async with conn.transaction():
-                updated = await conn.fetchrow(
-                    update_session_sql,
-                    worker_id, session_id,
-                    new_status.value,
-                    expected_turn_no + 1,
-                    ended_reason,
-                    failure_attempt,
-                    failure_text,
-                    expected_turn_no,
-                    set_ended_at,
-                )
-                if updated is None:
-                    return CompleteTurnResult.TURN_CONFLICT
-
-                if re_enqueue:
-                    await conn.execute(
-                        "SELECT pg_notify('session_ready', $1)", session_id,
-                    )
-                return CompleteTurnResult.SUCCESS
-
-    # ---- Park / resume (yielding-tools feature) -------------------------
-
-    async def park_turn(
-        self,
-        worker_id: str,
-        session_id: str,
-        *,
-        expected_turn_no: int,
-        parked_event_key: str,
-        parked_until,
-        parked_at,
-        parked_state: dict,
-    ) -> CompleteTurnResult:
-        """Park the in-flight turn (yielding-tools §7.2).
-
-        Atomic write: stamps parked_status='parked', parked_event_key,
-        parked_until, parked_at, parked_state into sessions.data
-        via jsonb_set (does NOT touch turn_no, status, ended_at
-        etc. — the turn is suspended, not completed).
-
-        Returns SUCCESS, TURN_CONFLICT (turn_no advanced under us),
-        or LEASE_LOST (we lost the lease before parking).
-        """
-        return await self._park_turn_inner(
-            worker_id, session_id,
-            expected_turn_no=expected_turn_no,
-            parked_event_key=parked_event_key,
-            parked_until=parked_until,
-            parked_at=parked_at,
-            parked_state=parked_state,
-        )
-
-    async def _park_turn_inner(
-        self, worker_id, session_id, *,
-        expected_turn_no, parked_event_key, parked_until,
-        parked_at, parked_state,
-    ):
-        # JSON-encode the state blob — postgres' jsonb expects text
-        # input it can parse.
-        import json
-        state_json = json.dumps(parked_state)
-
-        update_session_sql = """
-            UPDATE sessions
-            SET data = (
-                jsonb_set(
-                  jsonb_set(
-                    jsonb_set(
-                      jsonb_set(
-                        jsonb_set(data,
-                          '{parked_status}', to_jsonb('parked'::text)),
-                        '{parked_event_key}', to_jsonb($3::text)),
-                      '{parked_until}', to_jsonb($4::timestamptz)),
-                    '{parked_at}', to_jsonb($5::timestamptz)),
-                  '{parked_state}', $6::jsonb
-                )
-            ),
-            updated_at = now()
-            WHERE id = $2 AND (data->>'turn_no')::int = $7
-            RETURNING id
-        """
-
-        async with self._storage.pool.acquire() as conn:
-            async with conn.transaction():
-                updated = await conn.fetchrow(
-                    update_session_sql,
-                    worker_id, session_id, parked_event_key,
-                    parked_until, parked_at, state_json,
-                    expected_turn_no,
-                )
-                if updated is None:
-                    return CompleteTurnResult.TURN_CONFLICT
-                return CompleteTurnResult.SUCCESS
-
-    async def clear_park(self, session_id: str) -> None:
-        """NULL every parked_* JSONB field on the session row.
-
-        Used by the worker's resume path once a resumable park has
-        been consumed (resume hook ran, synthesised tool_result
-        persisted). After this returns the row is indistinguishable
-        from a non-parked session to the claim path.
-
-        Idempotent: missing row or already-cleared row is a silent
-        no-op (no RAISE, no error). Matches the ABC's contract so
-        the worker can call this without first checking row state.
-        """
-        sql = """
-            UPDATE sessions
-            SET data = (data
-                - 'parked_status'
-                - 'parked_event_key'
-                - 'parked_until'
-                - 'parked_at'
-                - 'parked_state'
-            ),
-            updated_at = now()
-            WHERE id = $1
-        """
-        async with self._storage.pool.acquire() as conn:
-            await conn.execute(sql, session_id)
-
-    async def mark_resumable(
-        self,
-        event_key: str,
-        *,
-        resume_event_payload: dict,
-    ) -> int:
-        """Flip parked sessions keyed on event_key to resumable.
-
-        One atomic SQL UPDATE matches every parked row whose
-        ``parked_event_key`` equals the supplied key, flips it to
-        ``resumable``, and stamps the payload under
-        ``parked_state.resume_event_payload``. The ``WHERE
-        parked_status='parked'`` clause guards against double-publish
-        — only the first publisher wins per row.
-
-        After the flip, every affected lease is re-armed
-        (``runnable=TRUE``) and the ``session_ready`` channel is
-        NOTIFY-ed once per session id so the worker pool wakes.
-
-        Returns the number of rows flipped (typically 0 or 1; more
-        is supported but unusual — distinct event_keys are the norm).
-        """
-        import json
-        payload_json = json.dumps(resume_event_payload)
-        update_session_sql = """
-            UPDATE sessions
-            SET data = jsonb_set(
-                jsonb_set(data,
-                    '{parked_status}', to_jsonb('resumable'::text)),
-                '{parked_state, resume_event_payload}',
-                $2::jsonb
-            ),
-            updated_at = now()
-            WHERE data->>'parked_status' = 'parked'
-              AND data->>'parked_event_key' = $1
-            RETURNING id
-        """
-        async with self._storage.pool.acquire() as conn:
-            async with conn.transaction():
-                rows = await conn.fetch(
-                    update_session_sql, event_key, payload_json,
-                )
-                if not rows:
-                    return 0
-                session_ids = [r["id"] for r in rows]
-                for sid in session_ids:
-                    await conn.execute(
-                        "SELECT pg_notify('session_ready', $1)", sid,
-                    )
-                return len(rows)
 
     # ---- LISTEN/NOTIFY (Task 11) ----------------------------------------
 

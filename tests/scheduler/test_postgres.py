@@ -22,11 +22,10 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from primer.int.scheduler import CompleteTurnResult, FailureRecord
 from primer.model.except_ import ConfigError
 from primer.model.provider import PoolConfig, PostgresConfig
 from primer.model.scheduler import PostgresSchedulerConfig
-from primer.model.workspace_session import WorkspaceSession, SessionStatus
+from primer.model.workspace_session import WorkspaceSession
 from primer.scheduler.postgres import PostgresScheduler
 from primer.storage.postgres import PostgresStorageProvider
 
@@ -187,50 +186,6 @@ async def _insert_session(storage_provider, sid: str, *,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }),
         )
-
-
-async def test_complete_turn_success(sched, storage_provider):
-    """complete_turn advances turn_no and returns SUCCESS."""
-    await _insert_session(storage_provider, "s-ct-1")
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    result = await sched.complete_turn(
-        "w1", "s-ct-1",
-        expected_turn_no=0,
-        new_status=SessionStatus.RUNNING,
-        re_enqueue=True,
-    )
-    assert result == CompleteTurnResult.SUCCESS
-
-
-async def test_complete_turn_conflict_on_wrong_fence(sched, storage_provider):
-    await _insert_session(storage_provider, "s-fence-1", turn_no=5)
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    result = await sched.complete_turn(
-        "w1", "s-fence-1",
-        expected_turn_no=99,
-        new_status=SessionStatus.RUNNING,
-        re_enqueue=False,
-    )
-    assert result == CompleteTurnResult.TURN_CONFLICT
-
-
-async def test_failure_record_writes_columns(sched, storage_provider):
-    await _insert_session(storage_provider, "s-fr-1")
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.complete_turn(
-        "w1", "s-fr-1",
-        expected_turn_no=0,
-        new_status=SessionStatus.RUNNING,
-        re_enqueue=True,
-        record_failure=FailureRecord(error_text="boom", attempt_count=2),
-    )
-    async with storage_provider.pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT data FROM sessions WHERE id = $1", "s-fr-1",
-        )
-    data = json.loads(row["data"]) if isinstance(row["data"], str) else row["data"]
-    assert data["attempt_count"] == 2
-    assert data["last_error"] == "boom"
 
 
 async def test_enqueue_sends_notify(sched, storage_provider):

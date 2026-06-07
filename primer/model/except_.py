@@ -176,7 +176,7 @@ class TransientError(PrimerError):
 
 
 class LeaseLostError(PrimerError):
-    """Internal: ``Scheduler.complete_turn`` returned ``LEASE_LOST``.
+    """Internal: the scheduler detected a lost lease on session release.
 
     The worker discards the in-progress turn output. Never escapes the
     worker boundary -- REST callers do not see this.
@@ -184,7 +184,7 @@ class LeaseLostError(PrimerError):
 
 
 class TurnConflictError(PrimerError):
-    """Internal: ``Scheduler.complete_turn`` returned ``TURN_CONFLICT``.
+    """Internal: the scheduler detected a turn-number conflict on release.
 
     Another worker advanced the session ahead of us. The worker
     discards the in-progress turn output. Same scope as

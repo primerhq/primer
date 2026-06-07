@@ -6,10 +6,6 @@ import asyncio
 
 import pytest
 
-from primer.int.scheduler import (
-    CompleteTurnResult,
-    FailureRecord,
-)
 from primer.model.workspace_session import SessionStatus
 from primer.scheduler.in_memory import InMemoryScheduler
 
@@ -27,92 +23,6 @@ async def test_register_and_list_workers(sched):
     workers = await sched.list_workers()
     assert len(workers) == 1
     assert workers[0].id == "w1"
-
-
-def _seed_lease(sched, session_id: str, worker_id: str) -> None:
-    """Simulate a claimed lease by directly setting worker_id on _LeaseState."""
-    from primer.scheduler.in_memory import _LeaseState
-    sched._leases[session_id] = _LeaseState(worker_id=worker_id, runnable=True)
-
-
-async def test_complete_turn_success_increments_turn_no(sched):
-    sched.register_session_for_test("s1")
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.enqueue("s1")
-    _seed_lease(sched, "s1", "w1")
-    result = await sched.complete_turn(
-        "w1", "s1",
-        expected_turn_no=0,
-        new_status=SessionStatus.RUNNING,
-        re_enqueue=False,
-    )
-    assert result == CompleteTurnResult.SUCCESS
-    snap = sched.session_snapshot_for_test("s1")
-    assert snap.turn_no == 1
-
-
-async def test_complete_turn_with_wrong_fence_returns_conflict(sched):
-    sched.register_session_for_test("s1", turn_no=5)
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.enqueue("s1")
-    _seed_lease(sched, "s1", "w1")
-    result = await sched.complete_turn(
-        "w1", "s1",
-        expected_turn_no=99,
-        new_status=SessionStatus.RUNNING,
-        re_enqueue=False,
-    )
-    assert result == CompleteTurnResult.TURN_CONFLICT
-
-
-async def test_complete_turn_without_lease_returns_lease_lost(sched):
-    sched.register_session_for_test("s1")
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.enqueue("s1")
-    _seed_lease(sched, "s1", "w1")
-    result = await sched.complete_turn(
-        "w2", "s1",
-        expected_turn_no=0,
-        new_status=SessionStatus.RUNNING,
-        re_enqueue=False,
-    )
-    assert result == CompleteTurnResult.LEASE_LOST
-
-
-async def test_failure_record_writes_attempt_count(sched):
-    sched.register_session_for_test("s1")
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.enqueue("s1")
-    _seed_lease(sched, "s1", "w1")
-    result = await sched.complete_turn(
-        "w1", "s1",
-        expected_turn_no=0,
-        new_status=SessionStatus.RUNNING,
-        re_enqueue=False,
-        record_failure=FailureRecord(error_text="boom", attempt_count=3),
-    )
-    assert result == CompleteTurnResult.SUCCESS
-    snapshot = sched.session_snapshot_for_test("s1")
-    assert snapshot.attempt_count == 3
-    assert snapshot.last_error == "boom"
-
-
-async def test_complete_turn_success_resets_attempt_count(sched):
-    sched.register_session_for_test("s1")
-    sched._sessions["s1"].attempt_count = 4
-    sched._sessions["s1"].last_error = "old"
-    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
-    await sched.enqueue("s1")
-    _seed_lease(sched, "s1", "w1")
-    await sched.complete_turn(
-        "w1", "s1",
-        expected_turn_no=0,
-        new_status=SessionStatus.RUNNING,
-        re_enqueue=False,
-    )
-    snapshot = sched.session_snapshot_for_test("s1")
-    assert snapshot.attempt_count == 0
-    assert snapshot.last_error is None
 
 
 async def test_watch_ready_yields_on_enqueue(sched):

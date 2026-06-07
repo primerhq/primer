@@ -16,7 +16,6 @@ from primer.model.workspace_session import (
 )
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind, Lease as ClaimLease, ReleaseOutcome
-from primer.int.scheduler import Lease as SchedLease
 from primer.scheduler.in_memory import InMemoryScheduler
 from primer.worker.pool import WorkerPool
 
@@ -33,20 +32,6 @@ async def scheduler():
 def engine():
     return InMemoryClaimEngine(adapters={})
 
-
-def _make_sched_lease(
-    session_id: str,
-    worker_id: str,
-    turn_no: int = 0,
-) -> SchedLease:
-    """Build a scheduler Lease without calling scheduler.claim()."""
-    return SchedLease(
-        session_id=session_id,
-        worker_id=worker_id,
-        expires_at=datetime.now(timezone.utc),
-        attempt_count=0,
-        turn_no=turn_no,
-    )
 
 
 @pytest.fixture
@@ -109,208 +94,9 @@ async def test_pool_worker_id_is_unique(scheduler, engine):
         await p2.drain_and_stop()
 
 
-class _FakeExecutor:
-    """Stand-in for WorkspaceAgentExecutor that records invoke()."""
-
-    def __init__(self):
-        self.invoked = False
-
-    async def invoke(self, _messages):
-        self.invoked = True
-
-
-class _NoopPersist:
-    async def persist_turn(self, turn_no): return None
-
 
 async def _async_return(value):
     return value
-
-
-async def test_run_one_turn_marks_complete(scheduler, engine, monkeypatch):
-    """Happy-path turn: fake-invoke, complete_turn(SUCCESS)."""
-    sid = "sess-rt-1"
-    scheduler.register_session_for_test(
-        sid, status=SessionStatus.RUNNING,
-    )
-    pool = WorkerPool(
-        config=WorkerConfig(concurrency=1),
-        scheduler=scheduler,
-        storage=None,                   # type: ignore[arg-type]
-        workspace_registry=None,        # type: ignore[arg-type]
-        provider_registry=None,         # type: ignore[arg-type]
-        engine=engine,
-    )
-    pool._worker_id = "wrk-test"
-    await scheduler.register_worker(
-        worker_id="wrk-test", host="h", pid=1, capacity=1,
-    )
-    await scheduler.enqueue(sid)
-    from primer.scheduler.in_memory import _LeaseState
-    scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
-    lease = _make_sched_lease(sid, "wrk-test")
-
-    fake_session = WorkspaceSession(
-        id=sid, workspace_id="ws-1",
-        binding=AgentSessionBinding(agent_id="ag-1"),
-        status=SessionStatus.RUNNING,
-        created_at=datetime.now(timezone.utc),
-        turn_no=lease.turn_no,
-    )
-    fake_executor = _FakeExecutor()
-    monkeypatch.setattr(
-        pool, "_load_session", lambda _sid: _async_return(fake_session),
-    )
-    monkeypatch.setattr(
-        pool, "_load_workspace_for_persist",
-        lambda _ws_id: _async_return(_NoopPersist()),
-    )
-    monkeypatch.setattr(
-        pool, "_build_executor",
-        lambda _s, _w: _async_return(fake_executor),
-    )
-    monkeypatch.setattr(
-        pool, "_infer_post_turn_status",
-        lambda _exec, _sess: SessionStatus.WAITING,
-    )
-
-    await pool._run_one_turn(lease)
-
-    assert fake_executor.invoked is True
-    snapshot = scheduler.session_snapshot_for_test(sid)
-    assert snapshot.turn_no == lease.turn_no + 1
-    assert snapshot.status == SessionStatus.WAITING
-
-
-async def test_run_one_turn_skips_when_session_already_ended(scheduler, engine, monkeypatch):
-    """If the session row says ENDED, don't run the turn — just release."""
-    sid = "sess-ended-1"
-    scheduler.register_session_for_test(
-        sid, status=SessionStatus.ENDED,
-    )
-    pool = WorkerPool(
-        config=WorkerConfig(concurrency=1),
-        scheduler=scheduler, storage=None,            # type: ignore[arg-type]
-        workspace_registry=None,                      # type: ignore[arg-type]
-        provider_registry=None,                       # type: ignore[arg-type]
-        engine=engine,
-    )
-    pool._worker_id = "wrk-test"
-    await scheduler.register_worker(
-        worker_id="wrk-test", host="h", pid=1, capacity=1,
-    )
-    await scheduler.enqueue(sid)
-    from primer.scheduler.in_memory import _LeaseState
-    scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
-    lease = _make_sched_lease(sid, "wrk-test")
-
-    fake_session = WorkspaceSession(
-        id=sid, workspace_id="ws-1",
-        binding=AgentSessionBinding(agent_id="ag-1"),
-        status=SessionStatus.ENDED,
-        created_at=datetime.now(timezone.utc),
-        turn_no=lease.turn_no,
-    )
-    monkeypatch.setattr(
-        pool, "_load_session", lambda _sid: _async_return(fake_session),
-    )
-    # _build_executor MUST NOT be called — if it is, raise.
-    def _fail(*a, **kw):
-        raise AssertionError("_build_executor should not be called for ENDED session")
-    monkeypatch.setattr(pool, "_build_executor", _fail)
-
-    await pool._run_one_turn(lease)
-
-    snapshot = scheduler.session_snapshot_for_test(sid)
-    assert snapshot.status == SessionStatus.ENDED
-
-
-async def test_run_one_turn_honours_cancel_requested_flag(scheduler, engine, monkeypatch):
-    """If session.cancel_requested is True at claim time, end without
-    running a turn."""
-    sid = "sess-cancel-pre-1"
-    scheduler.register_session_for_test(
-        sid, status=SessionStatus.RUNNING,
-    )
-    pool = WorkerPool(
-        config=WorkerConfig(concurrency=1),
-        scheduler=scheduler, storage=None,            # type: ignore[arg-type]
-        workspace_registry=None,                      # type: ignore[arg-type]
-        provider_registry=None,                       # type: ignore[arg-type]
-        engine=engine,
-    )
-    pool._worker_id = "wrk-test"
-    await scheduler.register_worker(
-        worker_id="wrk-test", host="h", pid=1, capacity=1,
-    )
-    await scheduler.enqueue(sid)
-    from primer.scheduler.in_memory import _LeaseState
-    scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
-    lease = _make_sched_lease(sid, "wrk-test")
-
-    fake_session = WorkspaceSession(
-        id=sid, workspace_id="ws-1",
-        binding=AgentSessionBinding(agent_id="ag-1"),
-        status=SessionStatus.RUNNING,
-        created_at=datetime.now(timezone.utc),
-        turn_no=lease.turn_no,
-        cancel_requested=True,
-    )
-    monkeypatch.setattr(
-        pool, "_load_session", lambda _sid: _async_return(fake_session),
-    )
-    def _fail(*a, **kw):
-        raise AssertionError("_build_executor should not be called")
-    monkeypatch.setattr(pool, "_build_executor", _fail)
-
-    await pool._run_one_turn(lease)
-
-    snapshot = scheduler.session_snapshot_for_test(sid)
-    assert snapshot.status == SessionStatus.ENDED
-
-
-async def test_run_one_turn_honours_pause_requested_flag(scheduler, engine, monkeypatch):
-    """If session.pause_requested is True at claim time, transition to
-    PAUSED without running a turn."""
-    sid = "sess-pause-pre-1"
-    scheduler.register_session_for_test(
-        sid, status=SessionStatus.RUNNING,
-    )
-    pool = WorkerPool(
-        config=WorkerConfig(concurrency=1),
-        scheduler=scheduler, storage=None,            # type: ignore[arg-type]
-        workspace_registry=None,                      # type: ignore[arg-type]
-        provider_registry=None,                       # type: ignore[arg-type]
-        engine=engine,
-    )
-    pool._worker_id = "wrk-test"
-    await scheduler.register_worker(
-        worker_id="wrk-test", host="h", pid=1, capacity=1,
-    )
-    await scheduler.enqueue(sid)
-    from primer.scheduler.in_memory import _LeaseState
-    scheduler._leases[sid] = _LeaseState(worker_id="wrk-test", runnable=True)
-    lease = _make_sched_lease(sid, "wrk-test")
-
-    fake_session = WorkspaceSession(
-        id=sid, workspace_id="ws-1",
-        binding=AgentSessionBinding(agent_id="ag-1"),
-        status=SessionStatus.RUNNING,
-        created_at=datetime.now(timezone.utc),
-        turn_no=lease.turn_no,
-        pause_requested=True,
-    )
-    monkeypatch.setattr(
-        pool, "_load_session", lambda _sid: _async_return(fake_session),
-    )
-    def _fail(*a, **kw):
-        raise AssertionError("_build_executor should not be called")
-    monkeypatch.setattr(pool, "_build_executor", _fail)
-
-    await pool._run_one_turn(lease)
-
-    snapshot = scheduler.session_snapshot_for_test(sid)
-    assert snapshot.status == SessionStatus.PAUSED
 
 
 async def test_claim_loop_runs_runnable_session(scheduler, engine, monkeypatch):
@@ -699,62 +485,6 @@ async def test_metrics_snapshot_includes_in_flight_and_capacity(scheduler, engin
     assert snap["primer_worker_claims_total"] == 0
     assert snap["primer_session_turns_total"] == {}
     assert snap["primer_session_turn_duration_seconds"]["count"] == 0
-
-
-async def test_metrics_records_turn_outcome_after_run_one_turn(
-    scheduler, engine, monkeypatch,
-):
-    """After a happy-path turn, the success counter and duration aggregates
-    are bumped."""
-    from primer.scheduler.in_memory import _LeaseState
-    sid = "sess-metrics-1"
-    scheduler.register_session_for_test(sid, status=SessionStatus.RUNNING)
-    pool = WorkerPool(
-        config=WorkerConfig(concurrency=1),
-        scheduler=scheduler,
-        storage=None,                   # type: ignore[arg-type]
-        workspace_registry=None,        # type: ignore[arg-type]
-        provider_registry=None,         # type: ignore[arg-type]
-        engine=engine,
-    )
-    pool._worker_id = "wrk-metrics"
-    await scheduler.register_worker(
-        worker_id="wrk-metrics", host="h", pid=1, capacity=1,
-    )
-    await scheduler.enqueue(sid)
-    scheduler._leases[sid] = _LeaseState(worker_id="wrk-metrics", runnable=True)
-    lease = _make_sched_lease(sid, "wrk-metrics")
-    fake_session = WorkspaceSession(
-        id=sid, workspace_id="ws-1",
-        binding=AgentSessionBinding(agent_id="ag-1"),
-        status=SessionStatus.RUNNING,
-        created_at=datetime.now(timezone.utc),
-        turn_no=lease.turn_no,
-    )
-    monkeypatch.setattr(
-        pool, "_load_session", lambda _sid: _async_return(fake_session),
-    )
-    monkeypatch.setattr(
-        pool, "_load_workspace_for_persist",
-        lambda _ws: _async_return(_NoopPersist()),
-    )
-    monkeypatch.setattr(
-        pool, "_build_executor",
-        lambda _s, _w: _async_return(_FakeExecutor()),
-    )
-    monkeypatch.setattr(
-        pool, "_infer_post_turn_status",
-        lambda _e, _s: SessionStatus.WAITING,
-    )
-
-    await pool._run_one_turn(lease)
-
-    snap = pool.metrics_snapshot()
-    assert snap["primer_session_turns_total"].get("success") == 1
-    assert snap["primer_session_turn_duration_seconds"]["count"] == 1
-    assert snap["primer_session_turn_duration_seconds"]["sum"] >= 0.0
-    # In-flight cleared in the finally block.
-    assert snap["primer_worker_in_flight"] == 0
 
 
 async def test_turn_driver_drains_async_generator():
