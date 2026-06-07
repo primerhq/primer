@@ -37,7 +37,16 @@ RUN pip install --no-cache-dir aiohttp watchfiles pydantic && \
 
 # Workspace dir — the real workspace is mounted by `docker run -v`; this
 # fallback ensures the directory exists if no volume is provided.
-RUN mkdir -p /workspace
+#
+# Mode 0777 so the runtime can write here regardless of the UID the
+# container is launched under. The container backend runs the runtime as
+# the host UID (ContainerWorkspaceBackend.create -> user=_host_uid_gid()),
+# and Docker initialises a fresh named volume mounted at /workspace from
+# this image directory's contents + ownership + mode. Without a writable
+# mode the (root-owned) volume is unwritable by a non-root UID and the
+# runtime crashes writing its readiness marker. World-writable is safe:
+# /workspace is the isolated per-workspace sandbox tree.
+RUN mkdir -p /workspace && chmod 0777 /workspace
 
 # Switch cwd to /workspace so relative paths in ops resolve correctly.
 WORKDIR /workspace
