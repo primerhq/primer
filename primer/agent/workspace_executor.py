@@ -30,6 +30,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     _UserInputWaiting,
 )
+from primer.model.yield_ import YieldToWorker
 
 
 if TYPE_CHECKING:
@@ -200,6 +201,16 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                 if ev.type == "done":
                     last_done_reason = ev.stop_reason  # type: ignore[union-attr]
                 yield ev
+        except YieldToWorker:
+            # A park (tool approval, ask_user, subscribe_to_trigger,
+            # watch_files, sleep) is NOT a failure: the base executor raises
+            # YieldToWorker to hand the turn back to the worker, which parks
+            # the session row for resume. Let it propagate WITHOUT marking the
+            # on-disk session slot ENDED/failed -- otherwise the slot is killed
+            # at the gate and the resuming claim (especially a cross-process
+            # worker that rehydrates the slot) hits "cannot commit state on
+            # ENDED session" on inject_resume_messages (see FINDINGS F10/F10c).
+            raise
         except Exception:
             try:
                 await self._session.set_status(
