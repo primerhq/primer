@@ -167,4 +167,111 @@
   }
 
   window.DocsMakeStubApi = DocsMakeStubApi;
+
+  // ===========================================================================
+  // DocsBootEmbedIframe(iframe, componentName, fixturesOrPath, props, onDone)
+  //
+  // Shared iframe-boot helper used by the embed: directive. Calls back
+  // onDone(err) when the component has been rendered (err=null) or a fatal
+  // error occurred (err=Error).
+  //
+  // Parameters:
+  //   iframe          - the <iframe> DOM element (must already be in the DOM)
+  //   componentName   - exact window.<name> string, e.g. "AgentsPage"
+  //   fixturesOrPath  - EITHER a URL string to fetch as JSON (e.g.
+  //                     "/v1/user_docs/_fixtures/agents-page.json"),
+  //                     OR a plain object containing the fixtures inline.
+  //                     Inline objects are used by test harnesses so auth is
+  //                     not required.
+  //   props           - plain object of static props to pass to the component
+  //   onDone          - function(err) called once; err is null on success
+  // ===========================================================================
+  function DocsBootEmbedIframe(iframe, componentName, fixturesOrPath, props, onDone) {
+    var idoc = iframe.contentDocument;
+
+    // Build the iframe document with no #root so the full-app auto-boot
+    // (ReactDOM.createRoot(getElementById("root")).render) throws harmlessly;
+    // every component global is already registered by that point.
+    idoc.open();
+    idoc.write(
+      "<!doctype html>" +
+      "<html lang=\"en\" data-theme=\"dark\"><head>" +
+      "<meta charset=\"utf-8\" />" +
+      "<link rel=\"stylesheet\" href=\"/console/styles.css\" />" +
+      "<style>html,body{margin:0;background:var(--bg);} #embed-root{padding:16px;}</style>" +
+      "</head><body>" +
+      "<div id=\"embed-root\"></div>" +
+      "<script src=\"/console/vendor/react.min.js\"><\/script>" +
+      "<script src=\"/console/vendor/react-dom.min.js\"><\/script>" +
+      "<script src=\"/console/vendor/html2canvas.min.js\"><\/script>" +
+      "<\/body><\/html>"
+    );
+    idoc.close();
+
+    var iwin = iframe.contentWindow;
+
+    // Swallow the harmless createRoot(null) error produced when the bundle's
+    // auto-boot runs inside the frame (there is no #root).
+    iwin.addEventListener("error", function (e) {
+      var msg = String((e && e.message) || "");
+      if (/root|createRoot|null/i.test(msg)) { e.preventDefault(); }
+    });
+
+    // Load a plain-JS or JSX source file into the iframe by fetching it and
+    // injecting an inline <script>. The static handler serves .jsx as
+    // text/plain with nosniff so <script src> is refused; fetch+inline
+    // sidesteps the MIME guard.
+    function loadSourceInline(src) {
+      return iwin.fetch(src).then(function (res) {
+        if (!res.ok) throw new Error("failed to fetch " + src + " (" + res.status + ")");
+        return res.text();
+      }).then(function (code) {
+        var s = idoc.createElement("script");
+        s.textContent = code;
+        idoc.body.appendChild(s);
+      });
+    }
+
+    // Wait for React + ReactDOM to be available in the iframe.
+    function waitForReact() {
+      return new Promise(function (resolve) {
+        var t = setInterval(function () {
+          if (iwin.React && iwin.ReactDOM) { clearInterval(t); resolve(); }
+        }, 10);
+      });
+    }
+
+    waitForReact()
+      .then(function () { return loadSourceInline("/console/_app.js"); })
+      .then(function () { return loadSourceInline("/console/components/docs/embed-preview.jsx"); })
+      .then(function () {
+        if (typeof iwin[componentName] !== "function") {
+          throw new Error(componentName + " not defined in iframe after bundle load");
+        }
+        if (typeof iwin.DocsMakeStubApi !== "function") {
+          throw new Error("DocsMakeStubApi not defined in iframe");
+        }
+        // Resolve fixtures: accept either a URL string (fetch from server)
+        // or an inline plain object (used by test harnesses).
+        if (fixturesOrPath && typeof fixturesOrPath === "object") {
+          return Promise.resolve(fixturesOrPath);
+        }
+        return iwin.fetch(fixturesOrPath).then(function (res) {
+          if (!res.ok) throw new Error("fixtures fetch failed: " + res.status);
+          return res.json();
+        });
+      })
+      .then(function (fixtures) {
+        iwin.primerApi = iwin.DocsMakeStubApi(fixtures);
+        // Render the real component into the embed mount.
+        var root = iwin.ReactDOM.createRoot(idoc.getElementById("embed-root"));
+        root.render(iwin.React.createElement(iwin[componentName], props || {}));
+        onDone(null);
+      })
+      .catch(function (err) {
+        onDone(err);
+      });
+  }
+
+  window.DocsBootEmbedIframe = DocsBootEmbedIframe;
 })();

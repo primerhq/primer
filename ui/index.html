@@ -131,6 +131,13 @@
 <script type="text/babel" src="components/docs/embeds/bug-reporter-modal.jsx"></script>
 <script type="text/babel" src="components/docs/embeds.jsx"></script>
 <script type="text/babel" src="components/docs/directives-mockup.jsx"></script>
+<!-- embed: directive (Task 1.2): loads AFTER all page-component globals and
+     after the markdown directive registry. embed-preview.jsx provides
+     DocsMakeStubApi + DocsBootEmbedIframe; embed-registry.jsx maps ids to
+     components; directives-embed.jsx registers the embed: directive. -->
+<script type="text/babel" src="components/docs/embed-preview.jsx"></script>
+<script type="text/babel" src="components/docs/embed-registry.jsx"></script>
+<script type="text/babel" src="components/docs/directives-embed.jsx"></script>
 <script type="text/babel" src="components/docs.jsx"></script>
 
 <!-- Tweaks panel + app -->

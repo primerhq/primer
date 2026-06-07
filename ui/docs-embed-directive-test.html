@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- Test harness for Task 1.2: exercises DocsBootEmbedIframe + fixture route.
+     Proves the embed: directive mechanism end-to-end:
+       1. DocsBootEmbedIframe is available (from embed-preview.jsx).
+       2. It fetches /v1/user_docs/_fixtures/agents-page.json from the server.
+       3. It boots the real /console/_app.js bundle (window.AgentsPage).
+       4. The real AgentsPage renders the weekly-digest fixture row.
+     The page requires auth because /v1/user_docs/_fixtures/ is auth-guarded.
+     The playwright test logs in first via the /v1/auth/login endpoint.
+-->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>Docs embed directive test</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+  html, body { margin: 0; height: 100%; background: var(--bg); }
+  #host { width: 100%; height: calc(100vh - 32px); border: 0; display: block; }
+  #status { position: fixed; top: 4px; left: 4px; z-index: 9; font: 11px monospace; color: var(--text); }
+</style>
+</head>
+<body>
+<div id="status" data-state="booting">booting</div>
+<iframe id="host" title="embed-host" sandbox="allow-scripts allow-same-origin"></iframe>
+
+<script>
+var statusEl = document.getElementById("status");
+function setStatus(s) { statusEl.textContent = s; statusEl.dataset.state = s; }
+
+// Load embed-preview.jsx (plain JS; no JSX needed) into this host page
+// so we can call DocsBootEmbedIframe.
+function loadScriptInline(src) {
+  return fetch(src).then(function(res) {
+    if (!res.ok) throw new Error("fetch " + src + " -> " + res.status);
+    return res.text();
+  }).then(function(code) {
+    var s = document.createElement("script");
+    s.textContent = code;
+    document.body.appendChild(s);
+  });
+}
+
+(async function () {
+  try {
+    setStatus("loading-preview-lib");
+    // Load the stub factory into the HOST page (for DocsBootEmbedIframe).
+    // embed-preview.jsx has no JSX so no Babel needed.
+    await loadScriptInline("/console/components/docs/embed-preview.jsx");
+
+    if (typeof window.DocsBootEmbedIframe !== "function") {
+      throw new Error("DocsBootEmbedIframe not defined after embed-preview.jsx load");
+    }
+
+    setStatus("booting-iframe");
+    var iframe = document.getElementById("host");
+
+    // Boot the real AgentsPage inside the iframe against the agents-page fixture.
+    window.DocsBootEmbedIframe(
+      iframe,
+      "AgentsPage",
+      "/v1/user_docs/_fixtures/agents-page.json",
+      { onOpen: function() {}, pushToast: function() {} },
+      function(err) {
+        if (err) {
+          setStatus("error: " + (err.message || String(err)));
+          try {
+            iframe.contentDocument.getElementById("embed-root").textContent =
+              "BOOT ERROR: " + (err.message || err);
+          } catch(_) {}
+        } else {
+          setStatus("done");
+        }
+      }
+    );
+  } catch(err) {
+    setStatus("error: " + (err.message || String(err)));
+  }
+})();
+</script>
+</body>
+</html>

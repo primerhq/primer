@@ -1,0 +1,16 @@
+{
+  "embeds": [
+    "agents-page",
+    "sessions-list",
+    "session-detail",
+    "chat-stream",
+    "workspaces",
+    "workspace-template-form",
+    "trigger-create",
+    "channels",
+    "graph-canvas",
+    "workers-stats",
+    "collection-list",
+    "api-token-create"
+  ]
+}
