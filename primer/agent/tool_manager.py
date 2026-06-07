@@ -317,12 +317,20 @@ class ToolExecutionManager:
                 toolset_id=toolset_id, tool_name=bare_name,
             )
             if policy is not None and policy.enabled:
+                # Derive identity from the bound workspace session so the
+                # approval event key is session-scoped
+                # (``tool_approval:<session_id>:<call_id>``). Without this
+                # session_id falls back to "unknown" and every approval gate
+                # shares one event key, so one session's respond spuriously
+                # resumes another's. chat-surface approvals (no workspace
+                # session) keep session_id=None for now (out of scope).
+                sess = self._workspace_session
                 ctx = ApprovalContext(
                     tool_name=bare_name,
                     toolset_id=toolset_id,
                     arguments=call.arguments or {},
-                    agent_id=getattr(self, "_agent_id", None),
-                    session_id=getattr(self, "_session_id", None),
+                    agent_id=getattr(sess, "agent_id", None),
+                    session_id=getattr(sess, "session_id", None),
                     chat_id=getattr(self, "_chat_id", None),
                     requested_at=datetime.now(UTC),
                 )
