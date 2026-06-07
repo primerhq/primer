@@ -476,3 +476,148 @@ async def test_kubernetes_backend(authed_client, unique_suffix):
                 assert leaks == [], f"leaked K8s objects: {leaks}"
         await authed_client.delete(f"/v1/workspace_templates/{tpl}")
         await authed_client.delete(f"/v1/workspace_providers/{wp}")
+
+
+@smk("SMK-WSP-13")
+@requires("workspace:kubernetes")
+async def test_kubernetes_backend_gateway(authed_client, unique_suffix):
+    """Approach A: a host-side platform reaches in-cluster runtime pods via a
+    Gateway API HTTPRoute the backend auto-creates.
+
+    Topology: the platform runs on the host (the default e2e target,
+    localhost:8765) and talks to the apiserver via a kubeconfig connection;
+    runtime pods are reached through traefik's Gateway + a wildcard DNS entry
+    (``*.<PRIMER_K8S_WS_DOMAIN, default ws.local>`` -> node IP). Requires the
+    Gateway + wildcard-DNS infra (see the plan's Task 6). Override the dial
+    port via ``PRIMER_K8S_GATEWAY_PORT`` (default 32045, traefik web nodePort)
+    and the runtime image via ``PRIMER_K8S_RUNTIME_IMAGE``.
+
+    Like the in_cluster variant the server generates the workspace id and names
+    every K8s object ``primer-ws-<id>``; we additionally assert the per-
+    workspace HTTPRoute is created on materialise and deleted on teardown.
+    """
+    import os
+
+    namespace = os.environ.get("PRIMER_K8S_NAMESPACE", "primer-workspaces")
+    runtime_image = os.environ.get(
+        "PRIMER_K8S_RUNTIME_IMAGE",
+        "127.0.0.1:30500/primer/workspace-runtime:1.0",
+    )
+    gateway_port = int(os.environ.get("PRIMER_K8S_GATEWAY_PORT", "32045"))
+    ws_domain = os.environ.get("PRIMER_K8S_WS_DOMAIN", "ws.local")
+    kubeconfig = os.environ.get("KUBECONFIG") or os.path.expanduser("~/.kube/config")
+
+    wp = f"wpkg-{unique_suffix}"
+    tpl = f"tplkg-{unique_suffix}"
+    wid: str | None = None
+    obj_name: str | None = None
+
+    rp = await authed_client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp,
+            "provider": "kubernetes",
+            "config": {
+                "kind": "kubernetes",
+                "connection": {"kind": "kubeconfig", "path": kubeconfig},
+                "namespace": namespace,
+                "reachability": {
+                    "kind": "gateway_httproute",
+                    "scheme": "ws",
+                    "external_port": gateway_port,
+                    "gateway": {"name": "primer-gw", "namespace": "primer-gateway"},
+                    "routing": {
+                        "kind": "hostname",
+                        "hostname_template": "{workspace_id}." + ws_domain,
+                    },
+                },
+            },
+        },
+    )
+    assert rp.status_code in (200, 201), rp.text
+
+    rt = await authed_client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl,
+            "description": "smk k8s gateway backend",
+            "provider_id": wp,
+            "backend": {
+                "kind": "kubernetes",
+                "image": runtime_image,
+                "entrypoint": ["python", "-m", "primer_runtime.server"],
+                "pvc_size": "1Gi",
+            },
+        },
+    )
+    assert rt.status_code in (200, 201), rt.text
+
+    try:
+        rw = await authed_client.post("/v1/workspaces", json={"template_id": tpl})
+        assert rw.status_code in (200, 201), rw.text
+        body = rw.json()
+        wid = body["id"]
+        assert wid and wid.startswith("ws-"), wid
+        obj_name = body["runtime_meta"]["k8s_object_name"]
+        assert obj_name == f"primer-ws-{wid}", body
+
+        # The per-workspace HTTPRoute must exist once the workspace is created.
+        assert _kubectl_names("httproute", obj_name, namespace) == [obj_name]
+
+        phase = None
+        for _ in range(120):
+            got = await authed_client.get(f"/v1/workspaces/{wid}")
+            assert got.status_code == 200, got.text
+            phase = got.json().get("phase")
+            if phase == "running":
+                break
+            assert phase not in ("failed", "error"), got.text
+            await asyncio.sleep(1.0)
+        assert phase == "running", f"workspace never reached running: phase={phase!r}"
+
+        marker = f"K8S-GW-MARKER-{unique_suffix}"
+        w = await authed_client.put(
+            f"/v1/workspaces/{wid}/files",
+            params={"path": "marker.txt"},
+            json={"content": marker, "encoding": "text"},
+        )
+        assert w.status_code == 204, w.text
+        rd = await authed_client.get(
+            f"/v1/workspaces/{wid}/files/read",
+            params={"path": "marker.txt", "encoding": "text"},
+        )
+        assert rd.status_code == 200, rd.text
+        assert rd.json()["content"] == marker
+
+        diag = await authed_client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": "echo EXEC-OK; pwd; cat marker.txt", "timeout_seconds": 30},
+        )
+        assert diag.status_code in (200, 201), diag.text
+        db = diag.json()
+        assert db["exit_code"] == 0, db
+        assert "EXEC-OK" in db["stdout"], db
+        assert "/workspace" in db["stdout"], db
+        assert marker in db["stdout"], db
+    finally:
+        if wid is not None:
+            d = await authed_client.delete(f"/v1/workspaces/{wid}")
+            assert d.status_code in (204, 404), d.text
+            gone = await authed_client.get(f"/v1/workspaces/{wid}")
+            assert gone.status_code == 404, gone.text
+            if obj_name is not None:
+                leaks: list[str] = []
+                for _ in range(30):
+                    leaks = (
+                        _kubectl_names("statefulset", obj_name, namespace)
+                        + _kubectl_names("service", obj_name, namespace)
+                        + _kubectl_names("secret", obj_name, namespace)
+                        + _kubectl_names("httproute", obj_name, namespace)
+                        + _kubectl_names("pvc", f"ws-{obj_name}-0", namespace)
+                    )
+                    if not leaks:
+                        break
+                    await asyncio.sleep(1.0)
+                assert leaks == [], f"leaked K8s objects: {leaks}"
+        await authed_client.delete(f"/v1/workspace_templates/{tpl}")
+        await authed_client.delete(f"/v1/workspace_providers/{wp}")
