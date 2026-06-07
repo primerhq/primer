@@ -53,7 +53,7 @@ def _make_manager_with_fake_tool(tool_name: str, tool_result: str, *, raises=Non
                 args_schema={"type": "object", "properties": {}},
             )
 
-        async def call(self, *, tool_name, arguments, principal=None):
+        async def call(self, *, tool_name, arguments, principal=None, ctx=None):
             if raises is not None:
                 raise raises
             result = MagicMock()

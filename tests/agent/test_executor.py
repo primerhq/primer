@@ -180,7 +180,7 @@ class _FakeToolsetProvider:
             yield t
 
     async def call(
-        self, *, tool_name: str, arguments, principal=None
+        self, *, tool_name: str, arguments, principal=None, ctx=None
     ) -> ToolCallResult:
         return await self._handler(tool_name, arguments, principal)
 

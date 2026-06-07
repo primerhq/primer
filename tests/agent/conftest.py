@@ -32,6 +32,7 @@ class _EchoProvider:
         tool_name: str,
         arguments: dict[str, Any],
         principal: str | None = None,
+        ctx=None,
     ) -> ToolCallResult:
         return ToolCallResult(output=str(arguments), is_error=False)
 

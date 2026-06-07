@@ -49,6 +49,7 @@ class _FakeToolsetProvider:
         tool_name: str,
         arguments: dict[str, Any],
         principal: str | None = None,
+        ctx=None,
     ) -> ToolCallResult:
         self.calls.append((tool_name, arguments, principal))
         return ToolCallResult(output=f"{tool_name}({arguments})", is_error=False)
@@ -114,7 +115,7 @@ class TestToolsetRouting:
     @pytest.mark.asyncio
     async def test_execute_propagates_provider_error_as_tool_result(self) -> None:
         class _Boom(_FakeToolsetProvider):
-            async def call(self, *, tool_name, arguments, principal=None):
+            async def call(self, *, tool_name, arguments, principal=None, ctx=None):
                 raise ProviderError("upstream broke")
 
         a = _Boom(toolset_id="a", tools=[_tool("foo", toolset_id="a")])
@@ -127,7 +128,7 @@ class TestToolsetRouting:
     @pytest.mark.asyncio
     async def test_execute_propagates_auth_required(self) -> None:
         class _NeedAuth(_FakeToolsetProvider):
-            async def call(self, *, tool_name, arguments, principal=None):
+            async def call(self, *, tool_name, arguments, principal=None, ctx=None):
                 raise AuthRequiredError(
                     "oauth needed",
                     auth_url="https://example.com/oauth",

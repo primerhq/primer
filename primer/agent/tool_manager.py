@@ -46,7 +46,7 @@ from primer.model.except_ import (
     PrimerError,
     UnsupportedContentError,
 )
-from primer.model.yield_ import Yielded, YieldToWorker
+from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
 
@@ -377,11 +377,27 @@ class ToolExecutionManager:
         principal: str | None,
     ) -> ToolResultPart:
         provider = self._toolsets[toolset_id]
+        # Yielding tools (ask_user, sleep, watch_files, ...) declare a
+        # ``ctx: ToolContext`` parameter so they can form session-scoped
+        # event keys and raise YieldToWorker. Build that context from the
+        # bound workspace session; non-yielding handlers ignore it (the
+        # provider only injects ctx when the handler's signature declares
+        # it). Without this the generic toolset path crashes with a
+        # missing-argument TypeError before the session can ever park.
+        sess = self._workspace_session
+        ctx: ToolContext | None = None
+        if sess is not None:
+            ctx = ToolContext(
+                tool_call_id=call.id,
+                session_id=sess.session_id,
+                workspace_id=sess.workspace_id,
+            )
         try:
             result = await provider.call(
                 tool_name=bare_name,
                 arguments=call.arguments,
                 principal=principal,
+                ctx=ctx,
             )
         except AuthRequiredError:
             raise

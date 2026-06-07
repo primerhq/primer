@@ -98,6 +98,7 @@ class _FakeToolsetProvider:
         tool_name: str,
         arguments: dict[str, Any],
         principal: str | None = None,
+        ctx=None,
     ):
         self.calls.append(
             {
