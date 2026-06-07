@@ -1,7 +1,8 @@
 """REST routes for the user-facing documentation system.
 
-Mounts ``/v1/user_docs/manifest``, ``/v1/user_docs/{slug:path}``, and
-``/v1/user_docs/embeds/manifest``. See spec section 5.2 for the
+Mounts ``/v1/user_docs/manifest``, ``/v1/user_docs/{slug:path}``,
+``/v1/user_docs/embeds/manifest``, and
+``/v1/user_docs/_fixtures/{name}.json``. See spec section 5.2 for the
 contract.
 
 The router pulls the live :class:`UserDocsService` instance off
@@ -12,10 +13,14 @@ router is a thin HTTP adapter.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
+import primer
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 
 logger = logging.getLogger(__name__)
@@ -74,6 +79,37 @@ async def get_ai_doc_mirror(slug: str, request: Request) -> dict[str, Any]:
             },
         )
     return data
+
+
+_FIXTURES_DIR = Path(primer.__file__).resolve().parent / "user_docs" / "_fixtures"
+
+
+@user_docs_router.get(
+    "/user_docs/_fixtures/{name}",
+    summary="Serve a fixture JSON file for docs embed previews",
+)
+async def get_fixture(name: str) -> JSONResponse:
+    # Guard against path traversal: reject names containing '..' or '/'.
+    if ".." in name or "/" in name:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_name", "message": "Fixture name must not contain '..' or '/'."},
+        )
+    # The route captures everything after /_fixtures/ including the .json
+    # suffix. Validate the name ends with .json and strip it for the stem.
+    if not name.endswith(".json"):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": f"No fixture named {name!r}."},
+        )
+    fixture_path = _FIXTURES_DIR / name
+    if not fixture_path.exists() or not fixture_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": f"No fixture named {name!r}."},
+        )
+    data = json.loads(fixture_path.read_text(encoding="utf-8"))
+    return JSONResponse(content=data)
 
 
 @user_docs_router.get(
