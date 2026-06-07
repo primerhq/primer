@@ -57,6 +57,7 @@ from tests._support.runs import (
     make_scripted_agent,
     start_agent_session,
 )
+from tests._support.smk import smk
 from tests._support.yield_journeys import wait_for_resume
 
 
@@ -143,6 +144,7 @@ async def _drive_approval_park(
 # ===========================================================================
 
 
+@smk("SMK-WEB-09", status="partial")
 @pytest.mark.asyncio
 async def test_t0863_approval_timeout_resume_synthesises_rejection(
     client: httpx.AsyncClient, mock_llm, unique_suffix: str, tmp_path,

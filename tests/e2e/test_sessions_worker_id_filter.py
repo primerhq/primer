@@ -22,6 +22,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests._support.smk import smk
+
 from .test_sessions_top_level import (
     _create_workspace_and_session,
     _full_setup,
@@ -34,6 +36,7 @@ from .test_sessions_top_level import (
 # ============================================================================
 
 
+@smk("SMK-AGT-05", status="partial")
 @pytest.mark.asyncio
 async def test_t0733_sessions_filter_by_absent_worker_id_returns_empty(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,

@@ -56,6 +56,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from tests._support.smk import smk
+
 
 def _llm_body(entity_id: str, model_name: str) -> dict:
     return {
@@ -136,6 +138,7 @@ def _llm_policy_body(
 # ===========================================================================
 
 
+@smk("SMK-WEB-07", "SMK-WEB-08", status="partial")
 @pytest.mark.asyncio
 async def test_t0858_tool_approval_policy_multi_strategy_journey(
     client: httpx.AsyncClient, unique_suffix: str,

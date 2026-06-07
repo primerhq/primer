@@ -62,6 +62,8 @@ import json
 import httpx
 import pytest
 
+from tests._support.smk import smk
+
 
 # 60-char Discord placeholder (>=30; satisfies DiscordChannelProviderConfig
 # length floor) without looking like a real token.
@@ -75,6 +77,7 @@ _FAKE_TELEGRAM_TOKEN = "1234567890:abcdefghij1234567890"
 # ===========================================================================
 
 
+@smk("SMK-CHT-05")
 @pytest.mark.asyncio
 async def test_t0860_channels_cross_platform_validation_journey(
     client: httpx.AsyncClient, unique_suffix: str,

@@ -68,6 +68,8 @@ import asyncpg
 import httpx
 import pytest
 
+from tests._support.smk import smk
+
 
 # ---------------------------------------------------------------------------
 # Postgres connection (matches scripts/e2e/bringup.sh defaults).
@@ -201,6 +203,7 @@ async def _inject_approval_park_on_chat(
 # ===========================================================================
 
 
+@smk("SMK-CHT-04", status="partial")
 @pytest.mark.asyncio
 async def test_t0859_chats_approval_park_respond_and_delete_journey(
     client: httpx.AsyncClient, unique_suffix: str,
