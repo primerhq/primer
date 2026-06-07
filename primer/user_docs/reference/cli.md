@@ -2,114 +2,111 @@
 slug: cli
 title: Command-line interface
 section: reference
-summary: The uv run primer subcommands, their flags, and what each one prints.
+summary: The primer CLI subcommands, their flags, and what each one does.
 ---
 
 ## Top-level
 
-The `primer` CLI is a typer app. Subcommand discovery via the
-standard `--help`:
+`primer` is a Typer application. Run `--help` on any subcommand for
+the full flag list:
 
 ```code-tabs:bash
 --- bash
 uv run primer --help
-# usage: primer [OPTIONS] COMMAND [ARGS]...
+# Primer microagents framework -- API + worker entrypoints.
 #
 # commands:
-#   api      Run the API + (optionally) worker process
-#   worker   Run a dedicated worker process
-#   init     Initialise storage + bootstrap providers
+#   api      Serve the HTTP API (and an in-process worker by default)
+#   worker   Run the worker pool (with a minimal health/workers HTTP surface)
+#   init     Run first-time bootstrap. Idempotent; --force re-runs even if completed.
 ```
 
 ## primer api
 
-The default entry point. Runs uvicorn with the FastAPI app and
-(by default) the in-process worker pool.
+Starts the FastAPI HTTP server via uvicorn. By default it also starts
+an in-process worker pool (`runtime_mode=api+worker`). Pass
+`--no-worker` to split API and worker into separate processes.
 
 ```code-tabs:bash
 --- bash
-# Default: API + worker in one process.
+# Default: API + worker in one process, auto-loads ~/.primer/config.yaml
 uv run primer api
 
-# API only (pair with a dedicated `primer worker` process).
-PRIMER_RUNTIME_MODE=api uv run primer api
+# Explicit config file.
+uv run primer api --config /etc/primer/config.yaml
+uv run primer api -c /etc/primer/config.yaml
 
-# Custom port.
-PRIMER_PORT=9000 uv run primer api
-
-# Strict doc lint (refuses to start on user-doc lint errors).
-PRIMER_USER_DOCS_STRICT=1 uv run primer api
+# API only -- pair with a dedicated `primer worker` process.
+uv run primer api --no-worker
 ```
 
+### Flags
+
+| Flag | Short | Default | Description |
+|---|---|---|---|
+| `--config PATH` | `-c` | `~/.primer/config.yaml` if it exists, else built-in defaults | Path to a YAML config file. |
+| `--no-worker` | | off | Serve the API only; do NOT start the in-process worker pool. |
+
+Config file discovery order: explicit `--config` > `~/.primer/config.yaml`
+(if present) > built-in defaults (embedded SQLite at
+`~/.primer/db/data.sqlite`).
+
+YAML config fields map directly to `AppConfig`. Every field is
+optional. Env vars (`PRIMER_*`) override missing YAML fields; a
+`--config`-supplied YAML wins over env vars.
+
 ```callout:tip
-For production deploys, run `primer api` and `primer worker` as
-two separate processes against the same shared storage. Scaling
+For production deploys, run `primer api --no-worker` and `primer worker`
+as two separate processes against the same shared storage. Scaling
 workers becomes independent of scaling HTTP capacity.
 ```
 
 ## primer worker
 
-Runs only the worker pool, no HTTP server. Pairs with a
-separate API-only process.
+Runs only the worker pool. A minimal HTTP surface (`/v1/health` and
+`/v1/workers`) is still served for liveness/readiness probes. Pairs
+with a `primer api --no-worker` process.
 
 ```code-tabs:bash
 --- bash
-PRIMER_WORKER__POOL_SIZE=16 uv run primer worker
+# Default: auto-loads ~/.primer/config.yaml
+uv run primer worker
+
+# Explicit config.
+uv run primer worker --config /etc/primer/config.yaml
+uv run primer worker -c /etc/primer/config.yaml
 ```
 
-The worker process claims sessions from storage and dispatches
-their tool calls. It does not serve HTTP, so the worker host
-does not need a public network ingress.
+### Flags
+
+| Flag | Short | Default | Description |
+|---|---|---|---|
+| `--config PATH` | `-c` | `~/.primer/config.yaml` if it exists, else built-in defaults | Path to a YAML config file. |
 
 ## primer init
 
-Initialises a fresh primer install. Creates the storage schema,
-seeds the built-in providers, mints a default operator account.
+Runs first-time bootstrap. Idempotent -- rows that already exist are
+skipped. Pass `--force` to re-run the bootstrap even when the
+completion marker is already set (useful for partially-failed runs).
 
 ```code-tabs:bash
 --- bash
-# Interactive prompt for admin credentials.
+# Idempotent bootstrap against default config.
 uv run primer init
 
-# Non-interactive (CI/automation).
-uv run primer init \
-  --admin-username admin \
-  --admin-password "$(openssl rand -hex 16)" \
-  --confirm
+# Explicit config file.
+uv run primer init --config /etc/primer/config.yaml
+
+# Re-run even if bootstrap already completed.
+uv run primer init --force
 ```
 
-The `--confirm` flag is required for non-interactive use; without
-it the command prompts even when stdin is closed.
+### Flags
 
-## primer harness install
+| Flag | Short | Default | Description |
+|---|---|---|---|
+| `--config PATH` | `-c` | `~/.primer/config.yaml` if it exists, else built-in defaults | Path to a YAML config file. |
+| `--force` | | off | Re-run bootstrap even if it has already completed. |
 
-Installs a harness from a git source.
-
-```code-tabs:bash
---- bash
-uv run primer harness install \
-  --source https://github.com/codemug/harness-pr-reviewer \
-  --branch main
-
-# Inspect what would change without writing.
-uv run primer harness install \
-  --source https://github.com/codemug/harness-pr-reviewer \
-  --dry-run
-```
-
-The dry-run mode parses the harness manifest, shows what entities
-would be created, and exits without writing.
-
-## Exit codes
-
-Every subcommand follows the same convention:
-
-| Code | Meaning |
-|---|---|
-| `0` | Success |
-| `1` | Generic error (config invalid, storage unreachable, etc.) |
-| `2` | Wrong CLI usage (typer surfacing arg parse errors) |
-| `130` | SIGINT (Ctrl+C) |
-
-CI consumers should rely on the exit code, not on stdout/stderr
-parsing.
+Exit code `1` when any provider bootstraps with errors (printed to
+stderr). Exit code `0` when all rows are created or skipped.
