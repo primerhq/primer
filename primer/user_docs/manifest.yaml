@@ -71,9 +71,20 @@ sections:
     order: 5
     docs:
       - rest-api-overview
-      - rest-api-agents-graphs-sessions
-      - rest-api-channels-triggers
-      - rest-api-knowledge-workspaces
+      - api-agents
+      - api-providers
+      - api-sessions
+      - api-chats
+      - api-workspaces
+      - api-knowledge
+      - api-triggers
+      - api-channels
+      - api-tool-approval
+      - api-toolsets
+      - api-graphs
+      - api-harnesses
+      - api-workers-health
+      - api-auth-tokens
       - mcp-server-reference
-      - env-vars
       - cli
+      - env-vars

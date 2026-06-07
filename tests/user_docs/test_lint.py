@@ -153,29 +153,32 @@ class TestFrontmatterRequiredKeys:
         assert any("difficulty" in i.message for i in bad)
 
 
-class TestMockupJsonValid:
-    def test_malformed_mockup_json_is_rejected(self, tmp_path):
+class TestEmbedDirectiveBody:
+    def test_embed_known_id_lints_clean(self, tmp_path):
+        """embed:<id> with a registered id produces no unknown_embed_id error."""
         _write(
             tmp_path, "features/agents.md",
             "---\nslug: agents\ntitle: A\nsection: features\n"
-            "summary: x\n---\n## h\n\n```mockup:agent-create-modal\n"
-            "{ this is not valid json }\n```\n",
+            "summary: x\n---\n## h\n\n```embed:agent-create-modal\n```\n",
         )
         svc = _svc(tmp_path)
-        assert "mockup_invalid_json" in _codes(
+        assert "unknown_embed_id" not in _codes(
             run_lint(svc, embeds_manifest=["agent-create-modal"])
         )
 
-    def test_empty_mockup_body_is_fine(self, tmp_path):
+    def test_mockup_directive_is_not_parsed(self, tmp_path):
+        """mockup: is no longer a recognized directive; the walker ignores it
+        entirely so no lint rule fires for it."""
         _write(
             tmp_path, "features/agents.md",
             "---\nslug: agents\ntitle: A\nsection: features\n"
             "summary: x\n---\n## h\n\n```mockup:agent-create-modal\n```\n",
         )
         svc = _svc(tmp_path)
-        assert "mockup_invalid_json" not in _codes(
-            run_lint(svc, embeds_manifest=["agent-create-modal"])
-        )
+        issues = run_lint(svc, embeds_manifest=["agent-create-modal"])
+        # No mockup-related rules exist any more
+        assert "mockup_invalid_json" not in _codes(issues)
+        assert "unknown_embed_id" not in _codes(issues)
 
 
 class TestCrossLinkResolution:
@@ -199,12 +202,13 @@ class TestCrossLinkResolution:
         assert "broken_ref" not in _codes(run_lint(svc, embeds_manifest=[]))
 
 
-class TestUnknownMockupId:
+class TestUnknownEmbedId:
     def test_unknown_embed_id_is_rejected(self, tmp_path):
+        """embed:<id> with an unregistered id emits unknown_embed_id."""
         _write(
             tmp_path, "features/agents.md",
             "---\nslug: agents\ntitle: A\nsection: features\n"
-            "summary: x\n---\n```mockup:not-registered\n```\n",
+            "summary: x\n---\n## h\n\n```embed:not-registered\n```\n",
         )
         svc = _svc(tmp_path)
         bad = [i for i in run_lint(

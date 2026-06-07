@@ -11,7 +11,7 @@ Rules (severity in parens, ``error`` unless noted):
 
 1. ``no_em_dash`` (error) -- U+2014 anywhere in the doc source.
 2. ``broken_ref`` (error) -- ref:/ai-doc: target unresolved.
-3. ``unknown_embed_id`` (error) -- mockup:<id> not in registry.
+3. ``unknown_embed_id`` (error) -- embed:<id> not in registry.
 4. ``missing_frontmatter_key`` (error) -- required key missing;
    cookbook docs additionally require difficulty/time_minutes/tags.
 5. ``duplicate_slug`` (error) -- two docs sharing a slug.
@@ -20,8 +20,7 @@ Rules (severity in parens, ``error`` unless noted):
    not a recognised diagram type.
 8. ``h1_in_body`` (error) -- '#' inside the body (h1 reserved for
    frontmatter title).
-9. ``mockup_invalid_json`` (error) -- mockup body fails json.loads.
-10. ``forbidden_token`` (warning) -- TODO / FIXME / xxx /
+9. ``forbidden_token`` (warning) -- TODO / FIXME / xxx /
     'lorem ipsum' in body.
 
 Docs under ``_meta/`` are exempt from every rule -- the authoring
@@ -30,7 +29,6 @@ guide is allowed to demonstrate forbidden patterns by example.
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -79,7 +77,7 @@ _KNOWN_MERMAID_TYPES = (
 
 _DIRECTIVE_FENCE_RE = re.compile(r"^```([\w:./-]+)\s*$")
 _DIRECTIVE_PREFIXES = (
-    "mermaid", "mockup:", "embed:", "callout:", "code-tabs:", "ref:", "ai-doc:",
+    "mermaid", "embed:", "callout:", "code-tabs:", "ref:", "ai-doc:",
 )
 
 
@@ -342,32 +340,6 @@ def run_lint(
                             f"not found"
                         ),
                     ))
-            elif directive.startswith("mockup:"):
-                embed_id = directive[len("mockup:"):]
-                if embed_id not in embeds_manifest:
-                    issues.append(LintIssue(
-                        file=rel_path, line=start_line - 1,
-                        rule="unknown_embed_id", severity="error",
-                        message=(
-                            f"embed id {embed_id!r} not registered; "
-                            f"valid ids: {sorted(embeds_manifest)}"
-                        ),
-                    ))
-                # Rule 9: validate JSON body when non-empty.
-                payload = "\n".join(payload_lines).strip()
-                if payload:
-                    try:
-                        json.loads(payload)
-                    except json.JSONDecodeError as exc:
-                        issues.append(LintIssue(
-                            file=rel_path,
-                            line=start_line + exc.lineno - 1,
-                            rule="mockup_invalid_json", severity="error",
-                            message=(
-                                f"mockup directive has malformed JSON: "
-                                f"{exc.msg}"
-                            ),
-                        ))
             elif directive.startswith("embed:"):
                 embed_id = directive[len("embed:"):]
                 if embed_id not in embeds_manifest:

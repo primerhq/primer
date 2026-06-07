@@ -102,9 +102,8 @@
 <script type="text/babel" src="components/api_tokens.jsx"></script>
 <script type="text/babel" src="components/mcp.jsx"></script>
 
-<!-- User documentation system: directives + embeds load BEFORE docs.jsx,
-     which registers them; mockup embed components load BEFORE the
-     embed registry that maps ids to them. -->
+<!-- User documentation system: directives load BEFORE docs.jsx,
+     which registers them. -->
 <script type="text/babel" src="vendor/highlight-jsx.js"></script>
 <script type="text/babel" src="vendor/highlight-curl.js"></script>
 <script type="text/babel" src="components/docs/directives-callout.jsx"></script>
@@ -112,29 +111,9 @@
 <script type="text/babel" src="components/docs/directives-ai-doc.jsx"></script>
 <script type="text/babel" src="components/docs/directives-code-tabs.jsx"></script>
 <script type="text/babel" src="components/docs/directives-mermaid.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/topbar.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/sessions-list-empty.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/agent-create-modal.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/graph-canvas-three-nodes.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/channels-prompt.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/docs-callout-demo.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/workspace-empty.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/session-detail-panel.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/chat-stream.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/harness-wizard-step.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/workspace-template-form.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/collection-list-empty.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/ssp-list.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/trigger-create.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/worker-stats.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/api-token-create.jsx"></script>
-<script type="text/babel" src="components/docs/embeds/bug-reporter-modal.jsx"></script>
-<script type="text/babel" src="components/docs/embeds.jsx"></script>
-<script type="text/babel" src="components/docs/directives-mockup.jsx"></script>
-<!-- embed: directive (Task 1.2): loads AFTER all page-component globals and
-     after the markdown directive registry. embed-preview.jsx provides
-     DocsMakeStubApi + DocsBootEmbedIframe; embed-registry.jsx maps ids to
-     components; directives-embed.jsx registers the embed: directive. -->
+<!-- embed: directive: embed-preview.jsx provides DocsMakeStubApi +
+     DocsBootEmbedIframe; embed-registry.jsx maps ids to components;
+     directives-embed.jsx registers the embed: directive. -->
 <script type="text/babel" src="components/docs/embed-preview.jsx"></script>
 <script type="text/babel" src="components/docs/embed-registry.jsx"></script>
 <script type="text/babel" src="components/docs/directives-embed.jsx"></script>

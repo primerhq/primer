@@ -23,23 +23,20 @@ from the manifest. Highlights:
 - The em-dash character is rejected anywhere in a doc source. Use
   the regular hyphen, the double-hyphen, or rework the sentence.
 - Every `ref:<slug>` and `ai-doc:<slug>` resolves at lint time.
-- Every `mockup:<id>` is checked against the live embed registry.
+- Every `embed:<id>` is checked against the embed registry
+  (`primer/user_docs/_fixtures/registry.json`).
 - Required frontmatter keys: slug, title, summary, section.
   Cookbook docs also require difficulty, time_minutes, tags.
 
 ## The six directives
-
-The full set of callout severities is rendered below side by side
-so authors can pick one without leaving the page:
-
-```mockup:docs-callout-demo
-```
 
 ### callout
 
 ```callout:info
 This is what the info kind looks like in real prose.
 ```
+
+Severity variants: `info`, `warning`, `danger`, `tip`.
 
 ### ref
 
@@ -69,10 +66,18 @@ flowchart LR
   B --> C
 ```
 
-### mockup
+### embed
 
-The directive shape is the same as the others; the body is parsed
-as JSON and forwarded to the embed component as props.
+Renders a real console component from the embed registry with fixtures.
+The id must match an entry in `primer/user_docs/_fixtures/registry.json`.
+The component is rendered inside an iframe using live fixture data --
+no hand-drawn JSX required.
+
+```embed:agents-page
+```
+
+Valid embed ids are listed in the registry. An unregistered id is
+a lint error (`unknown_embed_id`).
 
 ## A small architecture sketch
 
@@ -94,3 +99,12 @@ sequenceDiagram
 The directive registry lives in `ui/vendor/markdown.jsx`. Each
 directive registers a handler via `window.MarkdownDirectives.register`.
 The handler receives the body and returns a React node.
+
+## Adding a new embed
+
+1. Add the fixture JSON under `primer/user_docs/_fixtures/<id>.json`.
+2. Register the id in `primer/user_docs/_fixtures/registry.json`.
+3. Implement the component in `ui/components/docs/directives-embed.jsx`
+   (or a dedicated file loaded before it).
+4. Use `embed:<id>` in the doc body. The lint will verify the id on
+   next reload.

@@ -3,7 +3,7 @@
 Verifies:
 - embed:<registered-id> lints clean.
 - embed:<unknown-id> raises unknown_embed_id.
-- mockup:<registered-id> still lints clean (transition: both prefixes valid).
+- mockup:<id> is an unknown directive (no longer supported).
 """
 
 from __future__ import annotations
@@ -43,29 +43,8 @@ def _codes(issues: list[LintIssue]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Build the union manifest the same way app.py and docs_lint.py do:
-# mockup ids UNION registry.json embed ids.
+# Build the manifest from registry.json only (mockup ids removed).
 # ---------------------------------------------------------------------------
-
-_MOCKUP_IDS: list[str] = [
-    "topbar",
-    "sessions-list-empty",
-    "agent-create-modal",
-    "graph-canvas-three-nodes",
-    "channels-prompt",
-    "docs-callout-demo",
-    "workspace-empty",
-    "session-detail-panel",
-    "chat-stream",
-    "harness-wizard-step",
-    "workspace-template-form",
-    "collection-list-empty",
-    "ssp-list",
-    "trigger-create",
-    "worker-stats",
-    "api-token-create",
-    "bug-reporter-modal",
-]
 
 _REGISTRY_PATH = (
     pathlib.Path(__file__).resolve().parent.parent.parent
@@ -73,16 +52,9 @@ _REGISTRY_PATH = (
 )
 try:
     _registry_data = json.loads(_REGISTRY_PATH.read_text(encoding="utf-8"))
-    _registry_ids: list[str] = _registry_data.get("embeds", [])
+    _REGISTRY_MANIFEST: list[str] = _registry_data.get("embeds", [])
 except Exception:  # noqa: BLE001
-    _registry_ids = []
-
-_seen: set[str] = set(_MOCKUP_IDS)
-_UNION_MANIFEST: list[str] = list(_MOCKUP_IDS)
-for _eid in _registry_ids:
-    if _eid not in _seen:
-        _UNION_MANIFEST.append(_eid)
-        _seen.add(_eid)
+    _REGISTRY_MANIFEST = []
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +71,7 @@ class TestEmbedDirective:
             "```embed:agents-page\n```\n",
         )
         svc = _svc(tmp_path)
-        issues = run_lint(svc, embeds_manifest=_UNION_MANIFEST)
+        issues = run_lint(svc, embeds_manifest=_REGISTRY_MANIFEST)
         assert "unknown_embed_id" not in _codes(issues)
 
     def test_embed_unknown_id_raises_error(self, tmp_path):
@@ -111,15 +83,22 @@ class TestEmbedDirective:
             "```embed:not-a-real-id\n```\n",
         )
         svc = _svc(tmp_path)
-        issues = run_lint(svc, embeds_manifest=_UNION_MANIFEST)
+        issues = run_lint(svc, embeds_manifest=_REGISTRY_MANIFEST)
         bad = [i for i in issues if i.rule == "unknown_embed_id"]
         assert len(bad) == 1
         assert "not-a-real-id" in bad[0].message
         assert bad[0].severity == "error"
 
-    def test_mockup_known_id_still_lints_clean(self, tmp_path):
-        """mockup:<id> with a currently-valid mockup id must not raise any error
-        (transition: both mockup: and embed: are valid side by side)."""
+    def test_mockup_directive_is_unknown(self, tmp_path):
+        """mockup:<id> is no longer a supported directive and must not be
+        recognized by the lint (it will be treated as a plain fenced block
+        with an unrecognized info-string, not as an embed directive).
+
+        The lint does NOT emit unknown_embed_id for mockup: blocks because
+        mockup: is not in _DIRECTIVE_PREFIXES. The block is simply ignored
+        by the directive walker -- no lint error is produced for the
+        directive itself, but no lints-clean guarantee is provided either.
+        """
         _write(
             tmp_path, "features/agents.md",
             "---\nslug: agents\ntitle: Agents\nsection: features\n"
@@ -127,5 +106,12 @@ class TestEmbedDirective:
             "```mockup:agent-create-modal\n```\n",
         )
         svc = _svc(tmp_path)
-        issues = run_lint(svc, embeds_manifest=_UNION_MANIFEST)
+        issues = run_lint(svc, embeds_manifest=_REGISTRY_MANIFEST)
+        # mockup: is not in _DIRECTIVE_PREFIXES so the walker skips it
+        # entirely -- no unknown_embed_id fires (the block is invisible to
+        # the lint). The important contract: mockup: is NOT validated as an
+        # embed, and any doc using it gets no coverage from the embed check.
+        # The directive is unsupported; authors must use embed: instead.
+        assert "mockup:agent-create-modal" not in str(issues)
+        # And no embed-related error fires either
         assert "unknown_embed_id" not in _codes(issues)
