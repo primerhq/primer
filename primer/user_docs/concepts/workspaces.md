@@ -2,76 +2,130 @@
 slug: workspaces-concept
 title: Workspaces
 section: concepts
-summary: Sandboxed execution environments with a filesystem + git history, scoped to one or more sessions.
+summary: Isolated sandbox environments with a filesystem, a shell, and a git-backed state history that agents live and act inside.
 ---
 
 ## What a workspace is
 
-A workspace is primer's unit of execution isolation. Concretely:
-a filesystem (local directory, container volume, or remote PVC,
-depending on the provider) plus a git repo on top of it that
-tracks every state-changing tool call.
+A workspace is primer's unit of execution isolation. It is a
+materialised sandbox that gives an agent a real place to live:
+a filesystem the agent can read and write, a shell it can exec
+commands in, and a git-backed `.state/` history that records
+every state-changing turn as a commit. Sessions and chats run
+inside a workspace; the workspace persists across turns and
+across the sessions that run on it.
 
-Sessions and chat turns run inside one workspace. The workspace
-gives them a place to read files, run commands, and persist their
-output across turns. The git history gives the operator a replay
-log: which session changed which file at which turn.
+The key property of a workspace is that it owns both the
+filesystem and the execution environment together. Separating
+them would reopen the host-side execution hole the sandbox is
+meant to close, so the two are always a single unit.
 
-## Three levels: provider, template, instance
+## Three vocabulary levels
 
-The vocabulary trips up new operators. Three distinct things:
+Three distinct concepts share the workspace namespace:
 
-- A **workspace provider** is the backend (local, docker,
-  kubernetes). One per primer install per backend.
-- A **workspace template** is a parameterised recipe: 'a Python
-  3.13 dev environment with these packages preinstalled'. Many
-  templates per provider.
-- A **workspace instance** is a live workspace created from a
-  template. Many instances per template; each scoped to one or
-  a handful of sessions.
+- A **provider** is the backend configuration: which runtime
+  (local filesystem, container daemon, Kubernetes cluster) and
+  how to reach it. One provider per backend per installation.
+- A **template** is a parameterised recipe: which image or base
+  path, which environment variables, which seed files and init
+  commands, which resource limits. Many templates can reference
+  one provider.
+- A **workspace instance** is the live, materialised sandbox
+  created from a template. Many instances can be created from
+  one template; each instance hosts one or more sessions.
+
+```mermaid
+erDiagram
+    Provider ||--o{ Template : "provider_id"
+    Template ||--o{ Workspace : "template_id"
+    Workspace ||--o{ Session : "hosts"
+```
+
+## Three backends
+
+Primer ships three backends that all satisfy the same
+workspace contract:
+
+| Backend | Where the filesystem lives | Where commands run |
+|---|---|---|
+| Local | A directory on the host | The host process |
+| Container | A volume inside a Docker/Podman container | Inside the container |
+| Kubernetes | A PVC attached to a StatefulSet pod | Inside the pod |
+
+For container and Kubernetes backends, every file operation and
+shell command travels over a persistent WebSocket to an
+in-container `primer-runtime` server. This design keeps
+materialisation times low and execution latency sub-millisecond
+because the connection stays open for the lifetime of the
+workspace rather than being re-established per operation.
+
+The local backend requires only the host filesystem and `git`.
+Container and Kubernetes backends each require the respective
+daemon or cluster to be reachable by the server.
+
+## Lifecycle and the probe loop
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Provisioning: create
-  Provisioning --> Running: container ready
-  Running --> Probing: probe interval
-  Probing --> Running: probe ok
-  Probing --> Failed: 3 missed probes
-  Running --> Stopped: TTL expires
-  Stopped --> [*]
-  Failed --> [*]
+    [*] --> running : workspace created
+    running --> failed : 3 consecutive probe misses
+    failed --> running : 3 consecutive probe hits
+    running --> terminating : workspace deleted
+    failed --> terminating : workspace deleted
+    terminating --> [*]
 ```
 
-## The empty state
+A background probe pings every running workspace on a
+configurable interval (default 30 seconds). Three consecutive
+missed pings flip the workspace to `failed` and end every
+session on it with reason `workspace_lost`. Three consecutive
+successful pings after a failure restore it to `running`.
 
-A fresh install has no workspaces. The workspaces page surfaces
-this:
+## The state history
 
-```mockup:workspace-empty
-{ "providerName": "local", "ctaLabel": "Create workspace" }
+Every assistant turn that writes to the workspace is committed
+to the `.state/` git repo with structured trailers recording
+the workspace, session, agent, and operation. The commit log is
+a linear, greppable audit trail of what changed, when, and
+which session caused it.
+
+The `.tmp/` subtree holds oversized tool output that is too
+large to fit in context; it is per-session and cleaned up when
+the session ends. Both `.state/` and `.tmp/` are reserved and
+protected from direct mutation through the file API.
+
+## Multi-session collaboration
+
+Multiple sessions can run against the same workspace instance
+at the same time. They share the filesystem, so a producer
+session can write a file that a reviewer session reads in the
+same workspace. Commits from concurrent sessions are
+serialised by a workspace-wide lock to avoid git index
+conflicts.
+
+## Templates and ephemerality
+
+A template can seed the workspace with files (inline text,
+fetched URLs, or document references), environment variables,
+and commands to run at materialisation time. The image or base
+path is baked into the template; packages are not installed at
+materialisation time -- they belong in the image so
+materialisation is deterministic and fast.
+
+Workspaces are not ephemeral by default. They persist until
+explicitly deleted. If the use case calls for a fresh sandbox
+per run, create a new workspace instance per run and delete it
+on completion.
+
+```ref:features/workspaces
+The feature walkthrough covers creating providers, templates,
+and workspace instances, browsing files, and reading the state
+log.
 ```
 
-Pick a template (or import one), hit the button, and the provider
-provisions an instance. The instance lands in `Provisioning` for a
-few seconds, then transitions to `Running`.
-
-## TTL and the probe loop
-
-Workspaces have a TTL. By default a workspace stops automatically
-30 minutes after the last session ends. The probe loop pings each
-running workspace every 30 seconds (configurable via
-`PRIMER_WORKSPACE_PROBE_INTERVAL_SECONDS`); after three missed
-pings the workspace flips to `Failed`.
-
-```callout:warning
-Tight TTL is good for cost control but bad for long-running
-sessions that pause for hours waiting for a trigger. When a
-session yields on a trigger that may not fire today, bump the
-workspace TTL to cover the expected window or set it to 0 (no
-TTL) and rely on manual cleanup.
+```ref:reference/api-workspaces
+The API reference documents every workspace, template, and
+provider endpoint including the file sub-API and the git log
+surface.
 ```
-
-## Where to next
-
-The feature-level walkthrough of workspaces ships in Phase E with
-the full create + template + instance flow on the console.
