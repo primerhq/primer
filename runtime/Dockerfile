@@ -23,6 +23,15 @@ FROM python:3.13-slim
 LABEL runtime.primer.protocol="1"
 LABEL runtime.primer.version="1.0.0"
 
+# git is required by the workspace state repo: every workspace materialise
+# initialises a git-backed ``.state`` repo (SandboxStateRepo.initialize) via
+# an exec op inside the container, and session/graph history is committed
+# there. python:3.13-slim ships without git, so install it (slim base ->
+# apt). Without it, materialise hangs on a missing-binary exec failure.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install runtime in its own directory so workspace files are not mixed in.
 WORKDIR /opt/primer-runtime
 COPY pyproject.toml ./
