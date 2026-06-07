@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -23,7 +24,7 @@ from tests._support.runs import (
     wait_terminal,
 )
 from tests._support.smk import smk
-from tests._support.yield_journeys import wait_for_resume
+from tests._support.yield_journeys import drive_park_on_tool, wait_for_resume
 
 pytestmark = pytest.mark.asyncio
 
@@ -200,3 +201,86 @@ async def test_stdio_mcp_approval_park_resume(
         except Exception:  # noqa: BLE001
             pass
         await authed_client.delete(f"/v1/toolsets/{tid}")
+
+
+@smk("SMK-X-08")
+async def test_subscribe_to_trigger_park_resume(
+    authed_client, mock_llm, unique_suffix, tmp_path
+):
+    """A workspace session parks on the ``subscribe_to_trigger`` yielding
+    tool waiting for a named trigger; the trigger then fires through the
+    real REST path (``POST /v1/triggers/{id}/fire_now``), the
+    ParkedSessionDispatcher publishes the resume payload on the parked
+    session's event_key (``trigger:{trigger_id}``), the YieldEventListener
+    flips the row resumable + re-arms the engine lease, and the session
+    resumes and ends. Proves the full subscribe -> park -> fire -> resume
+    chain end to end against the live engine + event bus."""
+    registry, base_url = mock_llm
+
+    # ----- Create an enabled delayed trigger via the real REST path -----
+    # fire_at is far in the future so the scheduler never auto-fires it;
+    # the only fire is the explicit fire_now below.
+    trigger_slug = f"trg-x08-{unique_suffix}"
+    fire_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    r = await authed_client.post(
+        "/v1/triggers",
+        json={
+            "slug": trigger_slug,
+            "name": f"SMK-X-08 trigger {unique_suffix}",
+            "config": {"kind": "delayed", "fire_at": fire_at},
+            "enabled": True,
+        },
+    )
+    assert r.status_code in (200, 201), r.text
+    trigger_id = r.json()["id"]
+
+    try:
+        # ----- Drive a real turn until the session parks on the tool -----
+        # The agent (built by drive_park_on_tool) is offered
+        # ``trigger__subscribe_to_trigger``, emits the call which yields +
+        # parks, and on the synthesised tool result emits terminating text.
+        sid, _scenario, parked = await drive_park_on_tool(
+            authed_client, registry, base_url,
+            suffix=unique_suffix,
+            tool="trigger__subscribe_to_trigger",
+            tool_args={"trigger_id": trigger_id},
+            root=tmp_path,
+        )
+        assert parked.get("parked_status") == "parked", parked
+        # The session parked on this trigger's event_key.
+        assert parked.get("parked_event_key") == f"trigger:{trigger_id}", parked
+        initial_turn_no = parked["turn_no"]
+
+        # ----- Fire the trigger through the real REST path -----
+        r = await authed_client.post(f"/v1/triggers/{trigger_id}/fire_now")
+        assert r.status_code == 200, r.text
+        fire = r.json()
+        assert fire.get("skipped") is False, fire
+        # Exactly the one parked_session subscription should have been
+        # dispatched, cleanly waking the parked session.
+        results = fire.get("results", [])
+        assert len(results) == 1, fire
+        assert results[0].get("ok") is True, fire
+        assert results[0].get("skipped") in (False, None), fire
+        assert results[0].get("error_code") is None, fire
+        assert results[0].get("artefact_id") == sid, fire
+
+        # ----- Resume clears the park and advances the turn -----
+        body = await wait_for_resume(
+            authed_client, sid, min_turn_no=initial_turn_no + 1, timeout_s=90.0,
+        )
+        assert body["parked_status"] is None, body
+        assert body.get("parked_state") in (None, {}), body
+        assert body.get("parked_event_key") in (None, ""), body
+        assert body["turn_no"] > initial_turn_no, body
+
+        # ----- Session reaches terminal -----
+        final = await wait_terminal(authed_client, sid, timeout_s=90)
+        assert final.get("status") == "ended", final
+
+        # The one-shot parked_session subscription was consumed on fire.
+        r = await authed_client.get(f"/v1/triggers/{trigger_id}/subscriptions")
+        assert r.status_code == 200, r.text
+        assert r.json().get("items", []) == [], r.text
+    finally:
+        await authed_client.delete(f"/v1/triggers/{trigger_id}")
