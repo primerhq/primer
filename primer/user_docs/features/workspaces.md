@@ -2,116 +2,137 @@
 slug: workspaces
 title: Workspaces
 section: features
-summary: Provider configuration, template authoring, runtime instances, and the probe loop you tune in production.
+summary: Create and manage a workspace in the console -- pick a provider, create a template, spin up an instance, browse files, and run a diagnostic.
 ---
 
-## Three pages, three jobs
+## Overview
 
-The Workspaces area in the console splits into three pages, one
-per concept layer:
-
-- **Providers**: the backend bindings (local, docker, kubernetes).
-- **Templates**: parameterised recipes that the provider knows
-  how to instantiate.
-- **Workspaces** (instances): live runtimes, one per session or
-  per session-cluster.
+A workspace is the isolated sandbox an agent lives and acts inside. It
+gives the agent a real filesystem, a shell, and a git-backed state history.
+The console covers the full lifecycle: registering a provider, authoring a
+template, creating an instance, browsing files, and running diagnostics.
 
 ```ref:concepts/workspaces
-The concept page explains why the three levels exist; this page
-is the operator walkthrough for each.
+Background on the three vocabulary levels (provider, template, instance),
+the probe loop, and the state history git repo.
 ```
 
-## The empty state
+## Browse the workspaces list
 
-A fresh install has at least the `local` provider seeded, but no
-templates and no instances. The workspaces page surfaces this:
+Go to **Workspaces** in the left nav. The list shows every instance with
+its name, id, template, provider, phase pill (running / pending / failed /
+terminating), and creation time.
 
-```mockup:workspace-empty
-{ "providerName": "local" }
+Use the filter bar to narrow by free text (matches name, id, template, or
+provider) and by template or provider dropdown. Click any row to open the
+workspace detail view.
+
+## Create a template
+
+Before you can create a workspace you need a template. If the "New
+workspace" modal warns that no templates exist, click **Create a template
+now** inside the modal to open the template form inline.
+
+```embed:workspace-template-form
 ```
 
-## Creating a template
+The template form collects:
+- **Name** -- a unique identifier for this template (e.g. `python-3.13-default`).
+- **Provider** -- the backend that will materialise instances from this template.
+- **Base image or base path** -- the container image (Docker/Kubernetes) or host
+  directory path (local backend).
+- **TTL** -- how many minutes an instance may be idle before the probe loop
+  flips it to failed.
+- **Environment variables** -- key-value pairs injected into the workspace
+  environment at materialisation time.
+- **Init command** -- a shell command run once when the instance is first
+  created (package installs do not belong here; they should be baked into
+  the image).
 
-A template is a JSON-ish recipe: base image, env vars, TTL, and
-the post-create command. The console template editor wraps this
-in a form:
+Click **Create template**. The template row appears in the template list.
+The provider validates that the image or base path is reachable but does not
+spin up any instance yet.
 
-```mockup:workspace-template-form
-{ "templateName": "python-3.13-default", "providerKind": "local", "baseImage": "python:3.13-slim" }
+```callout:info
+A change to a template does not affect existing instances. Instances keep
+the recipe they were created from. To pick up a template change, create a
+new instance.
 ```
 
-Hit Create template. The row appears on the templates list; the
-provider validates that the recipe is reachable (the image
-exists, the env-var shape is valid) but does not spin up an
-instance yet.
+## Create a workspace instance
 
-## REST + Python
+1. Click **New workspace** in the filter bar.
+2. In the modal:
+   - **Name** (optional) -- a human-readable label like "Investing research".
+     The backend generates the unique id.
+   - **Template** -- pick from the dropdown of registered templates. If the
+     list is empty, use the inline link to create a template first.
+3. Click **Create**. The console navigates to the new workspace detail page.
 
-The same recipe creation via the API:
+The workspace enters the `running` phase once the provider materialises the
+sandbox. If materialisation fails, the phase flips to `failed` and a banner
+with the failure reason appears at the top of the detail page.
 
-```code-tabs:python,curl
---- python
-template = client.workspaces.create_template(
-    provider_id="local",
-    name="python-3.13-default",
-    base_image="python:3.13-slim",
-    ttl_minutes=30,
-    env={"PYTHONUNBUFFERED": "1"},
-)
---- curl
-curl -X POST https://primer.example/v1/workspaces/templates \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{
-    "provider_id":"local",
-    "name":"python-3.13-default",
-    "base_image":"python:3.13-slim",
-    "ttl_minutes":30,
-    "env":{"PYTHONUNBUFFERED":"1"}
-  }'
-```
+## Browse and edit files
 
-Creating an instance from a template:
+Open a workspace and click the **Files** tab. A two-pane layout appears:
 
-```code-tabs:python,curl
---- python
-ws = client.workspaces.create(template_id="python-3.13-default")
-print(ws.id, ws.status)
---- curl
-curl -X POST https://primer.example/v1/workspaces \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"template_id":"python-3.13-default"}'
-```
+- **Left pane (tree)** -- the workspace filesystem rooted at `/`. Folders
+  expand on click; use the new-file and new-folder icons in the pane header
+  to create entries. Hovering a row reveals a trash icon to delete it.
+  Directories under `.state` and `.tmp` are shown but cannot be deleted --
+  they are backend-managed.
 
-## Provider, template, instance flow
-
-The dependency chain is one-way: providers configure backends,
-templates parameterise providers, instances are spun up from
-templates.
-
-```mermaid
-flowchart LR
-  P[Provider<br/>local / docker / k8s] --> T[Template<br/>image + env + TTL]
-  T --> I1[Instance 1<br/>session sess-1]
-  T --> I2[Instance 2<br/>session sess-2]
-  T --> I3[Instance 3<br/>session sess-3]
-```
-
-A change to a provider or a template does not retroactively
-mutate existing instances; they keep the recipe they were
-created from. To pick up a template change, spin up a new
-instance.
-
-## Tuning the probe interval
-
-The probe loop pings each running instance every
-`workspace_probe_interval_seconds` (default 30 seconds). Three
-consecutive misses flip the instance to `failed`. Tune the
-interval down for fast detection (small clusters, dev) or up to
-reduce probe overhead (large clusters, prod).
+- **Right pane (editor)** -- clicking a file in the tree loads its contents.
+  For Markdown files a "Rendered" / "Raw" toggle switches between the rendered
+  view and the source. Click **Edit** to enter edit mode, modify the text
+  in the textarea, then click **Save**. Click **Download** to fetch the
+  raw file. Click **Delete** to remove the file (with a confirmation modal).
 
 ```callout:warning
-Bumping the probe interval above the TTL of a quick session
-defeats the point: the instance can be stopped via TTL before
-the next probe runs. Keep `probe_interval < ttl_minutes / 4` as
-a rule of thumb.
+File deletes from the console are permanent and cannot be undone from the
+console. The `.state/` git repo retains a history of agent-written changes,
+but console deletes bypass that history.
+```
+
+## Check sessions on a workspace
+
+The **Sessions** tab lists every session that has run or is running on this
+workspace -- session id, agent, status, start time, and last activity.
+Click a session row to open the session detail view. The tab badge shows the
+live count.
+
+## Read the state log
+
+The **Log** tab shows the `git log` of the workspace's `.state/` git repo as
+a timeline. Each commit row shows the short SHA, operation kind, agent id,
+session suffix, and timestamp. Click a row to expand the file diff for that
+commit.
+
+Use **Load more** at the bottom to page through older commits (up to 500).
+
+## Run a diagnostic
+
+Click **Run diagnostic** in the workspace detail header to send a diagnostic
+probe to the workspace. The diagnostic modal shows stdout / stderr from the
+probe command and reports whether the workspace runtime is healthy. Use this
+to confirm the workspace is reachable after a failed phase.
+
+```embed:workspaces
+```
+
+## Rename a workspace
+
+In the workspaces list, click the edit (pencil) icon on any row to open a
+rename modal. Change the name and click **Save**. Clear the field to remove
+the label. The underlying id is unchanged.
+
+## Pause and resume
+
+The **Pause** and **Resume** buttons are reserved and not yet active. Watch
+the release notes for availability.
+
+```ref:reference/api-workspaces
+Automate this -- the API reference covers providers, templates, workspace
+instances, the file sub-API, the diagnostic exec endpoint, and pause/resume.
 ```

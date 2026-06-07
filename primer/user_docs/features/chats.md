@@ -2,75 +2,113 @@
 slug: chats
 title: Chats
 section: features
-summary: The chats list, real-time streaming, attachments, sharing, and the WebSocket client contract.
+summary: Start and use a chat in the console -- open a conversation with an agent, send messages, watch token streaming, and approve gated tool calls.
 ---
 
-## The chats list
+## Overview
 
-The Chats page shows every chat thread the operator (or another
-agent) is participating in. Each row carries the bound agent, the
-last message preview, and a timestamp. Clicking a row opens the
-chat in the streaming view.
+A chat is a long-running, multi-turn conversation with a single agent. The
+console gives you a live streaming view of every token the agent produces,
+inline tool-approval cards when a tool call needs your sign-off, and a
+persistent message log you can scroll back through at any time.
 
-## The streaming view
-
-The chat view streams assistant messages over a WebSocket as the
-agent produces them. The cursor under the streaming message shows
-the tokens landing in near real time.
-
-```mockup:chat-stream
-{ "chatId": "chat-x9y8z7", "streaming": true, "userName": "alex", "agentName": "helper" }
+```ref:concepts/chats
+Background on the turn shape, message log, compaction, and how chats
+differ from sessions.
 ```
 
-The streaming dots disappear when the turn completes. If the
-client disconnects mid-turn the agent keeps running; reconnecting
-replays the messages that landed during the disconnect.
+## Open a chat
+
+1. Go to **Chats** in the left nav. The list shows every existing chat thread
+   with its bound agent, status pill (active / ended), message count, and
+   creation time.
+
+2. Click **New chat** (top-right of the filter bar). A modal opens:
+   - **Agent** -- select the agent this chat is bound to. The dropdown
+     shows all registered agents. You must have at least one agent before
+     you can create a chat.
+   - **Initial instructions** (optional) -- free-text guidance sent ahead
+     of the first user message so the agent has context.
+
+3. Click **Create chat**. The console navigates straight to the streaming
+   view for the new chat.
+
+To re-open any existing chat, click its row in the list.
+
+## Send a message and watch streaming
+
+The chat detail panel is split into a scrollable message log above and a
+composer at the bottom.
+
+```embed:chat-stream
+```
+
+1. Type your message in the composer textarea. Press **Enter** (or
+   **Shift+Enter** for a newline) or click **Send**.
+
+2. The agent label appears on the left of the message log. Tokens land
+   token-by-token; the **Thinking...** indicator appears between your
+   message and the first delta if there is a brief gap while the worker
+   picks up the turn.
+
+3. The header shows:
+   - The chat id and the bound agent.
+   - A **TokenMeter** pill showing input tokens / context length. Click
+     the compress icon next to it to trigger a manual compaction pass.
+   - A **live / connecting / offline** badge for the WebSocket state.
+   - The chat status pill (active / ended).
+
+4. Scroll up at any time to load older messages. The console pages backward
+   through the message log without losing your scroll position.
 
 ```callout:info
-The WebSocket is a delivery channel only; persistence is in the
-ChatMessage rows. Disconnects do not cancel turns. Use the
-explicit cancel endpoint when you want a turn to stop.
+If the WebSocket drops mid-turn the agent keeps running. When you reconnect,
+the console replays every message that arrived during the gap -- nothing is
+lost. The Send button is re-enabled once the socket is back to "live".
 ```
 
-## Sending a message
+## Attach a file
 
-Three transports get you to the same place.
+Click the paperclip button to the left of the composer, or drag and drop
+a file onto the chat panel. Images and PDFs up to 8 MiB are accepted. An
+attachment chip appears in the strip above the composer showing a thumbnail
+(images) or a file icon with the name and size (documents). Click the x
+on any chip to remove it before sending.
 
-```code-tabs:python,curl,javascript
---- python
-client.chats.send(chat_id="chat-x9y8z7", content="What's next on the queue?")
---- curl
-curl -X POST https://primer.example/v1/chats/chat-x9y8z7/messages \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"content":"What is next on the queue?"}'
---- javascript
-const ws = new WebSocket(`wss://primer.example/v1/chats/chat-x9y8z7/ws`);
-ws.onopen = () => ws.send(JSON.stringify({
-  kind: "user_message",
-  content: "What is next on the queue?",
-}));
-ws.onmessage = (ev) => console.log(JSON.parse(ev.data));
+## Approve a gated tool call
+
+When the agent calls a tool covered by a `required` approval policy, the
+turn parks and an inline approval card appears above the composer showing the
+tool name and its arguments.
+
+1. Review the tool name and arguments in the card.
+2. Click **Approve** to let the call proceed, or **Reject** and supply a
+   reason. The rejection reason is passed back to the agent as context.
+
+If you send a new message while an approval is pending, a warning banner
+appears explaining that the server will auto-reject the parked tool call when
+your new message arrives. Confirm with **Send and reject** or cancel.
+
+```callout:warning
+Rejection is not a retry. The agent receives a rejection result and decides
+how to continue on its own. If you want the tool to run, approve it -- do not
+send a new message first.
 ```
 
-The WS variant streams the assistant reply token by token. The
-REST variant returns the assembled reply once the turn completes.
+## Filter the chats list
 
-## Attachments
+The filter bar at the top of the Chats list accepts a free-text query (matches
+on chat id, agent id, and title) and an agent dropdown. Filters combine: you
+can search for a keyword scoped to one agent. Clear filters by erasing the
+text field and resetting the agent dropdown to "all agents".
 
-Drag a file into the message input to attach it. Attachments land
-in the workspace under `inbox/` and become available to
-filesystem tools. The agent sees a synthetic message describing
-the attachment.
+## Delete a chat
 
-## Sharing
+Click the trash icon on any row in the chats list (right column) to delete
+that chat. A confirmation modal appears. Deletion removes all persisted
+messages and cannot be undone.
 
-Each chat has a per-thread share token. Mint one from the chat's
-overflow menu; anyone with the URL can read the transcript (no
-writes). Revoke from the same menu.
-
-```callout:info
-Shared chats are read-only by design. There is no per-share write
-permission; if you need a collaborator to drive the chat, give
-them an operator account.
+```ref:reference/api-chats
+Automate this -- the API reference covers creating chats, fetching message
+logs, the WebSocket frame protocol, and the tool-approval endpoints.
 ```

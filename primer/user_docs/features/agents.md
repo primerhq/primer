@@ -2,93 +2,58 @@
 slug: agents
 title: Agents
 section: features
-summary: How to define, configure, and invoke agents from the console or the REST API.
+summary: Create and manage agents in the console -- configure a provider, bind tools, and set a system prompt.
 ---
 
 ## Overview
 
-The Agents page in the console lists every defined agent with its
-model and toolset bindings. The Create button opens the
-three-tab modal that walks you through basics, tools, and the
-system prompt.
+An agent pairs an LLM provider and model with a set of tools and a system prompt. The Agents page lists every defined agent with its provider, model, tool count, session count, and a live status indicator. Click "New agent" to open the three-tab create modal.
+
+```embed:agents-page
+```
 
 ## Creating an agent
 
-The create modal opens with the Basic tab focused. Switching to
-the Tools tab shows the toolset picker:
-
-```mockup:agent-create-modal
-{ "tab": "tools", "selectedToolset": "system" }
-```
-
-Bind whichever built-in or custom toolsets the agent should be able
-to call. The agent can only reach tools from the toolsets bound
-here; everything else is denied at dispatch time.
+1. Open the Agents page from the left nav.
+2. Click "New agent" (top-right of the filter bar).
+3. In the **Basic** tab, fill in:
+   - **ID** -- optional; the backend assigns one if left blank.
+   - **Description** -- a short label shown in the agents table.
+   - **LLM provider** -- pick from the providers configured under /providers/llm. If the list is empty, create a provider there first.
+   - **Model** -- the dropdown populates from the selected provider row.
+4. Switch to the **Tools** tab. Use the search box to filter by tool name, description, or toolset. Check individual tools or use the toolset header checkbox to bulk-select all tools in a toolset. The counter at the top right shows how many tools are selected.
+5. Switch to the **Advanced** tab if you need to set a system prompt, compaction prompt, or temperature (all optional).
+6. Click **Create**. The modal closes and the new agent row appears in the list; the page navigates to the agent detail view.
 
 ```callout:warning
-Binding the `system` toolset gives the agent shell and filesystem
-access through the sandboxed workspace. Pair it with a tight
-workspace template (small memory, no network, short TTL) when
-prototyping; relax once you trust the prompt.
+Binding tools from the `system` toolset gives the agent shell and filesystem access through the sandboxed workspace. Pair it with a tight workspace template (small memory, no network egress, short TTL) when prototyping. Relax limits only after validating the prompt and tool use pattern.
 ```
 
-## The turn loop, in detail
+## Editing an agent
 
-Each invocation of the agent runs through the same loop. The
-diagram below shows the four states a turn passes through:
+Open the agent detail, go to the **Config** tab, and click **Edit**. The same three-tab modal opens with existing values pre-filled. The ID field is locked after creation.
 
-```mermaid
-stateDiagram-v2
-  [*] --> Prompting
-  Prompting --> ToolDispatch: model requested tools
-  Prompting --> Done: no tool calls
-  ToolDispatch --> Prompting: feed results back
-  Done --> [*]
+Agents managed by a harness show a notice on the Config tab -- edit the harness instead of the agent directly.
+
+## Checking agent health
+
+The detail page shows a status panel at the top. It calls `GET /v1/agents/{id}/status` and reports whether the bound provider and toolsets all resolve. A red banner lists specific issues blocking new sessions.
+
+## Automate this
+
+```ref:reference/api-agents
+Full resource schema, list/create/update/delete endpoints, and status check.
 ```
 
-## Invoking via REST
+## See also
 
-The console UI sits on top of `/v1/agents`. Anything you do in the
-modal is replayable via the API.
-
-```code-tabs:python,curl,javascript
---- python
-import primer
-client = primer.Client(token="...")
-agent = client.agents.create(
-    name="weekly-digest",
-    model="claude-opus-4-7",
-    toolsets=["system", "web"],
-)
-print(agent.id)
---- curl
-curl -X POST https://primer.example/v1/agents \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"weekly-digest","model":"claude-opus-4-7","toolsets":["system","web"]}'
---- javascript
-const r = await fetch("/v1/agents", {
-  method: "POST",
-  headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-  body: JSON.stringify({ name: "weekly-digest", model: "claude-opus-4-7", toolsets: ["system", "web"] }),
-});
-console.log((await r.json()).id);
+```ref:concepts/what-is-an-agent
+The concept page explains the turn loop and how agents relate to sessions, workers, and workspaces.
 ```
-
-## Going further
-
-For model selection, prompt templates, fine-grained binding, the
-retry loop, and evaluations:
 
 ```ref:features/agents-advanced
-The advanced page covers what you reach for once the basic flow
-works.
+Model selection, compaction prompts, fine-grained tool binding, and the retry loop.
 ```
-
-## Agent-facing reference
-
-For the dense MCP-tool view used by LLM agents, follow the link
-below. It mirrors the same content with terser prose.
 
 ```ai-doc:agents
 ```

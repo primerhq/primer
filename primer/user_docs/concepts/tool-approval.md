@@ -2,76 +2,108 @@
 slug: tool-approval-concept
 title: Tool approval
 section: concepts
-summary: Pre-dispatch gates that pause a tool call until an operator, policy, or LLM judge says yes.
+summary: A gate that pauses a tool call until an operator, a policy, or an LLM judge decides whether it should run.
 ---
 
-## What approval gates do
+## What tool approval is
 
-Every tool dispatch passes through an approval gate before it
-runs. By default the gate is a no-op and the tool dispatches
-immediately. When an operator configures a policy on the tool,
-the gate consults that policy on every call. If the policy says
-allow, dispatch proceeds. If it says block, the call parks.
+Tool approval is a pre-dispatch gate. Every time a tool is about to run,
+the runtime checks whether a policy has been registered for that tool.
+When no policy exists the tool runs immediately. When a policy exists it
+becomes the decision-maker: should this particular call proceed or should
+it be denied?
 
-The mechanic is identical to a yielding tool: the call parks in
-storage, the worker lease releases, and the call resumes when the
-operator (or the judge, or the policy) decides.
+The gate is not the same as disabling a tool. The tool remains available
+to the agent; approval decides, call by call, whether execution is
+permitted. A single policy can allow most calls and block only the ones
+that match a specific condition.
 
-## The three policy kinds
+Mechanically, a blocked call parks the run the same way a yielding tool
+does. The worker releases its lease, freeing capacity, and the run stays
+in storage until the gate resolves. If no resolution arrives within the
+configured timeout the gate closes and the call is treated as denied.
 
-Primer ships three approval gate kinds. Each row in the policy
-table picks exactly one kind.
+## The three approval strategies
 
-| Kind | Who decides | Operator-facing |
-|---|---|---|
-| `required` | A human operator clicks approve or reject | Yes -- prompt lands in IC bell or channel |
-| `policy` | A Rego policy evaluates against the call args | No -- deterministic, no UI |
-| `llm` | A judge model returns allow or block | No -- silent unless audit replay |
+Primer provides three strategies. A policy row picks exactly one.
 
-## The decision flow
+**Required.** The gate always waits for a human operator to respond. The
+pending call is surfaced so the operator can see what tool is about to run,
+which arguments it was given, and which agent and session triggered it.
+The operator approves or rejects. Approved calls execute; rejected calls
+produce a clean error that the agent can reason about. No automated path
+can bypass a required gate.
 
-The gate looks up the policy by `(toolset_id, tool_name)` on every
-call. If no policy is configured the gate is skipped entirely.
+**Rego policy.** A small Open Policy Agent policy, written in Rego and
+stored with the policy row, evaluates the call arguments. The policy must
+produce a single boolean: `required := true` means gate and wait; `required
+:= false` means allow immediately. The evaluation is deterministic and
+synchronous. No human is involved. For example, a policy that gates only
+calls whose `tool_name` equals a sensitive operation will allow all other
+calls to pass through without delay.
+
+**LLM judge.** A designated model is given a prompt describing the call and
+asked whether it is safe. The model returns allow or block and a short
+reason. This strategy is probabilistic: the same call could produce
+different outcomes across runs. The judge's decision and its reason are
+recorded on the pending approval row so operators can audit why a call was
+allowed or blocked.
+
+## Decision flow
 
 ```mermaid
 flowchart TD
-  Call[Tool call] --> Lookup{Policy row?}
-  Lookup -->|no row| Allow[Allow + dispatch]
-  Lookup -->|required| Park[Park + prompt operator]
-  Lookup -->|policy| Eval[Evaluate Rego policy]
-  Lookup -->|llm| Judge[Ask judge model]
-  Park -->|operator approves| Allow
-  Park -->|operator rejects| Block[Block + error to agent]
-  Eval -->|allow| Allow
-  Eval -->|block| Block
-  Judge -->|allow| Allow
-  Judge -->|block| Block
+  Call[Tool is about to run] --> Lookup{Policy registered\nfor this tool?}
+  Lookup -->|No| Dispatch[Run immediately]
+  Lookup -->|required| Park[Park the run\nwait for operator]
+  Lookup -->|Rego policy| Eval[Evaluate Rego\nagainst call args]
+  Lookup -->|LLM judge| Judge[Ask judge model\nwith prompt]
+  Park -->|Operator approves| Dispatch
+  Park -->|Operator rejects| Deny[Deny: error returned\nto agent]
+  Park -->|Timeout expires| Deny
+  Eval -->|required = false| Dispatch
+  Eval -->|required = true| Park
+  Judge -->|Allow| Dispatch
+  Judge -->|Block| Deny
 ```
 
-## What the operator sees
+## What a parked approval looks like
 
-An approval prompt for a `required` policy lands on whichever
-channel the agent is configured to talk on, or on the IC bell in
-the console if no channel is configured. A Slack delivery looks
-like this:
+When a required policy parks a call, the pending approval record exposes:
 
-```mockup:channels-prompt
-{ "platform": "slack", "question": "Approve write_workspace_file call on prod-config?", "options": ["Approve", "Reject"], "agentName": "deploy-bot" }
+- The tool name and toolset it belongs to.
+- The full arguments the agent passed.
+- The policy identifier and approval type.
+- The agent and session that triggered the call.
+
+An operator can inspect this record and respond. Approving unparks the run
+and the tool dispatches as if it had been allowed immediately. Rejecting
+unparks the run with a denial error, which the agent receives as a tool
+result and can handle as it sees fit.
+
+## Timeout and denial
+
+Every policy can carry a `timeout_seconds` value. If the gate has not been
+resolved within that window, the platform resolves it automatically as a
+denial. The run unparks, the agent receives the denial error, and the
+pending record is closed. This prevents a required gate from blocking a
+run indefinitely when no operator is available.
+
+## Policy lifecycle
+
+Policies are additive and reversible. A policy can be disabled without
+deleting it, which restores the tool to immediate dispatch. Re-enabling
+the policy reinstates the gate on the next call. Deleting the policy
+removes the gate entirely. None of these changes require a restart, and
+none affect calls that are already parked: those resolve under the policy
+that was in effect when they parked.
+
+```ref:features/tool-approval
+The feature walkthrough covers creating policies, managing the approvals
+queue, and configuring per-tool overrides.
 ```
 
-The operator clicks; the gate resolves; the tool dispatches (or
-errors). A reject is not a retry; the tool sees a clean error and
-the agent decides what to do next.
-
-```callout:info
-Policies are cheap to add and cheap to remove. Flipping a policy
-on for a sensitive tool takes effect on the next call without a
-restart. Use that to dial up oversight when something looks off
-without taking the tool offline.
+```ref:reference/api-tool-approval
+The API reference documents all policy fields, the pending-approval
+schema, and the respond endpoint.
 ```
-
-## Where to next
-
-The feature-level walkthrough of approval policies (the policy
-editor + the approvals queue + the per-tool override controls)
-ships in Phase F of the doc rollout.

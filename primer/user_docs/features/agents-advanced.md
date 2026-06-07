@@ -2,111 +2,84 @@
 slug: agents-advanced
 title: Agents (advanced)
 section: features
-summary: Model selection, prompt templating, fine-grained tool binding, evaluation runs, and the retry loop.
+summary: Model selection, system and compaction prompts, fine-grained tool binding, and the retry and turn loop behavior.
 ---
 
-## Beyond the basics
+## Overview
 
-The `features/agents` walkthrough covers the create modal and a
-first invocation. This page covers what you reach for on day two:
-swapping models without rewriting prompts, prompt templates that
-fan out to multiple agents, fine-grained binding rules, and what
-the retry knobs actually control.
+The `features/agents` walkthrough covers creating an agent and the first invocation. This page covers day-two configuration: swapping models, writing effective system prompts, narrowing tool access below the toolset level, and understanding what the retry knobs actually control.
 
 ## Model selection
 
-Every agent declares one model. Switching the model is an in-place
-update: hit Edit, pick a new model, save. Sessions started after
-the switch use the new model; in-flight sessions keep the old one
-until they complete.
+Every agent declares one provider and one model. To change the model:
+
+1. Open the agent detail and click **Edit** on the Config tab.
+2. Change the **LLM provider** or **Model** dropdown in the Basic tab.
+3. Click **Save changes**.
+
+Sessions started after the save use the new model. Any session already in flight keeps the old model until it ends.
 
 ```callout:tip
-For routine work, prefer the smallest model that produces the
-output you accept. The cost difference between Opus and Haiku for
-the same agent is roughly 12x. Reserve the big models for
-prompts where the agent visibly struggles to follow instructions.
+Prefer the smallest model that meets your quality bar. The cost difference between a large flagship model and a small fast model can exceed 10x for the same task. Reserve the largest models for prompts where the agent visibly fails to follow complex instructions.
 ```
 
-## Prompt templating
+## System prompt
 
-The system prompt accepts Jinja-style placeholders that resolve
-against the session's input metadata. The common ones:
+The system prompt (Advanced tab) is the fixed instruction block prepended to every turn. It accepts Jinja-style placeholders resolved against the session's input metadata:
 
 | Placeholder | Resolves to |
 |---|---|
-| `{{ agent.name }}` | The agent's name |
-| `{{ session.workspace_id }}` | The workspace id this session runs in |
+| `{{ agent.name }}` | The agent's ID |
+| `{{ session.workspace_id }}` | Workspace the session runs in |
 | `{{ session.input }}` | The initial input string |
 | `{{ now }}` | Current ISO timestamp |
 
-The prompt tab in the create modal renders the template against
-sample inputs so you see the resolved text before saving.
+Keep the system prompt focused on role, output format, and constraints. Avoid embedding data that changes per-run -- pass that through the session input instead.
 
-```mockup:agent-create-modal
-{ "tab": "prompt" }
-```
+## Compaction prompt
+
+When the conversation grows past the model's context window, the runtime compacts older turns into a summary. The compaction prompt (Advanced tab) controls what to keep.
+
+Leave it blank to use the framework default, which preserves system context, recent turns, and pending tool calls. Override it only when your agent has a domain-specific retention need -- for example, a research agent that must preserve cited sources, or a coding agent that must retain the current file path under edit.
 
 ## Fine-grained tool binding
 
-Binding a toolset gives the agent every tool in it. Sometimes that
-is too broad. Two ways to narrow:
+The Tools tab in the create/edit modal lets you select individual tools. You are NOT binding an entire toolset -- only the tools you explicitly check are exposed to the model. This matters for two reasons:
 
-- **Per-tool overrides**: in the toolset binding row, mark
-  specific tools as denied. Useful for keeping the agent off
-  `delete_*` operations while granting the rest of `system`.
-- **Tool approval policies**: set a policy on the specific
-  `(toolset, tool)` pair so the call routes to an approval gate.
+- **Scope control**: the `system` toolset ships over 100 tools. Binding all of them inflates the model's tool list, increasing token cost per turn and the chance of an unintended call. Pick the minimum set the agent needs.
+- **Emergency deny**: remove a specific tool from the agent's list to deny it immediately without changing the underlying toolset or approval policy.
 
-The two compose. A tool can be bound, then approval-policied, then
-silently denied for an emergency override; the agent sees a clean
-error from the deny, and the approval queue records the attempt.
+Two controls compose for layered access:
 
-## The retry loop
+1. **Tool selection** (the modal): determines which scoped tool IDs (`toolset__tool`) are registered with the agent. Nothing outside this list can be called.
+2. **Tool approval policies**: for calls that should route to a human gate before executing, configure an approval policy on the `(toolset, tool)` pair in the tool approval settings. The agent still sees the tool in its list but the runtime intercepts the call before dispatch.
 
-When a tool call errors, the agent sees the error and decides
-what to do next. The runtime adds two knobs:
+## The turn and retry loop
 
-```code-tabs:python,curl,javascript
---- python
-client.agents.update(
-    agent_id="weekly-digest",
-    retry_policy={
-        "max_attempts": 3,
-        "backoff_seconds": 2,
-    },
-)
---- curl
-curl -X PATCH https://primer.example/v1/agents/weekly-digest \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"retry_policy":{"max_attempts":3,"backoff_seconds":2}}'
---- javascript
-await fetch("/v1/agents/weekly-digest", {
-  method: "PATCH",
-  headers: { "Authorization": `Bearer ${token}` },
-  body: JSON.stringify({ retry_policy: { max_attempts: 3, backoff_seconds: 2 } }),
-});
-```
+Each session runs through a turn loop:
 
-```mermaid
-flowchart TD
-  Start[Tool call dispatched] --> Try[Attempt N]
-  Try -->|success| Done[Result returned]
-  Try -->|error| Check{N < max?}
-  Check -->|yes| Wait[Sleep backoff seconds]
-  Wait --> Inc[N = N + 1]
-  Inc --> Try
-  Check -->|no| Fail[Return error to agent]
-```
+1. The runtime sends the current conversation to the model.
+2. If the model returns tool calls, each call is dispatched to the appropriate toolset.
+3. Tool results are fed back as the next message.
+4. Steps 1-3 repeat until the model stops requesting tools or the session is paused or cancelled.
 
-## Evaluations
+When a tool call errors, the agent receives the error text as the tool result and decides how to proceed. The runtime adds a retry layer on top:
 
-Agents can be invoked in eval mode against a fixture set. The
-result is a per-fixture pass/fail and a score for the response.
-Use this when tuning a prompt to verify the change does not
-regress an earlier scenario.
+- **Max attempts**: how many times the runtime retries a failed tool dispatch before returning the error to the model. Configured per-agent in the Advanced tab (if exposed) or via the API.
+- **Backoff**: seconds between retry attempts.
+
+Set max attempts to 1 (no retry) when tool errors are meaningful signals that the agent should reason about. Set it higher for transient network or service failures where silent retry is safe.
 
 ```callout:tip
-Pin eval fixtures to a git commit. A prompt change that improves
-one scenario often regresses another; running the full suite
-before promoting keeps the surprise rate down.
+Do not set a high retry count on tools that perform writes. A network timeout that retries three times may produce three writes if the first call succeeded but the response was lost.
+```
+
+## Temperature
+
+Temperature (Advanced tab) controls model output randomness. Leave it blank to use the provider's default. Set it to a low value (0.1-0.3) for deterministic extraction or structured output tasks. Use higher values (0.7-1.0) for creative or open-ended generation.
+
+## Automate this
+
+```ref:reference/api-agents
+Full resource schema and all configuration fields available via the API.
 ```

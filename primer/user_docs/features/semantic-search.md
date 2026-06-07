@@ -1,85 +1,84 @@
 ---
 slug: semantic-search
-title: Semantic search providers
+title: Semantic search
 section: features
-summary: Configure and bind the embedding models that index every knowledge collection and internal collection.
+summary: Run semantic search over a knowledge collection in the console.
 ---
 
-## What an SSP is
+## Overview
 
-A semantic search provider (SSP) is primer's binding to one
-embedding model. Each provider row carries the model identifier,
-the vector dimension, and the credentials needed to call the
-embedding API. Collections bind to one SSP at create time; the
-SSP decides what model embeds every document landing in that
-collection.
+The console exposes a search modal on every collection that lets
+you run natural-language queries against the collection's vector
+index and inspect the ranked results. This is useful for verifying
+that documents are indexed correctly, tuning top-k, and spot-checking
+retrieval quality before binding the collection to an agent.
 
-## The provider list
+Search is available from the collection detail panel on the
+Knowledge / Collections page. It runs against the same endpoint
+agents use, so results here reflect what an agent would see.
 
-The console Semantic Search Providers page lists every configured
-SSP. Exactly one provider is marked active; that one is the
-default for newly-created collections.
+## Running a search
 
-```mockup:ssp-list
-{ "activeId": "voyage-3-large" }
+1. Open Knowledge / Collections in the left navigation.
+2. Click the collection row you want to search to open the detail
+   panel on the right.
+3. Click **Search** in the detail panel action buttons.
+4. The search modal opens with a query textarea and a `top_k` field
+   (default 10).
+5. Type a natural-language query in the textarea.
+6. Press **Enter** (or Shift+Enter for a newline) or click the
+   **Search** button.
+7. Results appear below the search bar, one entry per chunk.
+
+```callout:tip
+The modal shows response latency in milliseconds and the hit count
+next to the top_k control after each query. Use this to compare
+retrieval speed across collections backed by different search
+providers.
 ```
 
-Adding a provider is a one-shot form (kind, model, credentials);
-the row appears immediately and accepts collection bindings.
+## Reading the results
 
-## Adding a provider
+Each result row shows:
 
-The REST equivalent:
+- **Rank** -- position in the result set (1-based).
+- **Document ID** -- the document the chunk belongs to.
+- **Chunk ID** -- the sub-document chunk identifier.
+- **Score** -- cosine similarity score, four decimal places.
+- **Text** -- the chunk text as indexed.
+- **Metadata** -- any metadata keys stored on the chunk, rendered
+  inline below the text.
 
-```code-tabs:python,curl
---- python
-ssp = client.semantic_search.create_provider(
-    id="voyage-3-large",
-    kind="voyage",
-    model="voyage-3-large",
-    api_key="<token>",
-)
-client.semantic_search.set_active_provider(ssp.id)
---- curl
-curl -X POST https://primer.example/v1/ssp/providers \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{
-    "id":"voyage-3-large",
-    "kind":"voyage",
-    "model":"voyage-3-large",
-    "api_key":"<token>"
-  }'
+Low scores (near 0) mean weak semantic overlap with the query.
+If top results are irrelevant, check the embedding model bound
+to the collection and whether the source documents were converted
+cleanly before ingest.
 
-curl -X PUT https://primer.example/v1/ssp/active \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"provider_id":"voyage-3-large"}'
+## Adjusting top_k
+
+The `top_k` field controls how many chunks the vector index
+returns. Increase it to see more candidates when diagnosing
+recall issues; decrease it to tighten results for a focused
+query. The field accepts values from 1 to 100.
+
+## Reranking
+
+If the collection's search provider has a cross-encoder reranker
+configured (set up on the Internal Collections page), results
+are reranked automatically before being returned. The console
+search modal reflects post-rerank order; the score column still
+shows the original vector similarity score, not the reranker
+score.
+
+```callout:warning
+The search modal queries the live index. Results change as
+documents are ingested or deleted. Run the search again after
+adding content to confirm new material appears.
 ```
 
-## Active vs configured
+## Automate this
 
-Configured providers can serve specific collections via explicit
-binding. The active provider is the one a freshly-created
-collection picks up if no explicit binding is named. Flipping
-the active provider does NOT migrate existing collections; they
-continue to use the SSP they were created with.
-
-```callout:info
-The active provider is per-instance, not per-collection. There
-is no concept of 'default for this team'. If your operators need
-different defaults, give them separate primer instances or rely
-on explicit SSP id at collection-create time.
+```ref:reference/api-knowledge
+Full REST reference for the collection search endpoint, including
+query payload schema and response shape.
 ```
-
-## Local vs remote
-
-Three SSP kinds ship in primer:
-
-| Kind | Where it runs | Best for |
-|---|---|---|
-| `voyage` | Remote API call | Production quality, no GPU |
-| `openai` | Remote API call | Existing OpenAI account |
-| `huggingface` | In-process (CPU or GPU) | Air-gapped or cost-sensitive |
-
-The huggingface kind loads the model into the primer process at
-SSP create time; the first embedding call is slow as the model
-warms.

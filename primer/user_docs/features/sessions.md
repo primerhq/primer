@@ -2,76 +2,72 @@
 slug: sessions
 title: Sessions
 section: features
-summary: The sessions list, session detail, transcript inspection, retry, pause, resume, cancel.
+summary: Start, observe, and control a session in the console -- start a run, watch turns stream in, and pause, resume, or cancel.
 ---
 
-## The sessions list
+## Overview
 
-Sessions land in the list as soon as they exist. The filter row
-at the top supports filtering by status (running, parked, done,
-failed) and by agent. Hitting a row opens the session detail.
+A session is a single run of an agent. It owns the full conversation transcript, the workspace slot, and the worker claim for each active turn. The Sessions page lists all sessions, newest first, with live status updates every three seconds.
 
-```mockup:sessions-list-empty
-{ "emptyLine": "No sessions yet", "ctaLabel": "New session" }
+```embed:sessions-list
 ```
 
-The empty state shows on a fresh install. Once sessions exist the
-list paginates, newest first.
+## Starting a session
 
-## The session detail page
+1. Navigate to Sessions in the left nav.
+2. Click **New session** (top-right of the filter bar).
+3. Select the agent to run and provide the initial input text.
+4. Click **Start**. The new session row appears at the top of the list with status `created`, then transitions to `running` as a worker picks it up.
 
-Clicking a session row opens the detail page. The header strip
-shows the session id, the bound agent, and the current status.
-The transcript pane streams turns as they land.
+You can also start a session from an agent's detail page using the **Chat** button, which opens an interactive chat session without requiring a workspace.
 
-```mockup:session-detail-panel
-{ "sessionId": "sess-a1b2c3", "agentId": "weekly-digest", "status": "running", "turnCount": 4 }
+## Filtering and sorting the list
+
+The filter bar supports:
+
+- **Status chips**: click one or more of created / running / waiting / paused / ended / failed / cancelled to filter by status. Active-status chips (running, paused) are highlighted.
+- **Agent** dropdown: narrows to sessions bound to a specific agent.
+- **Workspace** dropdown: narrows to sessions running in a specific workspace.
+- **Text search**: matches against session ID, agent ID, graph ID, or workspace ID.
+- **Column headers**: click to sort by created time, last-turn time, agent, or worker. Click again to reverse direction.
+
+## Viewing session detail
+
+Click any row to open the session detail view.
+
+```embed:session-detail
 ```
 
-A parked session shows the parked reason in the footer:
+The detail view shows:
 
-```mockup:session-detail-panel
-{ "sessionId": "sess-9z8y7x", "agentId": "release-bot", "status": "parked", "turnCount": 7, "parkedReason": "trigger:gh-pr-merged" }
+- **Header strip**: session ID, bound agent, current status, and elapsed time.
+- **Transcript pane**: turns stream in as they land. Each turn shows the role (user/assistant/tool), content, and timestamp.
+- **Footer**: for sessions in `waiting` or `paused` state, the footer shows the reason the session stopped -- typically the event key the agent yielded on. Use this to diagnose where the session is blocked.
+
+## Pausing, resuming, and cancelling
+
+Three operator controls appear in the session detail header:
+
+- **Pause**: holds the session at the next turn boundary. The worker releases the slot. The session moves to `paused`. Use this to inspect state before the next turn runs.
+- **Resume**: reverses a pause. The session re-enters the queue and a worker picks it up at the next turn.
+- **Cancel**: moves the session to `cancelled` immediately. Any in-flight tool call receives a cancellation error. The transcript is preserved and readable after cancellation.
+
+```callout:warning
+Cancel is immediate and irreversible. If the agent was mid-write (writing a file, sending a message), the write may or may not have completed before the cancellation error arrived. Check the transcript to see where the last tool call landed before assuming the operation is rolled back.
 ```
 
-The footer's parked-reason field is the literal event key the tool
-yielded on. Use it to track down where the session is stuck.
+## Retrying from a specific turn
 
-## Creating a session
+On the session detail, use the retry control to rewind the transcript to a specific turn and re-run from that point. This is useful when a tool failure caused the agent to go off-track and you want to re-run without starting a new session from scratch.
 
-Three entry points produce identical results.
+## Automate this
 
-```code-tabs:python,curl
---- python
-sess = client.sessions.create(
-    agent_id="weekly-digest",
-    input="Summarise yesterday.",
-)
-print(sess.id)
---- curl
-curl -X POST https://primer.example/v1/sessions \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"agent_id":"weekly-digest","input":"Summarise yesterday."}'
+```ref:reference/api-sessions
+Full session resource schema, list/create/control endpoints, and transcript inspection.
 ```
 
-The console New session button calls the same endpoint. So does a
-trigger subscription with `target=start_session`.
-
-## Pause, resume, cancel
-
-Three operator controls:
-
-- **Pause** holds the next turn at the boundary. The worker
-  releases the slot; the session moves to `parked`. Resume
-  reverses it.
-- **Cancel** moves the session to `cancelled` immediately. Any
-  in-flight tool call gets a cancellation error; the transcript
-  is preserved.
-- **Retry from turn N** rewinds the transcript to turn N and
-  re-runs from there. Useful when a tool failure made the agent
-  go off-track.
+## See also
 
 ```ref:concepts/sessions
-The concept page covers the turn loop and the parked state in
-detail.
+The concept page explains the turn loop, the parked state, worker claims, and how sessions relate to workspaces.
 ```

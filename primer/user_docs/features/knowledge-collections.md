@@ -2,92 +2,85 @@
 slug: knowledge-collections
 title: Knowledge collections
 section: features
-summary: Collections as the unit of RAG; create, populate, search, share.
+summary: Create and manage knowledge collections in the console.
 ---
 
-## What a collection is
+## Overview
 
 A collection is a named container for documents that agents can
-search. Two settings are durable per collection: the semantic
-search provider it binds to (which embedding model indexes its
-documents) and the access policy (who can read, write, search).
+search via similarity. Two settings are fixed at create time and
+cannot change afterwards: the embedding provider and model (which
+decide how documents are vectorised) and the semantic search
+provider (the database that holds the vector index).
 
-A collection is also the granularity of agent binding. An agent
-sees only the collections the operator has bound to it; an
-operator with two unrelated projects keeps the collections
-separate so the agents do not leak context.
+Collections appear in the console under Knowledge / Collections.
+The table shows each collection's ID, description, embedding
+provider, and embedding model. Click any row to open the detail
+panel on the right.
 
-## The empty state
-
-The Collections page on a fresh install looks like this:
-
-```mockup:collection-list-empty
-{ "emptyLine": "No collections yet" }
+```embed:collection-list
 ```
 
 ## Creating a collection
 
-The console New collection button opens a small form: name,
-description, semantic-search provider, retention. The same
-operation via the API:
+1. Open Knowledge / Collections in the left navigation.
+2. Click **New collection** (top-right of the filter bar).
+3. Fill in the form that appears:
+   - **ID** -- optional; the backend assigns one if you leave it blank.
+   - **Description** -- free text shown in the table.
+   - **Embedding provider** -- pick from the providers configured
+     under Providers / Embedding. The dropdown is empty if none
+     are configured yet; create one there first.
+   - **Model** -- options are drawn from the selected provider's
+     declared model list.
+   - **Search provider** -- the vector database (pgvector or
+     pgvectorscale) that stores this collection's index.
+     Immutable after create.
+4. Click **Create**.
 
-```code-tabs:python,curl,javascript
---- python
-col = client.knowledge.create_collection(
-    name="incident-runbooks",
-    description="Post-mortem write-ups and runbook entries.",
-    ssp_id="voyage-3-large",
-)
-print(col.id)
---- curl
-curl -X POST https://primer.example/v1/knowledge/collections \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{
-    "name":"incident-runbooks",
-    "description":"Post-mortem write-ups...",
-    "ssp_id":"voyage-3-large"
-  }'
---- javascript
-const r = await fetch("/v1/knowledge/collections", {
-  method: "POST",
-  headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-  body: JSON.stringify({
-    name: "incident-runbooks",
-    description: "Post-mortem write-ups...",
-    ssp_id: "voyage-3-large",
-  }),
-});
+A success toast confirms the collection was created and the table
+refreshes.
+
+```callout:warning
+The embedding model and search provider are bound at create time
+and cannot be changed afterwards. If you need a different model,
+delete the collection and create a new one; documents must be
+re-ingested.
 ```
 
-## Binding to an agent
+## Editing a collection
 
-Once a collection exists, bind it to one or more agents from the
-Agents page (Tools tab). The agent can then call `search_collection`
-and `get_document` for any document in any bound collection.
+Select the collection row to open the detail panel, then click
+**Edit**. Only the description can change on a non-system,
+non-harness-managed collection. The ID, embedding model, and
+search provider are locked.
+
+System collections (marked with a system badge in the table) are
+maintained automatically and cannot be edited or deleted by hand.
+
+## Opening documents
+
+From the detail panel, click **List documents** to open a modal
+that pages through every document row (or vector entry for system
+collections) stored in the collection. Use **Search** to run a
+quick similarity query without leaving the panel.
+
+## Filtering and refreshing
+
+The filter bar at the top accepts a text string matched against
+collection IDs. Click **Refresh** to re-fetch the list from the
+API.
+
+## Automate this
+
+```ref:reference/api-knowledge
+Full REST reference for collections: create, read, update,
+list, and per-collection document and search endpoints.
+```
+
+## Related concept
 
 ```ref:concepts/toolsets-and-tools
-The binding model that decides which tools each agent can reach.
+How to bind a collection to an agent so the agent can call
+search and retrieve against it.
 ```
-
-## Document ingest
-
-Adding a document to a collection runs it through the ingestion
-pipeline: chunk, embed, index. The chunking strategy is per
-collection; the default is a paragraph-aware splitter targeting
-~800 tokens per chunk.
-
-```callout:tip
-Tune the chunk size to the use case before populating. Reflowing
-1000 documents through a new chunker is expensive; smaller
-chunks for FAQ-style content, larger chunks for prose-heavy
-collections.
-```
-
-## Where to next
-
-For the document-level walkthrough (upload, chunk strategy,
-re-index):
-
-The document feature page covers ingest mechanics, the per-doc
-metadata schema, and the retrieval surface in detail. Phase E
-of the doc rollout ships it alongside this page.
