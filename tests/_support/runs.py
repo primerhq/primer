@@ -60,6 +60,54 @@ async def make_scripted_agent(
     return {"provider_id": pid, "agent_id": aid, "model": scenario}
 
 
+async def make_real_agent(
+    client: httpx.AsyncClient,
+    real_cfg: dict,
+    *,
+    suffix: str,
+    tools: list[str] | None = None,
+    system_prompt: list[str] | None = None,
+) -> dict:
+    """Create an OpenChat provider + agent pointed at the REAL LM Studio model.
+
+    ``real_cfg`` is ``load_config()["llm"]["real"]`` — carries base_url, model,
+    and api_key (resolved from ${LMSTUDIO_API_KEY}). Flavor is ``lmstudio`` so
+    the api_key (required by the nginx in front of LM Studio) is forwarded as a
+    bearer token but not schema-enforced.
+    """
+    pid = f"pr-{suffix}"
+    aid = f"ar-{suffix}"
+    model = real_cfg["model"]
+    pr = await client.post(
+        "/v1/llm_providers",
+        json={
+            "id": pid,
+            "provider": "openchat",
+            "models": [{"name": model, "context_length": 8192}],
+            "config": {
+                "url": real_cfg["base_url"],
+                "flavor": "lmstudio",
+                "api_key": real_cfg.get("api_key") or None,
+            },
+            "limits": {"max_concurrency": 2},
+        },
+    )
+    assert pr.status_code in (200, 201), pr.text
+    ar = await client.post(
+        "/v1/agents",
+        json={
+            "id": aid,
+            "description": "smk real-llm agent",
+            "model": {"provider_id": pid, "model_name": model},
+            "tools": tools or [],
+            "system_prompt": system_prompt
+            or ["You are a terse assistant. Follow the user's instruction exactly."],
+        },
+    )
+    assert ar.status_code in (200, 201), ar.text
+    return {"provider_id": pid, "agent_id": aid, "model": model}
+
+
 async def make_local_workspace(
     client: httpx.AsyncClient, *, suffix: str, root: Path
 ) -> str:
