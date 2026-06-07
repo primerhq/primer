@@ -258,7 +258,13 @@ class RuntimeClient:
         abort: asyncio.Event | None = None,
     ) -> ExecResult:
         """Run *cmd* inside the container and return the aggregated result."""
-        args: dict[str, Any] = {"cmd": cmd}
+        # The runtime spawns the command via ``create_subprocess_exec(*cmd)``,
+        # i.e. it expects an argv LIST. A bare string would be iterated into
+        # one-character argv entries (``"pwd"`` -> ``['p','w','d']``), so wrap
+        # a string command in a shell. Callers passing a list (e.g. the state
+        # repo's ``["git","init"]``) are sent through unchanged.
+        argv: list[str] = ["/bin/sh", "-c", cmd] if isinstance(cmd, str) else list(cmd)
+        args: dict[str, Any] = {"cmd": argv}
         if workdir is not None:
             args["workdir"] = workdir
         if env is not None:
@@ -282,6 +288,15 @@ class RuntimeClient:
             async for item in self._iter_stream(req_id, q, abort=abort):
                 if not isinstance(item, dict):
                     continue
+                # A single-shot {"ok": false} error frame routed into the
+                # stream (runtime rejected the exec request, e.g. bad argv):
+                # surface it instead of waiting forever for an exit event.
+                if "ok" in item and not item["ok"]:
+                    err = item.get("error") or {}
+                    raise RuntimeError(
+                        err.get("code", ErrorCode.EPROTOCOL),
+                        err.get("message", "exec failed"),
+                    )
                 event = item.get("event")
                 # The runtime serialises streaming events as the protocol
                 # Event envelope: {"event": ..., "data": {...}}. The exec
@@ -431,6 +446,14 @@ class RuntimeClient:
         # Single-shot response
         if "ok" in raw:
             fut = self._pending.get(req_id)
+            if fut is None and req_id in self._streams:
+                # An error frame for a STREAMING op (exec/watch/archive): the
+                # runtime answers a failed streaming request with a single-shot
+                # {"ok": false} instead of an event stream. Route it into the
+                # stream queue so the consumer surfaces the error instead of
+                # blocking forever waiting for an exit/close event.
+                self._streams[req_id].put_nowait(raw)
+                return
             if fut and not fut.done():
                 if raw["ok"]:
                     fut.set_result(raw.get("result") or {})
