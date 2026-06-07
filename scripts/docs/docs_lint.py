@@ -12,6 +12,7 @@ Exits 0 with a clean-corpus summary when there are no errors.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
@@ -23,9 +24,12 @@ from primer.user_docs_lint import run_lint
 from primer.user_docs_service import UserDocsService
 
 # ---------------------------------------------------------------------------
-# Embeds manifest -- keep in sync with primer/api/app.py _user_docs_embed_ids
+# Embeds manifest -- union of the legacy mockup: ids and the new embed: ids
+# from primer/user_docs/_fixtures/registry.json. Both remain valid during the
+# transition period (Phase 7 will drop the mockup: set). Keep in sync with
+# primer/api/app.py _mockup_embed_ids.
 # ---------------------------------------------------------------------------
-_EMBEDS_MANIFEST: list[str] = [
+_MOCKUP_EMBED_IDS: list[str] = [
     "topbar",
     "sessions-list-empty",
     "agent-create-modal",
@@ -44,6 +48,20 @@ _EMBEDS_MANIFEST: list[str] = [
     "api-token-create",
     "bug-reporter-modal",
 ]
+
+_REGISTRY_PATH = _REPO_ROOT / "primer" / "user_docs" / "_fixtures" / "registry.json"
+try:
+    _registry_data = json.loads(_REGISTRY_PATH.read_text(encoding="utf-8"))
+    _registry_embed_ids: list[str] = _registry_data.get("embeds", [])
+except Exception:  # noqa: BLE001
+    _registry_embed_ids = []
+
+_seen: set[str] = set(_MOCKUP_EMBED_IDS)
+_EMBEDS_MANIFEST: list[str] = list(_MOCKUP_EMBED_IDS)
+for _eid in _registry_embed_ids:
+    if _eid not in _seen:
+        _EMBEDS_MANIFEST.append(_eid)
+        _seen.add(_eid)
 
 _USER_DOCS_ROOT = _REPO_ROOT / "primer" / "user_docs"
 

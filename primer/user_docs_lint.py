@@ -79,7 +79,7 @@ _KNOWN_MERMAID_TYPES = (
 
 _DIRECTIVE_FENCE_RE = re.compile(r"^```([\w:./-]+)\s*$")
 _DIRECTIVE_PREFIXES = (
-    "mermaid", "mockup:", "callout:", "code-tabs:", "ref:", "ai-doc:",
+    "mermaid", "mockup:", "embed:", "callout:", "code-tabs:", "ref:", "ai-doc:",
 )
 
 
@@ -368,6 +368,17 @@ def run_lint(
                                 f"{exc.msg}"
                             ),
                         ))
+            elif directive.startswith("embed:"):
+                embed_id = directive[len("embed:"):]
+                if embed_id not in embeds_manifest:
+                    issues.append(LintIssue(
+                        file=rel_path, line=start_line - 1,
+                        rule="unknown_embed_id", severity="error",
+                        message=(
+                            f"embed id {embed_id!r} not registered; "
+                            f"valid ids: {sorted(embeds_manifest)}"
+                        ),
+                    ))
             elif directive == "mermaid":
                 first = next(
                     (ln for ln in payload_lines if ln.strip()), "",

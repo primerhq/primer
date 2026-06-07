@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -353,10 +354,11 @@ def _make_lifespan(config: AppConfig):
         user_docs_service = UserDocsService(_user_docs_root)
         user_docs_service.reload_index()
         app.state.user_docs_service = user_docs_service
-        # Hand-maintained mirror of ui/components/docs/embeds.jsx's
-        # EMBEDS map. The list seeds lint rule 3 (unknown_embed_id) and
-        # the /v1/user_docs/embeds/manifest response.
-        _user_docs_embed_ids = [
+        # Union manifest: hand-maintained mockup: ids (legacy, kept for
+        # transition) + new embed: ids from registry.json. Both sets
+        # remain valid during the transition period (Phase 7 will drop
+        # the mockup: set once feature docs are rewritten).
+        _mockup_embed_ids = [
             "topbar",
             "sessions-list-empty",
             "agent-create-modal",
@@ -375,6 +377,25 @@ def _make_lifespan(config: AppConfig):
             "api-token-create",
             "bug-reporter-modal",
         ]
+        _registry_path = _user_docs_root / "_fixtures" / "registry.json"
+        try:
+            _registry_data = json.loads(_registry_path.read_text(encoding="utf-8"))
+            _registry_embed_ids: list[str] = _registry_data.get("embeds", [])
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "lifespan: could not read embed registry from %s; "
+                "only mockup ids will be valid",
+                _registry_path,
+            )
+            _registry_embed_ids = []
+        # Build the union, preserving order: mockup ids first, then any
+        # new registry ids not already present.
+        _seen: set[str] = set(_mockup_embed_ids)
+        _user_docs_embed_ids = list(_mockup_embed_ids)
+        for _eid in _registry_embed_ids:
+            if _eid not in _seen:
+                _user_docs_embed_ids.append(_eid)
+                _seen.add(_eid)
         app.state.user_docs_embeds = _user_docs_embed_ids
         user_docs_service.set_embeds_manifest(_user_docs_embed_ids)
         logger.info("lifespan: user-docs service initialised")
