@@ -837,3 +837,60 @@ class TestReAttachAfterRestart:
         # The re-attached workspace works just like the original.
         result = await ws2.diagnostic_exec("pwd")
         assert result.exit_code == 0
+
+
+# ===========================================================================
+# Cross-process session rehydration (distributed worker support)
+# ===========================================================================
+
+
+class TestCrossProcessRehydration:
+    """A session created on one process must be runnable on another.
+
+    The API process allocates the slot via ``start_session`` (writing
+    ``.state/sessions/<sid>/session.json`` + ``agent.json`` to shared
+    disk); a separate worker process re-attaches the workspace with an
+    empty in-memory registry and must rebuild the session handle from
+    disk. Before this was supported, ``get_session`` returned None and
+    the worker failed to build the executor (blocking SMK-DST-06).
+    """
+
+    async def test_get_session_rehydrates_slot_from_another_instance(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "ws-xproc"
+        root.mkdir()
+        tpl = _template()
+        # Instance A: the API process. Allocate the slot.
+        ws_a = await LocalWorkspace.materialise(
+            workspace_id="ws-xproc", root=root, template=tpl, env={},
+        )
+        created = await ws_a.start_session(
+            _binding(agent_id="agent-x"), id="sess-xproc-1"
+        )
+        assert created.session_id == "sess-xproc-1"
+
+        # Instance B: a worker process. Fresh in-memory registry, same
+        # on-disk root. get_session must rehydrate the slot from disk.
+        ws_b = await LocalWorkspace.materialise(
+            workspace_id="ws-xproc", root=root, template=tpl, env={},
+        )
+        rehydrated = await ws_b.get_session("sess-xproc-1")
+        assert rehydrated is not None
+        assert rehydrated.session_id == "sess-xproc-1"
+        assert rehydrated.agent_id == "agent-x"
+        assert (await rehydrated.status()) == SessionStatus.RUNNING
+
+        # Idempotent: the rehydrated handle is cached, not rebuilt.
+        again = await ws_b.get_session("sess-xproc-1")
+        assert again is rehydrated
+
+    async def test_get_session_returns_none_for_unknown_slot(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "ws-xproc2"
+        root.mkdir()
+        ws = await LocalWorkspace.materialise(
+            workspace_id="ws-xproc2", root=root, template=_template(), env={},
+        )
+        assert await ws.get_session("sess-does-not-exist") is None

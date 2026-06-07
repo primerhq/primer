@@ -8,9 +8,12 @@ exposes the user-facing surface (``append_instruction`` /
 runtime-facing surface (``commit_state`` / ``cache_output`` /
 ``set_status`` / ``take_pending_messages``).
 
-Sessions are single-use: there is no re-attach. Use
-:meth:`AgentSession.start` to allocate a fresh slot; the workspace
-calls this from its ``start_session()`` method.
+Use :meth:`AgentSession.start` to allocate a fresh slot; the workspace
+calls this from its ``start_session()`` method. A session created on one
+process can be re-attached on another by reconstructing it from its
+persisted on-disk slot (session.json + agent.json) via the constructor;
+``LocalWorkspace.get_session`` does this so a worker process can run a
+session the API process allocated.
 
 See ``docs/superpowers/specs/2026-05-02-workspace-design.md`` (the
 "AgentSession" section + "Session lifecycle" section) for the full

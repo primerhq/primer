@@ -223,7 +223,33 @@ class LocalWorkspace(Workspace):
         return out
 
     async def get_session(self, session_id: str) -> AgentSession | None:
-        return self._sessions.get(session_id)
+        cached = self._sessions.get(session_id)
+        if cached is not None:
+            return cached
+        # Cross-process rehydration: the session may have been created on a
+        # different process (e.g. the API process allocated the slot via
+        # start_session; a worker process now needs to build its executor and
+        # run the turn). The slot is persisted on shared disk under
+        # ``.state/sessions/<sid>/`` (session.json + agent.json), so rebuild
+        # the in-memory handle from disk. Returns None when no slot exists.
+        async with self._lock:
+            # Re-check under the lock in case a concurrent caller rehydrated it.
+            cached = self._sessions.get(session_id)
+            if cached is not None:
+                return cached
+            info = await self._state.load_session_info(session_id)
+            binding = await self._state.load_agent_binding(session_id)
+            if info is None or binding is None:
+                return None
+            session = AgentSession(
+                session_info=info,
+                agent_binding=binding,
+                state_repo=self._state,
+                truncation_store=self._cache,
+                workspace_tools=self._tools,
+            )
+            self._sessions[session_id] = session
+            return session
 
     async def remove_session(self, session_id: str) -> bool:
         """Drop the in-memory handle for ``session_id``.
