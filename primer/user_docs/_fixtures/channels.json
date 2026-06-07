@@ -1,19 +1,50 @@
 {
   "GET /channel_providers?limit=200": {
-    "items": [],
-    "total": 0
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
   },
   "GET /channels?limit=200": {
-    "items": [],
-    "total": 0
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
   },
   "GET /workspace_channel_associations?limit=200": {
-    "items": [],
-    "total": 0
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
   },
   "GET /workspaces?limit=200": {
-    "items": [],
-    "total": 0
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "ws-0ae22e9a7d65436a",
+        "name": null,
+        "template_id": "docs-tpl-local",
+        "provider_id": "docs-wp-local",
+        "overrides": null,
+        "created_at": "2026-06-07T19:00:59.293412Z",
+        "phase": "running",
+        "last_probe_at": null,
+        "last_probe_ok": false,
+        "failure_reason": null,
+        "runtime_meta": {
+          "url": "local://ws-0ae22e9a7d65436a",
+          "token": "",
+          "mapped_host_port": null,
+          "k8s_object_name": null
+        }
+      }
+    ]
   },
-  "_note": "channel_providers empty-valid: seeding requires live platform credentials + auth"
+  "_note": "channel_providers empty-valid: seeding requires live platform credentials"
 }

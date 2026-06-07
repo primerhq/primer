@@ -1,23 +1,101 @@
 {
   "GET /triggers": {
-    "items": [],
-    "total": 0
+    "items": [
+      {
+        "id": "tr-97fe775c00c7",
+        "slug": "docs-demo-trigger",
+        "name": "Demo digest trigger",
+        "description": null,
+        "config": {
+          "kind": "delayed",
+          "fire_at": "2099-12-31T09:00:00Z"
+        },
+        "enabled": true,
+        "next_fire_at": "2099-12-31T09:00:00Z",
+        "last_fired_at": null,
+        "last_fire_error": null,
+        "created_at": "2026-06-07T19:00:59.441566Z"
+      }
+    ],
+    "total": 1
   },
   "GET /agents?limit=200": {
-    "items": [],
-    "total": 0
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "weekly-digest",
+        "description": "Summarises the week",
+        "model": {
+          "provider_id": "demo-openai",
+          "model_name": "gpt-4o"
+        },
+        "temperature": null,
+        "tools": [],
+        "system_prompt": [
+          "You write concise weekly digests."
+        ],
+        "compaction_prompt": [],
+        "harness_id": null
+      }
+    ]
   },
   "GET /graphs?limit=200": {
-    "items": [],
-    "total": 0
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
   },
   "GET /workspaces?limit=200": {
-    "items": [],
-    "total": 0
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "ws-0ae22e9a7d65436a",
+        "name": null,
+        "template_id": "docs-tpl-local",
+        "provider_id": "docs-wp-local",
+        "overrides": null,
+        "created_at": "2026-06-07T19:00:59.293412Z",
+        "phase": "running",
+        "last_probe_at": null,
+        "last_probe_ok": false,
+        "failure_reason": null,
+        "runtime_meta": {
+          "url": "local://ws-0ae22e9a7d65436a",
+          "token": "",
+          "mapped_host_port": null,
+          "k8s_object_name": null
+        }
+      }
+    ]
   },
   "GET /chats?limit=200": {
-    "items": [],
-    "total": 0
-  },
-  "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "chat-644f44f19241",
+        "agent_id": "weekly-digest",
+        "created_at": "2026-06-07T19:00:59.425499Z",
+        "status": "active",
+        "title": null,
+        "last_seq": 0,
+        "turn_status": "idle",
+        "cancel_requested_at": null,
+        "parked_status": null,
+        "parked_event_key": null,
+        "parked_until": null,
+        "parked_at": null,
+        "parked_state": null
+      }
+    ]
+  }
 }

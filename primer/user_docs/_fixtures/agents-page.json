@@ -1,14 +1,47 @@
 {
   "GET /agents?limit=200&offset=0": {
-    "items": [],
-    "total": 0
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "weekly-digest",
+        "description": "Summarises the week",
+        "model": {
+          "provider_id": "demo-openai",
+          "model_name": "gpt-4o"
+        },
+        "temperature": null,
+        "tools": [],
+        "system_prompt": [
+          "You write concise weekly digests."
+        ],
+        "compaction_prompt": [],
+        "harness_id": null
+      }
+    ]
   },
   "GET /agents/weekly-digest": {
-    "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+    "id": "weekly-digest",
+    "description": "Summarises the week",
+    "model": {
+      "provider_id": "demo-openai",
+      "model_name": "gpt-4o"
+    },
+    "temperature": null,
+    "tools": [],
+    "system_prompt": [
+      "You write concise weekly digests."
+    ],
+    "compaction_prompt": [],
+    "harness_id": null
   },
   "GET /llm_providers?limit=200": {
-    "items": [],
-    "total": 0
-  },
-  "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
+  }
 }

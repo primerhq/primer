@@ -2,12 +2,12 @@
   "GET /workers": {
     "items": [
       {
-        "id": "wrk-c2448256fe05",
+        "id": "wrk-d5ba94ecac66",
         "host": "build-host",
-        "pid": 1591149,
+        "pid": 3371965,
         "capacity": 8,
-        "started_at": "2026-06-07T04:12:38.912103Z",
-        "last_heartbeat": "2026-06-07T18:58:40.052773Z",
+        "started_at": "2026-06-07T19:00:55.238423Z",
+        "last_heartbeat": "2026-06-07T19:00:55.238423Z",
         "status": "active"
       }
     ]
@@ -28,11 +28,11 @@
       "in_flight": 0,
       "capacity": 8,
       "metrics": {
-        "primer_worker_id": "wrk-c2448256fe05",
+        "primer_worker_id": "wrk-d5ba94ecac66",
         "primer_worker_in_flight": 0,
         "primer_worker_capacity": 8,
-        "primer_worker_claims_total": 0,
-        "primer_worker_claims_empty_total": 26576,
+        "primer_worker_claims_total": 1,
+        "primer_worker_claims_empty_total": 7,
         "primer_session_turns_total": {},
         "primer_session_turn_duration_seconds": {
           "count": 0,

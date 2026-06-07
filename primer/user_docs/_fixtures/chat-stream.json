@@ -1,17 +1,54 @@
 {
   "GET /chats?limit=200": {
-    "items": [],
-    "total": 0
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
   },
   "GET /chats/{id}": {
-    "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+    "id": "chat-644f44f19241",
+    "agent_id": "weekly-digest",
+    "created_at": "2026-06-07T19:00:59.425499Z",
+    "status": "active",
+    "title": null,
+    "last_seq": 0,
+    "turn_status": "idle",
+    "cancel_requested_at": null,
+    "parked_status": null,
+    "parked_event_key": null,
+    "parked_until": null,
+    "parked_at": null,
+    "parked_state": null
   },
   "GET /chats/{id}/messages": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
     "items": []
   },
   "GET /agents?limit=200": {
-    "items": [],
-    "total": 0
-  },
-  "_note": "empty-valid: run capture_fixtures.py with PRIMER_DOCS_USER/PRIMER_DOCS_PASS to populate"
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "weekly-digest",
+        "description": "Summarises the week",
+        "model": {
+          "provider_id": "demo-openai",
+          "model_name": "gpt-4o"
+        },
+        "temperature": null,
+        "tools": [],
+        "system_prompt": [
+          "You write concise weekly digests."
+        ],
+        "compaction_prompt": [],
+        "harness_id": null
+      }
+    ]
+  }
 }
