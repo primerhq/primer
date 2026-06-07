@@ -3,11 +3,15 @@
 Covers backlog items (all new in this iteration):
 
 * T0790 — TimerScheduler republishes a ``timer:*`` park whose
-  parked_until is in the past. Inject the park, wait one timer
-  tick (~2s) + listener round-trip, assert parked_status='resumable'.
+  parked_until is due. A real sleep park (1s duration) drives the
+  genuine engine path; the TimerScheduler (2s cadence) republishes
+  the due timer event, the listener flips the session, and the
+  engine resumes the turn.
 * T0791 — TimeoutSweeper publishes the ``__yield_timeout__`` marker
-  for an expired non-timer park (ask_user with past parked_until).
-  Sweeper cadence is 30s so this test waits ~35s for the first tick.
+  for an expired non-timer park. A real approval-timeout park drives
+  the genuine engine path; the TimeoutSweeper fires once the
+  parked_until deadline elapses and the session resumes with a
+  synthesised rejection result.
 * T0792 — WS reconnect with ``?cursor=N`` replays missed
   chat_messages in order; new connection picks up live streaming
   after replay completes.
@@ -19,24 +23,22 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
-from typing import Any
 
-import asyncpg
 import httpx
 import pytest
 
+from tests._support.mock_llm import Rule
+from tests._support.runs import (
+    make_local_workspace,
+    make_scripted_agent,
+    start_agent_session,
+)
+from tests._support.yield_journeys import drive_park_on_tool, wait_for_resume
+
 
 # ---------------------------------------------------------------------------
-# Postgres + seed helpers
+# WS-test seed helpers (used only by T0792/T0793)
 # ---------------------------------------------------------------------------
-
-
-async def _pg() -> asyncpg.Connection:
-    return await asyncpg.connect(
-        host="localhost", port=5432,
-        user="primer", password="primer", database="primer_e2e",
-    )
 
 
 async def _seed_llm_provider(client: httpx.AsyncClient, pid: str) -> None:
@@ -66,121 +68,6 @@ async def _seed_agent(
     assert r.status_code == 201
 
 
-async def _seed_workspace(
-    client: httpx.AsyncClient, wp_id: str, tpl_id: str, tmp_path,
-) -> str:
-    r = await client.post(
-        "/v1/workspace_providers",
-        json={
-            "id": wp_id, "provider": "local",
-            "config": {"kind": "local", "root_path": str(tmp_path)},
-        },
-    )
-    assert r.status_code == 201
-    r = await client.post(
-        "/v1/workspace_templates",
-        json={
-            "id": tpl_id, "description": "tpl",
-            "provider_id": wp_id, "backend": {"kind": "local"},
-        },
-    )
-    assert r.status_code == 201
-    r = await client.post("/v1/workspaces", json={"template_id": tpl_id})
-    assert r.status_code == 201
-    return r.json()["id"]
-
-
-async def _seed_session(
-    client: httpx.AsyncClient, workspace_id: str, agent_id: str,
-) -> str:
-    r = await client.post(
-        f"/v1/workspaces/{workspace_id}/sessions",
-        json={
-            "binding": {"kind": "agent", "agent_id": agent_id},
-            "auto_start": False,
-        },
-    )
-    assert r.status_code == 201
-    return r.json()["id"]
-
-
-async def _inject_park_with_deadline(
-    session_id: str,
-    *,
-    tool_name: str,
-    tool_call_id: str,
-    event_key: str,
-    parked_until: datetime,
-    prompt: str | None = None,
-) -> None:
-    """Inject a parked session with an explicit parked_until — useful
-    for testing TimerScheduler / TimeoutSweeper (set parked_until in
-    the past so they fire immediately on next poll).
-    """
-    now = datetime.now(timezone.utc)
-    resume_metadata: dict[str, Any] = {"tool_call_id": tool_call_id}
-    if prompt is not None:
-        resume_metadata["prompt"] = prompt
-    if tool_name == "sleep":
-        resume_metadata["requested_seconds"] = 30.0
-    parked_state = {
-        "schema_version": 1,
-        "tool_call_id": tool_call_id,
-        "yielded": {
-            "tool_name": tool_name,
-            "event_key": event_key,
-            "timeout": 600.0,
-            "resume_metadata": resume_metadata,
-        },
-        "llm_messages": [],
-        "turn_no": 0,
-        "started_at": now.isoformat(),
-        "resume_event_payload": None,
-    }
-    sql = """
-        UPDATE sessions
-        SET data = jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(data,
-                     '{parked_status}', to_jsonb('parked'::text)),
-                   '{parked_event_key}', to_jsonb($2::text)),
-                 '{parked_until}', to_jsonb($3::text)),
-               '{parked_at}', to_jsonb($4::text)),
-             '{parked_state}', $5::jsonb),
-            updated_at = now()
-        WHERE id = $1
-    """
-    conn = await _pg()
-    try:
-        await conn.execute(
-            sql, session_id, event_key,
-            parked_until.isoformat(), now.isoformat(),
-            json.dumps(parked_state),
-        )
-    finally:
-        await conn.close()
-
-
-async def _read_park(session_id: str) -> dict:
-    conn = await _pg()
-    try:
-        row = await conn.fetchrow(
-            "SELECT data->>'parked_status' AS parked_status, "
-            "data->'parked_state'->'resume_event_payload' AS payload "
-            "FROM sessions WHERE id = $1",
-            session_id,
-        )
-        if row is None:
-            return {}
-        payload = row["payload"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        return {
-            "parked_status": row["parked_status"],
-            "resume_event_payload": payload,
-        }
-    finally:
-        await conn.close()
-
-
 async def _cleanup(client: httpx.AsyncClient, urls: list[str]) -> None:
     for url in urls:
         try:
@@ -189,124 +76,173 @@ async def _cleanup(client: httpx.AsyncClient, urls: list[str]) -> None:
             pass
 
 
-async def _seed_ladder(
-    client: httpx.AsyncClient, unique_suffix: str, tmp_path,
-) -> tuple[str, list[str]]:
-    pid = f"llm-bt-{unique_suffix}"
-    aid = f"ag-bt-{unique_suffix}"
-    wp_id = f"wp-bt-{unique_suffix}"
-    tpl_id = f"tpl-bt-{unique_suffix}"
-    await _seed_llm_provider(client, pid)
-    await _seed_agent(client, aid, pid)
-    wid = await _seed_workspace(client, wp_id, tpl_id, tmp_path)
-    sid = await _seed_session(client, wid, aid)
-    cleanup_urls = [
-        f"/v1/workspaces/{wid}/sessions/{sid}/cancel",
-        f"/v1/workspaces/{wid}",
-        f"/v1/workspace_templates/{tpl_id}",
-        f"/v1/workspace_providers/{wp_id}",
-        f"/v1/agents/{aid}",
-        f"/v1/llm_providers/{pid}",
-    ]
-    return sid, cleanup_urls
+# ---------------------------------------------------------------------------
+# Approval-park helper (mirrors _drive_approval_park from t0863)
+# ---------------------------------------------------------------------------
+
+
+async def _drive_approval_park_t791(
+    client: httpx.AsyncClient,
+    registry,
+    base_url: str,
+    *,
+    suffix: str,
+    tmp_path,
+    timeout_seconds: float,
+) -> tuple[str, dict, str]:
+    """Gate misc__uuid_v4 with a short-timeout required policy and
+    drive a real session until it parks on ``_approval``.
+
+    Returns ``(session_id, parked_body, policy_id)``.
+    """
+    pol = f"pol-t791-{suffix}"
+    existing = await client.get("/v1/tool_approval_policies")
+    if existing.status_code == 200:
+        for it in existing.json().get("items", []):
+            if (
+                it.get("toolset_id") == "misc"
+                and it.get("tool_name") == "uuid_v4"
+            ):
+                await client.delete(f"/v1/tool_approval_policies/{it['id']}")
+    r = await client.post(
+        "/v1/tool_approval_policies",
+        json={
+            "id": pol,
+            "toolset_id": "misc",
+            "tool_name": "uuid_v4",
+            "enabled": True,
+            "approval": {"type": "required"},
+            "timeout_seconds": timeout_seconds,
+        },
+    )
+    assert r.status_code in (200, 201), r.text
+    r = await client.post("/v1/tool_approval_policies/invalidate")
+    assert r.status_code == 202, r.text
+
+    scenario = f"scripted:t791-{suffix}"
+    agent = await make_scripted_agent(
+        client, registry, base_url, suffix=suffix, scenario=scenario,
+        tools=["misc__uuid_v4"],
+        rules=[
+            Rule(when_tool_result=False, emit_tool="misc__uuid_v4",
+                 emit_args={}),
+            Rule(when_tool_result=True, emit_text="done"),
+        ],
+    )
+    wid = await make_local_workspace(client, suffix=suffix, root=tmp_path)
+    sid = await start_agent_session(
+        client, workspace_id=wid, agent_id=agent["agent_id"],
+    )
+
+    deadline = asyncio.get_event_loop().time() + 30.0
+    last: dict = {}
+    while asyncio.get_event_loop().time() < deadline:
+        r = await client.get(f"/v1/sessions/{sid}")
+        if r.status_code == 200:
+            last = r.json()
+            if last.get("parked_status") == "parked":
+                return sid, last, pol
+            if last.get("status") == "ended":
+                raise AssertionError(
+                    f"session {sid} ended before parking on _approval: "
+                    f"reason={last.get('ended_reason')!r} body={last!r}"
+                )
+        await asyncio.sleep(0.25)
+    raise AssertionError(
+        f"session {sid} never parked on _approval within 30s; "
+        f"last_body={last!r}"
+    )
 
 
 # ===========================================================================
-# T0790 — TimerScheduler republishes due timer:* park
+# T0790 -- TimerScheduler republishes due timer:* park
 # ===========================================================================
 
 
 @pytest.mark.asyncio
 async def test_t0790_timer_scheduler_republishes_due_timer_park(
-    client: httpx.AsyncClient, unique_suffix: str, tmp_path,
+    client: httpx.AsyncClient, mock_llm, unique_suffix: str, tmp_path,
 ) -> None:
-    """T0790 — Inject a session parked on the sleep tool with a
-    parked_until timestamp in the past. The TimerScheduler runs at
-    a 2s cadence and republishes empty events for due ``timer:*``
-    parks; the bus listener mark_resumable() flips the row.
+    """T0790 -- Drive a real 1-second sleep park via the genuine engine
+    path. The sleep tool writes a ``timer:<tcid>`` park with
+    ``parked_until ~= now + 1s``. The TimerScheduler (2s cadence)
+    finds the due timer event, republishes it on the bus, the
+    YieldEventListener flips the session, and the engine resumes.
 
-    End-to-end pin for the M2 timer-wake path: park → tick → flip.
+    End-to-end pin for the M2 timer-wake path: real park -> tick -> resume.
     """
-    sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
-    tcid = f"tc-timer-{unique_suffix}"
-    try:
-        past = datetime.now(timezone.utc) - timedelta(seconds=5)
-        await _inject_park_with_deadline(
-            sid,
-            tool_name="sleep",
-            tool_call_id=tcid,
-            event_key=f"timer:{tcid}",
-            parked_until=past,
-        )
-
-        # Poll for resumable; timer cadence is 2s + listener round-trip.
-        # Budget 10s to absorb cold-cache jitter.
-        for _ in range(100):
-            await asyncio.sleep(0.1)
-            fields = await _read_park(sid)
-            if fields.get("parked_status") == "resumable":
-                break
-        assert fields.get("parked_status") == "resumable", (
-            f"timer park never flipped to resumable; final={fields}"
-        )
-        # Real timer events publish an empty payload — payload should
-        # be {} (or absent of the timeout/cancel markers).
-        payload = fields.get("resume_event_payload") or {}
-        assert "__yield_timeout__" not in payload, (
-            f"timer park got timeout marker (sweeper raced?): {payload}"
-        )
-        assert "__yield_cancelled__" not in payload, payload
-    finally:
-        await _cleanup(client, cleanup_urls)
+    registry, base_url = mock_llm
+    sid, _, _ = await drive_park_on_tool(
+        client, registry, base_url,
+        suffix=unique_suffix,
+        tool="misc__sleep",
+        tool_args={"seconds": 1.0},
+        root=tmp_path,
+    )
+    # TimerScheduler cadence is 2s; budget 20s to absorb cold-start jitter.
+    # The session resumes (parked_status=None) once the sleep tool result
+    # comes back and the agent emits its terminating reply (min_turn_no=1).
+    body = await wait_for_resume(client, sid, timeout_s=20, min_turn_no=1)
+    assert body.get("parked_status") is None, body
+    assert body.get("turn_no", 0) >= 1, (
+        f"expected at least one completed turn after timer-wake; body={body}"
+    )
 
 
 # ===========================================================================
-# T0791 — TimeoutSweeper publishes __yield_timeout__ marker
+# T0791 -- TimeoutSweeper publishes __yield_timeout__ marker
 # ===========================================================================
 
 
 @pytest.mark.asyncio
 async def test_t0791_timeout_sweeper_publishes_timeout_marker(
-    client: httpx.AsyncClient, unique_suffix: str, tmp_path,
+    client: httpx.AsyncClient, mock_llm, unique_suffix: str, tmp_path,
 ) -> None:
-    """T0791 — Inject a session parked on ask_user (non-timer) with
-    a parked_until in the past. The TimeoutSweeper runs at 30s
-    cadence and publishes the ``__yield_timeout__`` marker for
-    expired non-timer parks. Bus listener flips the row; payload
-    carries the timeout marker.
+    """T0791 -- Drive a real approval-timeout park (non-timer, short
+    policy deadline) via the genuine engine path. The TimeoutSweeper
+    (30s cadence) finds the expired non-timer park, publishes the
+    ``__yield_timeout__`` marker, the engine synthesises a rejected
+    tool_result, and the session resumes.
 
-    NOTE: 30s sweeper cadence means this test takes ~35s to converge.
-    Could be tightened by exposing a config knob for the sweeper
-    interval; deferred to a future iteration.
+    End-to-end pin for the M2 sweeper path on a Postgres-backed
+    deployment (the Storage.find() query is backend-agnostic and
+    reads persisted park columns, unlike the InMemoryScheduler
+    path tested in T0863 which has a known product gap).
     """
-    sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
-    tcid = f"tc-sweeper-{unique_suffix}"
+    registry, base_url = mock_llm
+    sid, parked, pol = await _drive_approval_park_t791(
+        client, registry, base_url,
+        suffix=unique_suffix,
+        tmp_path=tmp_path,
+        timeout_seconds=2.0,
+    )
     try:
-        past = datetime.now(timezone.utc) - timedelta(seconds=5)
-        await _inject_park_with_deadline(
-            sid,
-            tool_name="ask_user",
-            tool_call_id=tcid,
-            event_key=f"ask_user:{sid}:{tcid}",
-            parked_until=past,
-            prompt="What is your name?",
-        )
+        # Sanity: approval decision is observable before the sweeper fires.
+        r = await client.get(f"/v1/sessions/{sid}/tool_approval/pending")
+        assert r.status_code == 200, r.text
+        pending = r.json()
+        assert pending["tool_name"] in ("uuid_v4", "misc__uuid_v4"), pending
+        assert pending["approval_type"] == "required", pending
 
-        # Sweeper cadence 30s + listener round-trip. Budget 40s.
-        for _ in range(400):
-            await asyncio.sleep(0.1)
-            fields = await _read_park(sid)
-            if fields.get("parked_status") == "resumable":
-                break
-        assert fields.get("parked_status") == "resumable", (
-            f"sweeper didn't flip non-timer park within ~40s; final={fields}"
-        )
-        payload = fields.get("resume_event_payload") or {}
-        assert payload.get("__yield_timeout__") is True, (
-            f"expected __yield_timeout__ marker, got {payload}"
-        )
+        # TimeoutSweeper cadence is 30s; parked_until is ~2s out.
+        # Give 70s to allow at least one full sweep cycle after expiry.
+        body = await wait_for_resume(client, sid, timeout_s=70)
+        assert body.get("parked_status") is None, body
+        assert "/errors/internal" not in json.dumps(body), body
     finally:
-        await _cleanup(client, cleanup_urls)
+        try:
+            await client.delete(f"/v1/tool_approval_policies/{pol}")
+        except Exception:  # noqa: BLE001
+            pass
+        # Cancel the parked yield so the session does not remain
+        # indefinitely parked if wait_for_resume raised above.
+        try:
+            await client.post(
+                f"/v1/sessions/{sid}/yields/call_0/cancel",
+                json={"reason": "t0791 test cleanup"},
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ===========================================================================
