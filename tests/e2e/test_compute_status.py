@@ -501,15 +501,16 @@ async def test_t0171_graph_status_flags_multiple_missing_references(
             "id": graph_id,
             "description": "multi-issue graph for T0171",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": missing_agent_id},
                 {"kind": "graph", "id": "n2", "graph_id": missing_subgraph_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
                 {"kind": "static", "from_node": "n1", "to_node": "n2"},
-                {"kind": "static", "from_node": "n2", "to_node": "end"},
+                {"kind": "static", "from_node": "n2", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         },
     )
     assert create.status_code == 201, create.text
@@ -750,13 +751,14 @@ async def test_t0357_graph_status_walks_depth_one_for_subgraph_refs(
             "id": sub_graph_id,
             "description": "T0357 sub-graph",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         },
     )
     assert sub.status_code == 201, sub.text
@@ -768,19 +770,21 @@ async def test_t0357_graph_status_walks_depth_one_for_subgraph_refs(
             "id": top_graph_id,
             "description": "T0357 top graph",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "missing_node",
                  "agent_id": missing_agent_id},
                 {"kind": "graph", "id": "sub_node",
                  "graph_id": sub_graph_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start",
+                 "to_node": "missing_node"},
                 {"kind": "static", "from_node": "missing_node",
                  "to_node": "sub_node"},
                 {"kind": "static", "from_node": "sub_node",
-                 "to_node": "end"},
+                 "to_node": "done"},
             ],
-            "entry_node_id": "missing_node",
         },
     )
     assert top.status_code == 201, top.text
@@ -850,13 +854,14 @@ async def test_t0358_session_bound_to_graph_with_subgraph_creates_cleanly(
             "id": sub_graph_id,
             "description": "T0358 sub",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         },
     )
     assert sub.status_code == 201, sub.text
@@ -867,15 +872,17 @@ async def test_t0358_session_bound_to_graph_with_subgraph_creates_cleanly(
             "id": top_graph_id,
             "description": "T0358 top",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "graph", "id": "sub_node",
                  "graph_id": sub_graph_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start",
+                 "to_node": "sub_node"},
                 {"kind": "static", "from_node": "sub_node",
-                 "to_node": "end"},
+                 "to_node": "done"},
             ],
-            "entry_node_id": "sub_node",
         },
     )
     assert top.status_code == 201, top.text
@@ -1204,13 +1211,14 @@ async def test_t0430_graph_create_edge_unknown_node_id_returns_422(
             "id": graph_id,
             "description": "T0430 — edge with bad to_node",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
                 {"kind": "static", "from_node": "n1", "to_node": "no-such-node"},
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code != 500, resp.text
@@ -1240,13 +1248,13 @@ async def test_t0430_graph_create_edge_unknown_node_id_returns_422(
             "id": graph_id,
             "description": "T0430 — edge with bad from_node",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "ghost", "to_node": "end"},
+                {"kind": "static", "from_node": "ghost", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         }
         resp2 = await client.post("/v1/graphs", json=body2)
         assert resp2.status_code == 422, resp2.text
@@ -1292,19 +1300,22 @@ async def test_t0431_graph_create_with_cyclic_edges_documented_behavior(
     graph_created = False
 
     try:
-        # Two-node cycle: n1 → n2 → n1
+        # Two-node cycle: n1 → n2 → n1, with begin/end framing
         body = {
             "id": graph_id,
             "description": "T0431 — cyclic edges, no max_iterations",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
                 {"kind": "agent", "id": "n2", "agent_id": agent_id},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
                 {"kind": "static", "from_node": "n1", "to_node": "n2"},
                 {"kind": "static", "from_node": "n2", "to_node": "n1"},
+                {"kind": "static", "from_node": "n2", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         # Hard pin: never 5xx
@@ -1323,12 +1334,13 @@ async def test_t0431_graph_create_with_cyclic_edges_documented_behavior(
             got = await client.get(f"/v1/graphs/{graph_id}")
             assert got.status_code == 200, got.text
             assert got.json()["max_iterations"] is None, got.json()
-            # Edges preserved
+            # Cycle edges preserved
             edge_pairs = sorted(
                 (e["from_node"], e["to_node"])
                 for e in got.json()["edges"]
             )
-            assert edge_pairs == [("n1", "n2"), ("n2", "n1")], got.json()
+            assert ("n1", "n2") in edge_pairs, got.json()
+            assert ("n2", "n1") in edge_pairs, got.json()
         else:
             envelope = resp.json()
             assert envelope.get("type") == "/errors/validation-error", envelope
@@ -1466,6 +1478,7 @@ async def test_t0469_graph_router_branch_unknown_to_node_returns_422(
             "id": graph_id,
             "description": "T0469",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {
                     "kind": "agent", "id": "n1", "agent_id": agent_id,
                     "response_format": {
@@ -1473,24 +1486,24 @@ async def test_t0469_graph_router_branch_unknown_to_node_returns_422(
                         "properties": {"action": {"type": "string"}},
                     },
                 },
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
                 {
                     "kind": "conditional", "from_node": "n1",
                     "router": {
                         "kind": "json_path",
                         "branches": [
-                            {"when": {"action": "done"}, "to_node": "end"},
+                            {"conditions": [], "to_node": "done"},
                             {
-                                "when": {"action": "ghost-route"},
+                                "conditions": [],
                                 "to_node": "ghost-not-a-node",
                             },
                         ],
                     },
                 },
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code != 500, resp.text
@@ -1538,34 +1551,35 @@ async def test_t0470_graph_with_multiple_terminals_accepted_status_clean(
     assert ag.status_code == 201, ag.text
 
     try:
-        # Two-terminal DAG: n1 splits to end-a and end-b via static
-        # edges (both static fire — semantically the executor would
-        # pick one, but topology-wise this is valid).
+        # Two-end DAG: begin -> n1 -> end-a and begin -> n1 -> end-b
+        # (both static fire — semantically the executor would pick one,
+        # but topology-wise this is valid with multiple End nodes).
         body = {
             "id": graph_id,
             "description": "T0470 multi-terminal",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end-a"},
-                {"kind": "terminal", "id": "end-b"},
+                {"kind": "end", "id": "end-a"},
+                {"kind": "end", "id": "end-b"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
                 {"kind": "static", "from_node": "n1", "to_node": "end-a"},
                 {"kind": "static", "from_node": "n1", "to_node": "end-b"},
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code == 201, (
-            f"multi-terminal graph should be accepted; got "
+            f"multi-end graph should be accepted; got "
             f"{resp.status_code}: {resp.text}"
         )
 
-        # Round-trip: GET preserves both terminals
+        # Round-trip: GET preserves both end nodes
         got = await client.get(f"/v1/graphs/{graph_id}")
         assert got.status_code == 200, got.text
         terminals = [
-            n for n in got.json()["nodes"] if n["kind"] == "terminal"
+            n for n in got.json()["nodes"] if n["kind"] == "end"
         ]
         assert len(terminals) == 2, terminals
 
@@ -1615,12 +1629,15 @@ async def test_t0471_graph_with_self_loop_edge_returns_clean_envelope(
             "id": graph_id,
             "description": "T0471 self-loop",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
                 {"kind": "static", "from_node": "n1", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code != 500, resp.text
@@ -1677,28 +1694,32 @@ async def test_t0472_graph_entry_node_at_terminal_only_node_clean(
     assert ag.status_code == 201, ag.text
 
     try:
+        # T0472: a minimal two-node graph (begin directly wired to end)
+        # is the smallest valid graph — no agent nodes. Pin: 201 + clean
+        # /status; never /errors/internal.
         body = {
             "id": graph_id,
-            "description": "T0472 entry-at-terminal",
+            "description": "T0472 minimal begin-to-end",
             "nodes": [
-                {"kind": "terminal", "id": "the-only-node"},
+                {"kind": "begin", "id": "start"},
+                {"kind": "end", "id": "done"},
             ],
-            "edges": [],
-            "entry_node_id": "the-only-node",
+            "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "done"},
+            ],
         }
         resp = await client.post("/v1/graphs", json=body)
         # Hard pin: never 5xx
         assert resp.status_code != 500, resp.text
-        # Acceptable: 201 (current permissive accept) or 422 (a future
-        # validator deliberately rejects no-op graphs)
+        # Acceptable: 201 (valid minimal graph) or 422 (if validator
+        # rejects begin-only graphs with no agent nodes)
         assert resp.status_code in (201, 422), (
-            f"entry-at-terminal graph: unexpected status "
+            f"minimal begin-to-end graph: unexpected status "
             f"{resp.status_code}: {resp.text}"
         )
 
         if resp.status_code == 201:
-            # /status returns clean envelope (no agent referenced
-            # since entry is terminal — ok=true)
+            # /status returns clean envelope (no agent referenced — ok=true)
             status = await client.get(f"/v1/graphs/{graph_id}/status")
             assert status.status_code == 200, status.text
             body_status = status.json()
@@ -1772,18 +1793,19 @@ async def test_t0473_put_graph_with_live_session_clean_envelope(
             )
             assert tpl.status_code == 201, tpl.text
 
-            # Initial graph: just n1 + terminal
+            # Initial graph: begin + n1 + end
             initial_graph = {
                 "id": graph_id,
                 "description": "T0473 initial",
                 "nodes": [
+                    {"kind": "begin", "id": "start"},
                     {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                    {"kind": "terminal", "id": "end"},
+                    {"kind": "end", "id": "done"},
                 ],
                 "edges": [
-                    {"kind": "static", "from_node": "n1", "to_node": "end"},
+                    {"kind": "static", "from_node": "start", "to_node": "n1"},
+                    {"kind": "static", "from_node": "n1", "to_node": "done"},
                 ],
-                "entry_node_id": "n1",
             }
             gr = await client.post("/v1/graphs", json=initial_graph)
             assert gr.status_code == 201, gr.text
@@ -1811,15 +1833,16 @@ async def test_t0473_put_graph_with_live_session_clean_envelope(
                 "id": graph_id,
                 "description": "T0473 mutated",
                 "nodes": [
+                    {"kind": "begin", "id": "start"},
                     {"kind": "agent", "id": "n1", "agent_id": agent_id},
                     {"kind": "agent", "id": "n2", "agent_id": agent_id},
-                    {"kind": "terminal", "id": "end"},
+                    {"kind": "end", "id": "done"},
                 ],
                 "edges": [
+                    {"kind": "static", "from_node": "start", "to_node": "n1"},
                     {"kind": "static", "from_node": "n1", "to_node": "n2"},
-                    {"kind": "static", "from_node": "n2", "to_node": "end"},
+                    {"kind": "static", "from_node": "n2", "to_node": "done"},
                 ],
-                "entry_node_id": "n1",
             }
             put_resp = await client.put(
                 f"/v1/graphs/{graph_id}", json=new_graph,
@@ -2008,16 +2031,17 @@ async def test_t0475_graph_subgraph_node_missing_graph_id_status_clean(
             "id": graph_id,
             "description": "T0475",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {
                     "kind": "graph", "id": "subnode",
                     "graph_id": missing_subgraph_id,
                 },
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "subnode", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "subnode"},
+                {"kind": "static", "from_node": "subnode", "to_node": "done"},
             ],
-            "entry_node_id": "subnode",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code == 201, (
@@ -2164,13 +2188,14 @@ async def test_t0495_graph_max_iterations_zero_rejected_422(
             "id": graph_id,
             "description": "T0495",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
             "max_iterations": 0,
         }
         resp = await client.post("/v1/graphs", json=body)
@@ -2219,13 +2244,14 @@ async def test_t0496_graph_max_iterations_negative_rejected_422(
             "id": graph_id,
             "description": "T0496",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
             "max_iterations": -5,
         }
         resp = await client.post("/v1/graphs", json=body)
@@ -2272,13 +2298,14 @@ async def test_t0497_graph_max_iterations_very_large_accepted_round_trip(
             "id": graph_id,
             "description": "T0497",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
             "max_iterations": very_large,
         }
         resp = await client.post("/v1/graphs", json=body)
@@ -2341,10 +2368,12 @@ async def test_t0498_graph_with_callable_router_create_clean(
             "id": graph_id,
             "description": "T0498 callable router",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
                 {
                     "kind": "conditional", "from_node": "n1",
                     "router": {
@@ -2353,7 +2382,6 @@ async def test_t0498_graph_with_callable_router_create_clean(
                     },
                 },
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code == 201, (
@@ -2362,13 +2390,16 @@ async def test_t0498_graph_with_callable_router_create_clean(
             f"{resp.status_code}: {resp.text}"
         )
 
-        # GET round-trips the edge shape verbatim
+        # GET round-trips the edge shape verbatim; we now have 2 edges
+        # (start->n1 static + n1 conditional)
         got = await client.get(f"/v1/graphs/{graph_id}")
         assert got.status_code == 200, got.text
         edges = got.json()["edges"]
-        assert len(edges) == 1, edges
-        edge = edges[0]
-        assert edge.get("kind") == "conditional", edge
+        # Find the conditional edge
+        cond_edges = [e for e in edges if e.get("kind") == "conditional"]
+        assert len(cond_edges) == 1, edges
+        edge = cond_edges[0]
+        assert edge.get("from_node") == "n1", edge
         router = edge.get("router")
         assert isinstance(router, dict), edge
         assert router.get("kind") == "callable", router
@@ -2599,20 +2630,23 @@ async def test_t0519_graph_node_ids_edge_cases_round_trip(
         " ws ",               # leading + trailing whitespace
     ]
     try:
-        nodes = [
-            {"kind": "agent", "id": eid, "agent_id": agent_id}
-            for eid in edge_ids
-        ] + [{"kind": "terminal", "id": "end"}]
-        edges = [
-            {"kind": "static", "from_node": eid, "to_node": "end"}
-            for eid in edge_ids
-        ]
+        nodes = (
+            [{"kind": "begin", "id": "start"}]
+            + [{"kind": "agent", "id": eid, "agent_id": agent_id} for eid in edge_ids]
+            + [{"kind": "end", "id": "done"}]
+        )
+        edges = (
+            [{"kind": "static", "from_node": "start", "to_node": edge_ids[0]}]
+            + [
+                {"kind": "static", "from_node": eid, "to_node": "done"}
+                for eid in edge_ids
+            ]
+        )
         body = {
             "id": graph_id,
             "description": "T0519 node-id edge cases",
             "nodes": nodes,
             "edges": edges,
-            "entry_node_id": edge_ids[0],
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code == 201, (
@@ -2685,26 +2719,32 @@ async def test_t0520_graph_entry_at_subgraph_node_session_converges_cleanly(
                 "id": parent_graph_id,
                 "description": "T0520 parent graph",
                 "nodes": [
+                    {"kind": "begin", "id": "start"},
                     {
                         "kind": "graph", "id": "subnode",
                         "graph_id": child_subgraph_id,
                     },
-                    {"kind": "terminal", "id": "end"},
+                    {"kind": "end", "id": "done"},
                 ],
                 "edges": [
                     {
+                        "kind": "static", "from_node": "start",
+                        "to_node": "subnode",
+                    },
+                    {
                         "kind": "static", "from_node": "subnode",
-                        "to_node": "end",
+                        "to_node": "done",
                     },
                 ],
-                "entry_node_id": "subnode",
             }
             gr = await client.post("/v1/graphs", json=parent_body)
             assert gr.status_code == 201, gr.text
 
             got = await client.get(f"/v1/graphs/{parent_graph_id}")
             assert got.status_code == 200, got.text
-            assert got.json()["entry_node_id"] == "subnode", got.json()
+            # The subgraph-kind node should be in the nodes list
+            node_kinds = [n["kind"] for n in got.json()["nodes"]]
+            assert "graph" in node_kinds, got.json()
 
             wp = await client.post(
                 "/v1/workspace_providers",
@@ -2810,18 +2850,19 @@ async def test_t0521_graph_with_subgraph_and_agent_siblings_round_trip(
             "id": graph_id,
             "description": "T0521 mixed node kinds",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "an", "agent_id": agent_id},
                 {
                     "kind": "graph", "id": "sn",
                     "graph_id": missing_subgraph_id,
                 },
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "an"},
                 {"kind": "static", "from_node": "an", "to_node": "sn"},
-                {"kind": "static", "from_node": "sn", "to_node": "end"},
+                {"kind": "static", "from_node": "sn", "to_node": "done"},
             ],
-            "entry_node_id": "an",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code == 201, resp.text
@@ -2829,7 +2870,7 @@ async def test_t0521_graph_with_subgraph_and_agent_siblings_round_trip(
         got = await client.get(f"/v1/graphs/{graph_id}")
         assert got.status_code == 200, got.text
         kinds = sorted(n["kind"] for n in got.json()["nodes"])
-        assert kinds == sorted(["agent", "graph", "terminal"]), kinds
+        assert kinds == sorted(["begin", "agent", "graph", "end"]), kinds
 
         status = await client.get(f"/v1/graphs/{graph_id}/status")
         assert status.status_code == 200, status.text
@@ -2881,13 +2922,14 @@ async def test_t0522_graph_with_empty_description_accepted(
             "id": graph_id,
             "description": "",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code == 201, (
@@ -2939,13 +2981,14 @@ async def test_t0523_graph_max_iterations_one_accepted_round_trip(
             "id": graph_id,
             "description": "T0523",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
             "max_iterations": 1,
         }
         resp = await client.post("/v1/graphs", json=body)
@@ -2998,17 +3041,18 @@ async def test_t0524_graph_node_jinja_syntax_error_in_template_accepted(
             "id": graph_id,
             "description": "T0524 broken jinja",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {
                     "kind": "agent", "id": "n1",
                     "agent_id": agent_id,
                     "input_template": broken_template,
                 },
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code == 201, (
@@ -3213,22 +3257,27 @@ async def test_t0545_graph_node_ids_reserved_style_names_round_trip(
     )
     assert ag.status_code == 201, ag.text
 
-    reserved_style = ["start", "main", "_internal"]
+    # Use "main" and "_internal" as agent node ids; use "begin_node" and
+    # "end_node" as begin/end since "begin"/"end" are now kind discriminators.
+    reserved_style = ["main", "_internal"]
     try:
-        nodes = [
-            {"kind": "agent", "id": rid, "agent_id": agent_id}
-            for rid in reserved_style
-        ] + [{"kind": "terminal", "id": "end"}]
-        edges = [
-            {"kind": "static", "from_node": rid, "to_node": "end"}
-            for rid in reserved_style
-        ]
+        nodes = (
+            [{"kind": "begin", "id": "begin_node"}]
+            + [{"kind": "agent", "id": rid, "agent_id": agent_id} for rid in reserved_style]
+            + [{"kind": "end", "id": "end_node"}]
+        )
+        edges = (
+            [{"kind": "static", "from_node": "begin_node", "to_node": reserved_style[0]}]
+            + [
+                {"kind": "static", "from_node": rid, "to_node": "end_node"}
+                for rid in reserved_style
+            ]
+        )
         body = {
             "id": graph_id,
             "description": "T0545 reserved-style node ids",
             "nodes": nodes,
             "edges": edges,
-            "entry_node_id": "start",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code == 201, (
@@ -3239,7 +3288,7 @@ async def test_t0545_graph_node_ids_reserved_style_names_round_trip(
         got = await client.get(f"/v1/graphs/{graph_id}")
         assert got.status_code == 200, got.text
         got_ids = sorted(n["id"] for n in got.json()["nodes"])
-        assert got_ids == sorted(reserved_style + ["end"]), got_ids
+        assert got_ids == sorted(["begin_node", "end_node"] + reserved_style), got_ids
 
         status = await client.get(f"/v1/graphs/{graph_id}/status")
         assert status.status_code == 200, status.text
@@ -3286,13 +3335,14 @@ async def test_t0546_graph_description_with_control_chars_round_trip(
             "id": graph_id,
             "description": weird_desc,
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         assert resp.status_code == 201, resp.text
@@ -3704,30 +3754,32 @@ async def test_t0568_graph_post_entry_node_id_missing_returns_422(
     assert ag.status_code == 201, ag.text
 
     try:
+        # T0568: entry_node_id is no longer a separate field — it was removed.
+        # The begin node now defines the entry point. Pin that a graph with
+        # a missing begin node (no node of kind "begin") is rejected with 422.
         body = {
             "id": graph_id,
             "description": "T0568",
             "nodes": [
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "missing-node-id",  # not in nodes
         }
         resp = await client.post("/v1/graphs", json=body)
         envelope = resp.json() if resp.content else {}
         assert envelope.get("type") != "/errors/internal", (
-            f"missing entry_node_id leaked /errors/internal: "
+            f"missing begin node leaked /errors/internal: "
             f"{resp.text}"
         )
         assert resp.status_code == 422, (
-            f"missing entry_node_id should be 422; got "
+            f"graph without begin node should be 422; got "
             f"{resp.status_code}: {resp.text}"
         )
-        # Detail mentions the bad node id
-        assert "missing-node-id" in resp.text, resp.text
+        # Detail mentions the topology error
+        assert envelope.get("type") == "/errors/validation-error", envelope
 
         got = await client.get(f"/v1/graphs/{graph_id}")
         assert got.status_code == 404, got.text
@@ -3765,20 +3817,23 @@ async def test_t0569_graph_post_with_100_nodes_round_trip(
 
     node_ids = [f"n{i:03d}" for i in range(100)]
     try:
-        nodes = [
-            {"kind": "agent", "id": nid, "agent_id": agent_id}
-            for nid in node_ids
-        ] + [{"kind": "terminal", "id": "end"}]
-        edges = [
-            {"kind": "static", "from_node": nid, "to_node": "end"}
-            for nid in node_ids
-        ]
+        nodes = (
+            [{"kind": "begin", "id": "start"}]
+            + [{"kind": "agent", "id": nid, "agent_id": agent_id} for nid in node_ids]
+            + [{"kind": "end", "id": "done"}]
+        )
+        edges = (
+            [{"kind": "static", "from_node": "start", "to_node": node_ids[0]}]
+            + [
+                {"kind": "static", "from_node": nid, "to_node": "done"}
+                for nid in node_ids
+            ]
+        )
         body = {
             "id": graph_id,
             "description": "T0569 100-node graph",
             "nodes": nodes,
             "edges": edges,
-            "entry_node_id": node_ids[0],
         }
         resp = await client.post(
             "/v1/graphs", json=body,
@@ -3792,7 +3847,7 @@ async def test_t0569_graph_post_with_100_nodes_round_trip(
         got = await client.get(f"/v1/graphs/{graph_id}")
         assert got.status_code == 200, got.text
         got_node_ids = sorted(n["id"] for n in got.json()["nodes"])
-        expected_ids = sorted(node_ids + ["end"])
+        expected_ids = sorted(node_ids + ["start", "done"])
         assert got_node_ids == expected_ids, (
             f"100-node graph node id set mismatch: "
             f"len={len(got_node_ids)}, expected={len(expected_ids)}"
@@ -3842,13 +3897,14 @@ async def test_t0570_mutual_subgraph_cycle_accepted_status_clean(
             "id": graph_a_id,
             "description": "T0570 graph A",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "graph", "id": "subB", "graph_id": graph_b_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "subB", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "subB"},
+                {"kind": "static", "from_node": "subB", "to_node": "done"},
             ],
-            "entry_node_id": "subB",
         }
         ra = await client.post("/v1/graphs", json=body_a)
         assert ra.status_code == 201, ra.text
@@ -3858,13 +3914,14 @@ async def test_t0570_mutual_subgraph_cycle_accepted_status_clean(
             "id": graph_b_id,
             "description": "T0570 graph B",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "graph", "id": "subA", "graph_id": graph_a_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "subA", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "subA"},
+                {"kind": "static", "from_node": "subA", "to_node": "done"},
             ],
-            "entry_node_id": "subA",
         }
         rb = await client.post("/v1/graphs", json=body_b)
         assert rb.status_code == 201, rb.text
@@ -4257,11 +4314,14 @@ async def test_t0613_graph_put_replace_nodes_status_reflects_v2(
                 "id": graph_id,
                 "description": "T0613 v1",
                 "nodes": [
-                    {"kind": "agent", "id": "n_v1",
-                     "agent_id": agent_v1},
+                    {"kind": "begin", "id": "start"},
+                    {"kind": "agent", "id": "n_v1", "agent_id": agent_v1},
+                    {"kind": "end", "id": "done"},
                 ],
-                "edges": [],
-                "entry_node_id": "n_v1",
+                "edges": [
+                    {"kind": "static", "from_node": "start", "to_node": "n_v1"},
+                    {"kind": "static", "from_node": "n_v1", "to_node": "done"},
+                ],
             },
         )
         assert v1.status_code == 201, v1.text
@@ -4278,11 +4338,14 @@ async def test_t0613_graph_put_replace_nodes_status_reflects_v2(
             "id": graph_id,
             "description": "T0613 v2 — replaced nodes",
             "nodes": [
-                {"kind": "agent", "id": "n_v2",
-                 "agent_id": missing_agent},
+                {"kind": "begin", "id": "start"},
+                {"kind": "agent", "id": "n_v2", "agent_id": missing_agent},
+                {"kind": "end", "id": "done"},
             ],
-            "edges": [],
-            "entry_node_id": "n_v2",
+            "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "n_v2"},
+                {"kind": "static", "from_node": "n_v2", "to_node": "done"},
+            ],
         }
         v2 = await client.put(f"/v1/graphs/{graph_id}", json=v2_body)
         assert v2.status_code == 200, v2.text
@@ -4350,6 +4413,7 @@ async def test_t0617_graph_node_with_both_agent_id_and_graph_id_clean(
             "id": graph_id,
             "description": "T0617 mixed-id node",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {
                     "kind": "agent",
                     "id": "n1",
@@ -4357,12 +4421,12 @@ async def test_t0617_graph_node_with_both_agent_id_and_graph_id_clean(
                     # The suspicious extra:
                     "graph_id": "should-not-be-here",
                 },
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         envelope = resp.json() if resp.content else {}
@@ -4378,7 +4442,10 @@ async def test_t0617_graph_node_with_both_agent_id_and_graph_id_clean(
             # the rogue graph_id field on the agent-kind node
             got = await client.get(f"/v1/graphs/{graph_id}")
             assert got.status_code == 200, got.text
-            n1 = got.json()["nodes"][0]
+            # Find the agent-kind node (index may vary with begin node present)
+            agent_nodes = [n for n in got.json()["nodes"] if n.get("kind") == "agent"]
+            assert len(agent_nodes) == 1, got.json()
+            n1 = agent_nodes[0]
             assert n1["kind"] == "agent", n1
             assert n1.get("graph_id") in (None, "should-not-be-here"), (
                 f"unexpected graph_id field treatment: {n1!r}"
@@ -4422,39 +4489,50 @@ async def test_t0618_graph_put_entry_node_id_missing_returns_422(
         "id": graph_id,
         "description": "T0618 original",
         "nodes": [
+            {"kind": "begin", "id": "start"},
             {"kind": "agent", "id": "n1", "agent_id": agent_id},
-            {"kind": "terminal", "id": "end"},
+            {"kind": "end", "id": "done"},
         ],
         "edges": [
-            {"kind": "static", "from_node": "n1", "to_node": "end"},
+            {"kind": "static", "from_node": "start", "to_node": "n1"},
+            {"kind": "static", "from_node": "n1", "to_node": "done"},
         ],
-        "entry_node_id": "n1",
     }
     create = await client.post("/v1/graphs", json=valid_body)
     assert create.status_code == 201, create.text
 
     try:
-        # PUT with entry_node_id pointing at a non-existent node
-        put_body = dict(valid_body)
-        put_body["description"] = "T0618 attempted-corrupt"
-        put_body["entry_node_id"] = "MISSING-node-id"
+        # PUT with a graph missing the required begin node — topology
+        # validator must reject with 422
+        put_body = {
+            "id": graph_id,
+            "description": "T0618 attempted-corrupt",
+            "nodes": [
+                {"kind": "agent", "id": "n1", "agent_id": agent_id},
+                {"kind": "end", "id": "done"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
+            ],
+        }
         resp = await client.put(f"/v1/graphs/{graph_id}", json=put_body)
         envelope = resp.json() if resp.content else {}
         assert envelope.get("type") != "/errors/internal", (
-            f"PUT bad entry_node_id leaked /errors/internal: {resp.text}"
+            f"PUT missing begin node leaked /errors/internal: {resp.text}"
         )
         assert resp.status_code == 422, (
-            f"PUT with missing entry_node_id should be 422; got "
+            f"PUT with missing begin node should be 422; got "
             f"{resp.status_code}: {resp.text}"
         )
-        # Detail mentions the bad node id
-        assert "MISSING-node-id" in resp.text, resp.text
+        assert envelope.get("type") == "/errors/validation-error", envelope
 
         # Defence: original row unchanged
         got = await client.get(f"/v1/graphs/{graph_id}")
         assert got.status_code == 200, got.text
         assert got.json()["description"] == "T0618 original", got.json()
-        assert got.json()["entry_node_id"] == "n1", got.json()
+        # begin node should still be present
+        node_kinds = [n["kind"] for n in got.json()["nodes"]]
+        assert "begin" in node_kinds, got.json()
     finally:
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
@@ -4495,14 +4573,15 @@ async def test_t0619_graph_duplicate_edges_round_trip(
         "id": graph_id,
         "description": "T0619 duplicate edges",
         "nodes": [
+            {"kind": "begin", "id": "start"},
             {"kind": "agent", "id": "n1", "agent_id": agent_id},
-            {"kind": "terminal", "id": "end"},
+            {"kind": "end", "id": "done"},
         ],
         "edges": [
-            {"kind": "static", "from_node": "n1", "to_node": "end"},
-            {"kind": "static", "from_node": "n1", "to_node": "end"},
+            {"kind": "static", "from_node": "start", "to_node": "n1"},
+            {"kind": "static", "from_node": "n1", "to_node": "done"},
+            {"kind": "static", "from_node": "n1", "to_node": "done"},
         ],
-        "entry_node_id": "n1",
     }
     try:
         resp = await client.post("/v1/graphs", json=body)
@@ -4519,10 +4598,15 @@ async def test_t0619_graph_duplicate_edges_round_trip(
             got = await client.get(f"/v1/graphs/{graph_id}")
             assert got.status_code == 200, got.text
             edges = got.json()["edges"]
-            # Pin: no silent dedup — both edges round-trip
-            assert len(edges) == 2, (
+            # Pin: no silent dedup — the two duplicate n1->done edges
+            # both round-trip (plus the start->n1 edge = 3 total)
+            dup_edges = [
+                e for e in edges
+                if e.get("from_node") == "n1" and e.get("to_node") == "done"
+            ]
+            assert len(dup_edges) == 2, (
                 f"duplicate edges silently deduped at GET: "
-                f"got {len(edges)} edges, expected 2: {edges!r}"
+                f"got {len(dup_edges)} n1->done edges, expected 2: {edges!r}"
             )
             # /status walks the graph cleanly
             status = await client.get(f"/v1/graphs/{graph_id}/status")
@@ -4566,11 +4650,13 @@ async def test_t0620_graph_node_empty_id_returns_422(
             "id": graph_id,
             "description": "T0620 empty node id",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
-            "edges": [],
-            "entry_node_id": "end",
+            "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "done"},
+            ],
         }
         resp = await client.post("/v1/graphs", json=body)
         envelope = resp.json() if resp.content else {}
@@ -4620,32 +4706,38 @@ async def test_t0621_graph_zero_edges_multi_node_accepted_clean(
     )
     assert ag.status_code == 201, ag.text
     try:
+        # T0621: a graph with begin->end plus unreachable agent nodes.
+        # The validator requires begin+end but doesn't check that all
+        # nodes are reachable — unreachable agent nodes are legal.
         body = {
             "id": graph_id,
-            "description": "T0621 zero-edge multi-node",
+            "description": "T0621 unreachable agent nodes",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
                 {"kind": "agent", "id": "n2", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
-            "edges": [],  # the unusual shape
-            "entry_node_id": "n1",
+            "edges": [
+                {"kind": "static", "from_node": "start", "to_node": "done"},
+            ],
         }
         resp = await client.post("/v1/graphs", json=body)
         envelope = resp.json() if resp.content else {}
         assert envelope.get("type") != "/errors/internal", (
-            f"zero-edge graph leaked /errors/internal: {resp.text}"
+            f"graph with unreachable nodes leaked /errors/internal: {resp.text}"
         )
-        # Acceptable: 201 (legal) or clean 4xx (if validator added)
+        # Acceptable: 201 (legal — validator doesn't require all nodes reachable)
+        # or clean 4xx (if a strict reachability validator is added)
         assert resp.status_code in (201, 400, 422), (
-            f"zero-edge graph unexpected status: "
+            f"graph with unreachable nodes unexpected status: "
             f"{resp.status_code}: {resp.text}"
         )
         if resp.status_code == 201:
             got = await client.get(f"/v1/graphs/{graph_id}")
             assert got.status_code == 200, got.text
-            assert got.json()["edges"] == [], got.json()
-            assert len(got.json()["nodes"]) == 3, got.json()
+            assert len(got.json()["edges"]) == 1, got.json()
+            assert len(got.json()["nodes"]) == 4, got.json()
 
             status = await client.get(f"/v1/graphs/{graph_id}/status")
             assert status.status_code == 200, status.text
@@ -4692,13 +4784,14 @@ async def test_t0622_graph_max_iterations_null_accepted(
             "id": graph_id,
             "description": "T0622 max_iterations=null",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
             "max_iterations": None,
         }
         resp = await client.post("/v1/graphs", json=body)
@@ -4763,15 +4856,16 @@ async def test_t0623_graph_concurrent_put_replace_clean_envelopes(
                 "id": graph_id,
                 "description": f"T0623 racer {tag}",
                 "nodes": [
-                    {"kind": "agent", "id": f"n_{tag}",
-                     "agent_id": agent_id},
-                    {"kind": "terminal", "id": "end"},
+                    {"kind": "begin", "id": "start"},
+                    {"kind": "agent", "id": f"n_{tag}", "agent_id": agent_id},
+                    {"kind": "end", "id": "done"},
                 ],
                 "edges": [
+                    {"kind": "static", "from_node": "start",
+                     "to_node": f"n_{tag}"},
                     {"kind": "static", "from_node": f"n_{tag}",
-                     "to_node": "end"},
+                     "to_node": "done"},
                 ],
-                "entry_node_id": f"n_{tag}",
             }
 
         tasks = [
@@ -4993,11 +5087,14 @@ async def test_t0637_graph_status_3_level_subgraph_chain_clean_envelope(
                 "id": graph_c,
                 "description": "T0637 leaf graph (broken)",
                 "nodes": [
-                    {"kind": "agent", "id": "n_c",
-                     "agent_id": missing_agent},
+                    {"kind": "begin", "id": "start"},
+                    {"kind": "agent", "id": "n_c", "agent_id": missing_agent},
+                    {"kind": "end", "id": "done"},
                 ],
-                "edges": [],
-                "entry_node_id": "n_c",
+                "edges": [
+                    {"kind": "static", "from_node": "start", "to_node": "n_c"},
+                    {"kind": "static", "from_node": "n_c", "to_node": "done"},
+                ],
             },
         )
         assert gc.status_code == 201, gc.text
@@ -5009,11 +5106,14 @@ async def test_t0637_graph_status_3_level_subgraph_chain_clean_envelope(
                 "id": graph_b,
                 "description": "T0637 middle graph",
                 "nodes": [
-                    {"kind": "graph", "id": "n_b",
-                     "graph_id": graph_c},
+                    {"kind": "begin", "id": "start"},
+                    {"kind": "graph", "id": "n_b", "graph_id": graph_c},
+                    {"kind": "end", "id": "done"},
                 ],
-                "edges": [],
-                "entry_node_id": "n_b",
+                "edges": [
+                    {"kind": "static", "from_node": "start", "to_node": "n_b"},
+                    {"kind": "static", "from_node": "n_b", "to_node": "done"},
+                ],
             },
         )
         assert gb.status_code == 201, gb.text
@@ -5025,11 +5125,14 @@ async def test_t0637_graph_status_3_level_subgraph_chain_clean_envelope(
                 "id": graph_a,
                 "description": "T0637 root graph",
                 "nodes": [
-                    {"kind": "graph", "id": "n_a",
-                     "graph_id": graph_b},
+                    {"kind": "begin", "id": "start"},
+                    {"kind": "graph", "id": "n_a", "graph_id": graph_b},
+                    {"kind": "end", "id": "done"},
                 ],
-                "edges": [],
-                "entry_node_id": "n_a",
+                "edges": [
+                    {"kind": "static", "from_node": "start", "to_node": "n_a"},
+                    {"kind": "static", "from_node": "n_a", "to_node": "done"},
+                ],
             },
         )
         assert ga.status_code == 201, ga.text
@@ -5402,14 +5505,16 @@ async def test_t0640_graph_put_mid_flight_on_running_session(
             "id": graph_id,
             "description": "T0640 mutated mid-flight",
             "nodes": [
+                {"kind": "begin", "id": "start_new"},
                 {"kind": "agent", "id": "n_new", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end_new"},
+                {"kind": "end", "id": "end_new"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start_new",
+                 "to_node": "n_new"},
                 {"kind": "static", "from_node": "n_new",
                  "to_node": "end_new"},
             ],
-            "entry_node_id": "n_new",
         }
         put = await client.put(f"/v1/graphs/{graph_id}", json=put_body)
         put_env = put.json() if put.content else {}
@@ -5477,28 +5582,25 @@ async def test_t0641_graph_large_dag_200_nodes_round_trips(
     assert ag.status_code == 201, ag.text
 
     try:
-        # 199 agent nodes + 1 terminal node
-        nodes = [
+        # 198 agent nodes + 1 begin + 1 end = 200 nodes, linear chain
+        nodes = [{"kind": "begin", "id": "n000"}]
+        nodes += [
             {"kind": "agent", "id": f"n{i:03d}", "agent_id": agent_id}
-            for i in range(199)
+            for i in range(1, 199)
         ]
-        nodes.append({"kind": "terminal", "id": "end"})
-        # Linear chain edges
+        nodes.append({"kind": "end", "id": "n199"})
+        # Linear chain: n000->n001->...->n199
         edges = [
             {"kind": "static", "from_node": f"n{i:03d}",
              "to_node": f"n{i + 1:03d}"}
-            for i in range(198)
+            for i in range(199)
         ]
-        edges.append(
-            {"kind": "static", "from_node": "n198", "to_node": "end"},
-        )
 
         body = {
             "id": graph_id,
             "description": "T0641 large DAG (200 nodes, 199 edges)",
             "nodes": nodes,
             "edges": edges,
-            "entry_node_id": "n000",
         }
         resp = await client.post("/v1/graphs", json=body)
         envelope = resp.json() if resp.content else {}
@@ -5519,7 +5621,10 @@ async def test_t0641_graph_large_dag_200_nodes_round_trips(
         assert len(got.json()["edges"]) == 199, (
             f"edge count diverged: {len(got.json()['edges'])}"
         )
-        assert got.json()["entry_node_id"] == "n000", got.json()
+        # Verify begin node exists at n000
+        begin_nodes = [n for n in got.json()["nodes"] if n["kind"] == "begin"]
+        assert len(begin_nodes) == 1, got.json()
+        assert begin_nodes[0]["id"] == "n000", got.json()
 
         status = await client.get(f"/v1/graphs/{graph_id}/status")
         assert status.status_code == 200, status.text
@@ -5563,14 +5668,15 @@ async def test_t0642_graph_duplicate_node_ids_clean_envelope(
             "id": graph_id,
             "description": "T0642 duplicate node ids",
             "nodes": [
+                {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},  # dup
-                {"kind": "terminal", "id": "end"},
+                {"kind": "end", "id": "done"},
             ],
             "edges": [
-                {"kind": "static", "from_node": "n1", "to_node": "end"},
+                {"kind": "static", "from_node": "start", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "done"},
             ],
-            "entry_node_id": "n1",
         }
         resp = await client.post("/v1/graphs", json=body)
         envelope = resp.json() if resp.content else {}
@@ -5768,18 +5874,19 @@ async def test_t0673_graph_put_entry_swap_mid_flight_session_clean_fatal(
     )
     assert tpl.status_code == 201, tpl.text
 
-    # Initial graph: entry_node_id = "n1"
+    # Initial graph: begin -> n1 -> end
     v1_body = {
         "id": graph_id,
         "description": "T0673 v1",
         "nodes": [
+            {"kind": "begin", "id": "start"},
             {"kind": "agent", "id": "n1", "agent_id": agent_id},
-            {"kind": "terminal", "id": "end"},
+            {"kind": "end", "id": "done"},
         ],
         "edges": [
-            {"kind": "static", "from_node": "n1", "to_node": "end"},
+            {"kind": "static", "from_node": "start", "to_node": "n1"},
+            {"kind": "static", "from_node": "n1", "to_node": "done"},
         ],
-        "entry_node_id": "n1",
     }
     gr = await client.post("/v1/graphs", json=v1_body)
     assert gr.status_code == 201, gr.text
@@ -5803,19 +5910,21 @@ async def test_t0673_graph_put_entry_swap_mid_flight_session_clean_fatal(
         assert sess.status_code == 201, sess.text
         session_id = sess.json()["id"]
 
-        # PUT graph with NEW entry_node_id and disjoint nodes
+        # PUT graph with disjoint nodes (new begin -> n_new -> end_new)
         v2_body = {
             "id": graph_id,
             "description": "T0673 v2 — new entry",
             "nodes": [
+                {"kind": "begin", "id": "start_new"},
                 {"kind": "agent", "id": "n_new", "agent_id": agent_id},
-                {"kind": "terminal", "id": "end_new"},
+                {"kind": "end", "id": "end_new"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "start_new",
+                 "to_node": "n_new"},
                 {"kind": "static", "from_node": "n_new",
                  "to_node": "end_new"},
             ],
-            "entry_node_id": "n_new",
         }
         put = await client.put(f"/v1/graphs/{graph_id}", json=v2_body)
         put_env = put.json() if put.content else {}
