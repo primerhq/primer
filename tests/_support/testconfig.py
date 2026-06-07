@@ -124,21 +124,20 @@ def requires(*deps: str):
 
 
 def _render_server_config() -> str:
-    """Emit the storage + vector_store AppConfig fragment as YAML."""
-    cfg = load_config()
-    st = cfg.get("server", {}).get("storage", {})
-    vs = cfg.get("server", {}).get("vector_store", {})
-    out: dict[str, Any] = {}
-    if st.get("backend") == "postgres" and st.get("postgres_dsn"):
-        out["storage"] = {"backend": "postgres", "dsn": st["postgres_dsn"]}
-    if vs.get("backend", "lance") in ("pgvector", "pgvectorscale"):
-        out["vector_store"] = {
-            "backend": vs["backend"],
-            "dsn": vs.get("postgres_dsn", ""),
-        }
-    if not out:
-        return ""  # sqlite + lance: nothing to override, append is a no-op
-    return yaml.safe_dump(out, sort_keys=False)
+    """Server storage/vector_store override appended to the bringup config.
+
+    Intentionally a no-op. ``scripts/e2e/bringup.sh`` provisions Postgres +
+    pgvector itself via ``docker-compose`` (image pgvector/pgvector) and
+    renders the matching ``db:`` + ``vector_store:`` AppConfig blocks
+    directly, so there is nothing to append here. The testconfig
+    ``server.storage`` / ``server.vector_store`` blocks exist only to
+    DECLARE the postgres/pgvector capabilities to :class:`Caps` (read from
+    the raw config), not to re-render the server. Appending anything here
+    would duplicate bringup's blocks and use the stale ``storage:`` /
+    ``backend``+``dsn`` schema, which the current AppConfig (``db:`` +
+    provider/config) rejects.
+    """
+    return ""
 
 
 if __name__ == "__main__":
