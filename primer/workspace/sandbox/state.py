@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timezone
 
 from primer.int.sandbox import Sandbox
+from primer.model.except_ import ValidationError
 from primer.model.workspace import CommitInfo, Op
 
 
@@ -101,6 +102,21 @@ class SandboxStateRepo:
             raise RuntimeError(
                 f"git initial commit failed (rc={r.exit_code}): {r.stderr}"
             )
+
+    async def create_session(self, session_info: object, agent_binding: object) -> None:
+        """Interim guard: session lifecycle is not yet supported on the
+        sandbox/container/kubernetes backend.
+
+        Full StateRepo parity (git-backed sessions on container/k8s) is a
+        planned future feature. Until then, calling this method raises a
+        typed ValidationError so the API layer returns HTTP 422 instead of
+        propagating an AttributeError as HTTP 500.
+        """
+        raise ValidationError(
+            "Sessions are not yet supported on the sandbox/container/kubernetes "
+            "workspace backend; graph and stateful agent sessions currently require "
+            "a local workspace."
+        )
 
     async def commit_turn(
         self,
