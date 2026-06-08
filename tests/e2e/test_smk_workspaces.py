@@ -673,6 +673,138 @@ async def test_kubernetes_backend(authed_client, unique_suffix):
 
 @smk("SMK-WSP-13")
 @requires("workspace:kubernetes")
+async def test_kubernetes_backend_graph_session(authed_client, unique_suffix):
+    """Graph-bound session on a KUBERNETES workspace runs to a clean terminal.
+
+    The k8s lane of StateRepo parity: proves the in-cluster platform +
+    runtime image speak the 1.1 state protocol end to end. The session is
+    created (201, not 422/500), reaches ``ended``, and its node state is
+    committed to the pod's ``.state/graphs/<session_id>`` git tree.
+
+    Uses a ``begin -> end`` graph with NO agent node, so no LLM call is made.
+    That is deliberate: the in-cluster platform cannot reach the host-side
+    mock LLM, and the proof here is purely that ``create_session`` plus the
+    per-node commits roundtrip through the real pod over the runtime
+    WebSocket. The runtime image must speak protocol >=1.1 (override via
+    ``PRIMER_K8S_RUNTIME_IMAGE``; defaults to the cluster-local 1.1 tag).
+    """
+    import os
+
+    namespace = os.environ.get("PRIMER_K8S_NAMESPACE", "primer-workspaces")
+    runtime_image = os.environ.get(
+        "PRIMER_K8S_RUNTIME_IMAGE",
+        "127.0.0.1:30500/primer/workspace-runtime:1.1",
+    )
+    wp = f"wpkg-{unique_suffix}"
+    tpl = f"tplkg-{unique_suffix}"
+    wid: str | None = None
+
+    rp = await authed_client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp,
+            "provider": "kubernetes",
+            "config": {
+                "kind": "kubernetes",
+                "connection": {"kind": "in_cluster"},
+                "namespace": namespace,
+                "reachability": {"kind": "in_cluster"},
+            },
+        },
+    )
+    assert rp.status_code in (200, 201), rp.text
+    rt = await authed_client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl,
+            "description": "smk k8s graph session",
+            "provider_id": wp,
+            "backend": {
+                "kind": "kubernetes",
+                "image": runtime_image,
+                "entrypoint": ["python", "-m", "primer_runtime.server"],
+                "pvc_size": "1Gi",
+            },
+        },
+    )
+    assert rt.status_code in (200, 201), rt.text
+
+    gid = await make_graph(
+        authed_client,
+        suffix=f"kgs-{unique_suffix}",
+        nodes=[
+            {"kind": "begin", "id": "start"},
+            {"kind": "end", "id": "done", "output_template": "ok"},
+        ],
+        edges=[
+            {"kind": "static", "from_node": "start", "to_node": "done"},
+        ],
+    )
+
+    try:
+        rw = await authed_client.post("/v1/workspaces", json={"template_id": tpl})
+        assert rw.status_code in (200, 201), rw.text
+        wid = rw.json()["id"]
+
+        # Wait for the pod to be running (real image pull + StatefulSet boot).
+        phase = None
+        for _ in range(120):
+            got = await authed_client.get(f"/v1/workspaces/{wid}")
+            assert got.status_code == 200, got.text
+            phase = got.json().get("phase")
+            if phase == "running":
+                break
+            assert phase not in ("failed", "error"), got.text
+            await asyncio.sleep(1.0)
+        assert phase == "running", f"workspace never reached running: phase={phase!r}"
+
+        r = await authed_client.post(
+            f"/v1/workspaces/{wid}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": gid},
+                "auto_start": True,
+            },
+        )
+        # The key proof: must be 201, not 422/500.
+        assert r.status_code == 201, (
+            f"k8s graph session create should be 201; got {r.status_code}: {r.text}"
+        )
+        sid = r.json()["id"]
+
+        final = await wait_terminal(authed_client, sid, timeout_s=120.0, interval_s=1.0)
+        assert final.get("status") == "ended", (
+            f"k8s graph session did not reach ended: {final}"
+        )
+        last_err = final.get("last_error")
+        if last_err:
+            assert "/errors/internal" not in str(last_err.get("type", "")), (
+                f"k8s graph session has /errors/internal: {last_err}"
+            )
+
+        # Verify the graph node state was committed inside the k8s pod.
+        diag = await authed_client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": "ls .state/graphs", "timeout_seconds": 30},
+        )
+        assert diag.status_code in (200, 201), diag.text
+        assert diag.json()["exit_code"] == 0, diag.json()
+        assert sid in diag.json()["stdout"], (
+            f"session state dir {sid!r} missing from pod .state/graphs: "
+            f"{diag.json()['stdout']!r}"
+        )
+    finally:
+        if wid is not None:
+            d = await authed_client.delete(f"/v1/workspaces/{wid}")
+            assert d.status_code in (204, 404), d.text
+            gone = await authed_client.get(f"/v1/workspaces/{wid}")
+            assert gone.status_code == 404, gone.text
+        await authed_client.delete(f"/v1/workspace_templates/{tpl}")
+        await authed_client.delete(f"/v1/workspace_providers/{wp}")
+        await authed_client.delete(f"/v1/graphs/{gid}")
+
+
+@smk("SMK-WSP-13")
+@requires("workspace:kubernetes")
 async def test_kubernetes_backend_gateway(authed_client, unique_suffix):
     """Approach A: a host-side platform reaches in-cluster runtime pods via a
     Gateway API HTTPRoute the backend auto-creates.
