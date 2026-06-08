@@ -542,6 +542,25 @@ class Message(BaseModel):
 # ---- Tool definitions and choice -------------------------------------------
 
 
+class ToolExample(BaseModel):
+    """One worked example of calling a tool, validated against its args_schema.
+
+    Rendered into ``Tool.description`` for the LLM and kept structured so a
+    conformance test can re-validate ``args`` against the tool's schema.
+    """
+
+    args: dict[str, Any] = Field(
+        ..., description="A valid argument object for this tool."
+    )
+    returns: str | None = Field(
+        default=None,
+        description="Short illustrative outcome, e.g. '201 plus the stored row'.",
+    )
+    note: str | None = Field(
+        default=None, description="Optional one-line caveat for this example."
+    )
+
+
 class Tool(Describeable):
     """A function tool the model may invoke during a chat turn.
 
@@ -598,6 +617,15 @@ class Tool(Describeable):
         validation_alias="schema",
         serialization_alias="schema",
         description="JSON Schema describing the tool's argument object.",
+    )
+    examples: list[ToolExample] = Field(
+        default_factory=list,
+        exclude=True,
+        description=(
+            "Structured worked examples, rendered into `description` and "
+            "validated against `args_schema`. In-memory metadata only; "
+            "excluded from serialization (not sent over the wire)."
+        ),
     )
 
 
