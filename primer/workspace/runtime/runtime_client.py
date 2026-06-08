@@ -224,6 +224,58 @@ class RuntimeClient:
     async def delete(self, path: str) -> None:
         await self._send_request(OpName.DELETE, {"path": path})
 
+    async def state_commit(
+        self,
+        *,
+        files: dict[str, bytes],
+        deletes: list[str],
+        message: str,
+        allow_empty: bool = False,
+    ) -> str:
+        """Commit a set of file changes to the workspace state repo.
+
+        Returns the 40-hex SHA of the new commit.
+        """
+        args: dict[str, Any] = {
+            "files": {p: base64.b64encode(b).decode() for p, b in files.items()},
+            "deletes": list(deletes),
+            "message": message,
+            "allow_empty": allow_empty,
+        }
+        result = await self._send_request(OpName.STATE_COMMIT, args)
+        return result["sha"]
+
+    async def state_read(self, paths: list[str]) -> dict[str, bytes | None]:
+        """Read one or more files from the workspace state repo HEAD.
+
+        Returns a mapping of path -> bytes (or None if the path does not exist).
+        """
+        result = await self._send_request(OpName.STATE_READ, {"paths": list(paths)})
+        out: dict[str, bytes | None] = {}
+        for p, v in result["files"].items():
+            out[p] = base64.b64decode(v) if v is not None else None
+        return out
+
+    async def state_history(
+        self,
+        *,
+        session_id: str | None = None,
+        agent_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return recent commits from the workspace state repo.
+
+        Results can be filtered by session_id or agent_id (matched via git log
+        --grep on the commit trailer).
+        """
+        args: dict[str, Any] = {
+            "limit": limit,
+            "session_id": session_id,
+            "agent_id": agent_id,
+        }
+        result = await self._send_request(OpName.STATE_HISTORY, args)
+        return result["commits"]
+
     async def archive(self, paths: list[str]) -> AsyncIterator[bytes]:  # type: ignore[override]
         """Stream a tar archive.  Yields raw binary chunks."""
         req_id = self._alloc_req_id()
