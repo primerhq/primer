@@ -258,9 +258,9 @@ class TestCatalog:
 
     @pytest.mark.asyncio
     async def test_each_tool_has_non_empty_description(self, system_toolset) -> None:
+        from tests.toolset._desc_conformance import assert_tool_conforms
         async for t in system_toolset.list_tools():
-            assert t.description, f"empty description on {t.id}"
-            assert len(t.description) > 30, f"too-thin description on {t.id}"
+            assert_tool_conforms(t)
             assert isinstance(t.args_schema, dict)
 
     @pytest.mark.asyncio
@@ -723,7 +723,7 @@ class TestProviderRegistrySystemHandling:
 
 
 # ===========================================================================
-# Per-entity smoke — every CRUD set actually dispatches to storage
+# Per-entity smoke - every CRUD set actually dispatches to storage
 # (covers the closures generated for embedding/cross_encoder/toolset/agent/
 # graph/collection/document/vector_store_config/agent_thread/graph_thread)
 # ===========================================================================
