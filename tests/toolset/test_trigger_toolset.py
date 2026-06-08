@@ -390,3 +390,13 @@ class TestToolExecutionManagerIntegration:
         assert "trigger__subscribe_to_trigger" in scoped_ids
         # All 12 tools should be present.
         assert len(scoped_ids) == 12
+
+
+@pytest.mark.asyncio
+async def test_trigger_tools_conform(toolset) -> None:
+    from tests.toolset._desc_conformance import assert_tool_conforms
+    count = 0
+    async for tool in toolset.list_tools():
+        assert_tool_conforms(tool)
+        count += 1
+    assert count == 12

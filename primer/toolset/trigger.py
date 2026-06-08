@@ -40,7 +40,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
-from primer.model.chat import Tool, ToolCallResult
+from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.trigger import (
     ParkedSessionSubConfig,
     Subscription,
@@ -49,6 +49,7 @@ from primer.model.trigger import (
     TriggerConfig,
 )
 from primer.model.yield_ import ToolContext, Yielded
+from primer.toolset._describe import make_tool
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.service import (
@@ -194,142 +195,254 @@ class _SubscribeArgs(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-TOOL_LIST = Tool(
+TOOL_LIST = make_tool(
     id="list",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "List triggers. Optional filters: ``kind`` (delayed / scheduled) "
-        "and ``enabled`` (true / false). Returns an array of Trigger "
-        "objects."
+    purpose="List triggers as an array of Trigger objects.",
+    when=(
+        "Use when you need to enumerate triggers, optionally filtered by "
+        "``kind`` (delayed / scheduled) or ``enabled`` (true / false); not "
+        "for one known id (use ``get``)."
     ),
     args_schema=_ListArgs.model_json_schema(),
+    examples=[
+        ToolExample(args={}, returns="all triggers"),
+        ToolExample(
+            args={"kind": "scheduled", "enabled": True},
+            returns="enabled cron triggers",
+        ),
+    ],
 )
 
-TOOL_GET = Tool(
+TOOL_GET = make_tool(
     id="get",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "Get one trigger by id. Returns the full Trigger row or "
-        "``is_error=true type=trigger_not_found``."
+    purpose="Get one trigger by id, returning the full Trigger row.",
+    when=(
+        "Use when you already know the trigger id and want its full row; "
+        "to enumerate or filter many triggers use ``list`` instead. "
+        "A missing id returns ``type=trigger_not_found``."
     ),
     args_schema=_IdArgs.model_json_schema(),
+    examples=[
+        ToolExample(args={"id": "trg-1"}, returns="the Trigger row"),
+    ],
 )
 
-TOOL_CREATE = Tool(
+TOOL_CREATE = make_tool(
     id="create",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "Create a new trigger. ``config`` is the discriminated union "
-        "(delayed: ``{kind:'delayed', fire_at}``; scheduled: "
-        "``{kind:'scheduled', cron, timezone?, catchup?}``). Returns the "
-        "created Trigger. Conflicts on duplicate slug surface as "
-        "``type=trigger_slug_conflict``; bad cron / timezone surface as "
-        "``type=cron_invalid`` / ``type=timezone_invalid``."
+    purpose="Create a new trigger and return the created Trigger.",
+    when=(
+        "Use when registering a new trigger. ``config`` is the "
+        "discriminated union (delayed: ``{kind:'delayed', fire_at}``; "
+        "scheduled: ``{kind:'scheduled', cron, timezone?, catchup?}``). "
+        "Duplicate slug surfaces as ``type=trigger_slug_conflict``; bad "
+        "cron / timezone surface as ``type=cron_invalid`` / "
+        "``type=timezone_invalid``."
     ),
     args_schema=_CreateArgs.model_json_schema(),
+    examples=[
+        ToolExample(
+            args={
+                "slug": "nightly",
+                "name": "Nightly digest",
+                "config": {"kind": "scheduled", "cron": "0 2 * * *"},
+            },
+            returns="the created Trigger",
+        ),
+    ],
 )
 
-TOOL_UPDATE = Tool(
+TOOL_UPDATE = make_tool(
     id="update",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "Partial update of a trigger. Changing ``config.kind`` is "
-        "rejected with ``type=trigger_kind_immutable`` — operators "
-        "delete + recreate to switch kinds. Returns the updated Trigger."
+    purpose="Partially update a trigger and return the updated Trigger.",
+    when=(
+        "Use when changing a trigger's name / description / enabled / "
+        "config. Only supplied fields change. Changing ``config.kind`` is "
+        "rejected with ``type=trigger_kind_immutable`` (delete + recreate "
+        "to switch kinds). For subscription fields use "
+        "``update_subscription`` instead."
     ),
     args_schema=_UpdateArgs.model_json_schema(),
+    examples=[
+        ToolExample(
+            args={"id": "trg-1", "enabled": False},
+            returns="the updated Trigger",
+            note="disable without deleting",
+        ),
+    ],
 )
 
-TOOL_DELETE = Tool(
+TOOL_DELETE = make_tool(
     id="delete",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "Delete a trigger and cascade-delete its subscriptions. Returns "
-        "``{ok: true}`` on success or ``type=trigger_not_found``."
+    purpose="Delete a trigger and cascade-delete its subscriptions.",
+    when=(
+        "Use when permanently removing a trigger; this cascade-deletes all "
+        "its subscriptions. To remove a single subscription only, use "
+        "``delete_subscription``. Returns ``{ok: true}`` or "
+        "``type=trigger_not_found``."
     ),
     args_schema=_IdArgs.model_json_schema(),
+    examples=[
+        ToolExample(args={"id": "trg-1"}, returns="{ok: true}"),
+    ],
 )
 
-TOOL_FIRE_NOW = Tool(
+TOOL_FIRE_NOW = make_tool(
     id="fire_now",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "Synchronously fire a trigger (operator/testing aid). Bypasses "
-        "the scheduler. Returns ``{fire_id, results: [...]}`` where each "
-        "result mirrors the per-subscription dispatch envelope."
+    purpose="Synchronously fire a trigger now (operator/testing aid).",
+    when=(
+        "Use when you need to fire a trigger immediately, bypassing the "
+        "scheduler, e.g. for testing dispatch. Returns ``{fire_id, "
+        "results: [...]}`` where each result mirrors the per-subscription "
+        "dispatch envelope."
     ),
     args_schema=_IdArgs.model_json_schema(),
+    examples=[
+        ToolExample(
+            args={"id": "trg-1"},
+            returns="{fire_id, results: [...]}",
+            note="bypasses the scheduler",
+        ),
+    ],
 )
 
-TOOL_LIST_SUBS = Tool(
+TOOL_LIST_SUBS = make_tool(
     id="list_subscriptions",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "List subscriptions bound to a trigger. Returns an array of "
-        "Subscription rows. ``type=trigger_not_found`` if the parent "
-        "trigger doesn't exist."
+    purpose="List the subscriptions bound to one trigger.",
+    when=(
+        "Use when you need all subscriptions for a given ``trigger_id``; "
+        "for one known subscription use ``get_subscription``. Returns an "
+        "array of Subscription rows, or ``type=trigger_not_found`` if the "
+        "parent trigger doesn't exist."
     ),
     args_schema=_SubListArgs.model_json_schema(),
+    examples=[
+        ToolExample(
+            args={"trigger_id": "trg-1"},
+            returns="subscriptions of trg-1",
+        ),
+    ],
 )
 
-TOOL_GET_SUB = Tool(
+TOOL_GET_SUB = make_tool(
     id="get_subscription",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "Get one subscription scoped to its trigger. Returns the full "
-        "Subscription row or ``type=subscription_not_found``."
+    purpose="Get one subscription scoped to its trigger.",
+    when=(
+        "Use when you know both the ``trigger_id`` and the "
+        "``subscription_id`` and want that subscription's full row; to "
+        "enumerate all of a trigger's subscriptions use "
+        "``list_subscriptions``. Missing returns "
+        "``type=subscription_not_found``."
     ),
     args_schema=_SubIdArgs.model_json_schema(),
+    examples=[
+        ToolExample(
+            args={"trigger_id": "trg-1", "subscription_id": "sub-1"},
+            returns="the Subscription row",
+        ),
+    ],
 )
 
-TOOL_CREATE_SUB = Tool(
+TOOL_CREATE_SUB = make_tool(
     id="create_subscription",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "Create a subscription bound to a trigger. ``config`` is the "
+    purpose="Create a subscription bound to a trigger.",
+    when=(
+        "Use when attaching a delivery to a trigger. ``config`` is the "
         "subscription-kind discriminated union "
-        "(chat_message / agent_fresh_session / graph_fresh_session). "
-        "Subs of kind ``parked_session`` are rejected with "
-        "``type=parked_session_only_from_yield`` — only the "
-        "``subscribe_to_trigger`` yielding tool may create those."
+        "(chat_message / agent_fresh_session / graph_fresh_session). Subs "
+        "of kind ``parked_session`` are rejected with "
+        "``type=parked_session_only_from_yield`` (only the "
+        "``subscribe_to_trigger`` yielding tool may create those)."
     ),
     args_schema=_SubCreateArgs.model_json_schema(),
+    examples=[
+        ToolExample(
+            args={
+                "trigger_id": "trg-1",
+                "config": {
+                    "kind": "agent_fresh_session",
+                    "workspace_id": "ws-1",
+                    "agent_id": "code-reviewer",
+                },
+            },
+            returns="the created Subscription",
+        ),
+    ],
 )
 
-TOOL_UPDATE_SUB = Tool(
+TOOL_UPDATE_SUB = make_tool(
     id="update_subscription",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "Partial update of a subscription. Only the fields supplied are "
-        "modified. Returns the updated Subscription or "
+    purpose="Partially update a subscription and return it.",
+    when=(
+        "Use when changing a subscription's payload_template / parallelism "
+        "/ enabled / description; only supplied fields are modified. To "
+        "change trigger-level fields use ``update``. Missing returns "
         "``type=subscription_not_found``."
     ),
     args_schema=_SubUpdateArgs.model_json_schema(),
+    examples=[
+        ToolExample(
+            args={
+                "trigger_id": "trg-1",
+                "subscription_id": "sub-1",
+                "enabled": False,
+            },
+            returns="the updated Subscription",
+        ),
+    ],
 )
 
-TOOL_DELETE_SUB = Tool(
+TOOL_DELETE_SUB = make_tool(
     id="delete_subscription",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "Delete a subscription by id (scoped to its trigger). Returns "
-        "``{ok: true}`` on success or ``type=subscription_not_found``."
+    purpose="Delete one subscription, scoped to its trigger.",
+    when=(
+        "Use when removing a single subscription while keeping the trigger "
+        "and its other subscriptions; to remove the whole trigger use "
+        "``delete``. Returns ``{ok: true}`` or "
+        "``type=subscription_not_found``."
     ),
     args_schema=_SubIdArgs.model_json_schema(),
+    examples=[
+        ToolExample(
+            args={"trigger_id": "trg-1", "subscription_id": "sub-1"},
+            returns="{ok: true}",
+        ),
+    ],
 )
 
-TOOL_SUBSCRIBE = Tool(
+TOOL_SUBSCRIBE = make_tool(
     id="subscribe_to_trigger",
     toolset_id=TRIGGER_TOOLSET_ID,
-    description=(
-        "Yielding tool. Park the calling session until ``trigger_id`` "
-        "next fires. Resumes with the fire context dict as the tool "
-        "result. Validates the trigger exists and is enabled — "
+    purpose=(
+        "Park the calling session until ``trigger_id`` next fires, then "
+        "resume with the fire context as the tool result."
+    ),
+    when=(
+        "Use when the current session should wait for a trigger to fire "
+        "before continuing. Validates the trigger exists and is enabled, "
         "otherwise returns ``type=trigger_not_found_or_disabled``. "
-        "Persists a one-shot ``parked_session`` Subscription bound to "
-        "the caller's (session_id, tool_call_id); the matching "
-        "dispatcher deletes the row after delivering the resume payload."
+        "Persists a one-shot ``parked_session`` Subscription bound to the "
+        "caller's (session_id, tool_call_id); the matching dispatcher "
+        "deletes the row after delivering the resume payload."
     ),
     args_schema=_SubscribeArgs.model_json_schema(),
+    examples=[
+        ToolExample(
+            args={"trigger_id": "trg-1"},
+            returns="the fire context on next fire",
+            note="yielding: parks the session until the trigger fires",
+        ),
+    ],
 )
 
 
