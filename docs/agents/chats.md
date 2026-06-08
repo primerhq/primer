@@ -3,14 +3,10 @@ slug: chats
 title: Chats - multi-turn conversations with agents
 summary: How chat turns are claimed, run, parked, cancelled, and resumed; the WS protocol and message-stream contract; auto-compaction.
 related: [agents, yielding, tool-approval, channels]
-mcp_tools:
-  - system::list_chats
-  - system::get_chat
-  - system::create_chat
-  - system::update_chat
-  - system::delete_chat
-  - system::find_chats
-  - system::list_chat_messages
+# Chats are NOT available over MCP; they are driven via the REST API
+# and the operator console. For headless MCP execution use a session
+# (see sessions.md). No chat MCP tools exist.
+mcp_tools: []
 ---
 
 # Chats - multi-turn conversations with agents
@@ -18,20 +14,26 @@ mcp_tools:
 ## Overview
 
 A **Chat** is a multi-turn conversation between a human (or another
-agent) and a primer agent, created with `system::create_chat` and
-inspected with `system::get_chat` / `system::list_chat_messages`.
-It's the primary surface for interactive
-work - the operator console renders chats as a familiar chat UI; an
+agent) and a primer agent. It's the interactive, human-in-the-loop
+surface: the operator console renders chats as a familiar chat UI; an
 external client connects via WebSocket to send messages and stream
 assistant responses. The whole conversation is a series of
 `ChatMessage` rows persisted in order; the wire protocol is just
 "send a user_message; replay messages on connect; stream new ones
 as they arrive."
 
+Chats are created and driven through the REST API (`POST /v1/chats`,
+the WebSocket message stream, `POST /v1/chats/{id}/cancel`, and so on)
+and the operator console. They are NOT a system entity and there is
+NO chat MCP toolset, so an external MCP-connected agent cannot create
+or drive a chat directly.
+
 Use a chat when a human (or another agent) drives a back-and-forth
-conversation turn by turn; not when the work runs headless to
-completion with no one in the loop (use a [session](sessions.md)
-via `system::create_session`).
+conversation turn by turn. When the work runs headless to completion
+with no one in the loop, or when you want to run an agent or graph
+programmatically over MCP, use a [session](sessions.md) instead
+(`workspaces::create_workspace_session`) - that is the only MCP-driven
+way to run an agent or graph headlessly.
 
 Under the hood chats are deliberately not bound to a WebSocket. A
 turn - the work of "given the user_message, run the agent loop
@@ -153,29 +155,35 @@ Auto-compaction:
   range: synthetic message with summary text replaces the elided
   rows.
 
-## MCP tools
+## How chats are driven (REST + console, not MCP)
 
-Chats expose generic CRUD and a message-listing tool. The actual
-"send a user_message and wait" interaction is the WebSocket - not
-an MCP tool. External agents connecting via MCP typically use chats
-indirectly (e.g. firing a trigger that posts a message to a chat)
-rather than driving them directly.
+There is NO chat MCP toolset. Chats are not a system entity exposed
+over MCP; they are the interactive surface managed through the REST
+API and the operator console:
 
-- `system::list_chats` - paginated.
-- `system::get_chat` - fetch the row (turn_status, parked state,
+- `POST /v1/chats` - create a chat. Body needs `agent_id` and an
+  optional initial `user_message` content.
+- `GET /v1/chats/{id}` - fetch the row (turn_status, parked state,
   cancel state).
-- `system::create_chat` - body needs `agent_id` and an optional
-  initial `user_message` content.
-- `system::update_chat` - partial (rare).
-- `system::delete_chat` - cascade-deletes messages.
-- `system::find_chats` - predicate query.
-- `system::list_chat_messages` - paginated messages by seq.
+- `GET /v1/chats/{id}/messages?cursor=<seq>` - paginated messages
+  by seq (the cursor query used for replay).
+- WebSocket `/v1/chats/{id}/ws` - send a `user_message` and stream
+  the assistant response. This is the actual "send and wait"
+  interaction; it requires the WS handshake.
+- `POST /v1/chats/{id}/cancel` - request cancellation of the
+  current turn.
 
-Sending a user_message via MCP isn't directly possible (it requires
-the WS handshake). The closest path: create a chat-message
-subscription on a trigger and fire the trigger. The fire dispatcher
-appends the rendered payload to the chat exactly as if a user had
-sent it. See [triggers-and-subscriptions](triggers-and-subscriptions.md).
+For an external agent connected over MCP, there is no way to create
+or drive a chat directly. Two honest options:
+
+- To run an agent or graph headlessly over MCP, use a
+  [session](sessions.md) (`workspaces::create_workspace_session`)
+  instead. That is the MCP-native primitive.
+- To push a message into an existing chat without a WS handshake,
+  create a chat-message subscription on a trigger and fire the
+  trigger. The fire dispatcher appends the rendered payload to the
+  chat exactly as if a user had sent it. See
+  [triggers-and-subscriptions](triggers-and-subscriptions.md).
 
 ## Workflows
 
@@ -184,14 +192,7 @@ sent it. See [triggers-and-subscriptions](triggers-and-subscriptions.md).
 **Goal.** Agent wants to know if chat `ch-foo` is currently parked
 on `ask_user` so it can post the answer.
 
-1. Fetch the chat row:
-
-```json
-{
-  "tool": "system::get_chat",
-  "arguments": {"id": "ch-foo"}
-}
-```
+1. Fetch the chat row over REST (`GET /v1/chats/ch-foo`).
 
 Returns:
 ```json

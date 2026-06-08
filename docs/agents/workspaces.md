@@ -4,21 +4,29 @@ title: Workspaces - execution sandboxes
 summary: Isolated filesystem + git state for sessions, with multi-backend providers, templates, and a fixed .state/.tmp layout.
 related: [sessions, agents, knowledge]
 mcp_tools:
-  - system::list_workspaces
-  - system::get_workspace
-  - system::create_workspace
-  - system::update_workspace
-  - system::delete_workspace
-  - system::find_workspaces
-  - system::list_workspace_providers
-  - system::list_workspace_templates
-  - workspaces::list_workspace
-  - workspaces::get_workspace
   - workspaces::create_workspace
+  - workspaces::get_workspace
+  - workspaces::list_workspaces
   - workspaces::delete_workspace
+  - workspaces::create_workspace_provider
+  - workspaces::get_workspace_provider
+  - workspaces::list_workspace_providers
+  - workspaces::delete_workspace_provider
+  - workspaces::create_workspace_template
+  - workspaces::get_workspace_template
+  - workspaces::list_workspace_templates
+  - workspaces::update_workspace_template
+  - workspaces::delete_workspace_template
   - workspaces::read_workspace_file
   - workspaces::write_workspace_file
-  - workspaces::watch_files
+  - workspaces::list_workspace_files
+  - workspaces::get_workspace_file_info
+  - workspaces::delete_workspace_file
+  - workspaces::get_workspace_log
+  - workspaces::create_workspace_session
+  - workspaces::get_workspace_session
+  - workspaces::list_workspace_sessions
+  - workspaces::cancel_workspace_session
 ---
 
 # Workspaces - execution sandboxes
@@ -99,7 +107,7 @@ A `Workspace.status` is one of:
   audit record; can be deleted manually.
 
 Provisioning is async (claim-based, like sessions and harnesses).
-Workspace create returns 202; poll `system::get_workspace` until
+Workspace create returns 202; poll `workspaces::get_workspace` until
 `status=ready`.
 
 Sessions run inside a workspace. A workspace destroyed while
@@ -110,28 +118,37 @@ async - sessions get a `cancelled` marker, parked tools get
 
 ## MCP tools
 
-Two surfaces. The system toolset has generic CRUD; the workspaces
-toolset has the ergonomic verb-style operations + file I/O.
+Everything lives in one place: the `workspaces` toolset. It carries
+the workspace lifecycle, the provider and template registries, the
+file I/O tools, and (cross-referenced in [sessions](sessions.md)) the
+session tools. Every tool takes an explicit `workspace_id` because
+it's called from a context with no implicit session.
 
-### Generic CRUD (system toolset)
+### Workspace lifecycle
 
-- `system::list_workspaces` - paginated.
-- `system::get_workspace` - fetch by id.
-- `system::create_workspace` - body needs `id`, `provider_id`,
+- `workspaces::create_workspace` - body needs `id`, `provider_id`,
   optional `template_id`. Returns 202.
-- `system::update_workspace` - partial update of metadata.
-- `system::delete_workspace` - cascade-cancels in-flight sessions.
-  Returns 202.
-- `system::find_workspaces` - predicate query.
-- `system::list_workspace_providers` - list registered providers.
-- `system::list_workspace_templates` - list templates.
+- `workspaces::get_workspace` - fetch by id.
+- `workspaces::list_workspaces` - paginated.
+- `workspaces::delete_workspace` - cascade-cancels in-flight
+  sessions. Returns 202.
 
-### Workspace-aware tools (workspaces toolset)
+### Providers and templates
 
-- `workspaces::list_workspace` - paginated; same as system list.
-- `workspaces::get_workspace` - same as system get.
-- `workspaces::create_workspace` - same as system create.
-- `workspaces::delete_workspace` - same as system delete.
+- `workspaces::create_workspace_provider` /
+  `workspaces::get_workspace_provider` /
+  `workspaces::list_workspace_providers` /
+  `workspaces::delete_workspace_provider` - the registered compute
+  substrates (local / Docker / Kubernetes and any custom backends).
+- `workspaces::create_workspace_template` /
+  `workspaces::get_workspace_template` /
+  `workspaces::list_workspace_templates` /
+  `workspaces::update_workspace_template` /
+  `workspaces::delete_workspace_template` - reusable workspace
+  configs.
+
+### Files and logs
+
 - `workspaces::read_workspace_file` - read file from a workspace
   by relative path. Body: `workspace_id`, `path`. Returns text
   content. 404 on missing file.
@@ -140,13 +157,24 @@ toolset has the ergonomic verb-style operations + file I/O.
   ("0644" etc.). Refuses to overwrite a file the current session
   hasn't read first (only relevant inside a session context;
   external MCP callers always force-write).
-- `workspaces::watch_files` - yielding tool. NOT exposed over MCP.
-  Inside a session, yields until a watched file changes.
+- `workspaces::list_workspace_files` - list files under a path.
+- `workspaces::get_workspace_file_info` - stat a file.
+- `workspaces::delete_workspace_file` - remove a file.
+- `workspaces::get_workspace_log` - read the workspace log.
 
-The `workspaces::*` toolset is hidden from MCP for any tool that
-needs an active `AgentSession` (`watch_files`). The file read/write
-tools are MCP-exposable because they take an explicit
-`workspace_id` and don't rely on session context.
+### Sessions
+
+Sessions on a workspace are run with
+`workspaces::create_workspace_session`, inspected with
+`workspaces::get_workspace_session` /
+`workspaces::list_workspace_sessions`, and stopped with
+`workspaces::cancel_workspace_session`. See
+[sessions](sessions.md) for the full set.
+
+Note: `workspaces::watch_files` exists inside a session (it yields
+until a watched file changes) but is NOT exposable over MCP because
+it needs an active `AgentSession`. External agents wanting
+change-detection should poll `read_workspace_file` instead.
 
 ## Workflows
 
@@ -159,7 +187,7 @@ manifest.
 
 ```json
 {
-  "tool": "workspaces::list_workspace",
+  "tool": "workspaces::list_workspaces",
   "arguments": {"limit": 100}
 }
 ```

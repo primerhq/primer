@@ -4,12 +4,13 @@ title: Sessions - long-running workspace agent runs
 summary: Headless agent execution inside a workspace, with file I/O, pause/resume control, and waiting.json state surfaces.
 related: [workspaces, agents, yielding, chats]
 mcp_tools:
-  - system::list_sessions
-  - system::get_session
-  - system::create_session
-  - system::update_session
-  - system::delete_session
-  - system::find_sessions
+  - workspaces::create_workspace_session
+  - workspaces::get_workspace_session
+  - workspaces::list_workspace_sessions
+  - workspaces::pause_workspace_session
+  - workspaces::resume_workspace_session
+  - workspaces::steer_workspace_session
+  - workspaces::cancel_workspace_session
 ---
 
 # Sessions - long-running workspace agent runs
@@ -17,7 +18,8 @@ mcp_tools:
 ## Overview
 
 A **Session** is a headless agent run, started with
-`system::create_session` and polled with `system::get_session`.
+`workspaces::create_workspace_session` and polled with
+`workspaces::get_workspace_session`.
 Unlike a chat (which expects a
 human in the loop), a session is started with an initial instruction
 (or input) and runs to completion or pause without requiring user
@@ -26,9 +28,14 @@ workspace's filesystem and git state with other sessions on the same
 workspace. The workspace is what gives them a sense of place; the
 session is the agent invocation inside it.
 
+Creating and cancelling a session are first-class MCP tools
+(`workspaces::create_workspace_session` /
+`workspaces::cancel_workspace_session`), so an external MCP-connected
+agent can run an agent or graph headlessly end to end.
+
 Use a session when the work runs headless to completion with no
 human in the loop; not when you need a back-and-forth conversation
-with a person (use a [chat](chats.md) via `system::create_chat`).
+with a person (use a [chat](chats.md), driven over REST, not MCP).
 
 Sessions are the right primitive when the work is "do this thing,
 take as long as you need, here are the tools, tell me when you're
@@ -96,12 +103,12 @@ Transitions:
 - `PAUSED → RUNNING` - operator action.
 - any → `ENDED` - terminal; not reversible.
 
-The transitions are operator-driven via REST routes (also exposed
-through the system toolset for agents to inspect):
+The transitions are driven via REST routes and the matching
+`workspaces` MCP tools:
 
-- `request_pause(session_id)`
-- `request_resume(session_id)`
-- `request_end(session_id)`
+- `request_pause(session_id)` / `workspaces::pause_workspace_session`
+- `request_resume(session_id)` / `workspaces::resume_workspace_session`
+- `request_end(session_id)` / `workspaces::cancel_workspace_session`
 
 The worker pool reads these flags between turns and acts on them.
 
@@ -113,26 +120,36 @@ filesystem.
 
 ## MCP tools
 
-Sessions appear in the system toolset as generic CRUD. The richer
-operations (pause, resume, end, append instruction) are REST routes
-not currently exposed as MCP tools - they're operator-facing.
+Sessions live in the `workspaces` toolset. Creating, inspecting, and
+controlling a session are all exposed over MCP, so an external agent
+can run an agent or graph headlessly end to end.
 
-- `system::list_sessions` - paginated.
-- `system::get_session` - fetch the row including `status`, parked
-  fields, and any error message.
-- `system::create_session` - body needs `workspace_id`, `agent_id`,
-  optional `instruction`. Creates the row and marks it claimable.
-- `system::update_session` - partial update (rare; most updates
-  happen via the workspace's `.state` repo).
-- `system::delete_session` - terminal. Cancels the lease, removes
-  the row, leaves the `.state/sessions/<id>/` subtree intact (it's
-  workspace state, not session state).
-- `system::find_sessions` - predicate query.
+- `workspaces::create_workspace_session` - start a session bound to
+  an agent or graph. Args: `workspace_id`, `binding`
+  (`{kind:"agent", agent_id}` or `{kind:"graph", graph_id}`),
+  optional `initial_instructions`, `auto_start` (default true),
+  optional `graph_input`, `parent_session_id`, `metadata`. Returns
+  the session row with its `id` and `status`.
+- `workspaces::get_workspace_session` - fetch the row including
+  `status`, parked fields, and any error message. Args:
+  `workspace_id`, `session_id`.
+- `workspaces::list_workspace_sessions` - list sessions on a
+  workspace.
+- `workspaces::pause_workspace_session` /
+  `workspaces::resume_workspace_session` /
+  `workspaces::steer_workspace_session` - control a running session
+  (pause at the next turn boundary, resume, or inject steering input).
+- `workspaces::cancel_workspace_session` - hard-cancel a session.
+  Args: `workspace_id`, `session_id`. Returns the session
+  `{status:"ended", ended_reason:"cancelled"}` (or still running with
+  `cancel_requested` while an in-flight turn is preempted). This is
+  how you end a session; sessions are not a CRUD entity and there is
+  no delete.
 
 For starting a fresh session of a known agent in a known workspace,
-the right tool is `system::create_session`. For triggering a fresh
-session in response to an event, the right path is a trigger with
-an `agent_fresh_session` subscription - see
+the right tool is `workspaces::create_workspace_session`. For
+triggering a fresh session in response to an event, the right path is
+a trigger with an `agent_fresh_session` subscription - see
 [triggers-and-subscriptions](triggers-and-subscriptions.md).
 
 ## Workflows
@@ -146,11 +163,12 @@ checkout in workspace `ws-analysis-01`.
 
 ```json
 {
-  "tool": "system::create_session",
+  "tool": "workspaces::create_workspace_session",
   "arguments": {
     "workspace_id": "ws-analysis-01",
-    "agent_id": "analyse-repo",
-    "instruction": "Walk the repo at /repo and produce a dependency report."
+    "binding": {"kind": "agent", "agent_id": "analyse-repo"},
+    "initial_instructions": "Walk the repo at /repo and produce a dependency report.",
+    "auto_start": true
   }
 }
 ```
@@ -161,8 +179,8 @@ Returns the session with its `id` and a `status` of `running`: `{"id": "sid-abc"
 
 ```json
 {
-  "tool": "system::get_session",
-  "arguments": {"id": "sid-abc"}
+  "tool": "workspaces::get_workspace_session",
+  "arguments": {"workspace_id": "ws-analysis-01", "session_id": "sid-abc"}
 }
 ```
 
@@ -180,8 +198,8 @@ know what it's waiting on.
 
 ```json
 {
-  "tool": "system::get_session",
-  "arguments": {"id": "sid-xyz"}
+  "tool": "workspaces::get_workspace_session",
+  "arguments": {"workspace_id": "ws-analysis-01", "session_id": "sid-xyz"}
 }
 ```
 
