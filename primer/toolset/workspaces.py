@@ -5,7 +5,7 @@ internal collections subsystem ingests its tools into the
 ``_internal_tools`` collection during bootstrap so agents can search
 for them.
 
-Tool catalog (26 tools)
+Tool catalog (27 tools)
 -----------------------
 
 Provider (CRUD minus update):
@@ -21,9 +21,10 @@ Workspace (CRUD minus update):
     list_workspaces, get_workspace, create_workspace, delete_workspace
 
 Sessions:
-    create_workspace_session, list_workspace_sessions,
-    get_workspace_session, pause_workspace_session,
-    resume_workspace_session, steer_workspace_session
+    create_workspace_session, cancel_workspace_session,
+    list_workspace_sessions, get_workspace_session,
+    pause_workspace_session, resume_workspace_session,
+    steer_workspace_session
 
 Files:
     list_workspace_files, get_workspace_file_info,
@@ -971,6 +972,64 @@ def build_workspaces_toolset(
                     "graph_input": {"ticket": "INC-1"},
                 },
                 returns="a graph session bound to incident-pipeline",
+            ),
+        ],
+    )
+    registry[name] = entry
+
+    async def _cancel_workspace_session(
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
+        if scheduler is None or claim_engine is None:
+            return _err(
+                "session tools unavailable: scheduler/claim_engine not wired",
+                error_type="unavailable",
+            )
+        try:
+            args = _WorkspaceSessionArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        from primer.workspace.session_factory import (
+            SessionCancelDeps,
+            cancel_session,
+        )
+
+        deps = SessionCancelDeps(
+            storage_provider=storage_provider,
+            scheduler=scheduler,
+            claim_engine=claim_engine,
+            event_bus=event_bus,
+        )
+        try:
+            session = await cancel_session(
+                workspace_id=args.workspace_id,
+                session_id=args.session_id,
+                deps=deps,
+            )
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except ConflictError as exc:
+            return _err_from_primer(exc, error_type="conflict")
+        return _ok(session)
+
+    name, entry = _tool(
+        "cancel_workspace_session",
+        "Hard-cancel a session; it transitions to ended with reason cancelled.",
+        (
+            "Use when you need to stop a run; a created or paused session "
+            "ends immediately, a running one is preempted at the next safe "
+            "point. Not for a temporary halt (use "
+            "``pause_workspace_session``)."
+        ),
+        _WorkspaceSessionArgs,
+        _cancel_workspace_session,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1", "session_id": "ses-1"},
+                returns=(
+                    "the session, now "
+                    "{status:\"ended\", ended_reason:\"cancelled\"}"
+                ),
             ),
         ],
     )

@@ -26,15 +26,12 @@ from fastapi import APIRouter, Depends, Path, Query, WebSocket, WebSocketDisconn
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
-    get_agent_storage,
     get_claim_engine,
     get_event_bus,
-    get_graph_storage,
     get_scheduler,
     get_session_storage,
     get_storage_provider,
     get_workspace_registry,
-    get_workspace_storage,
 )
 from primer.api.errors import common_responses
 from primer.observability import tracing as _tracing
@@ -103,10 +100,6 @@ class SessionCreateBody(BaseModel):
 async def create_session(
     body: SessionCreateBody,
     workspace_id: str = Path(...),
-    workspaces=Depends(get_workspace_storage),
-    sessions=Depends(get_session_storage),
-    agents=Depends(get_agent_storage),
-    graphs=Depends(get_graph_storage),
     scheduler=Depends(get_scheduler),
     workspace_registry=Depends(get_workspace_registry),
     engine=Depends(get_claim_engine),
@@ -257,10 +250,10 @@ async def pause_session(
 async def cancel_session(
     workspace_id: str = Path(...),
     session_id: str = Path(...),
-    sessions=Depends(get_session_storage),
     scheduler=Depends(get_scheduler),
     engine=Depends(get_claim_engine),
     event_bus=Depends(get_event_bus),
+    storage_provider=Depends(get_storage_provider),
 ) -> WorkspaceSession:
     """Hard cancel.
 
@@ -273,46 +266,25 @@ async def cancel_session(
       legacy ``scheduler.signal_cancel`` for backward compat with the
       pre-engine claim path.
     * 409 when the session is already ENDED.
+
+    Delegates to :func:`primer.workspace.session_factory.cancel_session`
+    so the REST route and the ``cancel_workspace_session`` MCP tool share
+    one canonical path.
     """
-    s = await sessions.get(session_id)
-    if s is None or s.workspace_id != workspace_id:
-        raise NotFoundError(
-            f"Session {session_id!r} does not exist on workspace "
-            f"{workspace_id!r}"
-        )
-    if s.status == SessionStatus.ENDED:
-        raise ConflictError(f"Session {session_id!r} has ended")
-    if s.status in {
-        SessionStatus.CREATED,
-        SessionStatus.WAITING,
-        SessionStatus.PAUSED,
-    }:
-        s.status = SessionStatus.ENDED
-        s.ended_reason = "cancelled"
-        s.ended_at = datetime.now(timezone.utc)
-        await sessions.update(s)
-        # Drop the lease — session is gone, no point claiming it.
-        if engine is not None:
-            from primer.int.claim import ClaimKind
-            await engine.delete_lease(ClaimKind.SESSION, session_id)
-        return s
-    now = datetime.now(timezone.utc)
-    s.cancel_requested = True
-    s.cancel_requested_at = now
-    await sessions.update(s)
-    # Publish on the bus so the engine-path worker's _cancel_watcher
-    # preempts the running turn. The WS interrupt handler at line ~820
-    # publishes the same key.
-    if event_bus is not None:
-        try:
-            await event_bus.publish(f"session:{session_id}:cancel", {})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "cancel_session: event_bus.publish failed (legacy path still signalled)",
-                extra={"session_id": session_id, "exception": type(exc).__name__},
-            )
-    await scheduler.signal_cancel(session_id)
-    return s
+    from primer.workspace.session_factory import (
+        SessionCancelDeps,
+        cancel_session as _cancel_session_helper,
+    )
+
+    deps = SessionCancelDeps(
+        storage_provider=storage_provider,
+        scheduler=scheduler,
+        claim_engine=engine,
+        event_bus=event_bus,
+    )
+    return await _cancel_session_helper(
+        workspace_id=workspace_id, session_id=session_id, deps=deps,
+    )
 
 
 @nested_session_router.delete(

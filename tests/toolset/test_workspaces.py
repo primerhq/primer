@@ -389,10 +389,12 @@ class TestCatalog:
         assert WORKSPACES_TOOLSET_ID == "workspaces"
         names = [t.id async for t in toolset.list_tools()]
         # 24 original + watch_files (yielding-tools M4) +
-        # create_workspace_session (session-tools) = 26.
-        assert len(names) == 26
+        # create_workspace_session + cancel_workspace_session
+        # (session-tools) = 27.
+        assert len(names) == 27
         assert "watch_files" in names
         assert "create_workspace_session" in names
+        assert "cancel_workspace_session" in names
 
     @pytest.mark.asyncio
     async def test_every_tool_has_clear_description(self, toolset) -> None:
@@ -487,8 +489,9 @@ class TestBootstrapIngestsWorkspacesTools:
             if doc_id.startswith("workspaces::")
         }
         # 24 original + watch_files (yielding-tools M4) +
-        # create_workspace_session (session-tools) = 26.
-        assert len(ws_ingested) == 26
+        # create_workspace_session + cancel_workspace_session
+        # (session-tools) = 27.
+        assert len(ws_ingested) == 27
         for expected in (
             "workspaces::list_workspace_providers",
             "workspaces::create_workspace_template",
@@ -1038,9 +1041,13 @@ class _FakeScheduler:
 class _FakeClaimEngine:
     def __init__(self) -> None:
         self.upserts: list[tuple] = []
+        self.deleted: list[tuple] = []
 
     async def upsert(self, kind, entity_id, *, priority=100, next_attempt_at=None):
         self.upserts.append((kind, entity_id))
+
+    async def delete_lease(self, kind, entity_id):
+        self.deleted.append((kind, entity_id))
 
 
 def _seed_agent(sp, agent_id="code-reviewer") -> None:
@@ -1116,6 +1123,90 @@ class TestCreateWorkspaceSession:
                 "workspace_id": "ws-stub",
                 "binding": {"kind": "agent", "agent_id": "x"},
             },
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "unavailable"
+
+
+# ===========================================================================
+# cancel_workspace_session tool
+# ===========================================================================
+
+
+def _seed_session(sp, *, status, sid="sess-c1", workspace_id="ws-stub"):
+    from datetime import datetime, timezone
+
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        WorkspaceSession,
+    )
+
+    storage = sp.get_storage(WorkspaceSession)
+    storage._data[sid] = WorkspaceSession(
+        id=sid,
+        workspace_id=workspace_id,
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=status,
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+class TestCancelWorkspaceSession:
+    @pytest.mark.asyncio
+    async def test_cancel_created_session_ends(
+        self, session_toolset, seeded, sp
+    ) -> None:
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(sp, status=SessionStatus.CREATED)
+        result = await session_toolset.call(
+            tool_name="cancel_workspace_session",
+            arguments={"workspace_id": seeded, "session_id": "sess-c1"},
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["status"] == "ended"
+        assert body["ended_reason"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_cancel_already_ended_is_conflict(
+        self, session_toolset, seeded, sp
+    ) -> None:
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(sp, status=SessionStatus.ENDED)
+        result = await session_toolset.call(
+            tool_name="cancel_workspace_session",
+            arguments={"workspace_id": seeded, "session_id": "sess-c1"},
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "conflict"
+
+    @pytest.mark.asyncio
+    async def test_cancel_missing_session_is_not_found(
+        self, session_toolset, seeded
+    ) -> None:
+        result = await session_toolset.call(
+            tool_name="cancel_workspace_session",
+            arguments={"workspace_id": seeded, "session_id": "nope"},
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "not-found"
+
+    @pytest.mark.asyncio
+    async def test_cancel_without_scheduler_is_unavailable(
+        self, sp, workspace_registry
+    ) -> None:
+        ts = build_workspaces_toolset(
+            storage_provider=sp,
+            workspace_registry=workspace_registry,
+            scheduler=None,
+            claim_engine=None,
+            event_bus=None,
+        )
+        result = await ts.call(
+            tool_name="cancel_workspace_session",
+            arguments={"workspace_id": "ws-stub", "session_id": "x"},
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "unavailable"

@@ -37,7 +37,7 @@ from typing import Any
 
 from primer.int.claim import ClaimKind
 from primer.model.agent import Agent
-from primer.model.except_ import NotFoundError, ValidationError
+from primer.model.except_ import ConflictError, NotFoundError, ValidationError
 from primer.model.graph import Graph
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace_session import (
@@ -315,8 +315,86 @@ async def create_session(
     return session
 
 
+@dataclass
+class SessionCancelDeps:
+    """Bundle of collaborators :func:`cancel_session` needs.
+
+    ``event_bus`` is optional: when present, the ``running`` cancel path
+    publishes ``session:{id}:cancel`` so the engine-path worker's
+    ``_cancel_watcher`` preempts the in-flight turn. When ``None`` the
+    publish is skipped (the legacy ``scheduler.signal_cancel`` still
+    fires).
+    """
+
+    storage_provider: Any
+    scheduler: Any
+    claim_engine: Any
+    event_bus: Any | None = None
+
+
+async def cancel_session(
+    *, workspace_id: str, session_id: str, deps: SessionCancelDeps
+) -> WorkspaceSession:
+    """Hard-cancel a session (shared by the REST route + the workspaces tool).
+
+    created/waiting/paused -> ended/cancelled inline + drop the claim lease;
+    running -> set cancel_requested + publish session:{id}:cancel + signal_cancel.
+    Raises NotFoundError (missing/mismatched) / ConflictError (already ended).
+
+    Extracted verbatim from ``POST .../sessions/{sid}/cancel``
+    (:mod:`primer.api.routers.sessions`) so the REST endpoint and the
+    ``cancel_workspace_session`` MCP tool share one canonical path.
+    """
+    sessions = deps.storage_provider.get_storage(WorkspaceSession)
+
+    s = await sessions.get(session_id)
+    if s is None or s.workspace_id != workspace_id:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
+    if s.status == SessionStatus.ENDED:
+        raise ConflictError(f"Session {session_id!r} has ended")
+    if s.status in {
+        SessionStatus.CREATED,
+        SessionStatus.WAITING,
+        SessionStatus.PAUSED,
+    }:
+        s.status = SessionStatus.ENDED
+        s.ended_reason = "cancelled"
+        s.ended_at = datetime.now(timezone.utc)
+        await sessions.update(s)
+        # Drop the lease -- session is gone, no point claiming it.
+        if deps.claim_engine is not None:
+            await deps.claim_engine.delete_lease(ClaimKind.SESSION, session_id)
+        return s
+    now = datetime.now(timezone.utc)
+    s.cancel_requested = True
+    s.cancel_requested_at = now
+    await sessions.update(s)
+    # Publish on the bus so the engine-path worker's _cancel_watcher
+    # preempts the running turn. The WS interrupt handler publishes the
+    # same key.
+    if deps.event_bus is not None:
+        try:
+            await deps.event_bus.publish(f"session:{session_id}:cancel", {})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "cancel_session: event_bus.publish failed "
+                "(legacy path still signalled)",
+                extra={
+                    "session_id": session_id,
+                    "exception": type(exc).__name__,
+                },
+            )
+    await deps.scheduler.signal_cancel(session_id)
+    return s
+
+
 __all__ = [
+    "SessionCancelDeps",
     "SessionFactoryDeps",
+    "cancel_session",
     "create_session",
     "start_workspace_session",
 ]

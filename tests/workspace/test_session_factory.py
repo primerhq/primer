@@ -9,12 +9,13 @@ Spec §12.5.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 
 from primer.int.claim import ClaimKind
 from primer.model.agent import Agent, AgentModel
-from primer.model.except_ import NotFoundError, ValidationError
+from primer.model.except_ import ConflictError, NotFoundError, ValidationError
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace_session import (
     AgentSessionBinding,
@@ -23,7 +24,9 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.workspace.session_factory import (
+    SessionCancelDeps,
     SessionFactoryDeps,
+    cancel_session,
     create_session,
     start_workspace_session,
 )
@@ -37,20 +40,36 @@ from primer.workspace.session_factory import (
 class _FakeScheduler:
     def __init__(self) -> None:
         self.enqueued: list[str] = []
+        self.signalled: list[str] = []
 
     async def enqueue(self, sid: str) -> None:
         self.enqueued.append(sid)
+
+    async def signal_cancel(self, sid: str) -> None:
+        self.signalled.append(sid)
 
 
 class _FakeClaimEngine:
     def __init__(self) -> None:
         self.upserts: list[tuple[ClaimKind, str, int]] = []
+        self.deleted: list[tuple[ClaimKind, str]] = []
 
     async def upsert(
         self, kind: ClaimKind, entity_id: str, *, priority: int = 100,
         next_attempt_at=None,
     ) -> None:
         self.upserts.append((kind, entity_id, priority))
+
+    async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
+        self.deleted.append((kind, entity_id))
+
+
+class _FakeEventBus:
+    def __init__(self) -> None:
+        self.published: list[tuple[str, Any]] = []
+
+    async def publish(self, key: str, payload: Any) -> None:
+        self.published.append((key, payload))
 
 
 # ---------------------------------------------------------------------------
@@ -404,3 +423,121 @@ async def test_start_workspace_session_missing_workspace_raises_not_found(
             deps=deps,
         )
     assert live.started == []
+
+
+# ---------------------------------------------------------------------------
+# cancel_session: shared hard-cancel flow (REST route + workspaces tool)
+# ---------------------------------------------------------------------------
+
+
+def _cancel_deps(
+    sp, scheduler, claim_engine, event_bus=None,
+) -> SessionCancelDeps:
+    return SessionCancelDeps(
+        storage_provider=sp,
+        scheduler=scheduler,
+        claim_engine=claim_engine,
+        event_bus=event_bus,
+    )
+
+
+async def _seed_session(
+    sp, *, status: SessionStatus, sid="sess-cancel-1", workspace_id="ws-1",
+) -> WorkspaceSession:
+    session = WorkspaceSession(
+        id=sid,
+        workspace_id=workspace_id,
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=status,
+        created_at=datetime.now(timezone.utc),
+    )
+    await sp.get_storage(WorkspaceSession).create(session)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_created_ends_immediately_and_drops_lease(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    await _seed_session(fake_storage_provider, status=SessionStatus.CREATED)
+    deps = _cancel_deps(fake_storage_provider, fake_scheduler, fake_claim_engine)
+
+    out = await cancel_session(
+        workspace_id="ws-1", session_id="sess-cancel-1", deps=deps,
+    )
+
+    assert out.status == SessionStatus.ENDED
+    assert out.ended_reason == "cancelled"
+    assert out.ended_at is not None
+    # Lease was dropped via the claim engine.
+    assert (ClaimKind.SESSION, "sess-cancel-1") in fake_claim_engine.deleted
+    # Row persisted as ENDED.
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    rehydrated = await storage.get("sess-cancel-1")
+    assert rehydrated is not None
+    assert rehydrated.status == SessionStatus.ENDED
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_already_ended_raises_conflict(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    await _seed_session(fake_storage_provider, status=SessionStatus.ENDED)
+    deps = _cancel_deps(fake_storage_provider, fake_scheduler, fake_claim_engine)
+
+    with pytest.raises(ConflictError):
+        await cancel_session(
+            workspace_id="ws-1", session_id="sess-cancel-1", deps=deps,
+        )
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_running_publishes_bus_and_signals(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    await _seed_session(fake_storage_provider, status=SessionStatus.RUNNING)
+    bus = _FakeEventBus()
+    deps = _cancel_deps(
+        fake_storage_provider, fake_scheduler, fake_claim_engine, event_bus=bus,
+    )
+
+    out = await cancel_session(
+        workspace_id="ws-1", session_id="sess-cancel-1", deps=deps,
+    )
+
+    assert out.cancel_requested is True
+    assert out.cancel_requested_at is not None
+    # Bus publish on the exact key the worker watcher subscribes to.
+    assert ("session:sess-cancel-1:cancel", {}) in bus.published
+    # Legacy scheduler signal fired.
+    assert "sess-cancel-1" in fake_scheduler.signalled
+    # NOT ended -- running sessions are preempted, not ended inline.
+    assert out.status == SessionStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_missing_raises_not_found(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    deps = _cancel_deps(fake_storage_provider, fake_scheduler, fake_claim_engine)
+
+    with pytest.raises(NotFoundError):
+        await cancel_session(
+            workspace_id="ws-1", session_id="does-not-exist", deps=deps,
+        )
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_workspace_mismatch_raises_not_found(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    await _seed_session(
+        fake_storage_provider, status=SessionStatus.CREATED,
+        workspace_id="ws-other",
+    )
+    deps = _cancel_deps(fake_storage_provider, fake_scheduler, fake_claim_engine)
+
+    with pytest.raises(NotFoundError):
+        await cancel_session(
+            workspace_id="ws-1", session_id="sess-cancel-1", deps=deps,
+        )
