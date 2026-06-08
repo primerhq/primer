@@ -42,8 +42,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from primer.model.chat import Tool, ToolCallResult
+from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.yield_ import ToolContext, Yielded
+from primer.toolset._describe import make_tool
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -562,115 +563,150 @@ def build_misc_toolset(
     """
     registry: dict[str, tuple[Tool, ToolHandler]] = {
         "get_datetime": (
-            Tool(
+            make_tool(
                 id="get_datetime",
-                description=(
-                    "Current date and time as ISO 8601 plus Unix "
-                    "epoch seconds. Optional ``timezone`` (IANA name, "
-                    "e.g. 'America/New_York') — defaults to UTC. "
-                    "Returns ``{datetime, timezone, unix}``. "
-                    "Use this whenever you need the wall-clock time; "
-                    "do not estimate."
-                ),
                 toolset_id=toolset_id,
+                purpose=(
+                    "Return the current wall-clock date and time as ISO 8601 "
+                    "plus Unix epoch seconds (``{datetime, timezone, unix}``)."
+                ),
+                when=(
+                    "Use when you need the real current time; do not estimate "
+                    "or reuse a time from earlier in the conversation."
+                ),
                 args_schema=_GetDatetimeArgs.model_json_schema(),
+                examples=[
+                    ToolExample(args={}, returns="now in UTC"),
+                    ToolExample(
+                        args={"timezone": "America/New_York"},
+                        returns="same instant in US Eastern",
+                    ),
+                ],
             ),
             _get_datetime_handler,
         ),
         "ask_user": (
-            Tool(
+            make_tool(
                 id="ask_user",
-                description=(
-                    "Ask the human operator a question and pause the "
-                    "agent's turn until they respond. YIELDING TOOL — "
-                    "the agent's execution is suspended while the "
-                    "operator types; the worker is released to handle "
-                    "other sessions in the meantime. Use this when "
-                    "you genuinely need human input (clarification, "
-                    "approval, a choice the agent can't make "
-                    "autonomously) — do not use it for status updates "
-                    "or progress reports. Optional ``timeout_seconds`` "
-                    "(falls back to the global yield cap). Optional "
-                    "``response_schema`` (JSON Schema validated "
-                    "server-side). Returns ``{response: <any>}`` on "
-                    "operator reply, ``{timed_out: true, "
-                    "elapsed_seconds}`` on timeout, or ``{cancelled: "
-                    "true, reason, elapsed_seconds}`` if the operator "
-                    "skipped the prompt."
-                ),
                 toolset_id=toolset_id,
+                purpose=(
+                    "Ask the human operator a question and pause the agent's "
+                    "turn until they type a reply; returns ``{response: "
+                    "<any>}`` (or ``{timed_out}`` / ``{cancelled}``)."
+                ),
+                when=(
+                    "Use when you genuinely need human input (clarification, "
+                    "approval, a choice the agent cannot make autonomously); "
+                    "not for status updates, and not for waiting a fixed "
+                    "duration (use ``sleep``)."
+                ),
                 args_schema=_AskUserArgs.model_json_schema(),
+                examples=[
+                    ToolExample(
+                        args={"prompt": "Proceed with deploy?"},
+                        returns="operator's typed reply",
+                        note="yielding; worker released",
+                    ),
+                ],
             ),
             _ask_user_handler,
         ),
         "sleep": (
-            Tool(
+            make_tool(
                 id="sleep",
-                description=(
-                    "Pause this agent turn for ``seconds`` seconds "
-                    "(fractional allowed). YIELDING TOOL — the agent's "
-                    "execution is suspended for the requested duration; "
-                    "the worker is released to handle other sessions in "
-                    "the meantime. Useful for polling external state "
-                    "with backoff or for deliberate pacing. Returns "
-                    "``{requested_seconds, elapsed_seconds}``. If the "
-                    "operator cancels the yield mid-sleep, the result "
-                    "additionally includes ``cancelled: true``."
-                ),
                 toolset_id=toolset_id,
+                purpose=(
+                    "Pause this agent turn for ``seconds`` seconds "
+                    "(fractional allowed); returns ``{requested_seconds, "
+                    "elapsed_seconds}``."
+                ),
+                when=(
+                    "Use when you must wait a fixed duration (polling with "
+                    "backoff, deliberate pacing); not for waiting on a human "
+                    "(use ``ask_user``)."
+                ),
                 args_schema=_SleepArgs.model_json_schema(),
+                examples=[
+                    ToolExample(
+                        args={"seconds": 5},
+                        returns="resumes after 5s",
+                        note="yielding; worker released",
+                    ),
+                ],
             ),
             _sleep_handler,
         ),
         "uuid_v4": (
-            Tool(
+            make_tool(
                 id="uuid_v4",
-                description=(
-                    "Generate one or more cryptographically random "
-                    "UUIDv4 strings. Use this whenever you need a "
-                    "fresh stable identifier (entity id, conversation "
-                    "tag, dedup key) — do not invent one yourself, "
-                    "LLM-generated 'random' strings are low entropy. "
-                    "Returns ``{uuids: [...]}``."
-                ),
                 toolset_id=toolset_id,
+                purpose=(
+                    "Generate one or more cryptographically random UUIDv4 "
+                    "strings; returns ``{uuids: [...]}``."
+                ),
+                when=(
+                    "Use when you need a fresh stable identifier (entity id, "
+                    "conversation tag, dedup key); do not invent one yourself, "
+                    "LLM-generated 'random' strings are low entropy."
+                ),
                 args_schema=_UuidV4Args.model_json_schema(),
+                examples=[
+                    ToolExample(args={"count": 1}, returns="one UUIDv4"),
+                    ToolExample(args={"count": 3}, returns="three UUIDs"),
+                ],
             ),
             _uuid_v4_handler,
         ),
         "hash": (
-            Tool(
+            make_tool(
                 id="hash",
-                description=(
-                    "Compute a hex digest of an input string. Default "
-                    "algorithm is sha256 (suitable for content "
-                    "addressing); sha1 and md5 are available for "
-                    "interop only — neither is cryptographically "
-                    "safe. Returns ``{algorithm, hex_digest}``."
-                ),
                 toolset_id=toolset_id,
+                purpose=(
+                    "Compute a hex digest of an input string under "
+                    "sha256/sha1/md5; returns ``{algorithm, hex_digest}``."
+                ),
+                when=(
+                    "Use when you need content addressing or a dedup check; "
+                    "sha256 (default) is for content addressing, sha1 and md5 "
+                    "are for interop only."
+                ),
                 args_schema=_HashArgs.model_json_schema(),
+                examples=[
+                    ToolExample(
+                        args={"input": "hello"},
+                        returns="sha256 hex digest",
+                    ),
+                    ToolExample(
+                        args={"input": "hello", "algorithm": "md5"},
+                        returns="md5 hex (interop only)",
+                    ),
+                ],
             ),
             _hash_handler,
         ),
         "calculate": (
-            Tool(
+            make_tool(
                 id="calculate",
-                description=(
-                    "Evaluate an arithmetic expression safely. "
-                    "Supports +, -, *, /, //, %, **, parentheses, "
-                    "unary +/-, an allowlist of math functions "
-                    "(abs, round, min, max, pow, sqrt, log, log2, "
-                    "log10, exp, sin, cos, tan, asin, acos, atan, "
-                    "floor, ceil), and the constants pi, e, tau. "
-                    "NOT a Python eval — no attribute access, no "
-                    "comprehensions, no string ops. Use this "
-                    "whenever you need correct arithmetic; do not "
-                    "compute by hand. Returns "
-                    "``{expression, result}``."
-                ),
                 toolset_id=toolset_id,
+                purpose=(
+                    "Evaluate an arithmetic expression safely (``+ - * / // % "
+                    "**``, parentheses, an allowlist of math functions, and "
+                    "the constants pi, e, tau); returns ``{expression, "
+                    "result}``."
+                ),
+                when=(
+                    "Use when you need correct arithmetic; do not compute by "
+                    "hand. NOT a Python eval: no attribute access, no "
+                    "comprehensions, no string ops."
+                ),
                 args_schema=_CalculateArgs.model_json_schema(),
+                examples=[
+                    ToolExample(args={"expression": "2 + 2 * 10"}, returns="22"),
+                    ToolExample(
+                        args={"expression": "sqrt(144)"},
+                        returns="12.0",
+                    ),
+                ],
             ),
             _calculate_handler,
         ),
