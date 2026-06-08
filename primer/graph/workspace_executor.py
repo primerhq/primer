@@ -348,21 +348,17 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         )
 
     async def _load_node_history(self, node_id: str) -> list[Message]:
-        path = self._messages_path(node_id)
-
-        def _read() -> list[Message]:
-            if not path.exists():
-                return []
-            out: list[Message] = []
-            with path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.rstrip("\n")
-                    if not line:
-                        continue
-                    out.append(Message.model_validate_json(line))
-            return out
-
-        return await asyncio.to_thread(_read)
+        rel_path = self._repo_rel(self._messages_path(node_id))
+        data = await self._state_repo.read_state_file(rel_path)
+        if data is None:
+            return []
+        out: list[Message] = []
+        for line in data.decode("utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            out.append(Message.model_validate_json(line))
+        return out
 
     async def _persist_node_turn(
         self,
@@ -484,14 +480,11 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
 
     async def load_state(self) -> dict | None:
         """Return the persisted ``state.json`` payload, or ``None`` if absent."""
-        path = self.state_root / "state.json"
-
-        def _read() -> dict | None:
-            if not path.exists():
-                return None
-            return json.loads(path.read_text(encoding="utf-8"))
-
-        return await asyncio.to_thread(_read)
+        rel_path = self._repo_rel(self.state_root / "state.json")
+        data = await self._state_repo.read_state_file(rel_path)
+        if data is None:
+            return None
+        return json.loads(data.decode("utf-8"))
 
     async def write_graph_binding(self) -> None:
         """Snapshot the graph definition under ``<state_root>/graph.json``.
