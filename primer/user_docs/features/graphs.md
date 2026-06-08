@@ -139,13 +139,6 @@ graph executor runs each node in turn (or in parallel for fan-out branches),
 persisting per-node state to the workspace's `.state/graphs/<session_id>/`
 git repo. The session detail view shows the graph run progress.
 
-```callout:warning
-Pick a **local** workspace for a graph run. Because the executor persists
-per-node state to the workspace's git-backed state repository, graph-bound
-sessions currently require the local workspace backend; container and
-kubernetes workspaces are not yet supported for graphs.
-```
-
 ## Delete a graph
 
 Open the graph detail view and click **Delete** in the status panel. A

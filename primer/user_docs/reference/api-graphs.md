@@ -155,13 +155,10 @@ To run a graph, create a workspace session with a graph binding:
 }
 ```
 
-```callout:warning
-Graph-bound sessions currently require a **local** workspace. The graph
-executor persists per-node state through the workspace's git-backed state
-repository, which only the local workspace backend exposes today. Binding a
-graph session to a container or kubernetes workspace is not yet supported
-(StateRepo parity for those backends is a tracked follow-on).
-```
+Graph-bound sessions run on any workspace backend (local, container, or
+kubernetes). The graph executor persists per-node state through the
+workspace's git-backed state repository on whichever backend hosts the
+workspace.
 
 See the Sessions API for details on session lifecycle.
 
