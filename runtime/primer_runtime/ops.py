@@ -21,6 +21,101 @@ from primer_runtime.protocol import ErrorCode
 
 
 # ---------------------------------------------------------------------------
+# Git-state helpers (ported from primer.workspace.local.state -- do NOT
+# import primer.*; the runtime package is self-contained)
+# ---------------------------------------------------------------------------
+
+# Separator characters used in the git log format string.
+_RECORD_SEP = "\x1e"
+_FIELD_SEP = "\x1f"
+
+# Git log format: sha <FS> subject <FS> committer-date-iso <FS> trailers <RS>
+# The %(trailers:only,unfold) placeholder expands each Key: Value trailer.
+_GIT_LOG_FORMAT = f"%H{_FIELD_SEP}%s{_FIELD_SEP}%cI{_FIELD_SEP}%(trailers:only,unfold){_RECORD_SEP}"
+
+
+def _parse_trailers(block: str) -> dict[str, str]:
+    """Parse ``Key: value`` lines from a trailer block (ported from LocalStateRepo)."""
+    result: dict[str, str] = {}
+    for line in block.splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        result[key.strip()] = value.strip()
+    return result
+
+
+def _parse_log_records(stdout: str) -> list[dict]:
+    """Parse git log output into a list of record dicts (ported from LocalStateRepo).
+
+    Each dict has:
+      sha, subject, committed_at (ISO-8601 str),
+      workspace_id, session_id, agent_id, op, tool, call_id (str | None)
+    """
+    out: list[dict] = []
+    for record in stdout.split(_RECORD_SEP):
+        record = record.strip("\n")
+        if not record:
+            continue
+        parts = record.split(_FIELD_SEP)
+        if len(parts) < 4:
+            continue
+        sha, subject, committed_at_iso, trailer_block = (
+            parts[0],
+            parts[1],
+            parts[2],
+            parts[3],
+        )
+        trailers = _parse_trailers(trailer_block)
+        out.append(
+            {
+                "sha": sha,
+                "subject": subject,
+                "committed_at": committed_at_iso,
+                "workspace_id": trailers.get("X-Primer-Workspace"),
+                "session_id": trailers.get("X-Primer-Session"),
+                "agent_id": trailers.get("X-Primer-Agent"),
+                "op": trailers.get("X-Primer-Op"),
+                "tool": trailers.get("X-Primer-Tool"),
+                "call_id": trailers.get("X-Primer-Call"),
+            }
+        )
+    return out
+
+
+async def _run_git(state_dir: str, *args: str, allow_empty_repo: bool = False) -> tuple[str, str]:
+    """Run ``git -C <state_dir> <args...>``, return (stdout, stderr) as text.
+
+    Raises :class:`OpError` (EINTERNAL) on non-zero exit unless ``allow_empty_repo``
+    is True and git exits 128 complaining about an empty repo.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "-C",
+        state_dir,
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, stderr_bytes = await proc.communicate()
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        if (
+            allow_empty_repo
+            and proc.returncode == 128
+            and "does not have any commits yet" in stderr
+        ):
+            return "", stderr
+        raise OpError(
+            ErrorCode.EINTERNAL,
+            f"git {' '.join(args)} exited {proc.returncode}: {stderr.strip()}",
+        )
+    return stdout, stderr
+
+
+# ---------------------------------------------------------------------------
 # Error type
 # ---------------------------------------------------------------------------
 
@@ -260,6 +355,120 @@ async def delete(args: dict, workspace_root: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# State-repo op handlers  (in-pod git operations against <workspace_root>/.state)
+# ---------------------------------------------------------------------------
+
+
+async def state_commit(args: dict, workspace_root: str) -> dict:
+    """``state_commit`` op: write files, git-rm deletes, commit, return sha.
+
+    args:
+      files      dict[str, str]  -- {relative-path: content_b64}
+      deletes    list[str]       -- relative paths to git rm (optional)
+      message    str             -- full commit message (may include trailers)
+      allow_empty bool           -- passed as --allow-empty flag (optional)
+
+    Returns: {"sha": "<40-hex>"}
+    """
+    files: dict[str, str] = args.get("files") or {}
+    deletes: list[str] = args.get("deletes") or []
+    message: str = args.get("message", "")
+    allow_empty: bool = bool(args.get("allow_empty", False))
+
+    state_dir = os.path.join(workspace_root, ".state")
+
+    # Write files to disk and collect paths to stage.
+    staged: list[str] = []
+    for rel_path, content_b64 in files.items():
+        try:
+            content = base64.b64decode(content_b64)
+        except Exception as exc:
+            raise OpError(ErrorCode.EPROTOCOL, f"Invalid base64 for {rel_path!r}: {exc}")
+        dest = pathlib.Path(state_dir) / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(content)
+        staged.append(rel_path)
+
+    # Stage new/modified files.
+    if staged:
+        await _run_git(state_dir, "add", "--", *staged)
+
+    # Delete files.
+    if deletes:
+        await _run_git(state_dir, "rm", "--quiet", "--ignore-unmatch", "--", *deletes)
+
+    # Commit.
+    commit_args = ["commit", "--quiet", "-m", message]
+    if allow_empty:
+        commit_args.insert(1, "--allow-empty")
+    await _run_git(state_dir, *commit_args)
+
+    # Return the HEAD sha.
+    sha_raw, _ = await _run_git(state_dir, "rev-parse", "HEAD")
+    return {"sha": sha_raw.strip()}
+
+
+async def state_read(args: dict, workspace_root: str) -> dict:
+    """``state_read`` op: read files from <workspace_root>/.state by path.
+
+    args:
+      paths  list[str]  -- relative paths to read
+
+    Returns: {"files": {path: content_b64_or_null}}
+    where each value is a base64 string if the file exists, or null if absent.
+    """
+    paths: list[str] = args.get("paths") or []
+    state_dir = pathlib.Path(workspace_root) / ".state"
+
+    result: dict[str, str | None] = {}
+    for rel_path in paths:
+        target = state_dir / rel_path
+        if target.exists() and target.is_file():
+            content = target.read_bytes()
+            result[rel_path] = base64.b64encode(content).decode()
+        else:
+            result[rel_path] = None
+
+    return {"files": result}
+
+
+async def state_history(args: dict, workspace_root: str) -> dict:
+    """``state_history`` op: return git log of <workspace_root>/.state.
+
+    args:
+      limit       int         -- max commits to return (default 100)
+      session_id  str|None    -- filter by X-Primer-Session trailer
+      agent_id    str|None    -- filter by X-Primer-Agent trailer
+
+    Returns: {"commits": [<record-dict>, ...]}
+    Each record has: sha, subject, committed_at (ISO-8601), workspace_id,
+    session_id, agent_id, op, tool, call_id (all str|None except sha/subject/committed_at).
+    Newest first.
+    """
+    limit: int = int(args.get("limit", 100))
+    session_id: str | None = args.get("session_id")
+    agent_id: str | None = args.get("agent_id")
+
+    state_dir = os.path.join(workspace_root, ".state")
+
+    git_args = [
+        "log",
+        f"--max-count={limit}",
+        f"--format={_GIT_LOG_FORMAT}",
+    ]
+    if session_id is not None:
+        git_args += ["--grep", f"^X-Primer-Session: {session_id}$"]
+    if agent_id is not None:
+        git_args += ["--grep", f"^X-Primer-Agent: {agent_id}$"]
+    if session_id is not None and agent_id is not None:
+        git_args.append("--all-match")
+
+    stdout, _ = await _run_git(state_dir, *git_args, allow_empty_repo=True)
+    commits = _parse_log_records(stdout)
+    return {"commits": commits}
+
+
+# ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
 
@@ -270,4 +479,7 @@ HANDLERS: dict[str, object] = {
     "list_dir": list_dir,
     "stat": stat,
     "delete": delete,
+    "state_commit": state_commit,
+    "state_read": state_read,
+    "state_history": state_history,
 }
