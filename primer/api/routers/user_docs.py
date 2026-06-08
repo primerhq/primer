@@ -75,7 +75,7 @@ async def get_ai_doc_mirror(slug: str, request: Request) -> dict[str, Any]:
             status_code=404,
             detail={
                 "error": "not_found",
-                "message": f"no AI doc at primer/ai_docs/{slug}.md",
+                "message": f"no AI doc at docs/agents/{slug}.md",
             },
         )
     return data

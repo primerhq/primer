@@ -326,17 +326,15 @@ def run_lint(
                         ))
             elif directive.startswith("ai-doc:"):
                 slug_part = directive[len("ai-doc:"):]
-                # noqa: SLF001 — accessing the service's root path is
-                # the documented contract for the lint runner.
-                ai_doc_path = (
-                    svc._root.parent / "ai_docs" / f"{slug_part}.md"
-                )  # noqa: SLF001
+                from primer.ai_docs_path import resolve_ai_docs_dir
+
+                ai_doc_path = resolve_ai_docs_dir() / f"{slug_part}.md"
                 if not ai_doc_path.exists():
                     issues.append(LintIssue(
                         file=rel_path, line=start_line - 1,
                         rule="broken_ref", severity="error",
                         message=(
-                            f"ai-doc target primer/ai_docs/{slug_part}.md "
+                            f"ai-doc target docs/agents/{slug_part}.md "
                             f"not found"
                         ),
                     ))

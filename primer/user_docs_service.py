@@ -183,7 +183,9 @@ class UserDocsService:
         """Return the AI-doc at primer/ai_docs/<slug>.md, parsed the
         same way as a user doc. Returns None when the file does not
         exist. Used by the /v1/user_docs/_ai/<slug> mirror route."""
-        ai_root = self._root.parent / "ai_docs"
+        from primer.ai_docs_path import resolve_ai_docs_dir
+
+        ai_root = resolve_ai_docs_dir()
         path = ai_root / f"{slug}.md"
         if not path.exists():
             return None
