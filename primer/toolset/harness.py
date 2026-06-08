@@ -27,7 +27,8 @@ from uuid import uuid4
 
 from pydantic import SecretStr
 
-from primer.model.chat import Tool, ToolCallResult
+from primer.model.chat import Tool, ToolCallResult, ToolExample
+from primer.toolset._describe import make_tool
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.harness import Harness, HarnessOperation, HarnessRendering, HarnessStatus
 from primer.model.storage import (
@@ -75,12 +76,16 @@ def _harness_dict(harness: Harness) -> dict:
 # Tool descriptors
 # ---------------------------------------------------------------------------
 
-TOOL_LIST = Tool(
+TOOL_LIST = make_tool(
     id="harness__list",
     toolset_id=HARNESS_TOOLSET_ID,
-    description=(
-        "List harnesses with optional filters. Returns a paginated response "
-        "with items, total, offset, and length."
+    purpose=(
+        "List harnesses, optionally filtered, as a paginated response "
+        "(``items``, ``total``, ``offset``, ``length``)."
+    ),
+    when=(
+        "Use when you need to enumerate or filter harnesses; not for "
+        "fetching one known id (use ``harness__get``)."
     ),
     args_schema={
         "type": "object",
@@ -95,12 +100,21 @@ TOOL_LIST = Tool(
             "length": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
         },
     },
+    examples=[
+        ToolExample(args={}, returns="first page of harnesses"),
+        ToolExample(args={"status": "installed", "length": 20}, returns="installed only"),
+    ],
 )
 
-TOOL_GET = Tool(
+TOOL_GET = make_tool(
     id="harness__get",
     toolset_id=HARNESS_TOOLSET_ID,
-    description="Get a single harness by id. Returns the full row or is_error=true type=not-found.",
+    purpose="Get a single harness by id, returning the full row.",
+    when=(
+        "Use when you have a known harness id; not for searching or "
+        "filtering (use ``harness__list``). Returns ``is_error=true`` "
+        "``type=not-found`` when the id is unknown."
+    ),
     args_schema={
         "type": "object",
         "required": ["id"],
@@ -108,14 +122,19 @@ TOOL_GET = Tool(
             "id": {"type": "string", "description": "The harness id (e.g. hns_abc123)."},
         },
     },
+    examples=[
+        ToolExample(args={"id": "hns-1"}, returns="the harness row or not-found"),
+    ],
 )
 
-TOOL_REGISTER = Tool(
+TOOL_REGISTER = make_tool(
     id="harness__register",
     toolset_id=HARNESS_TOOLSET_ID,
-    description=(
-        "Register a new harness (git-backed bundle). Status: DRAFT. "
-        "Call harness__fetch next to load schema."
+    purpose="Register a new git-backed harness, creating it in status DRAFT.",
+    when=(
+        "Use when onboarding a new harness from a git repo; the row starts "
+        "as DRAFT, so call ``harness__fetch`` next to load its schema. Slug "
+        "must be unique (returns ``type=conflict`` otherwise)."
     ),
     args_schema={
         "type": "object",
@@ -134,12 +153,24 @@ TOOL_REGISTER = Tool(
             "description": {"type": "string", "maxLength": 2000},
         },
     },
+    examples=[
+        ToolExample(
+            args={"name": "My Harness", "slug": "my-harness", "git_url": "https://github.com/acme/h"},
+            returns="DRAFT harness",
+            note="call harness__fetch next",
+        ),
+    ],
 )
 
-TOOL_UPDATE = Tool(
+TOOL_UPDATE = make_tool(
     id="harness__update",
     toolset_id=HARNESS_TOOLSET_ID,
-    description="Update mutable metadata on a harness (name, description, ref, subpath, git_token).",
+    purpose="Update mutable metadata on a harness (name, description, ref, subpath, git_token).",
+    when=(
+        "Use when changing a harness's metadata; not for changing override "
+        "values (use ``harness__update_overrides``). Changing ``ref`` or "
+        "``subpath`` marks overrides dirty."
+    ),
     args_schema={
         "type": "object",
         "required": ["id"],
@@ -152,15 +183,20 @@ TOOL_UPDATE = Tool(
             "git_token": {"type": "string"},
         },
     },
+    examples=[
+        ToolExample(args={"id": "hns-1", "description": "new text"}, returns="updated row"),
+    ],
 )
 
-TOOL_UPDATE_OVERRIDES = Tool(
+TOOL_UPDATE_OVERRIDES = make_tool(
     id="harness__update_overrides",
     toolset_id=HARNESS_TOOLSET_ID,
-    description=(
-        "Validate overrides against the cached schema and store them. "
-        "Returns is_error=true type=overrides-invalid if validation fails. "
-        "Returns is_error=true type=overrides-schema-missing if no schema is cached."
+    purpose="Validate overrides against the cached schema and store them.",
+    when=(
+        "Use when setting a harness's override values; not for metadata "
+        "(use ``harness__update``). Returns ``type=overrides-invalid`` if "
+        "validation fails, or ``type=overrides-schema-missing`` if no schema "
+        "is cached yet (run ``harness__fetch`` first)."
     ),
     args_schema={
         "type": "object",
@@ -170,14 +206,24 @@ TOOL_UPDATE_OVERRIDES = Tool(
             "overrides": {"type": "object", "description": "Override values dict."},
         },
     },
+    examples=[
+        ToolExample(
+            args={"id": "hns-1", "overrides": {"some_key": "value"}},
+            returns="stored overrides",
+            note="validated against cached schema",
+        ),
+    ],
 )
 
-TOOL_FETCH = Tool(
+TOOL_FETCH = make_tool(
     id="harness__fetch",
     toolset_id=HARNESS_TOOLSET_ID,
-    description=(
-        "Enqueue a FETCH operation for the harness. Returns 202-style ack with "
-        "pending_operation=fetch. Returns is_error=true type=conflict if already pending."
+    purpose="Enqueue a FETCH operation to load the harness bundle and overrides schema.",
+    when=(
+        "Use when you need to load or refresh a harness's bundle/schema "
+        "(e.g. right after registering); not to apply it (use "
+        "``harness__install``). Returns ``type=conflict`` if an operation is "
+        "already pending."
     ),
     args_schema={
         "type": "object",
@@ -186,14 +232,20 @@ TOOL_FETCH = Tool(
             "id": {"type": "string"},
         },
     },
+    examples=[
+        ToolExample(args={"id": "hns-1"}, returns="enqueued FETCH"),
+    ],
 )
 
-TOOL_INSTALL = Tool(
+TOOL_INSTALL = make_tool(
     id="harness__install",
     toolset_id=HARNESS_TOOLSET_ID,
-    description=(
-        "Enqueue an INSTALL operation. Requires status in [draft, ready, outdated] "
-        "and an overrides schema cached. Returns is_error=true on conflict or missing schema."
+    purpose="Enqueue an INSTALL operation to apply the harness.",
+    when=(
+        "Use when activating a fetched harness; requires status in "
+        "[draft, ready, outdated] and an overrides schema cached "
+        "(run ``harness__fetch`` first). Returns ``type=conflict`` or "
+        "``type=overrides-schema-missing`` when preconditions are unmet."
     ),
     args_schema={
         "type": "object",
@@ -202,14 +254,24 @@ TOOL_INSTALL = Tool(
             "id": {"type": "string"},
         },
     },
+    examples=[
+        ToolExample(
+            args={"id": "hns-1"},
+            returns="enqueued INSTALL",
+            note="requires status draft/ready/outdated + overrides cached",
+        ),
+    ],
 )
 
-TOOL_SYNC = Tool(
+TOOL_SYNC = make_tool(
     id="harness__sync",
     toolset_id=HARNESS_TOOLSET_ID,
-    description=(
-        "Enqueue a SYNC operation. Requires status in [installed, outdated] and a "
-        "fetched bundle. Returns is_error=true on conflict or missing bundle."
+    purpose="Enqueue a SYNC operation to reconcile an installed harness.",
+    when=(
+        "Use when re-applying an already-installed harness; requires status "
+        "in [installed, outdated] and a fetched bundle. Returns "
+        "``type=conflict`` or ``type=fetch-required`` when preconditions are "
+        "unmet; not for first activation (use ``harness__install``)."
     ),
     args_schema={
         "type": "object",
@@ -218,14 +280,23 @@ TOOL_SYNC = Tool(
             "id": {"type": "string"},
         },
     },
+    examples=[
+        ToolExample(
+            args={"id": "hns-1"},
+            returns="enqueued SYNC",
+            note="requires status installed/outdated",
+        ),
+    ],
 )
 
-TOOL_UNINSTALL = Tool(
+TOOL_UNINSTALL = make_tool(
     id="harness__uninstall",
     toolset_id=HARNESS_TOOLSET_ID,
-    description=(
-        "Enqueue an UNINSTALL operation. Returns is_error=true type=conflict "
-        "if a pending operation is already set."
+    purpose="Enqueue an UNINSTALL operation to remove an installed harness.",
+    when=(
+        "Use when tearing down a harness; not to pause/refresh it (use "
+        "``harness__sync``). Returns ``type=conflict`` if an operation is "
+        "already pending."
     ),
     args_schema={
         "type": "object",
@@ -234,6 +305,9 @@ TOOL_UNINSTALL = Tool(
             "id": {"type": "string"},
         },
     },
+    examples=[
+        ToolExample(args={"id": "hns-1"}, returns="enqueued UNINSTALL"),
+    ],
 )
 
 

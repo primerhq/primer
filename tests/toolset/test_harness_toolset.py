@@ -489,6 +489,16 @@ class TestCatalog:
             assert tool.toolset_id == HARNESS_TOOLSET_ID
 
 
+@pytest.mark.asyncio
+async def test_harness_tools_conform(toolset) -> None:
+    from tests.toolset._desc_conformance import assert_tool_conforms
+    count = 0
+    async for tool in toolset.list_tools():
+        assert_tool_conforms(tool)
+        count += 1
+    assert count == 9
+
+
 # ===========================================================================
 # harness__update
 # ===========================================================================
