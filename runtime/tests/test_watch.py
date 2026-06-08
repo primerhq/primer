@@ -23,7 +23,7 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestServer
 
-from primer_runtime.server import build_app
+from primer_runtime.server import build_app, PROTOCOL_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ class ServerFixture:
             )
             # Complete handshake
             await ws.send_json(
-                {"req_id": 0, "op": "hello", "args": {"protocol": "1.0", "client": "test/0"}}
+                {"req_id": 0, "op": "hello", "args": {"protocol": PROTOCOL_VERSION, "client": "test/0"}}
             )
             resp = await ws.receive_json()
             assert resp["ok"] is True, f"Handshake failed: {resp}"

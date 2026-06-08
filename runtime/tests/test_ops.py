@@ -20,7 +20,7 @@ from aiohttp.test_utils import TestServer
 from primer_runtime.exec import run_exec
 from primer_runtime.ops import OpError, append_line, delete, list_dir, read_file, stat, write_file
 from primer_runtime.protocol import ErrorCode
-from primer_runtime.server import build_app
+from primer_runtime.server import build_app, PROTOCOL_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ class ServerFixture:
         try:
             ws = await session.ws_connect(url, headers={"Authorization": f"Bearer {token}"})
             # Complete handshake
-            await ws.send_json({"req_id": 0, "op": "hello", "args": {"protocol": "1.0", "client": "test/0"}})
+            await ws.send_json({"req_id": 0, "op": "hello", "args": {"protocol": PROTOCOL_VERSION, "client": "test/0"}})
             resp = await ws.receive_json()
             assert resp["ok"] is True, f"Handshake failed: {resp}"
             try:

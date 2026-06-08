@@ -71,12 +71,12 @@ async def test_handshake_correct_token_correct_protocol(server: ServerFixture) -
             {
                 "req_id": 0,
                 "op": "hello",
-                "args": {"protocol": "1.0", "client": "test/0"},
+                "args": {"protocol": PROTOCOL_VERSION, "client": "test/0"},
             }
         )
         resp = await ws.receive_json()
         assert resp["ok"] is True
-        assert resp["result"]["protocol"] == "1.0"
+        assert resp["result"]["protocol"] == PROTOCOL_VERSION
 
 
 @pytest.mark.asyncio
@@ -117,7 +117,7 @@ async def test_unknown_op_returns_eunsupported(server: ServerFixture) -> None:
             {
                 "req_id": 0,
                 "op": "hello",
-                "args": {"protocol": "1.0", "client": "test/0"},
+                "args": {"protocol": PROTOCOL_VERSION, "client": "test/0"},
             }
         )
         _ = await ws.receive_json()  # consume hello response

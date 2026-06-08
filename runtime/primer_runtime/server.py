@@ -39,7 +39,7 @@ _KEY_WORKSPACE_ROOT: web.AppKey[str] = web.AppKey("workspace_root", str)
 # Version constants
 # ---------------------------------------------------------------------------
 
-PROTOCOL_VERSION: str = "1.0"
+PROTOCOL_VERSION: str = "1.1"
 RUNTIME_VERSION: str = "1.0.0"
 
 _PROTOCOL_MAJOR: int = int(PROTOCOL_VERSION.split(".")[0])

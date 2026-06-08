@@ -17,6 +17,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+PROTOCOL_VERSION: str = "1.1"
+
 
 class OpName(StrEnum):
     HELLO = "hello"
@@ -31,6 +33,9 @@ class OpName(StrEnum):
     EXEC = "exec"
     WATCH_START = "watch_start"
     WATCH_CANCEL = "watch_cancel"
+    STATE_COMMIT = "state_commit"
+    STATE_READ = "state_read"
+    STATE_HISTORY = "state_history"
 
 
 class ErrorCode(StrEnum):

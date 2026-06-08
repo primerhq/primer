@@ -7,7 +7,8 @@ from primer.workspace.runtime.protocol import (
 def test_op_names_complete():
     expected = {"hello", "health", "read_file", "write_file", "append_line",
                 "list_dir", "stat", "delete", "archive",
-                "exec", "watch_start", "watch_cancel"}
+                "exec", "watch_start", "watch_cancel",
+                "state_commit", "state_read", "state_history"}
     actual = {op.value for op in OpName}
     assert actual == expected
 

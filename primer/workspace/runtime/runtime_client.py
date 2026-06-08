@@ -112,7 +112,7 @@ class RuntimeClient:
         *,
         url: str,
         token: str,
-        protocol_version: str = "1.0",
+        protocol_version: str = "1.1",
     ) -> None:
         self._url = url
         self._token = token
