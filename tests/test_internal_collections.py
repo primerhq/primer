@@ -149,12 +149,14 @@ class _FakeEmbedder:
         self.calls.append((model, list(inputs)))
 
         class _R:
-            def __init__(self, vec):
-                self.embeddings = [type("E", (), {"vector": vec})()]
+            def __init__(self, vecs):
+                self.embeddings = [type("E", (), {"vector": v})() for v in vecs]
 
-        text = inputs[0].text
-        vec = [float((hash(text) >> i) & 0xFF) / 255.0 for i in range(self.dim)]
-        return _R(vec)
+        vecs = [
+            [float((hash(inp.text) >> i) & 0xFF) / 255.0 for i in range(self.dim)]
+            for inp in inputs
+        ]
+        return _R(vecs)
 
 
 class _FakePR:
@@ -763,3 +765,25 @@ class TestAiDocsBootstrap:
         sub = await docs.get("cookbook/pr-reviewer")
         assert sub is not None
         assert sub.meta["slug"] == "cookbook/pr-reviewer"
+
+    @pytest.mark.asyncio
+    async def test_ingest_from_real_docs_agents_dir(self, subsystem, sp) -> None:
+        from primer.ai_docs_path import resolve_ai_docs_dir
+        from primer.model.collection import Document
+
+        root = resolve_ai_docs_dir()
+        assert root.name == "agents" and root.is_dir(), f"unexpected: {root}"
+
+        await subsystem._materialise_collection_rows()
+
+        async def _emit(*a, **k):
+            return None
+
+        counts: dict[str, int] = {"docs": 0}
+        n = await subsystem._ingest_ai_docs(
+            _emit, counts, ingester_factory=_ingester_factory_for_test()
+        )
+        assert n >= 14  # 14 feature docs (cookbook recipes add more later)
+        docs = sp.get_storage(Document)
+        assert await docs.get("agents") is not None
+        assert await docs.get("sessions") is not None

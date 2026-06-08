@@ -61,6 +61,7 @@ RUN uv sync --frozen --no-install-project --no-dev
 
 # ----- Layer 4: project source -----
 COPY primer ./primer
+COPY docs ./docs
 COPY ui ./ui
 COPY docker/primer/entrypoint.sh /usr/local/bin/primer-entrypoint.sh
 RUN chmod +x /usr/local/bin/primer-entrypoint.sh
