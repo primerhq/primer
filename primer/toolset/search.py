@@ -25,8 +25,9 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from primer.model.chat import Tool, ToolCallResult
+from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import ConfigError, PrimerError, NotFoundError
+from primer.toolset._describe import make_tool
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -167,39 +168,28 @@ def _make_ai_docs_handler(
 
 
 def _descriptor(name: str, pretty: str) -> Tool:
-    return Tool(
+    return make_tool(
         id=name,
-        description=(
-            f"Semantic search over {pretty} via the internal "
-            f"collections subsystem. Embeds the query via the "
-            "configured embedding provider, searches the reserved "
-            f"``_internal_{pretty}`` collection in the vector store, "
-            "and returns up to ``top_k`` hits ordered by relevance. "
-            "Each hit carries ``document_id`` (the entity id), an "
-            "optional similarity ``score``, and the ``text`` that was "
-            "embedded plus the entity's serialized ``meta``. Returns "
-            "``is_error=true`` ``type=subsystem-inactive`` when the "
-            "internal collections subsystem has not been bootstrapped."
-        ),
         toolset_id=SEARCH_TOOLSET_ID,
+        purpose=(
+            f"Semantic search over {pretty}: embed the query and return up "
+            f"to ``top_k`` hits from the reserved ``_internal_{pretty}`` "
+            "collection, each with ``document_id``, ``score``, ``text`` and "
+            "``meta``."
+        ),
+        when=(
+            f"Use when you need to discover {pretty} by meaning rather than "
+            "by exact id; if you already know the id, look it up directly "
+            "instead of searching."
+        ),
         args_schema=_SearchArgs.model_json_schema(),
+        examples=[
+            ToolExample(
+                args={"query": "code review", "top_k": 5},
+                returns=f"up to 5 {pretty} ranked by relevance",
+            ),
+        ],
     )
-
-
-_AI_DOCS_DESCRIPTION = (
-    "Semantic search over agent-facing platform documentation. "
-    "Returns ranked chunks of the markdown docs shipped in "
-    "``primer.ai_docs`` — each one a section (e.g. 'Overview', "
-    "'Gotchas') of a single capability doc. Each hit carries "
-    "``document_id`` (the doc's slug, e.g. ``agents`` or ``chats``), "
-    "``chunk_id``, similarity ``score``, the chunk ``text`` that "
-    "matched, and the parent doc's metadata (title, summary, "
-    "mcp_tools list). Pair with ``system::get_document_content`` to "
-    "fetch the whole doc once a relevant slug is identified, or call "
-    "``system::get_document`` for the metadata row only. Returns "
-    "``is_error=true`` ``type=subsystem-inactive`` when the internal "
-    "collections subsystem has not been bootstrapped."
-)
 
 
 def build_search_toolset(
@@ -224,11 +214,27 @@ def build_search_toolset(
     # search via the same vector store + embedder. Pair with
     # system::get_document_content for full-doc retrieval.
     registry["search_ai_docs"] = (
-        Tool(
+        make_tool(
             id="search_ai_docs",
-            description=_AI_DOCS_DESCRIPTION,
             toolset_id=toolset_id,
+            purpose=(
+                "Semantic search over the agent-facing documentation collection; "
+                "returns the most relevant doc chunks, each whose ``document_id`` "
+                "is the doc slug (e.g. ``agents``, ``chats``)."
+            ),
+            when=(
+                "Use when you need platform usage guidance or how-to docs; pair "
+                "with ``get_document_content`` on a returned slug to fetch the "
+                "full document. Not for user-defined collections (use "
+                "``search_collections``)."
+            ),
             args_schema=_SearchArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"query": "how do graphs work", "top_k": 3},
+                    returns="top doc chunks",
+                ),
+            ],
         ),
         _make_ai_docs_handler(subsystem),
     )

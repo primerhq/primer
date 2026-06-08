@@ -95,4 +95,11 @@ class TestCatalog:
         ])
         async for tool in toolset.list_tools():
             assert tool.toolset_id == SEARCH_TOOLSET_ID
-            assert "Semantic search" in tool.description
+
+
+class TestDescriptions:
+    @pytest.mark.asyncio
+    async def test_search_tools_conform(self, toolset) -> None:
+        from tests.toolset._desc_conformance import assert_tool_conforms
+        async for tool in toolset.list_tools():
+            assert_tool_conforms(tool)
