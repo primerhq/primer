@@ -551,14 +551,5 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         """
         return f"graphs/{self._graph_session_id}/{filename}"
 
-    def _repo_rel(self, p: Path) -> str:
-        """Return ``p`` as a forward-slash path relative to the state repo root.
-
-        Only valid for :class:`~primer.workspace.local.state.LocalStateRepo`
-        (which has a ``path`` attribute). Use :meth:`_state_rel` instead when
-        building paths that must also work on sandbox backends.
-        """
-        return p.relative_to(self._state_repo.path).as_posix()
-
 
 __all__ = ["WorkspaceGraphExecutor"]
