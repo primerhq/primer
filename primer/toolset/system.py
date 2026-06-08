@@ -44,12 +44,14 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 from primer.model.agent import Agent
-from primer.model.chat import Tool, ToolCallResult
+from primer.model.chat import Tool, ToolCallResult, ToolExample
+from primer.toolset._describe import make_tool
 from primer.model.collection import Collection, Document
 from primer.model.common import Identifiable
 from primer.model.except_ import (
@@ -230,6 +232,183 @@ def _parse_order_by(spec: list[str] | None) -> list[OrderBy] | None:
 
 
 # ===========================================================================
+# CRUD description helpers: self-contained create/update schemas + hint table
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class _EntityHint:
+    sample_id: str
+    create_body: dict  # a MINIMAL VALID body for create/update examples
+
+
+def _create_schema(model_cls: type) -> dict:
+    """Self-contained JSON schema for {entity: <model>} (root-level $defs)."""
+    wrapper = create_model(f"_Create_{model_cls.__name__}", entity=(model_cls, ...))
+    return wrapper.model_json_schema()
+
+
+def _update_schema(model_cls: type) -> dict:
+    wrapper = create_model(
+        f"_Update_{model_cls.__name__}", id=(str, ...), entity=(model_cls, ...)
+    )
+    return wrapper.model_json_schema()
+
+
+_ENTITY_HINTS: dict[str, _EntityHint] = {
+    "agent": _EntityHint(
+        sample_id="code-reviewer",
+        create_body={
+            "id": "code-reviewer",
+            "description": "Reviews diffs",
+            "model": {"provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6"},
+        },
+    ),
+    "graph": _EntityHint(
+        sample_id="incident-pipeline",
+        create_body={
+            "id": "incident-pipeline",
+            "description": "Begin to End",
+            "nodes": [
+                {"kind": "begin", "id": "begin"},
+                {"kind": "end", "id": "end"},
+            ],
+            "edges": [{"kind": "static", "from_node": "begin", "to_node": "end"}],
+        },
+    ),
+    "collection": _EntityHint(
+        sample_id="kb-1",
+        create_body={
+            "id": "kb-1",
+            "description": "Knowledge base",
+            "embedder": {"provider_id": "hf-1", "model": "all-MiniLM-L6-v2"},
+            "search_provider_id": "ssp-1",
+        },
+    ),
+    "llm_provider": _EntityHint(
+        sample_id="anthropic-1",
+        create_body={
+            "id": "anthropic-1",
+            "provider": "anthropic",
+            "models": [{"name": "claude-sonnet-4-6", "context_length": 200000}],
+            "config": {"api_key": "sk-x"},
+            "limits": {"max_concurrency": 4},
+        },
+    ),
+    "embedding_provider": _EntityHint(
+        sample_id="hf-1",
+        create_body={
+            "id": "hf-1",
+            "provider": "huggingface",
+            "models": [{"name": "all-MiniLM-L6-v2"}],
+            "config": {"token": "hf-x"},
+            "limits": {"max_concurrency": 4},
+        },
+    ),
+    "cross_encoder_provider": _EntityHint(
+        sample_id="ce-1",
+        create_body={
+            "id": "ce-1",
+            "provider": "huggingface",
+            "models": [{"name": "BAAI/bge-reranker-v2-m3"}],
+            "config": {"token": "hf-x"},
+            "limits": {"max_concurrency": 4},
+        },
+    ),
+    "semantic_search_provider": _EntityHint(
+        sample_id="ssp-1",
+        create_body={
+            "id": "ssp-1",
+            "provider": "pgvector",
+            "config": {
+                "hostname": "localhost",
+                "username": "primer",
+                "password": "secret",
+                "database": "primer",
+            },
+        },
+    ),
+    "toolset": _EntityHint(
+        sample_id="github-mcp",
+        create_body={
+            "id": "github-mcp",
+            "provider": "mcp",
+            "config": {
+                "transport": "http",
+                "config": {"url": "https://mcp.example.com"},
+            },
+        },
+    ),
+    "document": _EntityHint(
+        sample_id="doc-1",
+        create_body={
+            "id": "doc-1",
+            "collection_id": "kb-1",
+            "name": "Onboarding guide",
+        },
+    ),
+    "agent_thread": _EntityHint(
+        sample_id="thread-1",
+        create_body={
+            "id": "thread-1",
+            "agent_id": "code-reviewer",
+            "created_at": "2026-01-01T00:00:00Z",
+            "last_activity_at": "2026-01-01T00:00:00Z",
+        },
+    ),
+    "graph_thread": _EntityHint(
+        sample_id="gthread-1",
+        create_body={
+            "id": "gthread-1",
+            "graph_id": "incident-pipeline",
+            "created_at": "2026-01-01T00:00:00Z",
+            "last_activity_at": "2026-01-01T00:00:00Z",
+        },
+    ),
+    "tool_approval_policy": _EntityHint(
+        sample_id="tap-1",
+        create_body={
+            "id": "tap-1",
+            "toolset_id": "system",
+            "tool_name": "delete_agent",
+            "approval": {"type": "required"},
+        },
+    ),
+    "channel_provider": _EntityHint(
+        sample_id="slack-1",
+        create_body={
+            "id": "slack-1",
+            "provider": "slack",
+            "config": {"app_token": "xapp-x", "bot_token": "xoxb-x"},
+        },
+    ),
+    "channel": _EntityHint(
+        sample_id="chan-1",
+        create_body={
+            "id": "chan-1",
+            "provider_id": "slack-1",
+            "external_id": "C12345",
+        },
+    ),
+    "workspace_channel_association": _EntityHint(
+        sample_id="wca-1",
+        create_body={
+            "id": "wca-1",
+            "workspace_id": "ws-1",
+            "channel_id": "chan-1",
+        },
+    ),
+}
+
+
+def _hint(entity_label: str) -> _EntityHint:
+    return _ENTITY_HINTS.get(
+        entity_label,
+        _EntityHint(sample_id=f"{entity_label}-1", create_body={"id": f"{entity_label}-1"}),
+    )
+
+
+# ===========================================================================
 # Generic CRUD tool factory — produces 6 tools per entity
 # ===========================================================================
 
@@ -249,14 +428,15 @@ def _crud_tools_for(
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
 
-    Schemas embed the entity model's full JSON schema for create/update
-    so the LLM sees every required and optional field on the entity
-    type rather than a generic dict.
+    Create/update use a self-contained wrapper-model schema (built via
+    ``_create_schema`` / ``_update_schema``) so the embedded ``$defs``
+    resolve at the document root for validation, rather than a generic
+    dict.
     """
     storage = storage_provider.get_storage(model_cls)
     cls_name = model_cls.__name__
     tools: dict[str, tuple[Tool, ToolHandler]] = {}
-    entity_schema = model_cls.model_json_schema()
+    hint = _hint(entity_label)
 
     # ---- list ---------------------------------------------------------
     async def _list_handler(arguments: dict[str, Any]) -> ToolCallResult:
@@ -275,20 +455,25 @@ def _crud_tools_for(
         return _ok(response)
 
     tools[f"list_{entity_label_plural}"] = (
-        Tool(
+        make_tool(
             id=f"list_{entity_label_plural}",
-            description=(
-                f"List {cls_name} entities with pagination. Supply "
-                "``offset`` (default 0) OR ``cursor`` (mutually exclusive). "
-                "``limit`` defaults to 20, max 200. Optional ``order_by`` "
-                "sort spec like ``['id:asc']``. Returns a page object "
-                "with ``items`` (the entities), ``length`` (count this "
-                "page), ``total`` (full set count, offset mode only), "
-                "and ``next_cursor`` (cursor mode only). On invalid "
-                "arguments returns ``is_error=true``."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=(
+                f"List {cls_name} rows as a page object (``items``, "
+                "``length``, ``total``, ``next_cursor``)."
+            ),
+            when=(
+                "Use when you need to browse or paginate this entity type; "
+                "not for one known id (use ``get``) or a predicate (use "
+                "``find``)."
+            ),
             args_schema=_PaginationArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"offset": 0, "limit": 20},
+                    returns=f"a page of {entity_label_plural}",
+                )
+            ],
         ),
         _list_handler,
     )
@@ -307,15 +492,15 @@ def _crud_tools_for(
         return _ok(row)
 
     tools[f"get_{entity_label}"] = (
-        Tool(
+        make_tool(
             id=f"get_{entity_label}",
-            description=(
-                f"Fetch one {cls_name} by its ``id``. Returns the full "
-                "entity object on success. Returns ``is_error=true`` "
-                "with ``type=not-found`` if no row has that id."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=f"Fetch one {cls_name} by ``id``; returns the full entity.",
+            when="Use when you know the exact id; returns ``type=not-found`` otherwise.",
             args_schema=_GetByIdArgs.model_json_schema(),
+            examples=[
+                ToolExample(args={"id": hint.sample_id}, returns=f"the {entity_label}")
+            ],
         ),
         _get_handler,
     )
@@ -346,23 +531,24 @@ def _crud_tools_for(
         return _ok(created)
 
     tools[f"create_{entity_label}"] = (
-        Tool(
+        make_tool(
             id=f"create_{entity_label}",
-            description=(
-                f"Create a new {cls_name}. Body shape is the full "
-                f"{cls_name} schema (see ``entity`` parameter). The "
-                "entity's ``id`` field is the wire-level identifier — "
-                "must be unique across this entity type. Returns the "
-                "created entity (echoes back the body). On duplicate id "
-                "returns ``is_error=true`` with ``type=conflict``; on "
-                "schema violation returns ``type=validation-error``."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            args_schema={
-                "type": "object",
-                "properties": {"entity": entity_schema},
-                "required": ["entity"],
-            },
+            purpose=(
+                f"Create a new {cls_name} from the full ``entity`` body; "
+                "the ``id`` must be unique."
+            ),
+            when=(
+                "Use when adding a new row; duplicate id returns "
+                "``type=conflict``, a bad body returns ``type=validation-error``."
+            ),
+            args_schema=_create_schema(model_cls),
+            examples=[
+                ToolExample(
+                    args={"entity": hint.create_body},
+                    returns=f"the stored {entity_label}",
+                )
+            ],
         ),
         _create_handler,
     )
@@ -399,31 +585,32 @@ def _crud_tools_for(
             await on_update(updated.id)
         return _ok(updated)
 
+    update_when = (
+        "Use when overwriting a whole row; the body ``id`` must "
+        "equal the path ``id``. Unknown id returns ``type=not-found``."
+    )
+    if on_update is not None:
+        update_when += (
+            " Mutating provider/toolset/vector-store rows invalidates the "
+            "matching cached adapter immediately."
+        )
+
     tools[f"update_{entity_label}"] = (
-        Tool(
+        make_tool(
             id=f"update_{entity_label}",
-            description=(
-                f"Replace an existing {cls_name}. Pass ``id`` (the row "
-                f"to update) and ``entity`` (the full new {cls_name} "
-                "body — replaces, does not patch). The body's ``id`` "
-                "must equal the path ``id``. Returns the updated entity. "
-                "Mutating provider/toolset/vector-store rows cascades to "
-                "invalidate the matching cached adapter. On unknown id "
-                "returns ``type=not-found``; on id mismatch returns "
-                "``type=conflict``."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
-            args_schema={
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "description": "Id of the row to replace.",
-                    },
-                    "entity": entity_schema,
-                },
-                "required": ["id", "entity"],
-            },
+            purpose=(
+                f"Replace an existing {cls_name}; pass ``id`` and the full "
+                "``entity`` (replaces, does not patch)."
+            ),
+            when=update_when,
+            args_schema=_update_schema(model_cls),
+            examples=[
+                ToolExample(
+                    args={"id": hint.sample_id, "entity": hint.create_body},
+                    returns=f"the updated {entity_label}",
+                )
+            ],
         ),
         _update_handler,
     )
@@ -447,18 +634,25 @@ def _crud_tools_for(
             await on_delete(args.id)
         return _ok({"deleted": True, "id": args.id})
 
+    delete_when = (
+        "Use when removing a row; unknown id returns ``type=not-found``."
+    )
+    if on_delete is not None:
+        delete_when += (
+            " Deleting provider/toolset/vector-store rows invalidates the "
+            "matching cached adapter immediately."
+        )
+
     tools[f"delete_{entity_label}"] = (
-        Tool(
+        make_tool(
             id=f"delete_{entity_label}",
-            description=(
-                f"Delete a {cls_name} by ``id``. Cascades to invalidate "
-                "the cached adapter for provider/toolset/vector-store "
-                "rows. Returns ``{'deleted': true, 'id': '...'}`` on "
-                "success. Returns ``type=not-found`` if no row has that "
-                "id."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=f"Delete a {cls_name} by ``id``; returns ``{{deleted, id}}``.",
+            when=delete_when,
             args_schema=_DeleteByIdArgs.model_json_schema(),
+            examples=[
+                ToolExample(args={"id": hint.sample_id}, returns="deletion ack")
+            ],
         ),
         _delete_handler,
     )
@@ -483,21 +677,37 @@ def _crud_tools_for(
         return _ok(response)
 
     tools[f"find_{entity_label_plural}"] = (
-        Tool(
+        make_tool(
             id=f"find_{entity_label_plural}",
-            description=(
-                f"Find {cls_name} entities matching a predicate tree. "
-                "Same pagination + ordering as ``list``. Pass "
-                "``predicate=null`` to match everything (equivalent to "
-                "list). The predicate is a binary tree — see "
-                "the ``predicate`` parameter description for the full "
-                "operator and operand shape."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=(
+                f"Find {cls_name} rows matching a predicate tree; same "
+                "pagination as ``list``."
+            ),
+            when=(
+                "Use when filtering by field values; pass ``predicate=null`` "
+                "to match all (equivalent to ``list``)."
+            ),
             args_schema=_FindArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={
+                        "predicate": {
+                            "kind": "predicate",
+                            "left": {"kind": "field", "name": "id"},
+                            "op": "=",
+                            "right": {"kind": "value", "value": hint.sample_id},
+                        }
+                    },
+                    returns="rows whose id equals the sample",
+                )
+            ],
         ),
         _find_handler,
     )
+
+    if hint.create_body:
+        model_cls.model_validate(hint.create_body)  # fail fast on a bad example body
 
     return tools
 

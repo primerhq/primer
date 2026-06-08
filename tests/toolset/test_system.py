@@ -187,6 +187,27 @@ def _thread() -> Thread:
     )
 
 
+# The (entity_label, entity_label_plural) pairs the CRUD factory generates a
+# six-verb tool set for. Mirrors ``crud_specs`` in build_system_toolset.
+_CRUD_ENTITIES = [
+    ("llm_provider", "llm_providers"),
+    ("embedding_provider", "embedding_providers"),
+    ("cross_encoder_provider", "cross_encoder_providers"),
+    ("toolset", "toolsets"),
+    ("agent", "agents"),
+    ("graph", "graphs"),
+    ("collection", "collections"),
+    ("document", "documents"),
+    ("agent_thread", "agent_threads"),
+    ("graph_thread", "graph_threads"),
+    ("semantic_search_provider", "semantic_search_providers"),
+    ("tool_approval_policy", "tool_approval_policies"),
+    ("channel_provider", "channel_providers"),
+    ("channel", "channels"),
+    ("workspace_channel_association", "workspace_channel_associations"),
+]
+
+
 # ===========================================================================
 # Catalog tests
 # ===========================================================================
@@ -241,6 +262,30 @@ class TestCatalog:
             assert t.description, f"empty description on {t.id}"
             assert len(t.description) > 30, f"too-thin description on {t.id}"
             assert isinstance(t.args_schema, dict)
+
+    @pytest.mark.asyncio
+    async def test_crud_tools_conform(self, system_toolset) -> None:
+        from tests.toolset._desc_conformance import assert_tool_conforms
+
+        # The CRUD factory emits exactly these six verbs per entity; the
+        # non-migrated extras (list_toolset_tools, find_collection_documents_
+        # by_meta, ...) are out of scope for this task (Task 9) so we match
+        # the generated tools by their exact verb-prefixed ids.
+        crud_ids = set()
+        for entity, plural in _CRUD_ENTITIES:
+            crud_ids.update(
+                {
+                    f"list_{plural}",
+                    f"get_{entity}",
+                    f"create_{entity}",
+                    f"update_{entity}",
+                    f"delete_{entity}",
+                    f"find_{plural}",
+                }
+            )
+        async for t in system_toolset.list_tools():
+            if t.id in crud_ids:
+                assert_tool_conforms(t)
 
 
 # ===========================================================================
