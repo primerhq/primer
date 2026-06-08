@@ -996,3 +996,18 @@ class TestProviderInvalidateCascade:
         )
         backend2 = await workspace_registry.get_backend("local-1")
         assert not getattr(backend2, "tagged", False)
+
+
+@pytest.mark.asyncio
+async def test_build_workspaces_toolset_accepts_session_deps(sp, workspace_registry):
+    from primer.toolset.workspaces import build_workspaces_toolset
+
+    ts = build_workspaces_toolset(
+        storage_provider=sp,
+        workspace_registry=workspace_registry,
+        scheduler=None,
+        claim_engine=None,
+        event_bus=None,
+    )
+    ids = [t.id async for t in ts.list_tools()]
+    assert "create_workspace" in ids

@@ -288,12 +288,9 @@ def _make_lifespan(config: AppConfig):
             semantic_search_registry=semantic_search_registry,
         )
         provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
-        # Build the always-on _workspaces toolset.
-        ws_toolset = build_workspaces_toolset(
-            storage_provider=storage_provider,
-            workspace_registry=workspace_registry,
-        )
-        provider_registry._workspaces_toolset_provider = ws_toolset  # noqa: SLF001
+        # NOTE: the always-on _workspaces toolset is built later in this
+        # lifespan (after the scheduler/claim_engine/event_bus exist) so its
+        # session tools can capture those deps. See the build below.
         # Build the always-on _misc toolset (stateless utilities).
         misc_toolset = build_misc_toolset()
         provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
@@ -337,7 +334,6 @@ def _make_lifespan(config: AppConfig):
         app.state.provider_registry = provider_registry
         app.state.workspace_registry = workspace_registry
         app.state.system_toolset = system_toolset
-        app.state.workspaces_toolset = ws_toolset
         app.state.misc_toolset = misc_toolset
         app.state.web_toolset = web_toolset
         app.state.internal_collections = None
@@ -627,6 +623,20 @@ def _make_lifespan(config: AppConfig):
                 app.state.coordinator_sweeper = coordinator_sweeper
         app.state.event_bus = event_bus
         app.state.claim_engine = claim_engine
+
+        # Build the always-on _workspaces toolset now that the scheduler,
+        # claim engine, and event bus exist (any may be None when no
+        # scheduler is configured; the session tools degrade to an
+        # ``unavailable`` error in that case).
+        ws_toolset = build_workspaces_toolset(
+            storage_provider=storage_provider,
+            workspace_registry=workspace_registry,
+            scheduler=scheduler,
+            claim_engine=claim_engine,
+            event_bus=event_bus,
+        )
+        provider_registry._workspaces_toolset_provider = ws_toolset  # noqa: SLF001
+        app.state.workspaces_toolset = ws_toolset
 
         # --- Session recovery on startup -----------------------------------
         # The claim engine + scheduler are in-memory; their state does NOT
@@ -1837,9 +1847,16 @@ def create_test_app(
             semantic_search_registry=_test_ssp_registry,
         )
     if workspaces_toolset is None:
+        # The test factory builds its scheduler/event_bus/claim_engine
+        # later (and only conditionally), so the session tools degrade to
+        # an ``unavailable`` error here. Tests that exercise them inject a
+        # pre-built ``workspaces_toolset`` instead.
         workspaces_toolset = build_workspaces_toolset(
             storage_provider=storage_provider,
             workspace_registry=workspace_registry,
+            scheduler=None,
+            claim_engine=None,
+            event_bus=None,
         )
     if misc_toolset is None:
         misc_toolset = build_misc_toolset()

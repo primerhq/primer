@@ -534,6 +534,9 @@ def build_workspaces_toolset(
     *,
     storage_provider: "StorageProvider",
     workspace_registry: "WorkspaceRegistry",
+    scheduler: "Any | None" = None,
+    claim_engine: "Any | None" = None,
+    event_bus: "Any | None" = None,
     toolset_id: str = WORKSPACES_TOOLSET_ID,
 ) -> InternalToolsetProvider:
     """Construct the immutable ``_workspaces`` toolset."""
