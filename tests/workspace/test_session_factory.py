@@ -14,6 +14,8 @@ import pytest
 
 from primer.int.claim import ClaimKind
 from primer.model.agent import Agent, AgentModel
+from primer.model.except_ import NotFoundError, ValidationError
+from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace_session import (
     AgentSessionBinding,
     GraphSessionBinding,
@@ -23,6 +25,7 @@ from primer.model.workspace_session import (
 from primer.workspace.session_factory import (
     SessionFactoryDeps,
     create_session,
+    start_workspace_session,
 )
 
 
@@ -244,3 +247,160 @@ async def test_create_session_works_with_seeded_agent(
     )
     assert isinstance(sess.binding, AgentSessionBinding)
     assert sess.binding.agent_id == "ag-1"
+
+
+# ---------------------------------------------------------------------------
+# start_workspace_session: the full create flow (validate + slot + persist)
+# ---------------------------------------------------------------------------
+
+
+class _FakeLiveWorkspace:
+    """Records start_session calls; otherwise a no-op."""
+
+    def __init__(self) -> None:
+        self.started: list[dict] = []
+
+    async def start_session(
+        self, binding, *, id, instructions, parent_session_id
+    ) -> None:
+        self.started.append(
+            {
+                "binding": binding,
+                "id": id,
+                "instructions": instructions,
+                "parent_session_id": parent_session_id,
+            }
+        )
+
+
+class _FakeWorkspaceRegistry:
+    """Tiny stub exposing async get_workspace(id)."""
+
+    def __init__(self, live: _FakeLiveWorkspace) -> None:
+        self._live = live
+        self.requested: list[str] = []
+
+    async def get_workspace(self, workspace_id: str) -> _FakeLiveWorkspace:
+        self.requested.append(workspace_id)
+        return self._live
+
+
+def _full_deps(
+    fake_storage_provider, fake_scheduler, fake_claim_engine, live,
+) -> SessionFactoryDeps:
+    return SessionFactoryDeps(
+        storage_provider=fake_storage_provider,
+        claim_engine=fake_claim_engine,
+        scheduler=fake_scheduler,
+        workspace_registry=_FakeWorkspaceRegistry(live),
+    )
+
+
+async def _seed_workspace(sp, workspace_id="ws-1") -> None:
+    from pydantic import SecretStr
+
+    from primer.model.workspace import WorkspaceRuntimeMeta
+
+    await sp.get_storage(WorkspaceRow).create(
+        WorkspaceRow(
+            id=workspace_id,
+            template_id="tpl-1",
+            provider_id="local-1",
+            created_at=datetime.now(timezone.utc),
+            runtime_meta=WorkspaceRuntimeMeta(
+                url="ws://127.0.0.1:5959/",
+                token=SecretStr("t"),
+            ),
+        ),
+    )
+
+
+async def _seed_agent(sp, agent_id="ag-1") -> None:
+    await sp.get_storage(Agent).create(
+        Agent(
+            id=agent_id,
+            description="x",
+            model=AgentModel(provider_id="p", model_name="m"),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_workspace_session_agent_happy_path(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    await _seed_workspace(fake_storage_provider)
+    await _seed_agent(fake_storage_provider)
+    live = _FakeLiveWorkspace()
+    deps = _full_deps(
+        fake_storage_provider, fake_scheduler, fake_claim_engine, live,
+    )
+
+    sess = await start_workspace_session(
+        workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        initial_instructions="boot",
+        graph_input=None,
+        auto_start=True,
+        metadata={},
+        parent_session_id=None,
+        deps=deps,
+    )
+
+    assert isinstance(sess, WorkspaceSession)
+    assert sess.workspace_id == "ws-1"
+    assert sess.status == SessionStatus.RUNNING
+    # On-disk slot was allocated for the same sid the row carries.
+    assert len(live.started) == 1
+    assert live.started[0]["id"] == sess.id
+    # auto_start enqueued the same sid with the scheduler.
+    assert fake_scheduler.enqueued == [sess.id]
+
+
+@pytest.mark.asyncio
+async def test_start_workspace_session_missing_agent_raises_validation(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    await _seed_workspace(fake_storage_provider)
+    live = _FakeLiveWorkspace()
+    deps = _full_deps(
+        fake_storage_provider, fake_scheduler, fake_claim_engine, live,
+    )
+
+    with pytest.raises(ValidationError):
+        await start_workspace_session(
+            workspace_id="ws-1",
+            binding=AgentSessionBinding(agent_id="missing"),
+            initial_instructions=None,
+            graph_input=None,
+            auto_start=False,
+            metadata={},
+            parent_session_id=None,
+            deps=deps,
+        )
+    # No slot allocated when validation fails.
+    assert live.started == []
+
+
+@pytest.mark.asyncio
+async def test_start_workspace_session_missing_workspace_raises_not_found(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    await _seed_agent(fake_storage_provider)
+    live = _FakeLiveWorkspace()
+    deps = _full_deps(
+        fake_storage_provider, fake_scheduler, fake_claim_engine, live,
+    )
+
+    with pytest.raises(NotFoundError):
+        await start_workspace_session(
+            workspace_id="ws-missing",
+            binding=AgentSessionBinding(agent_id="ag-1"),
+            initial_instructions=None,
+            graph_input=None,
+            auto_start=False,
+            metadata={},
+            parent_session_id=None,
+            deps=deps,
+        )
+    assert live.started == []

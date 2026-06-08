@@ -219,6 +219,12 @@ class _LiveWorkspace:
     async def get_session(self, session_id):
         return self._sessions.get(session_id)
 
+    async def start_session(
+        self, binding, *, id, instructions=None, parent_session_id=None
+    ):
+        self._sessions[id] = _LiveSession(id)
+        return self._sessions[id]
+
     async def aclose(self):
         return
 
@@ -382,9 +388,11 @@ class TestCatalog:
     async def test_toolset_id_and_count(self, toolset) -> None:
         assert WORKSPACES_TOOLSET_ID == "workspaces"
         names = [t.id async for t in toolset.list_tools()]
-        # 24 original + watch_files (yielding-tools M4) = 25.
-        assert len(names) == 25
+        # 24 original + watch_files (yielding-tools M4) +
+        # create_workspace_session (session-tools) = 26.
+        assert len(names) == 26
         assert "watch_files" in names
+        assert "create_workspace_session" in names
 
     @pytest.mark.asyncio
     async def test_every_tool_has_clear_description(self, toolset) -> None:
@@ -478,8 +486,9 @@ class TestBootstrapIngestsWorkspacesTools:
             for doc_id in ingested_ids
             if doc_id.startswith("workspaces::")
         }
-        # 24 original + watch_files (yielding-tools M4) = 25.
-        assert len(ws_ingested) == 25
+        # 24 original + watch_files (yielding-tools M4) +
+        # create_workspace_session (session-tools) = 26.
+        assert len(ws_ingested) == 26
         for expected in (
             "workspaces::list_workspace_providers",
             "workspaces::create_workspace_template",
@@ -1011,3 +1020,102 @@ async def test_build_workspaces_toolset_accepts_session_deps(sp, workspace_regis
     )
     ids = [t.id async for t in ts.list_tools()]
     assert "create_workspace" in ids
+
+
+# ===========================================================================
+# create_workspace_session tool
+# ===========================================================================
+
+
+class _FakeScheduler:
+    def __init__(self) -> None:
+        self.enqueued: list[str] = []
+
+    async def enqueue(self, sid: str) -> None:
+        self.enqueued.append(sid)
+
+
+class _FakeClaimEngine:
+    def __init__(self) -> None:
+        self.upserts: list[tuple] = []
+
+    async def upsert(self, kind, entity_id, *, priority=100, next_attempt_at=None):
+        self.upserts.append((kind, entity_id))
+
+
+def _seed_agent(sp, agent_id="code-reviewer") -> None:
+    from primer.model.agent import Agent, AgentModel
+
+    storage = sp.get_storage(Agent)
+    storage._data[agent_id] = Agent(
+        id=agent_id,
+        description="x",
+        model=AgentModel(provider_id="p", model_name="m"),
+    )
+
+
+@pytest.fixture
+def session_toolset(sp, workspace_registry):
+    return build_workspaces_toolset(
+        storage_provider=sp,
+        workspace_registry=workspace_registry,
+        scheduler=_FakeScheduler(),
+        claim_engine=_FakeClaimEngine(),
+        event_bus=None,
+    )
+
+
+class TestCreateWorkspaceSession:
+    @pytest.mark.asyncio
+    async def test_create_agent_session_happy_path(
+        self, session_toolset, seeded, sp
+    ) -> None:
+        _seed_agent(sp)
+        result = await session_toolset.call(
+            tool_name="create_workspace_session",
+            arguments={
+                "workspace_id": seeded,
+                "binding": {"kind": "agent", "agent_id": "code-reviewer"},
+                "initial_instructions": "go",
+                "auto_start": True,
+            },
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["id"]
+        assert body["workspace_id"] == seeded
+
+    @pytest.mark.asyncio
+    async def test_create_missing_agent_is_validation_error(
+        self, session_toolset, seeded
+    ) -> None:
+        result = await session_toolset.call(
+            tool_name="create_workspace_session",
+            arguments={
+                "workspace_id": seeded,
+                "binding": {"kind": "agent", "agent_id": "nope"},
+            },
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "validation-error"
+
+    @pytest.mark.asyncio
+    async def test_create_without_scheduler_is_unavailable(
+        self, sp, workspace_registry
+    ) -> None:
+        ts = build_workspaces_toolset(
+            storage_provider=sp,
+            workspace_registry=workspace_registry,
+            scheduler=None,
+            claim_engine=None,
+            event_bus=None,
+        )
+        result = await ts.call(
+            tool_name="create_workspace_session",
+            arguments={
+                "workspace_id": "ws-stub",
+                "binding": {"kind": "agent", "agent_id": "x"},
+            },
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "unavailable"

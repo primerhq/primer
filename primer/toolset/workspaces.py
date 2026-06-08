@@ -5,7 +5,7 @@ internal collections subsystem ingests its tools into the
 ``_internal_tools`` collection during bootstrap so agents can search
 for them.
 
-Tool catalog (25 tools)
+Tool catalog (26 tools)
 -----------------------
 
 Provider (CRUD minus update):
@@ -21,9 +21,9 @@ Workspace (CRUD minus update):
     list_workspaces, get_workspace, create_workspace, delete_workspace
 
 Sessions:
-    list_workspace_sessions, get_workspace_session,
-    pause_workspace_session, resume_workspace_session,
-    steer_workspace_session
+    create_workspace_session, list_workspace_sessions,
+    get_workspace_session, pause_workspace_session,
+    resume_workspace_session, steer_workspace_session
 
 Files:
     list_workspace_files, get_workspace_file_info,
@@ -54,6 +54,7 @@ from primer.model.except_ import (
     PrimerError,
     NotFoundError,
 )
+from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.storage import CursorPage, OffsetPage, OrderBy
 from primer.model.workspace import (
     Workspace as WorkspaceRow,
@@ -61,6 +62,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.model.workspace_session import SessionBinding
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._describe import make_tool
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
@@ -151,6 +153,16 @@ class _CreateWorkspaceArgs(BaseModel):
     id: str | None = Field(default=None)
     template_id: str = Field(..., min_length=1)
     overrides: WorkspaceTemplateOverrides | None = Field(default=None)
+
+
+class _CreateSessionArgs(BaseModel):
+    workspace_id: str = Field(..., min_length=1)
+    binding: SessionBinding
+    initial_instructions: str | None = None
+    auto_start: bool = True
+    graph_input: Any | None = None
+    parent_session_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class _WorkspaceSessionArgs(BaseModel):
@@ -891,6 +903,79 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     # ------------------- Sessions sub-resource ------------------------
+    async def _create_session(arguments: dict[str, Any]) -> ToolCallResult:
+        if scheduler is None or claim_engine is None:
+            return _err(
+                "session tools unavailable: scheduler/claim_engine not wired",
+                error_type="unavailable",
+            )
+        try:
+            args = _CreateSessionArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        from primer.workspace.session_factory import (
+            SessionFactoryDeps,
+            start_workspace_session,
+        )
+
+        deps = SessionFactoryDeps(
+            storage_provider=storage_provider,
+            claim_engine=claim_engine,
+            scheduler=scheduler,
+            workspace_registry=workspace_registry,
+        )
+        try:
+            session = await start_workspace_session(
+                workspace_id=args.workspace_id,
+                binding=args.binding,
+                initial_instructions=args.initial_instructions,
+                graph_input=args.graph_input,
+                auto_start=args.auto_start,
+                metadata=args.metadata,
+                parent_session_id=args.parent_session_id,
+                deps=deps,
+            )
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except PrimerValidationError as exc:
+            return _err_from_primer(exc, error_type="validation-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="backend-error")
+        return _ok(session)
+
+    name, entry = _tool(
+        "create_workspace_session",
+        "Start a session that runs an agent or graph inside a workspace.",
+        (
+            "Use when you need to execute an agent or graph headlessly; "
+            "poll it with ``get_workspace_session`` and read outputs with "
+            "``read_workspace_file``; stop it with "
+            "``cancel_workspace_session``."
+        ),
+        _CreateSessionArgs,
+        _create_session,
+        examples=[
+            ToolExample(
+                args={
+                    "workspace_id": "ws-1",
+                    "binding": {"kind": "agent", "agent_id": "code-reviewer"},
+                    "initial_instructions": "Summarise README.md",
+                    "auto_start": True,
+                },
+                returns="the created session, e.g. {id, status:\"running\"}",
+            ),
+            ToolExample(
+                args={
+                    "workspace_id": "ws-1",
+                    "binding": {"kind": "graph", "graph_id": "incident-pipeline"},
+                    "graph_input": {"ticket": "INC-1"},
+                },
+                returns="a graph session bound to incident-pipeline",
+            ),
+        ],
+    )
+    registry[name] = entry
+
     async def _list_sessions(arguments: dict[str, Any]) -> ToolCallResult:
         try:
             args = _WorkspaceListSessionsArgs.model_validate(arguments)

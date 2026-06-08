@@ -28,6 +28,7 @@ helper handles the rest atomically.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -35,7 +36,15 @@ from datetime import datetime, timezone
 from typing import Any
 
 from primer.int.claim import ClaimKind
+from primer.model.agent import Agent
+from primer.model.except_ import NotFoundError, ValidationError
+from primer.model.graph import Graph
+from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace_session import (
+    AgentBinding as OnDiskAgentBinding,
+)
+from primer.model.workspace_session import (
+    AgentSessionBinding,
     GraphSessionBinding,
     SessionBinding,
     SessionStatus,
@@ -60,6 +69,167 @@ class SessionFactoryDeps:
     claim_engine: Any
     scheduler: Any
     workspace_registry: Any | None = None
+
+
+async def start_workspace_session(
+    *,
+    workspace_id: str,
+    binding: SessionBinding,
+    initial_instructions: str | None,
+    graph_input: Any | None,
+    auto_start: bool,
+    metadata: dict | None,
+    parent_session_id: str | None,
+    deps: SessionFactoryDeps,
+) -> WorkspaceSession:
+    """Full create flow shared by the REST route and the workspaces tool:
+    validate workspace + binding (+ graph_input vs Begin.input_schema),
+    allocate the on-disk slot via deps.workspace_registry, then persist
+    via create_session. Raises NotFoundError (workspace) / ValidationError
+    (agent, graph, graph_input).
+
+    Extracted verbatim from ``POST /v1/workspaces/{wid}/sessions``
+    (:mod:`primer.api.routers.sessions`) so the REST endpoint and the
+    ``create_workspace_session`` MCP tool share one canonical path.
+    """
+    workspaces = deps.storage_provider.get_storage(WorkspaceRow)
+    agents = deps.storage_provider.get_storage(Agent)
+    graphs = deps.storage_provider.get_storage(Graph)
+
+    workspace = await workspaces.get(workspace_id)
+    if workspace is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+
+    resolved_agent = None
+    if isinstance(binding, AgentSessionBinding):
+        resolved_agent = await agents.get(binding.agent_id)
+        if resolved_agent is None:
+            raise ValidationError(
+                f"Agent {binding.agent_id!r} does not exist"
+            )
+    elif isinstance(binding, GraphSessionBinding):
+        resolved_graph = await graphs.get(binding.graph_id)
+        if resolved_graph is None:
+            raise ValidationError(
+                f"Graph {binding.graph_id!r} does not exist"
+            )
+        # Pre-validate graph_input against the graph's Begin.input_schema
+        # before persisting the session row. The workspace executor reads
+        # ``session.metadata['graph_input']`` as the initial input, so any
+        # shape mismatch must surface as a 422 at create time rather than
+        # blowing up the first turn. When no Begin or no schema is
+        # present we accept whatever was sent (back-compat).
+        import jsonschema as _jsonschema  # local import keeps top clean
+        from primer.model.graph import _BeginNode
+
+        begin = next(
+            (n for n in resolved_graph.nodes if isinstance(n, _BeginNode)),
+            None,
+        )
+        if begin is not None and begin.input_schema is not None:
+            resolved_input: Any | None = graph_input
+            if resolved_input is None and initial_instructions:
+                # Legacy fallback: parse initial_instructions as JSON so
+                # callers that still drive graphs through that field
+                # continue to work.
+                try:
+                    resolved_input = json.loads(initial_instructions)
+                except json.JSONDecodeError as exc:
+                    raise ValidationError(
+                        "initial_instructions for graph with "
+                        "input_schema must be valid JSON (or pass "
+                        "graph_input directly)"
+                    ) from exc
+            if resolved_input is None:
+                raise ValidationError(
+                    f"graph {binding.graph_id!r} requires graph_input"
+                )
+            try:
+                _jsonschema.validate(
+                    instance=resolved_input,
+                    schema=begin.input_schema,
+                )
+            except _jsonschema.ValidationError as exc:
+                raise ValidationError(
+                    f"graph_input invalid at path "
+                    f"{list(exc.absolute_path)!r}: {exc.message}"
+                ) from exc
+            # Normalise so the persistence block below writes the
+            # validated value (covers the legacy
+            # initial_instructions-as-JSON fallback path).
+            graph_input = resolved_input
+
+    # Pre-generate the sid so we can allocate the on-disk slot BEFORE
+    # the factory's auto_start path makes the row claimable. Spec §12.5
+    # (Plan §3.2): persist + auto-start + claim registration live in
+    # create_session so the trigger dispatcher, this helper and the
+    # REST handler share one canonical create path.
+    sid = f"sess-{uuid.uuid4().hex[:12]}"
+
+    # Allocate the on-disk session slot inside the workspace so the
+    # scheduler-visible Session row and the workspace's
+    # .state/sessions/<sid>/ directory share the same id (spec §11.4
+    # step 5). Both agent and graph bindings get a holder slot;
+    # graph bindings use a synthetic agent_id (``graph:<graph_id>``)
+    # so the graph executor in primer/worker/pool.py can compose the
+    # workspace's tools into every per-node ToolExecutionManager.
+    if isinstance(binding, AgentSessionBinding):
+        assert resolved_agent is not None  # guarded above
+        on_disk_binding = OnDiskAgentBinding(
+            agent_id=resolved_agent.id,
+            agent_name=resolved_agent.id,
+            registered_tool_ids=list(resolved_agent.tools or []),
+        )
+        live_workspace = await deps.workspace_registry.get_workspace(
+            workspace_id,
+        )
+        await live_workspace.start_session(
+            on_disk_binding,
+            id=sid,
+            instructions=initial_instructions,
+            parent_session_id=parent_session_id,
+        )
+    elif isinstance(binding, GraphSessionBinding):
+        # Synthetic AgentBinding for the graph-holder slot. The
+        # registered_tool_ids list is informational only; the per-node
+        # tool managers register their own toolsets via the worker
+        # pool's tool_manager_resolver. The workspace tools (ls/read/
+        # write/exec/...) become available to every graph node via the
+        # AgentSession the executor consumes.
+        on_disk_binding = OnDiskAgentBinding(
+            agent_id=f"graph:{binding.graph_id}",
+            agent_name=f"graph:{binding.graph_id}",
+            registered_tool_ids=[],
+        )
+        live_workspace = await deps.workspace_registry.get_workspace(
+            workspace_id,
+        )
+        await live_workspace.start_session(
+            on_disk_binding,
+            id=sid,
+            instructions=initial_instructions,
+            parent_session_id=parent_session_id,
+        )
+
+    # Persist the row + (optionally) auto-start + always register a
+    # forward-compat ClaimEngine upsert via the shared service helper.
+    # workspace_registry=None because the slot is already allocated above.
+    return await create_session(
+        workspace_id=workspace_id,
+        binding=binding,
+        initial_instructions=initial_instructions,
+        graph_input=graph_input,
+        auto_start=auto_start,
+        metadata=metadata,
+        parent_session_id=parent_session_id,
+        session_id=sid,
+        deps=SessionFactoryDeps(
+            storage_provider=deps.storage_provider,
+            claim_engine=deps.claim_engine,
+            scheduler=deps.scheduler,
+            workspace_registry=None,
+        ),
+    )
 
 
 async def create_session(
@@ -145,4 +315,8 @@ async def create_session(
     return session
 
 
-__all__ = ["SessionFactoryDeps", "create_session"]
+__all__ = [
+    "SessionFactoryDeps",
+    "create_session",
+    "start_workspace_session",
+]
