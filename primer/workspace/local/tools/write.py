@@ -8,6 +8,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, ConflictError
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 from primer.workspace.local.tools._common import resolve_workspace_path
@@ -46,8 +47,21 @@ class Write(WorkspaceTool):
     id: ClassVar[str] = "write"
     description: ClassVar[str] = (
         "Create or replace a file. Refuses to overwrite a file you "
-        "haven't read this session unless force=True is set."
+        "haven't read this session unless force=True is set.\n\n"
+        "Use when creating or replacing a whole file; not for changing "
+        "part of a file (use ``edit``)."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(
+            args={"path": "notes.txt", "content": "hello"},
+            returns="file written",
+        ),
+        ToolExample(
+            args={"path": "a.py", "content": "x = 1", "force": True},
+            returns="overwrites unread file",
+            note="force bypasses the read-before-write guard",
+        ),
+    ]
 
     def __init__(self, workspace_root: Path) -> None:
         self._root = Path(workspace_root)

@@ -9,6 +9,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 from primer.workspace.local.tools._common import resolve_workspace_path
@@ -40,8 +41,25 @@ class Edit(WorkspaceTool):
     id: ClassVar[str] = "edit"
     description: ClassVar[str] = (
         "Replace a substring in a file. By default old_string must be "
-        "unique; pass replace_all=true to replace every occurrence."
+        "unique; pass replace_all=true to replace every occurrence.\n\n"
+        "Use when replacing a substring in a file; old_string must be "
+        "unique unless replace_all is set."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(
+            args={"path": "a.py", "old_string": "foo", "new_string": "bar"},
+            returns="one replacement",
+        ),
+        ToolExample(
+            args={
+                "path": "a.py",
+                "old_string": "x",
+                "new_string": "y",
+                "replace_all": True,
+            },
+            returns="all occurrences",
+        ),
+    ]
 
     def __init__(self, workspace_root: Path) -> None:
         self._root = Path(workspace_root)

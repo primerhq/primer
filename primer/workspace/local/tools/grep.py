@@ -10,6 +10,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 from primer.workspace.local.tools._common import resolve_workspace_path, workspace_relative
@@ -75,8 +76,24 @@ class Grep(WorkspaceTool):
     description: ClassVar[str] = (
         "Search file contents with a regex. Choose output_mode "
         "('files_with_matches', 'content', or 'count') and optionally "
-        "filter files by glob."
+        "filter files by glob.\n\n"
+        "Use when searching file contents by regex; not for finding "
+        "files by name (use ``glob``)."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(
+            args={"pattern": "TODO", "path": "."},
+            returns="files containing TODO",
+        ),
+        ToolExample(
+            args={
+                "pattern": "def .*",
+                "output_mode": "content",
+                "glob": "*.py",
+            },
+            returns="matching lines",
+        ),
+    ]
 
     def __init__(self, workspace_root: Path) -> None:
         self._root = Path(workspace_root)

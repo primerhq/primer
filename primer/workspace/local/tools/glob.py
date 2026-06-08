@@ -8,6 +8,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 from primer.workspace.local.tools._common import resolve_workspace_path, workspace_relative
@@ -51,8 +52,17 @@ class Glob(WorkspaceTool):
     id: ClassVar[str] = "glob"
     description: ClassVar[str] = (
         "Find files by glob pattern (e.g. 'src/**/*.py'). Results "
-        "sorted newest-first; paginate with offset+limit."
+        "sorted newest-first; paginate with offset+limit.\n\n"
+        "Use when finding files by name pattern; not for searching file "
+        "contents (use ``grep``)."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(
+            args={"pattern": "**/*.py", "path": "."},
+            returns="python files newest-first",
+        ),
+        ToolExample(args={"pattern": "*.ts", "path": "src"}),
+    ]
 
     def __init__(self, workspace_root: Path) -> None:
         self._root = Path(workspace_root)

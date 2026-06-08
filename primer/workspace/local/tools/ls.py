@@ -8,6 +8,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 from primer.workspace.local.tools._common import resolve_workspace_path
@@ -45,9 +46,18 @@ class Ls(WorkspaceTool):
 
     id: ClassVar[str] = "ls"
     description: ClassVar[str] = (
-        "List directory contents. Use show_hidden=true for dotfiles, "
-        "recursive=true to walk subdirectories (max_depth caps depth)."
+        "List the contents of a directory. Returns one entry per line "
+        "with kind, size, mtime, and name.\n\n"
+        "Use when you need a directory listing; not for file contents "
+        "(use ``read``)."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(args={"path": "src"}, returns="entries in src"),
+        ToolExample(
+            args={"path": ".", "recursive": True},
+            returns="recursive listing",
+        ),
+    ]
 
     def __init__(self, workspace_root: Path) -> None:
         self._root = Path(workspace_root)

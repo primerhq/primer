@@ -14,6 +14,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 from primer.workspace.local.tools._common import resolve_workspace_path
@@ -71,8 +72,28 @@ class Exec(WorkspaceTool):
     description: ClassVar[str] = (
         "Run a shell command in the workspace. Returns "
         "<exit code>\\n<stdout>\\n<stderr>. Use the optional "
-        "timeout_ms to bound runtime."
+        "timeout_ms to bound runtime.\n\n"
+        "Use when you need to run a program or inspect the environment; "
+        "not for reading one file (use ``read``)."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(
+            args={
+                "command": "pytest -q",
+                "timeout_ms": 60000,
+                "description": "run the test suite",
+            },
+            returns="0\\n...passed",
+        ),
+        ToolExample(
+            args={
+                "command": "ls",
+                "workdir": "src",
+                "description": "list src",
+            },
+            returns="0\\nfoo.py\\n",
+        ),
+    ]
 
     def __init__(
         self,
