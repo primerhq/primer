@@ -72,7 +72,17 @@ class FakeSandbox(Sandbox):
     cache code without standing up a real container. Production code
     should not depend on this; it's exposed only because tests dispatch
     real workspace tools through it.
+
+    Satisfies the :class:`~primer.workspace.sandbox.state._StateCapableSandbox`
+    structural protocol so that :meth:`SandboxStateRepo.initialize` skips
+    the exec-based git init (which would fail on host paths). The state ops
+    are in-memory stubs that return plausible no-op results.
     """
+
+    #: Protocol version advertised to SandboxStateRepo.  Set >= "1.1" so
+    #: _require_state_ops() accepts this sandbox in tests that exercise the
+    #: full state-op surface.
+    protocol_version: str = "1.1"
 
     def __init__(self, root: Path, *, sandbox_id: str = "fake") -> None:
         self._root = Path(root)
@@ -80,6 +90,9 @@ class FakeSandbox(Sandbox):
         self._id = sandbox_id
         self._stopped = False
         self._started_at = datetime.now(tz=timezone.utc)
+        # In-memory state store: path -> bytes.  Used by the stub state ops.
+        self._state_files: dict[str, bytes] = {}
+        self._state_commits: list[dict] = []
 
     @property
     def id(self) -> str:
@@ -276,6 +289,48 @@ class FakeSandbox(Sandbox):
     async def remove(self) -> None:
         self._stopped = True
         await asyncio.to_thread(shutil.rmtree, self._root, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    # _StateCapableSandbox stub ops
+    # ------------------------------------------------------------------
+
+    async def state_commit(
+        self,
+        *,
+        files: dict[str, bytes],
+        deletes: list[str],
+        message: str,
+        allow_empty: bool = False,
+    ) -> str:
+        """In-memory state commit stub.
+
+        Stores files in ``_state_files``, removes deleted paths, and
+        records a commit entry.  Returns a deterministic fake SHA derived
+        from the current commit count.
+        """
+        for path, content in files.items():
+            self._state_files[path] = content
+        for path in deletes:
+            self._state_files.pop(path, None)
+        sha = f"{len(self._state_commits):040x}"
+        self._state_commits.append(
+            {"sha": sha, "message": message, "files": list(files)}
+        )
+        return sha
+
+    async def state_read(self, paths: list[str]) -> dict[str, bytes | None]:
+        """Return the in-memory content for the requested paths."""
+        return {p: self._state_files.get(p) for p in paths}
+
+    async def state_history(
+        self,
+        *,
+        session_id: str | None = None,
+        agent_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return in-memory commit history (newest first, up to *limit*)."""
+        return list(reversed(self._state_commits))[:limit]
 
 
 __all__ = ["FakeSandbox"]

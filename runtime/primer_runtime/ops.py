@@ -359,6 +359,42 @@ async def delete(args: dict, workspace_root: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+async def _ensure_state_repo(state_dir: str) -> None:
+    """Ensure ``<state_dir>/.git`` exists, initialising if needed.
+
+    Idempotent: if the repo is already initialised this is a fast no-op
+    (stat only).  Called at the start of every mutating state op so that
+    callers do not need a separate initialisation step.
+    """
+    git_dir = os.path.join(state_dir, ".git")
+    if os.path.isdir(git_dir):
+        return
+    os.makedirs(state_dir, exist_ok=True)
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", state_dir, "init", "--initial-branch=main",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr_bytes = await proc.communicate()
+    if proc.returncode != 0:
+        stderr = stderr_bytes.decode("utf-8", errors="replace")
+        raise OpError(
+            ErrorCode.EINTERNAL,
+            f"git init failed (rc={proc.returncode}): {stderr.strip()}",
+        )
+    # Configure identity so commits never fail due to missing global git config.
+    for cfg_args in (
+        ["config", "user.email", "primer@local"],
+        ["config", "user.name", "primer"],
+    ):
+        proc2 = await asyncio.create_subprocess_exec(
+            "git", "-C", state_dir, *cfg_args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc2.communicate()
+
+
 async def state_commit(args: dict, workspace_root: str) -> dict:
     """``state_commit`` op: write files, git-rm deletes, commit, return sha.
 
@@ -376,6 +412,7 @@ async def state_commit(args: dict, workspace_root: str) -> dict:
     allow_empty: bool = bool(args.get("allow_empty", False))
 
     state_dir = os.path.join(workspace_root, ".state")
+    await _ensure_state_repo(state_dir)
 
     # Write files to disk and collect paths to stage.
     staged: list[str] = []

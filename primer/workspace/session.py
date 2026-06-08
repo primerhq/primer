@@ -518,32 +518,33 @@ class AgentSession:
         most recent ``role == "assistant"`` entry. If no assistant
         message exists yet (fresh session), returns every message in
         the log -- typically just the initial user instruction.
-        """
-        path = self._state.path / "sessions" / self.session_id / "messages.jsonl"
 
-        def _read() -> list[Message]:
-            if not path.exists():
-                return []
+        Uses the :class:`StateRepo` protocol's ``read_state_file`` so
+        this works for both local and sandbox (container/k8s) backends.
+        """
+        rel = f"sessions/{self.session_id}/messages.jsonl"
+        raw: bytes | None = await self._state.read_state_file(rel)
+
+        def _parse(data: bytes) -> list[Message]:
             messages: list[Message] = []
-            with path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.rstrip("\n")
-                    if not line:
-                        continue
-                    # messages.jsonl interleaves LLM-history Messages
-                    # (role/parts) with session event-log records
-                    # (seq/kind/ts) written by the dispatch writer. Keep only
-                    # the Message-shaped lines (see FINDINGS F10b).
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not (isinstance(obj, dict) and "role" in obj and "parts" in obj):
-                        continue
-                    messages.append(Message.model_validate(obj))
+            for line in data.decode("utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                # messages.jsonl interleaves LLM-history Messages
+                # (role/parts) with session event-log records
+                # (seq/kind/ts) written by the dispatch writer. Keep only
+                # the Message-shaped lines (see FINDINGS F10b).
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not (isinstance(obj, dict) and "role" in obj and "parts" in obj):
+                    continue
+                messages.append(Message.model_validate(obj))
             return messages
 
-        all_messages = await asyncio.to_thread(_read)
+        all_messages = _parse(raw) if raw else []
         last_assistant_idx = -1
         for i, msg in enumerate(all_messages):
             if msg.role == "assistant":
@@ -563,17 +564,14 @@ class AgentSession:
     # ---- Internals -------------------------------------------------------
 
     async def _appended_messages_jsonl(self, message: Message) -> str:
-        """Return the new messages.jsonl content with ``message`` appended."""
-        path = (
-            self._state.path / "sessions" / self.session_id / "messages.jsonl"
-        )
+        """Return the new messages.jsonl content with ``message`` appended.
 
-        def _read_existing() -> str:
-            if not path.exists():
-                return ""
-            return path.read_text(encoding="utf-8")
-
-        existing = await asyncio.to_thread(_read_existing)
+        Uses the :class:`StateRepo` protocol's ``read_state_file`` so
+        this works for both local and sandbox (container/k8s) backends.
+        """
+        rel = f"sessions/{self.session_id}/messages.jsonl"
+        raw: bytes | None = await self._state.read_state_file(rel)
+        existing = raw.decode("utf-8") if raw else ""
         if existing and not existing.endswith("\n"):
             existing += "\n"
         return existing + message.model_dump_json() + "\n"

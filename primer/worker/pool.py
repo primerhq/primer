@@ -1154,8 +1154,8 @@ class WorkerPool:
             raise ConfigError(
                 f"workspace {workspace.id!r} ({type(workspace).__name__}) "
                 "does not expose a state_repo; graph-bound sessions "
-                "currently require a LocalWorkspace. Sandbox / Container "
-                "/ K8s backends need StateRepo parity (a tracked follow-on)."
+                "require a workspace with StateRepo support "
+                "(LocalWorkspace or SandboxWorkspace)."
             )
 
         # ③ Per-node resolvers — closures over self so each resolver

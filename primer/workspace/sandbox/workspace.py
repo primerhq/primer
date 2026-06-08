@@ -157,6 +157,16 @@ class SandboxWorkspace(Workspace):
         remove the sandbox without reaching into private attributes."""
         return self._sandbox
 
+    @property
+    def state_repo(self) -> SandboxStateRepo:
+        """The workspace's git-backed state repository.
+
+        Exposes the :class:`SandboxStateRepo` so the graph executor and
+        other consumers that access ``workspace.state_repo`` obtain the
+        sandbox-backed implementation rather than the ABC default (None).
+        """
+        return self._state_repo
+
     def get_tools(self) -> list[WorkspaceTool]:
         return list(self._tools)
 

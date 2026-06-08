@@ -124,47 +124,66 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         # (graph-level) and .state/graphs/<gsid>/nodes/<nid>/turns.jsonl
         # (per-node). Turn logs are observability data — high write rate,
         # no audit-trail value, so they live outside the git history.
-        state_root = state_repo.path / "graphs" / graph_session_id
+        #
+        # LocalStateRepo exposes a ``path`` attribute (a ``pathlib.Path``
+        # pointing at the on-host .state directory); the writers below do
+        # direct file I/O through it. SandboxStateRepo (container/k8s)
+        # only exposes ``state_path`` (a remote path string) — direct
+        # host-side file I/O is not applicable. For sandbox backends we
+        # fall back to NoopTurnLogWriter; the functional state (commits,
+        # session files) still lands correctly via state_repo.commit.
+        from primer.observability.turn_log_writer import NoopTurnLogWriter
 
-        def _make_append_line(rel_path: Path):
-            target = rel_path
+        _local_path: Path | None = getattr(state_repo, "path", None)
 
-            async def _append(line: bytes) -> None:
-                def _do() -> None:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with target.open("ab") as fh:
-                        fh.write(line)
+        if _local_path is not None:
+            state_root = _local_path / "graphs" / graph_session_id
 
-                await asyncio.to_thread(_do)
+            def _make_append_line(rel_path: Path):
+                target = rel_path
 
-            return _append
+                async def _append(line: bytes) -> None:
+                    def _do() -> None:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with target.open("ab") as fh:
+                            fh.write(line)
 
-        def _make_read_existing(rel_path: Path):
-            target = rel_path
+                    await asyncio.to_thread(_do)
 
-            async def _read() -> bytes:
-                def _do() -> bytes:
-                    if not target.exists():
-                        return b""
-                    return target.read_bytes()
+                return _append
 
-                return await asyncio.to_thread(_do)
+            def _make_read_existing(rel_path: Path):
+                target = rel_path
 
-            return _read
+                async def _read() -> bytes:
+                    def _do() -> bytes:
+                        if not target.exists():
+                            return b""
+                        return target.read_bytes()
 
-        def _factory(node_id: str) -> TurnLogWriter:
-            target = state_root / "nodes" / node_id / "turns.jsonl"
-            return WorkspaceTurnLogWriter(
-                append_line=_make_append_line(target),
-                read_existing=_make_read_existing(target),
+                    return await asyncio.to_thread(_do)
+
+                return _read
+
+            def _factory(node_id: str) -> TurnLogWriter:
+                target = state_root / "nodes" / node_id / "turns.jsonl"
+                return WorkspaceTurnLogWriter(
+                    append_line=_make_append_line(target),
+                    read_existing=_make_read_existing(target),
+                )
+
+            self._turn_log_factory = _factory
+            graph_target = state_root / "turns.jsonl"
+            self._graph_turn_log: TurnLogWriter = WorkspaceTurnLogWriter(
+                append_line=_make_append_line(graph_target),
+                read_existing=_make_read_existing(graph_target),
             )
-
-        self._turn_log_factory = _factory
-        graph_target = state_root / "turns.jsonl"
-        self._graph_turn_log = WorkspaceTurnLogWriter(
-            append_line=_make_append_line(graph_target),
-            read_existing=_make_read_existing(graph_target),
-        )
+        else:
+            # Sandbox (container/k8s) backend: turn-log I/O is not wired
+            # for the remote path. Use no-op writers; functional state
+            # still commits correctly via state_repo.commit_arbitrary.
+            self._turn_log_factory = lambda node_id: NoopTurnLogWriter()
+            self._graph_turn_log = NoopTurnLogWriter()
         # Spec §4.3 — when set (typically by pool.py from
         # ``session.metadata['graph_input']``), this overrides the
         # ``messages`` list passed to :meth:`invoke` and becomes
@@ -193,13 +212,19 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         return self._graph_session_id
 
     @property
-    def state_root(self) -> Path:
-        """Absolute path to the per-graph state subtree.
+    def state_root(self) -> Path | None:
+        """Absolute path to the per-graph state subtree, or None for sandbox repos.
 
-        Read-only convenience: ``<state_repo.path>/graphs/<gsid>``.
-        Tests use this to assert on persisted files.
+        Read-only convenience: ``<state_repo.path>/graphs/<gsid>`` for
+        :class:`~primer.workspace.local.state.LocalStateRepo` backends.
+        Returns ``None`` for :class:`~primer.workspace.sandbox.state.SandboxStateRepo`
+        (container/k8s) backends where the state lives inside the container.
+        Tests that only run against local workspaces may still assert on this.
         """
-        return self._state_repo.path / "graphs" / self._graph_session_id
+        local_path: Path | None = getattr(self._state_repo, "path", None)
+        if local_path is None:
+            return None
+        return local_path / "graphs" / self._graph_session_id
 
     # ---- Augmentation wrappers -------------------------------------------
 
@@ -348,7 +373,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         )
 
     async def _load_node_history(self, node_id: str) -> list[Message]:
-        rel_path = self._repo_rel(self._messages_path(node_id))
+        rel_path = self._state_rel(f"nodes/{node_id}/messages.jsonl")
         data = await self._state_repo.read_state_file(rel_path)
         if data is None:
             return []
@@ -370,16 +395,14 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
 
         Each turn becomes one commit so callers can grep history per
         node via ``git log -- graphs/<gsid>/nodes/<node_id>/``.
+
+        Uses :meth:`StateRepo.read_state_file` to read the existing content
+        so this works on both local and sandbox (container/k8s) backends.
         """
-        path = self._messages_path(node_id)
-        rel_path = self._repo_rel(path)
+        rel_path = self._state_rel(f"nodes/{node_id}/messages.jsonl")
 
-        def _read_existing() -> str:
-            if not path.exists():
-                return ""
-            return path.read_text(encoding="utf-8")
-
-        existing = await asyncio.to_thread(_read_existing)
+        raw_existing = await self._state_repo.read_state_file(rel_path)
+        existing = raw_existing.decode("utf-8") if raw_existing else ""
         if existing and not existing.endswith("\n"):
             existing += "\n"
         appended = (
@@ -412,7 +435,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         ended_detail: str | None = None,
     ) -> None:
         """Write graph-level state.json AND git-commit it."""
-        rel_state = self._repo_rel(self.state_root / "state.json")
+        rel_state = self._state_rel("state.json")
         payload = {
             "iteration": iteration,
             "status": status.value,
@@ -480,7 +503,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
 
     async def load_state(self) -> dict | None:
         """Return the persisted ``state.json`` payload, or ``None`` if absent."""
-        rel_path = self._repo_rel(self.state_root / "state.json")
+        rel_path = self._state_rel("state.json")
         data = await self._state_repo.read_state_file(rel_path)
         if data is None:
             return None
@@ -492,7 +515,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         Committed in the same way as state writes so the graph
         topology that drove an execution is recoverable from history.
         """
-        rel = self._repo_rel(self.state_root / "graph.json")
+        rel = self._state_rel("graph.json")
         body = self._graph.model_dump_json(indent=2)
         await self._state_repo.commit_arbitrary(
             summary=(
@@ -507,11 +530,34 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
 
     # ---- Internals -------------------------------------------------------
 
-    def _messages_path(self, node_id: str) -> Path:
-        return self.state_root / "nodes" / node_id / "messages.jsonl"
+    def _messages_path(self, node_id: str) -> Path | None:
+        """Return the host-FS path for a node's messages.jsonl, or None.
+
+        Returns ``None`` for sandbox (container/k8s) backends where state
+        lives inside the container, not on the host filesystem.
+        """
+        root = self.state_root
+        if root is None:
+            return None
+        return root / "nodes" / node_id / "messages.jsonl"
+
+    def _state_rel(self, filename: str) -> str:
+        """Return a state-repo-relative path for ``filename`` under the graph dir.
+
+        Always returns ``graphs/<graph_session_id>/<filename>`` regardless of
+        the backend type. Works for both :class:`~primer.workspace.local.state.
+        LocalStateRepo` (host-FS) and :class:`~primer.workspace.sandbox.state.
+        SandboxStateRepo` (container/k8s).
+        """
+        return f"graphs/{self._graph_session_id}/{filename}"
 
     def _repo_rel(self, p: Path) -> str:
-        """Return ``p`` as a forward-slash path relative to the state repo root."""
+        """Return ``p`` as a forward-slash path relative to the state repo root.
+
+        Only valid for :class:`~primer.workspace.local.state.LocalStateRepo`
+        (which has a ``path`` attribute). Use :meth:`_state_rel` instead when
+        building paths that must also work on sandbox backends.
+        """
         return p.relative_to(self._state_repo.path).as_posix()
 
 

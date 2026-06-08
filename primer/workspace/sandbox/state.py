@@ -337,16 +337,25 @@ class SandboxStateRepo:
     async def initialize(self) -> None:
         """Ensure the in-container git state repo exists.
 
-        If the sandbox exposes an ``exec`` method (i.e. it is a real
-        :class:`WSSandbox`), we run ``git init --initial-branch=main``
-        inside the ``.state`` directory so that subsequent
-        :meth:`state_commit` calls succeed.  This mirrors what
-        :class:`~primer.workspace.local.state.LocalStateRepo` does on the
-        host-FS backend.
+        If the sandbox satisfies :class:`_StateCapableSandbox` (i.e. it
+        exposes the runtime state-ops protocol -- ``state_commit``,
+        ``state_read``, ``state_history``), the runtime server manages its
+        own git repo lifecycle; no host-side git invocation is needed and
+        this method is a no-op.
 
-        The operation is idempotent: if the ``.git`` directory already
-        exists ``git init`` is a no-op.
+        For exec-only sandboxes that do NOT expose the state ops (e.g. a
+        hypothetical thin exec-only shim), we fall back to running
+        ``git init`` inside the sandbox via ``exec``.  The operation is
+        idempotent: if the ``.git`` directory already exists ``git init``
+        is a no-op.
         """
+        # Runtime-backed sandboxes (WSSandbox and any _StateCapableSandbox
+        # implementation) initialize their own git repo on the server side.
+        # Skip the exec-based git init to avoid running host-side git
+        # against in-container absolute paths.
+        if isinstance(self._sandbox, _StateCapableSandbox):
+            return
+
         exec_fn = getattr(self._sandbox, "exec", None)
         if exec_fn is None:
             # Non-exec sandbox (e.g. unit-test mock); skip git init.
