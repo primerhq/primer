@@ -751,11 +751,9 @@ class InternalCollectionsSubsystem:
     # under both editable installs and packaged ones.
     @staticmethod
     def _default_ai_docs_path() -> "Path":
-        from pathlib import Path
-        import primer
+        from primer.ai_docs_path import resolve_ai_docs_dir
 
-        pkg_root = Path(primer.__file__).resolve().parent
-        return pkg_root / "ai_docs"
+        return resolve_ai_docs_dir()
 
     async def _ingest_ai_docs(
         self,
@@ -802,7 +800,7 @@ class InternalCollectionsSubsystem:
             await emit("ingest_ai_docs", 0, 0)
             return 0
 
-        files = sorted(p for p in root.glob("*.md") if p.is_file())
+        files = sorted(p for p in root.rglob("*.md") if p.is_file())
         # Skip files starting with "_" to allow internal notes (e.g.
         # _design.md, _README.md) that shouldn't be ingested.
         files = [f for f in files if not f.name.startswith("_")]
@@ -897,7 +895,7 @@ class InternalCollectionsSubsystem:
         ingested = 0
         skipped = 0
         for idx, path in enumerate(files, start=1):
-            slug = path.stem
+            slug = path.relative_to(root).with_suffix("").as_posix()
             try:
                 raw_bytes = path.read_bytes()
                 content_hash = hashlib.sha256(raw_bytes).hexdigest()

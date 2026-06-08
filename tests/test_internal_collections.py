@@ -733,3 +733,33 @@ class TestAiDocsBootstrap:
         ai_docs_hits = [h for h in hits if h.record.collection_id == AI_DOCS_COLLECTION_ID]
         assert len(ai_docs_hits) >= 1
         await subsystem.aclose()
+
+    @pytest.mark.asyncio
+    async def test_ingest_recurses_subdirs_with_relative_path_slug(
+        self, subsystem, sp, tmp_path
+    ) -> None:
+        from primer.model.collection import Document
+
+        await subsystem._materialise_collection_rows()
+        (tmp_path / "agents.md").write_text(
+            "---\ntitle: Agents\nsummary: A.\n---\n# Agents\n\nbody\n"
+        )
+        (tmp_path / "cookbook").mkdir()
+        (tmp_path / "cookbook" / "pr-reviewer.md").write_text(
+            "---\ntitle: PR reviewer\nsummary: R.\n---\n# PR\n\nbody\n"
+        )
+
+        async def _emit(*a, **k):
+            return None
+
+        counts: dict[str, int] = {"docs": 0}
+        result = await subsystem._ingest_ai_docs(
+            _emit, counts, ai_docs_path=tmp_path,
+            ingester_factory=_ingester_factory_for_test(),
+        )
+        assert result == 2
+        docs = sp.get_storage(Document)
+        assert await docs.get("agents") is not None
+        sub = await docs.get("cookbook/pr-reviewer")
+        assert sub is not None
+        assert sub.meta["slug"] == "cookbook/pr-reviewer"
