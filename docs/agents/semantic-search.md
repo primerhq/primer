@@ -1,6 +1,6 @@
 ---
 slug: semantic-search
-title: Semantic search — internal collections and discovery
+title: Semantic search - internal collections and discovery
 summary: How primer's internal-collections subsystem indexes agents, graphs, tools, collections, and platform docs for vector retrieval via the search:: toolset.
 related: [knowledge, agents, graphs, mcp-exposure]
 mcp_tools:
@@ -11,7 +11,7 @@ mcp_tools:
   - search::search_ai_docs
 ---
 
-# Semantic search — internal collections and discovery
+# Semantic search - internal collections and discovery
 
 ## Overview
 
@@ -20,18 +20,18 @@ confuse. The first is user-defined knowledge: a `Collection` row that
 an operator created with `system::create_collection`, into which
 documents have been ingested via the regular knowledge router. That
 surface uses `system::list_collection_documents` and (when wired up)
-`system::search_collection`. The second is **internal collections** —
+`system::search_collection`. The second is **internal collections** -
 five reserved collections (id-prefixed with `_internal_`) that primer
 itself maintains, automatically, so agents can discover what primer
 contains via natural-language queries. This doc is about the second.
 
 The five internal collections are: `_internal_agents` (one vector per
 configured agent row), `_internal_graphs` (one per graph),
-`_internal_collections` (one per user collection — the metadata
+`_internal_collections` (one per user collection - the metadata
 row, not the documents), `_internal_tools` (one per tool descriptor
 across every reachable toolset), and `_internal_ai_docs` (multi-chunk
 embeddings of the very docs you're reading). Each is search-only
-from the agent side — write paths are operator-only (via UI/REST for
+from the agent side - write paths are operator-only (via UI/REST for
 the first four; via a code-shipped markdown bundle for the fifth).
 
 The point is discoverability. An agent connected to primer for the
@@ -44,11 +44,16 @@ answers. All five searches share the same backing infrastructure:
 the same embedder, the same vector store, the same per-query
 embedding path.
 
+Use a `search::search_*` tool when you have a natural-language
+query and want ranked matches; not when you already know the exact
+id or want an exact metadata predicate (use the `system::find_*` /
+`system::get_*` CRUD tools in [knowledge](knowledge.md) instead).
+
 ## Mental model
 
 The **internal-collections subsystem** is the runtime object that
 owns these collections. It's instantiated at app startup from the
-`InternalCollectionsConfig` singleton row — which carries the
+`InternalCollectionsConfig` singleton row - which carries the
 embedding provider id, the embedding model name, the semantic-search
 provider id (the vector store), and optional rerank/MMR config. The
 subsystem is opt-in: a fresh primer install has no config row, no
@@ -63,7 +68,7 @@ Once activated, the subsystem does two things:
    then walks the existing entity rows (agents, graphs, user
    collections, every toolset's tools, and every markdown file in
    `primer/ai_docs/`) and embeds them. The first four collections
-   store one vector per entity. The fifth — `_internal_ai_docs` —
+   store one vector per entity. The fifth - `_internal_ai_docs` -
    uses [primer/ingest/](../../primer/ingest/)'s `DocumentIngester`
    to chunk each markdown file by section and embed each chunk
    separately. Search against the docs collection therefore returns
@@ -72,7 +77,7 @@ Once activated, the subsystem does two things:
    types. When an agent is created/updated/deleted, an `IngestEvent`
    is enqueued; a background worker dequeues and applies. So the
    indexes are eventually consistent with storage. The docs
-   collection has no CDC path — it's only refreshed on bootstrap or
+   collection has no CDC path - it's only refreshed on bootstrap or
    re-bootstrap, by content-hash skip.
 
 A search call goes:
@@ -83,7 +88,7 @@ A search call goes:
 For the first four collections, `document_id` is the entity id
 (`ag-foo`, `gr-bar`, `col-baz`, `system::list_agents`). For the docs
 collection, `document_id` is the slug of the markdown file
-(`agents`, `chats`, etc.) — pair the hit with
+(`agents`, `chats`, etc.) - pair the hit with
 `system::get_document(id=<slug>, collection_id="_internal_ai_docs")`
 to fetch the full doc.
 
@@ -91,14 +96,14 @@ to fetch the full doc.
 
 The subsystem has three observable states:
 
-- **not configured** — no `InternalCollectionsConfig` row exists.
+- **not configured** - no `InternalCollectionsConfig` row exists.
   The `search::*` tools are absent from `tools/list`.
   `subsystem.search()` raises `subsystem-inactive`.
-- **configured, not bootstrapped** — the config row exists but
+- **configured, not bootstrapped** - the config row exists but
   `activated_at` is null. The `search::*` tools appear (the toolset
   is mounted) but every call returns `is_error=true` with
   `type=subsystem-inactive` until bootstrap completes.
-- **active** — `activated_at` is set; bootstrap succeeded. Searches
+- **active** - `activated_at` is set; bootstrap succeeded. Searches
   work. The CDC worker is running.
 
 The bootstrap is a multi-phase process the UI observes via a
@@ -107,17 +112,17 @@ The bootstrap is a multi-phase process the UI observes via a
 → ingest_collections → ingest_tools → ingest_ai_docs → finalize`. The
 phase + per-phase counters are persisted so a long bootstrap can be
 watched across browser refreshes / page navigation. Re-bootstrap is
-safe — collections are re-materialised idempotently and per-entity
+safe - collections are re-materialised idempotently and per-entity
 records are upserted by id.
 
 The `_internal_ai_docs` collection has its own micro-lifecycle: on
 each bootstrap run, every `*.md` file under `primer/ai_docs/` is
 hashed (sha256). The hash is compared to the existing
-`Document.meta['content_hash']` — equal hashes mean "no change, skip
+`Document.meta['content_hash']` - equal hashes mean "no change, skip
 re-embedding"; different hashes mean "re-ingest with replace=True"
 which drops prior chunks and re-embeds. New files create new
 Documents. Files removed from disk leave their old Documents in
-storage (no GC in v1 — restart with `--reset-ai-docs` if you need
+storage (no GC in v1 - restart with `--reset-ai-docs` if you need
 clean state, or delete via `system::delete_document`).
 
 ## MCP tools
@@ -151,14 +156,14 @@ bootstrapped. `validation-error` on bad args.
 ### `search::search_graphs`
 
 **Purpose.** Find configured `Graph` rows. Embedded text is the
-graph description plus its node ids — search for "review code"
+graph description plus its node ids - search for "review code"
 might match a graph whose description mentions review and whose
 nodes are `analyse`, `lint`, `verdict`.
 
 ### `search::search_collections`
 
 **Purpose.** Find user-defined `Collection` rows. **Does not search
-documents inside collections** — only the collection metadata rows.
+documents inside collections** - only the collection metadata rows.
 To search documents within a specific user collection, use the
 collection's own `system::search_collection` (when implemented) or
 inspect documents via `system::list_collection_documents` +
@@ -182,12 +187,12 @@ of the matched doc (`agents`, `triggers-and-subscriptions`, etc.);
 
 **Returns.** Per hit: the chunk text (a specific section of the
 doc), the score, and meta carrying the doc's title, summary, and
-mcp_tools frontmatter — enough to decide if it's worth fetching the
+mcp_tools frontmatter - enough to decide if it's worth fetching the
 whole doc via `system::get_document_content(id=<slug>)`.
 
 ## Workflows
 
-### Workflow 1 — find the right tool for a job
+### Workflow 1 - find the right tool for a job
 
 **Goal.** Agent needs to fetch a webpage; it knows roughly what it
 wants but not the exact tool name.
@@ -212,7 +217,7 @@ wants but not the exact tool name.
 }
 ```
 
-### Workflow 2 — learn how a feature works before using it
+### Workflow 2 - learn how a feature works before using it
 
 **Goal.** Agent wants to set up a recurring trigger but isn't sure
 about cron semantics in primer.
@@ -245,7 +250,7 @@ about cron semantics in primer.
 
 - **The subsystem is opt-in.** A new install has no
   `InternalCollectionsConfig` row, no bootstrap, no search tools. If
-  your `tools/list` doesn't contain `search::*`, that's why —
+  your `tools/list` doesn't contain `search::*`, that's why -
   operator needs to activate the subsystem.
 - **`search::search_collections` searches collection *metadata*, not
   documents within collections.** To search documents in a specific
@@ -260,14 +265,14 @@ about cron semantics in primer.
   `task_type="retrieval_query"` at search time and
   `task_type="retrieval_document"` at ingest. Models like BGE / E5
   add a query prefix internally that shifts the embedding sub-space.
-  Mixing query and document tasks degrades recall — don't call
+  Mixing query and document tasks degrades recall - don't call
   `search::search_*` with a long copy-pasted document as the query.
 - **Re-bootstrap is idempotent but not free.** Re-running bootstrap
   re-embeds every entity (skipping unchanged docs via content-hash).
   On large catalogues with paid embedding providers, this is real
   money. Operators get a confirmation prompt in the UI.
 - **Hits from `search_ai_docs` carry the chunk, not the whole doc.**
-  Don't try to satisfy a user's question entirely from the snippet —
+  Don't try to satisfy a user's question entirely from the snippet -
   follow up with `system::get_document_content` if the snippet looks
   like the right doc.
 - **Tool documents use scoped ids as `document_id`.** The
@@ -278,10 +283,10 @@ about cron semantics in primer.
 
 ## Related
 
-- [knowledge](knowledge.md) — user-defined collections and documents,
+- [knowledge](knowledge.md) - user-defined collections and documents,
   the parallel surface this doc explicitly is not about.
-- [agents](agents.md) — `search_agents` searches these rows.
-- [graphs](graphs.md) — `search_graphs` searches these rows.
-- [mcp-exposure](mcp-exposure.md) — only tools in the operator's
+- [agents](agents.md) - `search_agents` searches these rows.
+- [graphs](graphs.md) - `search_graphs` searches these rows.
+- [mcp-exposure](mcp-exposure.md) - only tools in the operator's
   allowlist appear in `tools/list`; the searches above are the
   recommended starter set.

@@ -1,6 +1,6 @@
 ---
 slug: sessions
-title: Sessions — long-running workspace agent runs
+title: Sessions - long-running workspace agent runs
 summary: Headless agent execution inside a workspace, with file I/O, pause/resume control, and waiting.json state surfaces.
 related: [workspaces, agents, yielding, chats]
 mcp_tools:
@@ -12,17 +12,23 @@ mcp_tools:
   - system::find_sessions
 ---
 
-# Sessions — long-running workspace agent runs
+# Sessions - long-running workspace agent runs
 
 ## Overview
 
-A **Session** is a headless agent run. Unlike a chat (which expects a
+A **Session** is a headless agent run, started with
+`system::create_session` and polled with `system::get_session`.
+Unlike a chat (which expects a
 human in the loop), a session is started with an initial instruction
 (or input) and runs to completion or pause without requiring user
-interaction. Sessions live inside a **Workspace** — they share the
+interaction. Sessions live inside a **Workspace** - they share the
 workspace's filesystem and git state with other sessions on the same
 workspace. The workspace is what gives them a sense of place; the
 session is the agent invocation inside it.
+
+Use a session when the work runs headless to completion with no
+human in the loop; not when you need a back-and-forth conversation
+with a person (use a [chat](chats.md) via `system::create_chat`).
 
 Sessions are the right primitive when the work is "do this thing,
 take as long as you need, here are the tools, tell me when you're
@@ -35,7 +41,7 @@ the workspace.
 
 Sessions are also where yields play their primary role. A session
 can yield (via `ask_user`, `subscribe_to_trigger`, tool approval),
-park in storage, and resume hours or days later — without holding
+park in storage, and resume hours or days later - without holding
 any compute resources in between. This is what makes "spin up a
 session that waits for a trigger" cost-effective at scale.
 
@@ -43,12 +49,12 @@ session that waits for a trigger" cost-effective at scale.
 
 A `Session` row carries:
 - `id`, `workspace_id`, `agent_id` (or `graph_id` for graph sessions).
-- `status` — `RUNNING | WAITING | PAUSED | ENDED`. High-level
+- `status` - `RUNNING | WAITING | PAUSED | ENDED`. High-level
   lifecycle position.
-- `claimed_by` — worker id when running.
-- `parked_status`, `parked_event_key`, `parked_until` — yield state
+- `claimed_by` - worker id when running.
+- `parked_status`, `parked_event_key`, `parked_until` - yield state
   (same fields as chats).
-- `instruction` (optional) — the initial user-message-equivalent.
+- `instruction` (optional) - the initial user-message-equivalent.
 
 Per-session state lives at workspace-relative path
 `.state/sessions/<session_id>/`. That subtree carries the LLM
@@ -57,14 +63,14 @@ tool output cache, and `waiting.json` (when the session is paused
 or waiting on external input).
 
 Session tools (`ls`, `read`, `write`, `edit`, `glob`, `grep`,
-`exec`) are composed onto the agent at session start — they're NOT
+`exec`) are composed onto the agent at session start - they're NOT
 globally registered. Each session's tool dispatcher knows about
 this session's workspace; the tools resolve paths relative to it.
 
 `waiting.json` is the operator-facing description of why the session
 is blocked. Two known shapes:
-- `{"type": "user_input", "prompt": "..."}` — `ask_user` is parked.
-- `{"type": "tool_approval", "tool": "...", "arguments": {...}}` —
+- `{"type": "user_input", "prompt": "..."}` - `ask_user` is parked.
+- `{"type": "tool_approval", "tool": "...", "arguments": {...}}` -
   a required-type approval is parked.
 
 The operator reads this to decide what to respond with.
@@ -73,22 +79,22 @@ The operator reads this to decide what to respond with.
 
 `Session.status` transitions:
 
-- `RUNNING` — currently claimed and executing.
-- `WAITING` — parked on an external event (yield). Set when
+- `RUNNING` - currently claimed and executing.
+- `WAITING` - parked on an external event (yield). Set when
   `parked_status="parked"`. The session won't be claimed by workers
   until the event fires.
-- `PAUSED` — operator-requested pause via `request_pause()`. The
+- `PAUSED` - operator-requested pause via `request_pause()`. The
   worker finishes the current turn and stops; the session stays at
   this state until `request_resume()` lifts it.
-- `ENDED` — terminal. Either the agent stopped, the operator ended
+- `ENDED` - terminal. Either the agent stopped, the operator ended
   it, or an unrecoverable error occurred. No further work runs.
 
 Transitions:
-- `RUNNING ↔ WAITING` — yield enters; resume exits.
-- `RUNNING → PAUSED` — operator action; takes effect at next turn
+- `RUNNING ↔ WAITING` - yield enters; resume exits.
+- `RUNNING → PAUSED` - operator action; takes effect at next turn
   boundary.
-- `PAUSED → RUNNING` — operator action.
-- any → `ENDED` — terminal; not reversible.
+- `PAUSED → RUNNING` - operator action.
+- any → `ENDED` - terminal; not reversible.
 
 The transitions are operator-driven via REST routes (also exposed
 through the system toolset for agents to inspect):
@@ -109,29 +115,29 @@ filesystem.
 
 Sessions appear in the system toolset as generic CRUD. The richer
 operations (pause, resume, end, append instruction) are REST routes
-not currently exposed as MCP tools — they're operator-facing.
+not currently exposed as MCP tools - they're operator-facing.
 
-- `system::list_sessions` — paginated.
-- `system::get_session` — fetch the row including `status`, parked
+- `system::list_sessions` - paginated.
+- `system::get_session` - fetch the row including `status`, parked
   fields, and any error message.
-- `system::create_session` — body needs `workspace_id`, `agent_id`,
+- `system::create_session` - body needs `workspace_id`, `agent_id`,
   optional `instruction`. Creates the row and marks it claimable.
-- `system::update_session` — partial update (rare; most updates
+- `system::update_session` - partial update (rare; most updates
   happen via the workspace's `.state` repo).
-- `system::delete_session` — terminal. Cancels the lease, removes
+- `system::delete_session` - terminal. Cancels the lease, removes
   the row, leaves the `.state/sessions/<id>/` subtree intact (it's
   workspace state, not session state).
-- `system::find_sessions` — predicate query.
+- `system::find_sessions` - predicate query.
 
 For starting a fresh session of a known agent in a known workspace,
 the right tool is `system::create_session`. For triggering a fresh
 session in response to an event, the right path is a trigger with
-an `agent_fresh_session` subscription — see
+an `agent_fresh_session` subscription - see
 [triggers-and-subscriptions](triggers-and-subscriptions.md).
 
 ## Workflows
 
-### Workflow 1 — spin up a session and wait for it to finish
+### Workflow 1 - spin up a session and wait for it to finish
 
 **Goal.** Run the `analyse-repo` agent against a known repo
 checkout in workspace `ws-analysis-01`.
@@ -149,7 +155,7 @@ checkout in workspace `ws-analysis-01`.
 }
 ```
 
-Returns `{"id": "sid-abc", "status": "RUNNING", ...}`.
+Returns the session with its `id` and a `status` of `running`: `{"id": "sid-abc", "status": "running"}`. Thread the `id` into the poll below.
 
 2. Poll until done:
 
@@ -160,12 +166,12 @@ Returns `{"id": "sid-abc", "status": "RUNNING", ...}`.
 }
 ```
 
-When `status=ENDED`, the session has finished. The output lives in
-the workspace — tool outputs are in `.tmp/sid-abc/`, the LLM
+When `status` is `ended`, the session has finished. The output lives in
+the workspace - tool outputs are in `.tmp/sid-abc/`, the LLM
 history is in `.state/sessions/sid-abc/`, and any files the agent
 wrote are wherever it wrote them.
 
-### Workflow 2 — read why a session is stuck
+### Workflow 2 - read why a session is stuck
 
 **Goal.** Operator clicked into a `WAITING` session. They need to
 know what it's waiting on.
@@ -179,7 +185,7 @@ know what it's waiting on.
 }
 ```
 
-Returns `status=WAITING`, `parked_status="parked"`,
+Returns `status="waiting"`, `parked_status="parked"`,
 `parked_event_key="ask_user:sid-xyz:tc-42"`.
 
 2. Read the `waiting.json` to see the prompt. (This requires
@@ -233,11 +239,11 @@ Returns `status=WAITING`, `parked_status="parked"`,
 
 ## Related
 
-- [workspaces](workspaces.md) — sessions live inside workspaces;
+- [workspaces](workspaces.md) - sessions live inside workspaces;
   workspaces own the filesystem + git state.
-- [agents](agents.md) — the agent defines what a session does;
+- [agents](agents.md) - the agent defines what a session does;
   the session is one instance of running an agent.
-- [yielding](yielding.md) — yields are how sessions transition
+- [yielding](yielding.md) - yields are how sessions transition
   to WAITING.
-- [chats](chats.md) — the human-in-the-loop sibling of sessions;
+- [chats](chats.md) - the human-in-the-loop sibling of sessions;
   same yield mechanics, different lifecycle.

@@ -1,6 +1,6 @@
 ---
 slug: knowledge
-title: Knowledge — collections and documents
+title: Knowledge - collections and documents
 summary: How to organise reference material in primer using Collections and Documents, including the ingest pipeline and how to read content back.
 related: [semantic-search, agents]
 mcp_tools:
@@ -22,7 +22,7 @@ mcp_tools:
   - system::find_collection_documents_by_meta
 ---
 
-# Knowledge — collections and documents
+# Knowledge - collections and documents
 
 ## Overview
 
@@ -33,17 +33,24 @@ binding to a configured embedder (so the collection has stable
 embedding semantics). A **Document** belongs to a Collection by
 `collection_id`, has its own `id`, `name`, and a `meta` bag for
 arbitrary metadata, and carries text content under `meta['content']`
-(by convention — the storage backend doesn't enforce a schema for
+(by convention - the storage backend doesn't enforce a schema for
 this).
 
 The Collections + Documents model is the primer-provided answer to
 "give my agent access to a body of reference material." Operators
-create one Collection per knowledge domain — engineering runbooks,
-support FAQs, product documentation — and POST Documents into it.
+create one Collection per knowledge domain - engineering runbooks,
+support FAQs, product documentation - and POST Documents into it.
 Agents discover collections via `search::search_collections`
 (metadata search), iterate documents via
 `system::list_collection_documents`, and fetch text via
 `system::get_document_content`.
+
+Use `system::find_documents` / `find_collection_documents_by_meta`
+when you want documents by exact id or metadata predicate; not when
+you want a ranked natural-language match (that is what the
+`search::search_*` tools in [semantic-search](semantic-search.md)
+do). Note `search::search_collections` ranks collection *metadata*,
+not the documents inside them.
 
 The piece that's still in flight is the **live ingest** path: the
 multipart-upload endpoint that takes a PDF/DOCX/MD file, runs it
@@ -51,13 +58,13 @@ through [primer/ingest/](../../primer/ingest/)'s `DocumentIngester`
 (load → split → embed → store), and produces both a Document row and
 multi-chunk vector records. That endpoint is partially built but
 not yet wired into the REST surface. Today, `POST /v1/documents`
-persists the Document row only — no chunking, no vectorising — and
+persists the Document row only - no chunking, no vectorising - and
 `system::search_collection` is a stub that returns
 `type=not-implemented`. The retrieval path that DOES work is reading
 content by id, which is what `system::get_document_content` gives you.
 
 A different special-purpose corner of the knowledge surface is the
-**internal collections** — five reserved collections owned by
+**internal collections** - five reserved collections owned by
 primer itself, including `_internal_ai_docs` (the docs you're
 reading). Those are documented separately at
 [semantic-search](semantic-search.md). The CRUD tools listed here
@@ -68,28 +75,28 @@ them in sync) and shouldn't be edited via these tools.
 ## Mental model
 
 A `Collection`:
-- `id` — operator-chosen identifier; immutable.
-- `description` — free text. This is what
+- `id` - operator-chosen identifier; immutable.
+- `description` - free text. This is what
   `search::search_collections` embeds.
-- `embedder` — `{provider_id, model}`. Bound at create time; not
+- `embedder` - `{provider_id, model}`. Bound at create time; not
   changeable (changing the embedder would invalidate every existing
   chunk's vector dimensions).
-- `search_provider_id` — id of a `SemanticSearchProvider` row. Bound
+- `search_provider_id` - id of a `SemanticSearchProvider` row. Bound
   at create time; immutable for the same reason as `embedder`.
-- `system` — true for the reserved internal collections; user
+- `system` - true for the reserved internal collections; user
   collections are created with `system=false`. The CRUD layer
   refuses to delete system collections.
 
 A `Document`:
-- `id` — operator-chosen identifier; unique within the collection.
-- `collection_id` — the owning Collection.
-- `name` — human-readable label.
-- `meta` — arbitrary JSON. By convention `meta['content']` holds the
+- `id` - operator-chosen identifier; unique within the collection.
+- `collection_id` - the owning Collection.
+- `name` - human-readable label.
+- `meta` - arbitrary JSON. By convention `meta['content']` holds the
   raw text. `meta['content_hash']` (when present) is a sha256 over
   the content used for change detection.
-- `harness_id` — null for user-created documents. Non-null for
+- `harness_id` - null for user-created documents. Non-null for
   documents managed by a harness install; mutation via the public
-  CRUD endpoints returns 409 — use the harness's sync/uninstall.
+  CRUD endpoints returns 409 - use the harness's sync/uninstall.
 
 A typical use case ties a Collection to an agent: the agent's
 `system_prompt` references the collection by id, and the agent's
@@ -101,7 +108,7 @@ description, then `system::list_collection_documents` to enumerate.
 
 ## Lifecycle and states
 
-There's no state machine on a Collection or Document — they're
+There's no state machine on a Collection or Document - they're
 plain CRUD. The interesting lifecycle is the **ingest path**, which
 in v1 is fully implemented in code but only partially exposed
 through HTTP. The pipeline:
@@ -112,7 +119,7 @@ through HTTP. The pipeline:
    HTML, plain text, markdown.
 2. **Split.** `DocumentSplitter.split(loaded)` produces a list of
    `Chunk` objects with positions and per-chunk metadata. Default
-   is the `DoclingSplitter` (structure-aware — respects headings,
+   is the `DoclingSplitter` (structure-aware - respects headings,
    tables, code blocks). `RecursiveSplitter` is the pure-Python
    fallback for environments where docling isn't desired.
 3. **Embed.** First chunk embedded alone to learn vector
@@ -123,7 +130,7 @@ through HTTP. The pipeline:
 `DocumentIngester` is the orchestrator; constructor takes the
 Collection, an Embedder, a VectorStore, plus optional loader and
 splitter. The internal-collections subsystem uses it directly for
-`_internal_ai_docs`. End-user code does not — the live REST entry
+`_internal_ai_docs`. End-user code does not - the live REST entry
 point that calls `DocumentIngester` from a multipart upload isn't
 yet wired up. So the practical state in v1:
 
@@ -141,59 +148,59 @@ CRUD, and the extra "use-this-not-that" tools.
 
 ### Collection CRUD
 
-- `system::list_collections` — paginated listing.
-- `system::get_collection` — fetch by id. 404 on miss.
-- `system::create_collection` — body needs `id`, `description`,
+- `system::list_collections` - paginated listing.
+- `system::get_collection` - fetch by id. 404 on miss.
+- `system::create_collection` - body needs `id`, `description`,
   `embedder`, `search_provider_id`. Reject reserved ids
   (`_internal_*`).
-- `system::update_collection` — partial update. `embedder` and
-  `search_provider_id` are not editable post-create — attempting
+- `system::update_collection` - partial update. `embedder` and
+  `search_provider_id` are not editable post-create - attempting
   triggers 422.
-- `system::delete_collection` — cascade-blocked if any document
+- `system::delete_collection` - cascade-blocked if any document
   references it. Reject reserved ids.
-- `system::find_collections` — predicate-based query.
+- `system::find_collections` - predicate-based query.
 
 ### Document CRUD
 
-- `system::list_documents` — paginated listing across all
+- `system::list_documents` - paginated listing across all
   collections.
-- `system::get_document` — fetch the row by id. Does NOT return
-  content — content lives in `meta['content']` and is best fetched
+- `system::get_document` - fetch the row by id. Does NOT return
+  content - content lives in `meta['content']` and is best fetched
   via the dedicated tool.
-- `system::create_document` — needs `collection_id`, `name`,
+- `system::create_document` - needs `collection_id`, `name`,
   optionally `meta`. Creates the row without chunking.
-- `system::update_document` — partial update of `name` and `meta`.
-- `system::delete_document` — removes the row + any vector records
+- `system::update_document` - partial update of `name` and `meta`.
+- `system::delete_document` - removes the row + any vector records
   bound by `document_id` in the store.
-- `system::find_documents` — predicate-based query.
+- `system::find_documents` - predicate-based query.
 
 ### Extras
 
-- `system::list_collection_documents` — same as
+- `system::list_collection_documents` - same as
   `list_documents(collection_id=X)` but more direct; first-class
   pagination on the collection.
-- `system::find_collection_documents_by_meta` — filter on
+- `system::find_collection_documents_by_meta` - filter on
   `meta.<key> == <value>`. Returns matching documents. Use this for
   faceted retrieval (`meta.kind == "runbook"`).
-- `system::get_document_content` — pulls text from
+- `system::get_document_content` - pulls text from
   `meta['content']`. Returns `{id, collection_id, name, content}`.
   Empty string if no content stored.
-- `system::put_document` — upsert by id with raw text. Stores
+- `system::put_document` - upsert by id with raw text. Stores
   content under `meta['content']`. **Does NOT vectorise.** Idempotent.
 
 The two stubs to know about:
 
-- `system::search_collection` — returns
+- `system::search_collection` - returns
   `is_error=true type=not-implemented` until the user-doc ingest
   pipeline lands.
-- `system::refresh_collection` — same. The IC subsystem's
+- `system::refresh_collection` - same. The IC subsystem's
   re-bootstrap covers refresh for the five internal collections;
   user collections will get their own refresh once chunking is
   wired through.
 
 ## Workflows
 
-### Workflow 1 — load a runbook collection and read a doc by id
+### Workflow 1 - load a runbook collection and read a doc by id
 
 **Goal.** Operator has created a `runbooks` collection and POSTed
 three runbook documents into it via `put_document`. An agent needs
@@ -232,7 +239,7 @@ Returns items like `{"id": "db-failover", "name": "Database failover", "meta": {
 
 Returns `{"id": "db-failover", "collection_id": "runbooks", "name": "Database failover", "content": "## Symptoms\\n\\n..."}`.
 
-### Workflow 2 — upsert a document programmatically
+### Workflow 2 - upsert a document programmatically
 
 **Goal.** Agent has been asked to remember a piece of information
 across sessions. It writes it into a "memory" collection.
@@ -288,8 +295,8 @@ ships; the agent has to know the document id to read it back.
 
 ## Related
 
-- [semantic-search](semantic-search.md) — the internal collections
+- [semantic-search](semantic-search.md) - the internal collections
   (`_internal_*`) and the `search::*` toolset.
-- [agents](agents.md) — agents typically bind one or more
+- [agents](agents.md) - agents typically bind one or more
   collections via their `system_prompt` or via tool calls in their
   prompt template.

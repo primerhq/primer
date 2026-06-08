@@ -1,7 +1,7 @@
 ---
 slug: agents
-title: Agents — definitions and runtime
-summary: How to define and invoke agents — the Agent entity, prompt structure, tool sets, response formats, auto-compaction, and the differences between chat-mode and session-mode execution.
+title: Agents - definitions and runtime
+summary: How to define and invoke agents - the Agent entity, prompt structure, tool sets, response formats, auto-compaction, and the differences between chat-mode and session-mode execution.
 related: [graphs, chats, sessions, workspaces, tool-approval, yielding]
 mcp_tools:
   - system::list_agents
@@ -13,7 +13,7 @@ mcp_tools:
   - search::search_agents
 ---
 
-# Agents — definitions and runtime
+# Agents - definitions and runtime
 
 ## Overview
 
@@ -22,14 +22,14 @@ agent is a stored row describing: a system prompt (one or more
 TextPart fragments), the LLM provider/model that runs it, the
 toolset(s) it has access to, any response_format constraint, a
 max-turns cap, and optional start/end event hooks. Agents don't
-run by themselves — they're invoked inside a context (a chat, a
+run by themselves - they're invoked inside a context (a chat, a
 session, a graph node, a fresh-session subscription) and that
 context owns the LLM loop and history persistence.
 
 There are two contexts in v1: chats (multi-turn human-in-the-loop)
 and sessions (long-running headless work). The underlying executor
-machinery is shared — both run the same `AgentExecutor` style turn
-loop with tool dispatch, auto-compaction, and stream fan-out — but
+machinery is shared - both run the same `AgentExecutor` style turn
+loop with tool dispatch, auto-compaction, and stream fan-out - but
 the wrapping differs (chat persists every message as a row in
 ChatMessage; session commits LLM history to the workspace's `.state`
 repo as git commits).
@@ -45,28 +45,33 @@ turn begins with the next user input.
 Agents are the primary indexed entity in the semantic catalogue. An
 agent's description + system_prompt are embedded into
 `_internal_agents`; `search::search_agents` is the discovery path.
-This is why agent descriptions matter for usability — they're
+This is why agent descriptions matter for usability - they're
 what shows up in semantic search results.
+
+Use a single agent when one LLM with one toolset does the whole
+job; not when you need to chain several agents with conditional
+routing between them (use a [graph](graphs.md) via
+`system::create_graph`).
 
 ## Mental model
 
 An `Agent` row carries:
 - `id`, `description` (free text; embedded for search).
-- `system_prompt` — a list of `TextPart` fragments. Concatenated at
+- `system_prompt` - a list of `TextPart` fragments. Concatenated at
   invoke time. Splitting into fragments lets the operator inject
   context (e.g. a workspace-specific preamble) without rewriting
   the base prompt.
-- `llm` — `{provider_id, model, config}`. Provider must exist as
+- `llm` - `{provider_id, model, config}`. Provider must exist as
   an `LLMProvider` row.
-- `tools` — list of toolset references. Each is `{toolset_id,
-  tool_names?}` — leaving `tool_names` empty includes every tool
+- `tools` - list of toolset references. Each is `{toolset_id,
+  tool_names?}` - leaving `tool_names` empty includes every tool
   from that toolset.
-- `response_format` — optional structured-output schema. When set,
+- `response_format` - optional structured-output schema. When set,
   the LLM is instructed to produce JSON matching the schema and
   the parsed result lands in `NodeOutput.parsed` for graph
   consumers.
-- `max_turns` — safety cap; agent stops with an error if exceeded.
-- `harness_id` — non-null for agents installed by a harness;
+- `max_turns` - safety cap; agent stops with an error if exceeded.
+- `harness_id` - non-null for agents installed by a harness;
   blocks public CRUD.
 
 The executor responsibilities, per turn:
@@ -85,7 +90,7 @@ The executor responsibilities, per turn:
 
 Auto-compaction (see [chats](chats.md) for chat-specific details):
 before each LLM call, the executor counts tokens. If over 90% of
-the model's context window, run a compaction strategy — typically
+the model's context window, run a compaction strategy - typically
 summarise the head, keep the tail. The resulting summary replaces
 the elided range in the reconstructed history. The original
 messages stay in storage; the substitution happens at history-
@@ -93,12 +98,12 @@ reconstruction time.
 
 Streaming: subscribers (the WS connection, internal taps) see token
 events in the order the LLM produces them. Persisted state is the
-complete messages, not the token-by-token stream — reconnect
+complete messages, not the token-by-token stream - reconnect
 replays the complete messages, not the tokens.
 
 ## Lifecycle and states
 
-An Agent row has no lifecycle of its own — it's a CRUD entity.
+An Agent row has no lifecycle of its own - it's a CRUD entity.
 **Agent invocations** have lifecycle, but that lifecycle is owned
 by the wrapping context (chat or session). See [chats](chats.md)
 and [sessions](sessions.md).
@@ -122,26 +127,26 @@ Agents are managed via standard CRUD plus the semantic search tool.
 
 ### CRUD (system toolset)
 
-- `system::list_agents` — paginated.
-- `system::get_agent` — fetch the row including `system_prompt`,
+- `system::list_agents` - paginated.
+- `system::get_agent` - fetch the row including `system_prompt`,
   `tools`, `response_format`, `llm`.
-- `system::create_agent` — body fields: `id`, `description`,
+- `system::create_agent` - body fields: `id`, `description`,
   `system_prompt`, `llm`, `tools`, optional `response_format`,
   `max_turns` (default 20).
-- `system::update_agent` — partial update. Editing a harness-
+- `system::update_agent` - partial update. Editing a harness-
   managed agent (`harness_id` set) returns 409.
-- `system::delete_agent` — cascade-blocked if any chat references
+- `system::delete_agent` - cascade-blocked if any chat references
   the agent.
-- `system::find_agents` — predicate query.
+- `system::find_agents` - predicate query.
 
 ### Discovery (search toolset)
 
-- `search::search_agents` — semantic search over agent
+- `search::search_agents` - semantic search over agent
   description + system_prompt. Returns ranked agent ids.
 
 ## Workflows
 
-### Workflow 1 — define an agent and invoke it in a fresh session
+### Workflow 1 - define an agent and invoke it in a fresh session
 
 **Goal.** Create the `summarise-document` agent and run it once
 in a fresh workspace.
@@ -192,9 +197,14 @@ in a fresh workspace.
 }
 ```
 
-4. Poll for completion (see [sessions](sessions.md)).
+Response threads the session `id` and a `status` of `running`:
+```json
+{"id": "ses_8f2a", "status": "running"}
+```
 
-### Workflow 2 — discover an existing agent by capability
+4. Poll `system::get_session(id="ses_8f2a")` until `status` is `ended` (see [sessions](sessions.md)).
+
+### Workflow 2 - discover an existing agent by capability
 
 **Goal.** Connected agent doesn't know what's available. Find an
 agent that does code review.
@@ -223,7 +233,7 @@ agent depending on what's installed.
 
 Read the description + system_prompt to confirm fit.
 
-3. Use it — either spin up a session or fire a chat or instantiate
+3. Use it - either spin up a session or fire a chat or instantiate
    a graph that uses it as a node.
 
 ## Gotchas
@@ -235,14 +245,14 @@ Read the description + system_prompt to confirm fit.
   session logs.
 - **Auto-compaction triggers between turns at 90% context.** Don't
   assume the LLM's history input is a contiguous slice of stored
-  rows — it can have a compaction summary replacing a range.
+  rows - it can have a compaction summary replacing a range.
 - **Streaming tokens are not persisted as separate rows.** Only
   complete messages (assistant_message, tool_call, tool_result)
   land in storage. The token-by-token stream is observed by live
   subscribers only.
 - **Agent definitions are re-read every turn.** Edit the agent
   while a session is running; the next turn sees the edit. The
-  tool set, the prompt, the response_format — all re-resolved.
+  tool set, the prompt, the response_format - all re-resolved.
 - **`harness_id` makes an agent immutable through CRUD.** Use
   `harness::sync` after upstream changes, not
   `system::update_agent`.
@@ -257,14 +267,14 @@ Read the description + system_prompt to confirm fit.
   the agent. See [yielding](yielding.md) for what happens then.
   Outside primer (over MCP) yielding tools are invisible.
 - **Approval-gated tools surface as silent parks.** From inside
-  the agent, a `_approval` yield happens transparently — the
+  the agent, a `_approval` yield happens transparently - the
   agent's next message contains the tool result (or rejection).
 
 ## Related
 
-- [graphs](graphs.md) — graphs orchestrate multiple agents.
-- [chats](chats.md) — the multi-turn human-in-the-loop wrapper.
-- [sessions](sessions.md) — the headless wrapper.
-- [workspaces](workspaces.md) — what sessions run inside.
-- [tool-approval](tool-approval.md) — gating individual tool calls.
-- [yielding](yielding.md) — the park/resume primitive.
+- [graphs](graphs.md) - graphs orchestrate multiple agents.
+- [chats](chats.md) - the multi-turn human-in-the-loop wrapper.
+- [sessions](sessions.md) - the headless wrapper.
+- [workspaces](workspaces.md) - what sessions run inside.
+- [tool-approval](tool-approval.md) - gating individual tool calls.
+- [yielding](yielding.md) - the park/resume primitive.
