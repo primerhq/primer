@@ -13,6 +13,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 
 from primer.int.sandbox import FileStat, Sandbox
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.local.tools.glob import GlobArgs
 from primer.workspace.sandbox.tools._common import (
@@ -28,8 +29,17 @@ class SandboxGlob(WorkspaceTool):
     id: ClassVar[str] = "glob"
     description: ClassVar[str] = (
         "Find files by glob pattern (e.g. 'src/**/*.py'). Results "
-        "sorted newest-first; paginate with offset+limit."
+        "sorted newest-first; paginate with offset+limit.\n\n"
+        "Use when finding files by name pattern; not for searching file "
+        "contents (use ``grep``)."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(
+            args={"pattern": "**/*.py", "path": "."},
+            returns="python files newest-first",
+        ),
+        ToolExample(args={"pattern": "*.ts", "path": "src"}),
+    ]
 
     def __init__(self, sandbox: Sandbox, *, workspace_root: str) -> None:
         self._sandbox = sandbox

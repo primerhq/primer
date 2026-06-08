@@ -539,11 +539,14 @@ def _workspace_tool_descriptor(
     so the LLM sees a globally-unique id that won't collide with tools
     from other toolsets.
     """
+    from primer.toolset._describe import render_description
+
     return Tool(
         id=scoped_id,
-        description=ws_tool.description,
+        description=render_description(ws_tool.description, ws_tool.examples),
         toolset_id=WORKSPACE_TOOLSET_ID,
         args_schema=ws_tool.parameters().model_json_schema(),
+        examples=ws_tool.examples,
     )
 
 

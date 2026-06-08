@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     # AgentSession is concrete and lives at primer/workspace/session.py,
     # which lands in sub-project D. Until then, the forward reference
     # below stays as a string so this module is importable without it.
+    from primer.model.chat import ToolExample
     from primer.workspace.session import AgentSession
 
 
@@ -173,6 +174,9 @@ class WorkspaceTool(ABC):
     description: ClassVar[str]
     """Long-form markdown description loaded into the agent's system
     prompt; tells the model when and how to use the tool."""
+
+    examples: ClassVar[list["ToolExample"]] = []
+    """Structured worked examples rendered into the LLM-facing description."""
 
     requires_workspace_context: ClassVar[bool] = True
     """When True, the runtime refuses to dispatch this tool unless the

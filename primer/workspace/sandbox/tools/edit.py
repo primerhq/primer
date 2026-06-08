@@ -8,6 +8,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 
 from primer.int.sandbox import Sandbox
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.local.tools.edit import EditArgs
 from primer.workspace.sandbox.tools._common import resolve_sandbox_path
@@ -20,8 +21,25 @@ class SandboxEdit(WorkspaceTool):
     id: ClassVar[str] = "edit"
     description: ClassVar[str] = (
         "Replace a substring in a file. By default old_string must be "
-        "unique; pass replace_all=true to replace every occurrence."
+        "unique; pass replace_all=true to replace every occurrence.\n\n"
+        "Use when replacing a substring in a file; old_string must be "
+        "unique unless replace_all is set."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(
+            args={"path": "a.py", "old_string": "foo", "new_string": "bar"},
+            returns="one replacement",
+        ),
+        ToolExample(
+            args={
+                "path": "a.py",
+                "old_string": "x",
+                "new_string": "y",
+                "replace_all": True,
+            },
+            returns="all occurrences",
+        ),
+    ]
 
     def __init__(self, sandbox: Sandbox, *, workspace_root: str) -> None:
         self._sandbox = sandbox

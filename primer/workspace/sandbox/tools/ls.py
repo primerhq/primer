@@ -7,6 +7,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 
 from primer.int.sandbox import Sandbox
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.local.tools.ls import LsArgs
 from primer.workspace.sandbox.tools._common import resolve_sandbox_path
@@ -19,8 +20,17 @@ class SandboxLs(WorkspaceTool):
     id: ClassVar[str] = "ls"
     description: ClassVar[str] = (
         "List the contents of a directory. Returns one entry per line "
-        "with kind, size, mtime, and name."
+        "with kind, size, mtime, and name.\n\n"
+        "Use when you need a directory listing; not for file contents "
+        "(use ``read``)."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(args={"path": "src"}, returns="entries in src"),
+        ToolExample(
+            args={"path": ".", "recursive": True},
+            returns="recursive listing",
+        ),
+    ]
 
     def __init__(self, sandbox: Sandbox, *, workspace_root: str) -> None:
         self._sandbox = sandbox

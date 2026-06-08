@@ -7,6 +7,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 
 from primer.int.sandbox import Sandbox
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.local.tools.read import ReadArgs
 from primer.workspace.sandbox.tools._common import resolve_sandbox_path
@@ -21,9 +22,19 @@ class SandboxRead(WorkspaceTool):
 
     id: ClassVar[str] = "read"
     description: ClassVar[str] = (
-        "Read a file with offset+limit pagination. Output prefixes "
-        "lines with their numbers. Binary files return a summary."
+        "Read a file with offset+limit pagination; output prefixes each "
+        "line with its number, and binary files return a summary.\n\n"
+        "Use when you need the contents of a known file path; not for "
+        "finding files (use ``glob``) or searching contents (use "
+        "``grep``)."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(args={"path": "README.md"}, returns="numbered lines 1..N"),
+        ToolExample(
+            args={"path": "src/big.py", "offset": 100, "limit": 50},
+            returns="lines 101-150",
+        ),
+    ]
 
     def __init__(self, sandbox: Sandbox, *, workspace_root: str) -> None:
         self._sandbox = sandbox

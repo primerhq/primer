@@ -14,6 +14,7 @@ from typing import ClassVar
 from pydantic import BaseModel
 
 from primer.int.sandbox import Sandbox
+from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.local.tools.grep import GrepArgs
 from primer.workspace.sandbox.tools._common import (
@@ -33,8 +34,24 @@ class SandboxGrep(WorkspaceTool):
     description: ClassVar[str] = (
         "Search file contents with a regex. Choose output_mode "
         "('files_with_matches', 'content', or 'count') and optionally "
-        "filter files by glob."
+        "filter files by glob.\n\n"
+        "Use when searching file contents by regex; not for finding "
+        "files by name (use ``glob``)."
     )
+    examples: ClassVar[list[ToolExample]] = [
+        ToolExample(
+            args={"pattern": "TODO", "path": "."},
+            returns="files containing TODO",
+        ),
+        ToolExample(
+            args={
+                "pattern": "def .*",
+                "output_mode": "content",
+                "glob": "*.py",
+            },
+            returns="matching lines",
+        ),
+    ]
 
     def __init__(self, sandbox: Sandbox, *, workspace_root: str) -> None:
         self._sandbox = sandbox

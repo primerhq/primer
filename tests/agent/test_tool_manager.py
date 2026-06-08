@@ -222,6 +222,7 @@ class _FakeWorkspaceTool:
 
     id = "fake_ws_tool"
     description = "a fake workspace tool"
+    examples: list = []
     requires_workspace_context = True
 
     def __init__(self) -> None:
