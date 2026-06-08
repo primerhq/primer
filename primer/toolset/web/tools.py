@@ -24,8 +24,9 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
-from primer.model.chat import Tool, ToolCallResult
+from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import BadRequestError
+from primer.toolset._describe import make_tool
 from primer.web_search.adapter import (
     SearchHit,
     WebSearchProviderError,
@@ -113,29 +114,44 @@ class HttpRequestArgs(BaseModel):
 
 
 def make_web_search_descriptor(toolset_id: str) -> Tool:
-    return Tool(
+    return make_tool(
         id="web-search",
-        description=(
-            "Perform a web search and return up to ``count`` "
-            "title/url/snippet results. Use for fact lookup, current "
-            "events, or finding canonical documentation pages."
-        ),
         toolset_id=toolset_id,
+        purpose=(
+            "Search the public web and return up to ``count`` "
+            "title/url/snippet results."
+        ),
+        when=(
+            "Use when you need fact lookup, current events, or to find "
+            "canonical documentation pages; not for fetching a known URL "
+            "(use ``http-request``)."
+        ),
         args_schema=WebSearchArgs.model_json_schema(),
+        examples=[
+            ToolExample(args={"query": "python 3.13 release notes"}, returns="up to 5 title/url/snippet hits"),
+            ToolExample(args={"query": "anthropic api pricing", "count": 10}, returns="up to 10 hits"),
+        ],
     )
 
 
 def make_http_request_descriptor(toolset_id: str) -> Tool:
-    return Tool(
+    return make_tool(
         id="http-request",
-        description=(
-            "Perform an HTTP request against ``url`` with the given "
-            "``method`` and optional ``headers`` / ``body``. Returns "
-            "JSON with the response status, headers, and body. The "
-            "body is truncated past the configured byte cap."
-        ),
         toolset_id=toolset_id,
+        purpose=(
+            "Perform an HTTP request against ``url`` and return JSON with "
+            "the response status, headers, and (byte-capped) body."
+        ),
+        when=(
+            "Use when you need to call a specific known URL or HTTP API; "
+            "not for open-ended web search (use ``web-search``). The body "
+            "is truncated past the configured byte cap."
+        ),
         args_schema=HttpRequestArgs.model_json_schema(),
+        examples=[
+            ToolExample(args={"url": "https://api.github.com/repos/python/cpython"}, returns="status, headers, JSON body"),
+            ToolExample(args={"url": "https://api.example.com/items", "method": "POST", "body": "{\"x\": 1}"}, returns="the POST response"),
+        ],
     )
 
 

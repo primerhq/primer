@@ -464,8 +464,8 @@ def _crud_tools_for(
             ),
             when=(
                 "Use when you need to browse or paginate this entity type; "
-                "not for one known id (use ``get``) or a predicate (use "
-                "``find``)."
+                f"not for one known id (use ``get_{entity_label}``) or a "
+                f"predicate (use ``find_{entity_label_plural}``)."
             ),
             args_schema=_PaginationArgs.model_json_schema(),
             examples=[
@@ -682,11 +682,11 @@ def _crud_tools_for(
             toolset_id=SYSTEM_TOOLSET_ID,
             purpose=(
                 f"Find {cls_name} rows matching a predicate tree; same "
-                "pagination as ``list``."
+                f"pagination as ``list_{entity_label_plural}``."
             ),
             when=(
                 "Use when filtering by field values; pass ``predicate=null`` "
-                "to match all (equivalent to ``list``)."
+                f"to match all (equivalent to ``list_{entity_label_plural}``)."
             ),
             args_schema=_FindArgs.model_json_schema(),
             examples=[

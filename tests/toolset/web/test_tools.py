@@ -314,3 +314,11 @@ class TestHttpRequestHandler:
             make_http_request_handler(
                 http_client=client, response_body_byte_cap=0
             )
+
+
+@pytest.mark.asyncio
+async def test_web_tools_conform():
+    from primer.toolset.web.tools import make_web_search_descriptor, make_http_request_descriptor
+    from tests.toolset._desc_conformance import assert_tool_conforms
+    for tool in (make_web_search_descriptor("web"), make_http_request_descriptor("web")):
+        assert_tool_conforms(tool)
