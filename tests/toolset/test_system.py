@@ -287,6 +287,13 @@ class TestCatalog:
             if t.id in crud_ids:
                 assert_tool_conforms(t)
 
+    @pytest.mark.asyncio
+    async def test_all_system_tools_conform(self, system_toolset) -> None:
+        from tests.toolset._desc_conformance import assert_tool_conforms
+
+        async for t in system_toolset.list_tools():
+            assert_tool_conforms(t)
+
 
 # ===========================================================================
 # Per-entity CRUD round-trips (LLMProvider as the canonical exemplar)

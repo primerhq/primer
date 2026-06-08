@@ -750,17 +750,27 @@ def _fetch_models_tool(
 
     name = f"fetch_{label}_models"
     return name, (
-        Tool(
+        make_tool(
             id=name,
-            description=(
-                f"Live model list reported by the {pretty} provider. "
-                "Differs from the configured ``models`` field on the "
-                "provider row, which is what the application is "
-                "*permitted* to send. Use this to discover model "
-                "identifiers the provider currently exposes."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=(
+                f"Fetch the live model list reported by a configured "
+                f"{pretty} provider."
+            ),
+            when=(
+                "Use when you need the model identifiers the provider "
+                "currently exposes; differs from the configured "
+                "``models`` field on the provider row (what the app is "
+                f"permitted to send) and from ``get_{label}`` (the stored "
+                "config row)."
+            ),
             args_schema=_ProviderIdArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"provider_id": "anthropic-1"},
+                    returns="the provider's available model ids",
+                )
+            ],
         ),
         _handler,
     )
@@ -820,18 +830,26 @@ def _list_toolset_tools_tool(
         return _ok({"tools": tools_out})
 
     return "list_toolset_tools", (
-        Tool(
+        make_tool(
             id="list_toolset_tools",
-            description=(
-                "Enumerate tools currently exposed by a toolset. Calls "
-                "the live provider so OAuth-protected MCP toolsets may "
-                "raise an auth-required error (returned as "
-                "``is_error=true`` ``type=auth-required``). Returns "
-                "``{'tools': [Tool, ...]}`` — each Tool carries its "
-                "id, description, schema, and originating toolset_id."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="Enumerate the tools a toolset currently exposes.",
+            when=(
+                "Use when you want to discover what a toolset offers "
+                "before dispatching to it via ``call_tool``. Calls the "
+                "live provider, so OAuth-protected MCP toolsets may return "
+                "``is_error=true`` ``type=auth-required``."
+            ),
             args_schema=_ToolsetIdArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"toolset_id": "system"},
+                    returns=(
+                        "``{'tools': [Tool, ...]}`` where each Tool carries "
+                        "its id, description, schema, and toolset_id"
+                    ),
+                )
+            ],
         ),
         _handler,
     )
@@ -866,18 +884,28 @@ def _call_tool_tool(
         )
 
     return "call_tool", (
-        Tool(
+        make_tool(
             id="call_tool",
-            description=(
-                "Meta-dispatch: invoke any tool from any toolset by id. "
-                "Useful when you have discovered a tool via "
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="Meta-dispatch: invoke any tool from any toolset by id.",
+            when=(
+                "Use when you have discovered a tool via "
                 "``list_toolset_tools`` and want to execute it without "
                 "going through the dedicated agent toolset wiring. The "
                 "dispatched tool's own ``output`` and ``is_error`` are "
-                "passed through unchanged so the model can act on them."
+                "passed through unchanged so you can act on them."
             ),
-            toolset_id=SYSTEM_TOOLSET_ID,
             args_schema=_CallToolArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={
+                        "toolset_id": "misc",
+                        "tool_name": "get_datetime",
+                        "arguments": {},
+                    },
+                    returns="the dispatched tool's output and is_error",
+                )
+            ],
         ),
         _handler,
     )
@@ -958,17 +986,23 @@ def _collection_extras(
         return _ok(response)
 
     out["list_collection_documents"] = (
-        Tool(
+        make_tool(
             id="list_collection_documents",
-            description=(
-                "List documents belonging to a collection. Server-side "
-                "filter on ``Document.collection_id == collection_id``. "
-                "Same pagination contract as the entity ``list`` tools. "
-                "Returns ``type=not-found`` if the collection itself "
-                "does not exist."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="List documents belonging to a collection.",
+            when=(
+                "Use when you want every document under a collection id "
+                "(server-side filter on ``Document.collection_id``); same "
+                "pagination contract as the entity ``list`` tools. Returns "
+                "``type=not-found`` if the collection itself does not exist."
+            ),
             args_schema=_CollectionDocumentsListArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"collection_id": "kb-1", "limit": 20},
+                    returns="a page of documents in the collection",
+                )
+            ],
         ),
         _list_docs,
     )
@@ -1007,18 +1041,24 @@ def _collection_extras(
         return _ok(response)
 
     out["find_collection_documents_by_meta"] = (
-        Tool(
+        make_tool(
             id="find_collection_documents_by_meta",
-            description=(
-                "Find documents in a collection by metadata equality. "
-                "``meta_filter`` is a flat dict of "
-                "``{key: equality_value, ...}`` translated server-side "
-                "to ``meta.key == value`` predicates joined with AND. "
-                "For richer predicates (range, OR, IN) use the generic "
-                "``find_documents`` tool with a hand-built Predicate."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="Find documents in a collection by metadata equality.",
+            when=(
+                "Use when you want exact metadata matching (``meta_filter`` "
+                "is a flat dict of ``{key: value}`` joined with AND); not "
+                "for free-text relevance (use ``search_collection``) nor "
+                "richer predicates like range/OR/IN (use ``find_documents`` "
+                "with a hand-built Predicate)."
+            ),
             args_schema=_CollectionFindByMetaArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"collection_id": "kb-1", "meta_filter": {"source": "web"}},
+                    returns="documents whose meta.source equals 'web'",
+                )
+            ],
         ),
         _find_by_meta,
     )
@@ -1040,17 +1080,28 @@ def _collection_extras(
         )
 
     out["search_collection"] = (
-        Tool(
+        make_tool(
             id="search_collection",
-            description=(
-                "Semantic / hybrid search over a collection. STUB: "
-                "returns ``is_error=true`` ``type=not-implemented`` "
-                "until the SearchService pipeline lands. Use "
-                "``find_collection_documents_by_meta`` for metadata "
-                "filtering in the meantime."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="Run semantic / hybrid search over a collection.",
+            when=(
+                "Use when you want free-text relevance ranking over "
+                "document content; for exact metadata matching use "
+                "``find_collection_documents_by_meta`` instead."
+            ),
             args_schema=_CollectionSearchArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"collection_id": "kb-1", "query": "onboarding"},
+                    returns="ranked hits once the pipeline lands",
+                    note=(
+                        "STUB: returns ``is_error=true`` "
+                        "``type=not-implemented`` until the SearchService "
+                        "pipeline (embedder + vector store + optional "
+                        "cross-encoder) is wired in the API layer."
+                    ),
+                )
+            ],
         ),
         _search,
     )
@@ -1074,16 +1125,26 @@ def _collection_extras(
         )
 
     out["refresh_collection"] = (
-        Tool(
+        make_tool(
             id="refresh_collection",
-            description=(
-                "Re-embed every document in the collection (e.g. after "
-                "swapping the embedder). STUB: returns "
-                "``is_error=true`` ``type=not-implemented`` until the "
-                "ingestion pipeline lands."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="Re-embed every document in a collection.",
+            when=(
+                "Use when you have swapped the embedder and want existing "
+                "documents re-vectorised against the new model."
+            ),
             args_schema=_CollectionIdArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"collection_id": "kb-1"},
+                    returns="a refresh acknowledgement once implemented",
+                    note=(
+                        "STUB: returns ``is_error=true`` "
+                        "``type=not-implemented`` until the SearchService "
+                        "ingestion pipeline lands."
+                    ),
+                )
+            ],
         ),
         _refresh,
     )
@@ -1164,18 +1225,23 @@ def _document_extras(
         )
 
     out["get_document_content"] = (
-        Tool(
+        make_tool(
             id="get_document_content",
-            description=(
-                "Fetch a document's text content. Looks up "
-                "``Document.meta['content']`` (where ``put_document`` "
-                "stores the raw text). Returns ``{id, collection_id, "
-                "name, content}``. Empty string content is normal for "
-                "documents that were created without going through "
-                "``put_document``."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="Fetch a document's text content.",
+            when=(
+                "Use when you need the raw text (looks up "
+                "``Document.meta['content']`` where ``put_document`` "
+                "stores it); empty-string content is normal for documents "
+                "created without going through ``put_document``."
+            ),
             args_schema=_DocumentIdArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"document_id": "doc-1"},
+                    returns="``{id, collection_id, name, content}``",
+                )
+            ],
         ),
         _get_content,
     )
@@ -1203,20 +1269,31 @@ def _document_extras(
         return _ok(stored)
 
     out["put_document"] = (
-        Tool(
+        make_tool(
             id="put_document",
-            description=(
-                "Ingest a document into a collection (upsert). "
-                "Synthesises a ``Document`` row, stores ``content`` "
-                "under ``meta['content']``, and creates the row if new "
-                "or updates it if the id already exists. Until the "
-                "chunking + embedding pipeline lands, this does NOT "
-                "vectorise the document — search will not see it. Use "
-                "``create_document`` / ``update_document`` for the raw "
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="Ingest a document with content into a collection (upsert).",
+            when=(
+                "Use when you have raw text to store under a document; "
+                "synthesises a ``Document`` row with ``content`` saved to "
+                "``meta['content']`` and creates or updates by id. Until "
+                "the chunking + embedding pipeline lands this does NOT "
+                "vectorise the document (search will not see it); use "
+                "``create_document`` / ``update_document`` for raw "
                 "row-level CRUD without content semantics."
             ),
-            toolset_id=SYSTEM_TOOLSET_ID,
             args_schema=_PutDocumentArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={
+                        "id": "doc-1",
+                        "collection_id": "kb-1",
+                        "name": "Onboarding Guide",
+                        "content": "Welcome to the team.",
+                    },
+                    returns="the stored Document row",
+                )
+            ],
         ),
         _put_document,
     )
@@ -1321,18 +1398,26 @@ def build_system_toolset(
         return _ok({"invalidated": True, "id": args.id})
 
     registry["invalidate_semantic_search_provider"] = (
-        Tool(
+        make_tool(
             id="invalidate_semantic_search_provider",
-            description=(
-                "Expire the cached VectorStoreProvider adapter for a "
-                "SemanticSearchProvider row. Call this after updating "
-                "the provider row so the next search request rebuilds "
-                "the adapter from the new config. Safe to call even if "
-                "no cached instance exists (no-op). Returns "
-                "``{'invalidated': true, 'id': '...'}``."
-            ),
             toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=(
+                "Expire the cached VectorStoreProvider adapter for a "
+                "SemanticSearchProvider row."
+            ),
+            when=(
+                "Use when you have updated the provider row and want the "
+                "next search request to rebuild the adapter from the new "
+                "config; safe to call even if no cached instance exists "
+                "(no-op)."
+            ),
             args_schema=_InvalidateSSPArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"id": "ssp-1"},
+                    returns="``{'invalidated': true, 'id': '...'}``",
+                )
+            ],
         ),
         _invalidate_ssp_handler,
     )
