@@ -1210,3 +1210,22 @@ class TestCancelWorkspaceSession:
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_session_tools_are_mcp_exposable(sp, workspace_registry):
+    from primer.mcp.safety import is_exposable
+    from primer.toolset.workspaces import build_workspaces_toolset
+
+    ts = build_workspaces_toolset(
+        storage_provider=sp,
+        workspace_registry=workspace_registry,
+        scheduler=object(),
+        claim_engine=object(),
+        event_bus=object(),
+    )
+    tools = {t.id: t async for t in ts.list_tools()}
+    for tid in ("create_workspace_session", "cancel_workspace_session"):
+        assert tid in tools, f"{tid} not registered"
+        ok, reason = is_exposable(tools[tid], provider=ts)
+        assert ok, f"{tid} not MCP-exposable: {reason}"
