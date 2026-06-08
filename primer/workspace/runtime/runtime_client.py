@@ -136,6 +136,11 @@ class RuntimeClient:
         self._connected = asyncio.Event()
         self._lock = asyncio.Lock()
 
+        # The protocol version the server confirmed during the hello
+        # handshake.  Starts at "0.0" (unknown) and is updated to the
+        # server-reported value once the first successful hello completes.
+        self._negotiated_version: str = "0.0"
+
     # ------------------------------------------------------------------
     # Public lifecycle
     # ------------------------------------------------------------------
@@ -173,6 +178,21 @@ class RuntimeClient:
             await self._session.close()
 
         self._fail_all_pending(ErrorCode.EPROTOCOL, "Client closed")
+
+    # ------------------------------------------------------------------
+    # Version info
+    # ------------------------------------------------------------------
+
+    @property
+    def negotiated_version(self) -> str:
+        """Protocol version confirmed by the server during the hello handshake.
+
+        Returns ``"0.0"`` until the first successful connection completes.
+        The value reflects the last successful handshake; use this (not the
+        advertised ``protocol_version`` constructor argument) when making
+        capability checks against the connected runtime.
+        """
+        return self._negotiated_version
 
     # ------------------------------------------------------------------
     # Per-op public methods
@@ -694,6 +714,13 @@ class RuntimeClient:
                 err.get("code", "EPROTOCOL"),
                 err.get("message", "hello failed"),
             )
+
+        # Capture the server's reported protocol version so callers can gate
+        # on capability (e.g. state_commit requires runtime >= 1.1).
+        server_result = resp.get("result") or {}
+        server_proto = server_result.get("protocol", "")
+        if server_proto:
+            self._negotiated_version = server_proto
 
         # Cancel old background tasks before spawning new ones
         for task in (self._receive_task, self._heartbeat_task):

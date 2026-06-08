@@ -153,6 +153,53 @@ class WSSandbox(Sandbox):
         return self._client.archive([self._resolve(p) for p in paths])
 
     # ------------------------------------------------------------------
+    # State-repo operations (runtime protocol >= 1.1)
+    # ------------------------------------------------------------------
+
+    @property
+    def protocol_version(self) -> str:
+        """The server-negotiated protocol version for the connected runtime.
+
+        Delegates to :attr:`RuntimeClient.negotiated_version`.  Returns
+        ``"0.0"`` when the client has never successfully connected.
+        """
+        return self._client.negotiated_version
+
+    async def state_commit(
+        self,
+        *,
+        files: dict[str, bytes],
+        deletes: list[str],
+        message: str,
+        allow_empty: bool = False,
+    ) -> str:
+        """Delegate to :meth:`RuntimeClient.state_commit`."""
+        return await self._client.state_commit(
+            files=files,
+            deletes=deletes,
+            message=message,
+            allow_empty=allow_empty,
+        )
+
+    async def state_read(self, paths: list[str]) -> dict[str, bytes | None]:
+        """Delegate to :meth:`RuntimeClient.state_read`."""
+        return await self._client.state_read(paths)
+
+    async def state_history(
+        self,
+        *,
+        session_id: str | None = None,
+        agent_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Delegate to :meth:`RuntimeClient.state_history`."""
+        return await self._client.state_history(
+            session_id=session_id,
+            agent_id=agent_id,
+            limit=limit,
+        )
+
+    # ------------------------------------------------------------------
     # Inspection + lifecycle
     # ------------------------------------------------------------------
 
