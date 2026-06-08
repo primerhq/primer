@@ -530,6 +530,19 @@ class LocalStateRepo:
         raw = await asyncio.to_thread(path.read_bytes)
         return _waiting_state_adapter.validate_json(raw)
 
+    async def read_state_file(self, path: str) -> bytes | None:
+        """Read a file by path relative to the ``.state/`` repo root.
+
+        Returns the file bytes, or ``None`` if the file is absent.
+        ``path`` must be a relative forward-slash path (e.g.
+        ``"sessions/sess-1/messages.jsonl"``).
+        """
+        _validate_relative_path(path)
+        target = self._path / path
+        if not await asyncio.to_thread(target.exists):
+            return None
+        return await asyncio.to_thread(target.read_bytes)
+
     # ---- internals -------------------------------------------------------
 
     def _repo_relative(self, p: Path) -> str:
