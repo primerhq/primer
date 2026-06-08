@@ -191,7 +191,21 @@ def _validate_relative_path(rel: str) -> None:
 
 
 def _map_commit_dict(raw: dict) -> CommitInfo:
-    """Map a raw commit dict (from state_history) to :class:`CommitInfo`."""
+    """Map a raw commit dict (from state_history) to :class:`CommitInfo`.
+
+    Handles two wire shapes:
+
+    * **Trailer-nested** -- the runtime emits trailer key/value pairs under a
+      ``"trailers"`` sub-dict keyed by ``"X-Primer-*"`` header names.  This
+      was the originally planned shape.
+    * **Flat** -- the runtime ops.py ``_parse_log_records`` function extracts
+      the trailer values directly into top-level fields
+      (``"workspace_id"``, ``"session_id"``, ``"agent_id"``, ``"op"``,
+      ``"tool"``, ``"call_id"``).  This is the actual shape the real runtime
+      returns, so we must handle it first.
+
+    The flat shape takes priority; the nested shape acts as a fallback.
+    """
     ts_raw = raw.get("committed_at") or raw.get("timestamp") or raw.get("ts")
     if isinstance(ts_raw, (int, float)):
         committed_at = datetime.fromtimestamp(float(ts_raw), tz=timezone.utc)
@@ -203,21 +217,41 @@ def _map_commit_dict(raw: dict) -> CommitInfo:
     else:
         committed_at = datetime.now(tz=timezone.utc)
 
-    trailers: dict[str, str] = {}
+    # Prefer the flat fields the runtime populates directly.
+    workspace_id: str | None = raw.get("workspace_id") or None
+    session_id: str | None = raw.get("session_id") or None
+    agent_id: str | None = raw.get("agent_id") or None
+    op: str | None = raw.get("op") or None
+    tool: str | None = raw.get("tool") or None
+    call_id: str | None = raw.get("call_id") or None
+
+    # Fall back to nested trailers dict when the flat fields are absent.
     raw_trailers = raw.get("trailers") or {}
-    for k, v in raw_trailers.items():
-        trailers[k] = str(v)
+    if raw_trailers:
+        trailers: dict[str, str] = {k: str(v) for k, v in raw_trailers.items()}
+        if workspace_id is None:
+            workspace_id = trailers.get(_TRAILER_WORKSPACE)
+        if session_id is None:
+            session_id = trailers.get(_TRAILER_SESSION)
+        if agent_id is None:
+            agent_id = trailers.get(_TRAILER_AGENT)
+        if op is None:
+            op = trailers.get(_TRAILER_OP)
+        if tool is None:
+            tool = trailers.get(_TRAILER_TOOL)
+        if call_id is None:
+            call_id = trailers.get(_TRAILER_CALL)
 
     return CommitInfo(
         sha=raw.get("sha", ""),
         subject=raw.get("subject", ""),
         committed_at=committed_at,
-        workspace_id=trailers.get(_TRAILER_WORKSPACE),
-        session_id=trailers.get(_TRAILER_SESSION),
-        agent_id=trailers.get(_TRAILER_AGENT),
-        op=trailers.get(_TRAILER_OP),
-        tool=trailers.get(_TRAILER_TOOL),
-        call_id=trailers.get(_TRAILER_CALL),
+        workspace_id=workspace_id,
+        session_id=session_id,
+        agent_id=agent_id,
+        op=op,
+        tool=tool,
+        call_id=call_id,
     )
 
 
@@ -301,11 +335,41 @@ class SandboxStateRepo:
     # ------------------------------------------------------------------
 
     async def initialize(self) -> None:
-        """No-op: the runtime manages its own state repo lifecycle."""
-        # The runtime initialises the state repo when the workspace starts.
-        # Nothing to do here beyond a cheap liveness check that the sandbox
-        # object is present.
-        pass
+        """Ensure the in-container git state repo exists.
+
+        If the sandbox exposes an ``exec`` method (i.e. it is a real
+        :class:`WSSandbox`), we run ``git init --initial-branch=main``
+        inside the ``.state`` directory so that subsequent
+        :meth:`state_commit` calls succeed.  This mirrors what
+        :class:`~primer.workspace.local.state.LocalStateRepo` does on the
+        host-FS backend.
+
+        The operation is idempotent: if the ``.git`` directory already
+        exists ``git init`` is a no-op.
+        """
+        exec_fn = getattr(self._sandbox, "exec", None)
+        if exec_fn is None:
+            # Non-exec sandbox (e.g. unit-test mock); skip git init.
+            return
+
+        state_dir = self._state_path  # e.g. /workspace/.state
+        # Create the directory and initialise the git repo in one shell
+        # invocation.  We configure user.name/user.email locally so that
+        # commits never fail due to a missing global git config.
+        init_script = (
+            f"mkdir -p {state_dir} && "
+            f"git -C {state_dir} init --initial-branch=main && "
+            f"git -C {state_dir} config user.email 'primer@local' && "
+            f"git -C {state_dir} config user.name 'primer'"
+        )
+        result = await exec_fn(
+            ["sh", "-c", init_script],
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"SandboxStateRepo.initialize: git init failed "
+                f"(rc={result.exit_code}): {result.stderr}"
+            )
 
     # ------------------------------------------------------------------
     # create_session

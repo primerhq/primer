@@ -1,8 +1,9 @@
 """StateRepo conformance suite.
 
-Parametrized over StateRepo implementations. Currently only the "local"
-parameter is active; a later task adds a "sandbox" parameter backed by a
-real container runtime.
+Parametrized over StateRepo implementations.  The "local" parameter
+exercises :class:`LocalStateRepo`; the "sandbox" parameter exercises
+:class:`SandboxStateRepo` over a real container runtime (Docker) and is
+skipped when the ``workspace:container`` capability is absent.
 
 Each test asserts a behavioural invariant that every conforming StateRepo
 implementation must satisfy.
@@ -23,6 +24,7 @@ from primer.model.workspace_session import (
     SessionInfo,
     SessionStatus,
 )
+from tests._support.testconfig import caps
 
 
 # ===========================================================================
@@ -76,12 +78,14 @@ def _make_binding(
 # ===========================================================================
 
 
-@pytest.fixture(params=["local"])
+@pytest.fixture(params=["local", "sandbox"])
 async def state_repo(request, tmp_path: Path):
     """Yield an initialized StateRepo for the implementation under test.
 
-    Adding a "sandbox" parameter later is a one-line change: add
-    ``"sandbox"`` to the params list and handle the branch below.
+    * ``local``   -- :class:`LocalStateRepo` over a tmp_path git repo.
+    * ``sandbox`` -- :class:`SandboxStateRepo` over a real Docker container
+                     running ``primer/workspace-runtime:1.0``.  Skipped when
+                     the ``workspace:container`` capability is absent.
     """
     impl = request.param
 
@@ -91,6 +95,87 @@ async def state_repo(request, tmp_path: Path):
         repo = LocalStateRepo(tmp_path / ".state", workspace_id="ws-conform")
         await repo.initialize()
         yield repo
+
+    elif impl == "sandbox":
+        # Gate: skip when Docker / container backend is not available.
+        if not caps().has("workspace:container"):
+            pytest.skip("workspace:container capability not available")
+
+        import secrets
+        from primer.model.workspace import (
+            ContainerConnectionSocket,
+            ContainerReachabilityHostPort,
+            ContainerWorkspaceConfig,
+        )
+        from primer.workspace.runtime.docker import DockerRuntimeAdapter
+        from primer.workspace.sandbox.state import SandboxStateRepo
+
+        _RUNTIME_IMAGE = "primer/workspace-runtime:1.0"
+        # Use a unique id per fixture instance so parallel/sequential test
+        # runs do not collide on container or volume names.
+        _UNIQ = secrets.token_hex(8)
+        _WORKSPACE_ID = f"ws-conform-{_UNIQ}"
+        _NAME = f"workspace-{_WORKSPACE_ID}"
+        _VOLUME = f"{_NAME}-data"
+
+        cfg = ContainerWorkspaceConfig(
+            kind="container",
+            runtime="docker",
+            connection=ContainerConnectionSocket(socket_path="/var/run/docker.sock"),
+            reachability=ContainerReachabilityHostPort(bind_host="127.0.0.1"),
+        )
+        adapter = DockerRuntimeAdapter(cfg)
+        await adapter.initialize()
+
+        from primer.model.workspace import ResourceLimits
+
+        token = secrets.token_urlsafe(32)
+        try:
+            sandbox = await adapter.create_sandbox(
+                name=_NAME,
+                image=_RUNTIME_IMAGE,
+                command=["python", "-m", "primer_runtime.server"],
+                env={},
+                workdir="/workspace",
+                volume_name=_VOLUME,
+                volume_target="/workspace",
+                extra_mounts=[],
+                user=None,
+                resources=ResourceLimits(),
+                network="full",
+                pull_policy="if_missing",
+                reachability=ContainerReachabilityHostPort(bind_host="127.0.0.1"),
+                token=token,
+            )
+        except Exception:
+            await adapter.aclose()
+            raise
+
+        repo = SandboxStateRepo(
+            sandbox,
+            state_path="/workspace/.state",
+            workspace_id=_WORKSPACE_ID,
+        )
+        await repo.initialize()
+
+        try:
+            yield repo
+        finally:
+            # Teardown: stop + remove the container and its volume.
+            try:
+                await sandbox.stop()
+            except Exception:
+                pass
+            try:
+                await sandbox.remove()
+            except Exception:
+                pass
+            try:
+                await adapter.remove_volume(_VOLUME)
+            except Exception:
+                pass
+            await adapter.aclose()
+
     else:
         pytest.skip(f"unknown impl param: {impl!r}")
 
