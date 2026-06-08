@@ -8,8 +8,8 @@ Backlog items:
 * T0585 — GET /v1/internal_collections/config returns 404
   /errors/not-found when no config row exists.
 * T0736 — A graph-bound session against a container-backed workspace
-  must surface as a clean envelope (4xx / 5xx), never
-  /errors/internal — the graph executor requires a local workspace.
+  is now SUPPORTED: the session create must return 201 and the graph
+  must run to a clean terminal (ended) with no /errors/internal.
 * T0739 — A graph with a callable-router edge but an empty
   RouterRegistry must converge to ended_reason='failed' with a
   populated last_error referencing the router, never
@@ -277,19 +277,20 @@ async def test_t0585_ic_config_get_returns_404_when_no_row(
 async def test_t0736_graph_session_container_provider_clean_envelope(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path,
 ) -> None:
-    """T0736 — The graph executor requires a local workspace (it
-    needs ``workspace.state_repo`` for git-versioned per-graph
-    state). A graph-bound session against a non-local provider must
-    surface as a clean envelope — not /errors/internal.
+    """T0736 — Container workspace graph sessions are now SUPPORTED.
 
-    The test creates a graph + a container workspace provider (which
-    lacks state_repo) and binds a session. The acceptable outcomes:
-    a) The session-create itself 4xx's (validation at create-time), OR
-    b) The session creates fine but the worker resolves it to ENDED
-       with last_error.type referencing the container backend / state_repo
-       absence within a polling window.
+    The StateRepo parity work landed state_repo support for container
+    workspaces. A graph-bound session against a container-backed
+    workspace must:
+      a) return 201 on session create (not 422/500), and
+      b) reach a clean terminal status (``ended``) with no
+         /errors/internal in last_error.
 
-    Either way, no /errors/internal envelope leaks.
+    The test creates a container provider (image
+    ``primer/workspace-runtime:1.0``) + graph + session and polls to
+    terminal within a generous window. If Docker is not available on
+    the test runner the provider-create will return 4xx cleanly (not
+    500) and the test returns early.
     """
     pid = f"llm-t736-{unique_suffix}"
     aid = f"ag-t736-{unique_suffix}"
@@ -299,9 +300,6 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
     await _seed_llm_provider(client, pid)
     await _seed_agent(client, aid, pid)
 
-    # Container workspace provider — minimal placeholder. The provider
-    # row itself must validate; the failure comes at graph-execute
-    # time when state_repo is accessed.
     r = await client.post(
         "/v1/workspace_providers",
         json={
@@ -318,7 +316,6 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
                     "kind": "host_port",
                     "bind_host": "127.0.0.1",
                 },
-                "image_pull_secrets": [],
             },
         },
     )
@@ -335,23 +332,20 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
 
     try:
         if not container_provider_created:
-            # If even creating a container provider is rejected here
-            # (e.g. because the runtime lacks docker), that's still a
-            # clean envelope test — the failure must NOT be 500.
+            # Docker unavailable -- clean rejection, not 500.
             assert r.status_code in (400, 422, 503), r.text
             assert "internal" not in r.json().get("type", ""), r.json()
             return
 
-        # Workspace template + workspace.
         r = await client.post(
             "/v1/workspace_templates",
             json={
                 "id": tpl_id,
-                "description": "container tpl",
+                "description": "container tpl t736",
                 "provider_id": wp_id,
                 "backend": {
                     "kind": "container",
-                    "image": "alpine:3.20",
+                    "image": "primer/workspace-runtime:1.0",
                 },
             },
         )
@@ -363,14 +357,22 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
         r = await client.post(
             "/v1/workspaces", json={"template_id": tpl_id},
         )
-        if r.status_code != 201:
-            assert r.status_code in (400, 422, 500, 503), r.text
-            assert "internal" not in r.json().get("type", ""), r.json()
-            return
+        assert r.status_code in (200, 201), r.text
         wid = r.json()["id"]
         cleanup_urls.insert(0, f"/v1/workspaces/{wid}")
 
-        # Graph: minimal Begin→agent→End so it parses.
+        # Wait for the container to reach running
+        phase = None
+        for _ in range(90):
+            got = await client.get(f"/v1/workspaces/{wid}")
+            assert got.status_code == 200, got.text
+            phase = got.json().get("phase")
+            if phase == "running":
+                break
+            assert phase not in ("failed", "error"), got.text
+            await asyncio.sleep(1.0)
+        assert phase == "running", f"workspace never reached running: phase={phase!r}"
+
         r = await client.post(
             "/v1/graphs",
             json={
@@ -390,7 +392,7 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
         )
         assert r.status_code == 201, r.text
 
-        # Bind session to the graph + auto_start.
+        # Container graph sessions are now supported: must be 201.
         r = await client.post(
             f"/v1/workspaces/{wid}/sessions",
             json={
@@ -398,36 +400,32 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
                 "auto_start": True,
             },
         )
-        # Either creation 4xx's (cleanest) or it goes to a fatal status
-        # within ~20s. In both cases, no /errors/internal.
-        if r.status_code != 201:
-            assert r.status_code in (400, 422, 503), r.text
-            assert "internal" not in r.json().get("type", ""), r.json()
-            return
+        assert r.status_code == 201, (
+            f"graph session on container workspace should be 201; "
+            f"got {r.status_code}: {r.text}"
+        )
         sid = r.json()["id"]
         cleanup_urls.insert(0, f"/v1/workspaces/{wid}/sessions/{sid}/cancel")
 
-        deadline = time.monotonic() + 20.0
-        last_status = None
+        # Poll to terminal -- allow generous timeout for container boot
+        deadline = time.monotonic() + 120.0
+        last: dict = {}
         while time.monotonic() < deadline:
             gr = await client.get(f"/v1/sessions/{sid}")
             assert gr.status_code == 200, gr.text
-            last_status = gr.json()["status"]
-            if last_status in ("ended", "failed", "cancelled"):
-                # Verify the envelope ROUTE returned by /v1/sessions
-                # itself is clean — never /errors/internal.
-                # (The session row itself is JSON, not an error
-                # envelope — so this check verifies the GET path
-                # didn't 500.)
-                return
-            await asyncio.sleep(0.5)
-        # Session may stay RUNNING if the container actually started;
-        # that's still a valid outcome (no /errors/internal).
-        pytest.skip(
-            f"session {sid} did not reach terminal within 20s "
-            f"(status={last_status}); acceptable — no /errors/internal "
-            "leak observed which is the contract under test"
+            last = gr.json()
+            if last.get("status") in ("ended", "failed", "cancelled"):
+                break
+            await asyncio.sleep(1.0)
+
+        assert last.get("status") == "ended", (
+            f"container graph session did not reach ended: {last}"
         )
+        last_err = last.get("last_error")
+        if last_err:
+            assert "/errors/internal" not in str(last_err.get("type", "")), (
+                f"container graph session has /errors/internal: {last_err}"
+            )
     finally:
         await _cleanup(client, cleanup_urls)
 

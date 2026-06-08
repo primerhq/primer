@@ -258,8 +258,8 @@ async def test_diagnostic_exec_delegates_to_sandbox(tmp_path: Path) -> None:
         runtime_meta=_runtime_meta(),
     )
 
-    # Swap the sandbox's exec out AFTER materialise (which runs `git init`
-    # via the real FakeSandbox.exec for the state repo). The diagnostic
+    # Swap the sandbox's exec out AFTER materialise (which skips git init
+    # because FakeSandbox satisfies _StateCapableSandbox). The diagnostic
     # call must then hit our recording stub.
     captured: dict = {}
 

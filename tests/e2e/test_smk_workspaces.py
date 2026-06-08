@@ -14,9 +14,11 @@ import pytest
 
 from tests._support.mock_llm import Rule
 from tests._support.runs import (
+    make_graph,
     make_local_workspace,
     make_scripted_agent,
     start_agent_session,
+    start_graph_session,
     wait_terminal,
 )
 from tests._support.smk import smk
@@ -312,6 +314,197 @@ async def test_container_backend(authed_client, unique_suffix):
             assert _docker_names("volume", f"workspace-{wid}-data") == []
         await authed_client.delete(f"/v1/workspace_templates/{tpl}")
         await authed_client.delete(f"/v1/workspace_providers/{wp}")
+
+
+async def _make_container_workspace(authed_client, unique_suffix):
+    """Create a container provider + template + workspace; return (wp, tpl, wid).
+
+    Waits up to 90 s for the container to reach the ``running`` phase.
+    Raises AssertionError when the workspace does not reach running.
+    """
+    wp = f"wpc-gs-{unique_suffix}"
+    tpl = f"tplc-gs-{unique_suffix}"
+
+    rp = await authed_client.post(
+        "/v1/workspace_providers",
+        json={
+            "id": wp,
+            "provider": "container",
+            "config": {
+                "kind": "container",
+                "runtime": "docker",
+                "connection": {"kind": "socket", "socket_path": "/var/run/docker.sock"},
+                "reachability": {"kind": "host_port", "bind_host": "127.0.0.1"},
+            },
+        },
+    )
+    assert rp.status_code in (200, 201), rp.text
+
+    rt = await authed_client.post(
+        "/v1/workspace_templates",
+        json={
+            "id": tpl,
+            "description": "smk container graph/agent session",
+            "provider_id": wp,
+            "backend": {"kind": "container", "image": "primer/workspace-runtime:1.0"},
+        },
+    )
+    assert rt.status_code in (200, 201), rt.text
+
+    rw = await authed_client.post("/v1/workspaces", json={"template_id": tpl})
+    assert rw.status_code in (200, 201), rw.text
+    wid = rw.json()["id"]
+    assert wid and wid.startswith("ws-"), wid
+
+    phase = None
+    for _ in range(90):
+        got = await authed_client.get(f"/v1/workspaces/{wid}")
+        assert got.status_code == 200, got.text
+        phase = got.json().get("phase")
+        if phase == "running":
+            break
+        assert phase not in ("failed", "error"), got.text
+        await asyncio.sleep(1.0)
+    assert phase == "running", f"container workspace never reached running: phase={phase!r}"
+    return wp, tpl, wid
+
+
+@smk("SMK-WSP-12")
+@requires("workspace:container")
+async def test_container_backend_graph_session(authed_client, mock_llm, unique_suffix):
+    """Graph-bound session on a container workspace runs to clean terminal.
+
+    Proves: create_session returns 201 (not 422/500), the session reaches
+    ``ended`` status, and no /errors/internal appears in last_error. Also
+    verifies the graph state directory was committed to the pod via diagnostic.
+    """
+    registry, base_url = mock_llm
+    sc = f"scripted:cgs-{unique_suffix}"
+    agent = await make_scripted_agent(
+        authed_client, registry, base_url,
+        suffix=f"cgs-{unique_suffix}",
+        scenario=sc,
+        rules=[Rule(emit_text="done")],
+    )
+
+    wp, tpl, wid = await _make_container_workspace(authed_client, unique_suffix)
+    gid = await make_graph(
+        authed_client,
+        suffix=f"cgs-{unique_suffix}",
+        nodes=[
+            {"kind": "begin", "id": "start"},
+            {"kind": "agent", "id": "step", "agent_id": agent["agent_id"],
+             "input_template": "go"},
+            {"kind": "end", "id": "done", "output_template": "{{ nodes.step.text }}"},
+        ],
+        edges=[
+            {"kind": "static", "from_node": "start", "to_node": "step"},
+            {"kind": "static", "from_node": "step", "to_node": "done"},
+        ],
+    )
+
+    try:
+        r = await authed_client.post(
+            f"/v1/workspaces/{wid}/sessions",
+            json={
+                "binding": {"kind": "graph", "graph_id": gid},
+                "auto_start": True,
+            },
+        )
+        # The key proof: must be 201, not 422/500
+        assert r.status_code == 201, (
+            f"graph session create should be 201; got {r.status_code}: {r.text}"
+        )
+        sid = r.json()["id"]
+
+        # Poll to terminal -- container sessions need extra time
+        final = await wait_terminal(authed_client, sid, timeout_s=120.0, interval_s=1.0)
+        assert final.get("status") == "ended", (
+            f"container graph session did not reach ended: {final}"
+        )
+        last_err = final.get("last_error")
+        if last_err:
+            assert "/errors/internal" not in str(last_err.get("type", "")), (
+                f"container graph session has /errors/internal: {last_err}"
+            )
+
+        # Verify graph state persisted inside the pod.
+        # The executor names the state subdir after the WorkspaceSession id
+        # (the graph_session_id passed to WorkspaceGraphExecutor is session.id),
+        # not the graph row id -- so assert sid appears in .state/graphs.
+        diag = await authed_client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": "ls .state/graphs", "timeout_seconds": 30},
+        )
+        assert diag.status_code in (200, 201), diag.text
+        assert diag.json()["exit_code"] == 0, diag.json()
+        assert diag.json()["stdout"].strip(), (
+            f"no graph state dirs found in pod .state/graphs after graph session "
+            f"(stdout empty)"
+        )
+        assert sid in diag.json()["stdout"], (
+            f"session state dir {sid!r} missing from pod .state/graphs: "
+            f"{diag.json()['stdout']!r}"
+        )
+    finally:
+        if wid is not None:
+            d = await authed_client.delete(f"/v1/workspaces/{wid}")
+            assert d.status_code in (204, 404), d.text
+            gone = await authed_client.get(f"/v1/workspaces/{wid}")
+            assert gone.status_code == 404, gone.text
+            assert _docker_names("container", f"workspace-{wid}") == []
+            assert _docker_names("volume", f"workspace-{wid}-data") == []
+        await authed_client.delete(f"/v1/workspace_templates/{tpl}")
+        await authed_client.delete(f"/v1/workspace_providers/{wp}")
+        await authed_client.delete(f"/v1/graphs/{gid}")
+        await authed_client.delete(f"/v1/agents/{agent['agent_id']}")
+        await authed_client.delete(f"/v1/llm_providers/{agent['provider_id']}")
+
+
+@smk("SMK-WSP-12")
+@requires("workspace:container")
+async def test_container_backend_agent_session(authed_client, mock_llm, unique_suffix):
+    """Agent-bound session on a container workspace runs to clean terminal.
+
+    Proves: create_session + commit work on the pod. The session reaches
+    ``ended`` status with no /errors/internal in last_error.
+    """
+    registry, base_url = mock_llm
+    sc = f"scripted:cas-{unique_suffix}"
+    agent = await make_scripted_agent(
+        authed_client, registry, base_url,
+        suffix=f"cas-{unique_suffix}",
+        scenario=sc,
+        rules=[Rule(emit_text="done")],
+    )
+
+    wp, tpl, wid = await _make_container_workspace(authed_client, unique_suffix)
+
+    try:
+        sid = await start_agent_session(authed_client, workspace_id=wid, agent_id=agent["agent_id"])
+
+        # Poll to terminal -- container sessions need extra time
+        final = await wait_terminal(authed_client, sid, timeout_s=120.0, interval_s=1.0)
+        assert final.get("status") == "ended", (
+            f"container agent session did not reach ended: {final}"
+        )
+        last_err = final.get("last_error")
+        if last_err:
+            assert "/errors/internal" not in str(last_err.get("type", "")), (
+                f"container agent session has /errors/internal: {last_err}"
+            )
+    finally:
+        if wid is not None:
+            d = await authed_client.delete(f"/v1/workspaces/{wid}")
+            assert d.status_code in (204, 404), d.text
+            gone = await authed_client.get(f"/v1/workspaces/{wid}")
+            assert gone.status_code == 404, gone.text
+            assert _docker_names("container", f"workspace-{wid}") == []
+            assert _docker_names("volume", f"workspace-{wid}-data") == []
+        await authed_client.delete(f"/v1/workspace_templates/{tpl}")
+        await authed_client.delete(f"/v1/workspace_providers/{wp}")
+        await authed_client.delete(f"/v1/agents/{agent['agent_id']}")
+        await authed_client.delete(f"/v1/llm_providers/{agent['provider_id']}")
 
 
 def _kubectl_names(kind: str, name: str, namespace: str) -> list[str]:
