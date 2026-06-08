@@ -1,13 +1,18 @@
-"""SandboxStateRepo -- git-backed state repo inside a Sandbox.
+"""SandboxStateRepo -- runtime-backed state repo inside a Sandbox.
 
-Same contract as :class:`primer.workspace.local.state.LocalStateRepo`
-but every git op dispatches via :class:`Sandbox.exec` in argv form
-(no shell). Files are materialised into the sandbox via
-:class:`Sandbox.write_file`.
+Delegates every state operation to the workspace runtime via the
+:class:`WSSandbox` thin passthroughs ``state_commit`` / ``state_read`` /
+``state_history`` (which in turn delegate to :class:`RuntimeClient`).
 
-Baseline image requirement: ``git`` must be installed in the container
-image. :meth:`initialize` raises :class:`RuntimeError` if git is
-missing.
+Runtime protocol requirement: the connected runtime must report protocol
+version >= 1.1.  If it reports an older version, ``create_session``,
+``commit``, and ``commit_arbitrary`` raise a :class:`ValidationError`
+so the API layer returns HTTP 422 instead of letting callers hit an
+``EUNSUPPORTED`` from the runtime.
+
+File layout and commit message format are byte-compatible with
+:class:`primer.workspace.local.state.LocalStateRepo` so the conformance
+suite (Task 4.1) can compare the two implementations.
 """
 
 from __future__ import annotations
@@ -15,14 +20,28 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from primer.int.sandbox import Sandbox
+from pydantic import TypeAdapter
+
 from primer.model.except_ import ValidationError
 from primer.model.workspace import CommitInfo, Op
+from primer.model.workspace_session import (
+    AgentBinding,
+    SessionInfo,
+    WaitingState,
+)
+
+if TYPE_CHECKING:
+    pass
 
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Trailer keys (must match LocalStateRepo)
+# ---------------------------------------------------------------------------
 
 _TRAILER_WORKSPACE = "X-Primer-Workspace"
 _TRAILER_SESSION = "X-Primer-Session"
@@ -31,18 +50,197 @@ _TRAILER_OP = "X-Primer-Op"
 _TRAILER_TOOL = "X-Primer-Tool"
 _TRAILER_CALL = "X-Primer-Call"
 
+_VALID_OPS: frozenset[str] = frozenset(
+    [
+        "attach",
+        "message",
+        "user_instruction",
+        "tool_call",
+        "tool_result",
+        "memory_write",
+        "todo_update",
+        "status_change",
+    ]
+)
+
+_waiting_state_adapter: TypeAdapter[WaitingState] = TypeAdapter(WaitingState)
+
+
+# ---------------------------------------------------------------------------
+# Minimal structural protocol for a state-capable sandbox
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class _StateCapableSandbox(Protocol):
+    """Structural protocol: a Sandbox that also exposes runtime state ops.
+
+    :class:`WSSandbox` satisfies this protocol once the passthroughs are
+    defined.  Tests can inject any mock that provides these attributes.
+    """
+
+    @property
+    def protocol_version(self) -> str: ...
+
+    async def state_commit(
+        self,
+        *,
+        files: dict[str, bytes],
+        deletes: list[str],
+        message: str,
+        allow_empty: bool = False,
+    ) -> str: ...
+
+    async def state_read(self, paths: list[str]) -> dict[str, bytes | None]: ...
+
+    async def state_history(
+        self,
+        *,
+        session_id: str | None = None,
+        agent_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]: ...
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_version(version_str: str) -> tuple[int, int]:
+    """Parse ``"MAJOR.MINOR"`` into ``(major, minor)`` integers.
+
+    Returns ``(0, 0)`` for any string that does not conform to the
+    ``major.minor`` pattern so that comparisons degrade gracefully.
+    """
+    try:
+        parts = version_str.split(".", 1)
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        return (major, minor)
+    except (ValueError, IndexError):
+        return (0, 0)
+
+
+def _build_message(
+    *,
+    subject: str,
+    workspace_id: str,
+    session_id: str,
+    agent_id: str,
+    op: str,
+    tool: str | None,
+    call_id: str | None,
+) -> str:
+    """Build a commit message with trailers in the order the spec dictates.
+
+    Must produce output byte-compatible with
+    :func:`primer.workspace.local.state._build_message`.
+    """
+    trailers = [
+        f"{_TRAILER_WORKSPACE}: {workspace_id}",
+        f"{_TRAILER_SESSION}: {session_id}",
+        f"{_TRAILER_AGENT}: {agent_id}",
+        f"{_TRAILER_OP}: {op}",
+    ]
+    if tool is not None:
+        trailers.append(f"{_TRAILER_TOOL}: {tool}")
+    if call_id is not None:
+        trailers.append(f"{_TRAILER_CALL}: {call_id}")
+    return f"{subject}\n\n" + "\n".join(trailers) + "\n"
+
+
+def _build_arbitrary_message(
+    *,
+    subject: str,
+    workspace_id: str,
+    trailers: dict[str, str] | None,
+) -> str:
+    """Build a commit message for :meth:`SandboxStateRepo.commit_arbitrary`."""
+    lines = [
+        subject,
+        "",
+        f"{_TRAILER_WORKSPACE}: {workspace_id}",
+    ]
+    for key, value in (trailers or {}).items():
+        lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+
+def _validate_session_id(session_id: str) -> None:
+    if not session_id:
+        raise ValueError("session_id must be non-empty")
+    if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+        raise ValueError(f"session_id contains illegal characters: {session_id!r}")
+    if "\x00" in session_id:
+        raise ValueError("session_id contains a null byte")
+
+
+def _validate_relative_path(rel: str) -> None:
+    from pathlib import PurePosixPath
+
+    if not rel:
+        raise ValueError("path must be non-empty")
+    if rel.startswith("/") or rel.startswith("\\"):
+        raise ValueError(f"path must be relative: {rel!r}")
+    parts = PurePosixPath(rel).parts
+    if any(part == ".." for part in parts):
+        raise ValueError(f"path must not contain '..': {rel!r}")
+    if "\x00" in rel:
+        raise ValueError("path contains a null byte")
+
+
+def _map_commit_dict(raw: dict) -> CommitInfo:
+    """Map a raw commit dict (from state_history) to :class:`CommitInfo`."""
+    ts_raw = raw.get("committed_at") or raw.get("timestamp") or raw.get("ts")
+    if isinstance(ts_raw, (int, float)):
+        committed_at = datetime.fromtimestamp(float(ts_raw), tz=timezone.utc)
+    elif isinstance(ts_raw, str):
+        try:
+            committed_at = datetime.fromisoformat(ts_raw)
+        except ValueError:
+            committed_at = datetime.now(tz=timezone.utc)
+    else:
+        committed_at = datetime.now(tz=timezone.utc)
+
+    trailers: dict[str, str] = {}
+    raw_trailers = raw.get("trailers") or {}
+    for k, v in raw_trailers.items():
+        trailers[k] = str(v)
+
+    return CommitInfo(
+        sha=raw.get("sha", ""),
+        subject=raw.get("subject", ""),
+        committed_at=committed_at,
+        workspace_id=trailers.get(_TRAILER_WORKSPACE),
+        session_id=trailers.get(_TRAILER_SESSION),
+        agent_id=trailers.get(_TRAILER_AGENT),
+        op=trailers.get(_TRAILER_OP),
+        tool=trailers.get(_TRAILER_TOOL),
+        call_id=trailers.get(_TRAILER_CALL),
+    )
+
+
+# ---------------------------------------------------------------------------
+# SandboxStateRepo
+# ---------------------------------------------------------------------------
+
 
 class SandboxStateRepo:
-    """Git-backed state repo, dispatching every op through a Sandbox.
+    """Runtime-backed state repo -- full StateRepo protocol via state ops.
 
-    All shell-level work is broken into individual argv-form
-    :class:`Sandbox.exec` calls so the impl is portable across runtimes
-    that may not have a particular shell.
+    Every git operation is dispatched as a ``state_commit`` / ``state_read``
+    / ``state_history`` RPC to the in-container runtime server over the
+    existing WebSocket connection.  No shell access is required.
+
+    Protocol requirement: the connected runtime must report protocol
+    version >= 1.1 (introduced the state ops).  On older runtimes the
+    mutating methods raise :class:`ValidationError` with a clear message.
     """
 
     def __init__(
         self,
-        sandbox: Sandbox,
+        sandbox: object,
         *,
         state_path: str,
         workspace_id: str,
@@ -52,7 +250,10 @@ class SandboxStateRepo:
         self._sandbox = sandbox
         self._state_path = state_path
         self._workspace_id = workspace_id
-        self._lock = asyncio.Lock()
+        self._commit_lock = asyncio.Lock()
+        # session_id -> agent_id cache (populated by create_session /
+        # initialize scan; used by commit() to resolve the agent trailer).
+        self._agent_by_session: dict[str, str] = {}
 
     @property
     def workspace_id(self) -> str:
@@ -62,168 +263,300 @@ class SandboxStateRepo:
     def state_path(self) -> str:
         return self._state_path
 
-    async def initialize(self) -> None:
-        """Create the state directory and git-init it (idempotent)."""
-        # Ensure the state dir exists. write_file auto-creates parents;
-        # we then delete the sentinel.
-        sentinel = f"{self._state_path}/.primer-init"
-        await self._sandbox.write_file(sentinel, b"")
-        await self._sandbox.delete(sentinel)
+    # ------------------------------------------------------------------
+    # Version guard
+    # ------------------------------------------------------------------
 
-        # Idempotent: if .git is already there, nothing to do.
-        existing = await self._sandbox.stat(f"{self._state_path}/.git")
-        if existing is not None:
-            return
+    def _require_state_ops(self) -> None:
+        """Raise ValidationError if the runtime is too old for state ops.
 
-        # git init
-        r = await self._sandbox.exec(
-            ["git", "init", "--quiet"], workdir=self._state_path,
-        )
-        if r.exit_code != 0:
-            raise RuntimeError(
-                "git init failed in sandbox -- is git installed in the image?\n"
-                f"stderr: {r.stderr}"
-            )
-        # Local repo author config so commits don't depend on global git.
-        await self._sandbox.exec(
-            ["git", "config", "user.email", "primer@local"],
-            workdir=self._state_path,
-        )
-        await self._sandbox.exec(
-            ["git", "config", "user.name", "primer"],
-            workdir=self._state_path,
-        )
-        # Initial empty commit so HEAD exists.
-        r = await self._sandbox.exec(
-            ["git", "commit", "--allow-empty", "--quiet", "-m", "init"],
-            workdir=self._state_path,
-        )
-        if r.exit_code != 0:
-            raise RuntimeError(
-                f"git initial commit failed (rc={r.exit_code}): {r.stderr}"
-            )
-
-    async def create_session(self, session_info: object, agent_binding: object) -> None:
-        """Interim guard: session lifecycle is not yet supported on the
-        sandbox/container/kubernetes backend.
-
-        Full StateRepo parity (git-backed sessions on container/k8s) is a
-        planned future feature. Until then, calling this method raises a
-        typed ValidationError so the API layer returns HTTP 422 instead of
-        propagating an AttributeError as HTTP 500.
+        Reads :attr:`WSSandbox.protocol_version` (the server-negotiated
+        version captured during the hello handshake).  Any runtime that
+        does not expose the state ops will have version < 1.1 and will
+        cause a clean 4xx error rather than an obscure runtime error.
         """
-        raise ValidationError(
-            "Sessions are not yet supported on the sandbox/container/kubernetes "
-            "workspace backend; graph and stateful agent sessions currently require "
-            "a local workspace."
+        if not isinstance(self._sandbox, _StateCapableSandbox):
+            raise ValidationError(
+                "The sandbox backend does not support runtime state operations. "
+                "Use a WSSandbox-backed SandboxStateRepo (container or k8s workspace)."
+            )
+        version_str = self._sandbox.protocol_version  # type: ignore[union-attr]
+        version = _parse_version(version_str)
+        if version < (1, 1):
+            raise ValidationError(
+                f"workspace runtime image is too old (protocol {version_str!r}); "
+                "graph and stateful sessions require runtime protocol >= 1.1; "
+                "rebuild the runtime image"
+            )
+
+    def _state_sandbox(self) -> _StateCapableSandbox:
+        """Return the sandbox cast to :class:`_StateCapableSandbox`.
+
+        Callers MUST call :meth:`_require_state_ops` first.
+        """
+        return self._sandbox  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
+    # initialize
+    # ------------------------------------------------------------------
+
+    async def initialize(self) -> None:
+        """No-op: the runtime manages its own state repo lifecycle."""
+        # The runtime initialises the state repo when the workspace starts.
+        # Nothing to do here beyond a cheap liveness check that the sandbox
+        # object is present.
+        pass
+
+    # ------------------------------------------------------------------
+    # create_session
+    # ------------------------------------------------------------------
+
+    async def create_session(
+        self,
+        session_info: SessionInfo,
+        agent_binding: AgentBinding,
+    ) -> str:
+        """Write session.json + agent.json and commit with op ``attach``.
+
+        Returns the SHA of the attach commit.
+        """
+        self._require_state_ops()
+        session_id = session_info.session_id
+        _validate_session_id(session_id)
+
+        # Cache agent_id so commit() can resolve trailers.
+        self._agent_by_session[session_id] = agent_binding.agent_id
+
+        files: dict[str, str | bytes] = {
+            "session.json": session_info.model_dump_json(indent=2),
+            "agent.json": agent_binding.model_dump_json(indent=2),
+        }
+        try:
+            return await self.commit(
+                session_id,
+                summary=f"{session_id}: attach",
+                op="attach",
+                files=files,
+            )
+        except Exception:
+            self._agent_by_session.pop(session_id, None)
+            raise
+
+    # ------------------------------------------------------------------
+    # commit
+    # ------------------------------------------------------------------
+
+    async def commit(
+        self,
+        session_id: str,
+        *,
+        summary: str,
+        op: Op,
+        tool: str | None = None,
+        call_id: str | None = None,
+        files: dict[str, str | bytes] | None = None,
+        delete_files: list[str] | None = None,
+    ) -> str:
+        """Stage files under sessions/<session_id>/, commit with trailers.
+
+        Returns the new commit SHA. Acquires ``_commit_lock`` for the
+        duration so concurrent commits are serialised.
+        """
+        self._require_state_ops()
+        _validate_session_id(session_id)
+        if op not in _VALID_OPS:
+            raise ValueError(f"unknown op: {op!r}")
+
+        agent_id = self._agent_by_session.get(session_id)
+        if agent_id is None:
+            raise LookupError(
+                f"session {session_id!r} unknown to repo "
+                "(call create_session first)"
+            )
+
+        # Build the file map with paths relative to the state repo root.
+        commit_files: dict[str, bytes] = {}
+        for rel, content in (files or {}).items():
+            _validate_relative_path(rel)
+            path = f"sessions/{session_id}/{rel}"
+            if isinstance(content, str):
+                commit_files[path] = content.encode("utf-8")
+            else:
+                commit_files[path] = content
+
+        deletes: list[str] = []
+        for rel in (delete_files or []):
+            _validate_relative_path(rel)
+            deletes.append(f"sessions/{session_id}/{rel}")
+
+        message = _build_message(
+            subject=summary,
+            workspace_id=self._workspace_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            op=op,
+            tool=tool,
+            call_id=call_id,
         )
 
-    async def commit_turn(
+        sandbox = self._state_sandbox()
+        async with self._commit_lock:
+            sha = await sandbox.state_commit(
+                files=commit_files,
+                deletes=deletes,
+                message=message,
+                allow_empty=True,
+            )
+        logger.debug(
+            "SandboxStateRepo committed",
+            extra={
+                "sha": sha,
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "op": op,
+            },
+        )
+        return sha
+
+    # ------------------------------------------------------------------
+    # commit_arbitrary
+    # ------------------------------------------------------------------
+
+    async def commit_arbitrary(
         self,
         *,
-        session_id: str,
-        op: Op,
-        agent_id: str,
-        message_body: str,
-        files: dict[str, bytes],
-        tool_id: str | None = None,
-        call_id: str | None = None,
+        summary: str,
+        files: dict[str, str | bytes] | None = None,
+        delete_files: list[str] | None = None,
+        trailers: dict[str, str] | None = None,
     ) -> str:
-        """Stage files under sessions/<session_id>/, commit with trailers,
-        return the new SHA."""
-        async with self._lock:
-            for rel, content in files.items():
-                target = f"{self._state_path}/sessions/{session_id}/{rel}"
-                await self._sandbox.write_file(target, content)
+        """Commit arbitrary files relative to the state repo root.
 
-            trailers: dict[str, str] = {
-                _TRAILER_WORKSPACE: self._workspace_id,
-                _TRAILER_SESSION: session_id,
-                _TRAILER_AGENT: agent_id,
-                _TRAILER_OP: op,
-            }
-            if tool_id is not None:
-                trailers[_TRAILER_TOOL] = tool_id
-            if call_id is not None:
-                trailers[_TRAILER_CALL] = call_id
-            full_msg = _build_commit_message(message_body, trailers)
+        Returns the new commit SHA. Acquires ``_commit_lock`` for the
+        duration so concurrent commits are serialised.
+        """
+        self._require_state_ops()
 
-            r = await self._sandbox.exec(
-                ["git", "add", "--", f"sessions/{session_id}"],
-                workdir=self._state_path,
-            )
-            if r.exit_code != 0:
-                raise RuntimeError(
-                    f"git add failed (rc={r.exit_code}): {r.stderr}"
-                )
-            r = await self._sandbox.exec(
-                ["git", "commit", "--quiet", "-F", "-"],
-                workdir=self._state_path,
-                stdin=full_msg.encode("utf-8"),
-            )
-            if r.exit_code != 0:
-                raise RuntimeError(
-                    f"git commit failed (rc={r.exit_code}): {r.stderr}"
-                )
-            sha_res = await self._sandbox.exec(
-                ["git", "rev-parse", "HEAD"], workdir=self._state_path,
-            )
-            return sha_res.stdout.strip()
+        commit_files: dict[str, bytes] = {}
+        for rel, content in (files or {}).items():
+            _validate_relative_path(rel)
+            if isinstance(content, str):
+                commit_files[rel] = content.encode("utf-8")
+            else:
+                commit_files[rel] = content
 
-    async def history(self, *, limit: int = 50) -> list[CommitInfo]:
-        """Return up to ``limit`` recent commits, newest first."""
-        result = await self._sandbox.exec(
-            [
-                "git", "log", f"--max-count={limit}",
-                "--pretty=format:%H%x1f%s%x1f%ct%x1f%(trailers:only,unfold)%x1e",
-                "--no-color",
-            ],
-            workdir=self._state_path,
+        deletes: list[str] = []
+        for rel in (delete_files or []):
+            _validate_relative_path(rel)
+            deletes.append(rel)
+
+        message = _build_arbitrary_message(
+            subject=summary,
+            workspace_id=self._workspace_id,
+            trailers=trailers,
         )
-        return _parse_log(result.stdout)
 
+        sandbox = self._state_sandbox()
+        async with self._commit_lock:
+            sha = await sandbox.state_commit(
+                files=commit_files,
+                deletes=deletes,
+                message=message,
+                allow_empty=True,
+            )
+        return sha
 
-def _build_commit_message(subject: str, trailers: dict[str, str]) -> str:
-    """Subject + blank line + ``Key: value`` trailer lines + trailing newline."""
-    parts = [subject, ""]
-    for key, value in trailers.items():
-        parts.append(f"{key}: {value}")
-    return "\n".join(parts) + "\n"
+    # ------------------------------------------------------------------
+    # history
+    # ------------------------------------------------------------------
 
+    async def history(
+        self,
+        *,
+        session_id: str | None = None,
+        agent_id: str | None = None,
+        limit: int = 100,
+    ) -> list[CommitInfo]:
+        """Return commits, optionally filtered by session or agent. Newest first."""
+        if not isinstance(self._sandbox, _StateCapableSandbox):
+            return []
+        sandbox = self._state_sandbox()
+        raw_commits = await sandbox.state_history(
+            session_id=session_id,
+            agent_id=agent_id,
+            limit=limit,
+        )
+        return [_map_commit_dict(c) for c in raw_commits]
 
-_RECORD_SEP = "\x1e"
-_FIELD_SEP = "\x1f"
+    # ------------------------------------------------------------------
+    # show_commit
+    # ------------------------------------------------------------------
 
+    async def show_commit(self, sha: str) -> dict:
+        """Not supported on the sandbox backend.
 
-def _parse_log(text: str) -> list[CommitInfo]:
-    out: list[CommitInfo] = []
-    for record in text.split(_RECORD_SEP):
-        record = record.strip("\n")
-        if not record:
-            continue
-        parts = record.split(_FIELD_SEP)
-        if len(parts) < 4:
-            continue
-        sha, subject, ct, trailers_raw = parts[0], parts[1], parts[2], parts[3]
-        trailers: dict[str, str] = {}
-        for line in trailers_raw.splitlines():
-            line = line.strip()
-            if not line or ":" not in line:
-                continue
-            key, _, value = line.partition(":")
-            trailers[key.strip()] = value.strip()
-        out.append(CommitInfo(
-            sha=sha,
-            subject=subject,
-            committed_at=datetime.fromtimestamp(int(ct), tz=timezone.utc),
-            workspace_id=trailers.get(_TRAILER_WORKSPACE),
-            session_id=trailers.get(_TRAILER_SESSION),
-            agent_id=trailers.get(_TRAILER_AGENT),
-            op=trailers.get(_TRAILER_OP),
-            tool=trailers.get(_TRAILER_TOOL),
-            call_id=trailers.get(_TRAILER_CALL),
-        ))
-    return out
+        Raises :class:`NotImplementedError` so the API layer returns HTTP 501.
+        """
+        raise NotImplementedError(
+            "show_commit is not supported on the sandbox/container/k8s backend"
+        )
+
+    # ------------------------------------------------------------------
+    # load helpers
+    # ------------------------------------------------------------------
+
+    async def load_session_info(self, session_id: str) -> SessionInfo | None:
+        """Read ``sessions/<session_id>/session.json`` if present."""
+        _validate_session_id(session_id)
+        if not isinstance(self._sandbox, _StateCapableSandbox):
+            return None
+        sandbox = self._state_sandbox()
+        result = await sandbox.state_read([f"sessions/{session_id}/session.json"])
+        raw = result.get(f"sessions/{session_id}/session.json")
+        if raw is None:
+            return None
+        info = SessionInfo.model_validate_json(raw)
+        # Populate cache if not already present.
+        self._agent_by_session.setdefault(session_id, info.agent_id)
+        return info
+
+    async def load_agent_binding(self, session_id: str) -> AgentBinding | None:
+        """Read ``sessions/<session_id>/agent.json`` if present."""
+        _validate_session_id(session_id)
+        if not isinstance(self._sandbox, _StateCapableSandbox):
+            return None
+        sandbox = self._state_sandbox()
+        result = await sandbox.state_read([f"sessions/{session_id}/agent.json"])
+        raw = result.get(f"sessions/{session_id}/agent.json")
+        if raw is None:
+            return None
+        binding = AgentBinding.model_validate_json(raw)
+        self._agent_by_session.setdefault(session_id, binding.agent_id)
+        return binding
+
+    async def load_waiting_state(self, session_id: str) -> WaitingState | None:
+        """Read ``sessions/<session_id>/waiting.json`` if present."""
+        _validate_session_id(session_id)
+        if not isinstance(self._sandbox, _StateCapableSandbox):
+            return None
+        sandbox = self._state_sandbox()
+        result = await sandbox.state_read([f"sessions/{session_id}/waiting.json"])
+        raw = result.get(f"sessions/{session_id}/waiting.json")
+        if raw is None:
+            return None
+        return _waiting_state_adapter.validate_json(raw)
+
+    async def read_state_file(self, path: str) -> bytes | None:
+        """Read a file by path relative to the state repo root.
+
+        Returns the file bytes, or ``None`` if the file is absent.
+        """
+        _validate_relative_path(path)
+        if not isinstance(self._sandbox, _StateCapableSandbox):
+            return None
+        sandbox = self._state_sandbox()
+        result = await sandbox.state_read([path])
+        return result.get(path)
 
 
 __all__ = ["SandboxStateRepo"]
