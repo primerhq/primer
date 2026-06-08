@@ -2686,12 +2686,14 @@ async def test_t0520_graph_entry_at_subgraph_node_session_converges_cleanly(
     """T0520 — A parent graph whose entry_node_id is a node of
     kind=graph (subgraph reference). Pin: graph CRUD accepts the
     shape (201 + round-trip); a session bound to the parent
-    converges to terminal via _handle_fatal (graph executor
-    NotImplemented per T0429); never sticks RUNNING.
+    converges to a clean terminal status; never sticks RUNNING.
 
     The child subgraph reference doesn't even need to exist
     (orphan-tolerated per T0475) — the load-bearing assertion is
-    the parent graph's session terminates cleanly.
+    the parent graph's session terminates cleanly without
+    /errors/internal. The graph executor is implemented; the
+    session reaches "ended" with ended_reason in a clean terminal
+    set (completed or failed).
     """
     import asyncio
     import tempfile
@@ -2801,8 +2803,9 @@ async def test_t0520_graph_entry_at_subgraph_node_session_converges_cleanly(
                 f"subgraph-entry session did not converge in 30s: "
                 f"{final!r}"
             )
-            assert final.get("ended_reason") == "failed", final
-            assert final.get("last_error"), final
+            assert final.get("ended_reason") in ("completed", "failed"), (
+                f"unexpected ended_reason: {final!r}"
+            )
         finally:
             if session_id is not None and workspace_id is not None:
                 await client.post(
@@ -4925,11 +4928,13 @@ async def test_t0624_graph_deleted_then_resume_session_clean_fatal_path(
         2. DELETE the graph row
         3. Resume the session
 
-    Per primer/worker/pool.py:478, the executor is NotImplemented
-    regardless. The session must converge to ENDED via _handle_fatal
-    with a clean error path. Hard pin: never /errors/internal at any
-    step; resume returns a documented status code; subsequent GET
-    shows ended/failed.
+    The graph executor is implemented and resilient: deleting the graph
+    definition row after session creation does not kill an in-flight run
+    (the executor captures the graph definition at session-start time).
+    The session must converge to ENDED with a clean terminal ended_reason.
+    Hard pin: never /errors/internal at any step; resume returns a
+    documented status code; subsequent GET shows ended with ended_reason
+    in a clean terminal set (completed or failed).
     """
     import asyncio as _asyncio
     provider_id = f"llm-t0624-{unique_suffix}"
@@ -5012,7 +5017,7 @@ async def test_t0624_graph_deleted_then_resume_session_clean_fatal_path(
         )
 
         # If resume succeeded (200), wait for the worker to converge
-        # the session to ENDED via _handle_fatal.
+        # the session to ENDED.
         if resume.status_code == 200:
             for _ in range(60):  # 30s budget
                 got = await client.get(f"/v1/sessions/{session_id}")
@@ -5025,12 +5030,8 @@ async def test_t0624_graph_deleted_then_resume_session_clean_fatal_path(
                 f"session did not converge to ended in 30s: "
                 f"{final.json()!r}"
             )
-            assert final.json().get("ended_reason") == "failed", final.json()
-            last_err = final.json().get("last_error") or ""
-            # The error should reference EITHER the missing graph OR the
-            # NotImplementedError (whichever the worker hits first).
-            assert last_err, (
-                f"converged session must have last_error: {final.json()!r}"
+            assert final.json().get("ended_reason") in ("completed", "failed"), (
+                f"unexpected ended_reason: {final.json()!r}"
             )
     finally:
         if session_id is not None and workspace_id is not None:
@@ -5303,10 +5304,11 @@ async def test_t0639_two_graph_bound_sessions_terminate_independently(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
     """T0639 — Create two distinct graph-bound sessions on the same
-    workspace, resume both. Both must converge ENDED/failed via
-    _handle_fatal independently. Hard pin: distinct ids; both have
-    non-empty last_error; neither's failure leaks into the other's
-    row (no cross-session state pollution).
+    workspace, resume both. Both must converge to ENDED independently
+    with a clean terminal ended_reason. Hard pin: distinct ids; both
+    reach ended status independently; neither's execution leaks into
+    the other's row (no cross-session state pollution). Never
+    /errors/internal at any step.
     """
     import asyncio as _asyncio
     provider_id = f"llm-t0639-{unique_suffix}"
@@ -5396,11 +5398,8 @@ async def test_t0639_two_graph_bound_sessions_terminate_independently(
             assert body.get("status") == "ended", (
                 f"session #{i} did not converge ended in 30s: {body!r}"
             )
-            assert body.get("ended_reason") == "failed", (
-                f"session #{i} expected failed: {body!r}"
-            )
-            assert body.get("last_error"), (
-                f"session #{i} missing last_error: {body!r}"
+            assert body.get("ended_reason") in ("completed", "failed"), (
+                f"session #{i} unexpected ended_reason: {body!r}"
             )
             assert body.get("id") == session_ids[i], body
     finally:
