@@ -388,9 +388,10 @@ class TestCatalog:
 
     @pytest.mark.asyncio
     async def test_every_tool_has_clear_description(self, toolset) -> None:
+        from tests.toolset._desc_conformance import assert_tool_conforms
         async for tool in toolset.list_tools():
             assert tool.toolset_id == WORKSPACES_TOOLSET_ID
-            assert len(tool.description) > 30
+            assert_tool_conforms(tool)
 
 
 # ===========================================================================

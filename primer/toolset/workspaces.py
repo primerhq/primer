@@ -47,7 +47,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from primer.model.chat import Tool, ToolCallResult
+from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
@@ -62,6 +62,7 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
 )
 from primer.model.yield_ import ToolContext, Yielded
+from primer.toolset._describe import make_tool
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -362,16 +363,20 @@ def _make_delete_handler(
 
 def _tool(
     name: str,
-    description: str,
+    purpose: str,
+    when: str,
     args_cls: type[BaseModel],
     handler: ToolHandler,
+    examples: list[ToolExample],
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
     return name, (
-        Tool(
+        make_tool(
             id=name,
-            description=description,
             toolset_id=WORKSPACES_TOOLSET_ID,
+            purpose=purpose,
+            when=when,
             args_schema=args_cls.model_json_schema(),
+            examples=examples,
         ),
         handler,
     )
@@ -550,25 +555,40 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "list_workspace_providers",
         (
-            "List configured WorkspaceProviders with pagination. Same "
-            "limit/offset/cursor/order_by contract as the rest of the "
-            "system toolset's list_* tools. Returns ``items``, "
-            "``length``, ``total`` (offset mode), ``next_cursor`` "
-            "(cursor mode)."
+            "List configured WorkspaceProviders with pagination. Returns "
+            "``items``, ``length``, ``total`` (offset mode), "
+            "``next_cursor`` (cursor mode)."
+        ),
+        (
+            "Use when you need to enumerate the configured workspace "
+            "backends; not for fetching one by id (use "
+            "``get_workspace_provider``)."
         ),
         _PaginationArgs,
         _make_list_handler(_provider_storage),
+        examples=[
+            ToolExample(args={}, returns="page of WorkspaceProvider rows"),
+            ToolExample(args={"limit": 50, "order_by": ["id:asc"]}),
+        ],
     )
     registry[name] = entry
     name, entry = _tool(
         "get_workspace_provider",
         (
             "Fetch one WorkspaceProvider by id. Returns the provider "
-            "row with its discriminated config. ``type=not-found`` "
-            "when missing."
+            "row with its discriminated config."
+        ),
+        (
+            "Use when you have a provider id and want its full config; "
+            "not for listing all of them (use "
+            "``list_workspace_providers``). ``type=not-found`` when "
+            "missing."
         ),
         _IdArgs,
         _make_get_handler(_provider_storage, "WorkspaceProvider"),
+        examples=[
+            ToolExample(args={"id": "local-1"}, returns="the WorkspaceProvider row"),
+        ],
     )
     registry[name] = entry
     name, entry = _tool(
@@ -576,14 +596,29 @@ def build_workspaces_toolset(
         (
             "Create a new WorkspaceProvider. Body shape is the full "
             "WorkspaceProvider schema with ``provider`` discriminator "
-            "and matching ``config``. The Update operation is "
-            "intentionally absent — to change a provider's config, "
-            "delete and recreate."
+            "and matching ``config``."
+        ),
+        (
+            "Use when registering a new workspace backend. The Update "
+            "operation is intentionally absent; to change a provider's "
+            "config, delete and recreate."
         ),
         _CreateProviderArgs,
         _make_create_handler(
             _CreateProviderArgs, _provider_storage, "WorkspaceProvider"
         ),
+        examples=[
+            ToolExample(
+                args={
+                    "entity": {
+                        "id": "local-1",
+                        "provider": "local",
+                        "config": {"kind": "local"},
+                    }
+                },
+                returns="201 plus the stored provider row",
+            ),
+        ],
     )
     registry[name] = entry
     name, entry = _tool(
@@ -592,10 +627,17 @@ def build_workspaces_toolset(
             "Delete a WorkspaceProvider by id. Cascades to drop the "
             "cached backend instance from the WorkspaceRegistry."
         ),
+        (
+            "Use when retiring a configured backend; not for tearing "
+            "down a materialised workspace (use ``delete_workspace``)."
+        ),
         _IdArgs,
         _make_delete_handler(
             _provider_storage, "WorkspaceProvider", on_delete=_inv_provider
         ),
+        examples=[
+            ToolExample(args={"id": "local-1"}, returns="{deleted: true, id: ...}"),
+        ],
     )
     registry[name] = entry
 
@@ -603,15 +645,33 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "list_workspace_templates",
         "List WorkspaceTemplates with pagination.",
+        (
+            "Use when enumerating available materialisation recipes; "
+            "not for fetching one by id (use "
+            "``get_workspace_template``)."
+        ),
         _PaginationArgs,
         _make_list_handler(_template_storage),
+        examples=[
+            ToolExample(args={}, returns="page of WorkspaceTemplate rows"),
+            ToolExample(args={"limit": 10}),
+        ],
     )
     registry[name] = entry
     name, entry = _tool(
         "get_workspace_template",
-        "Fetch one WorkspaceTemplate by id; ``type=not-found`` if missing.",
+        "Fetch one WorkspaceTemplate by id.",
+        (
+            "Use when you have a template id and want its recipe; not "
+            "for listing all of them (use "
+            "``list_workspace_templates``). ``type=not-found`` if "
+            "missing."
+        ),
         _IdArgs,
         _make_get_handler(_template_storage, "WorkspaceTemplate"),
+        examples=[
+            ToolExample(args={"id": "py-base"}, returns="the WorkspaceTemplate row"),
+        ],
     )
     registry[name] = entry
     name, entry = _tool(
@@ -619,19 +679,39 @@ def build_workspaces_toolset(
         (
             "Create a new WorkspaceTemplate. Body must reference an "
             "existing ``provider_id`` and include the materialisation "
-            "recipe (packages, files, env, init_commands, resources)."
+            "recipe (backend, files, env, init_commands, resources)."
+        ),
+        (
+            "Use when defining a new recipe to materialise workspaces "
+            "from; not for materialising one (use ``create_workspace``)."
         ),
         _CreateTemplateArgs,
         _make_create_handler(
             _CreateTemplateArgs, _template_storage, "WorkspaceTemplate"
         ),
+        examples=[
+            ToolExample(
+                args={
+                    "entity": {
+                        "id": "py-base",
+                        "description": "Python base image",
+                        "provider_id": "local-1",
+                        "backend": {"kind": "local"},
+                    }
+                },
+                returns="201 plus the stored template row",
+            ),
+        ],
     )
     registry[name] = entry
     name, entry = _tool(
         "update_workspace_template",
         (
             "Replace an existing WorkspaceTemplate. The body's ``id`` "
-            "must equal the path ``id``. Existing materialised "
+            "must equal the path ``id``."
+        ),
+        (
+            "Use when editing a recipe in place. Existing materialised "
             "Workspaces are NOT re-materialised; only future creates "
             "see the new recipe."
         ),
@@ -639,6 +719,20 @@ def build_workspaces_toolset(
         _make_update_handler(
             _UpdateTemplateArgs, _template_storage, "WorkspaceTemplate"
         ),
+        examples=[
+            ToolExample(
+                args={
+                    "id": "py-base",
+                    "entity": {
+                        "id": "py-base",
+                        "description": "Python base image (v2)",
+                        "provider_id": "local-1",
+                        "backend": {"kind": "local"},
+                    },
+                },
+                returns="the updated template row",
+            ),
+        ],
     )
     registry[name] = entry
     name, entry = _tool(
@@ -648,8 +742,15 @@ def build_workspaces_toolset(
             "referenced it keep their snapshot ``template_id`` but the "
             "row no longer resolves."
         ),
+        (
+            "Use when retiring a recipe; not for destroying a "
+            "materialised workspace (use ``delete_workspace``)."
+        ),
         _IdArgs,
         _make_delete_handler(_template_storage, "WorkspaceTemplate"),
+        examples=[
+            ToolExample(args={"id": "py-base"}, returns="{deleted: true, id: ...}"),
+        ],
     )
     registry[name] = entry
 
@@ -657,15 +758,31 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "list_workspaces",
         "List persisted Workspace rows with pagination.",
+        (
+            "Use when enumerating materialised workspaces; not for "
+            "fetching one by id (use ``get_workspace``)."
+        ),
         _PaginationArgs,
         _make_list_handler(_workspace_storage),
+        examples=[
+            ToolExample(args={}, returns="page of Workspace rows"),
+            ToolExample(args={"limit": 20}),
+        ],
     )
     registry[name] = entry
     name, entry = _tool(
         "get_workspace",
-        "Fetch one Workspace row by id; ``type=not-found`` if missing.",
+        "Fetch one Workspace row by id.",
+        (
+            "Use when you have a workspace id and want its persisted "
+            "record; not for listing all of them (use "
+            "``list_workspaces``). ``type=not-found`` if missing."
+        ),
         _IdArgs,
         _make_get_handler(_workspace_storage, "Workspace"),
+        examples=[
+            ToolExample(args={"id": "ws-1"}, returns="the Workspace row"),
+        ],
     )
     registry[name] = entry
 
@@ -714,8 +831,27 @@ def build_workspaces_toolset(
             "id. Optional ``overrides`` layer per-instantiation env "
             "vars / files / init commands on top of the template."
         ),
+        (
+            "Use when you need a live sandbox from an existing template; "
+            "not for defining the recipe (use "
+            "``create_workspace_template``)."
+        ),
         _CreateWorkspaceArgs,
         _create_workspace,
+        examples=[
+            ToolExample(
+                args={"template_id": "py-base"},
+                returns="the stored Workspace row",
+            ),
+            ToolExample(
+                args={
+                    "id": "ws-1",
+                    "template_id": "py-base",
+                    "overrides": {"env": {"FOO": "bar"}},
+                },
+                note="overrides layer on top of the template",
+            ),
+        ],
     )
     registry[name] = entry
 
@@ -735,11 +871,19 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "delete_workspace",
         (
-            "Destroy a Workspace — backend resources AND the persisted "
-            "row. ``type=not-found`` when the id is unknown."
+            "Destroy a Workspace, freeing both backend resources AND "
+            "the persisted row."
+        ),
+        (
+            "Use when tearing down a live workspace; not for retiring "
+            "its template (use ``delete_workspace_template``). "
+            "``type=not-found`` when the id is unknown."
         ),
         _IdArgs,
         _delete_workspace,
+        examples=[
+            ToolExample(args={"id": "ws-1"}, returns="{deleted: true, id: ...}"),
+        ],
     )
     registry[name] = entry
 
@@ -770,8 +914,20 @@ def build_workspaces_toolset(
             "List sessions on a workspace, paginated. ``items`` is a "
             "list of SessionInfo objects; ``total`` is the full count."
         ),
+        (
+            "Use when enumerating the agent sessions on a workspace; "
+            "not for one session's state (use "
+            "``get_workspace_session``)."
+        ),
         _WorkspaceListSessionsArgs,
         _list_sessions,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1"},
+                returns="page of SessionInfo objects",
+            ),
+            ToolExample(args={"workspace_id": "ws-1", "limit": 10, "offset": 0}),
+        ],
     )
     registry[name] = entry
 
@@ -803,12 +959,22 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "get_workspace_session",
         (
-            "Get session state — returns ``{info, status}`` where "
+            "Get session state, returning ``{info, status}`` where "
             "``info`` is the SessionInfo and ``status`` is the current "
             "lifecycle state (running / waiting / paused / ended)."
         ),
+        (
+            "Use when inspecting one session on a workspace; not for "
+            "listing all of them (use ``list_workspace_sessions``)."
+        ),
         _WorkspaceSessionArgs,
         _get_session,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1", "session_id": "sess-1"},
+                returns="{info, status}",
+            ),
+        ],
     )
     registry[name] = entry
 
@@ -840,23 +1006,39 @@ def build_workspaces_toolset(
 
     name, entry = _tool(
         "pause_workspace_session",
+        "Request that a session pause at the next safe point.",
         (
-            "Request that a session pause at the next safe point. "
+            "Use when you want to halt a running session; not to "
+            "resume it (use ``resume_workspace_session``). "
             "``type=conflict`` when the session is in an incompatible "
             "lifecycle state (already ended, etc.)."
         ),
         _WorkspaceSessionArgs,
         _session_op("request_pause"),
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1", "session_id": "sess-1"},
+                returns="{ok: true, session_id: ...}",
+            ),
+        ],
     )
     registry[name] = entry
     name, entry = _tool(
         "resume_workspace_session",
+        "Request that a paused session resume.",
         (
-            "Request that a paused session resume. ``type=conflict`` "
-            "when the session is not currently paused."
+            "Use when restarting a paused session; not to pause it "
+            "(use ``pause_workspace_session``). ``type=conflict`` when "
+            "the session is not currently paused."
         ),
         _WorkspaceSessionArgs,
         _session_op("request_resume"),
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1", "session_id": "sess-1"},
+                returns="{ok: true, session_id: ...}",
+            ),
+        ],
     )
     registry[name] = entry
 
@@ -889,8 +1071,23 @@ def build_workspaces_toolset(
             "The agent will see it on its next turn. Returns the "
             "appended Instruction object on success."
         ),
+        (
+            "Use when you want to nudge a live agent mid-run; not to "
+            "pause or resume it (use ``pause_workspace_session`` / "
+            "``resume_workspace_session``)."
+        ),
         _SteerArgs,
         _steer_session,
+        examples=[
+            ToolExample(
+                args={
+                    "workspace_id": "ws-1",
+                    "session_id": "sess-1",
+                    "instruction": "Focus on the failing test first.",
+                },
+                returns="the appended Instruction object",
+            ),
+        ],
     )
     registry[name] = entry
 
@@ -926,8 +1123,22 @@ def build_workspaces_toolset(
             "Each item is a FileEntry (path, kind, size_bytes, "
             "modified_at)."
         ),
+        (
+            "Use when browsing a workspace's filesystem; not for one "
+            "entry's metadata (use ``get_workspace_file_info``) or its "
+            "bytes (use ``read_workspace_file``)."
+        ),
         _ListFilesArgs,
         _list_files,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1"},
+                returns="page of FileEntry objects at the root",
+            ),
+            ToolExample(
+                args={"workspace_id": "ws-1", "path": "src", "recursive": True},
+            ),
+        ],
     )
     registry[name] = entry
 
@@ -947,13 +1158,22 @@ def build_workspaces_toolset(
 
     name, entry = _tool(
         "get_workspace_file_info",
+        "Fetch the FileEntry for a single path (file / dir / symlink).",
         (
-            "Fetch the FileEntry for a single path (file / dir / "
-            "symlink). ``type=not-found`` when missing; "
-            "``type=bad-request`` on path-escape attempts."
+            "Use when you need one path's metadata (kind, size, mtime); "
+            "not for listing a directory (use ``list_workspace_files``) "
+            "or reading bytes (use ``read_workspace_file``). "
+            "``type=not-found`` when missing; ``type=bad-request`` on "
+            "path-escape attempts."
         ),
         _WorkspacePathArgs,
         _file_info,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1", "path": "src/main.py"},
+                returns="the FileEntry",
+            ),
+        ],
     )
     registry[name] = entry
 
@@ -1002,8 +1222,23 @@ def build_workspaces_toolset(
             "bytes as base64 (use this for binaries). Returns "
             "``{path, encoding, content, size_bytes}``."
         ),
+        (
+            "Use when you need a file's bytes; not for its metadata "
+            "(use ``get_workspace_file_info``) or to write it (use "
+            "``write_workspace_file``)."
+        ),
         _ReadFileArgs,
         _read_file,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1", "path": "README.md"},
+                returns="{path, encoding, content, size_bytes}",
+            ),
+            ToolExample(
+                args={"workspace_id": "ws-1", "path": "logo.png", "encoding": "base64"},
+                note="use base64 for binary files",
+            ),
+        ],
     )
     registry[name] = entry
 
@@ -1023,13 +1258,21 @@ def build_workspaces_toolset(
 
     name, entry = _tool(
         "delete_workspace_file",
+        "Delete a file or empty directory in a workspace.",
         (
-            "Delete a file or empty directory. Refuses to delete the "
-            "workspace root or paths inside ``.state`` / ``.tmp`` with "
-            "``type=bad-request``."
+            "Use when removing one path from a workspace; not for "
+            "destroying the whole workspace (use ``delete_workspace``). "
+            "Refuses to delete the workspace root or paths inside "
+            "``.state`` / ``.tmp`` with ``type=bad-request``."
         ),
         _WorkspacePathArgs,
         _delete_file,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1", "path": "tmp/scratch.txt"},
+                returns="{deleted: true, path: ...}",
+            ),
+        ],
     )
     registry[name] = entry
 
@@ -1066,12 +1309,35 @@ def build_workspaces_toolset(
         (
             "Replace (or create) a workspace file. ``encoding=text`` "
             "UTF-8 encodes the content; ``encoding=base64`` decodes the "
-            "content first. Creates parent directories as needed. "
-            "Refuses to overwrite a directory or write inside reserved "
-            "``.state`` / ``.tmp`` trees."
+            "content first. Creates parent directories as needed."
+        ),
+        (
+            "Use when creating or overwriting file content; not for "
+            "reading it (use ``read_workspace_file``). Refuses to "
+            "overwrite a directory or write inside reserved ``.state`` "
+            "/ ``.tmp`` trees."
         ),
         _WriteFileArgs,
         _write_file,
+        examples=[
+            ToolExample(
+                args={
+                    "workspace_id": "ws-1",
+                    "path": "notes.txt",
+                    "content": "hello world",
+                },
+                returns="{path, size_bytes}",
+            ),
+            ToolExample(
+                args={
+                    "workspace_id": "ws-1",
+                    "path": "logo.png",
+                    "content": "iVBORw0KGgo=",
+                    "encoding": "base64",
+                },
+                note="base64 content is decoded to raw bytes",
+            ),
+        ],
     )
     registry[name] = entry
 
@@ -1096,22 +1362,37 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "watch_files",
         (
-            "Watch one or more workspace-relative paths and pause "
-            "this agent turn until something changes. YIELDING TOOL "
-            "— execution is suspended; the worker is released to "
-            "handle other sessions while the watcher polls. Files "
-            "and directories are both accepted; directories report "
+            "Watch one or more workspace-relative paths and pause this "
+            "agent turn until something changes. YIELDING TOOL: "
+            "execution is suspended and the worker is released to "
+            "handle other sessions while the watcher polls. Files and "
+            "directories are both accepted; directories report "
             "child-file changes. Optional ``timeout_seconds`` (falls "
-            "back to the global yield cap). Optional ``batch_window_ms"
-            "`` (default 250) coalesces bursts of changes into one "
-            "wake. Returns ``{timed_out: false, changes: [...]}`` on "
-            "change, ``{timed_out: true, changes: []}`` on timeout, "
-            "or ``{cancelled: true, ...}`` if the operator skipped "
-            "the yield. Each change carries ``{path, event_type "
+            "back to the global yield cap). Optional ``batch_window_ms`` "
+            "(default 250) coalesces bursts of changes into one wake. "
+            "Returns ``{timed_out: false, changes: [...]}`` on change, "
+            "``{timed_out: true, changes: []}`` on timeout, or "
+            "``{cancelled: true, ...}`` if the operator skipped the "
+            "yield. Each change carries ``{path, event_type "
             "(created|modified|deleted), mtime_after}``."
+        ),
+        (
+            "Use when you must block until a watched path changes; not "
+            "for a one-shot listing (use ``list_workspace_files``). "
+            "Paths must be workspace-relative (no absolute, no ``..``)."
         ),
         _WatchFilesArgs,
         _watch_files_handler,
+        examples=[
+            ToolExample(
+                args={"paths": ["src/main.py"]},
+                returns="{timed_out: false, changes: [...]}",
+                note="yielding; parks until a watched path changes",
+            ),
+            ToolExample(
+                args={"paths": ["src"], "timeout_seconds": 30, "batch_window_ms": 500},
+            ),
+        ],
     )
     registry[name] = entry
 
@@ -1119,12 +1400,24 @@ def build_workspaces_toolset(
         "get_workspace_log",
         (
             "Fetch up to ``limit`` recent commits from the workspace's "
-            "``.state`` git repo. Newest first. Each commit carries the "
+            "``.state`` git repo, newest first. Each commit carries the "
             "parsed ``X-Primer-*`` trailers (workspace, session, agent, "
             "op, tool, call) for structured rendering."
         ),
+        (
+            "Use when you need the workspace's state-repo history; not "
+            "for a session's lifecycle state (use "
+            "``get_workspace_session``)."
+        ),
         _LogArgs,
         _get_log,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1"},
+                returns="{commits: [CommitInfo, ...]}",
+            ),
+            ToolExample(args={"workspace_id": "ws-1", "limit": 10}),
+        ],
     )
     registry[name] = entry
 
