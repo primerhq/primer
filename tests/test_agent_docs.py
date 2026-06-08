@@ -44,7 +44,6 @@ def test_agent_docs_have_required_frontmatter():
             assert fm.get(key), f"{rel}: missing frontmatter '{key}'"
 
 
-@pytest.mark.xfail(reason="em-dashes stripped in the polish task", strict=True)
 def test_agent_docs_have_no_em_dash():
     docs, root = _docs()
     for p in docs:

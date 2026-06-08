@@ -1,6 +1,6 @@
 ---
 slug: channels
-title: Channels — multi-platform messaging
+title: Channels - multi-platform messaging
 summary: How primer routes ask_user / tool approval prompts to Slack, Telegram, and Discord, and how channel events fire triggers.
 related: [triggers-and-subscriptions, tool-approval, yielding]
 mcp_tools:
@@ -19,13 +19,13 @@ mcp_tools:
   - system::delete_workspace_channel_association
 ---
 
-# Channels — multi-platform messaging
+# Channels - multi-platform messaging
 
 ## Overview
 
 Channels let primer reach humans through their existing messaging
 tools instead of forcing them into the operator console. Three
-adapter implementations exist today — Slack, Telegram, and Discord —
+adapter implementations exist today - Slack, Telegram, and Discord -
 each backed by an external app/bot integration the operator
 configures via a `ChannelProvider` row. Channels are the bridge
 between a running primer session that needs human input (an
@@ -47,7 +47,7 @@ The fanout pattern is fire-and-forget: when a session yields with
 `ask_user` or hits an approval gate, the `ChannelDispatcher` posts to
 every enabled association in parallel. Posts that fail (Slack outage,
 Telegram rate limit, Discord interaction expiry) log a WARN but don't
-block the worker — the session has already parked. Conversely, the
+block the worker - the session has already parked. Conversely, the
 **first response wins**: whichever platform's reply lands first in the
 `ChannelInbox` publishes a `subscription_matched` event and the session
 resumes. Late responses from other platforms are accepted but produce
@@ -58,21 +58,21 @@ publish is a no-op).
 
 ChannelProvider:
 - `id`, `provider_type` (`slack | telegram | discord`).
-- `config` — discriminated by `provider_type`. For Slack:
+- `config` - discriminated by `provider_type`. For Slack:
   `{client_id, client_secret, signing_secret, bot_token, oauth_token,
   workspace_id}`. For Telegram: `{bot_token}`. For Discord:
   `{app_id, public_key, bot_token}`.
 
 Channel:
 - `id`, `provider_id` (FK to ChannelProvider).
-- `external_id` — the platform's id for this account (Slack
+- `external_id` - the platform's id for this account (Slack
   channel id, Discord guild id, Telegram chat id).
-- `label` — operator-facing name.
+- `label` - operator-facing name.
 
 WorkspaceChannelAssociation:
 - `id`, `workspace_id`, `channel_id`.
 - `forward_ask_user` (bool), `forward_tool_approval` (bool).
-- `enabled` (bool) — toggle the whole association without deleting.
+- `enabled` (bool) - toggle the whole association without deleting.
 
 The dispatch flow for an `ask_user`:
 
@@ -112,22 +112,22 @@ A ChannelProvider has no lifecycle beyond its config. A Channel
 the same. A WorkspaceChannelAssociation has `enabled`. The
 **dispatch attempt** has these moments:
 
-- **dispatched** — post sent, awaiting response. The session is
+- **dispatched** - post sent, awaiting response. The session is
   parked; the user hasn't replied.
-- **resolved by reply** — a response arrived; first one wins; session
+- **resolved by reply** - a response arrived; first one wins; session
   resumes.
-- **resolved by timeout** — the yield's timeout fired; the session
+- **resolved by timeout** - the yield's timeout fired; the session
   resumes with `YieldTimeout`. Late channel replies still come in
   but produce no effect.
-- **resolved by cancellation** — operator cancelled the session;
+- **resolved by cancellation** - operator cancelled the session;
   yield cancellation runs. Late channel replies again do nothing.
-- **post failed** — the post itself errored. Logged WARN. The
+- **post failed** - the post itself errored. Logged WARN. The
   session is still parked; if no other platform succeeded, the user
   will never see the prompt. This is a serious UX bug from the
   human's perspective; monitor logs.
 
 There's no "post-resolve" hook to tell channels "this prompt was
-answered, please disable the button" — late clickers just see no
+answered, please disable the button" - late clickers just see no
 effect.
 
 ## MCP tools
@@ -140,11 +140,11 @@ them.
 
 - `system::list_channel_providers`
 - `system::get_channel_provider`
-- `system::create_channel_provider` — body needs `id`,
+- `system::create_channel_provider` - body needs `id`,
   `provider_type`, `config`. Secrets in `config` are write-only;
   GET / list responses redact them.
 - `system::update_channel_provider`
-- `system::delete_channel_provider` — cascade-blocked if any
+- `system::delete_channel_provider` - cascade-blocked if any
   Channel references it.
 
 ### Channel CRUD
@@ -158,15 +158,15 @@ them.
 ### Association CRUD
 
 - `system::list_workspace_channel_associations`
-- `system::create_workspace_channel_association` — body needs
+- `system::create_workspace_channel_association` - body needs
   `id`, `workspace_id`, `channel_id`, `forward_ask_user`,
   `forward_tool_approval`, `enabled`.
-- `system::delete_workspace_channel_association` — instant; the
+- `system::delete_workspace_channel_association` - instant; the
   next dispatch sees no row for this association.
 
 ## Workflows
 
-### Workflow 1 — operator wires up Slack for ask_user prompts
+### Workflow 1 - operator wires up Slack for ask_user prompts
 
 **Goal.** Forward every `ask_user` from workspace `ws-incidents` to
 Slack channel #ops-pager.
@@ -213,7 +213,7 @@ Slack channel #ops-pager.
    Slack message appears in #ops-pager with the question. A reply
    resumes the session.
 
-### Workflow 2 — agent observes a channel-driven trigger
+### Workflow 2 - agent observes a channel-driven trigger
 
 **Goal.** Agent wants to know whether a channel is wired up to fire
 triggers. It can inspect the channel surface.
@@ -246,7 +246,7 @@ Returns `[{"id": "ch-ops-pager", "provider_id": "cp-slack", ...}]`.
 
 - **`enabled=false` skips both forward flags.** Disabling an
   association silences both `ask_user` and tool-approval forwarding
-  without distinguishing — there's no per-flag enable. Use the two
+  without distinguishing - there's no per-flag enable. Use the two
   forward flags to choose; use `enabled` to mute the whole link.
 - **Dispatch is fire-and-forget.** A slow channel post does NOT
   block the worker's lease release. The session parks immediately.
@@ -256,20 +256,20 @@ Returns `[{"id": "ch-ops-pager", "provider_id": "cp-slack", ...}]`.
   but produces no state change.
 - **Failed posts produce no visible error.** They WARN to the
   server log. Operators relying on Slack forwards need to monitor
-  for these errors — the user/operator on the receiving end can't
+  for these errors - the user/operator on the receiving end can't
   tell the difference between "no prompt was sent" and "prompt
   failed to deliver".
 - **No post-resolve notification.** Once a yield resolves (reply,
   timeout, cancellation), the channel button isn't updated. Late
   clickers see "no response" silently. Don't promise users
-  "your click was registered" — they may have clicked after
+  "your click was registered" - they may have clicked after
   resolution.
 - **The platform round-trip id is opaque.** Slack `value`, Discord
   `custom_id`, Telegram `callback_data` are all primer-encoded
   payloads. Don't try to parse them outside primer's inbox.
 - **Secrets are redacted in GET/list responses.** Re-fetching a
   ChannelProvider row and re-POSTing it would zero out the secrets.
-  Updates must be partial — only fields you actually want to change.
+  Updates must be partial - only fields you actually want to change.
 - **Sub-spec adapters lag the core spec.** The Slack / Telegram /
   Discord implementations may have feature gaps relative to the
   core dispatcher (e.g. interactive components on Telegram are
@@ -278,9 +278,9 @@ Returns `[{"id": "ch-ops-pager", "provider_id": "cp-slack", ...}]`.
 
 ## Related
 
-- [tool-approval](tool-approval.md) — channels forward approval
+- [tool-approval](tool-approval.md) - channels forward approval
   prompts via the same dispatcher.
-- [yielding](yielding.md) — `ask_user` is the canonical yielding
+- [yielding](yielding.md) - `ask_user` is the canonical yielding
   tool that channels forward.
-- [triggers-and-subscriptions](triggers-and-subscriptions.md) —
+- [triggers-and-subscriptions](triggers-and-subscriptions.md) -
   `channel` kind triggers source events from channel inboxes.

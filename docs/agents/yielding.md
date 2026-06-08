@@ -12,7 +12,7 @@ mcp_tools: []
 
 A **yielding tool** is a tool whose handler returns a `Yielded`
 sentinel instead of a normal result. When the tool execution manager
-sees that sentinel, it doesn't dispatch and wait — it parks the
+sees that sentinel, it doesn't dispatch and wait - it parks the
 calling session (or chat or graph node) into storage, releases the
 worker lease, and exits. The session stays parked, consuming zero
 compute, until some external event fires the event key the yield is
@@ -24,12 +24,12 @@ This is the primitive behind every "wait for the user to do X" tool
 in primer. `ask_user` parks on a `ask_user:{sid}:{tcid}` key and
 resumes when the user replies in a channel. `subscribe_to_trigger`
 parks on a `trigger:{trigger_id}` key and resumes when the trigger
-fires. Tool approval reuses the same primitive — a `_approval` yield
+fires. Tool approval reuses the same primitive - a `_approval` yield
 parks the call until the operator's decision arrives. The shape is
 always identical: yield → park → external event → resume.
 
 Yielding tools are powerful, but they're also unavailable over MCP.
-The MCP transport has no pause/resume mechanism — `tools/call` is a
+The MCP transport has no pause/resume mechanism - `tools/call` is a
 single request/response. If primer exposed a yielding tool to an
 MCP client, the response would either time out or hang the client
 forever. Primer's MCP `is_exposable()` gate therefore drops every
@@ -59,19 +59,19 @@ the same key; all of them resume.
 The `resume_metadata` is the tool's own opaque state. It's stashed
 on the session row and handed back to the tool's `resume()` hook
 when the worker re-dispatches. Tools use it to remember which
-specific record they were waiting on — e.g. a `subscribe_to_trigger`
+specific record they were waiting on - e.g. a `subscribe_to_trigger`
 needs to know which subscription to update on fire.
 
 Session state during a park:
 
-- `parked_status="parked"` — the high-level lifecycle position.
-- `parked_event_key="trigger:tg-foo"` — what's being waited on.
-- `parked_until=<timestamp>` — null if no timeout, else the deadline.
-- `parked_tool_name="subscribe_to_trigger"` — the tool that yielded.
-- `parked_state_blob={...}` — the LLM message buffer + agent state
+- `parked_status="parked"` - the high-level lifecycle position.
+- `parked_event_key="trigger:tg-foo"` - what's being waited on.
+- `parked_until=<timestamp>` - null if no timeout, else the deadline.
+- `parked_tool_name="subscribe_to_trigger"` - the tool that yielded.
+- `parked_state_blob={...}` - the LLM message buffer + agent state
   needed to continue the turn after resume. Persisted as JSON so the
   resume worker can run on a different process from the parker.
-- `parked_resume_metadata={...}` — the tool's opaque payload.
+- `parked_resume_metadata={...}` - the tool's opaque payload.
 
 When the event fires:
 1. Whatever published the event calls `ClaimEngine.mark_resumable(
@@ -95,32 +95,32 @@ agent expected to have suddenly missing).
 
 The session's `parked_status` field tracks where it sits:
 
-- **(unset)** — normal operation. Not parked.
-- **parked** — yield handler ran, session is in storage with no lease.
+- **(unset)** - normal operation. Not parked.
+- **parked** - yield handler ran, session is in storage with no lease.
   Will not be picked up by workers until an external transition.
-- **resumable** — the event fired. A lease is available for a worker
+- **resumable** - the event fired. A lease is available for a worker
   to claim with priority 50.
-- **(unset, after resume)** — worker has resumed and the tool's
+- **(unset, after resume)** - worker has resumed and the tool's
   result is in the LLM buffer. The session is back in normal claim
   rotation.
 
 The transitions:
 
-- `→ parked` — tool returns `Yielded(...)`; tool manager raises the
+- `→ parked` - tool returns `Yielded(...)`; tool manager raises the
   yield exception; worker park hook persists state and releases the
   lease.
-- `parked → resumable` — external publisher calls
+- `parked → resumable` - external publisher calls
   `mark_resumable(kind, entity_id, priority=50)`. Three publishers
   in v1: trigger fire dispatcher, channel inbox (`ask_user` /
   `_approval` replies), and the timeout sweeper.
-- `resumable → (running)` — worker claims via `ClaimEngine.claim_due()`.
-- `→ end (cancelled)` — a yield cancellation: the agent's session is
+- `resumable → (running)` - worker claims via `ClaimEngine.claim_due()`.
+- `→ end (cancelled)` - a yield cancellation: the agent's session is
   cancelled while parked. The tool's `resume()` is called with a
   `YieldCancelled` payload so it can clean up any external
   registrations. Cancelling the yield is distinct from cancelling
-  the whole session — the session continues with a `tool_cancelled`
+  the whole session - the session continues with a `tool_cancelled`
   result.
-- `parked → (timeout-resumable)` — a periodic sweeper (every 30s)
+- `parked → (timeout-resumable)` - a periodic sweeper (every 30s)
   scans for `parked_until <= now()` and marks the matching rows
   resumable. The resume payload is a `YieldTimeout` marker; the
   tool's hook produces the right "I timed out" result for the LLM.
@@ -130,26 +130,29 @@ The transitions:
 Yielding tools as a class are not exposed over MCP. The specific
 yields in primer:
 
-- `workspaces::ask_user` — pause to ask a question of the operator.
-- `workspaces::subscribe_to_trigger` — wait for a named trigger to
+- `workspaces::ask_user` - pause to ask a question of the operator.
+- `workspaces::subscribe_to_trigger` - wait for a named trigger to
   fire.
-- `trigger::subscribe_to_trigger` — equivalent from the trigger
+- `trigger::subscribe_to_trigger` - equivalent from the trigger
   toolset's perspective.
-- `_approval` — internal yield used by tool approval (not a tool the
+- `_approval` - internal yield used by tool approval (not a tool the
   agent can call directly; it's a side effect of the dispatch gate).
 
 None of these appear in MCP `tools/list`. They are visible to
 agents running inside primer's own session/chat runtime.
 
 For external MCP-hosted agents who need wait-for-event behaviour:
-the right pattern is to **poll**. Call
-`system::list_trigger_fires(trigger_id=...)` or
-`system::get_chat(id=...)` and inspect the latest state. Polling is
-ugly but works; yielding is a primer-internal optimisation.
+the right pattern is to **poll**. Call `trigger::get(id=...)` and
+inspect `last_fired_at`, or `system::list_subscriptions(trigger_id=...)`
+to observe subscription state. To check whether a SESSION is still
+parked, call `workspaces::get_workspace_session(id=...)` and read its
+status. A chat's waiting state is not an MCP tool; inspect it via the
+REST API or the operator console. Polling is ugly but works; yielding
+is a primer-internal optimisation.
 
 ## Workflows
 
-### Workflow 1 — internal agent waits for an external trigger to fire
+### Workflow 1 - internal agent waits for an external trigger to fire
 
 **Goal.** An agent running inside a primer session needs to wait for a
 nightly cron trigger before proceeding.
@@ -179,7 +182,7 @@ What happens:
    `ToolResult(output="trigger fired at <ts>, payload=<...>")`.
 5. The LLM sees that result on its next turn and continues.
 
-### Workflow 2 — yield is cancelled mid-park
+### Workflow 2 - yield is cancelled mid-park
 
 **Goal.** Trace what happens when an operator cancels a parked
 session.
@@ -224,25 +227,25 @@ session.
   to 5 seconds will fire between 5 and 35 seconds later, not exactly
   at 5. Don't use yields as a high-precision timer.
 - **Multiple sessions parked on the same event_key all resume.**
-  The publish is fan-out — all listeners on `trigger:foo` get marked
+  The publish is fan-out - all listeners on `trigger:foo` get marked
   resumable. This is by design (multiple agents can subscribe to the
   same trigger), but it means firing an event with N parked listeners
   produces N claim races.
 - **The fire-and-forget channel post that delivers ask_user prompts
   doesn't block the park.** If Slack is slow, the session still
   parks immediately; the post lands when it lands. Conversely, a
-  failed channel post does NOT prevent the park — the prompt is
+  failed channel post does NOT prevent the park - the prompt is
   effectively lost from the user's perspective. Operators monitoring
   channel-forward failures should treat them as user-visible bugs.
 
 ## Related
 
-- [tool-approval](tool-approval.md) — uses yields internally to park
+- [tool-approval](tool-approval.md) - uses yields internally to park
   on `_approval` until the operator decides.
-- [triggers-and-subscriptions](triggers-and-subscriptions.md) — fires
+- [triggers-and-subscriptions](triggers-and-subscriptions.md) - fires
   the events that wake up `subscribe_to_trigger` parks.
-- [channels](channels.md) — receives operator/user replies that wake
+- [channels](channels.md) - receives operator/user replies that wake
   up `ask_user` and `_approval` parks.
-- [sessions](sessions.md) — owns the parked-status state fields.
-- [chats](chats.md) — chat turns can also park; same primitive,
+- [sessions](sessions.md) - owns the parked-status state fields.
+- [chats](chats.md) - chat turns can also park; same primitive,
   different storage column.

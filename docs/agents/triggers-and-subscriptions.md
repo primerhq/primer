@@ -1,7 +1,7 @@
 ---
 slug: triggers-and-subscriptions
 title: Triggers and subscriptions
-summary: Event-scheduling primitive — time-based or channel-driven triggers fire payloads to chats, fresh sessions, or parked-yield tools.
+summary: Event-scheduling primitive - time-based or channel-driven triggers fire payloads to chats, fresh sessions, or parked-yield tools.
 related: [yielding, chats, sessions, channels]
 mcp_tools:
   - system::list_triggers
@@ -28,7 +28,7 @@ mcp_tools:
 
 A **Trigger** is a recurring or one-shot event source in primer. A
 **Subscription** ties a trigger to something that consumes its
-fires — usually a chat (post the rendered payload as a user
+fires - usually a chat (post the rendered payload as a user
 message), a fresh agent or graph session (spin one up with the
 payload as input), or a parked yielding tool (resume the agent
 that's waiting). The pair is the primer answer to "wake my agent at
@@ -38,10 +38,10 @@ gets a message", "ping me when the cron deadline passes".
 There are three trigger kinds and four subscription kinds. The
 trigger kinds determine **how** firing happens; the subscription
 kinds determine **what** the fire dispatches to. The cartesian
-product is fully supported — any trigger can be subscribed to by
+product is fully supported - any trigger can be subscribed to by
 any kind of subscription.
 
-Triggers and subscriptions are both regular CRUD entities — they
+Triggers and subscriptions are both regular CRUD entities - they
 have list/get/create/update/delete tools in both the `system`
 toolset (generic CRUD) and the `trigger` toolset (with
 trigger-specific extras like `fire_now`). For most agent code the
@@ -50,33 +50,33 @@ trigger-specific extras like `fire_now`). For most agent code the
 ## Mental model
 
 A `Trigger` row:
-- `id` — operator-chosen identifier.
-- `kind` — `delayed | scheduled | channel`. Determines the fire
+- `id` - operator-chosen identifier.
+- `kind` - `delayed | scheduled | channel`. Determines the fire
   mechanism.
-- `config` — discriminated union keyed by kind. For `delayed`:
+- `config` - discriminated union keyed by kind. For `delayed`:
   `{fire_at: <timestamp>}`. For `scheduled`: `{cron: "<5-field>",
   catch_up: "one|all|none"}`. For `channel`: `{channel_id: "...",
   filter: {...}}`.
-- `payload_template` — a Jinja2 template rendered with the fire's
+- `payload_template` - a Jinja2 template rendered with the fire's
   context. Produces the body that subscribers receive.
-- `enabled` — bool. Disabled triggers don't fire.
-- `next_fire_at` — computed at create/update for `scheduled`
+- `enabled` - bool. Disabled triggers don't fire.
+- `next_fire_at` - computed at create/update for `scheduled`
   triggers; used by the claim engine to know when to claim.
 
 A `Subscription` row:
-- `id` — operator-chosen.
-- `trigger_id` — the parent trigger.
-- `kind` — `chat_message | agent_fresh_session | graph_fresh_session
+- `id` - operator-chosen.
+- `trigger_id` - the parent trigger.
+- `kind` - `chat_message | agent_fresh_session | graph_fresh_session
   | parked_session`. Determines the dispatch target.
-- `config` — discriminated by kind. For `chat_message`:
+- `config` - discriminated by kind. For `chat_message`:
   `{chat_id: "..."}`. For `agent_fresh_session`: `{agent_id: "...",
   workspace_id: "..."}`. For `graph_fresh_session`: `{graph_id: "...",
-  workspace_id: "..."}`. For `parked_session`: dynamic — created at
+  workspace_id: "..."}`. For `parked_session`: dynamic - created at
   yield time by `subscribe_to_trigger`.
-- `parallelism` — `skip | queue`. With `skip` (default), if the
+- `parallelism` - `skip | queue`. With `skip` (default), if the
   prior fire is still being processed, the new fire is a no-op for
   this sub. With `queue`, always fire.
-- `enabled` — bool.
+- `enabled` - bool.
 
 The fire pipeline:
 
@@ -84,25 +84,25 @@ The fire pipeline:
    `next_fire_at <= now() AND enabled = true`).
 2. A worker calls `fire_trigger(trigger_id, scheduled_for)`.
 3. The fire builds a context dict (the trigger metadata + any
-   kind-specific fire context — channel payload, scheduled
+   kind-specific fire context - channel payload, scheduled
    timestamp).
 4. `payload_template` is rendered.
 5. Every enabled subscription gets dispatched in parallel.
    Per-kind dispatcher:
-   - `chat_message` — appends a user_message to the chat. Drain
+   - `chat_message` - appends a user_message to the chat. Drain
      loop picks it up.
-   - `agent_fresh_session` — creates a new session for the agent in
+   - `agent_fresh_session` - creates a new session for the agent in
      the configured workspace, with the rendered payload as initial
      instruction.
-   - `graph_fresh_session` — same but for a graph.
-   - `parked_session` — publishes
+   - `graph_fresh_session` - same but for a graph.
+   - `parked_session` - publishes
      `subscription_matched(event_key="trigger:<trigger_id>")` to
      mark every parked session waiting on that key resumable.
 6. Subscription result is logged.
 7. Next `next_fire_at` is computed (for `scheduled`) and persisted.
 
 `delayed` triggers fire once and then `next_fire_at` becomes null.
-`channel` triggers don't have a `next_fire_at` — they fire when the
+`channel` triggers don't have a `next_fire_at` - they fire when the
 channel inbox notices a matching message.
 
 ## Lifecycle and states
@@ -110,30 +110,30 @@ channel inbox notices a matching message.
 A trigger transitions through these states implicitly via its
 fields (no enum):
 
-- **idle** — `enabled=true`, no in-flight fire. Eligible for claim
+- **idle** - `enabled=true`, no in-flight fire. Eligible for claim
   when `next_fire_at <= now()` (scheduled/delayed) or when a
   channel event arrives.
-- **firing** — claimed by a worker; fire pipeline running. Lease
+- **firing** - claimed by a worker; fire pipeline running. Lease
   is held; next claim attempt has to wait.
-- **disabled** — `enabled=false`. Not claimable.
+- **disabled** - `enabled=false`. Not claimable.
 
 A subscription's state is simpler: enabled or disabled. The
-`parked_session` kind has a one-shot lifecycle — created when a
+`parked_session` kind has a one-shot lifecycle - created when a
 yielding tool calls `subscribe_to_trigger`, deleted by the worker
 once it has fired.
 
 The fire pipeline guarantees **at most once** per
-`(trigger_id, scheduled_for)` tuple — the `FOR UPDATE SKIP LOCKED`
+`(trigger_id, scheduled_for)` tuple - the `FOR UPDATE SKIP LOCKED`
 on the lease means no two workers fire the same scheduled instance.
 Catch-up policy for scheduled triggers handles what happens when
 the server was down across a fire window:
 
-- `catch_up: one` (default) — fire once, with the most recent
+- `catch_up: one` (default) - fire once, with the most recent
   missed timestamp. Then schedule the next fire normally.
-- `catch_up: all` — fire once per missed instance, in order. Useful
+- `catch_up: all` - fire once per missed instance, in order. Useful
   for triggers where each instance has meaningful state (don't skip
   a daily report just because the server was down).
-- `catch_up: none` — skip missed fires entirely; schedule next fire
+- `catch_up: none` - skip missed fires entirely; schedule next fire
   for the next future instance.
 
 ## MCP tools
@@ -145,15 +145,15 @@ agent is doing generic entity CRUD.
 
 ### Trigger management (use `trigger::*`)
 
-- `trigger::list` — paginated listing. Same shape as system list.
-- `trigger::get` — fetch by id.
-- `trigger::create` — body needs `id`, `kind`, `config`,
+- `trigger::list` - paginated listing. Same shape as system list.
+- `trigger::get` - fetch by id.
+- `trigger::create` - body needs `id`, `kind`, `config`,
   `payload_template`, optional `enabled`. Validates the cron
   expression / fire_at timestamp at create time.
-- `trigger::update` — partial update. Editing `cron` recomputes
+- `trigger::update` - partial update. Editing `cron` recomputes
   `next_fire_at`. Editing kind is rejected.
-- `trigger::delete` — cascade-deletes subscriptions.
-- `trigger::fire_now` — manual fire, bypassing schedule. Useful
+- `trigger::delete` - cascade-deletes subscriptions.
+- `trigger::fire_now` - manual fire, bypassing schedule. Useful
   for testing and on-demand kicks. Increments `last_fired_at` and
   runs the normal subscription dispatch.
 
@@ -165,14 +165,14 @@ the kind-specific `config`.
 
 ### Yielding wait (not MCP-exposable)
 
-`trigger::subscribe_to_trigger` is a yielding tool — invisible from
+`trigger::subscribe_to_trigger` is a yielding tool - invisible from
 MCP. For external agents that want event-driven behaviour, poll
 `system::list_subscriptions(trigger_id=X)` or inspect the trigger's
 `last_fired_at` to detect fires.
 
 ## Workflows
 
-### Workflow 1 — schedule a daily summary
+### Workflow 1 - schedule a daily summary
 
 **Goal.** Every weekday at 9am, fire a freshly-instantiated session
 of the `summarise-overnight-alerts` agent in workspace `ws-ops`.
@@ -222,7 +222,7 @@ of the `summarise-overnight-alerts` agent in workspace `ws-ops`.
 A new session appears in `ws-ops` with the rendered payload as
 initial instruction.
 
-### Workflow 2 — wait for a channel event
+### Workflow 2 - wait for a channel event
 
 **Goal.** When a particular Slack channel receives a message, kick
 off the `triage-incident` agent.
@@ -278,7 +278,7 @@ session even if a prior triage is still running.
 - **`parked_session` subscriptions are dynamic and one-shot.** They
   exist only between the moment a `subscribe_to_trigger` yields
   and the moment the trigger fires (or the timeout sweeper times
-  the yield out). Don't try to CRUD them — they appear and
+  the yield out). Don't try to CRUD them - they appear and
   disappear with the yielding tool.
 - **Catch-up policy matters after downtime.** A nightly trigger
   with `catch_up: all` will fire 5 times when the server starts
@@ -308,11 +308,11 @@ session even if a prior triage is still running.
 
 ## Related
 
-- [yielding](yielding.md) — `subscribe_to_trigger` is the
+- [yielding](yielding.md) - `subscribe_to_trigger` is the
   yielding tool that parks on trigger fire events.
-- [chats](chats.md) — `chat_message` subscriptions append to
+- [chats](chats.md) - `chat_message` subscriptions append to
   chats.
-- [sessions](sessions.md) — `agent_fresh_session` and
+- [sessions](sessions.md) - `agent_fresh_session` and
   `graph_fresh_session` subscriptions spin up new sessions.
-- [channels](channels.md) — `channel` triggers source events from
+- [channels](channels.md) - `channel` triggers source events from
   channel inboxes.
