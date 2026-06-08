@@ -133,9 +133,10 @@ to subgraphs hot-apply.
   + node ids. Useful when you know what you want to accomplish but
   not whether a graph exists for it.
 
-To run a graph, create a session whose subject is the graph: use
-the same `system::create_session` path with `graph_id` instead of
-`agent_id`.
+To run a graph, create a session whose subject is the graph: call
+`workspaces::create_workspace_session` with a graph binding
+(`binding: {"kind": "graph", "graph_id": ...}`) instead of an agent
+binding, and pass any input via `graph_input`.
 
 ## Workflows
 
@@ -198,11 +199,12 @@ agent.
 
 ```json
 {
-  "tool": "system::create_session",
+  "tool": "workspaces::create_workspace_session",
   "arguments": {
     "workspace_id": "ws-pipelines",
-    "graph_id": "extract-then-summarise",
-    "instruction": "<input text or path here>"
+    "binding": {"kind": "graph", "graph_id": "extract-then-summarise"},
+    "graph_input": {"text": "<input text or path here>"},
+    "auto_start": true
   }
 }
 ```
@@ -212,7 +214,7 @@ Response threads the session `id` and a `status` of `running`:
 {"id": "ses_3c1d", "status": "running"}
 ```
 
-Poll `system::get_session(id="ses_3c1d")` until `status` is `ended`;
+Poll `workspaces::get_workspace_session` with `{"workspace_id": "ws-pipelines", "session_id": "ses_3c1d"}` until `status` is `ended`;
 the final node's output lands in the session's workspace.
 
 ### Workflow 2 - conditional routing based on an agent's structured output

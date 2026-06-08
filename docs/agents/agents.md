@@ -179,7 +179,7 @@ in a fresh workspace.
 
 ```json
 {
-  "tool": "system::list_workspaces",
+  "tool": "workspaces::list_workspaces",
   "arguments": {"limit": 10}
 }
 ```
@@ -188,11 +188,12 @@ in a fresh workspace.
 
 ```json
 {
-  "tool": "system::create_session",
+  "tool": "workspaces::create_workspace_session",
   "arguments": {
     "workspace_id": "ws-default",
-    "agent_id": "summarise-document",
-    "instruction": "Summarise the document with id 'doc-readme'."
+    "binding": {"kind": "agent", "agent_id": "summarise-document"},
+    "initial_instructions": "Summarise the document with id 'doc-readme'.",
+    "auto_start": true
   }
 }
 ```
@@ -202,7 +203,7 @@ Response threads the session `id` and a `status` of `running`:
 {"id": "ses_8f2a", "status": "running"}
 ```
 
-4. Poll `system::get_session(id="ses_8f2a")` until `status` is `ended` (see [sessions](sessions.md)).
+4. Poll `workspaces::get_workspace_session` with `{"workspace_id": "ws-default", "session_id": "ses_8f2a"}` until `status` is `ended` (see [sessions](sessions.md)).
 
 ### Workflow 2 - discover an existing agent by capability
 
