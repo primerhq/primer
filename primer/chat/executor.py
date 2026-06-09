@@ -522,6 +522,41 @@ class ChatTurnRunner:
         )
         yield cap_err
 
+    async def soft_yield(self, chat: Chat, exc: YieldToWorker) -> None:
+        """Convert a chat-surface yield into a conversational pause: surface the
+        tool's prompt as a visible assistant message, record the pending tool
+        call on the chat row, and let the turn end. The human's next message
+        resolves it (resume path). No parking."""
+        y = exc.yielded
+        tool_call_id = exc.tool_call_id
+        meta = y.resume_metadata or {}
+        if y.tool_name == "_approval":
+            original = meta.get("original_call") or {}
+            reason = meta.get("gate_reason") or ""
+            prompt = (
+                f"I'd like to run `{original.get('name', '?')}`"
+                + (f" ({reason})" if reason else "")
+                + ". Approve? (yes/no)"
+            )
+            pending = {"tool_call_id": tool_call_id, "mode": "approval",
+                       "original_call": original}
+        elif y.tool_name == "ask_user":
+            prompt = meta.get("prompt") or ""
+            pending = {"tool_call_id": tool_call_id, "mode": "ask_user",
+                       "response_schema": meta.get("response_schema")}
+        else:
+            # Out of scope on the chat surface (mcp_task deferred; sleep/watch
+            # unreachable). Fail closed so the agent is not stuck.
+            await self._append(chat, kind="tool_result", payload={
+                "id": tool_call_id, "name": y.tool_name,
+                "result": f"{y.tool_name!r} is not supported on the chat surface",
+                "error": True,
+            })
+            return
+        await self._append(chat, kind="assistant_token", payload={"delta": prompt})
+        chat.pending_tool_call = pending
+        await self._chats.update(chat)
+
     # ------------------------------------------------------------------
     # Event translation
     # ------------------------------------------------------------------

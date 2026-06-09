@@ -122,8 +122,9 @@ async def run_one_chat_turn(
                     if refreshed is not None and refreshed.cancel_requested_at is not None:
                         refreshed.cancel_requested_at = None
                         await chat_storage.update(refreshed)
-            except YieldToWorker:
-                await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="claimable")
+            except YieldToWorker as exc:
+                await runner.soft_yield(chat, exc)
+                await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="idle")
                 return
             except Exception:
                 logger.exception(
