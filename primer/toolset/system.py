@@ -563,6 +563,8 @@ def _crud_tools_for(
             return _err(
                 "missing required argument 'entity'", error_type="bad-request"
             )
+        if isinstance(body, dict) and not body.get("id"):
+            body = {**body, "id": entity_id}
         try:
             entity = model_cls.model_validate(body)
         except ValidationError as exc:

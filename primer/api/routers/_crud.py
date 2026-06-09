@@ -517,10 +517,13 @@ def make_crud_router(
         )
         async def _update(
             request: Request,
-            entity: model_cls = Body(..., description=f"{model_cls.__name__} body"),  # type: ignore[valid-type,assignment]
+            body: dict[str, Any] = Body(..., description=f"{model_cls.__name__} body"),
             entity_id: str = Path(..., description="Entity id."),
             storage=Depends(storage_dep),
         ) -> _ModelT:
+            if not body.get("id"):
+                body = {**body, "id": entity_id}
+            entity = model_cls.model_validate(body)
             if entity.id != entity_id:
                 raise ConflictError(
                     f"path id {entity_id!r} does not match body id {entity.id!r}"
@@ -536,8 +539,6 @@ def make_crud_router(
             if on_update is not None:
                 await on_update(updated.id, request)
             return updated
-
-        _update.__annotations__["entity"] = model_cls
 
         # ---- DELETE /<plural>/{id} ---------------------------------------
         @router.delete(
