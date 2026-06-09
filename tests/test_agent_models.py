@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from pydantic import ValidationError
 
@@ -107,13 +109,13 @@ class TestAgent:
         )
         assert a.temperature == 1.8
 
-    def test_id_inherited_from_describeable_must_be_non_empty(self) -> None:
-        with pytest.raises(ValidationError):
-            Agent(
-                id="",
-                description="x",
-                model=AgentModel(provider_id="p", model_name="m"),
-            )
+    def test_empty_id_autogenerates_with_prefix(self) -> None:
+        a = Agent(
+            id="",
+            description="x",
+            model=AgentModel(provider_id="p", model_name="m"),
+        )
+        assert re.fullmatch(r"agent-[0-9a-f]{12}", a.id), a.id
 
     def test_description_inherited_from_describeable_allows_empty(self) -> None:
         # Describeable.description has no min_length constraint; the

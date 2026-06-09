@@ -28,6 +28,8 @@ underlying agent definition has been edited or deleted.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from pydantic import BaseModel, Field
 
 from primer.model.common import Describeable
@@ -71,6 +73,8 @@ class Agent(Describeable):
     indexing once an agents :class:`primer.model.collection.Collection`
     is introduced.
     """
+
+    _id_prefix: ClassVar[str] = "agent"
 
     model: AgentModel = Field(
         ...,

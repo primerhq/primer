@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -170,13 +171,13 @@ class TestWorkspaceTemplate:
         assert tpl.state_path == ".primer/state"
         assert tpl.resources.cpu_cores == 4
 
-    def test_empty_id_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            WorkspaceTemplate(
-                id="",
-                description="x",
-                provider_id="local-1",
-            )
+    def test_empty_id_autogenerates(self) -> None:
+        tpl = WorkspaceTemplate(
+            id="",
+            description="x",
+            provider_id="local-1",
+        )
+        assert re.fullmatch(r"workspace-template-[0-9a-f]{12}", tpl.id), tpl.id
 
     def test_empty_provider_id_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -297,13 +298,13 @@ class TestWorkspaceProvider:
             "local", "container", "kubernetes",
         }
 
-    def test_empty_id_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            WorkspaceProvider(
-                id="",
-                provider=WorkspaceProviderType.LOCAL,
-                config=LocalWorkspaceConfig(root_path="/x"),
-            )
+    def test_empty_id_autogenerates(self) -> None:
+        wp = WorkspaceProvider(
+            id="",
+            provider=WorkspaceProviderType.LOCAL,
+            config=LocalWorkspaceConfig(root_path="/x"),
+        )
+        assert re.fullmatch(r"workspace-provider-[0-9a-f]{12}", wp.id), wp.id
 
 
 # ---- FileEntry -----------------------------------------------------------

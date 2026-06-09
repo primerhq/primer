@@ -12,6 +12,8 @@ Covers:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from pydantic import HttpUrl, SecretStr, ValidationError
 
@@ -368,14 +370,14 @@ class TestToolsetMcp:
 
 
 class TestToolsetCommon:
-    def test_id_required(self):
-        with pytest.raises(ValidationError):
-            Toolset(provider="internal")
+    def test_id_autogenerates_when_omitted(self):
+        ts = Toolset(provider="internal")
+        assert re.fullmatch(r"toolset-[0-9a-f]{12}", ts.id), ts.id
 
-    def test_id_min_length(self):
-        # Identifiable enforces min_length=1 on id.
-        with pytest.raises(ValidationError):
-            Toolset(id="", provider="internal")
+    def test_empty_id_autogenerates(self):
+        # Omitted/empty id autogenerates as ``toolset-<hex>``.
+        ts = Toolset(id="", provider="internal")
+        assert re.fullmatch(r"toolset-[0-9a-f]{12}", ts.id), ts.id
 
     def test_provider_required(self):
         with pytest.raises(ValidationError):

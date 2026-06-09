@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, ClassVar, Literal, Union
 
 from pydantic import (
     BaseModel,
@@ -441,6 +441,8 @@ class WorkspaceTemplate(Describeable):
     backend-specific configuration, the template supplies the
     declarative materialisation recipe.
     """
+
+    _id_prefix: ClassVar[str] = "workspace-template"
 
     provider_id: str = Field(
         ...,
@@ -1010,6 +1012,8 @@ class WorkspaceProvider(Identifiable):
     The id is a user-chosen handle; :class:`WorkspaceTemplate` carries
     a ``provider_id`` referencing this entry by id.
     """
+
+    _id_prefix: ClassVar[str] = "workspace-provider"
 
     provider: WorkspaceProviderType = Field(
         ...,

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, ClassVar, Literal, Union
 
 from pydantic import (
     BaseModel,
@@ -681,6 +681,8 @@ class Graph(Describeable):
     it ``None`` (the executor still terminates on terminal nodes /
     dead ends).
     """
+
+    _id_prefix: ClassVar[str] = "graph"
 
     nodes: list[GraphNode] = Field(
         ...,

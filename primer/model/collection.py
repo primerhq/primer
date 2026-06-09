@@ -14,7 +14,7 @@ against a vector index.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -60,6 +60,8 @@ class Collection(Describeable):
     vectorised; all documents in a collection share the same embedding
     space.
     """
+
+    _id_prefix: ClassVar[str] = "collection"
 
     embedder: CollectionEmbedder = Field(
         ...,
@@ -124,6 +126,8 @@ class Document(Identifiable):
     different backends model it differently (raw bytes, pre-chunked
     spans, external URI, etc.).
     """
+
+    _id_prefix: ClassVar[str] = "document"
 
     collection_id: str = Field(
         ...,

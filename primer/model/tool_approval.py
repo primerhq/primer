@@ -9,7 +9,7 @@ evaluator decides whether the call requires operator approval.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Literal, Union
+from typing import Annotated, ClassVar, Literal, Union
 
 from pydantic import BaseModel, Field
 
@@ -84,6 +84,8 @@ ApprovalConfig = Annotated[
 
 class ToolApprovalPolicy(Identifiable):
     """Operator-configured approval gate for one ``(toolset_id, tool_name)``."""
+
+    _id_prefix: ClassVar[str] = "tool-approval-policy"
 
     toolset_id: str = Field(
         ...,

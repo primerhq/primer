@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Union
+from typing import Annotated, ClassVar, Union
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
@@ -137,6 +137,8 @@ ChannelProviderConfig = Annotated[
 class ChannelProvider(Identifiable):
     """A configured messaging-platform credential set."""
 
+    _id_prefix: ClassVar[str] = "channel-provider"
+
     provider: ChannelProviderType = Field(...)
     config: ChannelProviderConfig = Field(...)
 
@@ -193,6 +195,8 @@ class ChannelProvider(Identifiable):
 class Channel(Identifiable):
     """One conversational target within a ChannelProvider."""
 
+    _id_prefix: ClassVar[str] = "channel"
+
     provider_id: str = Field(..., min_length=1)
     external_id: str = Field(..., min_length=1)
     label: str = Field(default="", max_length=200)
@@ -200,6 +204,8 @@ class Channel(Identifiable):
 
 class WorkspaceChannelAssociation(Identifiable):
     """Many-to-many link between a workspace and a channel."""
+
+    _id_prefix: ClassVar[str] = "workspace-channel-association"
 
     workspace_id: str = Field(..., min_length=1)
     channel_id: str = Field(..., min_length=1)

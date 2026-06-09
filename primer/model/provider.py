@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, PositiveInt, SecretStr, model_validator
 
@@ -452,6 +452,8 @@ class LLMProvider(Identifiable):
     allowed to send.
     """
 
+    _id_prefix: ClassVar[str] = "llm-provider"
+
     provider: LLMProviderType = Field(
         ...,
         description="Which LLM provider backend this entry targets.",
@@ -523,6 +525,8 @@ class EmbeddingProvider(Identifiable):
     a discriminated set of provider-specific configurations; the matching
     variant must agree with ``provider``.
     """
+
+    _id_prefix: ClassVar[str] = "embedding-provider"
 
     provider: EmbeddingProviderType = Field(
         ...,
@@ -612,6 +616,8 @@ class CrossEncoderProvider(Identifiable):
     Mirrors :class:`LLMProvider` and :class:`EmbeddingProvider` so the
     provider registry stays uniform across the three model families.
     """
+
+    _id_prefix: ClassVar[str] = "cross-encoder-provider"
 
     provider: CrossEncoderProviderType = Field(
         ...,
@@ -743,6 +749,8 @@ class Toolset(Identifiable):
     The ``id`` (inherited from :class:`Identifiable`) is a user-chosen
     handle the application uses to refer to this toolset.
     """
+
+    _id_prefix: ClassVar[str] = "toolset"
 
     provider: ToolsetProviderType = Field(
         ...,
@@ -1216,6 +1224,8 @@ class SemanticSearchProvider(Identifiable):
     connection + index settings; the parent ``provider`` discriminator
     chooses which config shape is valid.
     """
+
+    _id_prefix: ClassVar[str] = "semantic-search-provider"
 
     provider: SemanticSearchProviderType = Field(
         ...,
