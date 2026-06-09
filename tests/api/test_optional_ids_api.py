@@ -283,6 +283,113 @@ async def test_rest_update_mismatched_id_returns_409(
 
 
 # ===========================================================================
+# SCOPED PUT parity: the scoped update route (/parents/{pid}/scoped/{id})
+# must inject the path id when the body omits it, exactly like the flat
+# route. WorkspaceChannelAssociation is the only autogen-eligible model on a
+# scoped route; this exercises the same handler generically.
+# ===========================================================================
+
+
+class _ScopedThing(Identifiable):
+    _id_prefix: ClassVar[str] = "scoped-thing"
+    parent_id: str
+    name: str
+
+
+class _ScopedStorage:
+    def __init__(self) -> None:
+        self._data: dict[str, _ScopedThing] = {}
+
+    async def get(self, id: str) -> _ScopedThing | None:
+        return self._data.get(id)
+
+    async def create(self, entity: _ScopedThing) -> _ScopedThing:
+        self._data[entity.id] = entity
+        return entity
+
+    async def update(self, entity: _ScopedThing) -> _ScopedThing:
+        self._data[entity.id] = entity
+        return entity
+
+    async def delete(self, id: str) -> None:
+        self._data.pop(id, None)
+
+
+_SCOPED_STORAGE: _ScopedStorage | None = None
+
+
+def _get_scoped_storage() -> _ScopedStorage:
+    assert _SCOPED_STORAGE is not None
+    return _SCOPED_STORAGE
+
+
+@pytest_asyncio.fixture
+async def scoped_client() -> AsyncIterator[httpx.AsyncClient]:
+    global _SCOPED_STORAGE  # noqa: PLW0603
+
+    _SCOPED_STORAGE = _ScopedStorage()
+    _SCOPED_STORAGE._data["s1"] = _ScopedThing(
+        id="s1", parent_id="p1", name="before"
+    )
+
+    router = make_crud_router(
+        model_cls=_ScopedThing,
+        storage_dep=_get_scoped_storage,
+        plural="scoped_things",
+        tag="scoped_things",
+        scope_field="parent_id",
+        parent_path_segment="parents",
+    )
+
+    app = FastAPI()
+    register_error_handlers(app)
+    app.include_router(router)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        yield client
+
+    _SCOPED_STORAGE = None
+
+
+@pytest.mark.asyncio
+async def test_scoped_rest_update_omitted_id_uses_path_id(
+    scoped_client: httpx.AsyncClient,
+) -> None:
+    resp = await scoped_client.put(
+        "/parents/p1/scoped_things/s1",
+        json={"parent_id": "p1", "name": "after"},  # no id
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == "s1"
+    assert body["name"] == "after"
+
+
+@pytest.mark.asyncio
+async def test_scoped_rest_update_mismatched_id_returns_409(
+    scoped_client: httpx.AsyncClient,
+) -> None:
+    resp = await scoped_client.put(
+        "/parents/p1/scoped_things/s1",
+        json={"id": "different", "parent_id": "p1", "name": "x"},
+    )
+    assert resp.status_code == 409, resp.text
+
+
+@pytest.mark.asyncio
+async def test_scoped_rest_update_invalid_body_returns_422(
+    scoped_client: httpx.AsyncClient,
+) -> None:
+    resp = await scoped_client.put(
+        "/parents/p1/scoped_things/s1",
+        json={"parent_id": "p1", "name": {"nope": True}},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+# ===========================================================================
 # Cross-layer regression: internal create-without-id autogenerates a
 # type-prefixed id at the model chokepoint; a supplied id is preserved; and
 # the model no longer marks ``id`` required (so the create tool's args_schema

@@ -356,10 +356,16 @@ def make_crud_router(
         async def _scoped_update(
             request: Request,
             parent_id: str = Path(..., description="Parent resource id."),
-            entity: model_cls = Body(..., description=f"{model_cls.__name__} body"),  # type: ignore[valid-type,assignment]
+            body: dict[str, Any] = Body(..., description=f"{model_cls.__name__} body"),
             entity_id: str = Path(..., description="Entity id."),
             storage=Depends(storage_dep),
         ) -> _ModelT:
+            if not body.get("id"):
+                body = {**body, "id": entity_id}
+            try:
+                entity = model_cls.model_validate(body)
+            except PydanticValidationError as exc:
+                raise RequestValidationError(exc.errors()) from exc
             if entity.id != entity_id:
                 raise ConflictError(
                     f"path id {entity_id!r} does not match body id {entity.id!r}"
@@ -375,8 +381,6 @@ def make_crud_router(
             if on_update is not None:
                 await on_update(updated.id, request)
             return updated
-
-        _scoped_update.__annotations__["entity"] = model_cls
 
         # ---- DELETE /{parent_path_segment}/{parent_id}/{plural}/{id}  -----
         @router.delete(

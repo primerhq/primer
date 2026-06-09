@@ -62,7 +62,7 @@ Configure an agent to use a provider.
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `id` | no | Identifier (case-sensitive, min length 1). If omitted, the server assigns a type-prefixed id (e.g. `llm-provider-3f9a1c8d`). Immutable after creation |
+| `id` | no | Identifier (case-sensitive). If omitted, the server assigns a type-prefixed id (e.g. `llm-provider-3f9a1c8d`). Immutable after creation |
 | `provider` | yes | Provider type: one of `anthropic`, `openresponses`, `openchat`, `gemini`, `ollama`, `openrouter` |
 | `models` | yes | Non-empty list of `{"name": string, "context_length": integer}` entries |
 | `config` | yes | Provider-specific connection config (discriminated by `provider`). API keys are accepted in write requests but masked on read. |
@@ -195,7 +195,7 @@ await fetch("/v1/llm_providers/anthropic-prod/invalidate", {
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `id` | no | Identifier (case-sensitive, min length 1). If omitted, the server assigns a type-prefixed id (e.g. `embedding-provider-3f9a1c8d`). Immutable after creation |
+| `id` | no | Identifier (case-sensitive). If omitted, the server assigns a type-prefixed id (e.g. `embedding-provider-3f9a1c8d`). Immutable after creation |
 | `provider` | yes | One of `huggingface`, `openai`, `gemini` |
 | `models` | yes | Non-empty list of `{"name": string}` entries (no `dim` field at the row level) |
 | `config` | yes | Provider-specific config (API token/key masked on read) |
