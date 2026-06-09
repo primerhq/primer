@@ -183,11 +183,17 @@ async def _build_runner(
             toolset_providers[tid] = await deps.provider_registry.get_toolset(tid)
         except (NotFoundError, ConfigError):
             return None
+    from primer.agent.approval import ApprovalResolver
     from primer.agent.tool_manager import ToolExecutionManager
+    from primer.model.tool_approval import ToolApprovalPolicy
+    approval_resolver = ApprovalResolver(
+        storage=deps.storage_provider.get_storage(ToolApprovalPolicy),
+    )
     tool_manager = ToolExecutionManager(
         toolset_providers=toolset_providers,
         provider_registry=deps.provider_registry,
         tools=agent.tools,
+        approval_resolver=approval_resolver,
         chat_id=chat.id,
     )
     return ChatTurnRunner(
