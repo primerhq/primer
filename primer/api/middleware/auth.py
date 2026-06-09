@@ -37,9 +37,25 @@ from starlette.datastructures import State
 
 from primer.auth.api_tokens import PLAINTEXT_PREFIX, hash_token
 from primer.auth.tokens import verify_session
+from primer.model.user import User
 
 
 logger = logging.getLogger(__name__)
+
+
+# Synthetic operator used when auth is disabled (config.auth.enabled is
+# False, or no app config is present). Injecting it into request.state.user
+# lets ``require_auth`` accept the request so /v1/* routes run
+# unauthenticated as documented, instead of returning 401 everywhere.
+# Built once with a fixed timestamp so it stays deterministic; the
+# password_hash is a non-verifiable placeholder so this account can never
+# authenticate via password.
+_AUTH_DISABLED_USER = User(
+    id="system",
+    username="system",
+    password_hash="!auth-disabled",
+    created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+)
 
 
 def _utcnow() -> datetime:
@@ -80,6 +96,10 @@ class AuthMiddleware:
 
         config = getattr(app_state, "config", None)
         if config is None or not config.auth.enabled:
+            # Auth disabled (or unconfigured): inject the synthetic system
+            # user so require_auth accepts the request and routes run
+            # unauthenticated. principal/api_token stay None.
+            state.user = _AUTH_DISABLED_USER
             await self.app(scope, receive, send)
             return
 
