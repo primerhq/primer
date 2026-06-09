@@ -114,6 +114,13 @@ access:
 Both tools are read-only and idempotent; calling them never changes
 primer state.
 
+The loop: call `search::search_ai_docs(query="<goal>")` for ranked doc
+chunks (each carries a `document_id`); fetch the full doc with
+`system::get_document_content(id="<document_id>", collection_id="_internal_ai_docs")`;
+then call the `toolset::tool` it documents. Each doc is structured
+Overview, Mental model, Lifecycle, MCP tools, Workflows (request AND
+response JSON), Gotchas, so skim the section you need.
+
 If `search::search_ai_docs` returns `is_error=true` with
 `subsystem-inactive`, the internal-collections subsystem hasn't
 been bootstrapped on this deployment. In that case, you can still
@@ -145,6 +152,29 @@ full doc with
 | `channels` | Slack/Telegram/Discord adapters. ChannelProvider → Channel → WorkspaceChannelAssociation, forwarding flags, first-reply-wins, fire-and-forget posts. |
 | `mcp-exposure` | The MCP server endpoint itself. The `McpExposure` singleton, the allowlist, scope auth, hard-deny (none in v1), GZip bypass. |
 | `auth-and-tokens` | API tokens, scopes, cookie vs bearer, token minting, revocation, the `mcp` scope. |
+
+### Recipes by goal
+
+End-to-end recipes live under `cookbook/` slugs, fetched the same way
+(`system::get_document_content(id="cookbook/<slug>", collection_id="_internal_ai_docs")`).
+
+| Goal | Recipe slug |
+| --- | --- |
+| Run a headless agent over MCP | `cookbook/create-and-run-a-session` |
+| Find the right capability/tool/agent/graph | `cookbook/discover-a-capability` |
+| Run a multi-step graph and collect output | `cookbook/run-a-graph-and-collect-results` |
+| Handle a parked (waiting) session | `cookbook/monitor-and-resume-a-parked-session` |
+| Review PRs on a schedule | `cookbook/pr-reviewer-on-cron` |
+| Summarise documents periodically | `cookbook/scheduled-summariser` |
+| Daily incident digest | `cookbook/daily-incident-digest` |
+| Event-driven data pipeline | `cookbook/event-driven-data-pipeline` |
+| Workspace as a build environment | `cookbook/workspace-as-build-env` |
+| Multi-agent research graph | `cookbook/multi-agent-graph-research` |
+| Expose an internal tool over MCP | `cookbook/internal-tool-via-mcp` |
+| Slack question answerer | `cookbook/slack-question-answerer` |
+| Discord moderation helper | `cookbook/discord-moderation-helper` |
+| Telegram personal assistant | `cookbook/telegram-personal-assistant` |
+| Approval-gated deploy bot | `cookbook/approval-gated-deploy-bot` |
 
 ### Quick-pick by goal
 
@@ -179,12 +209,29 @@ shortest path to understanding what's available:
 3. **Enumerate the catalogue.** Brief picture of what's installed:
    - `system::list_agents` - what agents are defined.
    - `system::list_graphs` - what graphs are defined.
-   - `system::list_workspaces` - what workspaces exist.
+   - `workspaces::list_workspaces` - what workspaces exist.
    - `system::list_collections` - what knowledge is curated.
 
 4. **Read the docs relevant to the user's goal.** Pick from the
    capability index. Don't read all 14 - read the 1-3 that match
    the work the user has asked for.
+
+### Run an agent or graph over MCP
+
+Once you have picked an agent or graph (see the capability index and
+`cookbook/discover-a-capability`), you can run it end to end:
+
+1. `workspaces::create_workspace` (from a `template_id`) - returns the workspace id.
+2. `workspaces::create_workspace_session` with `binding` set to
+   `{"kind":"agent","agent_id":"..."}` or `{"kind":"graph","graph_id":"..."}`,
+   `initial_instructions` (or `graph_input`), and `auto_start: true` - returns the session id.
+3. Poll `workspaces::get_workspace_session` until `status` is `ended`
+   (`ended_reason: completed`). A `waiting` status means the agent parked on a
+   yielding tool; see `cookbook/monitor-and-resume-a-parked-session`.
+4. Read results with `workspaces::read_workspace_file`.
+5. Stop a run with `workspaces::cancel_workspace_session`; clean up with `workspaces::delete_workspace`.
+
+Full recipe: `cookbook/create-and-run-a-session`.
 
 ## 5. Things primer can't do (yet)
 
