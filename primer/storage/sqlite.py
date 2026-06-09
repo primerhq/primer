@@ -303,7 +303,10 @@ class SqliteStorage(Storage[ModelT]):
 
     # ----- CRUD ---------------------------------------------------------
 
-    async def get(self, id: str) -> ModelT | None:  # noqa: A002
+    async def get(self, id: str, *, conn: object | None = None) -> ModelT | None:  # noqa: A002
+        # SQLite uses a single shared connection so there is nothing to
+        # thread; accept the kwarg for Protocol parity and ignore it.
+        del conn
         await self._ensure_table()
         sql = f'SELECT id, data FROM "{self._table}" WHERE id = ?'
         try:
@@ -338,7 +341,10 @@ class SqliteStorage(Storage[ModelT]):
         assert row is not None
         return self._from_row(row[0], row[1])
 
-    async def update(self, entity: ModelT) -> ModelT:
+    async def update(self, entity: ModelT, *, conn: object | None = None) -> ModelT:
+        # SQLite uses a single shared connection so there is nothing to
+        # thread; accept the kwarg for Protocol parity and ignore it.
+        del conn
         await self._ensure_table()
         entity_id, data_json = self._to_row(entity)
         sql = (

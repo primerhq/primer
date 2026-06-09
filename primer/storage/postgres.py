@@ -38,6 +38,7 @@ import base64
 import json
 import logging
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, TypeVar
 
@@ -446,12 +447,26 @@ class PostgresStorage(Storage[ModelT]):
 
     # ---------- get / create / update / delete ----------------------------
 
-    async def get(self, id: str) -> ModelT | None:
+    @asynccontextmanager
+    async def _acquire_or_use(self, conn: Any | None):
+        """Yield a usable connection.
+
+        When ``conn`` is supplied, yield it as-is so the caller's open
+        transaction is reused. Otherwise acquire one from the pool for
+        the duration of the block.
+        """
+        if conn is not None:
+            yield conn
+        else:
+            async with self._provider.pool.acquire() as acquired:
+                yield acquired
+
+    async def get(self, id: str, *, conn: Any | None = None) -> ModelT | None:
         await self._ensure_table()
         sql = f'SELECT id, data FROM {self._qualified} WHERE id = $1'
         try:
-            async with self._provider.pool.acquire() as conn:
-                row = await conn.fetchrow(sql, id)
+            async with self._acquire_or_use(conn) as c:
+                row = await c.fetchrow(sql, id)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
         if row is None:
@@ -478,7 +493,7 @@ class PostgresStorage(Storage[ModelT]):
             raise self._wrap_db_error(exc) from exc
         return self._from_row(row)
 
-    async def update(self, entity: ModelT) -> ModelT:
+    async def update(self, entity: ModelT, *, conn: Any | None = None) -> ModelT:
         await self._ensure_table()
         entity_id, data_json = self._to_row(entity)
         sql = (
@@ -488,8 +503,8 @@ class PostgresStorage(Storage[ModelT]):
             f'RETURNING id, data'
         )
         try:
-            async with self._provider.pool.acquire() as conn:
-                row = await conn.fetchrow(sql, entity_id, data_json)
+            async with self._acquire_or_use(conn) as c:
+                row = await c.fetchrow(sql, entity_id, data_json)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
         if row is None:

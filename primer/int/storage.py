@@ -38,7 +38,7 @@ semantics.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from primer.model.common import Identifiable
 from primer.model.storage import (
@@ -63,12 +63,20 @@ class Storage(ABC, Generic[ModelT]):
     """
 
     @abstractmethod
-    async def get(self, id: str) -> ModelT | None:
+    async def get(self, id: str, *, conn: Any | None = None) -> ModelT | None:
         """Fetch the entity with the given id, or ``None`` if missing.
 
         Distinguishes "not found" from "lookup failed" by returning
         ``None`` for the former and raising for the latter (network /
         backend errors propagate).
+
+        Parameters
+        ----------
+        conn
+            When provided, read on that backend connection instead of
+            acquiring one from the pool. Lets a caller read inside a
+            transaction it already opened. Pool-less backends (SQLite,
+            in-memory) ignore it.
         """
 
     @abstractmethod
@@ -85,10 +93,19 @@ class Storage(ABC, Generic[ModelT]):
         """
 
     @abstractmethod
-    async def update(self, entity: ModelT) -> ModelT:
+    async def update(self, entity: ModelT, *, conn: Any | None = None) -> ModelT:
         """Replace the entity matching ``entity.id`` with the given value.
 
         Returns the stored entity post-update.
+
+        Parameters
+        ----------
+        conn
+            When provided, write on that backend connection/transaction
+            instead of acquiring one from the pool. Lets a caller commit
+            the write atomically with other work on the same
+            transaction. Pool-less backends (SQLite, in-memory) ignore
+            it.
 
         Raises
         ------
