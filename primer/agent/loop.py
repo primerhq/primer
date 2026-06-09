@@ -102,6 +102,7 @@ async def run_agent_turn(
     """
     tools = await tool_manager.list_tools(principal=principal)
 
+    tool_round = 0
     while True:
         buffered: list[StreamEvent] = []
         stream = llm.stream(
@@ -146,6 +147,21 @@ async def run_agent_turn(
             p for p in assistant_msg.parts if isinstance(p, ToolCallPart)
         ]
         if not tool_calls:
+            return
+
+        tool_round += 1
+        if (
+            agent.max_tool_turns is not None
+            and tool_round >= agent.max_tool_turns
+        ):
+            # The assistant keeps emitting tool calls. Force-stop the turn
+            # before dispatching another round so a model that never stops
+            # cannot spend tokens / loop unbounded.
+            logger.warning(
+                "agent loop: reached max_tool_turns cap; force-stopping turn "
+                "(agent_id=%s, max_tool_turns=%s, tool_round=%d)",
+                getattr(agent, "id", None), agent.max_tool_turns, tool_round,
+            )
             return
 
         tool_result_msgs = await _dispatch_tool_calls(

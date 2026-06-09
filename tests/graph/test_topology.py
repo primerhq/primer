@@ -10,6 +10,8 @@ from primer.model.graph import (
     Graph,
     _AgentNodeRef,
     _BeginNode,
+    _CallableRouter,
+    _ConditionalEdge,
     _EndNode,
     _StaticEdge,
 )
@@ -104,4 +106,64 @@ def test_rejects_duplicate_node_ids() -> None:
         _g(
             [_BeginNode(id="x"), _EndNode(id="x")],
             [],
+        )
+
+
+def _cyclic_nodes_edges():
+    nodes = [
+        _BeginNode(id="b"),
+        _AgentNodeRef(id="a1", agent_id="ag"),
+        _AgentNodeRef(id="a2", agent_id="ag"),
+        _EndNode(id="e"),
+    ]
+    edges = [
+        _StaticEdge(from_node="b", to_node="a1"),
+        _StaticEdge(from_node="a1", to_node="a2"),
+        _StaticEdge(from_node="a2", to_node="a1"),  # back-edge -> cycle
+        _StaticEdge(from_node="a2", to_node="e"),
+    ]
+    return nodes, edges
+
+
+def test_cyclic_graph_without_max_iterations_rejected() -> None:
+    nodes, edges = _cyclic_nodes_edges()
+    with pytest.raises(ValidationError):
+        _g(nodes, edges)
+
+
+def test_cyclic_graph_with_max_iterations_ok() -> None:
+    nodes, edges = _cyclic_nodes_edges()
+    _g(nodes, edges, max_iterations=5)
+
+
+def test_acyclic_linear_graph_without_max_iterations_ok() -> None:
+    _g(
+        [
+            _BeginNode(id="b"),
+            _AgentNodeRef(id="a", agent_id="ag"),
+            _EndNode(id="e"),
+        ],
+        [
+            _StaticEdge(from_node="b", to_node="a"),
+            _StaticEdge(from_node="a", to_node="e"),
+        ],
+    )
+
+
+def test_callable_router_without_max_iterations_rejected() -> None:
+    with pytest.raises(ValidationError):
+        _g(
+            [
+                _BeginNode(id="b"),
+                _AgentNodeRef(id="a", agent_id="ag"),
+                _EndNode(id="e"),
+            ],
+            [
+                _StaticEdge(from_node="b", to_node="a"),
+                _StaticEdge(from_node="b", to_node="e"),
+                _ConditionalEdge(
+                    from_node="a",
+                    router=_CallableRouter(callable_id="r"),
+                ),
+            ],
         )

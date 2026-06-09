@@ -360,6 +360,7 @@ class ChatTurnRunner:
             return
 
         # 4) LLM → tool → LLM loop.
+        tool_round = 0
         for _ in range(_MAX_TOOL_ROUND_TRIPS):
             tool_calls: list[ToolCallPart] = []
             tool_names: dict[str, str] = {}  # ToolCallStart.id → name
@@ -455,6 +456,26 @@ class ChatTurnRunner:
                     payload={"stop_reason": stop_reason},
                 )
                 yield done_msg
+                return
+
+            # Per-agent tool-turn cap. The model wants another tool round;
+            # enforce ``agent.max_tool_turns`` BEFORE dispatching it so a
+            # model that never stops cannot loop unbounded.
+            tool_round += 1
+            max_turns = self._agent.max_tool_turns
+            if max_turns is not None and tool_round >= max_turns:
+                cap_err = await self._append(
+                    chat,
+                    kind="error",
+                    payload={
+                        "message": (
+                            f"turn stopped: reached max tool turns "
+                            f"({max_turns})"
+                        ),
+                        "code": "max_tool_turns_exceeded",
+                    },
+                )
+                yield cap_err
                 return
 
             # Dispatch each tool call; persist the results back as

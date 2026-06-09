@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PositiveInt
 
 from primer.model.common import Describeable
 
@@ -90,6 +90,13 @@ class Agent(Describeable):
             "accept up to ~2.0, Anthropic / Google cap at 1.0). The "
             "adapter is responsible for clamping or rejecting values "
             "outside its own range."
+        ),
+    )
+    max_tool_turns: PositiveInt | None = Field(
+        default=50,
+        description=(
+            "Maximum number of tool-call rounds in a single turn before "
+            "the turn is force-stopped. None means unbounded."
         ),
     )
     tools: list[str] = Field(

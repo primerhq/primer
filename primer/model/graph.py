@@ -890,6 +890,50 @@ class Graph(Describeable):
                     for tid in (spec.target_node_ids or []):
                         adj[n.id].add(tid)
 
+        # ===== Loopability rule =====
+        # A graph that can loop without an iteration ceiling runs
+        # unbounded (cyclic supersteps never terminate). Require
+        # ``max_iterations`` whenever the graph can loop: either a
+        # directed cycle exists over the statically-known edges
+        # (static + json-path conditional + fanout-spec targets), OR a
+        # callable router is present (it can return ANY node id at run
+        # time, so treat its mere presence as making the graph
+        # potentially cyclic). The callable router's synthetic
+        # "routes-to-any-node" edges are intentionally EXCLUDED from the
+        # cycle adjacency below; its presence alone triggers the rule.
+        has_callable_router = any(
+            isinstance(e, _ConditionalEdge) and isinstance(e.router, _CallableRouter)
+            for e in self.edges
+        )
+        cycle_adj: dict[str, set[str]] = {n.id: set() for n in self.nodes}
+        for edge in self.edges:
+            if isinstance(edge, _StaticEdge):
+                cycle_adj[edge.from_node].add(edge.to_node)
+            elif isinstance(edge, _ConditionalEdge) and isinstance(
+                edge.router, _JsonPathRouter
+            ):
+                for branch in edge.router.branches:
+                    cycle_adj[edge.from_node].add(branch.to_node)
+                if edge.router.default_to is not None:
+                    cycle_adj[edge.from_node].add(edge.router.default_to)
+        for n in self.nodes:
+            if n.kind != "fan_out":
+                continue
+            for spec in n.specs:
+                if spec.kind in ("broadcast", "map"):
+                    if spec.target_node_id is not None:
+                        cycle_adj[n.id].add(spec.target_node_id)
+                else:
+                    for tid in (spec.target_node_ids or []):
+                        cycle_adj[n.id].add(tid)
+
+        has_cycle = self._has_cycle(cycle_adj)
+        if (has_cycle or has_callable_router) and self.max_iterations is None:
+            raise ValueError(
+                "cyclic graph (or callable router) requires max_iterations "
+                "to bound execution"
+            )
+
         # Reachability: BFS from Begin must visit every End.
         seen_nodes: set[str] = {begin_id}
         frontier: list[str] = [begin_id]
@@ -906,6 +950,37 @@ class Graph(Describeable):
                 f"End nodes not reachable from Begin: {sorted(missing)}"
             )
         return self
+
+    @staticmethod
+    def _has_cycle(adj: dict[str, set[str]]) -> bool:
+        """True if the directed graph in ``adj`` contains a cycle.
+
+        DFS with a three-colour (white/grey/black) visiting set; a
+        back-edge into a node currently on the recursion stack means a
+        cycle. Iterative to avoid recursion-depth limits on large graphs.
+        """
+        WHITE, GREY, BLACK = 0, 1, 2
+        colour: dict[str, int] = {n: WHITE for n in adj}
+        for start in adj:
+            if colour[start] != WHITE:
+                continue
+            # Stack of (node, iterator-over-children).
+            stack: list[tuple[str, list[str]]] = [(start, list(adj[start]))]
+            colour[start] = GREY
+            while stack:
+                node, children = stack[-1]
+                if children:
+                    nxt = children.pop()
+                    c = colour.get(nxt, BLACK)
+                    if c == GREY:
+                        return True
+                    if c == WHITE:
+                        colour[nxt] = GREY
+                        stack.append((nxt, list(adj.get(nxt, ()))))
+                else:
+                    colour[node] = BLACK
+                    stack.pop()
+        return False
 
     @staticmethod
     def _conditional_targets_include(edge: "_ConditionalEdge", node_id: str) -> bool:
