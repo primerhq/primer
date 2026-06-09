@@ -34,11 +34,11 @@ class ChatClaimAdapter(ClaimAdapter):
             raise RuntimeError(
                 "chat_storage is None — cannot run on_release without a storage backend"
             )
-        chat = await self._storage.get(entity_id)
+        chat = await self._storage.get(entity_id, conn=conn)
         if chat is None:
             return
 
         # 'idle' when the lease is fully done; 'claimable' if more work pending.
         next_status = "idle" if (outcome.success and outcome.drop_lease) else "claimable"
         updated = chat.model_copy(update={"turn_status": next_status})
-        await self._storage.update(updated)
+        await self._storage.update(updated, conn=conn)

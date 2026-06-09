@@ -59,10 +59,10 @@ class FakeStorage:
         self._session = session
         self.updated: list[WorkspaceSession] = []
 
-    async def get(self, id: str) -> WorkspaceSession | None:
+    async def get(self, id: str, *, conn=None) -> WorkspaceSession | None:
         return self._session if self._session.id == id else None
 
-    async def update(self, entity: WorkspaceSession) -> WorkspaceSession:
+    async def update(self, entity: WorkspaceSession, *, conn=None) -> WorkspaceSession:
         self.updated.append(entity)
         self._session = entity
         return entity

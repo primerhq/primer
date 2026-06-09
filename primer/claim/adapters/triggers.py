@@ -56,7 +56,7 @@ class TriggerClaimAdapter(ClaimAdapter):
             raise RuntimeError(
                 "trigger storage is None — cannot run on_release without a storage backend"
             )
-        trigger = await self._storage.get(entity_id)
+        trigger = await self._storage.get(entity_id, conn=conn)
         if trigger is None:
             return
         now = datetime.now(timezone.utc)
@@ -87,7 +87,7 @@ class TriggerClaimAdapter(ClaimAdapter):
         else:
             # Unknown / future kind: null the pointer defensively.
             updated = trigger.model_copy(update={"next_fire_at": None})
-        await self._storage.update(updated)
+        await self._storage.update(updated, conn=conn)
 
 
 __all__ = ["TriggerClaimAdapter"]

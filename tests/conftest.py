@@ -37,7 +37,7 @@ class _InMemoryStorage(Generic[_T]):
         self._cls = model_cls
         self._data: dict[str, _T] = {}
 
-    async def get(self, id: str) -> _T | None:
+    async def get(self, id: str, *, conn=None) -> _T | None:
         return self._data.get(id)
 
     async def create(self, entity: _T) -> _T:
@@ -46,7 +46,7 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
-    async def update(self, entity: _T) -> _T:
+    async def update(self, entity: _T, *, conn=None) -> _T:
         if entity.id not in self._data:
             raise NotFoundError(f"no entity with id {entity.id!r}")
         self._data[entity.id] = entity

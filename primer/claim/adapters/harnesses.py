@@ -24,7 +24,7 @@ class HarnessClaimAdapter(ClaimAdapter):
             raise RuntimeError(
                 "harness_storage is None — cannot run on_release without a storage backend"
             )
-        harness = await self._storage.get(entity_id)
+        harness = await self._storage.get(entity_id, conn=conn)
         if harness is None:
             return
 
@@ -42,4 +42,4 @@ class HarnessClaimAdapter(ClaimAdapter):
             "last_operation_at": now,
             "last_operation_error": last_error,
         })
-        await self._storage.update(updated)
+        await self._storage.update(updated, conn=conn)

@@ -63,10 +63,10 @@ class _FakeStorage:
     def __init__(self, session: WorkspaceSession) -> None:
         self._session = session
 
-    async def get(self, id: str) -> WorkspaceSession | None:
+    async def get(self, id: str, *, conn=None) -> WorkspaceSession | None:
         return self._session if self._session.id == id else None
 
-    async def update(self, entity: WorkspaceSession) -> WorkspaceSession:
+    async def update(self, entity: WorkspaceSession, *, conn=None) -> WorkspaceSession:
         self._session = entity
         return entity
 
@@ -233,7 +233,7 @@ class _SlowUpdateStorage(_FakeStorage):
         super().__init__(session)
         self.release_barrier: "object | None" = None
 
-    async def update(self, entity: WorkspaceSession) -> WorkspaceSession:
+    async def update(self, entity: WorkspaceSession, *, conn=None) -> WorkspaceSession:
         if self.release_barrier is not None:
             await self.release_barrier.wait()  # type: ignore[union-attr]
         return await super().update(entity)

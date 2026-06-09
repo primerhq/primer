@@ -48,7 +48,7 @@ class SessionClaimAdapter(ClaimAdapter):
             raise RuntimeError(
                 "session_storage is None - cannot run on_release without a storage backend"
             )
-        sess = await self._storage.get(entity_id)
+        sess = await self._storage.get(entity_id, conn=conn)
         if sess is None:
             return
 
@@ -67,7 +67,7 @@ class SessionClaimAdapter(ClaimAdapter):
                 "parked_state": p.parked_state,
                 "last_worker_id": None,
             })
-            await self._storage.update(parked)
+            await self._storage.update(parked, conn=conn)
             return
 
         # Non-park release: clear any park columns. Only bump turn_no /
@@ -88,7 +88,7 @@ class SessionClaimAdapter(ClaimAdapter):
             updates["last_turn_at"] = datetime.now(timezone.utc)
 
         updated = sess.model_copy(update=updates)
-        await self._storage.update(updated)
+        await self._storage.update(updated, conn=conn)
 
         # Write a terminal error record to messages.jsonl when the release
         # is a failure (reclaim, worker crash, or any other engine error).
