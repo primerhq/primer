@@ -2,24 +2,41 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
+from uuid import uuid4
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 
 class Identifiable(BaseModel):
-    """Mixin granting a user-defined string identifier.
+    """Mixin granting a string identifier.
 
-    Any configuration entry the application needs to address by name should
-    inherit from :class:`Identifiable` so the ``id`` field shape stays
-    consistent across the schema.
+    On create the ``id`` may be omitted: a subclass that sets the
+    ``_id_prefix`` ClassVar autogenerates ``<prefix>-<hex>`` (e.g.
+    ``agent-3f9a1c8d``); a subclass without a prefix still requires an
+    explicit id. After validation ``id`` is always a non-empty string.
     """
 
-    id: str = Field(
-        ...,
-        min_length=1,
-        description="User-defined identifier referenced by the application.",
+    # Subclasses that may autogenerate set this to their id prefix.
+    _id_prefix: ClassVar[str | None] = None
+
+    id: str | None = Field(
+        default=None,
+        description=(
+            "Identifier. Optional on create: when omitted, the server "
+            "assigns ``<type-prefix>-<hex>`` (e.g. ``agent-3f9a1c8d``). "
+            "Immutable after creation."
+        ),
     )
+
+    @model_validator(mode="after")
+    def _assign_id(self) -> "Identifiable":
+        if not self.id:
+            prefix = type(self)._id_prefix
+            if prefix is None:
+                raise ValueError("id is required for this entity type")
+            object.__setattr__(self, "id", f"{prefix}-{uuid4().hex[:12]}")
+        return self
 
 
 class Describeable(Identifiable):
