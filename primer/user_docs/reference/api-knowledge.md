@@ -59,7 +59,7 @@ Knowledge collections feature guide: creating collections and uploading document
 
 ## POST /v1/ssp
 
-Create a semantic-search provider. Supported backends: `pgvector`, `pgvector_scale`, `lance`.
+Create a semantic-search provider. Supported backends: `pgvector`, `pgvector_scale`, `lance`. The `id` is optional: supply one to use it verbatim, or omit it and the server assigns a type-prefixed id (e.g. `semantic-search-provider-3f9a1c8d`). The id is immutable after creation.
 
 ### pgvector
 
@@ -140,7 +140,7 @@ Deleting an SSP that is still referenced by one or more collections returns `409
 
 ## POST /v1/embedding_providers
 
-Register an embedding provider. Supported backends: `openai` (compatible with LM Studio, Azure, OpenRouter, etc.) and `huggingface`.
+Register an embedding provider. Supported backends: `openai` (compatible with LM Studio, Azure, OpenRouter, etc.) and `huggingface`. The `id` is optional: supply one to use it verbatim, or omit it and the server assigns a type-prefixed id (e.g. `embedding-provider-3f9a1c8d`). The id is immutable after creation.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -197,7 +197,7 @@ await fetch("/v1/embedding_providers", {
 
 ## POST /v1/collections
 
-Create a collection. Both `embedder.provider_id` and `search_provider_id` must reference existing rows. Passing an unknown `search_provider_id` returns `404`.
+Create a collection. Both `embedder.provider_id` and `search_provider_id` must reference existing rows. Passing an unknown `search_provider_id` returns `404`. The `id` is optional: supply one to use it verbatim, or omit it and the server assigns a type-prefixed id (e.g. `collection-3f9a1c8d`). The id is immutable after creation.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -266,7 +266,7 @@ Response `201`:
 
 ## POST /v1/documents
 
-Ingest a document. The `meta.text` field carries the content to embed. Embedding happens synchronously on create; the document's chunks appear immediately in `GET /v1/collections/{id}/indexed_documents` once the embedder is reachable. On embedder failure the row is persisted without chunks and the startup backfill will retry.
+Ingest a document. The `meta.text` field carries the content to embed. Embedding happens synchronously on create; the document's chunks appear immediately in `GET /v1/collections/{id}/indexed_documents` once the embedder is reachable. On embedder failure the row is persisted without chunks and the startup backfill will retry. The `id` is optional: supply one to use it verbatim, or omit it and the server assigns a type-prefixed id (e.g. `document-3f9a1c8d`). The id is immutable after creation.
 
 ```code-tabs:curl,python,javascript
 --- curl

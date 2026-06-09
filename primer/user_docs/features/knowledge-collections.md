@@ -26,7 +26,7 @@ panel on the right.
 1. Open Knowledge / Collections in the left navigation.
 2. Click **New collection** (top-right of the filter bar).
 3. Fill in the form that appears:
-   - **ID** -- optional; the backend assigns one if you leave it blank.
+   - **ID** -- optional; if you leave it blank the backend assigns a type-prefixed id (e.g. `collection-3f9a1c8d`). Immutable after creation.
    - **Description** -- free text shown in the table.
    - **Embedding provider** -- pick from the providers configured
      under Providers / Embedding. The dropdown is empty if none

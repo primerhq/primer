@@ -17,7 +17,7 @@ An agent pairs an LLM provider and model with a set of tools and a system prompt
 1. Open the Agents page from the left nav.
 2. Click "New agent" (top-right of the filter bar).
 3. In the **Basic** tab, fill in:
-   - **ID** -- optional; the backend assigns one if left blank.
+   - **ID** -- optional; if left blank the backend assigns a type-prefixed id (e.g. `agent-3f9a1c8d`). Immutable after creation.
    - **Description** -- a short label shown in the agents table.
    - **LLM provider** -- pick from the providers configured under /providers/llm. If the list is empty, create a provider there first.
    - **Model** -- the dropdown populates from the selected provider row.

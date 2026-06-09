@@ -130,9 +130,11 @@ Agents are managed via standard CRUD plus the semantic search tool.
 - `system::list_agents` - paginated.
 - `system::get_agent` - fetch the row including `system_prompt`,
   `tools`, `response_format`, `llm`.
-- `system::create_agent` - body fields: `id`, `description`,
-  `system_prompt`, `llm`, `tools`, optional `response_format`,
-  `max_turns` (default 20).
+- `system::create_agent` - body fields: optional `id`,
+  `description`, `system_prompt`, `llm`, `tools`, optional
+  `response_format`, `max_turns` (default 20). Omit `id` and the
+  server assigns `agent-<hex>` (e.g. `agent-3f9a1c8d`); supply one
+  to use it verbatim. Immutable after creation.
 - `system::update_agent` - partial update. Editing a harness-
   managed agent (`harness_id` set) returns 409.
 - `system::delete_agent` - cascade-blocked if any chat references

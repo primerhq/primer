@@ -48,7 +48,7 @@ Connecting an MCP server as a toolset source.
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `id` | yes | string | User-defined identifier (min length 1, case-sensitive) |
+| `id` | no | string | Identifier (min length 1, case-sensitive). If omitted, the server assigns a type-prefixed id (e.g. `toolset-3f9a1c8d`). Immutable after creation |
 | `provider` | yes | string | `"internal"` or `"mcp"` |
 | `config` | conditional | McpConfig or null | Required when `provider` is `"mcp"`. Must be omitted for `"internal"` |
 | `harness_id` | no | string or null | Set by harness management; mutation via CRUD returns 409 when set |

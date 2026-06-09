@@ -120,8 +120,10 @@ to subgraphs hot-apply.
 
 - `system::list_graphs` - paginated.
 - `system::get_graph` - fetch the full row.
-- `system::create_graph` - body: `id`, `description`, `nodes`,
-  `edges`, `sink`.
+- `system::create_graph` - body: optional `id`, `description`,
+  `nodes`, `edges`, `sink`. Omit `id` and the server assigns
+  `graph-<hex>` (e.g. `graph-7b2e44a1c0de`); supply one to use it
+  verbatim. Immutable after creation.
 - `system::update_graph` - partial update.
 - `system::delete_graph` - cascade-blocked if any subgraph node
   references it.

@@ -54,7 +54,7 @@ Build and run graphs in the console.
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `id` | yes | string | User-defined identifier (min length 1, case-sensitive) |
+| `id` | no | string | Identifier (min length 1, case-sensitive). If omitted, the server assigns a type-prefixed id (e.g. `graph-7b2e44a1c0de`). Immutable after creation |
 | `description` | yes | string | Human-readable description |
 | `nodes` | yes | GraphNode[] | At least one node; must include exactly one `begin` and at least one `end` |
 | `edges` | no | GraphEdge[] | Static or conditional edges; default empty list |

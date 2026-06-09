@@ -47,7 +47,7 @@ Create one in the console.
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `id` | yes | string | User-defined identifier (min length 1, case-sensitive) |
+| `id` | no | string | Identifier (min length 1, case-sensitive). If omitted, the server assigns a type-prefixed id (e.g. `agent-3f9a1c8d`). Immutable after creation |
 | `description` | yes | string | Human-readable description |
 | `model` | yes | AgentModel | LLM provider and model name (see below) |
 | `system_prompt` | no | string[] | Multi-part system prompt; segments joined by the runtime. Empty list means no system prompt |

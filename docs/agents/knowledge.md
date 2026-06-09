@@ -75,7 +75,9 @@ them in sync) and shouldn't be edited via these tools.
 ## Mental model
 
 A `Collection`:
-- `id` - operator-chosen identifier; immutable.
+- `id` - optional on create; supply one to use it verbatim, or
+  omit it and the server assigns `collection-<hex>`. Immutable
+  after creation.
 - `description` - free text. This is what
   `search::search_collections` embeds.
 - `embedder` - `{provider_id, model}`. Bound at create time; not
@@ -88,7 +90,9 @@ A `Collection`:
   refuses to delete system collections.
 
 A `Document`:
-- `id` - operator-chosen identifier; unique within the collection.
+- `id` - optional on create; supply one (unique within the
+  collection) to use it verbatim, or omit it and the server assigns
+  `document-<hex>`. Immutable after creation.
 - `collection_id` - the owning Collection.
 - `name` - human-readable label.
 - `meta` - arbitrary JSON. By convention `meta['content']` holds the
@@ -150,9 +154,11 @@ CRUD, and the extra "use-this-not-that" tools.
 
 - `system::list_collections` - paginated listing.
 - `system::get_collection` - fetch by id. 404 on miss.
-- `system::create_collection` - body needs `id`, `description`,
-  `embedder`, `search_provider_id`. Reject reserved ids
-  (`_internal_*`).
+- `system::create_collection` - body needs `description`,
+  `embedder`, `search_provider_id`, and an optional `id`. Omit `id`
+  and the server assigns `collection-<hex>` (e.g.
+  `collection-3f9a1c8d`); supply one to use it verbatim. Immutable
+  after creation. Reject reserved ids (`_internal_*`).
 - `system::update_collection` - partial update. `embedder` and
   `search_provider_id` are not editable post-create - attempting
   triggers 422.
@@ -168,7 +174,10 @@ CRUD, and the extra "use-this-not-that" tools.
   content - content lives in `meta['content']` and is best fetched
   via the dedicated tool.
 - `system::create_document` - needs `collection_id`, `name`,
-  optionally `meta`. Creates the row without chunking.
+  optionally `meta`, and an optional `id`. Omit `id` and the server
+  assigns `document-<hex>` (e.g. `document-3f9a1c8d`); supply one to
+  use it verbatim. Immutable after creation. Creates the row without
+  chunking.
 - `system::update_document` - partial update of `name` and `meta`.
 - `system::delete_document` - removes the row + any vector records
   bound by `document_id` in the store.

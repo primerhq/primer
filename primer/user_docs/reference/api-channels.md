@@ -60,7 +60,7 @@ Configure channel providers in the console.
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `id` | yes | string | User-defined identifier (min length 1) |
+| `id` | no | string | Identifier (min length 1). If omitted, the server assigns a type-prefixed id (e.g. `channel-provider-3f9a1c8d`). Immutable after creation |
 | `provider` | yes | string | One of `"slack"`, `"telegram"`, `"discord"` |
 | `config` | yes | ProviderConfig | Platform-specific credentials (see below) |
 
@@ -238,7 +238,7 @@ const {items} = await r.json()
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `id` | yes | string | User-defined identifier (min length 1) |
+| `id` | no | string | Identifier (min length 1). If omitted, the server assigns a type-prefixed id (e.g. `channel-3f9a1c8d`). Immutable after creation |
 | `provider_id` | yes | string | Id of the parent ChannelProvider; must exist (FK validated at create time) |
 | `external_id` | yes | string | Platform-side channel id (Slack channel id, Telegram chat id, Discord channel snowflake) |
 | `label` | no | string | Human-readable label (max 200 chars, default empty string) |
@@ -305,7 +305,7 @@ const r = await fetch("/v1/channels", {
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `id` | yes | string | User-defined identifier (min length 1) |
+| `id` | no | string | Identifier (min length 1). If omitted, the server assigns a type-prefixed id (e.g. `workspace-channel-association-3f9a1c8d`). Immutable after creation |
 | `workspace_id` | yes | string | Id of the workspace (min length 1) |
 | `channel_id` | yes | string | Id of the channel (min length 1) |
 | `enabled` | no | boolean | Default `true`; disabled associations are skipped |

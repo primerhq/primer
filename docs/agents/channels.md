@@ -140,9 +140,11 @@ them.
 
 - `system::list_channel_providers`
 - `system::get_channel_provider`
-- `system::create_channel_provider` - body needs `id`,
-  `provider_type`, `config`. Secrets in `config` are write-only;
-  GET / list responses redact them.
+- `system::create_channel_provider` - body needs `provider_type`,
+  `config`, and an optional `id`. Omit `id` and the server assigns
+  `channel-provider-<hex>` (e.g. `channel-provider-3f9a1c8d`);
+  supply one to use it verbatim. Immutable after creation. Secrets
+  in `config` are write-only; GET / list responses redact them.
 - `system::update_channel_provider`
 - `system::delete_channel_provider` - cascade-blocked if any
   Channel references it.
@@ -152,15 +154,21 @@ them.
 - `system::list_channels`, `system::get_channel`,
   `system::create_channel`, `system::update_channel`,
   `system::delete_channel`.
-- `create_channel` body needs `id`, `provider_id`, `external_id`,
-  `label`. External_id must match the platform's actual id.
+- `create_channel` body needs `provider_id`, `external_id`,
+  `label`, and an optional `id`. Omit `id` and the server assigns
+  `channel-<hex>` (e.g. `channel-3f9a1c8d`); supply one to use it
+  verbatim. Immutable after creation. External_id must match the
+  platform's actual id.
 
 ### Association CRUD
 
 - `system::list_workspace_channel_associations`
 - `system::create_workspace_channel_association` - body needs
-  `id`, `workspace_id`, `channel_id`, `forward_ask_user`,
-  `forward_tool_approval`, `enabled`.
+  `workspace_id`, `channel_id`, `forward_ask_user`,
+  `forward_tool_approval`, `enabled`, and an optional `id`. Omit
+  `id` and the server assigns
+  `workspace-channel-association-<hex>`; supply one to use it
+  verbatim. Immutable after creation.
 - `system::delete_workspace_channel_association` - instant; the
   next dispatch sees no row for this association.
 

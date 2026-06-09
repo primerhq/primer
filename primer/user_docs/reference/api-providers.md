@@ -62,7 +62,7 @@ Configure an agent to use a provider.
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `id` | yes | User-defined identifier (case-sensitive, min length 1) |
+| `id` | no | Identifier (case-sensitive, min length 1). If omitted, the server assigns a type-prefixed id (e.g. `llm-provider-3f9a1c8d`). Immutable after creation |
 | `provider` | yes | Provider type: one of `anthropic`, `openresponses`, `openchat`, `gemini`, `ollama`, `openrouter` |
 | `models` | yes | Non-empty list of `{"name": string, "context_length": integer}` entries |
 | `config` | yes | Provider-specific connection config (discriminated by `provider`). API keys are accepted in write requests but masked on read. |
@@ -195,7 +195,7 @@ await fetch("/v1/llm_providers/anthropic-prod/invalidate", {
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `id` | yes | User-defined identifier |
+| `id` | no | Identifier (case-sensitive, min length 1). If omitted, the server assigns a type-prefixed id (e.g. `embedding-provider-3f9a1c8d`). Immutable after creation |
 | `provider` | yes | One of `huggingface`, `openai`, `gemini` |
 | `models` | yes | Non-empty list of `{"name": string}` entries (no `dim` field at the row level) |
 | `config` | yes | Provider-specific config (API token/key masked on read) |
@@ -259,7 +259,7 @@ The `/models` and `/invalidate` sub-resources work identically to the LLM provid
 | GET | `/v1/cross_encoder_providers/{id}/models` | List configured model names |
 | POST | `/v1/cross_encoder_providers/{id}/invalidate` | Drop cached adapter |
 
-Only the `huggingface` backend is supported. Object shape follows the same pattern as embedding providers (`id`, `provider`, `models`, `config`, `limits`).
+Only the `huggingface` backend is supported. Object shape follows the same pattern as embedding providers (`id`, `provider`, `models`, `config`, `limits`). The `id` is optional on create: omit it and the server assigns a type-prefixed id (e.g. `cross-encoder-provider-3f9a1c8d`); it is immutable after creation.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -314,7 +314,7 @@ await fetch("/v1/cross_encoder_providers", {
 | POST | `/v1/ssp/find` | Filter by predicate |
 | POST | `/v1/ssp/{id}/invalidate` | Drop cached adapter |
 
-Supported `provider` values: `pgvector`, `pgvectorscale`, `lance`.
+Supported `provider` values: `pgvector`, `pgvectorscale`, `lance`. The `id` is optional on create: omit it and the server assigns a type-prefixed id (e.g. `semantic-search-provider-3f9a1c8d`); it is immutable after creation.
 
 ```code-tabs:curl,python,javascript
 --- curl

@@ -46,7 +46,7 @@ Configure approval policies in the console.
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `id` | yes | string | User-defined identifier (min length 1) |
+| `id` | no | string | Identifier (min length 1). If omitted, the server assigns a type-prefixed id (e.g. `tool-approval-policy-3f9a1c8d`). Immutable after creation |
 | `toolset_id` | yes | string | Toolset the policy applies to; may be a reserved internal toolset (`_system`, `_workspaces`, `_misc`, `_search`, `web`) or a user-created Toolset id |
 | `tool_name` | yes | string | Bare tool name as registered in the provider catalogue (min length 1) |
 | `approval` | yes | ApprovalConfig | Discriminated approval strategy (see below) |
