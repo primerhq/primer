@@ -787,3 +787,4 @@ class TestAiDocsBootstrap:
         docs = sp.get_storage(Document)
         assert await docs.get("agents") is not None
         assert await docs.get("sessions") is not None
+        assert await docs.get("cookbook/create-and-run-a-session") is not None
