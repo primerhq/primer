@@ -123,6 +123,17 @@ class Chat(Identifiable):
             "the cancellation."
         ),
     )
+    pending_tool_call: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Set when the chat agent invoked a yielding tool (ask_user or an "
+            "approval-gated call) and the turn ended awaiting the human's "
+            "reply. Holds {tool_call_id, mode: 'ask_user'|'approval', "
+            "original_call?, response_schema?}. Cleared when the reply is "
+            "consumed as the pending call's tool_result. The chat surface does "
+            "NOT park; this is purely in-conversation state."
+        ),
+    )
 
     # M1 park fields — identical shape to Session.parked_*.
     parked_status: Literal["parked", "resumable"] | None = Field(
