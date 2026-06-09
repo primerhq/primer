@@ -1,4 +1,4 @@
-"""Auth-disabled escape hatch — AuthMiddleware must inject a synthetic
+"""Auth-disabled escape hatch: AuthMiddleware must inject a synthetic
 system user so protected /v1/* routes stay reachable.
 
 Regression for: disabling auth (``config.auth.enabled = False``) left
