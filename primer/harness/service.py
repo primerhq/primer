@@ -176,6 +176,20 @@ def _rewrite_graph_payload(
                 if resolved is not None:
                     node["graph_id"] = resolved
 
+        elif node_kind == "tool_call":
+            # tool_id is an unresolved bundle ref ``<toolset_template>__<bare_name>``,
+            # like agent.tools entries. Rewrite the toolset segment to its resolved id.
+            tool_id = node.get("tool_id")
+            if isinstance(tool_id, str):
+                parts = tool_id.split("__", 1)
+                if len(parts) == 2:
+                    toolset_resolved = _lookup_resolved(
+                        rewrite_map, kind="toolset", template_name=parts[0],
+                        file_slug=file_slug,
+                    )
+                    if toolset_resolved is not None:
+                        node["tool_id"] = f"{toolset_resolved}__{parts[1]}"
+
         new_nodes.append(node)
 
     return {**payload, "nodes": new_nodes}

@@ -218,6 +218,100 @@ def test_build_leaves_external_graph_id_alone():
     assert graph_node["graph_id"] == "external-graph"
 
 
+def test_build_rewrites_graph_tool_call_node_tool_id():
+    """Graph tool_call node tool_id referencing a harness toolset → rewritten 3-segment."""
+    toolset_file = _make_rendered_file(
+        "toolset", "mytools",
+        {"provider": "mcp", "config": {"transport": "stdio", "config": {"command": ["cmd"]}}},
+    )
+    graph_file = _make_rendered_file(
+        "graph", "my-graph",
+        {
+            "description": "graph",
+            "nodes": [
+                {"kind": "begin", "id": "begin"},
+                {"kind": "tool_call", "id": "tc1", "tool_id": "mytools__run"},
+                {"kind": "end", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "tc1"},
+                {"kind": "static", "from_node": "tc1", "to_node": "end"},
+            ],
+        },
+    )
+
+    entries, errors = build_rendered_entries([toolset_file, graph_file], slug="acme")
+
+    assert not errors
+    graph_entry = next(e for e in entries if e.kind == "graph")
+    tc_node = next(n for n in graph_entry.rendered_payload["nodes"] if n.get("kind") == "tool_call")
+    assert tc_node["tool_id"] == "acme__mytools__run"
+
+
+def test_build_leaves_external_tool_call_node_tool_id_alone():
+    """Graph tool_call node tool_id NOT in harness → left as-is."""
+    graph_file = _make_rendered_file(
+        "graph", "my-graph",
+        {
+            "description": "graph",
+            "nodes": [
+                {"kind": "begin", "id": "begin"},
+                {"kind": "tool_call", "id": "tc1", "tool_id": "external__run"},
+                {"kind": "end", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "tc1"},
+                {"kind": "static", "from_node": "tc1", "to_node": "end"},
+            ],
+        },
+    )
+
+    entries, errors = build_rendered_entries([graph_file], slug="acme")
+
+    assert not errors
+    graph_entry = entries[0]
+    tc_node = next(n for n in graph_entry.rendered_payload["nodes"] if n.get("kind") == "tool_call")
+    assert tc_node["tool_id"] == "external__run"
+
+
+def test_rewritten_agent_tool_resolves_to_full_toolset_row_id():
+    """Integration-ish: the 3-segment rewrite + runtime toolset-id extraction agree.
+
+    The harness rewrites ``my-toolset__hello`` -> ``acme__my-toolset__hello``.
+    The runtime sites must recover the toolset row id ``acme__my-toolset``
+    (the full slug__template), NOT ``acme``.
+    """
+    from primer.worker.pool import _toolset_ids_from_scoped
+
+    toolset_file = _make_rendered_file(
+        "toolset", "my-toolset",
+        {"provider": "mcp", "config": {"transport": "stdio", "config": {"command": ["cmd"]}}},
+    )
+    agent_file = _make_rendered_file(
+        "agent", "assistant",
+        {
+            "description": "test",
+            "model": {"provider_id": "p", "model_name": "m"},
+            "tools": ["my-toolset__hello"],
+        },
+    )
+
+    entries, errors = build_rendered_entries([toolset_file, agent_file], slug="acme")
+    assert not errors
+
+    agent_entry = next(e for e in entries if e.kind == "agent")
+    toolset_entry = next(e for e in entries if e.kind == "toolset")
+    rewritten = agent_entry.rendered_payload["tools"]
+    assert rewritten == ["acme__my-toolset__hello"]
+
+    # The installed toolset row id is slug__template.
+    assert resolved_id("acme", "my-toolset") == "acme__my-toolset"
+    assert toolset_entry.resolved_id == "acme__my-toolset"
+
+    # Runtime extraction must recover the FULL toolset row id, not the slug.
+    assert _toolset_ids_from_scoped(rewritten) == ["acme__my-toolset"]
+
+
 # ---------------------------------------------------------------------------
 # 4. build_rendered_entries — Document collection_id rewrite
 # ---------------------------------------------------------------------------

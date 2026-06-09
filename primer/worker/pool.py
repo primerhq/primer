@@ -62,7 +62,7 @@ def _toolset_ids_from_scoped(scoped_tool_ids: list[str] | None) -> list[str]:
     for sid in scoped_tool_ids or []:
         if "__" not in sid:
             continue
-        prefix = sid.split("__", 1)[0]
+        prefix = sid.rsplit("__", 1)[0]
         if prefix:
             seen.setdefault(prefix, None)
     return list(seen)

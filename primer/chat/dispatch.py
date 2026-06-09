@@ -185,7 +185,7 @@ async def _build_runner(
     toolset_ids: set[str] = set()
     for sid in (agent.tools or []):
         if "__" in sid:
-            toolset_ids.add(sid.split("__", 1)[0])
+            toolset_ids.add(sid.rsplit("__", 1)[0])
     toolset_providers: dict[str, Any] = {}
     for tid in toolset_ids:
         try:

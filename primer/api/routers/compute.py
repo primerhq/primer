@@ -87,7 +87,7 @@ async def agent_status(
     missing_toolset_ids: set[str] = set()
     for tool_id in agent.tools:
         if "__" in tool_id:
-            toolset_id, _, _ = tool_id.partition("__")
+            toolset_id = tool_id.rpartition("__")[0]
         else:
             toolset_id = tool_id
         if toolset_id in seen_toolset_ids:
