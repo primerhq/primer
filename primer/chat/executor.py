@@ -55,6 +55,7 @@ from primer.model.chat import (
     Usage,
 )
 from primer.model.chats import Chat, ChatMessage
+from primer.model.yield_ import YieldToWorker
 from primer.model.storage import (
     CursorPage,
     FieldRef,
@@ -462,6 +463,8 @@ class ChatTurnRunner:
             for tc in tool_calls:
                 try:
                     rp = await self._tools.execute(tc)
+                except YieldToWorker:
+                    raise
                 except Exception as exc:  # noqa: BLE001 — model-visible error
                     rp = ToolResultPart(
                         id=tc.id,
