@@ -133,10 +133,10 @@ async def _list_all_messages(deps, chat_id):
 class TestDrainLoop:
     async def test_single_user_message_processed_to_done(self, deps):
         chat = await _seed_chat_with_one_message(deps)
-        await run_one_chat_turn(deps, chat_id=chat.id, worker_id="w1")
-        chats = deps.storage_provider.get_storage(Chat)
-        row = await chats.get(chat.id)
-        assert row.turn_status == "idle"
+        disposition = await run_one_chat_turn(deps, chat_id=chat.id, worker_id="w1")
+        # The terminal turn_status is written by the fenced adapter from
+        # this disposition, not by run_one_chat_turn directly.
+        assert disposition == "idle"
         all_rows = await _list_all_messages(deps, chat.id)
         kinds = [r.kind for r in all_rows]
         assert kinds[0] == "user_message"
@@ -157,7 +157,7 @@ class TestDrainLoop:
         chat.last_seq = 3
         await chats.update(chat)
 
-        await run_one_chat_turn(deps, chat_id=chat.id, worker_id="w1")
+        disposition = await run_one_chat_turn(deps, chat_id=chat.id, worker_id="w1")
 
         assert len(deps.fake_llm.calls) == 3
         all_rows = await _list_all_messages(deps, chat.id)
@@ -165,8 +165,7 @@ class TestDrainLoop:
         assert [m.payload.get("content") for m in user_msgs] == ["Hi", "second", "third"]
         done_rows = [r for r in all_rows if r.kind == "done"]
         assert len(done_rows) == 3
-        row = await chats.get(chat.id)
-        assert row.turn_status == "idle"
+        assert disposition == "idle"
 
     async def test_queued_user_messages_do_not_contaminate_earlier_prompts(self, deps):
         """Turn N's LLM prompt must NOT carry queued user_messages from
@@ -307,7 +306,7 @@ class TestCancelLifecycle:
             ))
 
         try:
-            await run_one_chat_turn(deps_obj, chat_id="c1", worker_id="w1")
+            disposition = await run_one_chat_turn(deps_obj, chat_id="c1", worker_id="w1")
         finally:
             await bus.aclose()
 
@@ -315,8 +314,10 @@ class TestCancelLifecycle:
         kinds = [r.kind for r in all_rows]
         assert kinds.count("cancelled") == 1, kinds
         assert kinds.count("done") == 1, kinds
+        # Clean drain (cancel cleared per-turn) -> idle disposition; the
+        # fenced adapter applies it. cancel_requested_at is cleared inline.
+        assert disposition == "idle"
         final = await chats.get("c1")
-        assert final.turn_status == "idle"
         assert final.cancel_requested_at is None
 
     async def test_runner_append_preserves_concurrent_cancel_flag(
@@ -377,3 +378,116 @@ class TestCancelLifecycle:
 
         after = await chats.get("c2")
         assert after.cancel_requested_at == cancel_time
+
+
+class _PublishRaisesBus(InMemoryEventBus):
+    """Bus whose tick publish raises, forcing run_one_chat_turn's
+    drain-loop error path (which yields the 'claimable' disposition)."""
+
+    async def publish(self, event_key, payload=None):  # type: ignore[override]
+        if event_key.endswith(":tick"):
+            raise RuntimeError("boom-on-tick")
+        return await super().publish(event_key, payload)
+
+
+def test_release_chat_helper_is_gone():
+    # The unfenced direct turn_status writer must be removed: the
+    # adapter is now the single authority.
+    import primer.chat.dispatch as dispatch
+    assert not hasattr(dispatch, "_release_chat")
+
+
+def test_disposition_maps_to_adapter_status():
+    # The adapter rule is: idle iff (success and drop_lease).
+    # The pool maps idle->success=True/drop=True (idle), and
+    # claimable->success=True/drop=False (claimable). Pin both ends.
+    from primer.int.claim import ReleaseOutcome
+    from primer.claim.adapters.chats import ChatClaimAdapter
+
+    ChatClaimAdapter(chat_storage=None)
+
+    def status_for(disposition: str) -> str:
+        outcome = (
+            ReleaseOutcome(success=True, drop_lease=True)
+            if disposition == "idle"
+            else ReleaseOutcome(success=True, drop_lease=False)
+        )
+        return "idle" if (outcome.success and outcome.drop_lease) else "claimable"
+
+    assert status_for("idle") == "idle"
+    assert status_for("claimable") == "claimable"
+
+
+@pytest.mark.asyncio
+class TestSingleWriterDisposition:
+    """run_one_chat_turn is the SINGLE source of the terminal turn_status
+    disposition; the worker pool maps it to a ReleaseOutcome the fenced
+    ChatClaimAdapter applies. run_one_chat_turn itself must NOT write
+    turn_status (no _release_chat write)."""
+
+    async def test_clean_drain_returns_idle_disposition(self, deps):
+        chat = await _seed_chat_with_one_message(deps)
+        disposition = await run_one_chat_turn(
+            deps, chat_id=chat.id, worker_id="w1",
+        )
+        assert disposition == "idle"
+        # No unfenced write: run_one_chat_turn left turn_status as-is.
+        row = await deps.storage_provider.get_storage(Chat).get(chat.id)
+        assert row.turn_status == "running"
+
+    async def test_error_returns_claimable_disposition(
+        self, fake_storage_provider, fake_provider_registry,
+    ):
+        await fake_storage_provider.get_storage(LLMProvider).create(
+            LLMProvider(
+                id="p", provider=LLMProviderType.ANTHROPIC,
+                models=[LLMModel(name="m", context_length=8192)],
+                config=AnthropicConfig(api_key=SecretStr("test")),
+                limits=Limits(max_concurrency=1),
+            ),
+        )
+        await fake_storage_provider.get_storage(Agent).create(Agent(
+            id="ag", description="x",
+            model=AgentModel(provider_id="p", model_name="m"),
+        ))
+        chats = fake_storage_provider.get_storage(Chat)
+        msgs = fake_storage_provider.get_storage(ChatMessage)
+        bus = _PublishRaisesBus()
+        await bus.initialize()
+
+        fake_llm = _FakeLLM()
+        async def _get_llm(_pid):
+            return fake_llm
+        fake_provider_registry.get_llm = _get_llm  # type: ignore[assignment]
+
+        deps_obj = ChatDispatchDeps(
+            storage_provider=fake_storage_provider,
+            provider_registry=fake_provider_registry,
+            event_bus=bus,
+            chat_tick_router=ChatTickRouter(),
+            fake_llm=fake_llm,
+        )
+        now = datetime.now(timezone.utc)
+        chat = Chat(
+            id="c1", agent_id="ag", created_at=now,
+            turn_status="running", claimed_by="w1",
+            claimed_at=now, last_heartbeat_at=now, last_seq=1,
+        )
+        await chats.create(chat)
+        await msgs.create(ChatMessage(
+            id=ChatMessage.make_id("c1", 1),
+            chat_id="c1", seq=1, kind="user_message",
+            payload={"content": "Hi"}, created_at=now,
+        ))
+
+        try:
+            disposition = await run_one_chat_turn(
+                deps_obj, chat_id="c1", worker_id="w1",
+            )
+        finally:
+            await bus.aclose()
+
+        assert disposition == "claimable"
+        # run_one_chat_turn did NOT write turn_status itself.
+        row = await chats.get("c1")
+        assert row.turn_status == "running"

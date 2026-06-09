@@ -217,7 +217,7 @@ async def test_dispatch_resume_continues_and_does_not_double_process(
         fake_llm=llm,
     )
     try:
-        await run_one_chat_turn(deps, chat_id="c1", worker_id="w1")
+        disposition = await run_one_chat_turn(deps, chat_id="c1", worker_id="w1")
     finally:
         await bus.aclose()
 
@@ -236,7 +236,8 @@ async def test_dispatch_resume_continues_and_does_not_double_process(
     assert len(llm.calls) == 1
     final = await chats.get("c1")
     assert final.pending_tool_call is None
-    assert final.turn_status == "idle"
+    # Clean drain -> idle disposition; the fenced adapter applies it.
+    assert disposition == "idle"
     reply = await msgs.get(ChatMessage.make_id("c1", 4))
     assert reply.payload["_history_excluded"] is True
 

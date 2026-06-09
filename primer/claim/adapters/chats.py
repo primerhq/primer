@@ -23,10 +23,12 @@ class ChatClaimAdapter(ClaimAdapter):
         # This mirrors how harnesses recover (their eligibility stays true
         # while pending_operation is set). Without it a dead worker's chat is
         # stranded at turn_status='running' forever (see FINDINGS F9).
+        # ('resumable' is a parked_status value, never a turn_status, so it is
+        # not part of this IN-list.)
         return (
             "e.data->>'status' = 'active' "
             "AND e.data->>'parked_status' IS NULL "
-            "AND e.data->>'turn_status' IN ('claimable','resumable','running')"
+            "AND e.data->>'turn_status' IN ('claimable','running')"
         )
 
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:

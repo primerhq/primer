@@ -707,7 +707,7 @@ def _make_lifespan(config: AppConfig):
         # and releasing) would otherwise sit stuck forever — see
         # bug-2026-06-02T192011Z-8feeba2a. ChatClaimAdapter's
         # eligibility predicate requires turn_status in {claimable,
-        # resumable}, parked_status IS NULL, and chat.status='active',
+        # running}, parked_status IS NULL, and chat.status='active',
         # so we only re-arm rows that match.
         if claim_engine is not None:
             try:
@@ -730,7 +730,7 @@ def _make_lifespan(config: AppConfig):
                         if getattr(_chat, "parked_status", None) is not None:
                             continue
                         _ts = getattr(_chat, "turn_status", None)
-                        if _ts not in ("claimable", "resumable", "running"):
+                        if _ts not in ("claimable", "running"):
                             continue
                         try:
                             await claim_engine.upsert(_ClaimKind.CHAT, _chat.id)

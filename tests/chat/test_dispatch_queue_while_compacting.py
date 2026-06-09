@@ -139,7 +139,7 @@ async def test_user_message_queued_mid_turn_runs_a_second_turn(
     )
 
     try:
-        await run_one_chat_turn(deps, chat_id="c1", worker_id="w1")
+        disposition = await run_one_chat_turn(deps, chat_id="c1", worker_id="w1")
     finally:
         await bus.aclose()
 
@@ -166,6 +166,5 @@ async def test_user_message_queued_mid_turn_runs_a_second_turn(
     assert kinds.count("user_message") == 2, kinds
     assert kinds.count("done") == 2, kinds
 
-    # Chat is released back to idle on clean drain.
-    final = await chats.get("c1")
-    assert final.turn_status == "idle"
+    # Clean drain -> idle disposition; the fenced adapter applies it.
+    assert disposition == "idle"

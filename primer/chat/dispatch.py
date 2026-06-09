@@ -54,17 +54,23 @@ async def run_one_chat_turn(
     *,
     chat_id: str,
     worker_id: str,
-) -> None:
+) -> str:
     """Drain the chat's user_message queue until empty / park / cancel.
 
     The chat row MUST already be in ``turn_status='running'`` when this
     is called — the caller (the worker pool's claim loop) has already
     done that atomically via the ClaimEngine.
 
-    On clean drain: leaves the chat ``turn_status='idle'``.
-    On park (YieldToWorker): releases the lease; ``turn_status``
-    stays in place (the claim predicate gates on ``parked_status``).
-    On cancel: persists a ``cancelled`` row, releases to idle.
+    Returns the terminal ``turn_status`` DISPOSITION (``'idle'`` or
+    ``'claimable'``); this function does NOT write turn_status itself.
+    The caller (the worker pool) maps the disposition to a
+    ``ReleaseOutcome`` and the fenced ``ChatClaimAdapter.on_release`` is
+    the single authority that persists the terminal turn_status. This
+    avoids the historical double-write (unfenced here + fenced adapter)
+    that could leave conflicting values on the error path.
+
+    On clean drain / park (YieldToWorker) / cancel: ``'idle'``.
+    On a turn that raised: ``'claimable'`` (so it is re-served).
     On lease loss (engine heartbeat): the pool cancels this task; the
     in-flight turn raises ``CancelledError`` and the lease release is
     fenced by the engine, so no stale writes land.
@@ -75,14 +81,14 @@ async def run_one_chat_turn(
     chat = await chat_storage.get(chat_id)
     if chat is None:
         logger.warning("chat %s vanished before dispatch", chat_id)
-        return
+        return "idle"
 
     cancel_event = asyncio.Event()
 
     runner = await _build_runner(deps, chat, cancel_event)
     if runner is None:
         await _persist_build_error(deps, chat, worker_id)
-        return
+        return "idle"
 
     cancel_task = asyncio.create_task(
         _cancel_watcher(deps, chat_id, cancel_event),
@@ -108,8 +114,7 @@ async def run_one_chat_turn(
                     deps, chat_id, chat.pending_tool_call,
                 )
                 if reply_um is None:
-                    await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="idle")
-                    return
+                    return "idle"
                 # Consume the reply as the pending call's tool_result,
                 # then continue the agent loop from the augmented
                 # history. resume_pending flags the reply
@@ -136,23 +141,20 @@ async def run_one_chat_turn(
                             await chat_storage.update(cleared)
                 except YieldToWorker as exc:
                     await runner.soft_yield(chat, exc)
-                    await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="idle")
-                    return
+                    return "idle"
                 except Exception:
                     logger.exception(
                         "chat %s resume raised; releasing claim", chat_id,
                     )
-                    await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="claimable")
-                    return
+                    return "claimable"
                 continue
             next_um = await _find_next_user_message(deps, chat_id)
             if next_um is None:
-                await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="idle")
                 final = await chat_storage.get(chat_id)
                 if final is not None and final.cancel_requested_at is not None:
                     final.cancel_requested_at = None
                     await chat_storage.update(final)
-                return
+                return "idle"
             try:
                 async for row in runner.run_turn(
                     chat,
@@ -173,14 +175,12 @@ async def run_one_chat_turn(
                         await chat_storage.update(refreshed)
             except YieldToWorker as exc:
                 await runner.soft_yield(chat, exc)
-                await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="idle")
-                return
+                return "idle"
             except Exception:
                 logger.exception(
                     "chat %s turn raised; releasing claim", chat_id,
                 )
-                await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="claimable")
-                return
+                return "claimable"
     finally:
         cancel_task.cancel()
         try:
@@ -274,31 +274,11 @@ async def _persist_build_error(
     ))
     chat.last_seq = next_seq
     await chats.update(chat)
-    await _release_chat(chats, chat.id, worker_id, next_turn_status="idle")
+    # The terminal turn_status ('idle') is applied by the fenced adapter
+    # from the 'idle' disposition run_one_chat_turn returns after this.
     await deps.event_bus.publish(
         f"chat:{chat.id}:tick", {"seq": next_seq},
     )
-
-
-async def _release_chat(
-    chat_storage,
-    chat_id: str,
-    worker_id: str,
-    *,
-    next_turn_status: str,
-) -> None:
-    """Release the chat claim by setting turn_status on the chat row.
-
-    Only acts when ``turn_status='running'`` so we don't clobber a row
-    that has already been released or reclaimed by another path.
-    """
-    chat = await chat_storage.get(chat_id)
-    if chat is None or chat.turn_status != "running":
-        return
-    updated = chat.model_copy(update={
-        "turn_status": next_turn_status,
-    })
-    await chat_storage.update(updated)
 
 
 async def _cancel_watcher(

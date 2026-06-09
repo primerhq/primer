@@ -742,7 +742,7 @@ class WorkerPool:
         chat_storage = self._storage.get_storage(Chat)
         chat = await chat_storage.get(engine_lease.entity_id)
         if chat is None or chat.turn_status not in (
-            "claimable", "resumable", "running",
+            "claimable", "running",
         ):
             await self._engine.release(
                 engine_lease,
@@ -759,23 +759,31 @@ class WorkerPool:
             event_bus=self._event_bus,
             chat_tick_router=self._chat_tick_router,
         )
-        success = False
+        # run_one_chat_turn returns the terminal turn_status DISPOSITION;
+        # it no longer writes turn_status itself. We map it to the
+        # ReleaseOutcome the fenced ChatClaimAdapter.on_release turns into
+        # the terminal turn_status (the single writer). Adapter rule:
+        # idle iff (success and drop_lease). So 'idle' -> drop the lease
+        # (idle); 'claimable' -> keep success but DON'T drop the lease so
+        # the adapter computes 'claimable' (re-served). A raised turn is
+        # treated as 'claimable' too.
+        disposition = "claimable"
         try:
-            await run_one_chat_turn(
+            disposition = await run_one_chat_turn(
                 deps,
                 chat_id=engine_lease.entity_id,
                 worker_id=self._worker_id,
             )
-            success = True
         except Exception:
             logger.exception(
                 "engine chat turn for %s raised",
                 engine_lease.entity_id,
             )
         finally:
+            drop_lease = disposition == "idle"
             await self._engine.release(
                 engine_lease,
-                outcome=ReleaseOutcome(success=success, drop_lease=True),
+                outcome=ReleaseOutcome(success=True, drop_lease=drop_lease),
             )
 
     async def _run_engine_harness(self, engine_lease: ClaimLease) -> None:
