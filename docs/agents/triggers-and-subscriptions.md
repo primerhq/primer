@@ -4,22 +4,17 @@ title: Triggers and subscriptions
 summary: Event-scheduling primitive - time-based or channel-driven triggers fire payloads to chats, fresh sessions, or parked-yield tools.
 related: [yielding, chats, sessions, channels]
 mcp_tools:
-  - system::list_triggers
-  - system::get_trigger
-  - system::create_trigger
-  - system::update_trigger
-  - system::delete_trigger
-  - system::list_subscriptions
-  - system::get_subscription
-  - system::create_subscription
-  - system::update_subscription
-  - system::delete_subscription
   - trigger::list
   - trigger::get
   - trigger::create
   - trigger::update
   - trigger::delete
   - trigger::fire_now
+  - trigger::list_subscriptions
+  - trigger::get_subscription
+  - trigger::create_subscription
+  - trigger::update_subscription
+  - trigger::delete_subscription
 ---
 
 # Triggers and subscriptions
@@ -159,15 +154,15 @@ agent is doing generic entity CRUD.
 
 ### Subscription management
 
-Use the system toolset's generic CRUD: `system::create_subscription`,
-`system::list_subscriptions`, etc. Bodies require `trigger_id` and
+Use the `trigger` toolset's subscription tools: `trigger::create_subscription`,
+`trigger::list_subscriptions`, etc. Bodies require `trigger_id` and
 the kind-specific `config`.
 
 ### Yielding wait (not MCP-exposable)
 
 `trigger::subscribe_to_trigger` is a yielding tool - invisible from
 MCP. For external agents that want event-driven behaviour, poll
-`system::list_subscriptions(trigger_id=X)` or inspect the trigger's
+`trigger::list_subscriptions(trigger_id=X)` or inspect the trigger's
 `last_fired_at` to detect fires.
 
 ## Workflows
@@ -196,7 +191,7 @@ of the `summarise-overnight-alerts` agent in workspace `ws-ops`.
 
 ```json
 {
-  "tool": "system::create_subscription",
+  "tool": "trigger::create_subscription",
   "arguments": {
     "id": "sub-morning-summary",
     "trigger_id": "tg-morning-summary",
@@ -249,7 +244,7 @@ off the `triage-incident` agent.
 
 ```json
 {
-  "tool": "system::create_subscription",
+  "tool": "trigger::create_subscription",
   "arguments": {
     "id": "sub-slack-incident",
     "trigger_id": "tg-slack-incident",
@@ -299,7 +294,7 @@ session even if a prior triage is still running.
   to confirm the fire actually ran.
 - **`subscribe_to_trigger` is invisible from MCP.** External agents
   must poll. The `trigger::list` tool gives them the trigger's
-  metadata; `system::list_subscriptions(trigger_id=X)` lets them
+  metadata; `trigger::list_subscriptions(trigger_id=X)` lets them
   observe state changes.
 - **Triggers and subscriptions are claimed via the same engine as
   sessions and chats.** A backed-up worker pool can delay trigger

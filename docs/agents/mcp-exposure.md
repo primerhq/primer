@@ -167,9 +167,8 @@ The agent should:
   agent's side, the tool simply doesn't exist. There's no error
   surface that says "this tool is gated".
 - **Yielding tools are also invisible.** The agent will not see
-  `workspaces::subscribe_to_trigger`, `trigger::subscribe_to_trigger`,
-  `workspaces::ask_user`, etc. Those primitives are unavailable
-  outside of primer's own agent runtime.
+  `trigger::subscribe_to_trigger`, `misc::ask_user`, etc. Those
+  primitives are unavailable outside of primer's own agent runtime.
 - **The allowlist is a *set*, not a *prefix*.** There's no
   `system::*` wildcard. Each tool is listed by full scoped id. Tools
   added later via harness install need a follow-up allowlist update.

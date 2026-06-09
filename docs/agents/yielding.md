@@ -130,11 +130,9 @@ The transitions:
 Yielding tools as a class are not exposed over MCP. The specific
 yields in primer:
 
-- `workspaces::ask_user` - pause to ask a question of the operator.
-- `workspaces::subscribe_to_trigger` - wait for a named trigger to
+- `misc::ask_user` - pause to ask a question of the operator.
+- `trigger::subscribe_to_trigger` - wait for a named trigger to
   fire.
-- `trigger::subscribe_to_trigger` - equivalent from the trigger
-  toolset's perspective.
 - `_approval` - internal yield used by tool approval (not a tool the
   agent can call directly; it's a side effect of the dispatch gate).
 
@@ -143,7 +141,7 @@ agents running inside primer's own session/chat runtime.
 
 For external MCP-hosted agents who need wait-for-event behaviour:
 the right pattern is to **poll**. Call `trigger::get(id=...)` and
-inspect `last_fired_at`, or `system::list_subscriptions(trigger_id=...)`
+inspect `last_fired_at`, or `trigger::list_subscriptions(trigger_id=...)`
 to observe subscription state. To check whether a SESSION is still
 parked, call `workspaces::get_workspace_session(id=...)` and read its
 status. A chat's waiting state is not an MCP tool; inspect it via the

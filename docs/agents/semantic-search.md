@@ -244,7 +244,7 @@ about cron semantics in primer.
 ```
 
 4. Now the agent has the full mental model and can call
-   `system::create_trigger` with the right config.
+   `trigger::create` with the right config.
 
 ## Gotchas
 

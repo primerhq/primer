@@ -255,7 +255,7 @@ Read the description + system_prompt to confirm fit.
   while a session is running; the next turn sees the edit. The
   tool set, the prompt, the response_format - all re-resolved.
 - **`harness_id` makes an agent immutable through CRUD.** Use
-  `harness::sync` after upstream changes, not
+  `harness::harness__sync` after upstream changes, not
   `system::update_agent`.
 - **`response_format` only populates `NodeOutput.parsed` in
   graph contexts.** Chat and session contexts return text only;
