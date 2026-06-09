@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from primer.int.claim import ReleaseOutcome
+from primer.int.claim import ClaimKind, ReleaseOutcome
 
 
 def _now() -> datetime:
@@ -92,6 +92,57 @@ async def test_harnesses_adapter_forwards_conn():
     )
     assert storage.get_conns == [sentinel]
     assert storage.update_conns == [sentinel]
+
+
+@pytest.mark.asyncio
+async def test_in_memory_release_is_fenced_on_ownership():
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    calls = []
+
+    class _Adapter:
+        kind = ClaimKind.CHAT
+        entity_table = "chat"
+
+        def eligibility_sql(self):
+            return "true"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            calls.append(entity_id)
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.CHAT: _Adapter()})
+    await engine.upsert(ClaimKind.CHAT, "c1")
+    leases = await engine.claim_due("worker-A", max_count=1)
+    lease_a = leases[0]
+    assert lease_a.claimed_by == "worker-A"
+    # Simulate re-claim by worker B.
+    engine._leases[(ClaimKind.CHAT, "c1")].claimed_by = "worker-B"
+    await engine.release(lease_a, outcome=ReleaseOutcome(success=True, drop_lease=True))
+    assert calls == []  # on_release NOT called (stale worker fenced out)
+    assert engine._leases[(ClaimKind.CHAT, "c1")].claimed_by == "worker-B"  # lease untouched
+
+
+@pytest.mark.asyncio
+async def test_in_memory_release_runs_when_still_owned():
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    calls = []
+
+    class _Adapter:
+        kind = ClaimKind.CHAT
+        entity_table = "chat"
+
+        def eligibility_sql(self):
+            return "true"
+
+        async def on_release(self, conn, entity_id, *, outcome):
+            calls.append(entity_id)
+
+    engine = InMemoryClaimEngine(adapters={ClaimKind.CHAT: _Adapter()})
+    await engine.upsert(ClaimKind.CHAT, "c2")
+    leases = await engine.claim_due("worker-A", max_count=1)
+    await engine.release(leases[0], outcome=ReleaseOutcome(success=True, drop_lease=True))
+    assert calls == ["c2"]  # owned -> on_release ran
 
 
 @pytest.mark.asyncio

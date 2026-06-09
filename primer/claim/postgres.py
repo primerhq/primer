@@ -41,6 +41,7 @@ safe without ``call_soon_threadsafe``.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
@@ -50,6 +51,8 @@ from primer.claim.sql import build_claim_query
 from primer.storage._ddl import CONCURRENT_CREATE_RACE
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
+
+logger = logging.getLogger(__name__)
 
 
 class PostgresClaimEngine(ClaimEngine):
@@ -275,13 +278,14 @@ class PostgresClaimEngine(ClaimEngine):
         async with self._storage.pool.acquire() as conn:
             async with conn.transaction():
                 if outcome.drop_lease:
-                    await conn.execute(
+                    owned = await conn.fetchval(
                         f"DELETE FROM {self._table}"
-                        f" WHERE kind = $1 AND entity_id = $2",
-                        lease.kind.value, lease.entity_id,
+                        f" WHERE kind = $1 AND entity_id = $2 AND claimed_by = $3"
+                        f" RETURNING 1",
+                        lease.kind.value, lease.entity_id, lease.claimed_by,
                     )
                 else:
-                    await conn.execute(
+                    owned = await conn.fetchval(
                         f"UPDATE {self._table}"
                         f"   SET claimed_by        = NULL,"
                         f"       claimed_at         = NULL,"
@@ -292,10 +296,22 @@ class PostgresClaimEngine(ClaimEngine):
                         f"                                 ELSE attempt_count + 1 END,"
                         f"       last_error         = CASE WHEN $4 THEN NULL"
                         f"                                 ELSE $5 END"
-                        f" WHERE kind = $1 AND entity_id = $2",
+                        f" WHERE kind = $1 AND entity_id = $2 AND claimed_by = $6"
+                        f" RETURNING 1",
                         lease.kind.value, lease.entity_id,
                         str(requeue_secs), outcome.success, outcome.last_error,
+                        lease.claimed_by,
                     )
+                # Fence: if no row matched our claimed_by, the lease was
+                # re-claimed by another worker (or deleted). Skip on_release
+                # so a stale worker cannot clobber the new owner's state.
+                if owned is None:
+                    logger.warning(
+                        "claim release skipped: lease %s/%s no longer owned by %r "
+                        "(presumed re-claimed)",
+                        lease.kind.value, lease.entity_id, lease.claimed_by,
+                    )
+                    return
                 adapter = self._adapters.get(lease.kind)
                 if adapter is not None:
                     await adapter.on_release(

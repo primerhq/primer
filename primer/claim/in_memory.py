@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, UTC, timedelta
 from collections.abc import AsyncIterator
@@ -8,6 +9,8 @@ from primer.int.claim import (
 )
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -101,15 +104,17 @@ class InMemoryClaimEngine(ClaimEngine):
 
     async def release(self, lease: Lease, *, outcome: ReleaseOutcome) -> None:
         key = (lease.kind, lease.entity_id)
-        if outcome.drop_lease:
-            self._leases.pop(key, None)
-            # Run adapter on_release before returning
-            adapter = self._adapters.get(lease.kind)
-            if adapter is not None:
-                await adapter.on_release(conn=None, entity_id=lease.entity_id, outcome=outcome)
-            return
         row = self._leases.get(key)
-        if row is None:
+        # Fence: only mutate the lease + run on_release while THIS worker
+        # still owns the lease. If the row is gone or was re-claimed by
+        # another worker, skip entirely so a stale/dead worker cannot
+        # clobber the new owner's entity state.
+        if row is None or row.claimed_by != lease.claimed_by:
+            logger.warning(
+                "claim release skipped: lease %s/%s no longer owned by %r "
+                "(presumed re-claimed)",
+                lease.kind.value, lease.entity_id, lease.claimed_by,
+            )
             return
         # Run the adapter's on_release hook (which clears the entity's park
         # columns) BEFORE releasing the claim, then reset the lease's claim
@@ -126,6 +131,9 @@ class InMemoryClaimEngine(ClaimEngine):
         adapter = self._adapters.get(lease.kind)
         if adapter is not None:
             await adapter.on_release(conn=None, entity_id=lease.entity_id, outcome=outcome)
+        if outcome.drop_lease:
+            self._leases.pop(key, None)
+            return
         row.claimed_by = None
         row.claimed_at = None
         row.last_heartbeat_at = None
