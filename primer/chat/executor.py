@@ -137,6 +137,29 @@ def _derive_chat_title(parts: list) -> str:
     return "[attachment]"
 
 
+def _text_of(reply_msg: "ChatMessage") -> str:
+    """Extract the plain text of a persisted ``user_message`` row.
+
+    Mirrors :func:`primer.chat.dispatch._parts_from` / the user_message
+    branch of :meth:`_load_history`: prefer the structured ``parts``
+    payload (join every TextPart's text), fall back to the flattened
+    ``content`` field for legacy / text-only rows.
+    """
+    payload = reply_msg.payload or {}
+    raw_parts = payload.get("parts")
+    if isinstance(raw_parts, list) and raw_parts:
+        texts: list[str] = []
+        for entry in raw_parts:
+            if isinstance(entry, dict):
+                text = entry.get("text")
+                if isinstance(text, str) and text:
+                    texts.append(text)
+        if texts:
+            return "\n".join(texts)
+    content = payload.get("content")
+    return content if isinstance(content, str) else ""
+
+
 def _looks_like_attachment_rejection(exc: Exception) -> bool:
     """Match the exception text against well-known multimodal rejection
     markers. Used both to gate the friendly diagnosis and to decide
@@ -342,7 +365,57 @@ class ChatTurnRunner:
         new_user_msg = Message(role="user", parts=parts)
         prompt = self._build_prompt(history, new_user_msg)
 
-        # 3) Resolve the tool catalogue once. Empty when the agent has
+        async for row in self._run_llm_loop(chat, prompt):
+            yield row
+
+    async def continue_turn(
+        self, chat: Chat,
+    ) -> AsyncIterator[ChatMessage]:
+        """Re-enter the agent loop from persisted history alone.
+
+        Used by the resume path after a pending tool_call has been
+        resolved (its tool_result persisted + the consumed reply
+        ``_history_excluded``). Builds the prompt purely from history:
+        no new user_message is injected or echoed, then runs the same
+        LLM → tool → LLM loop as :meth:`run_turn`. The augmented history
+        now pairs the previously-unresolved ``tool_call`` with its
+        ``tool_result`` so the model resumes mid-conversation.
+        """
+        self._active_chat_id = chat.id
+        # ``current_user_msg_seq=None``: the resolved tool_result is the
+        # trailing row now, and the consumed reply user_message carries
+        # ``_history_excluded`` so _load_history drops it. The None path
+        # only trims a trailing *user_message*, which no longer exists.
+        history = await self._load_history(chat.id)
+        try:
+            compacted = await self._maybe_compact_history(chat, history)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "ChatTurnRunner: pre-resume compaction failed for chat %s; "
+                "continuing with un-compacted history",
+                chat.id,
+            )
+            compacted = False
+        if compacted:
+            logger.info(
+                "ChatTurnRunner: pre-resume compaction fired for chat %s",
+                chat.id,
+            )
+        prompt = self._build_prompt(history, None)
+        async for row in self._run_llm_loop(chat, prompt):
+            yield row
+
+    async def _run_llm_loop(
+        self, chat: Chat, prompt: list[Message],
+    ) -> AsyncIterator[ChatMessage]:
+        """Run the LLM → tool → LLM round-trip loop over ``prompt``.
+
+        Shared by :meth:`run_turn` (fresh user turn) and
+        :meth:`continue_turn` (resume from history). Persists + yields
+        every row; terminates on a done/error/cancelled row or the
+        round-trip cap.
+        """
+        # Resolve the tool catalogue once. Empty when the agent has
         # no toolsets configured.
         try:
             tools = await self._tools.list_tools()
@@ -359,7 +432,7 @@ class ChatTurnRunner:
             yield err
             return
 
-        # 4) LLM → tool → LLM loop.
+        # LLM → tool → LLM loop.
         tool_round = 0
         for _ in range(_MAX_TOOL_ROUND_TRIPS):
             tool_calls: list[ToolCallPart] = []
@@ -555,6 +628,57 @@ class ChatTurnRunner:
             return
         await self._append(chat, kind="assistant_token", payload={"delta": prompt})
         chat.pending_tool_call = pending
+        await self._chats.update(chat)
+
+    # Tokens that read as an affirmative approval. Matched case-folded
+    # against the reply's whitespace-split tokens (any token suffices).
+    _AFFIRMATIVE = {"yes", "y", "approve", "approved", "ok", "okay", "sure", "go"}
+
+    async def resume_pending(
+        self, chat: Chat, pending: dict, reply_msg: ChatMessage,
+    ) -> None:
+        """Consume the human's reply as the pending tool call's result.
+
+        For ``ask_user`` the reply text becomes the tool_result output.
+        For ``approval`` an affirmative reply re-runs the original call
+        (gate bypassed); a negative reply records a rejection result and
+        does NOT execute. Persists the tool_result row (pairing the
+        unresolved tool_call), flags the consumed reply
+        ``_history_excluded`` so it is not replayed as a fresh user turn,
+        and clears ``chat.pending_tool_call``.
+        """
+        tool_call_id = pending["tool_call_id"]
+        reply_text = _text_of(reply_msg)
+        mode = pending.get("mode")
+        if mode == "approval":
+            decision = reply_text.strip().lower()
+            approved = any(
+                tok in self._AFFIRMATIVE for tok in decision.split()
+            )
+            if approved:
+                original = pending.get("original_call") or {}
+                call = ToolCallPart(
+                    id=original.get("id") or tool_call_id,
+                    name=original.get("name") or "",
+                    arguments=original.get("arguments") or {},
+                )
+                rp = await self._tools.execute(call, bypass_approval=True)
+                result_out, is_err = rp.output, bool(rp.error)
+            else:
+                result_out, is_err = (
+                    "user declined to approve the tool call", True,
+                )
+        else:  # ask_user
+            result_out, is_err = reply_text, False
+        await self._append(chat, kind="tool_result", payload={
+            "id": tool_call_id, "name": str(mode or ""),
+            "result": result_out, "error": is_err,
+        })
+        excluded = reply_msg.model_copy(update={
+            "payload": {**(reply_msg.payload or {}), "_history_excluded": True},
+        })
+        await self._messages.update(excluded)
+        chat.pending_tool_call = None
         await self._chats.update(chat)
 
     # ------------------------------------------------------------------
@@ -904,7 +1028,7 @@ class ChatTurnRunner:
     def _build_prompt(
         self,
         history: list[Message],
-        new_user_msg: Message,
+        new_user_msg: Message | None,
     ) -> list[Message]:
         prompt: list[Message] = []
         if self._agent.system_prompt:
@@ -913,7 +1037,10 @@ class ChatTurnRunner:
                 Message(role="system", parts=[TextPart(text=sys_text)]),
             )
         prompt.extend(history)
-        prompt.append(new_user_msg)
+        # ``new_user_msg`` is None on the resume path (continue_turn):
+        # the prompt is built purely from the augmented history.
+        if new_user_msg is not None:
+            prompt.append(new_user_msg)
         return prompt
 
     # ------------------------------------------------------------------

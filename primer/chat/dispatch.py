@@ -96,6 +96,55 @@ async def run_one_chat_turn(
                 return
             if chat.cancel_requested_at is not None:
                 cancel_event.set()
+            if chat.pending_tool_call is not None:
+                # Resume path: the chat parked on a yielding tool
+                # (ask_user / approval). The parked turn persisted NO
+                # terminal row, so _find_next_user_message would re-serve
+                # the ORIGINAL prompting message; instead locate the
+                # human's reply (the first user_message after the pending
+                # tool_call row). If none has arrived yet, release idle
+                # and wait for the next claim.
+                reply_um = await _find_resume_reply(
+                    deps, chat_id, chat.pending_tool_call,
+                )
+                if reply_um is None:
+                    await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="idle")
+                    return
+                # Consume the reply as the pending call's tool_result,
+                # then continue the agent loop from the augmented
+                # history. resume_pending flags the reply
+                # ``_history_excluded`` so it never replays as a fresh
+                # user turn, and the continuation's terminal row
+                # (done/error) closes the originally-parked user_message
+                # so _find_next_user_message advances past it next drain.
+                try:
+                    await runner.resume_pending(
+                        chat, chat.pending_tool_call, reply_um,
+                    )
+                    refreshed = await chat_storage.get(chat_id)
+                    if refreshed is not None:
+                        chat = refreshed
+                    async for row in runner.continue_turn(chat):
+                        await deps.event_bus.publish(
+                            f"chat:{chat_id}:tick", {"seq": row.seq},
+                        )
+                    if cancel_event.is_set():
+                        cancel_event.clear()
+                        cleared = await chat_storage.get(chat_id)
+                        if cleared is not None and cleared.cancel_requested_at is not None:
+                            cleared.cancel_requested_at = None
+                            await chat_storage.update(cleared)
+                except YieldToWorker as exc:
+                    await runner.soft_yield(chat, exc)
+                    await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="idle")
+                    return
+                except Exception:
+                    logger.exception(
+                        "chat %s resume raised; releasing claim", chat_id,
+                    )
+                    await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="claimable")
+                    return
+                continue
             next_um = await _find_next_user_message(deps, chat_id)
             if next_um is None:
                 await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="idle")
@@ -306,6 +355,11 @@ async def _find_next_user_message(
             if row.kind in _TERMINALS:
                 terminal_count += 1
             elif row.kind == "user_message":
+                # A reply consumed by the resume path is flagged
+                # ``_history_excluded``; it has already been folded into
+                # a tool_result and must NOT be re-served as a fresh turn.
+                if (row.payload or {}).get("_history_excluded"):
+                    continue
                 user_messages.append(row)
         if len(page.items) < PAGE:
             break
@@ -317,6 +371,55 @@ async def _find_next_user_message(
     target_index = terminal_count  # 0-based index into user_messages list
     if target_index < len(user_messages):
         return user_messages[target_index]
+    return None
+
+
+async def _find_resume_reply(
+    deps: ChatDispatchDeps,
+    chat_id: str,
+    pending: dict,
+) -> ChatMessage | None:
+    """Find the human reply that resolves a pending (parked) tool call.
+
+    The parked turn persisted its yielding ``tool_call`` row but NO
+    terminal row, so the ordinary :func:`_find_next_user_message`
+    cursor still points at the original prompting message. The reply is
+    the first un-consumed ``user_message`` whose seq is greater than the
+    pending ``tool_call`` row's seq. Returns None when no reply has
+    arrived yet (the chat should release idle and wait).
+    """
+    msgs = deps.storage_provider.get_storage(ChatMessage)
+    pred = Predicate(
+        left=FieldRef(name="chat_id"), op=Op.EQ,
+        right=Value(value=chat_id),
+    )
+    tool_call_id = pending.get("tool_call_id")
+    rows: list[ChatMessage] = []
+    offset = 0
+    PAGE = 200
+    while True:
+        page = await msgs.find(
+            pred, OffsetPage(offset=offset, length=PAGE),
+            order_by=[OrderBy(field="seq", direction="asc")],
+        )
+        rows.extend(page.items)
+        if len(page.items) < PAGE:
+            break
+        offset += PAGE
+
+    pending_seq: int | None = None
+    for row in rows:
+        if row.kind == "tool_call" and (row.payload or {}).get("id") == tool_call_id:
+            pending_seq = row.seq
+            break
+    if pending_seq is None:
+        return None
+    for row in rows:
+        if row.seq <= pending_seq or row.kind != "user_message":
+            continue
+        if (row.payload or {}).get("_history_excluded"):
+            continue
+        return row
     return None
 
 
