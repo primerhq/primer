@@ -5,12 +5,11 @@ graph binding, no per-call signals beyond the M1 yield protocol.
 It's a long-lived row that pairs one agent with an append-only
 conversation history (:class:`ChatMessage` rows).
 
-The park fields mirror :class:`Session` — when a chat agent invokes
-a yielding tool, the chat row is parked under the same M1/M2/M3
-machinery. The bus listener and timer / sweeper / watcher / mcp
-background tasks already wake parked rows; they don't care whether
-the row lives in ``sessions`` or ``chats`` as long as the
-``parked_event_key`` matches.
+Unlike :class:`Session`, a chat NEVER parks: when a chat agent
+invokes a yielding tool the turn ends awaiting the human's reply,
+recorded purely in-conversation via :attr:`Chat.pending_tool_call`
+and the message log. There is no park/resume machinery on the chat
+surface.
 
 Spec: ``docs/superpowers/specs/2026-05-22-yielding-tools-design.md`` §8.5.
 """
@@ -60,9 +59,9 @@ class Chat(Identifiable):
     """A user-driven conversation with a single agent.
 
     Persisted as a top-level entity (not nested under workspace) so
-    the WebSocket surface can address it directly. Carries the M1
-    park fields so any yielding tool the chat agent invokes uses
-    the same wake machinery as sessions.
+    the WebSocket surface can address it directly. A chat never
+    parks; a yielding tool invocation is held in-conversation via
+    :attr:`pending_tool_call` rather than a park slot.
     """
 
     agent_id: str = Field(
@@ -104,13 +103,10 @@ class Chat(Identifiable):
         description=(
             "Lifecycle state of the FIFO queue + worker claim. "
             "``idle`` means no pending work. ``claimable`` means a "
-            "user_message has landed (or a parked chat just became "
-            "resumable, or an operator interrupt is pending) and a "
-            "worker should pick the chat up. ``running`` means a "
-            "worker holds the claim and is actively processing. "
-            "Orthogonal to :attr:`parked_status` — a claimed chat "
-            "that parks on a yielding tool keeps ``turn_status`` "
-            "where it is while ``parked_status`` flips."
+            "user_message has landed (or an operator interrupt is "
+            "pending) and a worker should pick the chat up. "
+            "``running`` means a worker holds the claim and is "
+            "actively processing."
         ),
     )
     cancel_requested_at: datetime | None = Field(
@@ -132,27 +128,6 @@ class Chat(Identifiable):
             "original_call?, response_schema?}. Cleared when the reply is "
             "consumed as the pending call's tool_result. The chat surface does "
             "NOT park; this is purely in-conversation state."
-        ),
-    )
-
-    # M1 park fields — identical shape to Session.parked_*.
-    parked_status: Literal["parked", "resumable"] | None = Field(
-        default=None,
-        description=(
-            "Set to 'parked' when the chat's agent invoked a yielding "
-            "tool; flipped to 'resumable' by the bus listener once "
-            "the event fires; cleared back to None on resume."
-        ),
-    )
-    parked_event_key: str | None = Field(default=None)
-    parked_until: datetime | None = Field(default=None)
-    parked_at: datetime | None = Field(default=None)
-    parked_state: dict[str, Any] | None = Field(
-        default=None,
-        description=(
-            "Mirror of Session.parked_state — see "
-            "primer.worker.yield_runtime.ParkedState. Holds enough "
-            "state for any worker to resume the chat turn."
         ),
     )
 

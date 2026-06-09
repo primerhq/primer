@@ -15,3 +15,10 @@ def test_chat_pending_tool_call_defaults_none():
 def test_chat_pending_tool_call_roundtrip():
     c = _chat(pending_tool_call={"tool_call_id": "tc1", "mode": "ask_user"})
     assert c.pending_tool_call["mode"] == "ask_user"
+
+
+def test_chat_has_no_parked_columns():
+    from primer.model.chats import Chat
+    fields = set(Chat.model_fields)
+    for dead in ("parked_status", "parked_event_key", "parked_until", "parked_at", "parked_state"):
+        assert dead not in fields, dead

@@ -23,8 +23,6 @@ Chats are user-driven conversations with a single agent, persisted as top-level 
 | DELETE | `/v1/chats/{chat_id}` | End (or hard-delete) a chat |
 | GET | `/v1/chats/{chat_id}/messages` | List messages on a chat |
 | GET (ws) | `/v1/chats/{chat_id}/ws` | Stream messages and events over WebSocket |
-| GET | `/v1/chats/{chat_id}/tool_approval/pending` | Get pending tool approval request |
-| POST | `/v1/chats/{chat_id}/tool_approval/respond` | Submit an approval decision |
 
 ---
 
@@ -75,7 +73,6 @@ const chat = await r.json();
 | `last_seq` | integer | Starts at `0`; increments per message |
 | `title` | string or null | Set on the first user turn; null until then |
 | `created_at` | string | ISO-8601 timestamp |
-| `parked_status` | string or null | `parked`, `resumable`, or null |
 
 **Errors:** `404` agent not found, `422` missing `agent_id`.
 
@@ -239,92 +236,6 @@ ws.addEventListener("message", (evt) => {
   console.log(frame);
 });
 ```
-
----
-
-## GET /v1/chats/{chat_id}/tool_approval/pending
-
-Returns the pending tool approval request when the chat is parked on the `_approval` tool. Returns `404` when the chat is not parked, or is parked on a different tool.
-
-```code-tabs:curl,python,javascript
---- curl
-curl "https://primer.example/v1/chats/chat-abc123/tool_approval/pending" \
-  -H "Authorization: Bearer $TOKEN"
---- python
-import httpx
-r = httpx.get(
-    "https://primer.example/v1/chats/chat-abc123/tool_approval/pending",
-    headers={"Authorization": f"Bearer {token}"},
-)
---- javascript
-const r = await fetch("/v1/chats/chat-abc123/tool_approval/pending", {
-  headers: { "Authorization": `Bearer ${token}` },
-});
-```
-
-**Response: 200**
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `tool_call_id` | string | Required for the respond call |
-| `tool_name` | string | Inner tool the agent tried to call |
-| `arguments` | object | Arguments passed to the inner tool |
-| `parked_at` | string | ISO-8601 timestamp when the chat parked |
-| `timeout_at` | string or null | ISO-8601 expiry derived from `parked_at` + policy timeout |
-| `policy_id` | string or null | Approval policy that triggered the gate |
-| `approval_type` | string or null | e.g. `required` |
-| `gate_reason` | string or null | Human-readable reason from the policy |
-
-**Errors:** `404` not parked on `_approval`.
-
----
-
-## POST /v1/chats/{chat_id}/tool_approval/respond
-
-Submits an approval decision for the pending tool call. A `tool_call_id` mismatch returns `404`; the parked id is never echoed in the error response.
-
-**Request body**
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `tool_call_id` | string | yes | Must match the value from `/pending` |
-| `decision` | string | yes | `approved` or `rejected` |
-| `reason` | string | no | Optional free-text reason (max 1024 chars) |
-
-```code-tabs:curl,python,javascript
---- curl
-curl -X POST "https://primer.example/v1/chats/chat-abc123/tool_approval/respond" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"tool_call_id": "tc-shell-007", "decision": "rejected", "reason": "not permitted"}'
---- python
-import httpx
-r = httpx.post(
-    "https://primer.example/v1/chats/chat-abc123/tool_approval/respond",
-    headers={"Authorization": f"Bearer {token}"},
-    json={
-        "tool_call_id": "tc-shell-007",
-        "decision": "rejected",
-        "reason": "not permitted",
-    },
-)
-r.raise_for_status()
---- javascript
-const r = await fetch("/v1/chats/chat-abc123/tool_approval/respond", {
-  method: "POST",
-  headers: {
-    "Authorization": `Bearer ${token}`,
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({
-    tool_call_id: "tc-shell-007",
-    decision: "rejected",
-    reason: "not permitted",
-  }),
-});
-```
-
-**Response: 202** - `{"status": "accepted"}`. **Errors:** `404` if `tool_call_id` does not match the parked yield.
 
 ---
 

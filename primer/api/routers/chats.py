@@ -769,7 +769,6 @@ async def _recv_loop(
 
     - ``ping`` → immediate pong.
     - ``interrupt`` → set cancel_requested_at + publish cancel event.
-    - ``tool_approval_decide`` → publish on the parked event_key.
     - ``user_message`` → persist row, flip turn_status, publish claimable.
     """
     while True:
@@ -789,52 +788,6 @@ async def _recv_loop(
             chat.cancel_requested_at = datetime.now(timezone.utc)
             await chats_storage.update(chat)
             await event_bus.publish(f"chat:{chat_id}:cancel", {})
-            # Auto-reject any pending tool_approval park.
-            await _maybe_auto_reject_pending_approval(
-                chat=chat,
-                event_bus=event_bus,
-                note="interrupted by operator",
-            )
-            continue
-        if kind == "tool_approval_decide":
-            tcid = incoming.get("tool_call_id")
-            decision = incoming.get("decision")
-            reason = incoming.get("reason")
-            if decision not in ("approved", "rejected"):
-                await websocket.send_json({
-                    "kind": "error",
-                    "code": "tool_approval_bad_decision",
-                    "message": f"decision must be approved/rejected; got {decision!r}",
-                })
-                continue
-            # Re-fetch chat to get current parked_state.
-            chat = await chats_storage.get(chat_id)
-            if chat is None:
-                continue
-            blob = chat.parked_state or {}
-            yielded = blob.get("yielded") or {}
-            expected = (yielded.get("resume_metadata") or {}).get(
-                "original_call", {},
-            ).get("id")
-            if expected != tcid:
-                await websocket.send_json({
-                    "kind": "error",
-                    "code": "tool_approval_mismatch",
-                    "message": "tool_call_id does not match the pending approval",
-                })
-                continue
-            event_key = yielded.get("event_key")
-            if not event_key:
-                await websocket.send_json({
-                    "kind": "error",
-                    "code": "tool_approval_missing_event_key",
-                    "message": "park is missing event_key",
-                })
-                continue
-            await event_bus.publish(
-                event_key,
-                {"decision": decision, "reason": reason},
-            )
             continue
         if kind != "user_message":
             await websocket.send_json(
@@ -858,12 +811,6 @@ async def _recv_loop(
         chat = await chats_storage.get(chat_id)
         if chat is None or chat.status == "ended":
             return
-        # Auto-reject pending tool_approval park before this new turn.
-        await _maybe_auto_reject_pending_approval(
-            chat=chat,
-            event_bus=event_bus,
-            note="superseded by new user input",
-        )
         # Persist the user_message row + update chat.last_seq / title.
         # Delegate to the canonical service helper so the WS path and
         # the trigger dispatcher write user_messages identically.
@@ -974,28 +921,6 @@ async def _send_loop_instrumented(
             except WebSocketDisconnect:
                 return
             last_sent_seq = row.seq
-
-
-async def _maybe_auto_reject_pending_approval(
-    *,
-    chat,
-    event_bus,
-    note: str,
-) -> None:
-    """Auto-publish a rejection if the chat is parked on _approval."""
-    if chat.parked_status not in ("parked", "resumable"):
-        return
-    blob = chat.parked_state or {}
-    yielded = blob.get("yielded") or {}
-    if yielded.get("tool_name") != "_approval":
-        return
-    event_key = yielded.get("event_key")
-    if not event_key:
-        return
-    await event_bus.publish(
-        event_key,
-        {"decision": "rejected", "reason": note},
-    )
 
 
 def _parse_user_message_parts(frame: dict[str, Any]) -> list:

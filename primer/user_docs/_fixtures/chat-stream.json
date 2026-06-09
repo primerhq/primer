@@ -15,11 +15,7 @@
     "last_seq": 0,
     "turn_status": "idle",
     "cancel_requested_at": null,
-    "parked_status": null,
-    "parked_event_key": null,
-    "parked_until": null,
-    "parked_at": null,
-    "parked_state": null
+    "pending_tool_call": null
   },
   "GET /chats/{id}/messages": {
     "kind": "offset",

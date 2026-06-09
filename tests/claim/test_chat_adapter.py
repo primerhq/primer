@@ -12,4 +12,5 @@ def test_chat_eligibility_sql_pinned():
     # 'running' is eligible for crash recovery (reclaimed only when the
     # lease has expired); see FINDINGS F9 / ChatClaimAdapter.eligibility_sql.
     assert "'running'" in sql
-    assert "parked_status" in sql
+    # Chats never park; the eligibility predicate must not reference parked_*.
+    assert "parked_status" not in sql
