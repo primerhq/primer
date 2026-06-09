@@ -12,13 +12,20 @@ PUT handler shares the same injection logic.
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import AsyncIterator
+from typing import Any, ClassVar
 
+import httpx
 import pytest
-from pydantic import SecretStr
+import pytest_asyncio
+from httpx import ASGITransport
+from fastapi import FastAPI
 
+from primer.api.errors import register_error_handlers
 from primer.api.registries import ProviderRegistry
+from primer.api.routers._crud import make_crud_router
 from primer.model.agent import Agent, AgentModel
+from primer.model.common import Identifiable
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import CursorPageResponse, OffsetPageResponse
 from primer.toolset.system import build_system_toolset
@@ -165,3 +172,110 @@ async def test_update_with_mismatched_id_still_conflicts(system_toolset) -> None
     )
     assert result.is_error
     assert json.loads(result.output)["type"] == "conflict"
+
+
+# ===========================================================================
+# REST PUT coverage for make_crud_router._update (the regression site).
+#
+# The handler parses the body as a raw dict and calls model_validate; a
+# schema-invalid body must surface as 422 (RequestValidationError), not a
+# bare 500. These tests drive the real ASGI app end-to-end.
+# ===========================================================================
+
+
+class _Thing(Identifiable):
+    _id_prefix: ClassVar[str] = "thing"
+    name: str
+
+
+class _ThingStorage:
+    def __init__(self) -> None:
+        self._data: dict[str, _Thing] = {}
+
+    async def get(self, id: str) -> _Thing | None:
+        return self._data.get(id)
+
+    async def create(self, entity: _Thing) -> _Thing:
+        self._data[entity.id] = entity
+        return entity
+
+    async def update(self, entity: _Thing) -> _Thing:
+        self._data[entity.id] = entity
+        return entity
+
+    async def delete(self, id: str) -> None:
+        self._data.pop(id, None)
+
+
+# Module-level singleton so the FastAPI dependency can reach the fixture's
+# storage; reset per test by the fixture below.
+_THING_STORAGE: _ThingStorage | None = None
+
+
+def _get_thing_storage() -> _ThingStorage:
+    assert _THING_STORAGE is not None
+    return _THING_STORAGE
+
+
+@pytest_asyncio.fixture
+async def things_client() -> AsyncIterator[httpx.AsyncClient]:
+    global _THING_STORAGE  # noqa: PLW0603
+
+    _THING_STORAGE = _ThingStorage()
+    _THING_STORAGE._data["t1"] = _Thing(id="t1", name="before")
+
+    router = make_crud_router(
+        model_cls=_Thing,
+        storage_dep=_get_thing_storage,
+        plural="things",
+        tag="things",
+    )
+
+    app = FastAPI()
+    register_error_handlers(app)
+    app.include_router(router)
+
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        yield client
+
+    _THING_STORAGE = None
+
+
+@pytest.mark.asyncio
+async def test_rest_update_omitted_id_uses_path_id(
+    things_client: httpx.AsyncClient,
+) -> None:
+    resp = await things_client.put("/things/t1", json={"name": "after"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == "t1"
+    assert body["name"] == "after"
+    assert _THING_STORAGE is not None
+    stored = _THING_STORAGE._data["t1"]
+    assert stored.id == "t1"
+    assert stored.name == "after"
+
+
+@pytest.mark.asyncio
+async def test_rest_update_invalid_body_returns_422(
+    things_client: httpx.AsyncClient,
+) -> None:
+    # `name` declared str; a nested object value fails validation and must
+    # render as 422 (RequestValidationError), NOT a bare 500. This is the
+    # regression guard for the raw-pydantic-ValidationError fix.
+    resp = await things_client.put(
+        "/things/t1", json={"name": {"nope": True}}
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_rest_update_mismatched_id_returns_409(
+    things_client: httpx.AsyncClient,
+) -> None:
+    resp = await things_client.put(
+        "/things/t1", json={"id": "different", "name": "x"}
+    )
+    assert resp.status_code == 409, resp.text

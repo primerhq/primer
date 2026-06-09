@@ -23,6 +23,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request, status
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError as PydanticValidationError
 
 from primer.api.errors import common_responses
 from primer.api.routers import _managed as _managed_mod
@@ -523,7 +525,10 @@ def make_crud_router(
         ) -> _ModelT:
             if not body.get("id"):
                 body = {**body, "id": entity_id}
-            entity = model_cls.model_validate(body)
+            try:
+                entity = model_cls.model_validate(body)
+            except PydanticValidationError as exc:
+                raise RequestValidationError(exc.errors()) from exc
             if entity.id != entity_id:
                 raise ConflictError(
                     f"path id {entity_id!r} does not match body id {entity.id!r}"
