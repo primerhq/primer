@@ -178,9 +178,8 @@ class ToolContext:
         Unique id for this specific tool invocation, allocated by
         the LLM adapter. Stable across park and resume.
     session_id
-        Owning session's id. ``None`` for chat-only invocations
-        (M6 — chat sessions get their own id via a separate
-        :class:`ChatContext` once that milestone lands).
+        Owning session's id. ``None`` for chat-only invocations,
+        which carry ``chat_id`` instead.
     workspace_id
         Workspace id when the session is workspace-bound; ``None``
         for chat-only invocations.
@@ -188,12 +187,16 @@ class ToolContext:
         Set on resume to the timestamp the park was originally
         written; ``None`` on the initial call. Tools use this to
         compute how long they were parked for.
+    chat_id
+        Owning chat's id for chat-only invocations; ``None`` for
+        session-bound invocations.
     """
 
     tool_call_id: str
     session_id: str | None
     workspace_id: str | None
     parked_at: datetime | None = None
+    chat_id: str | None = None
 
 
 # ===========================================================================

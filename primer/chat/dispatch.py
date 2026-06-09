@@ -188,6 +188,7 @@ async def _build_runner(
         toolset_providers=toolset_providers,
         provider_registry=deps.provider_registry,
         tools=agent.tools,
+        chat_id=chat.id,
     )
     return ChatTurnRunner(
         agent=agent,

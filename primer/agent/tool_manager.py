@@ -100,12 +100,14 @@ class ToolExecutionManager:
         approval_resolver: ApprovalResolver | None = None,
         provider_registry: object | None = None,
         tools: list[str] | None = None,
+        chat_id: str | None = None,
     ) -> None:
         self._toolsets: dict[str, ToolsetProvider] = dict(toolset_providers or {})
         self._workspace_tools: dict[str, "WorkspaceTool"] = dict(workspace_tools or {})
         self._workspace_session = workspace_session
         self._approval_resolver = approval_resolver
         self._provider_registry = provider_registry
+        self._chat_id = chat_id
         # The agent's scoped-tool surface. Filters list_tools() to just
         # the listed ids and execute() rejects calls for anything else.
         # ``None`` means "no filter" — useful for callers that aren't
@@ -399,6 +401,13 @@ class ToolExecutionManager:
                 tool_call_id=call.id,
                 session_id=sess.session_id,
                 workspace_id=sess.workspace_id,
+            )
+        elif self._chat_id is not None:
+            ctx = ToolContext(
+                tool_call_id=call.id,
+                session_id=None,
+                workspace_id=None,
+                chat_id=self._chat_id,
             )
         try:
             result = await provider.call(
