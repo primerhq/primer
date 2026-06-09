@@ -5,8 +5,8 @@ The worker pool's harness claim loop creates these as background tasks;
 each task reads the Harness row, runs the pending operation, releases
 the claim, and publishes a ``harness:{id}:done`` event.
 
-Structure mirrors ``primer.chat.dispatch`` (heartbeat task, lease_lost
-event, branch on operation, finally cleanup).
+On lease loss the pool cancels this task; the engine fences the lease
+release so no stale writes land.
 """
 
 from __future__ import annotations
@@ -214,73 +214,54 @@ async def run_one_harness_operation(
         )
         return
 
-    lease_lost = asyncio.Event()
-
-    heartbeat_task = asyncio.create_task(
-        _heartbeat_loop(deps, harness_id, worker_id, lease_lost),
-        name=f"harness-hb-{harness_id}",
-    )
-
     try:
-        if lease_lost.is_set():
+        if operation == HarnessOperation.FETCH:
+            next_status, error_json = await _do_fetch(deps, harness)
+        elif operation == HarnessOperation.INSTALL:
+            next_status, error_json = await _do_install(deps, harness)
+        elif operation == HarnessOperation.SYNC:
+            next_status, error_json = await _do_sync(deps, harness)
+        elif operation == HarnessOperation.UNINSTALL:
+            await _do_uninstall(deps, harness)
+            # Row is gone, skip release, just publish done.
+            await deps.event_bus.publish(
+                f"harness:{harness_id}:done", {"harness_id": harness_id},
+            )
             return
-
-        try:
-            if operation == HarnessOperation.FETCH:
-                next_status, error_json = await _do_fetch(deps, harness)
-            elif operation == HarnessOperation.INSTALL:
-                next_status, error_json = await _do_install(deps, harness)
-            elif operation == HarnessOperation.SYNC:
-                next_status, error_json = await _do_sync(deps, harness)
-            elif operation == HarnessOperation.UNINSTALL:
-                await _do_uninstall(deps, harness)
-                # Row is gone — skip release, just publish done.
-                await deps.event_bus.publish(
-                    f"harness:{harness_id}:done", {"harness_id": harness_id},
-                )
-                return
-            elif operation == HarnessOperation.BUILD:
-                next_status, error_json = await _do_build(deps, harness)
-            elif operation == HarnessOperation.PUSH:
-                next_status, error_json = await _do_push(deps, harness)
-            else:
-                logger.error(
-                    "harness %s unknown operation %r — releasing as error",
-                    harness_id, operation,
-                )
-                next_status = HarnessStatus.ERROR
-                error_json = json.dumps(
-                    {"code": "unknown_operation", "message": str(operation)}
-                )
-        except Exception as exc:
-            # Defence in depth: each `_do_*` is supposed to catch its own
-            # exceptions and return (ERROR, error_json). If one slips
-            # through, we'd leak the claim to the sweeper's 90s window.
-            # Catch here so release_harness always runs.
-            logger.exception(
-                "harness %s operation %r raised uncaught — releasing as ERROR",
+        elif operation == HarnessOperation.BUILD:
+            next_status, error_json = await _do_build(deps, harness)
+        elif operation == HarnessOperation.PUSH:
+            next_status, error_json = await _do_push(deps, harness)
+        else:
+            logger.error(
+                "harness %s unknown operation %r, releasing as error",
                 harness_id, operation,
             )
             next_status = HarnessStatus.ERROR
             error_json = json.dumps(
-                {"code": "dispatch_unhandled", "message": str(exc)}
+                {"code": "unknown_operation", "message": str(operation)}
             )
+    except Exception as exc:
+        # Defence in depth: each `_do_*` is supposed to catch its own
+        # exceptions and return (ERROR, error_json). If one slips
+        # through, we'd leak the claim to the sweeper's 90s window.
+        # Catch here so release_harness always runs.
+        logger.exception(
+            "harness %s operation %r raised uncaught, releasing as ERROR",
+            harness_id, operation,
+        )
+        next_status = HarnessStatus.ERROR
+        error_json = json.dumps(
+            {"code": "dispatch_unhandled", "message": str(exc)}
+        )
 
-        if not lease_lost.is_set():
-            await _release_harness(
-                harness_storage,
-                harness_id,
-                worker_id,
-                next_status=next_status,
-                last_operation_error=error_json,
-            )
-
-    finally:
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    await _release_harness(
+        harness_storage,
+        harness_id,
+        worker_id,
+        next_status=next_status,
+        last_operation_error=error_json,
+    )
 
     await deps.event_bus.publish(
         f"harness:{harness_id}:done", {"harness_id": harness_id},
@@ -330,28 +311,6 @@ async def _release_harness(
         "last_operation_at": datetime.now(timezone.utc),
     })
     await harness_storage.update(updated)
-
-
-# ---------------------------------------------------------------------------
-# Heartbeat loop
-# ---------------------------------------------------------------------------
-
-
-async def _heartbeat_loop(
-    deps: HarnessDispatchDeps,
-    harness_id: str,
-    worker_id: str,
-    lease_lost: asyncio.Event,
-) -> None:
-    """Heartbeat placeholder — actual lease heartbeating is done by the pool's
-    engine heartbeat loop, which sets ``lease_lost`` via the WorkerPool when
-    the engine no longer confirms the lease. This coroutine exists so the
-    ``run_one_harness_operation`` interface is unchanged; it simply waits to
-    be cancelled when the operation completes."""
-    try:
-        await asyncio.Event().wait()  # wait forever until cancelled
-    except asyncio.CancelledError:
-        return
 
 
 # ---------------------------------------------------------------------------

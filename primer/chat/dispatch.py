@@ -65,7 +65,9 @@ async def run_one_chat_turn(
     On park (YieldToWorker): releases the lease; ``turn_status``
     stays in place (the claim predicate gates on ``parked_status``).
     On cancel: persists a ``cancelled`` row, releases to idle.
-    On lease loss (engine heartbeat): exits without further writes.
+    On lease loss (engine heartbeat): the pool cancels this task; the
+    in-flight turn raises ``CancelledError`` and the lease release is
+    fenced by the engine, so no stale writes land.
     """
     chat_storage = deps.storage_provider.get_storage(Chat)
     msg_storage = deps.storage_provider.get_storage(ChatMessage)
@@ -76,17 +78,12 @@ async def run_one_chat_turn(
         return
 
     cancel_event = asyncio.Event()
-    lease_lost = asyncio.Event()
 
     runner = await _build_runner(deps, chat, cancel_event)
     if runner is None:
         await _persist_build_error(deps, chat, worker_id)
         return
 
-    heartbeat_task = asyncio.create_task(
-        _heartbeat_loop(deps, chat_id, worker_id, lease_lost),
-        name=f"chat-hb-{chat_id}",
-    )
     cancel_task = asyncio.create_task(
         _cancel_watcher(deps, chat_id, cancel_event),
         name=f"chat-cancel-{chat_id}",
@@ -94,8 +91,6 @@ async def run_one_chat_turn(
 
     try:
         while True:
-            if lease_lost.is_set():
-                return
             chat = await chat_storage.get(chat_id)
             if chat is None:
                 return
@@ -118,8 +113,6 @@ async def run_one_chat_turn(
                     await deps.event_bus.publish(
                         f"chat:{chat_id}:tick", {"seq": row.seq},
                     )
-                    if lease_lost.is_set():
-                        return
                 # Cancellation is per-turn (mirrors ChatGPT/Claude.ai):
                 # if this turn was cancelled, clear the flag + event so
                 # queued user_messages are NOT auto-cancelled.
@@ -139,13 +132,11 @@ async def run_one_chat_turn(
                 await _release_chat(chat_storage, chat_id, worker_id, next_turn_status="claimable")
                 return
     finally:
-        heartbeat_task.cancel()
         cancel_task.cancel()
-        for t in (heartbeat_task, cancel_task):
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):
-                pass
+        try:
+            await cancel_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 async def _build_runner(
@@ -230,23 +221,6 @@ async def _persist_build_error(
     await deps.event_bus.publish(
         f"chat:{chat.id}:tick", {"seq": next_seq},
     )
-
-
-async def _heartbeat_loop(
-    deps: ChatDispatchDeps,
-    chat_id: str,
-    worker_id: str,
-    lease_lost: asyncio.Event,
-) -> None:
-    """Heartbeat placeholder — actual lease heartbeating is done by the pool's
-    engine heartbeat loop, which sets ``lease_lost`` via the WorkerPool when
-    the engine no longer confirms the lease. This coroutine exists so the
-    ``run_one_chat_turn`` interface is unchanged; it simply waits to be
-    cancelled when the turn completes."""
-    try:
-        await asyncio.Event().wait()  # wait forever until cancelled
-    except asyncio.CancelledError:
-        return
 
 
 async def _release_chat(

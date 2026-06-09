@@ -103,7 +103,7 @@ class WorkerPool:
 
         self._worker_id: str = ""
         self._tasks: list[asyncio.Task] = []
-        self._active_scopes: dict[str, _CancelScope] = {}
+        self._active_scopes: dict[tuple[ClaimKind, str], _CancelScope] = {}
 
         # Unified in-flight tracking — one set for all claim kinds.
         # (ClaimKind, entity_id) tuples for all kinds.
@@ -305,11 +305,9 @@ class WorkerPool:
                         confirmed_set = set(confirmed)
                         lost = self._in_flight - confirmed_set
                         for kind_id in lost:
-                            kind, entity_id = kind_id
-                            if kind == ClaimKind.SESSION:
-                                scope = self._active_scopes.get(entity_id)
-                                if scope is not None:
-                                    scope.cancel("preempted")
+                            scope = self._active_scopes.get(kind_id)
+                            if scope is not None:
+                                scope.cancel("preempted")
                 except Exception:
                     logger.exception("heartbeat_loop iteration failed")
         except asyncio.CancelledError:
@@ -387,16 +385,28 @@ class WorkerPool:
         lease: ClaimLease,
         handler: Callable[[ClaimLease], Coroutine],
     ) -> None:
-        """Wrapper that manages _in_flight bookkeeping around a handler call."""
+        """Wrapper that manages _in_flight bookkeeping + a cancel scope
+        around a handler call. The scope lets the heartbeat loop preempt a
+        running turn of ANY kind when its lease is lost."""
+        key = (lease.kind, lease.entity_id)
+        scope = _CancelScope()
+        self._active_scopes[key] = scope
         try:
-            await handler(lease)
+            async with scope:
+                await handler(lease)
+        except asyncio.CancelledError:
+            logger.info(
+                "engine handler for %s/%s cancelled (preempted)",
+                lease.kind, lease.entity_id,
+            )
         except Exception:
             logger.exception(
                 "engine handler for %s/%s raised unexpectedly",
                 lease.kind, lease.entity_id,
             )
         finally:
-            self._in_flight.discard((lease.kind, lease.entity_id))
+            self._active_scopes.pop(key, None)
+            self._in_flight.discard(key)
             self._wake.set()
 
     async def _engine_bus_loop(self) -> None:
@@ -922,7 +932,7 @@ class WorkerPool:
             try:
                 cancel_iter = self._cancel_iter()
                 async for sid in cancel_iter:
-                    scope = self._active_scopes.get(sid)
+                    scope = self._active_scopes.get((ClaimKind.SESSION, sid))
                     if scope is not None:
                         scope.cancel("user_signal")
                     if self._stopping.is_set():
