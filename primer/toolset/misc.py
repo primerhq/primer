@@ -321,20 +321,21 @@ async def _ask_user_handler(
     except ValidationError as exc:
         return _err_from_validation(exc)
 
-    # The event_key is keyed on (session_id, tool_call_id) so the API
-    # endpoint can target a specific in-flight prompt. Without a
-    # session id we'd lose disambiguation across concurrent sessions,
-    # so fail loud.
-    if ctx.session_id is None:
+    # Scope the event_key on (session_id|chat_id, tool_call_id). The session
+    # path (workspace sessions) uses session_id and PARKS; a chat has no
+    # session, so fall back to chat_id (the chat surface degrades a yield to a
+    # conversational turn rather than parking). Fail only when neither id exists.
+    scope_id = ctx.session_id or ctx.chat_id
+    if scope_id is None:
         return _err(
-            "ask_user requires ctx.session_id; the worker must pass "
-            "the live session id when invoking yielding tools",
+            "ask_user requires ctx.session_id or ctx.chat_id; the worker must "
+            "pass the live session or chat id when invoking yielding tools",
             error_type="bad-request",
         )
 
     return Yielded(
         tool_name="",  # filled in by the provider
-        event_key=f"ask_user:{ctx.session_id}:{ctx.tool_call_id}",
+        event_key=f"ask_user:{scope_id}:{ctx.tool_call_id}",
         timeout=args.timeout_seconds,
         resume_metadata={
             "prompt": args.prompt,
