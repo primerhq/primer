@@ -180,7 +180,7 @@ class UserDocsService:
             logger.warning("user_docs: re-lint failed: %s", exc)
 
     def get_ai_doc(self, slug: str) -> dict[str, Any] | None:
-        """Return the AI-doc at primer/ai_docs/<slug>.md, parsed the
+        """Return the AI-doc at docs/agents/<slug>.md, parsed the
         same way as a user doc. Returns None when the file does not
         exist. Used by the /v1/user_docs/_ai/<slug> mirror route."""
         from primer.ai_docs_path import resolve_ai_docs_dir

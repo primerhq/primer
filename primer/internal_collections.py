@@ -765,7 +765,7 @@ class InternalCollectionsSubsystem:
     ) -> int:
         """Walk markdown files, embed via DocumentIngester, content-hash skip.
 
-        Each ``primer/ai_docs/<slug>.md`` becomes one
+        Each ``docs/agents/<slug>.md`` becomes one
         :class:`~primer.model.collection.Document` (id=``<slug>``) under
         the reserved ``_internal_ai_docs`` collection. Multi-chunk
         records are produced by :class:`~primer.ingest.DocumentIngester`
