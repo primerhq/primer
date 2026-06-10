@@ -28,8 +28,8 @@ Configure approval policies in the console.
 | DELETE | `/v1/tool_approval_policies/{entity_id}` | Delete a policy |
 | GET | `/v1/sessions/{session_id}/tool_approval/pending` | Get pending approval for a session |
 | POST | `/v1/sessions/{session_id}/tool_approval/respond` | Submit an approval decision for a session |
-| GET | `/v1/chats/{chat_id}/tool_approval/pending` | Get pending approval for a chat |
-| POST | `/v1/chats/{chat_id}/tool_approval/respond` | Submit an approval decision for a chat |
+
+Chats do not expose `tool_approval/pending` or `tool_approval/respond`. On a chat, approval is conversational: when a policy gates a tool call the agent ends its turn with a normal assistant message asking you to approve, and you reply with a normal chat message (for example "yes" or "no").
 
 ## ToolApprovalPolicy object
 
@@ -278,9 +278,7 @@ await fetch("/v1/tool_approval_policies/invalidate", {
 
 When an enabled policy gates a tool call, the session parks on `_approval`. The pending endpoint returns the queued call details.
 
-`GET /v1/sessions/{session_id}/tool_approval/pending` - returns `200 OK` with the pending call, or `204 No Content` if there is no pending approval.
-
-`GET /v1/chats/{chat_id}/tool_approval/pending` - same for a chat context.
+`GET /v1/sessions/{session_id}/tool_approval/pending` - returns `200 OK` with the pending call, or `204 No Content` if there is no pending approval. Sessions only; on a chat the agent asks for approval as a normal assistant message instead.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -303,9 +301,7 @@ const pending = await r.json()
 
 ## Submit an approval decision
 
-`POST /v1/sessions/{session_id}/tool_approval/respond` - submit an `approved` or `rejected` decision. The session resumes with the result.
-
-`POST /v1/chats/{chat_id}/tool_approval/respond` - same for a chat context.
+`POST /v1/sessions/{session_id}/tool_approval/respond` - submit an `approved` or `rejected` decision. The session resumes with the result. Sessions only; on a chat you approve or reject by sending a normal chat message in reply to the agent's request.
 
 Request body:
 

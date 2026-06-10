@@ -1,13 +1,10 @@
-/* global React, Icon, Btn, Modal, Banner, ApprovalBanner, BottomSheet, relativeTime, fmtDate */
+/* global React, Icon, Btn, Modal, Banner, BottomSheet, relativeTime, fmtDate */
 //
-// Chats list + detail. Live updates via WebSocket (`/v1/chats/{id}/ws`),
-// initial history via REST (`GET /v1/chats/{id}/messages`), and inline
-// tool-approval card polled via REST (`GET /v1/chats/{id}/tool_approval/
-// pending`). Approval decisions prefer the open WS (`tool_approval_decide`
-// frame) and fall back to REST (`POST .../tool_approval/respond`) when
-// the socket is not open. Sending a new message while an approval is
-// pending shows an inline confirm banner — the server auto-rejects the
-// park when it sees a new user_message (§10.1), so the UI mirrors that.
+// Chats list + detail. Live updates via WebSocket (`/v1/chats/{id}/ws`)
+// and initial history via REST (`GET /v1/chats/{id}/messages`). Tool
+// approval is conversational: when the agent hits an approval gate it
+// ends its turn with a normal assistant message asking for a yes/no,
+// and the human replies via the normal composer like any other turn.
 //
 // Top-level consts are CT_-prefixed so babel-standalone's flat eval
 // scope doesn't collide with sibling components (precedent: Task 3).
@@ -455,7 +452,6 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   const [initialLoadedSeq, setInitialLoadedSeq] = React.useState(null);
   const [wsState, setWsState] = React.useState("connecting");
   const [composer, setComposer] = React.useState("");
-  const [pendingSendText, setPendingSendText] = React.useState(null);
   const [historyError, setHistoryError] = React.useState(null);
   // Live token-usage snapshot — driven by `"usage"` WS envelopes the
   // worker emits after each turn. Drives the header TokenMeter pill;
@@ -814,45 +810,6 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     return () => cancelAnimationFrame(raf);
   }, [lastSeq, waitingForReply]);
 
-  // Pending tool approval (polled REST; 404 = none).
-  const approval = useResource(
-    `chat-approval:${cid}`,
-    (s) => apiFetch("GET", `/chats/${encodeURIComponent(cid)}/tool_approval/pending`, null, { signal: s }),
-    { pollMs: 2000, deps: [cid] }
-  );
-  const hasPendingApproval = !!(approval.data && (!approval.error || approval.error.status !== 404));
-  const pendingApproval = hasPendingApproval ? approval.data : null;
-
-  // Fallback REST mutation for approve/reject when the WS isn't open.
-  const respond = useMutation(
-    (body) => apiFetch(
-      "POST",
-      `/chats/${encodeURIComponent(cid)}/tool_approval/respond`,
-      body,
-    ),
-    {
-      invalidates: [`chat-approval:${cid}`],
-      onSuccess: () => pushToast && pushToast({ kind: "success", title: "Decision sent" }),
-      onError: (err) => pushToast && pushToast({
-        kind: "error",
-        title: err?.title || "Respond failed",
-        detail: err?.detail || err?.message,
-        requestId: err?.requestId,
-      }),
-    },
-  );
-
-  const decide = (decision, tcid, reason) => {
-    const body = { tool_call_id: tcid, decision };
-    if (reason) body.reason = reason;
-    const ws = wsRef.current;
-    if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ kind: "tool_approval_decide", ...body }));
-    } else {
-      respond.mutate(body);
-    }
-  };
-
   const sendMessage = (text, atts) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== 1) {
@@ -878,10 +835,6 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   const onSubmitComposer = () => {
     const text = composer.trim();
     if (!text && attachments.length === 0) return;
-    if (hasPendingApproval) {
-      setPendingSendText({ text, attachments });
-      return;
-    }
     sendMessage(text, attachments);
     setComposer("");
     setAttachments([]);
@@ -912,14 +865,6 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     } finally {
       setCompactInFlight(false);
     }
-  };
-
-  const confirmSendOverApproval = () => {
-    if (!pendingSendText) return;
-    sendMessage(pendingSendText.text, pendingSendText.attachments);
-    setComposer("");
-    setAttachments([]);
-    setPendingSendText(null);
   };
 
   // ---- File picking + base64 encoding ----------------------------------
@@ -1144,36 +1089,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
               <span>Compacting conversation history…</span>
             </div>
           )}
-
-          {/* Inline approval card — sits ABOVE the composer when pending */}
-          {pendingApproval && (
-            <div style={{ marginLeft: 60, marginTop: 6 }}>
-              <CT_InlineApproval
-                data={pendingApproval}
-                onApprove={() => decide("approved", pendingApproval.tool_call_id)}
-                onReject={(reason) => decide("rejected", pendingApproval.tool_call_id, reason)}
-                busy={respond.loading}
-              />
-            </div>
-          )}
         </div>
-
-        {/* Auto-reject confirm banner */}
-        {pendingSendText && (
-          <div style={{ borderTop: "1px solid var(--border)", padding: "10px 14px" }}>
-            <Banner
-              kind="warning"
-              title="Sending a new message will auto-reject the pending approval."
-              detail={pendingApproval ? `Tool ${pendingApproval.tool_name} will be marked rejected by the server.` : undefined}
-              actions={
-                <>
-                  <Btn size="sm" kind="danger" icon="send" onClick={confirmSendOverApproval}>Send & reject</Btn>
-                  <Btn size="sm" kind="ghost" onClick={() => setPendingSendText(null)}>Cancel</Btn>
-                </>
-              }
-            />
-          </div>
-        )}
 
         {/* Pending-attachments strip — visible only when the composer
             has files queued. Each chip carries an image thumbnail or a
@@ -1436,104 +1352,6 @@ function CT_AttachmentChip({ attachment, onRemove }) {
       >
         <Icon name="x" size={12} />
       </button>
-    </div>
-  );
-}
-
-// ============================================================================
-// CT_InlineApproval — render the pending tool_call + approve/reject buttons.
-// Mirrors ApprovalBanner from approvals.jsx but routes decisions through the
-// parent (so we can prefer WS over REST).
-// ============================================================================
-
-function CT_InlineApproval({ data, onApprove, onReject, busy }) {
-  const [rejecting, setRejecting] = React.useState(false);
-  const [reason, setReason] = React.useState("");
-  if (!data) return null;
-
-  const submitReject = () => {
-    const r = reason.trim();
-    if (!r) return;
-    onReject(r);
-    setRejecting(false);
-    setReason("");
-  };
-
-  return (
-    <div
-      className="panel"
-      style={{ borderColor: "var(--amber)", boxShadow: "0 0 0 3px var(--amber-dim)" }}
-      data-testid="approval-banner"
-    >
-      <div className="panel-h" style={{ background: "var(--amber-dim)" }}>
-        <Icon name="warn-circle" size={14} style={{ color: "var(--amber)" }} />
-        <span style={{ color: "var(--amber)" }}>Awaiting your approval for {data.tool_name}</span>
-        <span className="mono sub">· {data.tool_call_id}</span>
-        <div className="right">
-          <span className="muted text-sm">
-            {data.policy_id && <>policy <span className="mono">{data.policy_id}</span></>}
-            {data.approval_type && <> · {data.approval_type}</>}
-          </span>
-        </div>
-      </div>
-      <div className="panel-body">
-        {data.gate_reason && (
-          <div className="muted text-sm mb-2">
-            <strong style={{ color: "var(--text)" }}>Gate:</strong> {data.gate_reason}
-          </div>
-        )}
-        {data.arguments && Object.keys(data.arguments).length > 0 && (
-          <div className="code-block" style={{ maxHeight: 140, overflow: "auto" }}>
-            {JSON.stringify({ arguments: data.arguments }, null, 2)}
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-          {!rejecting ? (
-            <>
-              <Btn
-                kind="primary"
-                icon="check"
-                disabled={busy}
-                onClick={onApprove}
-                data-testid="approval-banner-approve"
-              >
-                Approve
-              </Btn>
-              <Btn
-                kind="danger"
-                icon="x"
-                disabled={busy}
-                onClick={() => setRejecting(true)}
-                data-testid="approval-banner-reject"
-              >
-                Reject
-              </Btn>
-            </>
-          ) : (
-            <>
-              <input
-                className="input"
-                placeholder="Reason for rejection (required)…"
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                style={{ flex: 1 }}
-                autoFocus
-                data-testid="approval-banner-reason"
-              />
-              <Btn
-                kind="danger"
-                icon="send"
-                disabled={!reason.trim() || busy}
-                onClick={submitReject}
-                data-testid="approval-banner-reject-submit"
-              >
-                Send rejection
-              </Btn>
-              <Btn kind="ghost" onClick={() => { setRejecting(false); setReason(""); }}>Cancel</Btn>
-            </>
-          )}
-        </div>
-      </div>
     </div>
   );
 }

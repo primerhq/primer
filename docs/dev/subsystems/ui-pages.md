@@ -78,7 +78,7 @@ All page components live under `ui/components/` as self-invoking `<script type="
 | `/providers/cross_encoder[/:id]` | CrossEncoderProvidersListPage / Detail | `providers.jsx` | `GET /v1/cross_encoder_providers` |
 | `/ssp[/:id]` | SemanticSearchListPage / Detail | `semantic-search.jsx` | `GET /v1/ssp`, `POST /v1/ssp/{id}/invalidate`, `/v1/collections` |
 | `/subsystems/internal-collections` | InternalCollectionsPage | `internal-collections.jsx` | `GET/PUT/DELETE /v1/internal_collections/config`, `/bootstrap[/status]` |
-| `/chats[/:id]` | ChatsListPage / ChatDetailPage | `chats.jsx` | `GET /v1/chats`, `/chats/{id}/messages`, chat WS, `/chats/{id}/tool_approval/pending` |
+| `/chats[/:id]` | ChatsListPage / ChatDetailPage | `chats.jsx` | `GET /v1/chats`, `/chats/{id}/messages`, chat WS |
 | `/channels/providers[/:id]` | ChannelProvidersPage / Detail | `channels.jsx` | `GET /v1/channel_providers` |
 | `/channels/channels` | ChannelsListPage | `channels.jsx` | `GET /v1/channels` |
 | `/channels/associations` | ChannelAssociationsPage | `channels.jsx` | `GET /v1/workspace_channel_associations` |
@@ -167,7 +167,7 @@ Pages do not expose a programmatic API; navigation between them is always `windo
 
 - **Session detail pins the authoritative read path.** It always reads top-level `GET /v1/sessions/{id}` (and polls it), never the nested `/v1/workspaces/{wid}/sessions/{sid}` path, which is known to drift after signals; signals themselves still go through the workspace-scoped POSTs.
 
-- **Tool-approval pending is polled, not pushed.** The chat WebSocket does not emit `tool_approval_pending`/`tool_approval_resolved` frames; the inline approval card derives pending state by polling `.../tool_approval/pending` (200 renders, 404 collapses). The decide path prefers the open WebSocket `tool_approval_decide` frame and falls back to `POST .../respond` when the socket is closed.
+- **Chat tool-approval is conversational, not a banner.** A chat that hits an approval gate ends its turn with a normal assistant message asking for a yes/no; the operator replies through the normal composer like any other message. There is no inline approval card and no chat `/tool_approval/{pending,respond}` endpoint or `tool_approval_decide` frame. (Session detail still uses the polled banner for sessions.)
 
 ## 10. Testing patterns
 

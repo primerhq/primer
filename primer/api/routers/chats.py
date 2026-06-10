@@ -632,7 +632,7 @@ async def chat_ws(
     5. Run two concurrent loops:
        - ``_recv_loop``: reads client frames, persists user_message rows,
          flips turn_status='claimable', publishes 'chat-claimable' bus
-         events. Handles ping/interrupt/tool_approval_decide.
+         events. Handles ping/interrupt.
        - ``_send_loop``: iterates the tick subscription; on each tick
          reads new ChatMessage rows from storage and sends them as JSON.
     6. On WS disconnect: closes the tick subscription; the worker keeps
