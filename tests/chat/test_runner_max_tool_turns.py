@@ -100,3 +100,53 @@ async def test_chat_runner_stops_at_max_tool_turns(fake_storage_provider) -> Non
     ]
     assert len(cap_rows) == 1
     assert "3" in cap_rows[0].payload["message"]
+
+
+@pytest.mark.asyncio
+async def test_chat_runner_honors_cap_above_round_trip_floor(
+    fake_storage_provider,
+) -> None:
+    """A per-agent cap higher than _MAX_TOOL_ROUND_TRIPS (8) must NOT be
+    shadowed by the loop's fallback ceiling: the turn runs past 8 rounds
+    and terminates with the per-agent cap error, not the round-trip-limit
+    error."""
+    agent = Agent(
+        id="ag",
+        description="x",
+        model=AgentModel(provider_id="p", model_name="m"),
+        max_tool_turns=12,
+    )
+    chat = Chat(id="cmt-hi", agent_id="ag", created_at=datetime.now(timezone.utc))
+    chat_store = fake_storage_provider.get_storage(Chat)
+    msg_store = fake_storage_provider.get_storage(ChatMessage)
+    await chat_store.create(chat)
+
+    tm = _OkToolManager()
+    llm = _AlwaysToolLLM()
+    runner = ChatTurnRunner(
+        agent=agent,
+        llm=llm,
+        llm_model=LLMModel(name="m", context_length=4096),
+        tool_manager=tm,
+        chat_storage=chat_store,
+        message_storage=msg_store,
+    )
+
+    rows: list[ChatMessage] = []
+
+    async def _drive() -> None:
+        async for r in runner.run_turn(chat, "go"):
+            rows.append(r)
+
+    await asyncio.wait_for(_drive(), timeout=5.0)
+
+    # cap=12: dispatch on rounds 1..11 (11 executions), stop before round 12.
+    # More than the old _MAX_TOOL_ROUND_TRIPS=8 floor.
+    assert tm.executed == 11
+    cap_rows = [
+        r for r in rows
+        if r.kind == "error"
+        and r.payload.get("code") == "max_tool_turns_exceeded"
+    ]
+    assert len(cap_rows) == 1
+    assert "12" in cap_rows[0].payload["message"]

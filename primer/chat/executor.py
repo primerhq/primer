@@ -445,8 +445,20 @@ class ChatTurnRunner:
             return
 
         # LLM → tool → LLM loop.
+        # The loop's hard bound must NOT shadow a higher per-agent cap:
+        # when ``max_tool_turns`` is set it is the authority (allow up to
+        # that many rounds); when it is None we fall back to
+        # ``_MAX_TOOL_ROUND_TRIPS`` so an unbounded opt-out still can't
+        # spin forever. The per-agent terminal error below still fires at
+        # the configured cap.
+        max_turns = self._agent.max_tool_turns
+        loop_bound = (
+            max(_MAX_TOOL_ROUND_TRIPS, max_turns)
+            if max_turns is not None
+            else _MAX_TOOL_ROUND_TRIPS
+        )
         tool_round = 0
-        for _ in range(_MAX_TOOL_ROUND_TRIPS):
+        for _ in range(loop_bound):
             tool_calls: list[ToolCallPart] = []
             tool_names: dict[str, str] = {}  # ToolCallStart.id → name
             assistant_text_parts: list[str] = []
@@ -547,7 +559,6 @@ class ChatTurnRunner:
             # enforce ``agent.max_tool_turns`` BEFORE dispatching it so a
             # model that never stops cannot loop unbounded.
             tool_round += 1
-            max_turns = self._agent.max_tool_turns
             if max_turns is not None and tool_round >= max_turns:
                 cap_err = await self._append(
                     chat,

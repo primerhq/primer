@@ -535,7 +535,9 @@ class WorkerPool:
                 sid,
             )
         finally:
-            self._in_flight.discard((ClaimKind.SESSION, sid))
+            # ``_in_flight`` bookkeeping is owned by the ``_run_engine``
+            # wrapper's finally (the session path is always dispatched
+            # through it); discarding here too would be redundant.
             self._wake.set()
             try:
                 await self._engine.release(engine_lease, outcome=outcome)

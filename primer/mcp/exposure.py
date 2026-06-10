@@ -175,6 +175,26 @@ async def _iter_catalogue(
         )
 
 
+async def build_routing_map(
+    deps: ExposureDeps,
+) -> dict[str, tuple[str, str]]:
+    """Return ``{scoped_id: (toolset_id, bare_tool_name)}`` for the catalogue.
+
+    The keys are the exact scoped ids :func:`list_exposed_tools` advertises
+    (computed via :func:`tool_scoped_id`), so the inverse mapping back to
+    ``(toolset_id, bare_name)`` is exact regardless of how many ``__``
+    separators a scoped id contains. This is the authoritative resolver the
+    dispatch path uses instead of string-splitting: a harness-deployed
+    toolset whose id itself contains ``__`` (e.g. ``acme__ts``) and a
+    built-in tool whose bare name contains ``__`` (e.g. ``harness__list``)
+    both resolve correctly, where neither a first- nor last-``__`` split can.
+    """
+    routing: dict[str, tuple[str, str]] = {}
+    async for tool, _provider in _iter_catalogue(deps):
+        routing[tool_scoped_id(tool)] = (tool.toolset_id, tool.id)
+    return routing
+
+
 async def _validate_allowed_tools(
     allowed: list[str], deps: ExposureDeps,
 ) -> None:
@@ -269,4 +289,5 @@ __all__ = [
     "get_exposure",
     "update_exposure",
     "list_available_tools",
+    "build_routing_map",
 ]

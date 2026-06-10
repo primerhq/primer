@@ -584,6 +584,105 @@ async def test_postgres_release_on_release_runs_in_transaction(pg_storage):
 
 
 # ---------------------------------------------------------------------------
+# Tests - fenced release (skip on_release when claimed_by changed)
+# ---------------------------------------------------------------------------
+
+
+@_needs_pg
+@pytest.mark.asyncio
+async def test_postgres_release_fenced_when_reclaimed_by_other_worker(
+    pg_storage, caplog,
+):
+    """A's release no-ops when worker B re-claimed the lease in between.
+
+    Scenario: worker A claims the lease, then worker B re-claims it
+    (simulated by updating ``claimed_by`` in the leases table). When A
+    then calls ``release`` the fence (``claimed_by = $owner``) matches no
+    row, so neither the lease row NOR the entity row is mutated by A's
+    release, and a warning is logged. This is the live-Postgres analogue
+    of the in-memory fenced-release unit test.
+    """
+    import logging
+    from datetime import datetime, UTC
+    from primer.int.storage import Storage
+    from primer.model.chats import Chat
+
+    chat_storage: Storage[Chat] = pg_storage.get_storage(Chat)
+    chat = Chat(
+        id="fenced-chat-1",
+        agent_id="agent-x",
+        created_at=datetime.now(UTC),
+        status="active",
+        turn_status="claimable",
+    )
+    await chat_storage.create(chat)
+
+    try:
+        adapter = ChatClaimAdapter(chat_storage=chat_storage)
+
+        class _EligibleAdapter(type(adapter)):
+            """Override eligibility so no extra entity state is required."""
+            def eligibility_sql(self) -> str:
+                return "l.kind IS NOT NULL"
+
+        real_adapter = _EligibleAdapter(chat_storage=chat_storage)
+        adapters = {ClaimKind.CHAT: real_adapter}
+        engine = PostgresClaimEngine(storage_provider=pg_storage, adapters=adapters)
+
+        await engine.upsert(ClaimKind.CHAT, chat.id)
+        [lease_a] = await engine.claim_due("worker-A", max_count=1)
+        assert lease_a.claimed_by == "worker-A"
+
+        # Simulate worker B re-claiming the lease: flip claimed_by to B
+        # directly in the leases table (as a real second worker's
+        # claim_due would have done).
+        async with pg_storage.pool.acquire() as conn:
+            await conn.execute(
+                f"UPDATE {pg_storage.leases_table} "
+                f"   SET claimed_by = 'worker-B' "
+                f" WHERE kind = 'chat' AND entity_id = $1",
+                chat.id,
+            )
+
+        # A's release must no-op (fence mismatch). Use drop_lease=True +
+        # success=True so, absent the fence, it would delete the lease row
+        # AND on_release would flip turn_status to 'idle'.
+        with caplog.at_level(logging.WARNING, logger="primer.claim.postgres"):
+            await engine.release(
+                lease_a,
+                outcome=ReleaseOutcome(success=True, drop_lease=True),
+            )
+
+        # Lease row is UNCHANGED: still present and still owned by B.
+        async with pg_storage.pool.acquire() as conn:
+            lease_row = await conn.fetchrow(
+                f"SELECT claimed_by FROM {pg_storage.leases_table} "
+                f"WHERE kind = 'chat' AND entity_id = $1",
+                chat.id,
+            )
+        assert lease_row is not None, "A's release should not delete B's lease"
+        assert lease_row["claimed_by"] == "worker-B"
+
+        # Entity row is UNCHANGED: on_release was skipped, so turn_status
+        # is still 'claimable' (not 'idle').
+        unchanged_chat = await chat_storage.get(chat.id)
+        assert unchanged_chat is not None
+        assert unchanged_chat.turn_status == "claimable"
+
+        # A warning was logged about the skipped (fenced) release.
+        assert any(
+            "release skipped" in rec.getMessage()
+            for rec in caplog.records
+        ), "expected a fenced-release warning"
+
+    finally:
+        try:
+            await chat_storage.delete(chat.id)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Tests — mark_resumable
 # ---------------------------------------------------------------------------
 

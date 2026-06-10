@@ -18,7 +18,12 @@ slipping bug in either path still leaves the floor enforced.
 from __future__ import annotations
 
 from primer.agent.tool_manager import invoke_one
-from primer.mcp.exposure import ExposureDeps, _iter_catalogue, get_exposure
+from primer.mcp.exposure import (
+    ExposureDeps,
+    _iter_catalogue,
+    build_routing_map,
+    get_exposure,
+)
 from primer.mcp.safety import is_exposable, tool_scoped_id
 from primer.model.chat import Tool, ToolCallResult
 
@@ -84,11 +89,15 @@ async def invoke_exposed(
 
     Re-checks the live ``McpExposure`` allowlist and the safety
     predicate on every call. Resolves ``scoped_id`` to
-    ``(provider, bare_name)`` by splitting on ``__`` (toolset ids must
-    not themselves contain ``__`` — enforced upstream where toolset
-    ids are minted), then forwards to
-    :func:`primer.agent.tool_manager.invoke_one` so OTel + Prometheus
-    instrumentation stays unified with the agent-driven path.
+    ``(toolset_id, bare_name)`` via the precomputed routing map built
+    by :func:`primer.mcp.exposure.build_routing_map`: the keys are the
+    exact scoped ids the catalogue advertises, so the inverse is exact
+    even when a harness-deployed toolset id contains ``__`` (e.g.
+    ``acme__ts``) or a built-in bare name does (e.g. ``harness__list``);
+    a naive first- or last-``__`` split mis-resolves one or the other.
+    Then forwards to :func:`primer.agent.tool_manager.invoke_one` so
+    OTel + Prometheus instrumentation stays unified with the
+    agent-driven path.
 
     Raises
     ------
@@ -103,7 +112,17 @@ async def invoke_exposed(
         raise NotExposed(scoped_id, reason="not_in_allowlist")
     if "__" not in scoped_id:
         raise NotExposed(scoped_id, reason="malformed_id")
-    toolset_id, bare_name = scoped_id.split("__", 1)
+    routing = await build_routing_map(deps)
+    entry = routing.get(scoped_id)
+    if entry is not None:
+        toolset_id, bare_name = entry
+    else:
+        # Not in the live catalogue (toolset gone or tool removed since
+        # the allowlist was written). Fall back to a first-``__`` split
+        # purely to preserve the provider_missing / tool_missing reason
+        # distinction below; the resolved id is never dispatched because
+        # the provider/tool lookup that follows fails for it by design.
+        toolset_id, bare_name = scoped_id.split("__", 1)
     provider = await deps.provider_registry.get_toolset(toolset_id)
     if provider is None:
         raise NotExposed(scoped_id, reason="provider_missing")
