@@ -397,6 +397,70 @@ async def test_build_graph_executor_returns_graph_turn_driver(monkeypatch, tmp_p
     assert driver.last_done_reason == "graph_ended"
 
 
+async def test_build_graph_executor_seeds_graph_input_from_session_metadata(
+    monkeypatch, tmp_path,
+):
+    """The worker must relay ``session.metadata['graph_input']`` into the
+    WorkspaceGraphExecutor so structured input reaches Begin and per-node
+    templates (e.g. ``{{ initial_input.task }}``). Without this, the
+    executor falls back to the (empty) messages list and every node that
+    reads a structured field of ``initial_input`` fails to render."""
+    from primer.graph.workspace_executor import WorkspaceGraphExecutor
+    from primer.model.graph import (
+        Graph,
+        _AgentNodeRef,
+        _BeginNode,
+        _EndNode,
+        _StaticEdge,
+    )
+    from primer.model.workspace_session import GraphSessionBinding
+    from primer.workspace.local.state import LocalStateRepo
+
+    graph_snapshot = Graph(
+        id="g-gi-1", description="begin->agent->end",
+        nodes=[
+            _BeginNode(id="begin"),
+            _AgentNodeRef(id="work", agent_id="ag-1"),
+            _EndNode(id="end"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="work"),
+            _StaticEdge(from_node="work", to_node="end"),
+        ],
+    )
+    session = WorkspaceSession(
+        id="sess-graph-gi-1", workspace_id="ws-1",
+        binding=GraphSessionBinding(graph_id="g-gi-1", graph_snapshot=graph_snapshot),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        turn_no=0,
+        metadata={"graph_input": {"task": "Say hello."}},
+    )
+
+    repo = LocalStateRepo(tmp_path / "state", workspace_id="ws-1")
+    await repo.initialize()
+
+    class _LocalWsStub:
+        def __init__(self, sr):
+            self.id = "ws-1"
+            self.state_repo = sr
+
+        async def get_session(self, session_id):
+            return None
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=None,                 # type: ignore[arg-type]
+        storage=None,                   # type: ignore[arg-type]
+        workspace_registry=None,        # type: ignore[arg-type]
+        provider_registry=None,         # type: ignore[arg-type]
+        engine=InMemoryClaimEngine(adapters={}),
+    )
+    driver = await pool._build_executor(session, _LocalWsStub(repo))
+    assert isinstance(driver._executor, WorkspaceGraphExecutor)
+    assert driver._executor._graph_input == {"task": "Say hello."}
+
+
 async def test_infer_post_turn_status_maps_graph_ended_to_ended():
     """The mapper recognises the graph driver's sentinel and transitions
     the session directly to ENDED — no re-enqueue."""

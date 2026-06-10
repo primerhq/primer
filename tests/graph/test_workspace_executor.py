@@ -716,3 +716,117 @@ class TestWorkspaceAugmentation:
         )
         assert "BASE PROMPT" in sys_text
         assert "<<WORKSPACE FRAGMENT>>" in sys_text
+
+
+class _RecordingHolder:
+    """AgentSession-shaped double that records ``set_status`` transitions.
+
+    Stands in for the on-disk session holder slot so a test can assert
+    the graph executor moves it to ENDED when the run terminates.
+    """
+
+    workspace_id = "ws-test"
+    session_id = "sess-hold"
+    agent_id = "graph:g"
+    system_prompt_fragment = ""
+
+    def __init__(self) -> None:
+        self.workspace_tools: list = []
+        self.status_calls: list[tuple] = []
+
+    async def cache_output(self, text: str) -> str:
+        return "/tmp/fake"
+
+    async def set_status(self, status, *, ended_reason=None, waiting_state=None):
+        self.status_calls.append((status, ended_reason))
+
+
+def _begin_agent_end_graph() -> Graph:
+    return Graph(
+        id="g-hold",
+        description="begin -> A -> exit",
+        nodes=[
+            _BeginNode(id="begin"),
+            _AgentNodeRef(id="A", agent_id="x"),
+            _EndNode(id="exit"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="A"),
+            _StaticEdge(from_node="A", to_node="exit"),
+        ],
+    )
+
+
+def _one_shot_llm() -> "_FakeLLM":
+    return _FakeLLM(
+        scripts=[
+            [
+                TextDelta(text="hi", index=0),
+                Done(stop_reason="stop", raw_reason="stop"),
+            ]
+        ]
+    )
+
+
+class TestHolderLifecycle:
+    @pytest.mark.asyncio
+    async def test_completed_graph_ends_holder_session_when_owned(
+        self, tmp_path: Path
+    ) -> None:
+        """The root graph executor must transition the on-disk session
+        holder to ENDED when the graph completes, so workspace-level
+        session views (get/list_workspace_session) reflect the terminal
+        state instead of reporting the session as perpetually running."""
+        from primer.model.workspace_session import SessionStatus
+
+        repo = await _make_state_repo(tmp_path)
+        holder = _RecordingHolder()
+
+        async def agent_resolver(agent_id: str) -> Agent:
+            return _agent(agent_id)
+
+        async def llm_resolver(_a: Agent):
+            return (_one_shot_llm(), _model())
+
+        executor = WorkspaceGraphExecutor(
+            graph=_begin_agent_end_graph(),
+            agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,  # type: ignore[arg-type]
+            state_repo=repo,
+            graph_session_id="gsid-hold-1",
+            workspace_session=holder,  # type: ignore[arg-type]
+            owns_session_lifecycle=True,
+        )
+        await _drain(executor.invoke([]))
+
+        assert (SessionStatus.ENDED, "completed") in holder.status_calls
+
+    @pytest.mark.asyncio
+    async def test_subgraph_executor_does_not_end_shared_holder(
+        self, tmp_path: Path
+    ) -> None:
+        """A non-owning executor (e.g. a subgraph child sharing the
+        parent's holder) must NOT end the holder when its own run
+        terminates - that would kill the holder out from under the
+        still-running parent graph."""
+        repo = await _make_state_repo(tmp_path)
+        holder = _RecordingHolder()
+
+        async def agent_resolver(agent_id: str) -> Agent:
+            return _agent(agent_id)
+
+        async def llm_resolver(_a: Agent):
+            return (_one_shot_llm(), _model())
+
+        executor = WorkspaceGraphExecutor(
+            graph=_begin_agent_end_graph(),
+            agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,  # type: ignore[arg-type]
+            state_repo=repo,
+            graph_session_id="gsid-hold-2",
+            workspace_session=holder,  # type: ignore[arg-type]
+            # owns_session_lifecycle defaults False
+        )
+        await _drain(executor.invoke([]))
+
+        assert holder.status_calls == []

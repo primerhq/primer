@@ -99,6 +99,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         principal: str | None = None,
         graph_input: Any = None,
         tool_manager: ToolExecutionManager | None = None,
+        owns_session_lifecycle: bool = False,
     ) -> None:
         wrapped_agent_resolver = self._wrap_agent_resolver(
             agent_resolver, workspace_session
@@ -118,6 +119,12 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         self._state_repo = state_repo
         self._graph_session_id = graph_session_id
         self._workspace_session = workspace_session
+        # Only the top-level (worker-built) executor owns the on-disk
+        # session holder's lifecycle. Subgraph child executors share the
+        # parent's holder (see ``_build_sub_executor``) and must NOT end
+        # it when their own run terminates, or they would kill the holder
+        # out from under the still-running parent graph.
+        self._owns_session_lifecycle = owns_session_lifecycle
 
         # Turn-log writers: bypass the git-backed state_repo.commit
         # path and write directly to .state/graphs/<gsid>/turns.jsonl
@@ -471,6 +478,35 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             files={rel_state: body},
             trailers=trailers,
         )
+
+        # Mirror the agent executor: when the graph reaches its terminal
+        # ENDED save, transition the on-disk session holder slot to ENDED
+        # too. Without this the workspace-level session views
+        # (get/list_workspace_session, which read the holder) report a
+        # finished graph as perpetually "running". Only the owning
+        # (top-level) executor does this; subgraph children share the
+        # holder and must leave it to the parent. Parks save with WAITING
+        # (not ENDED), so a parked graph's holder is left intact for
+        # resume. Best-effort: a holder write failure must not crash the
+        # graph's terminal commit.
+        if (
+            status == SessionStatus.ENDED
+            and self._owns_session_lifecycle
+            and self._workspace_session is not None
+        ):
+            holder_reason = "completed" if ended_reason == "completed" else "failed"
+            try:
+                await self._workspace_session.set_status(
+                    SessionStatus.ENDED,
+                    ended_reason=holder_reason,
+                )
+            except Exception:  # noqa: BLE001 -- best-effort holder sync
+                logger.warning(
+                    "WorkspaceGraphExecutor: failed to end holder session "
+                    "%r on graph terminal (reason=%r)",
+                    getattr(self._workspace_session, "session_id", "?"),
+                    holder_reason,
+                )
 
     async def _build_sub_executor(
         self,

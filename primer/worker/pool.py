@@ -1251,6 +1251,15 @@ class WorkerPool:
         # executor only needs it for _CallableRouter edges.
         router_registry = getattr(self, "_router_registry", None)
 
+        # Structured graph input is persisted on the session row by the
+        # session-create handler as ``session.metadata['graph_input']``.
+        # Relay it into the executor so Begin materialises its NodeOutput
+        # from it and per-node templates (e.g. ``{{ initial_input.task }}``)
+        # render against the structured value. Without this the executor
+        # falls back to the (empty) messages list and any node reading a
+        # field of ``initial_input`` fails to render.
+        graph_input = (session.metadata or {}).get("graph_input")
+
         executor = WorkspaceGraphExecutor(
             graph=graph,
             agent_resolver=agent_resolver,
@@ -1261,7 +1270,9 @@ class WorkerPool:
             workspace_session=workspace_session,
             graph_resolver=graph_resolver,
             router_registry=router_registry,
+            graph_input=graph_input,
             principal=None,
+            owns_session_lifecycle=True,
         )
         return _GraphTurnDriver(executor)
 
