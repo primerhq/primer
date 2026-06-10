@@ -19,6 +19,10 @@ class PromptEnvelope:
     response_schema: dict[str, Any] | None
     choices: list[str] | None
     timeout_at_iso: str | None
+    # Structured approval detail (kind == "tool_approval"), so renderers can
+    # format the call cleanly instead of parsing it out of ``prompt``.
+    tool_name: str | None = None
+    tool_args: dict[str, Any] | None = None
 
 
 @dataclass

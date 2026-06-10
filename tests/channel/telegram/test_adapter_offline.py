@@ -98,8 +98,15 @@ async def test_post_ask_user_sends_message_with_token(monkeypatch):
         await adapter.aclose()
     sent = [s for s in app.bot.sent if "text" in s]
     assert len(sent) == 1
-    assert "[primer:" in sent[0]["text"]
+    # No visible correlation token in the body any more; HTML formatted.
+    assert "[primer:" not in sent[0]["text"]
+    assert sent[0]["parse_mode"] == "HTML"
     assert sent[0]["chat_id"] == 123456789
+    # ask_user replies are correlated by the message id (stub returns 42).
+    assert adapter.resolve_reply_target(42) == {
+        "workspace_id": "ws", "session_id": "s",
+        "tool_call_id": "tc", "kind": "ask_user",
+    }
 
 
 @pytest.mark.asyncio

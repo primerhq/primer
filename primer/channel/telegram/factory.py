@@ -8,10 +8,7 @@ from typing import Any
 from primer.channel.factory import register_adapter_factory
 from primer.channel.telegram.adapter import TelegramChannelAdapter
 from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
-from primer.channel.telegram.render import (
-    ASK_TOKEN_RE, REJECT_TOKEN_RE,
-    build_rejection_prompt,
-)
+from primer.channel.telegram.render import build_rejection_prompt
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
 )
@@ -62,16 +59,23 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                 logger.exception("telegram: edit_message_text failed")
         elif data.startswith("r:"):
             tag = data[2:]
-            body = build_rejection_prompt(tag=tag)
-            await context.bot.send_message(
-                chat_id=cq.message.chat.id, **body,
+            ids = await adapter._resolve_tag(tag)
+            if ids is None:
+                return
+            sent = await context.bot.send_message(
+                chat_id=cq.message.chat.id, **build_rejection_prompt(),
             )
+            # The reason arrives as a reply to this prompt; correlate by id.
+            mid = getattr(sent, "message_id", 0)
+            if mid:
+                adapter.remember_reply_target(
+                    message_id=mid, ids=ids, kind="reject",
+                )
 
     async def _on_message(update, context):
         msg = update.message
-        if msg is None or not msg.reply_to_message or not msg.reply_to_message.text:
+        if msg is None or not msg.reply_to_message:
             return
-        parent = msg.reply_to_message.text
         chat_id = str(msg.chat.id)
         entry = TELEGRAM_CONNECTIONS.entry(provider_id)
         if entry is None:
@@ -79,27 +83,20 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         adapter = entry.adapters_by_chat_id.get(chat_id)
         if adapter is None:
             return
-        rej = REJECT_TOKEN_RE.search(parent)
-        if rej:
-            tag = rej.group(1)
-            ids = await adapter._resolve_tag(tag)
-            if ids is None:
-                return
-            await adapter._handle_decision(
-                **ids, decision="rejected",
-                reason=msg.text or "",
-                telegram_user_id=msg.from_user.id if msg.from_user else None,
-            )
+        target = adapter.resolve_reply_target(msg.reply_to_message.message_id)
+        if target is None:
             return
-        ask = ASK_TOKEN_RE.search(parent)
-        if ask:
-            tag = ask.group(1)
-            ids = await adapter._resolve_tag(tag)
-            if ids is None:
-                return
+        kind = target.get("kind")
+        ids = {k: target[k] for k in ("workspace_id", "session_id", "tool_call_id")}
+        user_id = msg.from_user.id if msg.from_user else None
+        if kind == "reject":
+            await adapter._handle_decision(
+                **ids, decision="rejected", reason=msg.text or "",
+                telegram_user_id=user_id,
+            )
+        elif kind == "ask_user":
             await adapter._handle_text_reply(
-                **ids, text=msg.text or "",
-                telegram_user_id=msg.from_user.id if msg.from_user else None,
+                **ids, text=msg.text or "", telegram_user_id=user_id,
             )
 
     app.add_handler(CallbackQueryHandler(_on_callback))

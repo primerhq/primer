@@ -453,6 +453,8 @@ async def _dispatch_to_channels(
             response_schema=None,
             choices=["Approve", "Reject"],
             timeout_at_iso=None,
+            tool_name=original.get("name"),
+            tool_args=original.get("arguments") or {},
         )
     else:
         return
