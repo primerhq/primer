@@ -103,3 +103,49 @@ async def test_dispatch_none_dispatcher_is_noop():
     await _dispatch_to_channels(
         dispatcher=None, session=_session(), yielded=_ask_user_yielded(),
     )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_multi_event_sends_one_message_per_pending_node():
+    from primer.worker.yield_runtime import _dispatch_to_channels_multi
+
+    class _Disp:
+        def __init__(self): self.calls = []
+        async def dispatch_prompt(self, *, envelope):
+            self.calls.append(envelope); return [{"ok": True}]
+
+    d = _Disp()
+    pending = [
+        {"kind": "ask_user", "tool_call_id": "tc1",
+         "resume_metadata": {"prompt": "color?"}},
+        {"kind": "_approval", "tool_call_id": "tc2",
+         "resume_metadata": {"original_call": {"id": "tc2", "name": "workspace__write",
+                                               "arguments": {"path": "a.txt"}}}},
+    ]
+    sent = await _dispatch_to_channels_multi(
+        dispatcher=d, workspace_id="w1", session_id="s1",
+        pending=pending, already_sent=set())
+    assert {e.kind for e in d.calls} == {"ask_user", "tool_approval"}
+    assert {e.tool_call_id for e in d.calls} == {"tc1", "tc2"}
+    appr = next(e for e in d.calls if e.kind == "tool_approval")
+    assert appr.tool_name == "workspace__write"
+    assert appr.tool_args == {"path": "a.txt"}
+    assert sent == {"tc1", "tc2"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_multi_event_skips_already_sent():
+    from primer.worker.yield_runtime import _dispatch_to_channels_multi
+
+    class _Disp:
+        def __init__(self): self.calls = []
+        async def dispatch_prompt(self, *, envelope):
+            self.calls.append(envelope); return [{"ok": True}]
+
+    d = _Disp()
+    pending = [{"kind": "ask_user", "tool_call_id": "tc1", "resume_metadata": {"prompt": "q"}}]
+    sent = await _dispatch_to_channels_multi(
+        dispatcher=d, workspace_id="w1", session_id="s1",
+        pending=pending, already_sent={"tc1"})
+    assert d.calls == []  # already sent -> no re-send
+    assert sent == {"tc1"}

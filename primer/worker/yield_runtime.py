@@ -466,6 +466,67 @@ async def _dispatch_to_channels(
         )
 
 
+async def _dispatch_to_channels_multi(
+    *,
+    dispatcher,
+    workspace_id: str,
+    session_id: str,
+    pending: list[dict[str, Any]],
+    already_sent: set[str],
+) -> set[str]:
+    """Send one channel prompt per pending human-interaction node.
+
+    For a multi-event graph park (several agent/tool_call nodes yielding
+    in one superstep), each pending node gets its own message. ``pending``
+    items are ``{"kind": "ask_user"|"_approval", "tool_call_id",
+    "resume_metadata"}``. Returns the union of ``already_sent`` and the
+    tool_call_ids dispatched this call, so a re-park does not re-send a
+    message for a node already prompted. Never raises.
+    """
+    import logging
+    if dispatcher is None:
+        return set(already_sent)
+    sent = set(already_sent)
+    for p in pending:
+        tcid = p.get("tool_call_id")
+        if not tcid or tcid in sent:
+            continue
+        meta = p.get("resume_metadata") or {}
+        if p.get("kind") == "ask_user":
+            envelope = PromptEnvelope(
+                kind="ask_user", workspace_id=workspace_id,
+                session_id=session_id, tool_call_id=tcid,
+                prompt=meta.get("prompt", ""),
+                response_schema=meta.get("response_schema"),
+                choices=None, timeout_at_iso=None,
+            )
+        else:
+            oc = meta.get("original_call") or {}
+            gate_reason = meta.get("gate_reason")
+            prompt = (
+                f"Approve {oc.get('name', '<unknown>')}"
+                f"({oc.get('arguments') or {}})?"
+            )
+            if gate_reason:
+                prompt += f"\nReason: {gate_reason}"
+            envelope = PromptEnvelope(
+                kind="tool_approval", workspace_id=workspace_id,
+                session_id=session_id, tool_call_id=oc.get("id") or tcid,
+                prompt=prompt, response_schema=None,
+                choices=["Approve", "Reject"], timeout_at_iso=None,
+                tool_name=oc.get("name"), tool_args=oc.get("arguments") or {},
+            )
+        try:
+            await dispatcher.dispatch_prompt(envelope=envelope)
+            sent.add(tcid)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "_dispatch_to_channels_multi failed for %s/%s",
+                session_id, tcid,
+            )
+    return sent
+
+
 def _tool_call_id_from_event_key(event_key: str) -> str:
     """Pull the tool_call_id segment out of an event_key."""
     parts = event_key.split(":")
@@ -477,6 +538,7 @@ __all__ = [
     "PARKED_STATE_SCHEMA_VERSION",
     "ResumePayload",
     "_dispatch_to_channels",
+    "_dispatch_to_channels_multi",
     "_resume_tool_approval",
     "_tool_call_id_from_event_key",
     "classify_resume_payload",
