@@ -59,6 +59,7 @@ from primer.model.chat import (
     Message,
     StreamEvent,
     TextPart,
+    ToolResultPart,
     _GraphNodeEvent,
 )
 from primer.model.except_ import ConfigError
@@ -833,6 +834,49 @@ class _BaseGraphExecutor(ABC):
     def graph(self) -> Graph:
         return self._graph
 
+    def _build_pending_park_yield(self) -> "YieldToWorker":
+        """Build the outer approval ``YieldToWorker`` for the current
+        pending human-interaction set (tool_call approvals + agent-node
+        yields). Stamps ``event_keys`` (the full set) + the snapshot so
+        the worker parks on all of them; used both when a superstep first
+        yields and when re-parking on the remaining keys after one reply.
+        """
+        all_keys = (
+            [p.parked_event_key for p in self._pending_toolcalls]
+            + [p.event_key for p in self._pending_agent_yields]
+        )
+        if self._pending_toolcalls:
+            first = self._pending_toolcalls[0]
+            primary_event_key = first.parked_event_key
+            primary_tcid = first.tool_call_id
+            node_def = next(
+                (n for n in self._graph.nodes if n.id == first.node_id), None
+            )
+            tool_id = getattr(node_def, "tool_id", None)
+            resume_meta: dict[str, Any] = {}
+            if tool_id is not None:
+                resume_meta["original_call"] = {
+                    "id": first.tool_call_id,
+                    "name": tool_id,
+                    "arguments": first.arguments,
+                }
+        else:
+            first_ay = self._pending_agent_yields[0]
+            primary_event_key = first_ay.event_key
+            primary_tcid = first_ay.tool_call_id
+            resume_meta = dict(first_ay.resume_metadata)
+        yld = YieldToWorker(
+            Yielded(
+                tool_name="_approval",
+                event_key=primary_event_key,
+                resume_metadata=resume_meta,
+                event_keys=all_keys,
+            ),
+            tool_call_id=primary_tcid,
+        )
+        yld.graph_checkpoint = self.snapshot_state()  # type: ignore[attr-defined]
+        return yld
+
     # ---- Checkpoint payload (Phase 6 / Spec B §2.3 step 3) --------------
 
     def snapshot_state(self) -> dict[str, Any]:
@@ -1017,8 +1061,21 @@ class _BaseGraphExecutor(ABC):
     async def resume_from_checkpoint(
         self,
         checkpoint: dict[str, Any],
+        *,
+        resumed_tcid: str | None = None,
+        agent_tool_result: "Message | None" = None,
     ) -> AsyncIterator[StreamEvent]:
         """Restore from a checkpoint and continue graph execution.
+
+        ``resumed_tcid`` selects which pending human-interaction entry the
+        human just replied to. When ``None`` (the legacy single-park /
+        direct-test path) every pending ToolCall is drained at once. When
+        set, only the matching entry is resumed (a pending ToolCall via
+        bypass re-dispatch, or a pending agent-node yield via
+        ``_resume_agent_node`` with ``agent_tool_result``); if other
+        human-interaction nodes are still pending afterwards, the executor
+        re-raises a :class:`YieldToWorker` so the worker re-parks on the
+        remaining keys (drain-until-empty for full concurrency).
 
         Spec B §2.3 step 3 / Phase 6. Called by the worker after the
         operator approves a yielded ToolCall. The executor:
@@ -1051,14 +1108,23 @@ class _BaseGraphExecutor(ABC):
         node_states = self._node_states
         ready = self._ready_set
 
-        # Drain pending ToolCalls. We snapshot the list so re-yields during
-        # drain (should not happen with bypass_approval=True) accumulate
-        # into a fresh _pending_toolcalls that the post-drain check below
-        # can re-yield to the worker.
-        pending = list(self._pending_toolcalls)
-        self._pending_toolcalls = []
+        # Select which pending entries to resume this cycle. Legacy
+        # (resumed_tcid None): every pending ToolCall. Per-entry: only the
+        # matching tcid; the rest stay pending for the re-park below.
+        tc_all = list(self._pending_toolcalls)
+        ay_all = list(self._pending_agent_yields)
+        if resumed_tcid is None:
+            tc_pending = tc_all
+            ay_pending = ay_all
+        else:
+            tc_pending = [e for e in tc_all if e.tool_call_id == resumed_tcid]
+            ay_pending = [e for e in ay_all if e.tool_call_id == resumed_tcid]
+        # Remove the resumed entries; keep the rest on the executor so the
+        # re-park snapshot still carries them.
+        self._pending_toolcalls = [e for e in tc_all if e not in tc_pending]
+        self._pending_agent_yields = [e for e in ay_all if e not in ay_pending]
         completed_ids: list[str] = []
-        for entry in pending:
+        for entry in tc_pending:
             node_def = self._resolve_node_def(entry.node_id)
             if not isinstance(node_def, _ToolCallNode):
                 # Topology drifted between checkpoint + resume; surface
@@ -1189,6 +1255,57 @@ class _BaseGraphExecutor(ABC):
                 last_run_at=datetime.now(timezone.utc),
             )
             completed_ids.append(entry.node_id)
+
+        # Resume the selected agent-node yields: continue each node's turn
+        # with the human's answer / decision injected as the tool result.
+        for ay in ay_pending:
+            try:
+                out = await self._resume_agent_node(
+                    ay, agent_tool_result if agent_tool_result is not None
+                    else Message(role="tool", parts=[
+                        ToolResultPart(id=ay.tool_call_id, output="")]),
+                )
+            except Exception as exc:  # noqa: BLE001 -- map to node failure
+                fail_out = NodeOutput(
+                    text="", parsed=None, history=[],
+                    iteration=context.iteration, error=str(exc),
+                    ended_detail="tool_execution_failed",
+                )
+                context.nodes[ay.node_id] = fail_out
+                node_states[ay.node_id] = NodeRuntimeState(
+                    status=NodeRuntimeStatus.FAILED,
+                    last_run_iteration=context.iteration,
+                    last_run_at=datetime.now(timezone.utc),
+                    error=str(exc),
+                )
+                yield _GraphErrorEvent(  # type: ignore[misc]
+                    code="tool_execution_failed", message=str(exc),
+                    node_id=ay.node_id,
+                )
+                await self._save_state(
+                    iteration=context.iteration, node_states=node_states,
+                    status=SessionStatus.ENDED, ended_reason="failed",
+                    ended_detail="tool_execution_failed",
+                )
+                return
+            context.nodes[ay.node_id] = out
+            node_states[ay.node_id] = NodeRuntimeState(
+                status=NodeRuntimeStatus.ENDED,
+                last_run_iteration=context.iteration,
+                last_run_at=datetime.now(timezone.utc),
+            )
+            completed_ids.append(ay.node_id)
+
+        # Full concurrency: if other human-interaction nodes are still
+        # pending (the human has only replied to some), re-park on the
+        # remaining keys instead of advancing the graph.
+        if self._pending_toolcalls or self._pending_agent_yields:
+            await self._save_state(
+                iteration=context.iteration,
+                node_states=node_states,
+                status=SessionStatus.WAITING,
+            )
+            raise self._build_pending_park_yield()
 
         # Persist the drained-state snapshot so observers can see the
         # ToolCalls finished before the next superstep starts.
@@ -1813,57 +1930,10 @@ class _BaseGraphExecutor(ABC):
                     node_states=node_states,
                     status=SessionStatus.WAITING,
                 )
-                # All human-interaction event keys this superstep produced
-                # (tool_call approvals + agent-node yields), in a stable
-                # order. The worker parks on the full set; any one firing
-                # wakes the session, which resumes that node and re-parks
-                # on the remaining keys until drained.
-                _all_keys = (
-                    [p.parked_event_key for p in self._pending_toolcalls]
-                    + [p.event_key for p in self._pending_agent_yields]
-                )
-                # Primary entry drives back-compat fields (parked_event_key,
-                # timeout, display). Prefer a tool_call (carry original_call
-                # so the approval UI shows "Run tool <name> {args}"); else
-                # the first agent yield (carry its resume_metadata, e.g. the
-                # ask_user prompt).
-                if self._pending_toolcalls:
-                    first = self._pending_toolcalls[0]
-                    _primary_event_key = first.parked_event_key
-                    _primary_tcid = first.tool_call_id
-                    _node_def = next(
-                        (n for n in self._graph.nodes if n.id == first.node_id),
-                        None,
-                    )
-                    _tool_id = getattr(_node_def, "tool_id", None)
-                    _resume_meta: dict[str, Any] = {}
-                    if _tool_id is not None:
-                        _resume_meta["original_call"] = {
-                            "id": first.tool_call_id,
-                            "name": _tool_id,
-                            "arguments": first.arguments,
-                        }
-                else:
-                    first_ay = self._pending_agent_yields[0]
-                    _primary_event_key = first_ay.event_key
-                    _primary_tcid = first_ay.tool_call_id
-                    _resume_meta = dict(first_ay.resume_metadata)
-                # Stamp the snapshot on the exception so the worker can
-                # persist it onto the session's parked-state blob without
-                # needing a separate ``snapshot_state`` round-trip.
-                yld = YieldToWorker(
-                    Yielded(
-                        tool_name="_approval",
-                        event_key=_primary_event_key,
-                        resume_metadata=_resume_meta,
-                        event_keys=_all_keys,
-                    ),
-                    tool_call_id=_primary_tcid,
-                )
-                # Attach the snapshot payload + the full pending list so
-                # the worker / resume path has everything it needs.
-                yld.graph_checkpoint = self.snapshot_state()  # type: ignore[attr-defined]
-                raise yld
+                # Park on the full human-interaction set (tool_call
+                # approvals + agent-node yields). Any one firing wakes the
+                # session, which resumes that node and re-parks on the rest.
+                raise self._build_pending_park_yield()
 
             if any_failed:
                 # ended_reason / ended_detail may already be set by the
@@ -2427,6 +2497,92 @@ class _BaseGraphExecutor(ABC):
             parsed=parsed,
             history=history + all_new,
             iteration=context.iteration,
+        )
+
+    async def _resume_agent_node(
+        self,
+        pending: "_PendingAgentYield",
+        tool_result_msg: Message,
+    ) -> NodeOutput:
+        """Continue a parked agent node's turn with the injected tool result.
+
+        Rebuilds the prompt from: system + persisted node history +
+        re-rendered input_template (deterministic against the restored
+        context) + the rehydrated in-progress assistant turn + the
+        ``tool_result_msg`` (the human's ask_user answer / approval
+        verdict), then continues ``run_agent_turn`` to completion and
+        returns the node's NodeOutput.
+        """
+        node = self._resolve_node_def(pending.node_id)
+        assert isinstance(node, _AgentNodeRef)
+        context = self._context
+        assert context is not None
+        agent = await self._agent_resolver(node.agent_id)
+        llm, llm_model = await self._llm_resolver(agent)
+        if node.response_format is not None:
+            tool_manager = ToolExecutionManager()
+        elif self._tool_manager_resolver is not None:
+            tool_manager = await self._tool_manager_resolver(agent)
+        else:
+            tool_manager = ToolExecutionManager()
+
+        rendered = render_input_template(
+            node.input_template, context=context, extra_scope=None
+        )
+        new_user_msg = Message(role="user", parts=[TextPart(text=rendered)])
+        history = await self._load_node_history(node.id)
+        prompt: list[Message] = []
+        if agent.system_prompt:
+            sys_text = "\n\n".join(agent.system_prompt)
+            prompt.append(Message(role="system", parts=[TextPart(text=sys_text)]))
+        prompt.extend(history)
+        prompt.append(new_user_msg)
+        rehydrated_assistant = [
+            Message.model_validate(m) for m in pending.llm_messages
+        ]
+        prompt.extend(rehydrated_assistant)
+        prompt.append(tool_result_msg)
+
+        produced_messages: list[Message] = []
+        async for _event in run_agent_turn(
+            agent=agent,
+            llm=llm,
+            llm_model=llm_model,
+            tool_manager=tool_manager,
+            prompt=prompt,
+            response_format=node.response_format,
+            principal=self._principal,
+            messages_out=produced_messages,
+        ):
+            pass
+
+        all_new = [new_user_msg, *rehydrated_assistant, tool_result_msg, *produced_messages]
+        await self._persist_node_turn(node.id, pending.iteration, all_new)
+
+        last_assistant: Message | None = None
+        for msg in reversed(produced_messages):
+            if msg.role == "assistant":
+                last_assistant = msg
+                break
+        text = ""
+        if last_assistant is not None:
+            text = "".join(
+                p.text  # type: ignore[union-attr]
+                for p in last_assistant.parts
+                if p.type == "text"
+            )
+        parsed: dict[str, Any] | None = None
+        if node.response_format is not None and text:
+            try:
+                loaded = json.loads(text)
+                parsed = loaded if isinstance(loaded, dict) else {"value": loaded}
+            except json.JSONDecodeError:
+                parsed = None
+        return NodeOutput(
+            text=text,
+            parsed=parsed,
+            history=history + all_new,
+            iteration=pending.iteration,
         )
 
     async def _stream_subgraph_node(
