@@ -88,6 +88,10 @@ class Yielded:
     event_key: str
     timeout: float | None = None
     resume_metadata: dict[str, Any] = field(default_factory=dict)
+    # Multi-event park: the full set of event keys the session waits on
+    # (any one firing wakes it). None for the common single-event park,
+    # which uses event_key alone.
+    event_keys: list[str] | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         """Serialise for storage in the parked-state blob."""
@@ -96,6 +100,7 @@ class Yielded:
             "event_key": self.event_key,
             "timeout": self.timeout,
             "resume_metadata": dict(self.resume_metadata),
+            "event_keys": self.event_keys,
         }
 
     @classmethod
@@ -105,6 +110,7 @@ class Yielded:
             event_key=data["event_key"],
             timeout=data.get("timeout"),
             resume_metadata=dict(data.get("resume_metadata") or {}),
+            event_keys=data.get("event_keys"),
         )
 
 
