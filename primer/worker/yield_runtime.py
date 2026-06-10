@@ -139,6 +139,13 @@ class ParkedState:
                 f"unknown parked_state schema_version {version!r}; "
                 f"this runtime understands {PARKED_STATE_SCHEMA_VERSION}"
             )
+        missing = {"yielded", "llm_messages", "turn_no", "started_at"} - set(data)
+        if missing:
+            # A corrupt / truncated blob: a clear ValueError beats a bare
+            # KeyError so the resume path's guard logs an actionable reason.
+            raise ValueError(
+                f"parked_state blob missing required keys: {sorted(missing)}"
+            )
         return cls(
             yielded=Yielded.from_jsonable(data["yielded"]),
             llm_messages=list(data["llm_messages"]),
@@ -405,6 +412,58 @@ async def _resume_tool_approval(
 from primer.channel.adapter import PromptEnvelope
 
 
+def _build_prompt_envelope(
+    *,
+    kind: str,
+    workspace_id: str,
+    session_id: str,
+    fallback_tool_call_id: str,
+    metadata: dict[str, Any],
+) -> "PromptEnvelope | None":
+    """Build the channel PromptEnvelope for one parked human-interaction.
+
+    ``kind`` is the yielding tool name: ``ask_user`` (free-text question)
+    or ``_approval`` (tool-approval gate). Returns ``None`` for any other
+    tool (e.g. sleep/watch_files), which are not forwarded to channels.
+    Shared by the single- and multi-event dispatch paths so the envelope
+    mapping lives in exactly one place.
+    """
+    metadata = metadata or {}
+    if kind == "ask_user":
+        return PromptEnvelope(
+            kind="ask_user",
+            workspace_id=workspace_id,
+            session_id=session_id,
+            tool_call_id=fallback_tool_call_id,
+            prompt=metadata.get("prompt", ""),
+            response_schema=metadata.get("response_schema"),
+            choices=None,
+            timeout_at_iso=None,
+        )
+    if kind == "_approval":
+        original = metadata.get("original_call") or {}
+        gate_reason = metadata.get("gate_reason")
+        prompt = (
+            f"Approve {original.get('name', '<unknown>')}"
+            f"({original.get('arguments') or {}})?"
+        )
+        if gate_reason:
+            prompt += f"\nReason: {gate_reason}"
+        return PromptEnvelope(
+            kind="tool_approval",
+            workspace_id=workspace_id,
+            session_id=session_id,
+            tool_call_id=original.get("id") or fallback_tool_call_id,
+            prompt=prompt,
+            response_schema=None,
+            choices=["Approve", "Reject"],
+            timeout_at_iso=None,
+            tool_name=original.get("name"),
+            tool_args=original.get("arguments") or {},
+        )
+    return None
+
+
 async def _dispatch_to_channels(
     *,
     dispatcher,
@@ -421,42 +480,14 @@ async def _dispatch_to_channels(
     import logging
     if dispatcher is None:
         return
-    tool_name = yielded.tool_name
-    if tool_name == "ask_user":
-        metadata = yielded.resume_metadata or {}
-        envelope = PromptEnvelope(
-            kind="ask_user",
-            workspace_id=session.workspace_id,
-            session_id=session.id,
-            tool_call_id=_tool_call_id_from_event_key(yielded.event_key),
-            prompt=metadata.get("prompt", ""),
-            response_schema=metadata.get("response_schema"),
-            choices=None,
-            timeout_at_iso=None,
-        )
-    elif tool_name == "_approval":
-        metadata = yielded.resume_metadata or {}
-        original = metadata.get("original_call") or {}
-        gate_reason = metadata.get("gate_reason")
-        prompt = (
-            f"Approve {original.get('name', '<unknown>')}"
-            f"({original.get('arguments') or {}})?"
-        )
-        if gate_reason:
-            prompt += f"\nReason: {gate_reason}"
-        envelope = PromptEnvelope(
-            kind="tool_approval",
-            workspace_id=session.workspace_id,
-            session_id=session.id,
-            tool_call_id=original.get("id") or _tool_call_id_from_event_key(yielded.event_key),
-            prompt=prompt,
-            response_schema=None,
-            choices=["Approve", "Reject"],
-            timeout_at_iso=None,
-            tool_name=original.get("name"),
-            tool_args=original.get("arguments") or {},
-        )
-    else:
+    envelope = _build_prompt_envelope(
+        kind=yielded.tool_name,
+        workspace_id=session.workspace_id,
+        session_id=session.id,
+        fallback_tool_call_id=_tool_call_id_from_event_key(yielded.event_key),
+        metadata=yielded.resume_metadata or {},
+    )
+    if envelope is None:
         return
     try:
         await dispatcher.dispatch_prompt(envelope=envelope)
@@ -491,31 +522,15 @@ async def _dispatch_to_channels_multi(
         tcid = p.get("tool_call_id")
         if not tcid or tcid in sent:
             continue
-        meta = p.get("resume_metadata") or {}
-        if p.get("kind") == "ask_user":
-            envelope = PromptEnvelope(
-                kind="ask_user", workspace_id=workspace_id,
-                session_id=session_id, tool_call_id=tcid,
-                prompt=meta.get("prompt", ""),
-                response_schema=meta.get("response_schema"),
-                choices=None, timeout_at_iso=None,
-            )
-        else:
-            oc = meta.get("original_call") or {}
-            gate_reason = meta.get("gate_reason")
-            prompt = (
-                f"Approve {oc.get('name', '<unknown>')}"
-                f"({oc.get('arguments') or {}})?"
-            )
-            if gate_reason:
-                prompt += f"\nReason: {gate_reason}"
-            envelope = PromptEnvelope(
-                kind="tool_approval", workspace_id=workspace_id,
-                session_id=session_id, tool_call_id=oc.get("id") or tcid,
-                prompt=prompt, response_schema=None,
-                choices=["Approve", "Reject"], timeout_at_iso=None,
-                tool_name=oc.get("name"), tool_args=oc.get("arguments") or {},
-            )
+        envelope = _build_prompt_envelope(
+            kind=p.get("kind", ""),
+            workspace_id=workspace_id,
+            session_id=session_id,
+            fallback_tool_call_id=tcid,
+            metadata=p.get("resume_metadata") or {},
+        )
+        if envelope is None:
+            continue
         try:
             await dispatcher.dispatch_prompt(envelope=envelope)
             sent.add(tcid)

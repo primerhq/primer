@@ -1730,7 +1730,11 @@ class _BaseGraphExecutor(ABC):
                 for t in tasks:
                     try:
                         await t
-                    except (asyncio.CancelledError, BaseException):
+                    except (asyncio.CancelledError, Exception):
+                        # Swallow cancellation (we cancelled them) and any
+                        # task-body error during cleanup, but let
+                        # SystemExit / KeyboardInterrupt / GeneratorExit
+                        # propagate so the process can shut down cleanly.
                         pass
                 # Emit superstep_ended + close per-node writers.
                 # Happens BEFORE the per-node results loop / termination
@@ -2417,6 +2421,56 @@ class _BaseGraphExecutor(ABC):
             if isinstance(exc, asyncio.CancelledError):
                 raise
 
+    async def _select_node_tool_manager(
+        self, node: _AgentNodeRef, agent: "Agent",
+    ) -> ToolExecutionManager:
+        """Pick the tool manager for an agent node. A structured-output
+        node (``response_format`` set) is offered NO tools: the workspace
+        holder auto-injects tools into every node, and grammar-based
+        providers (LM Studio / llama.cpp / Ollama) reject a forced
+        json_schema combined with tools ("cannot combine structured
+        output constraints with lazy grammar"). Otherwise use the
+        resolver, else an empty manager.
+        """
+        if node.response_format is not None:
+            return ToolExecutionManager()
+        if self._tool_manager_resolver is not None:
+            return await self._tool_manager_resolver(agent)
+        return ToolExecutionManager()
+
+    def _agent_node_output(
+        self,
+        produced_messages: list[Message],
+        response_format: dict[str, Any] | None,
+        history: list[Message],
+        iteration: int,
+    ) -> NodeOutput:
+        """Build a NodeOutput from an agent turn's produced messages: the
+        last assistant message's text, plus ``parsed`` (JSON) when the node
+        had a ``response_format``."""
+        last_assistant: Message | None = None
+        for msg in reversed(produced_messages):
+            if msg.role == "assistant":
+                last_assistant = msg
+                break
+        text = ""
+        if last_assistant is not None:
+            text = "".join(
+                p.text  # type: ignore[union-attr]
+                for p in last_assistant.parts
+                if p.type == "text"
+            )
+        parsed: dict[str, Any] | None = None
+        if response_format is not None and text:
+            try:
+                loaded = json.loads(text)
+                parsed = loaded if isinstance(loaded, dict) else {"value": loaded}
+            except json.JSONDecodeError:
+                parsed = None
+        return NodeOutput(
+            text=text, parsed=parsed, history=history, iteration=iteration,
+        )
+
     async def _stream_agent_node(
         self,
         node: _AgentNodeRef,
@@ -2432,21 +2486,7 @@ class _BaseGraphExecutor(ABC):
         """
         agent = await self._agent_resolver(node.agent_id)
         llm, llm_model = await self._llm_resolver(agent)
-        if node.response_format is not None:
-            # A structured-output node is a data-shaping turn: it must
-            # return JSON matching response_format, not call tools. The
-            # workspace holder auto-injects tools into every node, and
-            # grammar-based providers (LM Studio / llama.cpp / Ollama)
-            # reject a forced json_schema response_format combined with
-            # tools ("cannot combine structured output constraints with
-            # lazy grammar"), which yields an empty stream and a None
-            # ``parsed``. So offer no tools when the node demands
-            # structured output.
-            tool_manager = ToolExecutionManager()
-        elif self._tool_manager_resolver is not None:
-            tool_manager = await self._tool_manager_resolver(agent)
-        else:
-            tool_manager = ToolExecutionManager()
+        tool_manager = await self._select_node_tool_manager(node, agent)
 
         # Render the input template -> single user-role Message.
         rendered = render_input_template(
@@ -2499,33 +2539,9 @@ class _BaseGraphExecutor(ABC):
         all_new = [new_user_msg] + produced_messages
         await self._persist_node_turn(node.id, context.iteration, all_new)
 
-        # Build NodeOutput from the LAST assistant message (after any
-        # tool round-trips).
-        last_assistant: Message | None = None
-        for msg in reversed(produced_messages):
-            if msg.role == "assistant":
-                last_assistant = msg
-                break
-        text = ""
-        if last_assistant is not None:
-            text = "".join(
-                p.text  # type: ignore[union-attr]
-                for p in last_assistant.parts
-                if p.type == "text"
-            )
-        parsed: dict[str, Any] | None = None
-        if node.response_format is not None and text:
-            try:
-                loaded = json.loads(text)
-                parsed = loaded if isinstance(loaded, dict) else {"value": loaded}
-            except json.JSONDecodeError:
-                parsed = None
-
-        return NodeOutput(
-            text=text,
-            parsed=parsed,
-            history=history + all_new,
-            iteration=context.iteration,
+        return self._agent_node_output(
+            produced_messages, node.response_format,
+            history + all_new, context.iteration,
         )
 
     async def _resume_agent_node(
@@ -2548,12 +2564,7 @@ class _BaseGraphExecutor(ABC):
         assert context is not None
         agent = await self._agent_resolver(node.agent_id)
         llm, llm_model = await self._llm_resolver(agent)
-        if node.response_format is not None:
-            tool_manager = ToolExecutionManager()
-        elif self._tool_manager_resolver is not None:
-            tool_manager = await self._tool_manager_resolver(agent)
-        else:
-            tool_manager = ToolExecutionManager()
+        tool_manager = await self._select_node_tool_manager(node, agent)
 
         rendered = render_input_template(
             node.input_template, context=context, extra_scope=None
@@ -2588,30 +2599,9 @@ class _BaseGraphExecutor(ABC):
         all_new = [new_user_msg, *rehydrated_assistant, tool_result_msg, *produced_messages]
         await self._persist_node_turn(node.id, pending.iteration, all_new)
 
-        last_assistant: Message | None = None
-        for msg in reversed(produced_messages):
-            if msg.role == "assistant":
-                last_assistant = msg
-                break
-        text = ""
-        if last_assistant is not None:
-            text = "".join(
-                p.text  # type: ignore[union-attr]
-                for p in last_assistant.parts
-                if p.type == "text"
-            )
-        parsed: dict[str, Any] | None = None
-        if node.response_format is not None and text:
-            try:
-                loaded = json.loads(text)
-                parsed = loaded if isinstance(loaded, dict) else {"value": loaded}
-            except json.JSONDecodeError:
-                parsed = None
-        return NodeOutput(
-            text=text,
-            parsed=parsed,
-            history=history + all_new,
-            iteration=pending.iteration,
+        return self._agent_node_output(
+            produced_messages, node.response_format,
+            history + all_new, pending.iteration,
         )
 
     async def _stream_subgraph_node(
