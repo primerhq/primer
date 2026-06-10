@@ -1,7 +1,7 @@
 ---
 slug: graphs
 title: Graphs - multi-step agent orchestration
-summary: How primer composes multiple agents into directed graphs with conditional routing, supersteps, and callable routers; how to author graphs and invoke them.
+summary: How primer composes agents, tools, and sub-graphs into directed graphs with Jinja-templated node inputs, conditional routing, fan-out/fan-in parallelism, and supersteps; how to author graphs and invoke them.
 related: [agents, sessions, semantic-search]
 mcp_tools:
   - system::list_graphs
@@ -17,102 +17,214 @@ mcp_tools:
 
 ## Overview
 
-A **Graph** is a directed graph of nodes that run agents (and other
-node types), with edges that route the output of one node into the
-input of another. Author one with `system::create_graph`, discover
-existing ones with `search::search_graphs`, and run one by creating
-a session with `graph_id`. It's primer's answer to "I need to chain
-three agents in a specific way, with conditional branches based on
-the output of one of them." Where a single agent is a turn-loop with
-one LLM, a graph is a higher-level orchestrator: each node runs
-its own complete turn-loop, and the graph chooses which node to
-run next.
+A **Graph** is a directed graph of nodes that run agents (and tools,
+sub-graphs, and parallel fan-out subtrees), with edges that route
+control from one node to the next. Each node builds its input by
+rendering a **Jinja2 template** against the accumulated graph context,
+so any node can pull data from any earlier node. Author one with
+`system::create_graph`, discover existing ones with
+`search::search_graphs`, and run one by creating a session with a
+graph binding.
 
-Use a graph when you need several agents chained with conditional
-routing between them; not when one agent with one toolset does the
-whole job (use a single [agent](agents.md) via
-`system::create_agent`).
+Where a single agent is a turn-loop with one LLM, a graph is a
+higher-level orchestrator: each `agent` node runs its own complete
+turn-loop, and the graph chooses which node runs next based on edges
+and (optionally) the structured output of a node.
 
-Graphs run to completion in one invocation. There's no mid-graph
-pause in v1 (yields inside an agent node still work, but they pause
-the agent within that node, not the graph topology). So a graph is
-right for "deterministic multi-step work" - extract → analyse →
-write report - not for "wait for a human between steps." For that,
-use chats or sessions that internally compose multiple agents.
+Use a graph when you need several steps chained with conditional
+routing or parallelism between them; not when one agent with one
+toolset does the whole job (use a single [agent](agents.md)).
 
-The execution model is **Pregel-style supersteps**. At each
-superstep: a ready set of nodes runs in parallel. When each finishes,
-edges out of those nodes are evaluated; nodes that become "ready"
-(all required inputs present) join the next superstep's ready set.
-The graph terminates when no ready nodes remain or when it hits a
-terminal sink.
+Graphs run to completion in one invocation. There is no mid-graph
+pause in v1 (yielding tools inside an agent node still work, but they
+pause the agent within that node, not the graph topology). So a graph
+is right for deterministic multi-step work (extract -> analyse ->
+write report), not for waiting for a human between steps. For that,
+use chats or sessions.
+
+The execution model is **Pregel-style supersteps**. At each superstep
+a ready set of nodes runs in parallel; when each finishes, edges out
+of it are evaluated and newly-ready nodes join the next superstep. The
+graph terminates when an `end` node fires or no ready nodes remain.
 
 ## Mental model
 
 A `Graph` row carries:
 - `id`, `description` (embedded for `search::search_graphs`).
-- `nodes` - list of `Node` configs. Each has `id`, `kind`, and
-  kind-specific config.
-- `edges` - list of `Edge` configs connecting nodes.
-- `sink` - terminal node id; when reached, graph stops.
+- `nodes` - list of node configs (a discriminated union on `kind`).
+- `edges` - list of edge configs connecting nodes (static or
+  conditional).
+- `max_iterations` - hard cap on supersteps. Required for any graph
+  with a cycle or a callable router; optional otherwise.
 
-Node kinds:
-- `agent` - run an Agent. Config: `agent_id`, `input_template`
-  (Jinja2 rendering the graph context into the agent's input).
-- `task` - a plain LLM prompt, no tools. Config: `llm`, `prompt`,
-  optional `response_format`.
-- `subgraph` - invoke another Graph as a node. Config: `graph_id`,
-  optional `input_template`.
-- `http` - fetch a URL. Config: `method`, `url`, `headers`, `body`.
-- `callable_router` - dispatch to a registered Python callback via
-  `RouterRegistry`. Used for custom logic that can't be expressed
-  as templates.
+There is no `sink` field: termination is structural. Every graph MUST
+have **exactly one `begin` node** and **at least one `end` node**; the
+graph stops when an `end` fires.
 
-Edge kinds:
-- `static` - always followed if source node completes.
-- `json_path` - followed conditionally based on a JSONPath
-  predicate over the source node's `NodeOutput.parsed`. Used for
-  "if the agent's structured output says X, go to node Y".
-- `callable_router` - dispatched to a Python callback that decides
-  the next node id. Most flexible; most opaque.
+### Node kinds
 
-Node output:
-- `NodeOutput.text` - what most consumers read. For agent/task
-  nodes, the LLM's final assistant message. For http, the
-  response body. For callable_router, whatever the function
-  returns.
-- `NodeOutput.parsed` - populated only when the node has a
-  `response_format`. Holds the structured JSON.
+Each node has `id`, `kind`, and kind-specific fields **at the top
+level** (there is no `config` wrapper).
 
-The graph context (the variable bag templates render against)
-accumulates: each node's output is added under
-`context.nodes[<node_id>]`. A later node's `input_template` can
-reference `{{ nodes.extract.parsed.entities }}` to pull from an
-earlier node's structured output.
+- **`begin`** - the single entry node. No template, no LLM. Optional
+  `input_schema` (JSON Schema 2020-12): when set, the graph's input is
+  validated at session-create (422 on mismatch). Begin has no incoming
+  edges.
+- **`agent`** - runs a stored Agent. Fields: `agent_id`,
+  `input_template` (Jinja, rendered to the user-role text appended to
+  the agent's history before its turn), optional `response_format`
+  (JSON Schema; when set the agent produces structured output and
+  `NodeOutput.parsed` is populated), optional `input_schema` (soft
+  warn-only validation of the rendered input).
+- **`tool_call`** - invokes a tool directly, no LLM. Fields: `tool_id`
+  (scoped `toolset_id__bare_name`), `arguments` (an object whose
+  **string leaves are each Jinja-rendered** against the context;
+  non-string leaves pass through), or `arguments_template` (a
+  full-JSON Jinja template that shadows `arguments` for dynamic
+  shapes), optional `output_schema`.
+- **`graph`** - delegates to another stored Graph (sub-graph). Fields:
+  `graph_id`, `input_template` (rendered to the sub-graph's input).
+  The reference resolves at execution time, so edits to the sub-graph
+  hot-apply.
+- **`fan_out`** - spawns parallel downstream executions. Field:
+  `specs` (one or more). Each spec is `broadcast` (N copies of one
+  target via `target_node_id` + `count`), `tee` (run each of
+  `target_node_ids` once), or `map` (read a list from
+  `source_node_id` + `source_path` and run one instance of
+  `target_node_id` per item). `on_failure` is `fail_fast` (default),
+  `drain_then_fail`, or `collect`.
+- **`fan_in`** - waits for ALL incoming branches, then aggregates.
+  Fields: `aggregate_template` (Jinja, result becomes
+  `NodeOutput.text`), optional `output_schema`. For a fan-out source,
+  "all incoming produced output" means every synthesized instance.
+- **`end`** - a terminal sink. Fields: `output_template` (Jinja over
+  the context, rendered to the graph's final output; empty template
+  terminates with no payload), optional `output_schema` (rendered
+  output must parse as conforming JSON, else
+  `ended_detail='end_output_invalid'`). End nodes have no outgoing
+  edges.
 
-A graph runs inside a session (call it a "graph session") - there's
-a row in storage for the graph invocation, the worker pool claims it,
-and the per-superstep state persists so the graph can resume if the
-worker dies mid-execution. Recovery is per-superstep; partial within
-a superstep is not preserved.
+### Edge kinds
+
+- **`static`** - `{kind, from_node, to_node}`. Always fires when
+  `from_node` completes.
+- **`conditional`** - `{kind, from_node, router}`. The router resolves
+  the destination. Two router kinds:
+  - **`json_path`** - `{kind:"json_path", branches:[...], default_to}`.
+    Each branch is `{conditions:[{path, op, value}], to_node}`; the
+    first branch whose conditions ALL hold (AND) fires. `op` is one of
+    `eq | ne | gt | gte | lt | lte | in | not_in | exists`. `path` is
+    a dotted/bracket path (`a.b[2].c`) into the source node's
+    `NodeOutput.parsed`, so the source must have a `response_format`.
+    An empty `conditions` list matches everything (catch-all). When no
+    branch matches, `default_to` fires; `null` ends the graph as
+    `failed`.
+  - **`callable`** - `{kind:"callable", callable_id}`. Dispatches to a
+    Python callback registered in the executor's `RouterRegistry`
+    (`(context, source) -> node_id`). Most flexible; opaque to
+    inspectors. Used for logic that cannot be expressed declaratively.
+
+### Node output
+
+When a node finishes, its result lands in `context.nodes[<node_id>]`
+as a `NodeOutput`:
+- `text` - the node's final assistant text (for an agent), the tool
+  result, or the rendered template (for tool/fan_in/end). What most
+  consumers read.
+- `parsed` - the structured JSON, populated **only** when the node had
+  a `response_format`.
+- `history` - the node's full message history.
+- `iteration` - the graph iteration that produced it.
+- `error` / `ended_detail` - set only for a node that failed inside a
+  fan-out subtree configured with `on_failure='collect'`.
+
+Fan-out targets surface as a **list** at `nodes[target]` (the
+aggregator), with individual instances at `nodes['target[i]']`.
+
+## The input templating engine
+
+Node inputs are rendered by a **sandboxed Jinja2** environment
+(`primer/graph/template.py`): no dunder/`__import__` access, and
+**`StrictUndefined`** - a missing variable or attribute raises an
+error (surfaced as a bad-request), it does NOT silently render empty.
+So a typo in a placeholder fails loudly at run time.
+
+Every template (`agent`/`graph` `input_template`, `end`
+`output_template`, `fan_in` `aggregate_template`, and each string leaf
+in a `tool_call` `arguments`) renders against the **graph context**,
+which exposes exactly three top-level variables:
+
+| Variable | Meaning |
+|----------|---------|
+| `initial_input` | The graph's input - whatever you passed as `graph_input` at session-create. Its type is **whatever you passed** (a dict, a string, or a `list[Message]`). NOT named `input`. |
+| `iteration` | The current superstep iteration (int; 0 on entry). Useful in cyclic graphs. |
+| `nodes` | A dict keyed by node id; values are `NodeOutput` (or `list[NodeOutput]` for fan-out targets). Access via attribute syntax: `nodes.extract.text`, `nodes.extract.parsed.entities`. |
+
+Inside a fan-out `map`/`broadcast` instance, two more variables are in
+scope for that instance's template: `fanout_index` (int) and
+`fanout_item` (the per-instance item).
+
+The **default** `input_template` (when omitted) is
+`{% for m in initial_input %}{{ m.parts[0].text }}\n{% endfor %}` - it
+assumes `initial_input` is a `list[Message]`. If you pass a dict or
+string as `graph_input`, write your own template (e.g.
+`{{ initial_input.text }}` or `{{ initial_input }}`).
+
+Common placeholder patterns:
+- `{{ initial_input.text }}` - read a field of a dict input.
+- `{{ nodes.extract.text }}` - a prior node's raw text.
+- `{{ nodes.triage.parsed.category }}` - a prior node's structured
+  field (requires `response_format` on that node).
+- `{% for r in nodes.scatter %}{{ r.text }}\n{% endfor %}` - iterate a
+  fan-out target's aggregated list.
+- `{{ fanout_item }}` - the current item inside a `map` instance.
+
+## What you can build
+
+Because a node template can read any ancestor, pull structured
+fields, and use full Jinja, graphs go well beyond linear chains:
+
+- **Linear pipeline** - extract -> analyse -> write; each node pulls
+  `nodes.<prev>.text`.
+- **Data-driven branching / state machine** - an agent with
+  `response_format` plus a `conditional` json_path edge routing on
+  `parsed`. The structured output is the state.
+- **Scatter-gather / map-reduce** - `fan_out` map over a list ->
+  parallel agent per item (`{{ fanout_item }}`) -> `fan_in` reduce
+  over `nodes.<target>`.
+- **Best-of-N / judge panel** - `fan_out` broadcast N copies ->
+  `fan_in` (or a judge agent) selects/synthesises.
+- **Multi-lens analysis** - `fan_out` tee the same input to several
+  different agents -> `fan_in` merge.
+- **Iterative refinement loop** - a cycle (writer -> critic -> writer)
+  with `max_iterations`, the writer reading `nodes.critic.text` and
+  `iteration`.
+- **Deterministic tool steps** - `tool_call` nodes with templated
+  `arguments` interleaved with agents (e.g. search with
+  `{"query": "{{ nodes.plan.parsed.topic }}"}`).
+- **Hierarchical composition** - `graph` nodes delegating to reusable
+  sub-graphs.
+- **Multi-source join** - one node fusing outputs from several
+  ancestors in its template.
+- **Validation gates** - `output_schema` on end/tool_call/fan_in to
+  guarantee a conforming output.
+
+Nodes also share one workspace, so they can coordinate via files (one
+node writes, a later node reads) in addition to template data-flow.
 
 ## Lifecycle and states
 
-Graph invocations have the same status enum as agent sessions:
-`RUNNING | WAITING | PAUSED | ENDED`. Same transitions, same claim
-mechanics. The graph executor inside the worker advances supersteps
-within `RUNNING` until a sink or no-ready-nodes condition triggers
-`ENDED`.
+Graph invocations use the same status enum as agent sessions:
+`RUNNING | WAITING | PAUSED | ENDED`, with the same claim mechanics.
+The executor advances supersteps within `RUNNING` until an `end` node
+or a no-ready-nodes condition triggers `ENDED`. Per-superstep state
+persists so the graph resumes if the worker dies mid-execution;
+recovery is per-superstep (partial within a superstep is not
+preserved).
 
-Cycles in graphs are allowed but require a `max_iterations` cap on
-the cyclic loop to prevent infinite supersteps. If a node revisits
-without a cap, the graph errors out.
-
-Subgraph nodes use a **stored reference** model. When a subgraph
-node fires, it looks up the referenced Graph by id from storage -
-so the subgraph definition is whatever's in storage at execution
-time, not the version that was current at graph create time. Edits
-to subgraphs hot-apply.
+Cycles are allowed but require `max_iterations`; a callable router
+also requires it (its targets are not statically known). Without the
+cap a loopable graph is rejected at create time.
 
 ## MCP tools
 
@@ -120,84 +232,68 @@ to subgraphs hot-apply.
 
 - `system::list_graphs` - paginated.
 - `system::get_graph` - fetch the full row.
-- `system::create_graph` - body: optional `id`, `description`,
-  `nodes`, `edges`, `sink`. Omit `id` and the server assigns
-  `graph-<hex>` (e.g. `graph-7b2e44a1c0de`); supply one to use it
-  verbatim. Immutable after creation.
-- `system::update_graph` - partial update.
-- `system::delete_graph` - cascade-blocked if any subgraph node
+- `system::create_graph` - body `{"entity": {...}}` with optional
+  `id`, `description`, `nodes`, `edges`, `max_iterations`. Omit `id`
+  and the server assigns `graph-<hex>`; supply one to use it verbatim.
+  Immutable after creation.
+- `system::update_graph` - replace the row.
+- `system::delete_graph` - cascade-blocked if any `graph` node
   references it.
 - `system::find_graphs` - predicate query.
 
 ### Discovery (search toolset)
 
-- `search::search_graphs` - semantic search over graph description
-  + node ids. Useful when you know what you want to accomplish but
-  not whether a graph exists for it.
+- `search::search_graphs` - semantic search over graph description +
+  node ids.
 
 To run a graph, create a session whose subject is the graph: call
 `workspaces::create_workspace_session` with a graph binding
-(`binding: {"kind": "graph", "graph_id": ...}`) instead of an agent
-binding, and pass any input via `graph_input`.
+(`binding: {"kind": "graph", "graph_id": ...}`) and pass input via
+`graph_input`.
 
 ## Workflows
 
-### Workflow 1 - build a two-step extract-then-summarise graph
+### Workflow 1 - a two-step extract-then-summarise graph
 
-**Goal.** Wire up an extraction agent feeding a summarisation
-agent.
-
-1. Confirm both agents exist:
-
-```json
-{
-  "tool": "search::search_agents",
-  "arguments": {"query": "extract entities", "top_k": 3}
-}
-```
-
-```json
-{
-  "tool": "search::search_agents",
-  "arguments": {"query": "summarise document", "top_k": 3}
-}
-```
-
-2. Create the graph:
+**Goal.** Wire an extraction agent feeding a summarisation agent.
+The extraction agent has a `response_format` so its entities flow as
+structured `parsed`.
 
 ```json
 {
   "tool": "system::create_graph",
   "arguments": {
-    "id": "extract-then-summarise",
-    "description": "Extract entities from a document, then summarise around the extracted entities.",
-    "nodes": [
-      {
-        "id": "extract",
-        "kind": "agent",
-        "config": {
+    "entity": {
+      "id": "extract-then-summarise",
+      "description": "Extract entities from a document, then summarise around them.",
+      "nodes": [
+        {"id": "start", "kind": "begin"},
+        {
+          "id": "extract",
+          "kind": "agent",
           "agent_id": "extract-entities",
-          "input_template": "Extract from: {{ input.text }}"
-        }
-      },
-      {
-        "id": "summarise",
-        "kind": "agent",
-        "config": {
+          "input_template": "Extract entities from:\n{{ initial_input.text }}",
+          "response_format": {"type": "object", "properties": {"entities": {"type": "array", "items": {"type": "string"}}}}
+        },
+        {
+          "id": "summarise",
+          "kind": "agent",
           "agent_id": "summarise-document",
-          "input_template": "Summarise around these entities: {{ nodes.extract.parsed.entities }}\\n\\nFull text:\\n{{ input.text }}"
-        }
-      }
-    ],
-    "edges": [
-      {"kind": "static", "from": "extract", "to": "summarise"}
-    ],
-    "sink": "summarise"
+          "input_template": "Summarise around these entities: {{ nodes.extract.parsed.entities }}\n\nFull text:\n{{ initial_input.text }}"
+        },
+        {"id": "done", "kind": "end", "output_template": "{{ nodes.summarise.text }}"}
+      ],
+      "edges": [
+        {"kind": "static", "from_node": "start", "to_node": "extract"},
+        {"kind": "static", "from_node": "extract", "to_node": "summarise"},
+        {"kind": "static", "from_node": "summarise", "to_node": "done"}
+      ]
+    }
   }
 }
 ```
 
-3. Run it via a session in a workspace:
+Run it in a workspace:
 
 ```json
 {
@@ -205,87 +301,97 @@ agent.
   "arguments": {
     "workspace_id": "ws-pipelines",
     "binding": {"kind": "graph", "graph_id": "extract-then-summarise"},
-    "graph_input": {"text": "<input text or path here>"},
+    "graph_input": {"text": "<input text here>"},
     "auto_start": true
   }
 }
 ```
 
-Response threads the session `id` and a `status` of `running`:
-```json
-{"id": "ses_3c1d", "status": "running"}
-```
+Poll `workspaces::get_workspace_session` until `status` is `ended`;
+the `end` node's rendered `output_template` is the graph's output.
 
-Poll `workspaces::get_workspace_session` with `{"workspace_id": "ws-pipelines", "session_id": "ses_3c1d"}` until `status` is `ended`;
-the final node's output lands in the session's workspace.
+### Workflow 2 - conditional routing on an agent's structured output
 
-### Workflow 2 - conditional routing based on an agent's structured output
+**Goal.** A triage agent routes to one of three handlers based on its
+classification. The triage agent's `response_format`:
+`{"type":"object","properties":{"category":{"enum":["bug","feature","support"]}}}`.
 
-**Goal.** A triage agent decides between three follow-up agents
-based on its classification result.
-
-The triage agent's `response_format`:
-```json
-{"type": "object", "properties": {"category": {"enum": ["bug", "feature", "support"]}}}
-```
-
-Graph definition (abbreviated):
 ```json
 {
-  "id": "triage-and-route",
-  "description": "Triage an inbound message into category-specific agent.",
-  "nodes": [
-    {"id": "triage", "kind": "agent", "config": {"agent_id": "triage", "input_template": "{{ input.text }}"}},
-    {"id": "handle_bug", "kind": "agent", "config": {"agent_id": "bug-handler", "input_template": "{{ input.text }}"}},
-    {"id": "handle_feature", "kind": "agent", "config": {"agent_id": "feature-handler", "input_template": "{{ input.text }}"}},
-    {"id": "handle_support", "kind": "agent", "config": {"agent_id": "support-handler", "input_template": "{{ input.text }}"}}
-  ],
-  "edges": [
-    {"kind": "json_path", "from": "triage", "to": "handle_bug", "predicate": "$.category == 'bug'"},
-    {"kind": "json_path", "from": "triage", "to": "handle_feature", "predicate": "$.category == 'feature'"},
-    {"kind": "json_path", "from": "triage", "to": "handle_support", "predicate": "$.category == 'support'"}
-  ],
-  "sink": null
+  "entity": {
+    "id": "triage-and-route",
+    "description": "Triage an inbound message into a category-specific handler.",
+    "nodes": [
+      {"id": "start", "kind": "begin"},
+      {"id": "triage", "kind": "agent", "agent_id": "triage", "input_template": "{{ initial_input.text }}", "response_format": {"type":"object","properties":{"category":{"enum":["bug","feature","support"]}}}},
+      {"id": "handle_bug", "kind": "agent", "agent_id": "bug-handler", "input_template": "{{ initial_input.text }}"},
+      {"id": "handle_feature", "kind": "agent", "agent_id": "feature-handler", "input_template": "{{ initial_input.text }}"},
+      {"id": "handle_support", "kind": "agent", "agent_id": "support-handler", "input_template": "{{ initial_input.text }}"},
+      {"id": "done", "kind": "end", "output_template": "{{ nodes.handle_bug.text }}{{ nodes.handle_feature.text }}{{ nodes.handle_support.text }}"}
+    ],
+    "edges": [
+      {"kind": "static", "from_node": "start", "to_node": "triage"},
+      {"kind": "conditional", "from_node": "triage", "router": {
+        "kind": "json_path",
+        "branches": [
+          {"conditions": [{"path": "category", "op": "eq", "value": "bug"}], "to_node": "handle_bug"},
+          {"conditions": [{"path": "category", "op": "eq", "value": "feature"}], "to_node": "handle_feature"},
+          {"conditions": [{"path": "category", "op": "eq", "value": "support"}], "to_node": "handle_support"}
+        ],
+        "default_to": "handle_support"
+      }},
+      {"kind": "static", "from_node": "handle_bug", "to_node": "done"},
+      {"kind": "static", "from_node": "handle_feature", "to_node": "done"},
+      {"kind": "static", "from_node": "handle_support", "to_node": "done"}
+    ]
+  }
 }
 ```
 
-Only one of the three handler nodes runs per invocation, based on
-the triage's category output.
+Only one handler runs per invocation, chosen by the triage category.
+
+### Workflow 3 - scatter-gather (map then reduce)
+
+**Goal.** Process every item of a list in parallel, then synthesise.
+
+Sketch: a `begin` -> an agent that emits a list (`response_format` with
+an array) -> a `fan_out` with a `map` spec
+(`source_node_id` the list node, `source_path` the array field,
+`target_node_id` a per-item agent whose template reads
+`{{ fanout_item }}`) -> a `fan_in` whose `aggregate_template` iterates
+`{% for r in nodes.<target> %}{{ r.text }}\n{% endfor %}` -> an `end`.
+Set `max_iterations` if the graph contains any cycle.
 
 ## Gotchas
 
-- **Graphs run to completion in one invocation.** There's no
-  mid-graph yield in v1. Yielding tools inside an agent node still
-  work but pause the agent within that node - the graph's
-  superstep waits for the agent to finish before evaluating edges.
-- **`json_path` edges read `NodeOutput.parsed`, not `text`.** The
-  source node must have a `response_format` for the parsed field
-  to be populated. Forgetting this is a frequent bug.
-- **Cycles need `max_iterations` caps.** Without one, the
-  executor errors on second visit. With one, the cap is checked
-  per-node-per-graph-execution.
-- **Subgraph references resolve at execution time.** Editing a
-  subgraph mid-flight: subsequent invocations see the edit.
-  Don't assume version pinning.
-- **Tool outputs go into `text`, not `parsed`.** Even if the
-  agent's last tool call returned JSON, the text field is what
-  the next node's template renders. To make structured output
-  flow, set `response_format` on the agent and pull from
+- **The template variable is `initial_input`, not `input`.** With
+  `StrictUndefined`, `{{ input.text }}` raises at render time.
+- **Exactly one `begin`, at least one `end`.** Begin has no incoming
+  edges; end nodes have no outgoing edges; every end must be reachable
+  from begin, or create fails.
+- **json_path routers read `NodeOutput.parsed`, not `text`.** The
+  source node must set `response_format` or `parsed` is `null` and
+  every condition is False. A missing `path` makes every operator
+  return False (use `op: "exists"` to test presence).
+- **Node fields are top-level, edges use `from_node`/`to_node`.**
+  There is no `config` wrapper and no `from`/`to` shorthand.
+- **Tool outputs land in `text`, not `parsed`.** To make an agent's
+  structured output flow, set its `response_format` and read
   `nodes.<id>.parsed`.
-- **Callable router nodes are opaque.** They dispatch to Python
-  callbacks registered at app startup. Operators inspecting the
-  graph see the callable id but not the logic. Use them sparingly
-  for things that can't be expressed declaratively.
-- **The graph session uses one workspace.** Every node in the
-  graph runs in the same workspace. Files written by node A are
-  visible to node B. Coordinate via filesystem.
-- **Graphs share the same auto-compaction + tool approval +
-  yielding mechanics as standalone agents** - those are
-  per-agent-node concerns, not per-graph.
+- **Cycles and callable routers need `max_iterations`.** A loopable
+  graph without the cap is rejected at create time.
+- **Sub-graph references resolve at execution time.** Editing a
+  sub-graph mid-flight: subsequent invocations see the edit.
+- **Callable routers are opaque.** They dispatch to callbacks
+  registered at app startup; inspectors see only the `callable_id`.
+- **One workspace per graph session.** Every node runs in the same
+  workspace; files written by node A are visible to node B.
+- **Per-agent-node concerns.** Auto-compaction, tool approval, and
+  yielding are per-agent-node, not per-graph.
 
 ## Related
 
-- [agents](agents.md) - each graph node typically wraps an agent.
+- [agents](agents.md) - each agent node wraps a stored Agent.
 - [sessions](sessions.md) - a graph runs inside a graph session.
-- [semantic-search](semantic-search.md) - `search::search_graphs`
-  is the discovery path.
+- [semantic-search](semantic-search.md) - `search::search_graphs` is
+  the discovery path.
