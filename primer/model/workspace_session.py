@@ -398,6 +398,14 @@ class WorkspaceSession(Identifiable):
             "'mcp_task:'."
         ),
     )
+    parked_event_keys: list[str] | None = Field(
+        default=None,
+        description=(
+            "Multi-event park: the full set of event keys this session "
+            "is waiting on (any one firing wakes it). NULL for the common "
+            "single-event park, which uses parked_event_key alone."
+        ),
+    )
     parked_until: datetime | None = Field(
         default=None,
         description=(
