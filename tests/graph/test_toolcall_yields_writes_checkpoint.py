@@ -203,3 +203,62 @@ async def test_toolcall_yield_does_not_mark_node_failed() -> None:
     t_state = loaded.node_states.get("t")
     assert t_state is not None
     assert t_state.status == NodeRuntimeStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_toolcall_yield_carries_original_call_metadata() -> None:
+    """The re-raised approval yield must carry original_call (tool name +
+    arguments) so the channel / approval UI shows what is being approved,
+    not 'Approve <unknown>({})?'. The graph rebuilds it from the node's
+    tool_id and the pending entry's rendered arguments."""
+    graph = Graph(
+        id="g-meta",
+        description="begin -> tool(yields) -> end",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="t", tool_id="workspace__write",
+                          arguments={"path": "release.txt", "content": "hi"}),
+            _EndNode(id="exit"),
+        ],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="t"),
+            _StaticEdge(from_node="t", to_node="exit"),
+        ],
+    )
+
+    # The gate raises with original_call (as ToolExecutionManager does); the
+    # graph must NOT drop it on the outer re-raise.
+    async def stub_dispatcher(node, arguments):
+        raise YieldToWorker(
+            Yielded(tool_name="_approval",
+                    event_key="tool_approval:sid-1:tc-9",
+                    resume_metadata={"original_call": {
+                        "id": "tc-9", "name": "workspace__write",
+                        "arguments": arguments}}),
+            tool_call_id="tc-9")
+
+    async def agent_resolver(agent_id: str) -> Agent:
+        raise KeyError(agent_id)
+
+    async def llm_resolver(agent):
+        raise NotImplementedError
+
+    thread_storage: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
+    message_storage: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
+    thread = await GraphExecutor.open_thread(
+        graph=graph, thread_storage=thread_storage,  # type: ignore[arg-type]
+    )
+    executor = GraphExecutor(
+        graph=graph, agent_resolver=agent_resolver,
+        llm_resolver=llm_resolver,  # type: ignore[arg-type]
+        thread_storage=thread_storage,  # type: ignore[arg-type]
+        message_storage=message_storage,  # type: ignore[arg-type]
+        graph_thread_id=thread.id, tool_dispatcher=stub_dispatcher,
+    )
+
+    _events, raised = await _drain_until_yield(executor.invoke([]))
+    assert raised is not None
+    oc = (raised.yielded.resume_metadata or {}).get("original_call")
+    assert oc is not None, "outer approval yield dropped original_call"
+    assert oc["name"] == "workspace__write"
+    assert oc["arguments"] == {"path": "release.txt", "content": "hi"}

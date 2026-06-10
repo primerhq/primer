@@ -1764,6 +1764,23 @@ class _BaseGraphExecutor(ABC):
                     status=SessionStatus.WAITING,
                 )
                 first = self._pending_toolcalls[0]
+                # Carry the gated call's identity on the approval yield so
+                # the channel message / approval UI shows what is being
+                # approved ("Run tool <name> {args}") instead of
+                # "Approve <unknown>({})?". Rebuilt from the node's tool_id
+                # and the pending entry's rendered arguments.
+                _node_def = next(
+                    (n for n in self._graph.nodes if n.id == first.node_id),
+                    None,
+                )
+                _tool_id = getattr(_node_def, "tool_id", None)
+                _resume_meta: dict[str, Any] = {}
+                if _tool_id is not None:
+                    _resume_meta["original_call"] = {
+                        "id": first.tool_call_id,
+                        "name": _tool_id,
+                        "arguments": first.arguments,
+                    }
                 # Stamp the snapshot on the exception so the worker can
                 # persist it onto the session's parked-state blob without
                 # needing a separate ``snapshot_state`` round-trip.
@@ -1771,6 +1788,7 @@ class _BaseGraphExecutor(ABC):
                     Yielded(
                         tool_name="_approval",
                         event_key=first.parked_event_key,
+                        resume_metadata=_resume_meta,
                     ),
                     tool_call_id=first.tool_call_id,
                 )

@@ -101,6 +101,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         tool_manager: ToolExecutionManager | None = None,
         owns_session_lifecycle: bool = False,
         toolset_resolver: Callable[[str], Awaitable[Any]] | None = None,
+        approval_resolver: Any | None = None,
     ) -> None:
         wrapped_agent_resolver = self._wrap_agent_resolver(
             agent_resolver, workspace_session
@@ -130,6 +131,9 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         # invoke internal-toolset tools (web__web-search, system__...), not
         # just workspace tools. None -> tool_call reaches workspace tools only.
         self._toolset_resolver = toolset_resolver
+        # Approval resolver so a gated tool_call node fires the approval gate
+        # (parks for human approval). None -> tool_call nodes run ungated.
+        self._approval_resolver = approval_resolver
 
         # Turn-log writers: bypass the git-backed state_repo.commit
         # path and write directly to .state/graphs/<gsid>/turns.jsonl
@@ -367,6 +371,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             manager = ToolExecutionManager.for_workspace(
                 toolset_providers=toolset_providers,
                 session=self._workspace_session,
+                approval_resolver=self._approval_resolver,
             )
             # Cache only the workspace-only manager; a per-toolset manager
             # must not leak to a later tool_call naming a different toolset.
@@ -555,6 +560,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             router_registry=self._router_registry,
             principal=self._principal,
             toolset_resolver=self._toolset_resolver,
+            approval_resolver=self._approval_resolver,
         )
 
     # ---- Public helpers --------------------------------------------------

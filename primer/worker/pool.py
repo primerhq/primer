@@ -1281,6 +1281,7 @@ class WorkerPool:
             principal=None,
             owns_session_lifecycle=True,
             toolset_resolver=toolset_resolver,
+            approval_resolver=self._approval_resolver,
         )
         return _GraphTurnDriver(executor)
 

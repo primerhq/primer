@@ -1035,3 +1035,79 @@ class TestToolCallInternalToolset:
 
         assert result.output == "echo-out"
         assert provider.calls and provider.calls[0]["tool_name"] == "echo"
+
+
+class TestToolCallApprovalWiring:
+    @pytest.mark.asyncio
+    async def test_dispatch_toolcall_passes_approval_resolver(self, tmp_path, monkeypatch):
+        """A graph ToolCall node must build its manager WITH the executor's
+        approval_resolver, so a gated tool_call fires the approval gate
+        (parks) instead of running ungated."""
+        from primer.model.graph import _ToolCallNode
+        from primer.model.chat import ToolResultPart
+        from primer.agent import tool_manager as tm
+
+        captured: dict = {}
+
+        class _FakeMgr:
+            async def execute(self, call, *, principal=None, bypass_approval=False):
+                captured["bypass"] = bypass_approval
+                return ToolResultPart(id=getattr(call, "id", "x"), output="ok")
+
+        def _fake_for_workspace(cls, *, toolset_providers, session,
+                                approval_resolver=None, provider_registry=None, tools=None):
+            captured["approval_resolver"] = approval_resolver
+            return _FakeMgr()
+
+        monkeypatch.setattr(tm.ToolExecutionManager, "for_workspace",
+                            classmethod(_fake_for_workspace))
+
+        sentinel = object()
+        repo = await _make_state_repo(tmp_path)
+
+        async def _ar(agent_id): raise KeyError(agent_id)
+        async def _lr(a): raise NotImplementedError
+
+        executor = WorkspaceGraphExecutor(
+            graph=Graph(id="g", description="d",
+                        nodes=[_BeginNode(id="b"), _EndNode(id="e")],
+                        edges=[_StaticEdge(from_node="b", to_node="e")]),
+            agent_resolver=_ar, llm_resolver=_lr,  # type: ignore[arg-type]
+            state_repo=repo, graph_session_id="gsid-ar",
+            workspace_session=_FakeWorkspaceSession(),  # type: ignore[arg-type]
+            approval_resolver=sentinel,
+        )
+        node = _ToolCallNode(id="t", tool_id="workspace__write", arguments={})
+        await executor._dispatch_toolcall(node, {"path": "x"})
+        assert captured["approval_resolver"] is sentinel
+
+    @pytest.mark.asyncio
+    async def test_with_bypass_redispatches_with_bypass_true(self, tmp_path):
+        """On resume, _dispatch_toolcall_with_bypass must re-dispatch with
+        bypass_approval=True so the gate does not re-fire (infinite park)."""
+        from primer.model.graph import _ToolCallNode
+        from primer.model.chat import ToolResultPart
+
+        repo = await _make_state_repo(tmp_path)
+
+        async def _ar(agent_id): raise KeyError(agent_id)
+        async def _lr(a): raise NotImplementedError
+
+        executor = WorkspaceGraphExecutor(
+            graph=Graph(id="g", description="d",
+                        nodes=[_BeginNode(id="b"), _EndNode(id="e")],
+                        edges=[_StaticEdge(from_node="b", to_node="e")]),
+            agent_resolver=_ar, llm_resolver=_lr,  # type: ignore[arg-type]
+            state_repo=repo, graph_session_id="gsid-bp",
+            workspace_session=_FakeWorkspaceSession(),  # type: ignore[arg-type]
+        )
+        seen: dict = {}
+
+        async def _spy(node, arguments, *, bypass_approval=False):
+            seen["bypass"] = bypass_approval
+            return ToolResultPart(id="x", output="ok")
+
+        executor._dispatch_toolcall = _spy  # type: ignore[assignment]
+        node = _ToolCallNode(id="t", tool_id="workspace__write", arguments={})
+        await executor._dispatch_toolcall_with_bypass(node, {})
+        assert seen["bypass"] is True
