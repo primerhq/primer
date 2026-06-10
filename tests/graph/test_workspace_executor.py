@@ -28,12 +28,15 @@ from primer.model.chat import (
     ToolCallStart,
 )
 from primer.model.graph import (
+    FanOutSpec,
     Graph,
     JsonPathBranch,
     _AgentNodeRef,
     _BeginNode,
     _ConditionalEdge,
     _EndNode,
+    _FanInNode,
+    _FanOutNode,
     _GraphNodeRef,
     _JsonPathRouter,
     _StaticEdge,
@@ -931,3 +934,104 @@ class TestStructuredNodeToolSuppression:
 
         assert len(llm.calls) == 1
         assert [t.id for t in llm.calls[0].get("tools") or []] == ["fake__echo"]
+
+
+class TestTeeFanInAggregation:
+    @pytest.mark.asyncio
+    async def test_tee_target_aggregator_has_no_leading_none(
+        self, tmp_path: Path
+    ) -> None:
+        """A tee target's fan-in aggregator must hold the target's output at
+        index 0, not a leading None.
+
+        Each tee target runs once (fanout_index is None). The aggregator
+        accumulation pre-padded the list to ``(fanout_index or 0) + 1`` =
+        one None and THEN appended, yielding ``nodes.<target> == [None,
+        out]`` so ``nodes.<target>[0]`` was None and any fan-in template
+        reading ``nodes.pros[0].text`` failed. The pad-with-None is only
+        for indexed (broadcast/map) placement; tee must just append."""
+        graph = Graph(
+            id="g-tee-agg",
+            description="begin -> tee[a,b] -> agents -> fan_in -> end",
+            nodes=[
+                _BeginNode(id="begin"),
+                _FanOutNode(id="tee", specs=[
+                    FanOutSpec(kind="tee", target_node_ids=["a", "b"]),
+                ]),
+                _AgentNodeRef(id="a", agent_id="x", input_template="A"),
+                _AgentNodeRef(id="b", agent_id="x", input_template="B"),
+                _FanInNode(
+                    id="merge",
+                    aggregate_template="{{ nodes.a[0].text }}|{{ nodes.b[0].text }}",
+                ),
+                _EndNode(id="exit", output_template="{{ nodes.merge.text }}"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="tee"),
+                _StaticEdge(from_node="a", to_node="merge"),
+                _StaticEdge(from_node="b", to_node="merge"),
+                _StaticEdge(from_node="merge", to_node="exit"),
+            ],
+        )
+        llm = _FakeLLM(
+            scripts=[[TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop")]]
+        )
+        repo = await _make_state_repo(tmp_path)
+        executor = await _build_executor(
+            graph=graph,
+            llm=llm,
+            state_repo=repo,
+            graph_session_id="gsid-tee-agg",
+            agents={"x": _agent("x")},
+        )
+        await _drain(executor.invoke([]))
+
+        state = await executor.load_state()
+        assert state is not None
+        assert state["status"] == "ended"
+        assert state["ended_reason"] == "completed"
+
+
+class TestToolCallInternalToolset:
+    @pytest.mark.asyncio
+    async def test_toolcall_resolves_internal_toolset(self, tmp_path: Path) -> None:
+        """A tool_call node naming an internal-toolset tool (e.g.
+        web__web-search, fake__echo) must resolve that toolset via the
+        executor's ``toolset_resolver`` and dispatch it, not fail with
+        'unknown tool ...; not registered with any toolset or workspace'.
+        Previously tool_call nodes built a workspace-only manager
+        (toolset_providers={}), so only workspace__* tools worked."""
+        from primer.model.graph import _ToolCallNode
+
+        provider = _FakeToolsetProvider(tool_id="echo", output="echo-out")
+
+        async def toolset_resolver(toolset_id: str):
+            assert toolset_id == "fake"
+            return provider
+
+        async def agent_resolver(agent_id: str) -> Agent:
+            raise KeyError(agent_id)
+
+        async def llm_resolver(agent: Agent):
+            raise NotImplementedError
+
+        repo = await _make_state_repo(tmp_path)
+        executor = WorkspaceGraphExecutor(
+            graph=Graph(
+                id="g-tc",
+                description="begin -> end (dispatch tested directly)",
+                nodes=[_BeginNode(id="b"), _EndNode(id="e")],
+                edges=[_StaticEdge(from_node="b", to_node="e")],
+            ),
+            agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,  # type: ignore[arg-type]
+            state_repo=repo,
+            graph_session_id="gsid-tc",
+            workspace_session=_FakeWorkspaceSession(),  # type: ignore[arg-type]
+            toolset_resolver=toolset_resolver,
+        )
+        node = _ToolCallNode(id="t", tool_id="fake__echo", arguments={})
+        result = await executor._dispatch_toolcall(node, {"x": 1})
+
+        assert result.output == "echo-out"
+        assert provider.calls and provider.calls[0]["tool_name"] == "echo"

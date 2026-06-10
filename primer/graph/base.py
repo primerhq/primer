@@ -1658,12 +1658,13 @@ class _BaseGraphExecutor(ABC):
                                     agg_list: list[NodeOutput | None] = (
                                         list(agg) if isinstance(agg, list) else []  # type: ignore[arg-type]
                                     )
-                                    target_len = (inst_obj.fanout_index or 0) + 1
-                                    while len(agg_list) < target_len:
-                                        agg_list.append(None)
                                     if inst_obj.fanout_index is not None:
+                                        target_len = inst_obj.fanout_index + 1
+                                        while len(agg_list) < target_len:
+                                            agg_list.append(None)
                                         agg_list[inst_obj.fanout_index] = fail_output
                                     else:
+                                        # tee: append (no leading-None pad).
                                         agg_list.append(fail_output)
                                     # Keep the list positionally aligned: a slot
                                     # that has not reported yet stays ``None`` at
@@ -1700,12 +1701,17 @@ class _BaseGraphExecutor(ABC):
                     if inst is not None:
                         agg = context.nodes.get(inst.target_node_id)
                         agg_list = list(agg) if isinstance(agg, list) else []  # type: ignore[arg-type]
-                        target_len = (inst.fanout_index or 0) + 1
-                        while len(agg_list) < target_len:
-                            agg_list.append(None)
                         if inst.fanout_index is not None:
+                            # Indexed (broadcast/map): place at its own slot,
+                            # padding with None for out-of-order completion.
+                            target_len = inst.fanout_index + 1
+                            while len(agg_list) < target_len:
+                                agg_list.append(None)
                             agg_list[inst.fanout_index] = done.output
                         else:
+                            # tee: one run per named target -> just append.
+                            # Padding here would leave a leading None
+                            # (nodes.<target>[0] == None).
                             agg_list.append(done.output)
                         # Keep the list positionally aligned (see the collect
                         # path above): an instance that has not reported stays

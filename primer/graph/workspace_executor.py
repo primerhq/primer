@@ -100,6 +100,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         graph_input: Any = None,
         tool_manager: ToolExecutionManager | None = None,
         owns_session_lifecycle: bool = False,
+        toolset_resolver: Callable[[str], Awaitable[Any]] | None = None,
     ) -> None:
         wrapped_agent_resolver = self._wrap_agent_resolver(
             agent_resolver, workspace_session
@@ -125,6 +126,10 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         # it when their own run terminates, or they would kill the holder
         # out from under the still-running parent graph.
         self._owns_session_lifecycle = owns_session_lifecycle
+        # Resolves a toolset_id -> ToolsetProvider so a tool_call node can
+        # invoke internal-toolset tools (web__web-search, system__...), not
+        # just workspace tools. None -> tool_call reaches workspace tools only.
+        self._toolset_resolver = toolset_resolver
 
         # Turn-log writers: bypass the git-backed state_repo.commit
         # path and write directly to .state/graphs/<gsid>/turns.jsonl
@@ -328,14 +333,18 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         yielded ToolCall without re-firing the approval gate.
 
         ``self._tool_manager`` is the manager the worker passes in when
-        building this executor. When absent, we build a workspace-only
-        manager lazily from ``self._workspace_session`` so tests /
-        callers that only need workspace tools don't have to construct
-        one upfront. When neither is available the call raises so the
-        ToolCall fails with ``tool_execution_failed`` rather than
-        hanging.
+        building this executor. When absent, we build a manager lazily
+        from ``self._workspace_session``. The node's ``tool_id`` is a
+        scoped id (``toolset__bare``); when it names a non-workspace
+        toolset and a ``toolset_resolver`` is wired, that toolset's
+        provider is resolved and registered so internal-toolset tools
+        (``web__web-search``, ``system__...``) dispatch -- otherwise the
+        manager only carries workspace tools. When neither a manager nor
+        a workspace_session is available the call raises so the ToolCall
+        fails with ``tool_execution_failed`` rather than hanging.
         """
         import uuid
+        from primer.agent.tool_manager import WORKSPACE_TOOLSET_ID, _SCOPE_SEPARATOR
         from primer.model.chat import ToolCallPart
 
         manager = self._tool_manager
@@ -346,11 +355,23 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
                     f"nor a workspace_session wired; cannot invoke tool "
                     f"{node.tool_id!r}"
                 )
+            # Resolve the toolset for a scoped, non-workspace tool_id so
+            # internal-toolset tools are dispatchable from a tool_call node.
+            toolset_providers: dict[str, Any] = {}
+            if self._toolset_resolver is not None and _SCOPE_SEPARATOR in node.tool_id:
+                toolset_id = node.tool_id.split(_SCOPE_SEPARATOR, 1)[0]
+                if toolset_id and toolset_id != WORKSPACE_TOOLSET_ID:
+                    toolset_providers[toolset_id] = await self._toolset_resolver(
+                        toolset_id
+                    )
             manager = ToolExecutionManager.for_workspace(
-                toolset_providers={},
+                toolset_providers=toolset_providers,
                 session=self._workspace_session,
             )
-            self._tool_manager = manager
+            # Cache only the workspace-only manager; a per-toolset manager
+            # must not leak to a later tool_call naming a different toolset.
+            if not toolset_providers:
+                self._tool_manager = manager
 
         call = ToolCallPart(
             id=str(uuid.uuid4()),
@@ -533,6 +554,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             graph_resolver=self._graph_resolver,
             router_registry=self._router_registry,
             principal=self._principal,
+            toolset_resolver=self._toolset_resolver,
         )
 
     # ---- Public helpers --------------------------------------------------
