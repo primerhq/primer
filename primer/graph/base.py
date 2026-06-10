@@ -2212,7 +2212,18 @@ class _BaseGraphExecutor(ABC):
         """
         agent = await self._agent_resolver(node.agent_id)
         llm, llm_model = await self._llm_resolver(agent)
-        if self._tool_manager_resolver is not None:
+        if node.response_format is not None:
+            # A structured-output node is a data-shaping turn: it must
+            # return JSON matching response_format, not call tools. The
+            # workspace holder auto-injects tools into every node, and
+            # grammar-based providers (LM Studio / llama.cpp / Ollama)
+            # reject a forced json_schema response_format combined with
+            # tools ("cannot combine structured output constraints with
+            # lazy grammar"), which yields an empty stream and a None
+            # ``parsed``. So offer no tools when the node demands
+            # structured output.
+            tool_manager = ToolExecutionManager()
+        elif self._tool_manager_resolver is not None:
             tool_manager = await self._tool_manager_resolver(agent)
         else:
             tool_manager = ToolExecutionManager()

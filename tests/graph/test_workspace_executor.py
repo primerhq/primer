@@ -830,3 +830,104 @@ class TestHolderLifecycle:
         await _drain(executor.invoke([]))
 
         assert holder.status_calls == []
+
+
+class TestStructuredNodeToolSuppression:
+    @pytest.mark.asyncio
+    async def test_response_format_node_offers_no_tools(self, tmp_path: Path) -> None:
+        """A node with ``response_format`` must NOT offer tools to the LLM.
+
+        A structured-output node is a data-shaping turn: it returns JSON
+        matching the schema, it does not call tools. The workspace holder
+        auto-injects tools into every node, and grammar-based providers
+        (LM Studio / llama.cpp / Ollama) reject a forced json_schema
+        combined with tools ('cannot combine structured output
+        constraints with lazy grammar'), producing an empty stream. So
+        when response_format is set the executor must suppress tools."""
+        graph = Graph(
+            id="g-sf",
+            description="A(structured) -> exit",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(
+                    id="A", agent_id="x",
+                    response_format={
+                        "type": "object",
+                        "properties": {"category": {"enum": ["bug", "feature"]}},
+                    },
+                ),
+                _EndNode(id="exit", output_template="{{ nodes.A.text }}"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
+        )
+        llm = _FakeLLM(
+            scripts=[
+                [
+                    TextDelta(text='{"category":"bug"}', index=0),
+                    Done(stop_reason="stop", raw_reason="stop"),
+                ]
+            ]
+        )
+        # The resolver hands back a manager that DOES expose a tool; the
+        # executor must still call the LLM with an empty tool list because
+        # the node demands structured output.
+        provider = _FakeToolsetProvider(tool_id="echo", output="echo-out")
+
+        async def tool_mgr_resolver(agent: Agent) -> ToolExecutionManager:
+            return ToolExecutionManager(toolset_providers={"fake": provider})
+
+        repo = await _make_state_repo(tmp_path)
+        executor = await _build_executor(
+            graph=graph,
+            llm=llm,
+            state_repo=repo,
+            graph_session_id="gsid-sf",
+            agents={"x": _agent("x")},
+            tool_manager_resolver=tool_mgr_resolver,
+        )
+        await _drain(executor.invoke([]))
+
+        assert len(llm.calls) == 1
+        assert llm.calls[0].get("tools") == []
+        assert provider.calls == []
+
+    @pytest.mark.asyncio
+    async def test_plain_node_still_offers_tools(self, tmp_path: Path) -> None:
+        """Guard: a node WITHOUT response_format keeps its tools."""
+        graph = Graph(
+            id="g-plain",
+            description="A(plain) -> exit",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="A", agent_id="x"),
+                _EndNode(id="exit", output_template="{{ nodes.A.text }}"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
+        )
+        llm = _FakeLLM(
+            scripts=[[TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop")]]
+        )
+        provider = _FakeToolsetProvider(tool_id="echo", output="echo-out")
+
+        async def tool_mgr_resolver(agent: Agent) -> ToolExecutionManager:
+            return ToolExecutionManager(toolset_providers={"fake": provider})
+
+        repo = await _make_state_repo(tmp_path)
+        executor = await _build_executor(
+            graph=graph,
+            llm=llm,
+            state_repo=repo,
+            graph_session_id="gsid-plain",
+            agents={"x": _agent("x")},
+            tool_manager_resolver=tool_mgr_resolver,
+        )
+        await _drain(executor.invoke([]))
+
+        assert len(llm.calls) == 1
+        assert [t.id for t in llm.calls[0].get("tools") or []] == ["fake__echo"]
