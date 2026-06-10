@@ -79,9 +79,42 @@ class YieldEventListener:
         finally:
             await sub.aclose()
 
+    async def _flip_rows(self, rows, event) -> int:
+        """Flip the given parked rows to resumable, stamping the payload +
+        the specific key that fired, and re-arming the engine lease.
+        """
+        flipped = 0
+        for sess in rows:
+            # Re-read guard: only advance rows still 'parked'.
+            if sess.parked_status != "parked":
+                continue
+            state = dict(sess.parked_state or {})
+            state["resume_event_payload"] = dict(event.payload or {})
+            # Record WHICH key fired so a multi-event park's resume routes
+            # to the right node. Harmless for single-event parks.
+            state["resume_event_key"] = event.event_key
+            updated = sess.model_copy(update={
+                "parked_status": "resumable",
+                "parked_state": state,
+            })
+            await self._storage.update(updated)
+            # Re-arm the engine lease (park dropped it). mark_resumable
+            # upserts a fresh claimable lease when none exists.
+            await self._engine.mark_resumable(ClaimKind.SESSION, sess.id)
+            flipped += 1
+        return flipped
+
     async def _handle_event(self, event) -> None:
         """Flip every session parked on ``event.event_key`` to resumable and
         re-arm its engine lease.
+
+        Single-event parks match on the singular ``parked_event_key`` (the
+        fast path that runs for every bus event). Multi-event parks (a
+        graph superstep with several human-interaction nodes) may be woken
+        by a reply to a NON-primary key, which is a member of
+        ``parked_event_keys`` but not the singular ``parked_event_key`` -
+        handled by a bounded membership fallback, gated to human-reply
+        events so the common path stays a single keyed query.
 
         Errors are logged but do not break the listener loop; the next
         event is processed regardless.
@@ -105,22 +138,26 @@ class YieldEventListener:
             # matches at most one parked row; the 200 cap is a generous
             # safety bound, not a real fan-out limit.
             page = await self._storage.find(predicate, OffsetPage(length=200))
-            flipped = 0
-            for sess in page.items:
-                # Re-read guard: only advance rows still 'parked'.
-                if sess.parked_status != "parked":
-                    continue
-                state = dict(sess.parked_state or {})
-                state["resume_event_payload"] = dict(event.payload or {})
-                updated = sess.model_copy(update={
-                    "parked_status": "resumable",
-                    "parked_state": state,
-                })
-                await self._storage.update(updated)
-                # Re-arm the engine lease (park dropped it). mark_resumable
-                # upserts a fresh claimable lease when none exists.
-                await self._engine.mark_resumable(ClaimKind.SESSION, sess.id)
-                flipped += 1
+            flipped = await self._flip_rows(page.items, event)
+
+            # Multi-event-park fallback: a reply to a non-primary node.
+            if flipped == 0 and event.event_key.startswith(
+                ("ask_user:", "tool_approval:")
+            ):
+                parked_pred = Predicate(
+                    left=FieldRef(name="parked_status"),
+                    op=Op.EQ,
+                    right=Value(value="parked"),
+                )
+                page2 = await self._storage.find(
+                    parked_pred, OffsetPage(length=200),
+                )
+                members = [
+                    s for s in page2.items
+                    if event.event_key in (s.parked_event_keys or [])
+                ]
+                flipped += await self._flip_rows(members, event)
+
             if flipped:
                 logger.info(
                     "yield-event-listener: resumed %d session(s) for "
