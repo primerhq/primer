@@ -96,11 +96,13 @@ async def index_document(
     semantic_search_registry,
 ) -> int:
     """Chunk, embed, and upsert ``document`` into its collection's vector
-    store. Returns the number of chunks indexed. Re-indexing first drops
-    the document's existing chunks so stale chunks do not linger.
+    store. Returns the number of chunks indexed. Re-indexing embeds the new
+    chunks FIRST and only then replaces the document's existing chunks, so a
+    failed re-embed leaves the prior index intact (the document stays
+    searchable) rather than wiping it.
 
-    System collections are skipped (returns 0). Raises nothing on
-    embedder/store failure; the caller treats this as best-effort.
+    System collections are skipped (returns 0). On embedder/store failure it
+    raises; the caller treats indexing as best-effort and swallows it.
     """
     if collection.system:
         return 0
@@ -115,21 +117,15 @@ async def index_document(
         collection.search_provider_id
     )
 
-    # Always clear prior chunks for this document so an update replaces
-    # rather than accumulates. Idempotent no-op when nothing is indexed.
-    try:
-        await store.delete(collection.id, document.id)
-    except PrimerError:
-        # The collection may not be registered yet (first ingest); the
-        # create_collection below handles registration.
-        pass
-
-    if not chunks:
-        return 0
-
-    # Embed all chunks; one embed call per chunk keeps the code simple
-    # and matches the catalog's per-record approach. The first chunk's
-    # vector length determines the collection dimensionality.
+    # Embed FIRST, before touching the existing chunks. If the embedder
+    # fails (transient error, missing key), we must not have already
+    # deleted the document's old chunks: the replace below only runs once
+    # every new vector is in hand, so a failure here leaves the prior
+    # index intact and the document still searchable.
+    #
+    # One embed call per chunk keeps the code simple and matches the
+    # catalog's per-record approach. The first chunk's vector length
+    # determines the collection dimensionality.
     records: list[EmbeddingRecord] = []
     for idx, chunk in enumerate(chunks):
         response = await embedder.embed(
@@ -152,6 +148,25 @@ async def index_document(
                 meta={"document_name": document.name},
             )
         )
+
+    # Now that embedding succeeded, atomically-ish replace the document's
+    # chunks: drop the prior set, then upsert the new one. The vector store
+    # exposes no native "replace by document id", so this is delete + put;
+    # because it runs only after a successful embed there is no failure
+    # window that leaves the document with zero chunks. Chunk ids are the
+    # stable str(idx), so a shorter re-index could leave higher-index stale
+    # rows behind without the delete -- hence the delete is still required.
+    try:
+        await store.delete(collection.id, document.id)
+    except PrimerError:
+        # The collection may not be registered yet (first ingest); the
+        # create_collection below handles registration.
+        pass
+
+    if not chunks:
+        # An empty body produces no records: the delete above already
+        # cleared any prior chunks, which is the intended replace-with-empty.
+        return 0
 
     # Register the collection in the store (idempotent) using the actual
     # embedding dimensionality, then upsert every chunk.

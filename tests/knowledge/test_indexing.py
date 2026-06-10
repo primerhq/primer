@@ -168,6 +168,99 @@ class TestIndexDocument:
         assert ("kb-1", "doc-1") in store.deleted  # old chunks cleared
 
 
+class _StatefulStore:
+    """Vector store that models real searchable state: delete removes rows,
+    put upserts on (document_id, chunk_id). Lets us assert what survives a
+    failed re-index."""
+
+    def __init__(self):
+        self._rows: dict[tuple, object] = {}
+        self._registered: set[str] = set()
+
+    async def delete(self, cid, did):
+        for key in [k for k in self._rows if k[0] == cid and k[1] == did]:
+            del self._rows[key]
+
+    async def create_collection(self, cid, *, dimensions, distance="cosine"):
+        self._registered.add(cid)
+
+    async def put(self, record):
+        self._rows[(record.collection_id, record.document_id, record.chunk_id)] = record
+
+    async def get(self, cid, did):
+        return [r for k, r in sorted(self._rows.items()) if k[0] == cid and k[1] == did]
+
+
+class _RaisingEmb:
+    """Embedder that raises, simulating a transient embedder/network error."""
+
+    async def embed(self, *, model, inputs):
+        raise PrimerError("transient embedder failure")
+
+
+class TestReindexFailureKeepsOldChunks:
+    @pytest.mark.asyncio
+    async def test_failed_reembed_does_not_delete_old_chunks(self):
+        store = _StatefulStore()
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        # First successful index: two chunks land and are searchable.
+        ok_reg = AsyncMock()
+        ok_reg.get_embedder = AsyncMock(return_value=_Emb(dim=3))
+        await index_document(
+            document=_document(text="\n\n".join(["a" * 800, "b" * 800])),
+            collection=_collection(),
+            provider_registry=ok_reg,
+            semantic_search_registry=ssr,
+        )
+        before = await store.get("kb-1", "doc-1")
+        assert len(before) == 2
+
+        # Re-index with an embedder that raises mid-pipeline.
+        bad_reg = AsyncMock()
+        bad_reg.get_embedder = AsyncMock(return_value=_RaisingEmb())
+        with pytest.raises(PrimerError):
+            await index_document(
+                document=_document(text="\n\n".join(["a" * 800, "b" * 800])),
+                collection=_collection(),
+                provider_registry=bad_reg,
+                semantic_search_registry=ssr,
+            )
+
+        # The old chunks must still be present/searchable.
+        after = await store.get("kb-1", "doc-1")
+        assert len(after) == 2, "failed re-index destroyed the old chunks"
+
+    @pytest.mark.asyncio
+    async def test_successful_reindex_fully_replaces(self):
+        store = _StatefulStore()
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=_Emb(dim=3))
+
+        # Index a 3-chunk doc.
+        await index_document(
+            document=_document(text="\n\n".join(["a" * 800, "b" * 800, "c" * 800])),
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+        )
+        assert len(await store.get("kb-1", "doc-1")) == 3
+
+        # Re-index with a shorter body -> stale chunks must be gone.
+        await index_document(
+            document=_document(text="just one short chunk"),
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+        )
+        final = await store.get("kb-1", "doc-1")
+        assert len(final) == 1
+        assert final[0].text == "just one short chunk"
+
+
 class _DocStore:
     """Minimal Storage[Document] supporting get + paginated list."""
 
