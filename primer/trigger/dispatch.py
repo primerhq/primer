@@ -72,8 +72,27 @@ async def fire_trigger(
     fire_context = source.build_fire_context(
         trigger, fired_at=fired_at, scheduled_for=scheduled_for,
     )
-    fire_id = make_fire_id(trigger.id, fired_at)
+    # fire_id is keyed on the LOGICAL fire instant (the scheduled tick
+    # when present) so an at-least-once redelivery of the same tick
+    # resolves to the same token and is deduped below. One-off / event
+    # fires have no logical tick and fall back to wall-clock fired_at.
+    fire_id = make_fire_id(trigger.id, scheduled_for or fired_at)
     fire_context["fire_id"] = fire_id
+
+    # Idempotency gate: if this exact fire_id already dispatched, treat
+    # the redelivery as a no-op. Per-trigger serialization is provided
+    # by the claim engine (one TRIGGER claim per entity_id at a time),
+    # so redeliveries arrive sequentially; recording last_fired_id on
+    # the row before dispatch makes the second pass a logged skip. This
+    # closes the sequential-redelivery window; it does not guard two
+    # truly-concurrent fires of the same tick from distinct workers
+    # (the claim engine prevents that upstream).
+    if trigger.last_fired_id == fire_id:
+        logger.info(
+            "trigger %s: duplicate fire_id %s; skipping (already dispatched)",
+            trigger.id, fire_id,
+        )
+        return FireResult(skipped=True, fire_id=fire_id)
 
     subs_storage = deps.storage_provider.get_storage(Subscription)
     q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger.id)
@@ -125,8 +144,11 @@ async def fire_trigger(
                 "error_message": str(exc),
             })
 
-    # Update trigger row's last_fired_at + error
+    # Update trigger row's last_fired_at + last_fired_id + error. Recording
+    # last_fired_id here is the dedup marker the gate above reads on a
+    # redelivery.
     trigger.last_fired_at = fired_at
+    trigger.last_fired_id = fire_id
     first_err = next((r for r in results if not r.get("ok")), None)
     if first_err:
         trigger.last_fire_error = json.dumps({

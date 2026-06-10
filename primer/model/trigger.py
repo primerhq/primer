@@ -52,6 +52,7 @@ class Trigger(Identifiable):
     enabled: bool = True
     next_fire_at: datetime | None = None  # null when disabled or terminal one-off
     last_fired_at: datetime | None = None
+    last_fired_id: str | None = None  # fire_id of the last dispatched fire (dedup)
     last_fire_error: str | None = None  # JSON-encoded {code, message}
     created_at: datetime
 
