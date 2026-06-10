@@ -40,6 +40,10 @@ ChatMessageKind = Literal[
     "assistant_token",
     "tool_call",
     "tool_result",
+    # Legacy-unused on the chat soft-yield path (chats never park, so no
+    # row is ever written with these kinds). Retained because
+    # dispatch._find_next_user_message still lists "yielded" among its
+    # recognized terminal kinds; dropping it would desync that set.
     "yielded",
     "resumed",
     "done",

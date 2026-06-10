@@ -82,6 +82,18 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_ROUND_TRIPS = 8
 
 
+# Yielding tools that the chat surface handles as a conversational
+# pause (soft_yield records a pending_tool_call; the human's next
+# message resolves it). Every other yielding tool is out of scope on
+# the chat surface and is failed closed inline as a tool error.
+_SOFT_YIELD_TOOLS = frozenset({"ask_user", "_approval"})
+
+
+def _is_soft_yield_tool(exc: YieldToWorker) -> bool:
+    """True when the yield is one the chat surface can pause on."""
+    return exc.yielded.tool_name in _SOFT_YIELD_TOOLS
+
+
 # Substrings that indicate the upstream model/provider refused our
 # request because of a multimodal content part (image / document /
 # audio / video) rather than a generic protocol failure. LM Studio +
@@ -553,12 +565,41 @@ class ChatTurnRunner:
 
             # Dispatch each tool call; persist the results back as
             # tool_result rows + append to the prompt for the next pass.
+            #
+            # A yielding tool (ask_user / approval gate) raises
+            # YieldToWorker. Only ONE pending_tool_call slot exists per
+            # chat, so the FIRST yield in the batch becomes pending and
+            # the soft-yield path fills its tool_result on resume. Every
+            # OTHER tool_call in the SAME assistant batch (calls AFTER
+            # the yielding one that never ran, plus any SECOND yielding
+            # call) must still get a synthetic tool_result here, or the
+            # persisted history keeps an unpaired tool_use and the
+            # provider 400s on the continuation.
             tool_result_parts: list[ToolResultPart] = []
-            for tc in tool_calls:
+            yielded_idx: int | None = None
+            yield_exc: YieldToWorker | None = None
+            for idx, tc in enumerate(tool_calls):
                 try:
                     rp = await self._tools.execute(tc)
-                except YieldToWorker:
-                    raise
+                except YieldToWorker as exc:
+                    if not _is_soft_yield_tool(exc):
+                        # Out of scope on the chat surface (mcp_task
+                        # deferred; sleep/watch unreachable). Fail closed
+                        # inline like a normal tool error so the agent
+                        # sees the result and the loop continues to a
+                        # terminal, NOT a pending pause (no soft_yield).
+                        rp = ToolResultPart(
+                            id=tc.id,
+                            output=(
+                                f"{exc.yielded.tool_name!r} is not supported "
+                                "on the chat surface"
+                            ),
+                            error=True,
+                        )
+                    else:
+                        yielded_idx = idx
+                        yield_exc = exc
+                        break
                 except Exception as exc:  # noqa: BLE001 — model-visible error
                     rp = ToolResultPart(
                         id=tc.id,
@@ -576,6 +617,28 @@ class ChatTurnRunner:
                         "error": bool(rp.error),
                     },
                 )
+
+            if yield_exc is not None:
+                # Pair every un-run/secondary tool_call in this batch with
+                # a synthetic error tool_result so the history stays valid,
+                # then re-raise so the dispatch layer's soft_yield records
+                # the FIRST yielding call as the single pending_tool_call.
+                yielding_tc = tool_calls[yielded_idx]
+                for other in tool_calls[yielded_idx + 1:]:
+                    yield await self._append(
+                        chat,
+                        kind="tool_result",
+                        payload={
+                            "id": other.id,
+                            "name": other.name,
+                            "result": (
+                                f"skipped: turn paused on "
+                                f"{yielding_tc.name!r}"
+                            ),
+                            "error": True,
+                        },
+                    )
+                raise yield_exc
 
             prompt.append(
                 Message(role="tool", parts=list(tool_result_parts)),
@@ -630,9 +693,42 @@ class ChatTurnRunner:
         chat.pending_tool_call = pending
         await self._chats.update(chat)
 
+    async def abandon_pending(self, chat: Chat, pending: dict) -> None:
+        """Abandon a pending (awaiting-input) tool call on cancel.
+
+        Persists a synthetic cancelled ``tool_result`` for the pending
+        call so the unpaired ``tool_use`` row gets a partner (history
+        stays valid) and clears ``chat.pending_tool_call``. Used by the
+        dispatch layer when a cancel arrives while the chat is awaiting
+        the human's reply: the pending call is dropped and the next
+        message is processed as a fresh turn instead of being swallowed
+        as the answer.
+        """
+        tool_call_id = pending.get("tool_call_id")
+        await self._append(chat, kind="tool_result", payload={
+            "id": tool_call_id, "name": str(pending.get("mode") or ""),
+            "result": "cancelled by user", "error": True,
+        })
+        # Close the originally-parked turn with a terminal row so the
+        # next drain advances past the prompting user_message rather than
+        # re-serving it. Without this the parked turn has no terminal and
+        # _find_next_user_message would re-issue the original prompt.
+        await self._append(chat, kind="cancelled", payload={
+            "reason": "cancel_while_awaiting_input",
+        })
+        chat.pending_tool_call = None
+        await self._chats.update(chat)
+
     # Tokens that read as an affirmative approval. Matched case-folded
-    # against the reply's whitespace-split tokens (any token suffices).
+    # against the reply's whitespace-split tokens.
     _AFFIRMATIVE = {"yes", "y", "approve", "approved", "ok", "okay", "sure", "go"}
+    # Tokens that read as a refusal. A negative anywhere in the reply
+    # vetoes a co-occurring affirmative ("no yes" -> rejected) so the
+    # parse fails closed against ambiguous intent.
+    _NEGATIVE = {
+        "no", "n", "nope", "nah", "deny", "denied", "reject", "rejected",
+        "cancel", "stop", "dont", "don't", "do not",
+    }
 
     async def resume_pending(
         self, chat: Chat, pending: dict, reply_msg: ChatMessage,
@@ -652,9 +748,10 @@ class ChatTurnRunner:
         mode = pending.get("mode")
         if mode == "approval":
             decision = reply_text.strip().lower()
-            approved = any(
-                tok in self._AFFIRMATIVE for tok in decision.split()
-            )
+            tokens = decision.split()
+            has_neg = any(t in self._NEGATIVE for t in tokens)
+            has_aff = any(t in self._AFFIRMATIVE for t in tokens)
+            approved = has_aff and not has_neg
             if approved:
                 original = pending.get("original_call") or {}
                 call = ToolCallPart(

@@ -103,6 +103,23 @@ async def run_one_chat_turn(
             if chat.cancel_requested_at is not None:
                 cancel_event.set()
             if chat.pending_tool_call is not None:
+                # Cancel-while-awaiting: a cancel arrived while the chat
+                # was waiting on the human's reply. Spec: abandon the
+                # pending call rather than consuming the next message as
+                # its answer. Persist a synthetic cancelled tool_result
+                # (keeps history paired), clear the pending slot + the
+                # cancel flag, and fall through to process the next
+                # message as a FRESH turn.
+                if chat.cancel_requested_at is not None:
+                    await runner.abandon_pending(chat, chat.pending_tool_call)
+                    cancel_event.clear()
+                    cleared = await chat_storage.get(chat_id)
+                    if cleared is not None:
+                        if cleared.cancel_requested_at is not None:
+                            cleared.cancel_requested_at = None
+                            await chat_storage.update(cleared)
+                        chat = cleared
+                    continue
                 # Resume path: the chat parked on a yielding tool
                 # (ask_user / approval). The parked turn persisted NO
                 # terminal row, so _find_next_user_message would re-serve
