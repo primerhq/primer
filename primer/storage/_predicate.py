@@ -314,6 +314,11 @@ def render_order_by(
     so cursor pagination has a deterministic seek key. Returns the
     full clause INCLUDING the ``ORDER BY`` keyword (or just
     ``ORDER BY id`` when no order keys are supplied).
+
+    Each non-id key is rendered ``NULLS LAST`` so NULLs sort after all
+    non-null values, deterministically and identically to the SQLite
+    backend (which emits a ``(field IS NULL) ASC`` sort term). This
+    keeps keyset pagination null-safe across a NULL boundary.
     """
     parts: list[str] = []
     seen_id = False
@@ -328,7 +333,10 @@ def render_order_by(
         else:
             expr = f"({_render_field_expr(model_class, ob.field)})::{cast}"
         direction = "ASC" if ob.direction == "asc" else "DESC"
-        parts.append(f"{expr} {direction}")
+        if ob.field == _PRIMARY_KEY_COLUMN:
+            parts.append(f"{expr} {direction}")
+        else:
+            parts.append(f"{expr} {direction} NULLS LAST")
     if not seen_id:
         parts.append(f"{_PRIMARY_KEY_COLUMN} ASC")
     return "ORDER BY " + ", ".join(parts)

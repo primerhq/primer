@@ -80,3 +80,35 @@ def test_compound_and_with_bool_and_str():
     sql, params = _sql(Predicate(left=left, op=Op.AND, right=right))
     assert sql == "((data->>'name' = $1) AND ((data->>'enabled')::boolean = $2))", sql
     assert params == ["x", True]
+
+
+from primer.model.storage import OrderBy
+from primer.storage._predicate import render_order_by
+
+
+def test_like_renders_bare_case_sensitive_operator():
+    # Postgres LIKE is case-sensitive by construction; the translator
+    # must emit a bare LIKE (no ILIKE, no lower()), so it matches the
+    # SQLite backend pinned via PRAGMA case_sensitive_like = ON.
+    sql, params = _sql(
+        Predicate(left=FieldRef(name="name"), op=Op.LIKE, right=Value(value="Hello%"))
+    )
+    assert sql == "(data->>'name' LIKE $1)", sql
+    assert "ILIKE" not in sql and "lower(" not in sql
+    assert params == ["Hello%"]
+
+
+def test_order_by_nullable_field_is_nulls_last():
+    # NULLs sort LAST so keyset pagination can page across the NULL
+    # boundary; parity with SQLite's "(field IS NULL) ASC" sort term.
+    clause = render_order_by(
+        _Model, order_by=[OrderBy(field="name", direction="asc")]
+    )
+    assert clause == "ORDER BY data->>'name' ASC NULLS LAST, id ASC", clause
+
+
+def test_order_by_id_has_no_nulls_clause():
+    clause = render_order_by(
+        _Model, order_by=[OrderBy(field="id", direction="desc")]
+    )
+    assert clause == "ORDER BY id DESC", clause

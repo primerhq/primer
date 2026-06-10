@@ -14,17 +14,31 @@ from primer.storage._cursor import (
 )
 
 
+from typing import Optional
+
+
 class _Sample(Identifiable):
     name: str
     count: int
+
+
+class _SampleNullable(Identifiable):
+    name: str
+    count: int
+    maybe: Optional[str] = None
 
 
 def test_encode_decode_roundtrip_with_no_orderby():
     entity = _Sample(id="abc", name="x", count=3)
     cursor = _encode_cursor_for(entity, order_by=None)
     decoded = _decode_cursor(cursor)
-    # No order keys -> only the implicit id-ASC tiebreaker.
-    assert decoded == {"keys": [{"field": "id", "value": "abc", "direction": "asc"}]}
+    # No order keys -> only the implicit id-ASC tiebreaker. The
+    # ``is_null`` flag carries NULLS-LAST ordering for keyset seeks.
+    assert decoded == {
+        "keys": [
+            {"field": "id", "value": "abc", "direction": "asc", "is_null": False}
+        ]
+    }
 
 
 def test_encode_decode_roundtrip_with_orderby():
@@ -35,9 +49,22 @@ def test_encode_decode_roundtrip_with_orderby():
     decoded = _decode_cursor(cursor)
     assert decoded == {
         "keys": [
-            {"field": "count", "value": 3, "direction": "desc"},
-            {"field": "id", "value": "abc", "direction": "asc"},
+            {"field": "count", "value": 3, "direction": "desc", "is_null": False},
+            {"field": "id", "value": "abc", "direction": "asc", "is_null": False},
         ],
+    }
+
+
+def test_encode_null_orderby_value_sets_is_null_flag():
+    # A NULL sort-key value encodes is_null=True so the seek predicate
+    # can page across the NULL boundary (NULLS LAST).
+    cursor = _encode_cursor_for(
+        _SampleNullable(id="abc", name="x", count=3, maybe=None),
+        order_by=[OrderBy(field="maybe", direction="asc")],
+    )
+    decoded = _decode_cursor(cursor)
+    assert decoded["keys"][0] == {
+        "field": "maybe", "value": None, "direction": "asc", "is_null": True,
     }
 
 

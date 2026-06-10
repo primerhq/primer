@@ -698,34 +698,68 @@ class PostgresStorage(Storage[ModelT]):
         if not keys:
             raise BadRequestError("cursor missing 'keys'")
 
+        clauses: list[str] = []
+        for prefix_len in range(len(keys)):
+            parts: list[str] = []
+            # Equality on the first prefix_len keys (NULL-safe).
+            for k in keys[:prefix_len]:
+                parts.append(self._cursor_key_eq(translator, k))
+            # Strict "past this key" on the prefix_len-th key (NULL-safe).
+            parts.append(self._cursor_key_gt(translator, keys[prefix_len]))
+            clauses.append("(" + " AND ".join(parts) + ")")
+        return "(" + " OR ".join(clauses) + ")"
+
+    def _cursor_key_exprs(self, k: dict[str, Any]) -> tuple[str, str]:
+        """Return ``(null_flag_expr, typed_value_expr)`` for a cursor key.
+
+        The null-flag expression yields ``true``/``false``; the value
+        expression is the typed field expression (so non-text seek keys
+        cast the left side to match the bound Python value -- asyncpg
+        rejects a bool/int bind against a bare text ``data->>'k'``).
+        """
         from primer.storage._predicate import (  # local import to avoid cycle
             _render_field_expr,
             _render_typed_field_expr,
         )
 
-        clauses: list[str] = []
-        for prefix_len in range(len(keys)):
-            parts: list[str] = []
-            # Equality on the first prefix_len keys. Use the typed
-            # expression so a non-text seek key (bool / int / float)
-            # casts the left side to match the bound Python value --
-            # asyncpg rejects a bool/int bind against a bare text
-            # ``data->>'k'`` expression (see _predicate._TYPED_COMPARISON_OPS).
-            for k in keys[:prefix_len]:
-                expr = _render_typed_field_expr(self._model, k["field"])
-                ph = translator.append_param(k["value"])
-                parts.append(f"({expr} = {ph})")
-            # Strict inequality on the prefix_len-th key
-            k = keys[prefix_len]
-            sql_op = ">" if k["direction"] == "asc" else "<"
-            if k["field"] == "id":
-                left = "id"
-            else:
-                left = _render_typed_field_expr(self._model, k["field"])
-            ph = translator.append_param(k["value"])
-            parts.append(f"({left} {sql_op} {ph})")
-            clauses.append("(" + " AND ".join(parts) + ")")
-        return "(" + " OR ".join(clauses) + ")"
+        if k["field"] == "id":
+            return "false", "id"
+        raw = _render_field_expr(self._model, k["field"])
+        return (
+            f"({raw} IS NULL)",
+            _render_typed_field_expr(self._model, k["field"]),
+        )
+
+    def _cursor_key_eq(
+        self, translator: _PredicateTranslator, k: dict[str, Any]
+    ) -> str:
+        """Equality of a cursor key, NULL-safe (both-null counts as equal)."""
+        null_expr, val_expr = self._cursor_key_exprs(k)
+        if k.get("is_null"):
+            return f"({null_expr} = true)"
+        ph = translator.append_param(k["value"])
+        return f"(({null_expr} = false) AND ({val_expr} = {ph}))"
+
+    def _cursor_key_gt(
+        self, translator: _PredicateTranslator, k: dict[str, Any]
+    ) -> str:
+        """Strict "past this key" in the key's own direction, NULL-safe.
+
+        Ordering tuple is ``(field IS NULL ASC, value <dir>)`` (NULLS
+        LAST), so a non-null cursor key is passed by a NULL row OR a
+        same-flag row strictly past it; a null cursor key sorts last and
+        can only be passed via the id tiebreaker, contributing no value
+        comparison here.
+        """
+        null_expr, val_expr = self._cursor_key_exprs(k)
+        if k.get("is_null"):
+            return "(false)"
+        sql_op = ">" if k["direction"] == "asc" else "<"
+        ph = translator.append_param(k["value"])
+        return (
+            f"(({null_expr} = true) OR "
+            f"(({null_expr} = false) AND ({val_expr} {sql_op} {ph})))"
+        )
 
     # ---------- error mapping ---------------------------------------------
 

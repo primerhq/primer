@@ -144,7 +144,9 @@ class Storage(ABC, Generic[ModelT]):
             choose a default order, but cursor pagination requires a
             stable total ordering -- backends MUST add an implicit
             secondary sort by ``id`` when the supplied ``order_by`` is
-            non-unique.
+            non-unique. Rows whose sort key is NULL sort LAST on every
+            backend, and keyset (cursor) pagination MUST page across the
+            NULL boundary without dropping or duplicating rows.
 
         Returns
         -------

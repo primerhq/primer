@@ -60,8 +60,12 @@ class Op(str, Enum):
     ``a AND b AND c`` -> ``Predicate(AND, Predicate(AND, a, b), c)``.
 
     ``LIKE`` follows SQL semantics: ``%`` matches any sequence,
-    ``_`` matches a single character. Backends SHOULD translate to their
-    native pattern syntax.
+    ``_`` matches a single character. Matching is case-SENSITIVE on
+    every backend (Postgres ``LIKE`` semantics); SQLite, whose ``LIKE``
+    is case-insensitive for ASCII by default, is pinned via
+    ``PRAGMA case_sensitive_like = ON`` so the two agree. Backends
+    SHOULD translate to their native pattern syntax but MUST preserve
+    case sensitivity.
     """
 
     EQ = "="

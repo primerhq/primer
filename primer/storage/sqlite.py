@@ -116,6 +116,13 @@ class SqliteStorageProvider(StorageProvider):
                 f"PRAGMA busy_timeout = {self._config.busy_timeout_ms}"
             )
             await self._conn.execute("PRAGMA foreign_keys = ON")
+            # SQLite's LIKE is case-insensitive for ASCII by default,
+            # whereas Postgres LIKE is case-sensitive. The Storage
+            # Protocol mandates case-SENSITIVE LIKE; COLLATE has no
+            # effect on LIKE in SQLite, so pin it via this connection-
+            # scoped pragma (this provider owns its connection, so the
+            # global scope affects only primer's own queries).
+            await self._conn.execute("PRAGMA case_sensitive_like = ON")
             await self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS leases ("
                 "  kind              TEXT NOT NULL,"
@@ -523,9 +530,15 @@ class SqliteStorage(Storage[ModelT]):
         """Build the WHERE fragment that seeks past the cursor.
 
         Cursor state shape:
-            {"keys": [{"field", "value", "direction"}, ..., {"field": "id", ...}]}
-        Lexicographic-expansion seek condition (same shape as the
-        Postgres backend; only the cell expressions differ).
+            {"keys": [{"field", "value", "direction", "is_null"}, ...,
+                      {"field": "id", ...}]}
+
+        Null-safe lexicographic-expansion seek (same shape as the
+        Postgres backend; only the cell expressions differ). Each key's
+        ordering tuple is ``((field IS NULL) ASC, field <dir>)`` so the
+        seek must compare the NULL flag ahead of the value, otherwise a
+        ``field > NULL`` comparison is UNKNOWN and silently drops every
+        row at/after the first NULL.
         """
         keys = cursor_state.get("keys", [])
         if not keys:
@@ -534,19 +547,51 @@ class SqliteStorage(Storage[ModelT]):
         for prefix_len in range(len(keys)):
             parts: list[str] = []
             for k in keys[:prefix_len]:
-                expr = _render_field_expr(self._model, k["field"])
-                ph = translator.append_param(k["value"])
-                parts.append(f"({expr} = {ph})")
-            k = keys[prefix_len]
-            sql_op = ">" if k["direction"] == "asc" else "<"
-            if k["field"] == "id":
-                left = "id"
-            else:
-                left = _render_typed_field_expr(self._model, k["field"])
-            ph = translator.append_param(k["value"])
-            parts.append(f"({left} {sql_op} {ph})")
+                parts.append(self._cursor_key_eq(translator, k))
+            parts.append(self._cursor_key_gt(translator, keys[prefix_len]))
             clauses.append("(" + " AND ".join(parts) + ")")
         return "(" + " OR ".join(clauses) + ")"
+
+    def _cursor_key_exprs(self, k: dict[str, Any]) -> tuple[str, str]:
+        """Return ``(null_flag_expr, value_expr)`` for a cursor key."""
+        if k["field"] == "id":
+            return "0", "id"
+        raw = _render_field_expr(self._model, k["field"])
+        return f"({raw} IS NULL)", _render_typed_field_expr(self._model, k["field"])
+
+    def _cursor_key_eq(
+        self, translator: _SqlitePredicateTranslator, k: dict[str, Any]
+    ) -> str:
+        """Equality of a cursor key, NULL-safe (both-null counts as equal)."""
+        null_expr, val_expr = self._cursor_key_exprs(k)
+        if k.get("is_null"):
+            return f"({null_expr} = 1)"
+        ph = translator.append_param(k["value"])
+        return f"(({null_expr} = 0) AND ({val_expr} = {ph}))"
+
+    def _cursor_key_gt(
+        self, translator: _SqlitePredicateTranslator, k: dict[str, Any]
+    ) -> str:
+        """Strict "past this key" in the key's own direction, NULL-safe.
+
+        Ordering tuple is ``(null_flag ASC, value <dir>)`` so:
+          * a non-null cursor key is passed by a NULL row (flag 1 > 0)
+            OR a same-flag row whose value is strictly past it;
+          * a null cursor key (flag 1, sorts last) can only be passed on
+            this key by the id tiebreaker, never by the value, so it
+            contributes no value comparison here.
+        """
+        null_expr, val_expr = self._cursor_key_exprs(k)
+        if k.get("is_null"):
+            # Nothing sorts after a NULL on this key (NULLs are last);
+            # the seek continues only via the id tiebreaker prefix.
+            return "(0)"
+        sql_op = ">" if k["direction"] == "asc" else "<"
+        ph = translator.append_param(k["value"])
+        return (
+            f"(({null_expr} = 1) OR "
+            f"(({null_expr} = 0) AND ({val_expr} {sql_op} {ph})))"
+        )
 
 
 # Map sqlite3 exception classes onto primer domain exceptions.

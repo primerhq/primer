@@ -189,3 +189,82 @@ async def test_cursor_pagination_walks_all_items(
             break
         cursor = page.next_cursor
     assert seen == [f"d{i:02d}" for i in range(7)]
+
+
+async def _walk_cursor(
+    s, *, order_by: list[OrderBy] | None, length: int
+) -> list[str]:
+    seen: list[str] = []
+    cursor: str | None = None
+    while True:
+        page = await s.find(None, CursorPage(cursor=cursor, length=length), order_by=order_by)
+        assert isinstance(page, CursorPageResponse)
+        seen.extend(d.id for d in page.items)
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_cursor_pagination_nullable_orderby_asc_no_drops_no_dupes(
+    sqlite_provider: SqliteStorageProvider,
+):
+    """Keyset pagination ordered on a NULLABLE field must page across the
+    NULL boundary without dropping or duplicating rows (NULLs sort last)."""
+    s = sqlite_provider.get_storage(_Doc)
+    rows = [
+        ("d0", "a"), ("d1", None), ("d2", "b"), ("d3", None),
+        ("d4", "c"), ("d5", None), ("d6", "d"),
+    ]
+    for rid, note in rows:
+        await s.create(_Doc(id=rid, title="t", note=note))
+    seen = await _walk_cursor(
+        s, order_by=[OrderBy(field="note", direction="asc")], length=2
+    )
+    assert sorted(seen) == [f"d{i}" for i in range(7)]
+    assert len(seen) == len(set(seen)), f"duplicates: {seen}"
+    # NULLs (d1, d3, d5) come last in ASC order.
+    assert set(seen[-3:]) == {"d1", "d3", "d5"}
+    assert seen[:4] == ["d0", "d2", "d4", "d6"]
+
+
+@pytest.mark.asyncio
+async def test_cursor_pagination_nullable_orderby_desc_no_drops_no_dupes(
+    sqlite_provider: SqliteStorageProvider,
+):
+    s = sqlite_provider.get_storage(_Doc)
+    rows = [
+        ("d0", "a"), ("d1", None), ("d2", "b"), ("d3", None), ("d4", "c"),
+    ]
+    for rid, note in rows:
+        await s.create(_Doc(id=rid, title="t", note=note))
+    seen = await _walk_cursor(
+        s, order_by=[OrderBy(field="note", direction="desc")], length=2
+    )
+    assert sorted(seen) == [f"d{i}" for i in range(5)]
+    assert len(seen) == len(set(seen)), f"duplicates: {seen}"
+    # Non-null descending first, NULLs last.
+    assert seen[:3] == ["d4", "d2", "d0"]
+    assert set(seen[-2:]) == {"d1", "d3"}
+
+
+@pytest.mark.asyncio
+async def test_like_is_case_sensitive(sqlite_provider: SqliteStorageProvider):
+    """Op.LIKE is case-SENSITIVE (Protocol contract), matching Postgres.
+
+    SQLite LIKE is case-insensitive for ASCII by default; the provider
+    pins ``PRAGMA case_sensitive_like = ON`` so "Hello" does not match
+    "hello%"."""
+    s = sqlite_provider.get_storage(_Doc)
+    await s.create(_Doc(id="h", title="Hello"))
+    miss = await s.find(
+        Predicate(left=FieldRef(name="title"), op=Op.LIKE, right=Value(value="hello%")),
+        OffsetPage(offset=0, length=10),
+    )
+    assert [d.id for d in miss.items] == []
+    hit = await s.find(
+        Predicate(left=FieldRef(name="title"), op=Op.LIKE, right=Value(value="Hello%")),
+        OffsetPage(offset=0, length=10),
+    )
+    assert [d.id for d in hit.items] == ["h"]

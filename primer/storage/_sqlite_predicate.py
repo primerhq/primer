@@ -230,6 +230,11 @@ def render_order_by_sqlite(
 
     Always appends an implicit ``id ASC`` tiebreaker so cursor
     pagination has a deterministic seek key.
+
+    Each non-id key is prefixed with a ``(<field> IS NULL)`` sort term
+    so NULLs always sort LAST, deterministically and identically to the
+    Postgres backend (which uses ``NULLS LAST``). This keeps keyset
+    pagination null-safe across a NULL boundary.
     """
     parts: list[str] = []
     seen_id = False
@@ -243,6 +248,12 @@ def render_order_by_sqlite(
         else:
             expr = f"CAST({_render_field_expr(model_class, ob.field)} AS {cast})"
         direction = "ASC" if ob.direction == "asc" else "DESC"
+        if ob.field != _PRIMARY_KEY_COLUMN:
+            # NULLs LAST: a row with NULL gets flag 1 and sorts after
+            # flag 0 in ASC. For DESC the value sorts descending but
+            # NULLs must still come last, so the flag stays ASC.
+            null_expr = _render_field_expr(model_class, ob.field)
+            parts.append(f"({null_expr} IS NULL) ASC")
         parts.append(f"{expr} {direction}")
     if not seen_id:
         parts.append(f"{_PRIMARY_KEY_COLUMN} ASC")

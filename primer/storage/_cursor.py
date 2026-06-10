@@ -34,8 +34,21 @@ def _encode_cursor_for(
             value: Any = dumped.get("id")
         else:
             value = _resolve_dotted(dumped, ob.field)
-        keys.append({"field": ob.field, "value": value, "direction": ob.direction})
-    keys.append({"field": "id", "value": dumped["id"], "direction": "asc"})
+        keys.append(
+            {
+                "field": ob.field,
+                "value": value,
+                "direction": ob.direction,
+                # NULL-flag for null-safe keyset seeks. Both backends
+                # order by ``(field IS NULL, field, id)`` with NULLs
+                # sorted LAST, so the seek predicate must compare this
+                # flag lexicographically ahead of the value.
+                "is_null": value is None,
+            }
+        )
+    keys.append(
+        {"field": "id", "value": dumped["id"], "direction": "asc", "is_null": False}
+    )
     payload = json.dumps({"keys": keys}, separators=(",", ":"))
     return base64.urlsafe_b64encode(payload.encode("utf-8")).rstrip(b"=").decode("ascii")
 

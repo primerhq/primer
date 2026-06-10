@@ -181,8 +181,12 @@ def test_render_order_by_appends_implicit_id_asc():
         _Row,
         order_by=[OrderBy(field="count", direction="desc")],
     )
+    # A non-id key gets a leading "(field IS NULL) ASC" term so NULLs
+    # sort LAST (parity with Postgres NULLS LAST), keeping cursor
+    # pagination null-safe across the NULL boundary.
     assert clause == (
-        "ORDER BY CAST(json_extract(data, '$.count') AS INTEGER) DESC, id ASC"
+        "ORDER BY (json_extract(data, '$.count') IS NULL) ASC, "
+        "CAST(json_extract(data, '$.count') AS INTEGER) DESC, id ASC"
     )
 
 
