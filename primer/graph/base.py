@@ -713,12 +713,19 @@ class _BaseGraphExecutor(ABC):
         self._nodes_by_id = {n.id: n for n in graph.nodes}
         self._edges_by_from: dict[str, list] = {}
         self._edges_by_to: dict[str, list] = {}
+        # Source node ids that own a callable-router out-edge. A callable
+        # router's target is unknown statically (it can return any node id at
+        # run time), so it is NOT recorded in ``_edges_by_to``. Instead the
+        # FanIn ready-set treats any such source as a *potential* upstream
+        # while it is still live (admitted-but-not-yet-resolved): see
+        # ``_fanin_ready``. Without this a FanIn fed by a callable router
+        # could fire before that branch completed.
+        self._callable_router_sources: set[str] = set()
         for e in graph.edges:
             self._edges_by_from.setdefault(e.from_node, []).append(e)
             # Only static + json-path conditional edges have statically-known
-            # ``to_node``s; conditional + callable router targets are skipped
-            # (FanIn ready-set treats them as already-satisfied since their
-            # source completion already records output to context.nodes).
+            # ``to_node``s; callable-router targets are tracked separately
+            # (see ``_callable_router_sources`` above).
             if isinstance(e, _StaticEdge):
                 self._edges_by_to.setdefault(e.to_node, []).append(e)
             elif isinstance(e, _ConditionalEdge):
@@ -729,6 +736,8 @@ class _BaseGraphExecutor(ABC):
                         self._edges_by_to.setdefault(
                             e.router.default_to, []
                         ).append(e)
+                elif isinstance(e.router, _CallableRouter):
+                    self._callable_router_sources.add(e.from_node)
         # FanOut bookkeeping (Spec B §2.1):
         # ``_pending_fanout`` -- staged instances awaiting drain after the
         #   FanOut's own completion within the current superstep.
@@ -764,6 +773,15 @@ class _BaseGraphExecutor(ABC):
         # before the first superstep / after termination.
         self._context: GraphContext | None = None
         self._ready_set: set[str] = set()
+        # Node ids that have entered the ready set at least once this run.
+        # Used by ``_fanin_ready`` to decide whether a callable-router source
+        # is a *live* potential upstream (admitted but not yet resolved) that
+        # a FanIn must wait for, vs. a branch that never activated (which must
+        # NOT block the FanIn). Not part of the serialised checkpoint: a
+        # callable-router source that already produced output no longer
+        # blocks (its routing decision is settled), and resume only re-admits
+        # nodes that are pending anyway.
+        self._admitted: set[str] = set()
         self._node_states: dict[str, NodeRuntimeState] = {}
 
         # Turn-log emission. Subclasses (WorkspaceGraphExecutor /
@@ -890,6 +908,14 @@ class _BaseGraphExecutor(ABC):
         else:
             self._context = GraphContext.model_validate(ctx_raw)
         self._ready_set = set(payload.get("ready_set") or [])
+        # Re-seed the admitted-set used by the FanIn callable-router gate.
+        # The restored ready-set is the in-flight frontier; completed nodes
+        # already have output (so they never block). This keeps a resumed
+        # executor from forgetting that a still-pending callable-router
+        # source must gate a downstream FanIn.
+        self._admitted = set(self._ready_set)
+        if self._context is not None:
+            self._admitted.update(self._context.nodes.keys())
         self._node_states = {
             nid: NodeRuntimeState.model_validate(raw)
             for nid, raw in (payload.get("node_states") or {}).items()
@@ -1283,6 +1309,7 @@ class _BaseGraphExecutor(ABC):
             nodes={},
         )
         ready: set[str] = {_resolve_initial_ready_node(self._graph)}
+        self._admitted = set(ready)
         ended_reason: str | None = None
         ended_detail: str | None = None
         # Phase 6 — expose mid-flight state on the executor so
@@ -1638,9 +1665,15 @@ class _BaseGraphExecutor(ABC):
                                         agg_list[inst_obj.fanout_index] = fail_output
                                     else:
                                         agg_list.append(fail_output)
-                                    context.nodes[inst_obj.target_node_id] = [
-                                        x for x in agg_list if x is not None
-                                    ]
+                                    # Keep the list positionally aligned: a slot
+                                    # that has not reported yet stays ``None`` at
+                                    # its own index. Compacting here would shift
+                                    # later results onto the wrong index and make
+                                    # the FanIn ready-set undercount. The FanIn
+                                    # template / consumer reads by position.
+                                    context.nodes[inst_obj.target_node_id] = (
+                                        agg_list
+                                    )
                             continue
                     any_failed = True
                     # When the failure carries a spec §5.4 code (e.g. End-node
@@ -1674,9 +1707,11 @@ class _BaseGraphExecutor(ABC):
                             agg_list[inst.fanout_index] = done.output
                         else:
                             agg_list.append(done.output)
-                        context.nodes[inst.target_node_id] = [
-                            x for x in agg_list if x is not None
-                        ]
+                        # Keep the list positionally aligned (see the collect
+                        # path above): an instance that has not reported stays
+                        # ``None`` at its index; never compact, or later
+                        # results shift onto the wrong index.
+                        context.nodes[inst.target_node_id] = agg_list
                         # Spec B §2.5 — count successful instances against the
                         # drain state too so drain_then_fail / collect modes
                         # know when every sibling has reported in.
@@ -2325,7 +2360,6 @@ class _BaseGraphExecutor(ABC):
         graph authors free to write the natural ``worker -> fanin`` edge
         once even when ``worker`` is fan-out target with N instances.
         """
-        next_ready: set[str] = set()
         # Build the effective edge-source set: each just-ran id contributes
         # its own outgoing edges; synthesized fan-out instances also
         # contribute their bare target's outgoing edges (de-duplicated).
@@ -2334,33 +2368,57 @@ class _BaseGraphExecutor(ABC):
             inst = self._fanout_instances.get(nid)
             if inst is not None:
                 edge_sources.add(inst.target_node_id)
+        # Phase 1: resolve every outgoing edge to its concrete target. We must
+        # know the FULL set of nodes scheduled this pass BEFORE gating any
+        # FanIn, because a callable router resolved here may schedule a node
+        # that itself feeds the FanIn (and the FanIn must then wait for it).
+        candidates: list[str] = []
         for nid in edge_sources:
             for edge in self._edges_by_from.get(nid, []):
                 if isinstance(edge, _StaticEdge):
-                    target = edge.to_node
+                    candidates.append(edge.to_node)
                 else:  # _ConditionalEdge
                     target_opt = await self._evaluate_conditional(edge, context)
                     if target_opt is None:
                         continue
-                    target = target_opt
-                # FanIn-specific gate: don't admit until every upstream
-                # source has produced output.
-                target_node = self._nodes_by_id.get(target)
-                if isinstance(target_node, _FanInNode):
-                    if not self._fanin_ready(target_node, context):
-                        continue
-                next_ready.add(target)
+                    candidates.append(target_opt)
+        # Every resolved target is now "live" (admitted at least once); a
+        # callable-router source admitted here is one the FanIn gate must
+        # still wait on if it has not yet produced output.
+        self._admitted.update(candidates)
+        # Phase 2: admit, gating FanIn targets on upstream completion.
+        next_ready: set[str] = set()
+        for target in candidates:
+            target_node = self._nodes_by_id.get(target)
+            if isinstance(target_node, _FanInNode):
+                if not self._fanin_ready(target_node, context):
+                    continue
+            next_ready.add(target)
+        self._admitted.update(next_ready)
         return next_ready
 
     def _fanin_ready(
         self, node: "_FanInNode", context: GraphContext
     ) -> bool:
-        """Return True iff every statically-known incoming edge source has
-        produced output. Spec B §2.2.
+        """Return True iff every incoming edge's source has produced output.
 
-        Fan-out sources count as "all N synthesized instances must have
-        produced output" — we compare ``len(context.nodes[src])`` against
-        the spawning FanOut's expected instance count.
+        Spec B §2.2. Three upstream kinds are gated:
+
+        * static / json-path-conditional edges: the source must have a
+          ``NodeOutput`` in ``context.nodes`` (``_edges_by_to`` index).
+        * fan-out sources: all N synthesized instances must have produced
+          output (compare non-``None`` count against the spawning FanOut's
+          expected instance count; the aggregator list is positionally
+          aligned and may carry ``None`` placeholders).
+        * callable-router sources: the router's target is unknown
+          statically, so any callable-router source that is *live* (has been
+          admitted this run but has not yet produced output) is treated as a
+          potential upstream the FanIn must wait for. Once such a source
+          produces output its routing decision is settled: if it routed here
+          the existing static/json-path or list checks above already account
+          for it; if it routed elsewhere it simply never blocks. A
+          callable-router source that never activates is never ``_admitted``,
+          so it cannot dead-lock the FanIn.
         """
         for edge in self._edges_by_to.get(node.id, []):
             src = getattr(edge, "from_node", None)
@@ -2371,8 +2429,20 @@ class _BaseGraphExecutor(ABC):
                 return False
             if isinstance(entry, list):
                 expected = self._fanout_target_expected_count.get(src)
-                if expected is None or len(entry) < expected:
+                # The aggregator list is positionally aligned and may carry
+                # ``None`` placeholders for instances that have not reported
+                # yet. Count only the slots that have actually produced output
+                # (``len`` would overcount past-end padding and undercount is
+                # impossible since we pad-to-index).
+                produced = sum(1 for x in entry if x is not None)
+                if expected is None or produced < expected:
                     return False
+        # Callable-router upstreams: a source that has been admitted this run
+        # but has not yet produced output may still route into this FanIn, so
+        # defer admission until it resolves.
+        for src in self._callable_router_sources:
+            if src in self._admitted and context.nodes.get(src) is None:
+                return False
         return True
 
     async def _evaluate_conditional(
