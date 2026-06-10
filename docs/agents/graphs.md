@@ -179,6 +179,34 @@ Common placeholder patterns:
   fan-out target's aggregated list.
 - `{{ fanout_item }}` - the current item inside a `map` instance.
 
+`initial_input` is a constant available to **every** node's template (it
+never mutates), so any node can read the original run input regardless of
+where it sits in the graph.
+
+### Structured input and per-node instructions
+
+Because `initial_input` is whatever you passed as `graph_input`, you can send
+a structured object and have each node pull only its slice - including
+per-node instructions keyed by node id:
+
+```json
+{
+  "document": "<text>",
+  "instructions": {"extract": "Company names only.", "summarise": "Three bullets, formal tone."}
+}
+```
+
+```text
+extract node    input_template: "{{ initial_input.instructions.extract }}\n\n{{ initial_input.document }}"
+summarise node  input_template: "{{ initial_input.instructions.summarise }}\n\n{{ nodes.extract.text }}"
+```
+
+This re-parameterises one reusable graph per run without editing its
+definition. Guard optional keys with the `default` filter
+(`{{ initial_input.instructions.extract | default('') }}`) since
+`StrictUndefined` makes a missing key a hard error, and pin the shape with
+the `begin` node's `input_schema` if you want a 422 on bad input.
+
 ## What you can build
 
 Because a node template can read any ancestor, pull structured
@@ -352,15 +380,144 @@ Only one handler runs per invocation, chosen by the triage category.
 
 ### Workflow 3 - scatter-gather (map then reduce)
 
-**Goal.** Process every item of a list in parallel, then synthesise.
+**Goal.** Classify every item of a list in parallel, then aggregate.
+A `map` fan-out spawns one `classify` instance per list item; the
+instance reads its item via `{{ fanout_item }}`. Note the wiring: the
+`fan_out` node has **no outgoing edge** (the spec wires `scatter ->
+classify`); each `classify` instance follows `classify`'s outgoing
+edge into the `fan_in`, which waits for all instances.
 
-Sketch: a `begin` -> an agent that emits a list (`response_format` with
-an array) -> a `fan_out` with a `map` spec
-(`source_node_id` the list node, `source_path` the array field,
-`target_node_id` a per-item agent whose template reads
-`{{ fanout_item }}`) -> a `fan_in` whose `aggregate_template` iterates
-`{% for r in nodes.<target> %}{{ r.text }}\n{% endfor %}` -> an `end`.
-Set `max_iterations` if the graph contains any cycle.
+```json
+{
+  "entity": {
+    "id": "map-reduce-reviews",
+    "description": "Classify each review in parallel, then aggregate.",
+    "nodes": [
+      {"id": "start", "kind": "begin"},
+      {"id": "split", "kind": "agent", "agent_id": "list-emitter",
+       "input_template": "Return the reviews as a JSON array of strings:\n{{ initial_input.reviews }}",
+       "response_format": {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "string"}}}}},
+      {"id": "scatter", "kind": "fan_out",
+       "specs": [{"kind": "map", "target_node_id": "classify", "source_node_id": "split", "source_path": "items"}]},
+      {"id": "classify", "kind": "agent", "agent_id": "sentiment",
+       "input_template": "Classify the sentiment (positive/negative/neutral) of review #{{ fanout_index }}:\n{{ fanout_item }}"},
+      {"id": "gather", "kind": "fan_in",
+       "aggregate_template": "{% for r in nodes.classify %}- {{ r.text }}\n{% endfor %}"},
+      {"id": "done", "kind": "end", "output_template": "{{ nodes.gather.text }}"}
+    ],
+    "edges": [
+      {"kind": "static", "from_node": "start", "to_node": "split"},
+      {"kind": "static", "from_node": "split", "to_node": "scatter"},
+      {"kind": "static", "from_node": "classify", "to_node": "gather"},
+      {"kind": "static", "from_node": "gather", "to_node": "done"}
+    ]
+  }
+}
+```
+
+### Workflow 4 - iterative refinement loop
+
+**Goal.** Draft, critique, and revise until the critic says it is good
+enough (or `max_iterations` is hit). The cycle `write -> critique ->
+write` requires `max_iterations`. The writer branches on `{{ iteration
+}}` for first-draft vs revision, and the critic's structured `done`
+flag drives a `json_path` router that either ends or loops back.
+
+```json
+{
+  "entity": {
+    "id": "draft-and-refine",
+    "description": "Draft, critique, revise up to a cap.",
+    "max_iterations": 6,
+    "nodes": [
+      {"id": "start", "kind": "begin"},
+      {"id": "write", "kind": "agent", "agent_id": "writer",
+       "input_template": "{% if iteration == 0 %}Write a first draft about: {{ initial_input.topic }}{% else %}Revise your draft using this critique:\n{{ nodes.critique.text }}\n\nPrevious draft:\n{{ nodes.write.text }}{% endif %}"},
+      {"id": "critique", "kind": "agent", "agent_id": "critic",
+       "input_template": "Critique this draft; set done=true only if it needs no further work:\n{{ nodes.write.text }}",
+       "response_format": {"type": "object", "properties": {"done": {"type": "boolean"}, "notes": {"type": "string"}}}},
+      {"id": "done", "kind": "end", "output_template": "{{ nodes.write.text }}"}
+    ],
+    "edges": [
+      {"kind": "static", "from_node": "start", "to_node": "write"},
+      {"kind": "static", "from_node": "write", "to_node": "critique"},
+      {"kind": "conditional", "from_node": "critique", "router": {
+        "kind": "json_path",
+        "branches": [{"conditions": [{"path": "done", "op": "eq", "value": true}], "to_node": "done"}],
+        "default_to": "write"
+      }}
+    ]
+  }
+}
+```
+
+### Workflow 5 - tool-augmented pipeline
+
+**Goal.** An agent plans a query, a `tool_call` node runs the search
+directly (no agent turn), and a writer answers from the results. The
+tool's `arguments` are templated per leaf: the string `query` is
+rendered from the planner's structured output; the non-string
+`max_results` passes through unchanged.
+
+```json
+{
+  "entity": {
+    "id": "research-and-write",
+    "description": "Plan a query, search the web, write from results.",
+    "nodes": [
+      {"id": "start", "kind": "begin"},
+      {"id": "plan", "kind": "agent", "agent_id": "planner",
+       "input_template": "Pick one web search query that answers: {{ initial_input.question }}",
+       "response_format": {"type": "object", "properties": {"query": {"type": "string"}}}},
+      {"id": "search", "kind": "tool_call", "tool_id": "web__web-search",
+       "arguments": {"query": "{{ nodes.plan.parsed.query }}", "max_results": 5}},
+      {"id": "write", "kind": "agent", "agent_id": "writer",
+       "input_template": "Answer using these results:\n{{ nodes.search.text }}\n\nQuestion: {{ initial_input.question }}"},
+      {"id": "done", "kind": "end", "output_template": "{{ nodes.write.text }}"}
+    ],
+    "edges": [
+      {"kind": "static", "from_node": "start", "to_node": "plan"},
+      {"kind": "static", "from_node": "plan", "to_node": "search"},
+      {"kind": "static", "from_node": "search", "to_node": "write"},
+      {"kind": "static", "from_node": "write", "to_node": "done"}
+    ]
+  }
+}
+```
+
+### Workflow 6 - best-of-N with a judge
+
+**Goal.** Run N independent attempts in parallel (`broadcast`), then a
+judge agent picks the best from the aggregated list. The `fan_in`
+hands the candidates to the judge via its `input_template` reading the
+`{{ nodes.candidate }}` list.
+
+```json
+{
+  "entity": {
+    "id": "best-of-n",
+    "description": "Generate N candidates, judge selects the best.",
+    "nodes": [
+      {"id": "start", "kind": "begin"},
+      {"id": "spread", "kind": "fan_out", "specs": [{"kind": "broadcast", "target_node_id": "candidate", "count": 3}]},
+      {"id": "candidate", "kind": "agent", "agent_id": "solver",
+       "input_template": "Attempt #{{ fanout_index }}. Solve:\n{{ initial_input.problem }}"},
+      {"id": "judge", "kind": "fan_in",
+       "aggregate_template": "Pick the best of these candidates and return only it:\n{% for c in nodes.candidate %}--- candidate {{ loop.index0 }} ---\n{{ c.text }}\n{% endfor %}"},
+      {"id": "done", "kind": "end", "output_template": "{{ nodes.judge.text }}"}
+    ],
+    "edges": [
+      {"kind": "static", "from_node": "start", "to_node": "spread"},
+      {"kind": "static", "from_node": "candidate", "to_node": "judge"},
+      {"kind": "static", "from_node": "judge", "to_node": "done"}
+    ]
+  }
+}
+```
+
+(For a judge that itself runs an LLM, route the `fan_in` output into a
+following `agent` node instead of doing the selection inside the
+`aggregate_template`.)
 
 ## Gotchas
 

@@ -105,6 +105,46 @@ Build and run graphs in the console.
 | `tee` | `target_node_ids` | Runs each named target once with the fan-out's input |
 | `map` | `target_node_id`, `source_node_id`, `source_path` | Parses a list from a source node's output and runs one instance per item |
 
+## Node input templating
+
+Every node that takes input builds it by rendering a **Jinja2 template** against the graph's accumulated state. This applies to an `agent`/`graph` node's `input_template`, an `end` node's `output_template`, a `fan_in` node's `aggregate_template`, and each string value inside a `tool_call` node's `arguments` (or its `arguments_template`).
+
+The renderer is sandboxed and uses `StrictUndefined`: a reference to a missing variable or attribute raises a render error (returned as `400`), it does not silently produce an empty string. Guard optional fields with the `default` filter, e.g. `{{ initial_input.note | default('') }}`.
+
+Templates see exactly three top-level variables, available to **every** node:
+
+| Variable | Meaning |
+|----------|---------|
+| `initial_input` | The graph's run input: whatever you passed as `graph_input` when starting the session. Its type is whatever you sent (a dict, string, or list of messages). Referenced as `initial_input`, not `input`. |
+| `iteration` | The current superstep iteration (integer; 0 on entry). Useful in cyclic graphs. |
+| `nodes` | A map of completed node outputs keyed by node id. Each value is a `NodeOutput` with `.text`, `.parsed` (set only when that node had a `response_format`), and `.history`. Fan-out targets appear as a list at `nodes.<target>`, with instances at `nodes['target[i]']`. |
+
+Inside a fan-out `map`/`broadcast` instance, two more variables are in scope for that instance only: `fanout_index` (integer) and `fanout_item` (that instance's item).
+
+### Structured input and per-node instructions
+
+`initial_input` carries your `graph_input` verbatim, so you can send a structured object and have each node pull only what it needs:
+
+```json
+{
+  "document": "<text>",
+  "instructions": {
+    "extract": "Extract company names only.",
+    "summarise": "Three bullets, formal tone."
+  }
+}
+```
+
+```text
+extract node    input_template: "{{ initial_input.instructions.extract }}\n\n{{ initial_input.document }}"
+summarise node  input_template: "{{ initial_input.instructions.summarise }}\n\n{{ nodes.extract.text }}"
+```
+
+Keying per-node directives by node id in one structured input lets a single reusable graph be re-parameterised each run without editing its definition. Two practical notes:
+
+- The default `input_template` (when omitted) assumes `initial_input` is a list of messages. If you send a dict or string, set an explicit `input_template` on each node.
+- Pin the input shape by setting `input_schema` (JSON Schema) on the `begin` node; `graph_input` is then validated at session-create and a mismatch returns `422`.
+
 ## Edge kinds
 
 **Static edge** (unconditional):
@@ -161,6 +201,93 @@ workspace's git-backed state repository on whichever backend hosts the
 workspace.
 
 See the Sessions API for details on session lifecycle.
+
+## Common patterns
+
+The node kinds plus templated inputs compose into a range of
+orchestration shapes. The most common:
+
+- **Linear pipeline** - `begin -> agent -> agent -> end`; each node's
+  `input_template` reads `nodes.<prev>.text`.
+- **Conditional branch** - an `agent` with `response_format` plus a
+  `conditional` edge whose `json_path` router branches on the parsed
+  output (a classify-then-dispatch state machine).
+- **Scatter-gather (map-reduce)** - a `fan_out` `map` spec spawns one
+  instance of a target per list item (each reads `{{ fanout_item }}`),
+  and a `fan_in` aggregates them.
+- **Best-of-N** - a `fan_out` `broadcast` runs N copies of one agent;
+  a `fan_in` (or a following agent) selects the best.
+- **Multi-lens** - a `fan_out` `tee` runs several different agents on
+  the same input; a `fan_in` merges.
+- **Iterative refinement** - a cycle (writer -> critic -> writer) with
+  `max_iterations`, the writer branching on `{{ iteration }}` and the
+  critic's structured flag driving a `json_path` router.
+- **Tool-augmented** - `tool_call` nodes (with templated `arguments`)
+  interleaved with agents for deterministic steps without an LLM turn.
+
+### Scatter-gather example
+
+The `fan_out` node has no outgoing edge (its `map` spec wires
+`scatter -> classify`); each `classify` instance follows its own edge
+into the `fan_in`, which waits for all instances.
+
+```json
+{
+  "id": "map-reduce-reviews",
+  "description": "Classify each review in parallel, then aggregate.",
+  "nodes": [
+    {"id": "start", "kind": "begin"},
+    {"id": "split", "kind": "agent", "agent_id": "list-emitter",
+     "input_template": "Return the reviews as a JSON array:\n{{ initial_input.reviews }}",
+     "response_format": {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "string"}}}}},
+    {"id": "scatter", "kind": "fan_out",
+     "specs": [{"kind": "map", "target_node_id": "classify", "source_node_id": "split", "source_path": "items"}]},
+    {"id": "classify", "kind": "agent", "agent_id": "sentiment",
+     "input_template": "Classify review #{{ fanout_index }}:\n{{ fanout_item }}"},
+    {"id": "gather", "kind": "fan_in",
+     "aggregate_template": "{% for r in nodes.classify %}- {{ r.text }}\n{% endfor %}"},
+    {"id": "done", "kind": "end", "output_template": "{{ nodes.gather.text }}"}
+  ],
+  "edges": [
+    {"kind": "static", "from_node": "start", "to_node": "split"},
+    {"kind": "static", "from_node": "split", "to_node": "scatter"},
+    {"kind": "static", "from_node": "classify", "to_node": "gather"},
+    {"kind": "static", "from_node": "gather", "to_node": "done"}
+  ]
+}
+```
+
+### Iterative-refinement example
+
+The cycle `write -> critique -> write` requires `max_iterations`. The
+writer branches on `{{ iteration }}`; the critic's structured `done`
+flag drives a `json_path` router that ends or loops back.
+
+```json
+{
+  "id": "draft-and-refine",
+  "description": "Draft, critique, revise up to a cap.",
+  "max_iterations": 6,
+  "nodes": [
+    {"id": "start", "kind": "begin"},
+    {"id": "write", "kind": "agent", "agent_id": "writer",
+     "input_template": "{% if iteration == 0 %}Draft about: {{ initial_input.topic }}{% else %}Revise using:\n{{ nodes.critique.text }}\n\nDraft:\n{{ nodes.write.text }}{% endif %}"},
+    {"id": "critique", "kind": "agent", "agent_id": "critic",
+     "input_template": "Critique; set done=true when good enough:\n{{ nodes.write.text }}",
+     "response_format": {"type": "object", "properties": {"done": {"type": "boolean"}}}},
+    {"id": "done", "kind": "end", "output_template": "{{ nodes.write.text }}"}
+  ],
+  "edges": [
+    {"kind": "static", "from_node": "start", "to_node": "write"},
+    {"kind": "static", "from_node": "write", "to_node": "critique"},
+    {"kind": "conditional", "from_node": "critique", "router": {
+      "kind": "json_path",
+      "branches": [{"conditions": [{"path": "done", "op": "eq", "value": true}], "to_node": "done"}],
+      "default_to": "write"
+    }}
+  ]
+}
+```
 
 ## Create a graph
 
