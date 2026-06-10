@@ -567,6 +567,132 @@ async def test_apply_install_sets_harness_id_on_entities(fake_storage_provider):
 
 
 # ---------------------------------------------------------------------------
+# BUG2: harness-installed documents are routed through the index pipeline
+# ---------------------------------------------------------------------------
+
+
+class _RecordingEmbedder:
+    async def embed(self, *, model, inputs):
+        class _R:
+            embeddings = [type("V", (), {"vector": [0.1, 0.2, 0.3]})()]
+        return _R()
+
+
+class _RecordingStore:
+    def __init__(self):
+        self.puts: list[Any] = []
+        self.created_collections: list[str] = []
+        self._registered: set[str] = set()
+
+    async def delete(self, cid, did):
+        pass
+
+    async def create_collection(self, cid, *, dimensions, distance="cosine"):
+        self.created_collections.append(cid)
+        self._registered.add(cid)
+
+    async def put(self, record):
+        self.puts.append(record)
+
+
+@pytest.mark.asyncio
+async def test_apply_install_indexes_documents(fake_storage_provider):
+    """A harness-installed Document with body text is submitted to the
+    embedding/index pipeline (the recording store receives chunk puts)."""
+    harness = _make_harness("acme")
+
+    collection_entry = RenderedEntry(
+        kind="collection", template_name="col", resolved_id="acme__col",
+        template_source_hash="h", rendered_hash="h1",
+        rendered_payload={
+            "description": "col",
+            "embedder": {"provider_id": "ep", "model": "text-emb"},
+            "search_provider_id": "ssp",
+        },
+    )
+    doc_entry = RenderedEntry(
+        kind="document", template_name="doc", resolved_id="acme__doc",
+        template_source_hash="h", rendered_hash="h2",
+        rendered_payload={
+            "collection_id": "acme__col",
+            "name": "Doc",
+            "meta": {"text": "hello searchable world"},
+        },
+    )
+
+    store = _RecordingStore()
+    prov_reg = MagicMock()
+    prov_reg.get_embedder = AsyncMock(return_value=_RecordingEmbedder())
+    ssr = MagicMock()
+    ssr.get_store = AsyncMock(return_value=store)
+
+    error = await apply_install(
+        storage_provider=fake_storage_provider,
+        harness=harness,
+        entries=[collection_entry, doc_entry],
+        rendered_files_by_name={},
+        bundle_hash="bh1",
+        overrides_hash="oh1",
+        schema_hash=None,
+        provider_registry=prov_reg,
+        semantic_search_registry=ssr,
+    )
+
+    assert error is None
+    # The document was chunked, embedded, and upserted into the store.
+    assert len(store.puts) >= 1
+    assert all(r.document_id == "acme__doc" for r in store.puts)
+    assert "acme__col" in store.created_collections
+
+
+@pytest.mark.asyncio
+async def test_apply_install_indexing_failure_does_not_fail_install(
+    fake_storage_provider,
+):
+    """Indexing is best-effort: an embedder error is swallowed and the
+    install still succeeds (the Document row persists)."""
+    harness = _make_harness("acme")
+
+    collection_entry = RenderedEntry(
+        kind="collection", template_name="col", resolved_id="acme__col",
+        template_source_hash="h", rendered_hash="h1",
+        rendered_payload={
+            "description": "col",
+            "embedder": {"provider_id": "ep", "model": "text-emb"},
+            "search_provider_id": "ssp",
+        },
+    )
+    doc_entry = RenderedEntry(
+        kind="document", template_name="doc", resolved_id="acme__doc",
+        template_source_hash="h", rendered_hash="h2",
+        rendered_payload={
+            "collection_id": "acme__col", "name": "Doc",
+            "meta": {"text": "body"},
+        },
+    )
+
+    prov_reg = MagicMock()
+    prov_reg.get_embedder = AsyncMock(side_effect=RuntimeError("no embedder"))
+    ssr = MagicMock()
+    ssr.get_store = AsyncMock(side_effect=RuntimeError("no store"))
+
+    error = await apply_install(
+        storage_provider=fake_storage_provider,
+        harness=harness,
+        entries=[collection_entry, doc_entry],
+        rendered_files_by_name={},
+        bundle_hash="bh1", overrides_hash="oh1", schema_hash=None,
+        provider_registry=prov_reg,
+        semantic_search_registry=ssr,
+    )
+
+    assert error is None
+    from primer.model.collection import Document
+    stored = await fake_storage_provider.get_storage(Document).get("acme__doc")
+    assert stored is not None
+
+
+# ---------------------------------------------------------------------------
 # 7. apply_install — writes HarnessRendering snapshot
 # ---------------------------------------------------------------------------
 
@@ -1054,9 +1180,9 @@ async def test_apply_install_payload_cannot_override_harness_id(fake_storage_pro
 @pytest.mark.asyncio
 async def test_apply_sync_surfaces_partial_apply_errors(fake_storage_provider):
     """When a create inside apply_sync raises, apply_sync returns a
-    partial_apply_failure error JSON (so dispatch can avoid stamping
-    bundle_hash) — but the snapshot is still written with the new
-    entries (so the next sync diffs against the right baseline)."""
+    partial_apply_failure error JSON AND does NOT advance the rendering
+    snapshot, leaving the prior snapshot intact so the next sync re-runs
+    the diff against the actual deployed baseline (no permanent drift)."""
     harness = _make_harness("acme")
 
     # Pre-seed an old rendering so we hit the non-fast-path branch.
@@ -1100,3 +1226,72 @@ async def test_apply_sync_surfaces_partial_apply_errors(fake_storage_provider):
     import json as _json
     parsed = _json.loads(error)
     assert parsed["code"] == "partial_apply_failure"
+
+    # BUG1 regression: the snapshot MUST still reflect the last fully-applied
+    # state (old-bh), NOT the new bundle that failed to apply. Otherwise the
+    # next sync's fast-path sees matching hashes and skips the retry forever.
+    snapshot = await fake_storage_provider.get_storage(HarnessRendering).get(
+        harness.id
+    )
+    assert snapshot is not None
+    assert snapshot.bundle_hash == "old-bh", (
+        "snapshot must not advance on partial apply failure"
+    )
+    assert snapshot.overrides_hash == "old-oh"
+
+
+@pytest.mark.asyncio
+async def test_apply_sync_failed_entity_retried_on_next_sync(fake_storage_provider):
+    """End-to-end of BUG1: a sync that partially fails, then a clean re-sync
+    of the SAME bundle, must actually create the previously-failed entity
+    (the fast-path must not short-circuit because the snapshot was advanced)."""
+    harness = _make_harness("acme")
+
+    await fake_storage_provider.get_storage(HarnessRendering).create(
+        HarnessRendering(
+            id=harness.id, harness_id=harness.id,
+            bundle_hash="old-bh", overrides_hash="old-oh", schema_hash=None,
+            entries=[], rendered_at=datetime.now(timezone.utc),
+        )
+    )
+
+    entry = RenderedEntry(
+        kind="agent", template_name="asst", resolved_id="acme__asst",
+        template_source_hash="h", rendered_hash="r",
+        rendered_payload={
+            "description": "assistant",
+            "model": {"provider_id": "p", "model_name": "m"},
+        },
+    )
+
+    from primer.model.agent import Agent
+    agent_storage = fake_storage_provider.get_storage(Agent)
+    orig_create = agent_storage.create
+
+    async def boom(_obj):
+        raise RuntimeError("transient apply failure")
+
+    agent_storage.create = boom  # type: ignore[assignment]
+    err1 = await apply_sync(
+        storage_provider=fake_storage_provider,
+        harness=harness,
+        new_entries=[entry],
+        rendered_files_by_name={},
+        bundle_hash="new-bh", overrides_hash="new-oh", schema_hash=None,
+    )
+    assert err1 is not None
+    agent_storage.create = orig_create  # type: ignore[assignment]
+
+    # Re-sync the SAME (new) bundle. The fast-path must NOT skip, and the
+    # agent must finally be created.
+    err2 = await apply_sync(
+        storage_provider=fake_storage_provider,
+        harness=harness,
+        new_entries=[entry],
+        rendered_files_by_name={},
+        bundle_hash="new-bh", overrides_hash="new-oh", schema_hash=None,
+    )
+    assert err2 is None
+    stored = await agent_storage.get("acme__asst")
+    assert stored is not None
+    assert stored.harness_id == harness.id

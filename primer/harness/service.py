@@ -19,11 +19,15 @@ from typing import Any
 
 from pydantic import ValidationError
 
+import logging
+
 from primer.harness.diff import diff_renderings
 from primer.harness.hashes import hash_rendered_payload, hash_template_source
 from primer.harness.template import RenderedFile
 from primer.model.except_ import ConflictError
 from primer.model.harness import Harness, HarnessRendering, RenderedEntry
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +408,52 @@ _UNINSTALL_ORDER: list[str] = list(reversed(_INSTALL_ORDER))
 
 
 # ---------------------------------------------------------------------------
+# Document indexing (best-effort)
+# ---------------------------------------------------------------------------
+
+
+async def _index_installed_document(
+    *,
+    storage_provider: Any,
+    document_entity: Any,
+    provider_registry: Any | None,
+    semantic_search_registry: Any | None,
+) -> None:
+    """Route a harness-installed Document through the same chunk/embed/index
+    pipeline the REST ``create_document`` flow uses (its on_create hook).
+
+    Best-effort: when the registries are not wired (pure-storage tests) or
+    the embedder / vector store is unavailable, the failure is logged and
+    swallowed so the install never fails on indexing. The Document row is
+    already persisted; it simply will not be searchable until a later sync
+    re-indexes it.
+    """
+    if provider_registry is None or semantic_search_registry is None:
+        return
+    try:
+        from primer.knowledge.indexing import index_document  # noqa: PLC0415
+        from primer.model.collection import Collection  # noqa: PLC0415
+
+        collection = await storage_provider.get_storage(Collection).get(
+            document_entity.collection_id
+        )
+        if collection is None:
+            return
+        await index_document(
+            document=document_entity,
+            collection=collection,
+            provider_registry=provider_registry,
+            semantic_search_registry=semantic_search_registry,
+        )
+    except Exception:  # noqa: BLE001 - best-effort indexing, never fail install
+        logger.exception(
+            "harness document %s: indexing failed; row persisted but not "
+            "searchable",
+            getattr(document_entity, "id", "?"),
+        )
+
+
+# ---------------------------------------------------------------------------
 # apply_install
 # ---------------------------------------------------------------------------
 
@@ -417,6 +467,8 @@ async def apply_install(
     bundle_hash: str,
     overrides_hash: str,
     schema_hash: str | None,
+    provider_registry: Any | None = None,
+    semantic_search_registry: Any | None = None,
 ) -> str | None:
     """Create every entity in storage with harness_id=harness.id.
 
@@ -424,9 +476,12 @@ async def apply_install(
     Writes the HarnessRendering snapshot (id = harness.id).
     Returns None on success or a JSON-encoded error string on failure.
 
-    v1 limitation: Document content (content_inline / content_path) is stored
-    in Document.meta["content"] when present in the corresponding RenderedFile.
-    Full embedding-pipeline ingestion is deferred to a future release.
+    Document content (content_inline / content_path) is stored in
+    Document.meta["content"] when present in the corresponding RenderedFile,
+    and each installed Document is routed through the same chunk/embed/index
+    pipeline as the REST create_document flow (best-effort: indexing failures
+    are logged, never aborting the install). When the registries are omitted
+    (pure-storage callers) indexing is skipped.
     """
     # Group entries by kind for ordered application
     by_kind: dict[str, list[RenderedEntry]] = {k: [] for k in _INSTALL_ORDER}
@@ -434,6 +489,7 @@ async def apply_install(
         by_kind.setdefault(entry.kind, []).append(entry)
 
     created: list[tuple[str, str]] = []  # (kind, resolved_id) for rollback
+    created_documents: list[Any] = []  # entities to index after a clean apply
 
     try:
         for kind in _INSTALL_ORDER:
@@ -493,6 +549,8 @@ async def apply_install(
                     # let the generic apply_failed path handle it.
                     raise conflict
                 created.append((kind, entry.resolved_id))
+                if kind == "document":
+                    created_documents.append(entity)
 
     except Exception as exc:
         # Best-effort rollback of already-created entities
@@ -515,6 +573,15 @@ async def apply_install(
     )
     await storage_provider.get_storage(HarnessRendering).create(rendering)
 
+    # Best-effort: index installed documents through the normal pipeline.
+    for doc_entity in created_documents:
+        await _index_installed_document(
+            storage_provider=storage_provider,
+            document_entity=doc_entity,
+            provider_registry=provider_registry,
+            semantic_search_registry=semantic_search_registry,
+        )
+
     return None
 
 
@@ -532,13 +599,20 @@ async def apply_sync(
     bundle_hash: str,
     overrides_hash: str,
     schema_hash: str | None,
+    provider_registry: Any | None = None,
+    semantic_search_registry: Any | None = None,
 ) -> str | None:
     """Diff against the stored HarnessRendering, apply, replace snapshot.
 
     Fast path: if bundle_hash and overrides_hash both match the stored
     rendering, skip all mutations (no-op).
 
-    Per-entity failures are collected; we continue applying the rest.
+    Per-entity failures are collected; we continue applying the rest. On any
+    per-entity failure the rendering snapshot is left untouched (see BUG1
+    note below) so the next sync re-runs the diff against the real baseline.
+
+    Created / updated documents are routed through the same chunk/embed/index
+    pipeline as the REST flow (best-effort; skipped when registries omitted).
     Returns None on success or a JSON-encoded error string on failure.
     """
     rendering_storage = storage_provider.get_storage(HarnessRendering)
@@ -556,6 +630,7 @@ async def apply_sync(
     diff = diff_renderings(old_entries, new_entries)
 
     apply_errors: list[dict[str, Any]] = []
+    indexed_documents: list[Any] = []  # entities to index after a clean apply
 
     # Process deletes first (reverse uninstall order: graph → ... → toolset)
     for entry in _sorted_by_kind(diff.deletes, _UNINSTALL_ORDER):
@@ -595,6 +670,9 @@ async def apply_sync(
             apply_errors.append(
                 {"kind": entry.kind, "id": entry.resolved_id, "error": str(exc)}
             )
+        else:
+            if entry.kind == "document":
+                indexed_documents.append(entity)
 
     # Process updates
     for _old_entry, new_entry in diff.updates:
@@ -624,8 +702,20 @@ async def apply_sync(
             apply_errors.append(
                 {"kind": new_entry.kind, "id": new_entry.resolved_id, "error": str(exc)}
             )
+        else:
+            if new_entry.kind == "document":
+                indexed_documents.append(entity)
 
-    # Replace the rendering snapshot
+    # On partial apply failure we MUST NOT advance the rendering snapshot.
+    # The snapshot is the baseline the next sync diffs against (and the
+    # fast-path keys off its bundle_hash); advancing it to the new bundle
+    # would make the next sync believe the failed entity was applied and
+    # silently skip it forever (permanent drift). Leave the prior snapshot
+    # untouched and surface the failure so the harness status reflects ERROR.
+    if apply_errors:
+        return json.dumps({"code": "partial_apply_failure", "errors": apply_errors})
+
+    # All entities applied: replace the rendering snapshot.
     new_rendering = HarnessRendering(
         id=harness.id,
         harness_id=harness.id,
@@ -640,8 +730,14 @@ async def apply_sync(
     else:
         await rendering_storage.create(new_rendering)
 
-    if apply_errors:
-        return json.dumps({"code": "partial_apply_failure", "errors": apply_errors})
+    # Best-effort: index created/updated documents through the normal pipeline.
+    for doc_entity in indexed_documents:
+        await _index_installed_document(
+            storage_provider=storage_provider,
+            document_entity=doc_entity,
+            provider_registry=provider_registry,
+            semantic_search_registry=semantic_search_registry,
+        )
 
     return None
 

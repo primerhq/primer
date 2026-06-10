@@ -135,6 +135,7 @@ class HarnessDispatchDeps:
     storage_provider: StorageProvider
     event_bus: EventBus
     provider_registry: Any | None = None  # may be None in pure-storage tests
+    semantic_search_registry: Any | None = None  # may be None in pure-storage tests
 
 
 # ---------------------------------------------------------------------------
@@ -868,6 +869,8 @@ async def _do_install(
                 bundle_hash=current_bundle_hash,
                 overrides_hash=overrides_hash,
                 schema_hash=harness.schema_hash,
+                provider_registry=deps.provider_registry,
+                semantic_search_registry=deps.semantic_search_registry,
             )
             if error is not None:
                 return HarnessStatus.ERROR, error
@@ -1056,6 +1059,8 @@ async def _do_sync(
                 bundle_hash=current_bundle_hash,
                 overrides_hash=overrides_hash,
                 schema_hash=harness.schema_hash,
+                provider_registry=deps.provider_registry,
+                semantic_search_registry=deps.semantic_search_registry,
             )
 
             # Only stamp bundle_hash / resolved_commit when the apply

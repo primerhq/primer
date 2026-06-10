@@ -79,6 +79,7 @@ class WorkerPool:
         storage: "StorageProvider",
         workspace_registry: "WorkspaceRegistry",
         provider_registry: "ProviderRegistry",
+        semantic_search_registry: Any | None = None,
         router_registry: "RouterRegistry | None" = None,
         approval_resolver: "ApprovalResolver | None" = None,
         channel_dispatcher=None,
@@ -91,6 +92,10 @@ class WorkerPool:
         self._storage = storage
         self._workspace_registry = workspace_registry
         self._provider_registry = provider_registry
+        # Optional SemanticSearchRegistry so harness-installed documents can
+        # be routed through the chunk/embed/index pipeline. None in
+        # pure-storage tests (indexing is then skipped, best-effort).
+        self._semantic_search_registry = semantic_search_registry
         # Optional RouterRegistry for callable-router edges in graph
         # dispatch. None means only _StaticEdge + _JsonPathRouter edges
         # work; _CallableRouter edges will raise at runtime.
@@ -811,6 +816,7 @@ class WorkerPool:
             storage_provider=self._storage,
             event_bus=self._event_bus,
             provider_registry=self._provider_registry,
+            semantic_search_registry=self._semantic_search_registry,
         )
         success = False
         try:
