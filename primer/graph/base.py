@@ -686,6 +686,26 @@ class _PendingToolCall:
     arguments: dict[str, Any]
 
 
+@dataclass
+class _PendingAgentYield:
+    """One agent node suspended on a yielding tool (ask_user) or an
+    approval gate mid-superstep.
+
+    Captured when :class:`YieldToWorker` bubbles up from
+    ``_stream_agent_node``; persisted into the checkpoint so a resumed
+    executor can rebuild the node's turn and continue it with the
+    human's answer / decision injected as the tool result.
+    """
+
+    node_id: str
+    tool_call_id: str
+    event_key: str
+    tool_name: str               # "ask_user" or "_approval"
+    resume_metadata: dict[str, Any]
+    llm_messages: list[dict[str, Any]]
+    iteration: int
+
+
 class _BaseGraphExecutor(ABC):
     """Pregel-style graph runtime base class with live event streaming."""
 
@@ -767,6 +787,12 @@ class _BaseGraphExecutor(ABC):
         # the session), and ``resume_from_checkpoint`` drains the list on
         # the resume path with ``bypass_approval=True``.
         self._pending_toolcalls: list[_PendingToolCall] = []
+        # ``_pending_agent_yields`` accumulates agent nodes that raised
+        # :class:`YieldToWorker` (ask_user / approval gate) during a
+        # superstep; same park/checkpoint/resume flow as ToolCalls, but
+        # resumed by rebuilding the node's agent turn (see
+        # ``_resume_agent_node``).
+        self._pending_agent_yields: list[_PendingAgentYield] = []
         # ``_context`` and ``_ready_set`` are populated by :meth:`invoke`
         # at the top of each superstep and kept on the executor so
         # :meth:`snapshot_state` can serialise them mid-flight. ``None``
@@ -891,6 +917,18 @@ class _BaseGraphExecutor(ABC):
                 }
                 for p in self._pending_toolcalls
             ],
+            "pending_agent_yields": [
+                {
+                    "node_id": p.node_id,
+                    "tool_call_id": p.tool_call_id,
+                    "event_key": p.event_key,
+                    "tool_name": p.tool_name,
+                    "resume_metadata": dict(p.resume_metadata),
+                    "llm_messages": list(p.llm_messages),
+                    "iteration": p.iteration,
+                }
+                for p in self._pending_agent_yields
+            ],
         }
 
     def restore_state(self, payload: dict[str, Any]) -> None:
@@ -962,6 +1000,18 @@ class _BaseGraphExecutor(ABC):
                 arguments=dict(raw.get("arguments") or {}),
             )
             for raw in (payload.get("pending_toolcalls") or [])
+        ]
+        self._pending_agent_yields = [
+            _PendingAgentYield(
+                node_id=raw["node_id"],
+                tool_call_id=raw["tool_call_id"],
+                event_key=raw["event_key"],
+                tool_name=raw["tool_name"],
+                resume_metadata=dict(raw.get("resume_metadata") or {}),
+                llm_messages=list(raw.get("llm_messages") or []),
+                iteration=raw["iteration"],
+            )
+            for raw in (payload.get("pending_agent_yields") or [])
         ]
 
     async def resume_from_checkpoint(
@@ -1752,7 +1802,7 @@ class _BaseGraphExecutor(ABC):
             # the resume path. ``_save_state`` is called with
             # ``SessionStatus.WAITING`` so the persisted state reflects
             # the paused world.
-            if self._pending_toolcalls:
+            if self._pending_toolcalls or self._pending_agent_yields:
                 # Keep ready set / context up to date on the executor for
                 # the snapshot.
                 self._ready_set = set(ready_ordered)
@@ -1763,34 +1813,52 @@ class _BaseGraphExecutor(ABC):
                     node_states=node_states,
                     status=SessionStatus.WAITING,
                 )
-                first = self._pending_toolcalls[0]
-                # Carry the gated call's identity on the approval yield so
-                # the channel message / approval UI shows what is being
-                # approved ("Run tool <name> {args}") instead of
-                # "Approve <unknown>({})?". Rebuilt from the node's tool_id
-                # and the pending entry's rendered arguments.
-                _node_def = next(
-                    (n for n in self._graph.nodes if n.id == first.node_id),
-                    None,
+                # All human-interaction event keys this superstep produced
+                # (tool_call approvals + agent-node yields), in a stable
+                # order. The worker parks on the full set; any one firing
+                # wakes the session, which resumes that node and re-parks
+                # on the remaining keys until drained.
+                _all_keys = (
+                    [p.parked_event_key for p in self._pending_toolcalls]
+                    + [p.event_key for p in self._pending_agent_yields]
                 )
-                _tool_id = getattr(_node_def, "tool_id", None)
-                _resume_meta: dict[str, Any] = {}
-                if _tool_id is not None:
-                    _resume_meta["original_call"] = {
-                        "id": first.tool_call_id,
-                        "name": _tool_id,
-                        "arguments": first.arguments,
-                    }
+                # Primary entry drives back-compat fields (parked_event_key,
+                # timeout, display). Prefer a tool_call (carry original_call
+                # so the approval UI shows "Run tool <name> {args}"); else
+                # the first agent yield (carry its resume_metadata, e.g. the
+                # ask_user prompt).
+                if self._pending_toolcalls:
+                    first = self._pending_toolcalls[0]
+                    _primary_event_key = first.parked_event_key
+                    _primary_tcid = first.tool_call_id
+                    _node_def = next(
+                        (n for n in self._graph.nodes if n.id == first.node_id),
+                        None,
+                    )
+                    _tool_id = getattr(_node_def, "tool_id", None)
+                    _resume_meta: dict[str, Any] = {}
+                    if _tool_id is not None:
+                        _resume_meta["original_call"] = {
+                            "id": first.tool_call_id,
+                            "name": _tool_id,
+                            "arguments": first.arguments,
+                        }
+                else:
+                    first_ay = self._pending_agent_yields[0]
+                    _primary_event_key = first_ay.event_key
+                    _primary_tcid = first_ay.tool_call_id
+                    _resume_meta = dict(first_ay.resume_metadata)
                 # Stamp the snapshot on the exception so the worker can
                 # persist it onto the session's parked-state blob without
                 # needing a separate ``snapshot_state`` round-trip.
                 yld = YieldToWorker(
                     Yielded(
                         tool_name="_approval",
-                        event_key=first.parked_event_key,
+                        event_key=_primary_event_key,
                         resume_metadata=_resume_meta,
+                        event_keys=_all_keys,
                     ),
-                    tool_call_id=first.tool_call_id,
+                    tool_call_id=_primary_tcid,
                 )
                 # Attach the snapshot payload + the full pending list so
                 # the worker / resume path has everything it needs.
@@ -2214,6 +2282,35 @@ class _BaseGraphExecutor(ABC):
             await queue.put(
                 _NodeDone(node_id=node_id, output=output, error=None)
             )
+        except YieldToWorker as yld:
+            if isinstance(node, _AgentNodeRef):
+                # Defer the agent node: record a pending agent-yield and
+                # post a suspended sentinel so the superstep leaves it
+                # unresolved. The executor checkpoints + re-raises after
+                # the superstep settles (mirrors the ToolCall path).
+                self._pending_agent_yields.append(
+                    _PendingAgentYield(
+                        node_id=node_id,
+                        tool_call_id=yld.tool_call_id,
+                        event_key=yld.yielded.event_key,
+                        tool_name=yld.yielded.tool_name,
+                        resume_metadata=dict(yld.yielded.resume_metadata or {}),
+                        llm_messages=list(yld.llm_messages or []),
+                        iteration=context.iteration,
+                    )
+                )
+                await queue.put(
+                    _NodeDone(
+                        node_id=node_id, output=None, error=None,
+                        ended_detail=None, suspended=True,
+                    )
+                )
+                return
+            # Non-agent yield (e.g. from a subgraph node): preserve the
+            # prior behaviour of recording it as a node error.
+            await queue.put(
+                _NodeDone(node_id=node_id, output=None, error=yld)
+            )
         except BaseException as exc:
             await queue.put(
                 _NodeDone(node_id=node_id, output=None, error=exc)
@@ -2273,19 +2370,30 @@ class _BaseGraphExecutor(ABC):
         # if the LLM emits ToolCallParts) happens transparently here --
         # graph nodes get the same behaviour as standalone agents.
         produced_messages: list[Message] = []
-        async for event in run_agent_turn(
-            agent=agent,
-            llm=llm,
-            llm_model=llm_model,
-            tool_manager=tool_manager,
-            prompt=prompt,
-            response_format=node.response_format,
-            principal=self._principal,
-            messages_out=produced_messages,
-        ):
-            await queue.put(
-                self._wrap_event(event, node.id, context.iteration)
-            )
+        try:
+            async for event in run_agent_turn(
+                agent=agent,
+                llm=llm,
+                llm_model=llm_model,
+                tool_manager=tool_manager,
+                prompt=prompt,
+                response_format=node.response_format,
+                principal=self._principal,
+                messages_out=produced_messages,
+            ):
+                await queue.put(
+                    self._wrap_event(event, node.id, context.iteration)
+                )
+        except YieldToWorker as yld:
+            # A yielding tool (ask_user) or an approval gate fired. The
+            # standalone agent executor stamps the in-progress assistant
+            # turn onto the exception; graph nodes call run_agent_turn
+            # directly, so do it here so the resume path can rehydrate it.
+            if not yld.llm_messages:
+                yld.llm_messages = [
+                    m.model_dump(mode="json") for m in produced_messages
+                ]
+            raise
 
         # Persist the new user msg + every message produced this turn
         # (assistant + any tool result messages from the loop).
