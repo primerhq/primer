@@ -291,13 +291,30 @@ async def run_one_session_turn(
         # _dispatch_to_channels never raises and no-ops when no dispatcher
         # is wired. Function-local import mirrors the ParkedState import
         # below to avoid the worker->dispatch circular import.
-        from primer.worker.yield_runtime import _dispatch_to_channels
-
-        await _dispatch_to_channels(
-            dispatcher=deps.channel_dispatcher,
-            session=session,
-            yielded=yielded_stamped,
+        from primer.worker.yield_runtime import (
+            _dispatch_to_channels,
+            _dispatch_to_channels_multi,
         )
+
+        graph_checkpoint = getattr(park, "graph_checkpoint", None)
+        multi_keys = getattr(yielded, "event_keys", None)
+        if multi_keys and graph_checkpoint:
+            # Multi-event graph park: one prompt per pending node. The
+            # re-park path (after a reply) never re-dispatches, so each
+            # node is prompted exactly once.
+            await _dispatch_to_channels_multi(
+                dispatcher=deps.channel_dispatcher,
+                workspace_id=session.workspace_id,
+                session_id=session.id,
+                pending=graph_checkpoint.get("pending_dispatch") or [],
+                already_sent=set(),
+            )
+        else:
+            await _dispatch_to_channels(
+                dispatcher=deps.channel_dispatcher,
+                session=session,
+                yielded=yielded_stamped,
+            )
 
         # The executor stamps YieldToWorker.llm_messages with the in-progress
         # turn history (the assistant message that emitted the tool_use).

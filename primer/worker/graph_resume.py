@@ -65,7 +65,9 @@ async def resume_graph_from_checkpoint(
     executor: "WorkspaceGraphExecutor",
     checkpoint: dict[str, Any],
     payload: "dict[str, Any] | YieldTimeout | YieldCancelled | Any",
-) -> str:
+    resumed_tcid: str | None = None,
+    agent_tool_result: "Any | None" = None,
+) -> "tuple[str, Any | None]":
     """Drive a graph executor's resume stream to completion.
 
     Parameters
@@ -89,26 +91,30 @@ async def resume_graph_from_checkpoint(
         :class:`_ToolApprovalRejected` so the resume drain emits the
         ``tool_execution_failed`` terminal event per spec §4.8.
 
+    ``resumed_tcid`` (multi-event park) selects which pending node the
+    human replied to; ``agent_tool_result`` is the tool-result Message for
+    a resumed agent-node yield (ask_user answer). When the resume leaves
+    other human-interaction nodes pending the executor re-raises
+    :class:`YieldToWorker`; this function catches it and returns it so the
+    worker can re-park on the remaining keys.
+
     Returns
     -------
-    str
-        ``"approved"`` if the operator approved (graph drained
-        normally); ``"rejected"`` otherwise. Caller uses this to mark
-        the session ENDED — graphs that complete via this path never
-        re-enqueue, mirroring :meth:`_GraphTurnDriver.last_done_reason`
-        (always ``"graph_ended"``).
+    tuple[str, YieldToWorker | None]
+        ``(decision, repark)``. ``decision`` is ``"approved"`` /
+        ``"rejected"``. ``repark`` is the re-park ``YieldToWorker`` when
+        nodes remain pending, else ``None`` (graph drained to completion).
     """
     # Local import to keep this module's import surface tiny — the
     # worker pool imports it lazily inside _handle_resume.
     from primer.graph.base import _ToolApprovalRejected
+    from primer.model.yield_ import YieldToWorker
 
     decision, reason = _decision_from_payload(payload)
 
-    if decision != "approved":
-        # Override the executor's bypass dispatch so every pending
-        # ToolCall surfaces as a rejection. ``resume_from_checkpoint``
-        # catches ``_ToolApprovalRejected`` and stamps each pending
-        # node with ``ended_detail='tool_execution_failed'``.
+    # Only the tool_call-approval rejection path uses the bypass override;
+    # an agent-node yield carries its result via ``agent_tool_result``.
+    if decision != "approved" and agent_tool_result is None:
         rejection_reason = reason or "rejected"
 
         async def _rejecting_dispatch(node, arguments):  # type: ignore[no-untyped-def]
@@ -116,13 +122,18 @@ async def resume_graph_from_checkpoint(
 
         executor._dispatch_toolcall_with_bypass = _rejecting_dispatch  # type: ignore[assignment]
 
-    # Drain the resume stream. Events are intentionally discarded here
-    # — streaming-tap subscribers attached via the executor's own
-    # fan-out still receive them. Mirrors :class:`_GraphTurnDriver.invoke`.
-    async for _ev in executor.resume_from_checkpoint(checkpoint):
-        pass
+    repark: YieldToWorker | None = None
+    try:
+        async for _ev in executor.resume_from_checkpoint(
+            checkpoint,
+            resumed_tcid=resumed_tcid,
+            agent_tool_result=agent_tool_result,
+        ):
+            pass
+    except YieldToWorker as yld:
+        repark = yld
 
-    return decision
+    return decision, repark
 
 
 __all__ = ["resume_graph_from_checkpoint"]

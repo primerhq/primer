@@ -277,14 +277,14 @@ async def test_resume_graph_from_checkpoint_approved_drains() -> None:
 
     real_resume = resume_executor.resume_from_checkpoint
 
-    async def _tap(cp):
-        async for ev in real_resume(cp):
+    async def _tap(cp, **kw):
+        async for ev in real_resume(cp, **kw):
             captured.append(ev)
             yield ev
 
     resume_executor.resume_from_checkpoint = _tap  # type: ignore[assignment]
 
-    decision = await resume_graph_from_checkpoint(
+    decision, _repark = await resume_graph_from_checkpoint(
         executor=resume_executor,
         checkpoint=restored.graph_checkpoint,  # type: ignore[arg-type]
         payload={"decision": "approved"},
@@ -356,14 +356,14 @@ async def test_resume_graph_from_checkpoint_rejected_terminates_failed() -> None
     captured: list[StreamEvent] = []
     real_resume = resume_executor.resume_from_checkpoint
 
-    async def _tap(cp):
-        async for ev in real_resume(cp):
+    async def _tap(cp, **kw):
+        async for ev in real_resume(cp, **kw):
             captured.append(ev)
             yield ev
 
     resume_executor.resume_from_checkpoint = _tap  # type: ignore[assignment]
 
-    decision = await resume_graph_from_checkpoint(
+    decision, _repark = await resume_graph_from_checkpoint(
         executor=resume_executor,
         checkpoint=checkpoint,
         payload={"decision": "rejected", "reason": "no thanks"},
@@ -423,7 +423,7 @@ async def test_resume_graph_from_checkpoint_timeout_terminates_failed() -> None:
         tool_dispatcher=never_called,
     )
 
-    decision = await resume_graph_from_checkpoint(
+    decision, _repark = await resume_graph_from_checkpoint(
         executor=resume_executor,
         checkpoint=checkpoint,
         payload=YieldTimeout(elapsed_seconds=3600.0),

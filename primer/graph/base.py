@@ -973,6 +973,35 @@ class _BaseGraphExecutor(ABC):
                 }
                 for p in self._pending_agent_yields
             ],
+            # Denormalised per-node dispatch info so the channel layer can
+            # send one prompt per pending node without re-deriving tool ids
+            # from the graph. tool_call entries resolve original_call here
+            # (the node tool_id is available at snapshot time).
+            "pending_dispatch": [
+                {
+                    "kind": "_approval",
+                    "tool_call_id": p.tool_call_id,
+                    "resume_metadata": {
+                        "original_call": {
+                            "id": p.tool_call_id,
+                            "name": getattr(
+                                next((n for n in self._graph.nodes
+                                      if n.id == p.node_id), None),
+                                "tool_id", "<unknown>",
+                            ),
+                            "arguments": dict(p.arguments),
+                        },
+                    },
+                }
+                for p in self._pending_toolcalls
+            ] + [
+                {
+                    "kind": p.tool_name,
+                    "tool_call_id": p.tool_call_id,
+                    "resume_metadata": dict(p.resume_metadata),
+                }
+                for p in self._pending_agent_yields
+            ],
         }
 
     def restore_state(self, payload: dict[str, Any]) -> None:
