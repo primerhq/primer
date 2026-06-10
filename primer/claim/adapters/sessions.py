@@ -62,6 +62,7 @@ class SessionClaimAdapter(ClaimAdapter):
             parked = sess.model_copy(update={
                 "parked_status": "parked",
                 "parked_event_key": p.parked_event_key,
+                "parked_event_keys": p.parked_event_keys,
                 "parked_until": p.parked_until,
                 "parked_at": p.parked_at,
                 "parked_state": p.parked_state,
@@ -78,6 +79,7 @@ class SessionClaimAdapter(ClaimAdapter):
         updates: dict[str, object | None] = {
             "parked_status": None,
             "parked_event_key": None,
+            "parked_event_keys": None,
             "parked_until": None,
             "parked_at": None,
             "parked_state": None,

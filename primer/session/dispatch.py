@@ -282,6 +282,7 @@ async def run_one_session_turn(
             event_key=yielded.event_key,
             timeout=yielded.timeout,
             resume_metadata=resume_metadata,
+            event_keys=getattr(yielded, "event_keys", None),
         )
 
         # Forward the prompt to every channel associated with this
@@ -334,6 +335,7 @@ async def run_one_session_turn(
             park=ParkRequest(
                 parked_state=parked_state.to_jsonable(),
                 parked_event_key=yielded.event_key,
+                parked_event_keys=getattr(yielded, "event_keys", None),
                 parked_until=parked_until,
                 parked_at=parked_at,
             ),

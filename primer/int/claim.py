@@ -40,6 +40,9 @@ class ParkRequest:
     parked_event_key: str
     parked_until: datetime | None
     parked_at: datetime
+    # Multi-event park: the full set of keys the session waits on (any one
+    # firing wakes it). None for the common single-event park.
+    parked_event_keys: list[str] | None = None
 
 
 @dataclass(frozen=True)

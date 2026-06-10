@@ -166,3 +166,33 @@ async def test_yield_to_worker_returns_park_outcome(
     assert outcome.park.parked_until is not None
     # parked_until must be after parked_at (timeout applied)
     assert outcome.park.parked_until > outcome.park.parked_at
+
+
+@pytest.mark.asyncio
+async def test_multi_event_park_persists_parked_event_keys(
+    seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+):
+    from typing import Any
+    from primer.model.yield_ import Yielded, YieldToWorker
+    yielded = Yielded(tool_name="_approval", event_key="ask_user:s1:tc-1",
+                      event_keys=["ask_user:s1:tc-1", "ask_user:s1:tc-2"],
+                      resume_metadata={})
+    exc = YieldToWorker(yielded, tool_call_id="tc-1", llm_messages=[])
+
+    class _Yielding:
+        async def invoke(self, messages: list[Any], **kw: Any):
+            raise exc
+            yield
+
+    async def _build(session):
+        return _Yielding()
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider, workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus, build_executor=_build)
+    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
+    assert outcome.park is not None
+    assert outcome.park.parked_event_keys == ["ask_user:s1:tc-1", "ask_user:s1:tc-2"]
+    # The blob's yielded carries the full set too (for resume + dispatch).
+    assert outcome.park.parked_state["yielded"]["event_keys"] == \
+        ["ask_user:s1:tc-1", "ask_user:s1:tc-2"]
