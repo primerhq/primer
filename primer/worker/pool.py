@@ -501,6 +501,7 @@ class WorkerPool:
             event_bus=self._event_bus,
             build_executor=_build_executor_with_shim_registration,
             turn_log_writer_factory=_turn_log_factory,
+            channel_dispatcher=self._channel_dispatcher,
         )
 
         outcome = ReleaseOutcome(success=False, drop_lease=True)

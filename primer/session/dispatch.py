@@ -94,6 +94,12 @@ class SessionDispatchDeps:
         [WorkspaceIO, str], TurnLogWriter,
     ] = _default_turn_log_factory
 
+    # Optional channel dispatcher. When set, a session that parks on an
+    # ask_user / tool-approval gate forwards the prompt to every channel
+    # associated with the session's workspace (Slack/Telegram/Discord).
+    # None -> no channel forwarding (the park still succeeds).
+    channel_dispatcher: Any | None = None
+
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -276,6 +282,20 @@ async def run_one_session_turn(
             event_key=yielded.event_key,
             timeout=yielded.timeout,
             resume_metadata=resume_metadata,
+        )
+
+        # Forward the prompt to every channel associated with this
+        # session's workspace (ask_user / tool_approval gates). Awaited
+        # so delivery is attempted before the lease drops;
+        # _dispatch_to_channels never raises and no-ops when no dispatcher
+        # is wired. Function-local import mirrors the ParkedState import
+        # below to avoid the worker->dispatch circular import.
+        from primer.worker.yield_runtime import _dispatch_to_channels
+
+        await _dispatch_to_channels(
+            dispatcher=deps.channel_dispatcher,
+            session=session,
+            yielded=yielded_stamped,
         )
 
         # The executor stamps YieldToWorker.llm_messages with the in-progress
