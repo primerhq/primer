@@ -74,10 +74,15 @@ level** (there is no `config` wrapper).
   `input_template` (Jinja, rendered to the user-role text appended to
   the agent's history before its turn), optional `response_format`
   (JSON Schema; when set the agent produces structured output and
-  `NodeOutput.parsed` is populated), optional `input_schema` (soft
-  warn-only validation of the rendered input).
+  `NodeOutput.parsed` is populated - a node with `response_format` is a
+  data-shaping turn and is offered **no tools**, so it cannot call tools
+  and emit structured output in the same turn), optional `input_schema`
+  (soft warn-only validation of the rendered input).
 - **`tool_call`** - invokes a tool directly, no LLM. Fields: `tool_id`
-  (scoped `toolset_id__bare_name`), `arguments` (an object whose
+  (scoped `toolset_id__bare_name` - workspace tools use the `workspace`
+  scope, e.g. `workspace__write` / `workspace__exec`; internal toolsets
+  use their own, e.g. `web__web-search`, `system__call_tool`),
+  `arguments` (an object whose
   **string leaves are each Jinja-rendered** against the context;
   non-string leaves pass through), or `arguments_template` (a
   full-JSON Jinja template that shadows `arguments` for dynamic
@@ -157,8 +162,8 @@ which exposes exactly three top-level variables:
 | Variable | Meaning |
 |----------|---------|
 | `initial_input` | The graph's input - whatever you passed as `graph_input` at session-create. Its type is **whatever you passed** (a dict, a string, or a `list[Message]`). NOT named `input`. |
-| `iteration` | The current superstep iteration (int; 0 on entry). Useful in cyclic graphs. |
-| `nodes` | A dict keyed by node id; values are `NodeOutput` (or `list[NodeOutput]` for fan-out targets). Access via attribute syntax: `nodes.extract.text`, `nodes.extract.parsed.entities`. |
+| `iteration` | The current superstep counter (int). The `begin` node runs at iteration 0, so the **first agent node runs at iteration 1**, not 0. Do not use `iteration == 0` to detect a node's first run in a loop - test `nodes.<prev> is defined` instead (see Workflow 4). |
+| `nodes` | A dict keyed by node id; values are `NodeOutput` (or `list[NodeOutput]` for fan-out targets, including `tee`). Holds only nodes that have **already run** this far - referencing a node that has not run yet (e.g. an un-taken conditional branch) raises under `StrictUndefined`, so guard with `{% if nodes.<id> is defined %}`. Access via attribute syntax: `nodes.extract.text`, `nodes.extract.parsed.entities`. |
 
 Inside a fan-out `map`/`broadcast` instance, two more variables are in
 scope for that instance's template: `fanout_index` (int) and
@@ -355,7 +360,7 @@ classification. The triage agent's `response_format`:
       {"id": "handle_bug", "kind": "agent", "agent_id": "bug-handler", "input_template": "{{ initial_input.text }}"},
       {"id": "handle_feature", "kind": "agent", "agent_id": "feature-handler", "input_template": "{{ initial_input.text }}"},
       {"id": "handle_support", "kind": "agent", "agent_id": "support-handler", "input_template": "{{ initial_input.text }}"},
-      {"id": "done", "kind": "end", "output_template": "{{ nodes.handle_bug.text }}{{ nodes.handle_feature.text }}{{ nodes.handle_support.text }}"}
+      {"id": "done", "kind": "end", "output_template": "{% if nodes.handle_bug is defined %}{{ nodes.handle_bug.text }}{% endif %}{% if nodes.handle_feature is defined %}{{ nodes.handle_feature.text }}{% endif %}{% if nodes.handle_support is defined %}{{ nodes.handle_support.text }}{% endif %}"}
     ],
     "edges": [
       {"kind": "static", "from_node": "start", "to_node": "triage"},
@@ -377,6 +382,9 @@ classification. The triage agent's `response_format`:
 ```
 
 Only one handler runs per invocation, chosen by the triage category.
+Because the other two handlers never run, the `end` node guards each
+with `{% if nodes.<id> is defined %}` - referencing an un-taken branch
+directly would raise under `StrictUndefined`.
 
 ### Workflow 3 - scatter-gather (map then reduce)
 
@@ -419,9 +427,11 @@ edge into the `fan_in`, which waits for all instances.
 
 **Goal.** Draft, critique, and revise until the critic says it is good
 enough (or `max_iterations` is hit). The cycle `write -> critique ->
-write` requires `max_iterations`. The writer branches on `{{ iteration
-}}` for first-draft vs revision, and the critic's structured `done`
-flag drives a `json_path` router that either ends or loops back.
+write` requires `max_iterations`. The writer detects its first run by
+testing whether the critic has run yet (`nodes.critique is defined`) -
+**not** `iteration == 0`, since the first `write` runs at iteration 1
+(begin is iteration 0). The critic's structured `done` flag drives a
+`json_path` router that either ends or loops back.
 
 ```json
 {
@@ -432,7 +442,7 @@ flag drives a `json_path` router that either ends or loops back.
     "nodes": [
       {"id": "start", "kind": "begin"},
       {"id": "write", "kind": "agent", "agent_id": "writer",
-       "input_template": "{% if iteration == 0 %}Write a first draft about: {{ initial_input.topic }}{% else %}Revise your draft using this critique:\n{{ nodes.critique.text }}\n\nPrevious draft:\n{{ nodes.write.text }}{% endif %}"},
+       "input_template": "{% if nodes.critique is defined %}Revise your draft using this critique:\n{{ nodes.critique.text }}\n\nPrevious draft:\n{{ nodes.write.text }}{% else %}Write a first draft about: {{ initial_input.topic }}{% endif %}"},
       {"id": "critique", "kind": "agent", "agent_id": "critic",
        "input_template": "Critique this draft; set done=true only if it needs no further work:\n{{ nodes.write.text }}",
        "response_format": {"type": "object", "properties": {"done": {"type": "boolean"}, "notes": {"type": "string"}}}},
@@ -530,6 +540,17 @@ following `agent` node instead of doing the selection inside the
   source node must set `response_format` or `parsed` is `null` and
   every condition is False. A missing `path` makes every operator
   return False (use `op: "exists"` to test presence).
+- **`nodes.<id>` holds only nodes that already ran.** Referencing an
+  un-taken conditional branch (or any not-yet-run node) raises under
+  `StrictUndefined`; guard with `{% if nodes.<id> is defined %}`. And
+  `iteration` is the global superstep counter (begin is 0, the first
+  agent node is 1), so detect a loop's first pass with
+  `nodes.<prev> is defined`, not `iteration == 0`.
+- **A fan-out target is a list in `nodes`.** After `broadcast`/`map`/`tee`,
+  `nodes.<target>` is a `list[NodeOutput]` - iterate it
+  (`{% for r in nodes.<target> %}`) or index it (`nodes.<target>[0].text`).
+  This holds even for `tee`, where each named target runs once and
+  becomes a single-element list.
 - **Node fields are top-level, edges use `from_node`/`to_node`.**
   There is no `config` wrapper and no `from`/`to` shorthand.
 - **Tool outputs land in `text`, not `parsed`.** To make an agent's
