@@ -22,13 +22,26 @@ def test_get_list_renders_table(mock_session):
     assert "a1" in result.output
 
 
-def test_get_one_by_id(mock_session):
+def test_get_one_by_id_emits_envelope(mock_session):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/agents/a1"
         return httpx.Response(200, json={"id": "a1", "model": "gpt"})
 
     mock_session.set_handler(handler)
     result = runner.invoke(app, ["get", "agent", "a1", "-o", "json"], obj=mock_session.session)
+    assert result.exit_code == 0, result.output
+    # Default single-object yaml/json emits the kind/spec envelope for round-trip.
+    assert json.loads(result.output) == {"kind": "agent", "spec": {"id": "a1", "model": "gpt"}}
+
+
+def test_get_one_raw_output_is_bare_body(mock_session):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "a1", "model": "gpt"})
+
+    mock_session.set_handler(handler)
+    result = runner.invoke(
+        app, ["get", "agent", "a1", "-o", "json", "-r"], obj=mock_session.session
+    )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["id"] == "a1"
 

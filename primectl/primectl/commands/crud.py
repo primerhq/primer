@@ -47,6 +47,10 @@ def register(app: typer.Typer) -> None:
         ),
         limit: int = typer.Option(None, "--limit", help="Max rows to list."),
         output: str = typer.Option(None, "-o", "--output", help="Output format override."),
+        raw_output: bool = typer.Option(
+            False, "-r", "--raw-output",
+            help="For a single object, print the bare body (no kind/spec envelope).",
+        ),
     ) -> None:
         """List a resource, or get one by id."""
         sess = _session(ctx)
@@ -61,7 +65,13 @@ def register(app: typer.Typer) -> None:
             if id is not None:
                 resp = sess.client.request("get", f"{res.path_prefix}/{id}")
                 obj = resp.json()
-                _emit(sess, obj, res, single=True)
+                fmt = sess.output
+                if fmt in ("yaml", "json") and not raw_output:
+                    # Emit the kind/spec envelope so the object round-trips
+                    # straight into `apply -f`. Use --raw-output for the bare body.
+                    typer.echo(dump_envelope(res.name, obj, fmt=fmt))
+                else:
+                    _emit(sess, obj, res, single=True)
                 return
             if filter:
                 pred = build_predicate(list(filter))
