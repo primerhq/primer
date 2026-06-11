@@ -251,6 +251,7 @@ function SSPCreateModal({ onClose, pushToast, existing }) {
         username: "", password: "", db_schema: "public",
         path: "",
         hnsw_m: 16, hnsw_ef_construction: 64,
+        use_halfvec: false,
         enable_diskann: false, diskann_num_neighbors: 50, diskann_search_list_size: 100,
         index_min_rows: 1000,
       };
@@ -271,6 +272,7 @@ function SSPCreateModal({ onClose, pushToast, existing }) {
       path: c.path || "",
       hnsw_m: c.hnsw_m ?? 16,
       hnsw_ef_construction: c.hnsw_ef_construction ?? 64,
+      use_halfvec: !!c.use_halfvec,
       enable_diskann: !!c.enable_diskann,
       diskann_num_neighbors: c.diskann_num_neighbors ?? 50,
       diskann_search_list_size: c.diskann_search_list_size ?? 100,
@@ -361,6 +363,7 @@ function SSPCreateModal({ onClose, pushToast, existing }) {
         db_schema: form.db_schema || "public",
         hnsw_m: Number(form.hnsw_m) || 16,
         hnsw_ef_construction: Number(form.hnsw_ef_construction) || 64,
+        use_halfvec: !!form.use_halfvec,
       };
       if (isScale) {
         config.enable_diskann = !!form.enable_diskann;
@@ -451,6 +454,17 @@ function SSPCreateModal({ onClose, pushToast, existing }) {
               <input className="input mono" type="number" value={form.hnsw_ef_construction} onChange={(e) => update("hnsw_ef_construction", +e.target.value)} style={{ width: "100%" }} />
             </FieldRow>
           </div>
+
+          {isPostgresFamily && (<>
+            <Section label="Vector type" />
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 6, fontSize: 12.5 }}>
+              <input type="checkbox" checked={form.use_halfvec} onChange={(e) => update("use_halfvec", e.target.checked)} />
+              <span>Use halfvec (half-precision)</span>
+            </label>
+            <div style={{ fontSize: 11.5, color: "var(--text-4)", marginBottom: 10 }}>
+              Store vectors as half-precision (halfvec), supporting up to 4000 dimensions. Enable for embedding models above 2000 dims, e.g. text-embedding-3-large (3072). Off uses the standard vector type (max 2000).
+            </div>
+          </>)}
 
           {isPostgresFamily && (<>
             <Section label="DiskANN" sub="pgvectorscale only" />
@@ -756,6 +770,7 @@ function SSPOverview({ p }) {
       <dt>database</dt><dd className="mono">{p.config?.database}</dd>
       <dt>schema</dt><dd className="mono">{p.config?.db_schema || "public"}</dd>
       <dt>distance_metric</dt><dd className="mono">{p.config?.distance_metric || "cosine"}</dd>
+      <dt>vector_type</dt><dd className="mono">{p.config?.use_halfvec ? "halfvec" : "vector"}</dd>
       <dt>hnsw_m</dt><dd className="mono">{p.config?.hnsw_m ?? 16}</dd>
       <dt>hnsw_ef_construction</dt><dd className="mono">{p.config?.hnsw_ef_construction ?? 64}</dd>
     </dl>
