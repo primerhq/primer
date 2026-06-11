@@ -694,8 +694,6 @@ class WorkerPool:
             )
             return await self._end_session(session, reason="failed")
 
-        from primer.model.chat import Message, ToolResultPart
-
         resume_payload = classify_resume_payload(parked, parked_at=session.parked_at)
         workspace = await self._load_workspace_for_persist(session.workspace_id)
         try:
@@ -708,67 +706,84 @@ class WorkerPool:
             return await self._end_session(session, reason="failed")
         executor = getattr(executor_or_driver, "_executor", executor_or_driver)
 
-        # Which pending node did the human reply to? The event listener
-        # records the fired key in parked_state; its tail segment is the
-        # tool_call_id. None -> legacy single-park (resume drains all).
+        # Replies to drain this cycle. A multi-event park accumulates every
+        # reply that arrived into ``resume_event_payloads`` (tcid -> reply);
+        # we drain them ALL so a concurrent second reply isn't lost. A
+        # single-event park / timeout / cancel uses the singular path
+        # (classified payload, resumed_tcid from the fired key, or None for
+        # the legacy drain-all).
         raw_state = session.parked_state or {}
-        resume_event_key = raw_state.get("resume_event_key")
-        resumed_tcid = (
-            resume_event_key.rsplit(":", 1)[-1] if resume_event_key else None
-        )
-        # If the fired entry is an agent-node yield with a resume hook
-        # (e.g. ask_user), build the tool_result the agent turn continues
-        # from. Tool_call approvals and agent-node approvals keep the
-        # bypass/verdict path (agent_tool_result stays None).
-        agent_tool_result = None
+        payloads_map = raw_state.get("resume_event_payloads")
         ck = parked.graph_checkpoint
-        ay = next(
-            (e for e in (ck.get("pending_agent_yields") or [])
-             if e.get("tool_call_id") == resumed_tcid),
-            None,
-        )
-        if ay is not None and ay.get("tool_name") not in (None, "_approval"):
+        if payloads_map:
+            replies = [
+                (tcid, (entry or {}).get("payload") or {})
+                for tcid, entry in payloads_map.items()
+            ]
+        else:
+            resume_event_key = raw_state.get("resume_event_key")
+            resumed_tcid = (
+                resume_event_key.rsplit(":", 1)[-1] if resume_event_key else None
+            )
+            replies = [(resumed_tcid, resume_payload.payload)]
+
+        repark = None
+        for tcid, payload in replies:
+            agent_tool_result = await self._graph_agent_tool_result(ck, tcid, payload)
             try:
-                hook = get_resume_hook(ay["tool_name"])
-                hook_result = hook(
-                    ay.get("resume_metadata") or {}, resume_payload.payload,
+                _decision, repark = await resume_graph_from_checkpoint(
+                    executor=executor,
+                    checkpoint=ck,
+                    payload=payload,
+                    resumed_tcid=tcid,
+                    agent_tool_result=agent_tool_result,
                 )
-                if asyncio.iscoroutine(hook_result):
-                    hook_result = await hook_result
-                agent_tool_result = Message(role="tool", parts=[ToolResultPart(
-                    id=resumed_tcid or ay["tool_call_id"],
-                    output=hook_result.output, error=hook_result.is_error)])
             except Exception:
                 logger.exception(
-                    "resume: ask_user hook for graph session %s raised", sid,
+                    "resume: graph executor for session %s raised during"
+                    " resume drain - ending failed", sid,
                 )
-                agent_tool_result = Message(role="tool", parts=[ToolResultPart(
-                    id=resumed_tcid or ay["tool_call_id"],
-                    output="resume failed", error=True)])
-
-        try:
-            _decision, repark = await resume_graph_from_checkpoint(
-                executor=executor,
-                checkpoint=ck,
-                payload=resume_payload.payload,
-                resumed_tcid=resumed_tcid,
-                agent_tool_result=agent_tool_result,
-            )
-        except Exception:
-            logger.exception(
-                "resume: graph executor for session %s raised during resume"
-                " drain - ending failed", sid,
-            )
-            return await self._end_session(session, reason="failed")
+                return await self._end_session(session, reason="failed")
+            if repark is None:
+                break  # graph drained to completion
+            ck = repark.graph_checkpoint  # resume the next reply from here
 
         if repark is not None:
-            # Other human-interaction nodes still pending -> re-park on the
-            # remaining keys (the re-park path does NOT re-dispatch).
+            # Human-interaction nodes still pending (not yet replied to) ->
+            # re-park on the remaining keys (no re-dispatch).
             return self._repark_graph_outcome(session, repark)
 
         # Drained to completion (the graph's own state.json carries the
         # real ended_reason; the session row mirrors _GraphTurnDriver).
         return await self._end_session(session, reason="completed")
+
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload):
+        """Build the tool_result Message an agent-node yield continues from
+        (e.g. the ask_user answer). Returns None for tool_call approvals /
+        agent-node approvals (those take the bypass/verdict path) or when
+        the fired tcid is not a hook-backed agent yield."""
+        from primer.model.chat import Message, ToolResultPart
+
+        ay = next(
+            (e for e in (checkpoint.get("pending_agent_yields") or [])
+             if e.get("tool_call_id") == tcid),
+            None,
+        )
+        if ay is None or ay.get("tool_name") in (None, "_approval"):
+            return None
+        try:
+            hook = get_resume_hook(ay["tool_name"])
+            hook_result = hook(ay.get("resume_metadata") or {}, payload)
+            if asyncio.iscoroutine(hook_result):
+                hook_result = await hook_result
+            return Message(role="tool", parts=[ToolResultPart(
+                id=tcid or ay["tool_call_id"],
+                output=hook_result.output, error=hook_result.is_error)])
+        except Exception:
+            logger.exception("resume: ask_user hook raised for tcid %s", tcid)
+            return Message(role="tool", parts=[ToolResultPart(
+                id=tcid or ay["tool_call_id"], output="resume failed",
+                error=True)])
 
     def _repark_graph_outcome(self, session, repark):
         """Build a ReleaseOutcome that re-parks a graph session on the

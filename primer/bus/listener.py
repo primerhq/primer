@@ -82,17 +82,34 @@ class YieldEventListener:
     async def _flip_rows(self, rows, event) -> int:
         """Flip the given parked rows to resumable, stamping the payload +
         the specific key that fired, and re-arming the engine lease.
+
+        Multi-event parks (``parked_event_keys`` set) ACCUMULATE replies
+        into ``parked_state['resume_event_payloads']`` (keyed by the fired
+        tool_call_id) and may be advanced even from ``resumable`` - so a
+        second concurrent reply that arrives before the worker has drained
+        the first is preserved rather than dropped or overwriting it. The
+        worker drains the whole map. Single-event parks are unchanged
+        (singular ``resume_event_payload``, only advanced from ``parked``).
         """
         flipped = 0
+        fired_tcid = event.event_key.rsplit(":", 1)[-1]
         for sess in rows:
-            # Re-read guard: only advance rows still 'parked'.
-            if sess.parked_status != "parked":
+            is_multi = bool(sess.parked_event_keys)
+            allowed = ("parked", "resumable") if is_multi else ("parked",)
+            if sess.parked_status not in allowed:
                 continue
             state = dict(sess.parked_state or {})
+            # Singular fields: kept for the single-event resume path + as a
+            # back-compat "last fired" hint.
             state["resume_event_payload"] = dict(event.payload or {})
-            # Record WHICH key fired so a multi-event park's resume routes
-            # to the right node. Harmless for single-event parks.
             state["resume_event_key"] = event.event_key
+            if is_multi:
+                payloads = dict(state.get("resume_event_payloads") or {})
+                payloads[fired_tcid] = {
+                    "payload": dict(event.payload or {}),
+                    "event_key": event.event_key,
+                }
+                state["resume_event_payloads"] = payloads
             updated = sess.model_copy(update={
                 "parked_status": "resumable",
                 "parked_state": state,
@@ -140,14 +157,16 @@ class YieldEventListener:
             page = await self._storage.find(predicate, OffsetPage(length=200))
             flipped = await self._flip_rows(page.items, event)
 
-            # Multi-event-park fallback: a reply to a non-primary node.
+            # Multi-event-park fallback: a reply to a non-primary node, or a
+            # second concurrent reply arriving while the session is already
+            # 'resumable'. Query both states so neither is dropped.
             if flipped == 0 and event.event_key.startswith(
                 ("ask_user:", "tool_approval:")
             ):
                 parked_pred = Predicate(
                     left=FieldRef(name="parked_status"),
-                    op=Op.EQ,
-                    right=Value(value="parked"),
+                    op=Op.IN,
+                    right=Value(value=["parked", "resumable"]),
                 )
                 page2 = await self._storage.find(
                     parked_pred, OffsetPage(length=200),
