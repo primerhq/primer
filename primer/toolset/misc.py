@@ -346,6 +346,44 @@ async def _ask_user_handler(
 
 
 # ===========================================================================
+# inform_user — non-yielding one-way message to the operator.
+#
+# Unlike ask_user (which parks the turn awaiting a reply), inform_user
+# relays a one-way status update via ctx.inform and returns
+# immediately. The handler returns ToolCallResult ONLY (no Yielded),
+# so the provider classifies it non-yielding.
+# ===========================================================================
+
+
+class _InformUserArgs(BaseModel):
+    """Message delivered one-way to the operator (no reply awaited)."""
+
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=8000,
+        description=(
+            "Message delivered to the operator. Newlines preserved. No reply "
+            "is awaited; the agent continues immediately."
+        ),
+    )
+
+
+async def _inform_user_handler(
+    arguments: dict[str, Any],
+    *,
+    ctx: ToolContext,
+) -> ToolCallResult:
+    try:
+        args = _InformUserArgs.model_validate(arguments)
+    except ValidationError as exc:
+        return _err_from_validation(exc)
+    sink = ctx.inform
+    delivered = await sink(args.message) if sink is not None else 0
+    return _ok({"delivered_to": int(delivered)})
+
+
+# ===========================================================================
 # uuid_v4
 # ===========================================================================
 
@@ -611,6 +649,31 @@ def build_misc_toolset(
                 ],
             ),
             _ask_user_handler,
+        ),
+        "inform_user": (
+            make_tool(
+                id="inform_user",
+                toolset_id=toolset_id,
+                purpose=(
+                    "Send the human operator a one-way message (status update, "
+                    "progress note) and keep going; returns "
+                    "``{delivered_to: <int>}``. Does NOT wait for a reply."
+                ),
+                when=(
+                    "Use when you want to keep the operator informed mid-task "
+                    "without blocking; when you need an answer or a decision, "
+                    "use ``ask_user`` instead."
+                ),
+                args_schema=_InformUserArgs.model_json_schema(),
+                examples=[
+                    ToolExample(
+                        args={"message": "Starting the migration now (~5 min)."},
+                        returns="{delivered_to: N}",
+                        note="non-yielding; one-way",
+                    ),
+                ],
+            ),
+            _inform_user_handler,
         ),
         "sleep": (
             make_tool(
