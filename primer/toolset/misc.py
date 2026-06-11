@@ -372,13 +372,16 @@ class _InformUserArgs(BaseModel):
 async def _inform_user_handler(
     arguments: dict[str, Any],
     *,
-    ctx: ToolContext,
+    ctx: ToolContext | None = None,
 ) -> ToolCallResult:
+    # ctx is optional + None-safe: inform_user is non-yielding and thus
+    # MCP-eligible, where the provider dispatches with ctx=None. No context
+    # means no delivery channel, so it degrades to delivered_to: 0.
     try:
         args = _InformUserArgs.model_validate(arguments)
     except ValidationError as exc:
         return _err_from_validation(exc)
-    sink = ctx.inform
+    sink = getattr(ctx, "inform", None)
     delivered = await sink(args.message) if sink is not None else 0
     return _ok({"delivered_to": int(delivered)})
 

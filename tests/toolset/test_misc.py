@@ -69,6 +69,20 @@ async def test_inform_user_no_sink_returns_zero():
     assert json.loads(res.output) == {"delivered_to": 0}
 
 
+async def test_inform_user_with_ctx_none_returns_zero():
+    # The MCP dispatch path invokes with ctx=None; the handler must degrade to
+    # delivered_to: 0 rather than raising a TypeError on the missing ctx.
+    provider = build_misc_toolset()
+    res = await provider.call(
+        tool_name="inform_user",
+        arguments={"message": "fyi"},
+        principal=None,
+        ctx=None,
+    )
+    assert res.is_error is False
+    assert json.loads(res.output) == {"delivered_to": 0}
+
+
 async def test_inform_user_is_mcp_eligible_but_not_auto_exposed():
     from primer.mcp.safety import is_exposable
 
