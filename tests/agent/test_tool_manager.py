@@ -348,3 +348,43 @@ class TestWorkspaceRouting:
                 workspace_tools={"fake_ws_tool": ws},  # type: ignore[arg-type]
                 workspace_session=None,
             )
+
+
+# ---- inform sink plumbing -------------------------------------------------
+
+
+class _CapturingProvider:
+    """Toolset provider that records the ``ctx`` it was dispatched with."""
+
+    def __init__(self) -> None:
+        self.captured: dict[str, Any] = {}
+
+    async def list_tools(self, *, principal: str | None = None):
+        if False:  # pragma: no cover - makes this an async generator
+            yield None
+
+    async def call(self, *, tool_name, arguments, principal=None, ctx=None):
+        self.captured["inform"] = getattr(ctx, "inform", "MISSING")
+        return ToolCallResult(output="{}", is_error=False)
+
+
+@pytest.mark.asyncio
+async def test_set_inform_sink_passed_into_tool_context() -> None:
+    provider = _CapturingProvider()
+    mgr = ToolExecutionManager(
+        toolset_providers={"misc": provider},  # type: ignore[arg-type]
+        chat_id="chat-1",
+    )
+
+    async def _sink(msg: str) -> int:
+        return 1
+
+    mgr.set_inform_sink(_sink)
+
+    await mgr._dispatch_toolset(
+        ToolCallPart(id="tc1", name="misc__x", arguments={}),
+        toolset_id="misc",
+        bare_name="x",
+        principal=None,
+    )
+    assert provider.captured["inform"] is _sink

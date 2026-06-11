@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -108,6 +109,7 @@ class ToolExecutionManager:
         self._approval_resolver = approval_resolver
         self._provider_registry = provider_registry
         self._chat_id = chat_id
+        self._inform_sink: "Callable[[str], Awaitable[int]] | None" = None
         # The agent's scoped-tool surface. Filters list_tools() to just
         # the listed ids and execute() rejects calls for anything else.
         # ``None`` means "no filter" — useful for callers that aren't
@@ -151,6 +153,12 @@ class ToolExecutionManager:
         tools into a fresh manager.
         """
         return dict(self._toolsets)
+
+    def set_inform_sink(
+        self, sink: "Callable[[str], Awaitable[int]] | None",
+    ) -> None:
+        """Attach the one-way inform sink used by the inform_user tool."""
+        self._inform_sink = sink
 
     @classmethod
     def for_workspace(
@@ -401,6 +409,7 @@ class ToolExecutionManager:
                 tool_call_id=call.id,
                 session_id=sess.session_id,
                 workspace_id=sess.workspace_id,
+                inform=self._inform_sink,
             )
         elif self._chat_id is not None:
             ctx = ToolContext(
@@ -408,6 +417,7 @@ class ToolExecutionManager:
                 session_id=None,
                 workspace_id=None,
                 chat_id=self._chat_id,
+                inform=self._inform_sink,
             )
         try:
             result = await provider.call(

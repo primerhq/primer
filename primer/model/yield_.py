@@ -34,6 +34,7 @@ surprises. JSONB-friendly: every field is either a primitive,
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
@@ -196,6 +197,10 @@ class ToolContext:
     chat_id
         Owning chat's id for chat-only invocations; ``None`` for
         session-bound invocations.
+    inform
+        Optional async sink for one-way inform delivery. Takes the
+        message and returns the number of destinations reached.
+        ``None`` when no channel/chat delivery is wired for this turn.
     """
 
     tool_call_id: str
@@ -203,6 +208,10 @@ class ToolContext:
     workspace_id: str | None
     parked_at: datetime | None = None
     chat_id: str | None = None
+    # Optional async sink for one-way inform delivery: takes the message,
+    # returns the number of destinations reached. None when no channel/chat
+    # delivery is wired for this turn.
+    inform: Callable[[str], Awaitable[int]] | None = None
 
 
 # ===========================================================================
