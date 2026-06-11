@@ -29,7 +29,9 @@ This module ships the M1 foundation:
 The dataclasses use ``frozen=True`` so they're hashable and safe to
 serialise/deserialise across the park boundary without copy
 surprises. JSONB-friendly: every field is either a primitive,
-``datetime``, or a nested dict of primitives.
+``datetime``, or a nested dict of primitives. (``ToolContext.inform``
+is the lone exception — a transient runtime sink that is never
+persisted or checkpointed.)
 """
 
 from __future__ import annotations
@@ -208,9 +210,6 @@ class ToolContext:
     workspace_id: str | None
     parked_at: datetime | None = None
     chat_id: str | None = None
-    # Optional async sink for one-way inform delivery: takes the message,
-    # returns the number of destinations reached. None when no channel/chat
-    # delivery is wired for this turn.
     inform: Callable[[str], Awaitable[int]] | None = None
 
 

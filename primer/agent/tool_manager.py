@@ -154,9 +154,7 @@ class ToolExecutionManager:
         """
         return dict(self._toolsets)
 
-    def set_inform_sink(
-        self, sink: "Callable[[str], Awaitable[int]] | None",
-    ) -> None:
+    def set_inform_sink(self, sink: "Callable[[str], Awaitable[int]] | None") -> None:
         """Attach the one-way inform sink used by the inform_user tool."""
         self._inform_sink = sink
 
