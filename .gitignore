@@ -241,3 +241,5 @@ tests/ui_e2e/.state/
 
 # User-filled test configuration (the .example template is versioned).
 tests/testconfig.yaml
+# local channel/test credentials (never commit)
+.credentials
