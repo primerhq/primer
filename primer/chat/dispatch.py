@@ -263,7 +263,7 @@ async def _build_runner(
         approval_resolver=approval_resolver,
         chat_id=chat.id,
     )
-    return ChatTurnRunner(
+    runner = ChatTurnRunner(
         agent=agent,
         llm=llm,
         llm_model=llm_model,
@@ -272,6 +272,9 @@ async def _build_runner(
         message_storage=msgs,
         cancel_event=cancel_event,
     )
+    from primer.agent.inform import ChatInformSink
+    tool_manager.set_inform_sink(ChatInformSink(runner=runner, chat=chat))
+    return runner
 
 
 async def _persist_build_error(

@@ -1203,6 +1203,13 @@ class WorkerPool:
             tools=agent.tools,
         )
 
+        from primer.agent.inform import SessionInformSink
+        tool_manager.set_inform_sink(SessionInformSink(
+            dispatcher=self._channel_dispatcher,
+            workspace_id=agent_session.workspace_id,
+            session_id=agent_session.session_id,
+        ))
+
         executor = WorkspaceAgentExecutor(
             agent=agent,
             llm=llm,

@@ -146,3 +146,6 @@ async def test_build_runner_wires_approval_resolver(
     runner = await _build_runner(deps, chat, asyncio.Event())
     assert runner is not None
     assert runner._tools._approval_resolver is not None
+    # _build_runner must also wire the ChatInformSink so inform_user is live.
+    from primer.agent.inform import ChatInformSink
+    assert isinstance(runner._tools._inform_sink, ChatInformSink)
