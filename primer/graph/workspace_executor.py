@@ -135,6 +135,16 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         # (parks for human approval). None -> tool_call nodes run ungated.
         self._approval_resolver = approval_resolver
 
+        # Per-superstep commit batching: node-turn message writes accumulate
+        # here (rel_path -> cumulative file content) and are flushed in the
+        # next ``_save_state`` so an N-node superstep is ONE commit, not N+1.
+        # Every park / boundary / terminal exit calls ``_save_state`` before
+        # handing off, so a buffered write is never stranded. ``_turn_tags``
+        # records the node#iteration pairs folded into the next commit so the
+        # batched commit message keeps per-node attribution.
+        self._pending_node_writes: dict[str, str] = {}
+        self._pending_node_turn_tags: list[str] = []
+
         # Turn-log writers: bypass the git-backed state_repo.commit
         # path and write directly to .state/graphs/<gsid>/turns.jsonl
         # (graph-level) and .state/graphs/<gsid>/nodes/<nid>/turns.jsonl
@@ -424,18 +434,26 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         iteration: int,
         new_messages: list[Message],
     ) -> None:
-        """Append messages to the node's jsonl AND git-commit the change.
+        """Buffer a node's appended jsonl; the next ``_save_state`` commits it.
 
-        Each turn becomes one commit so callers can grep history per
-        node via ``git log -- graphs/<gsid>/nodes/<node_id>/``.
+        Node turns within a superstep are folded into that superstep's single
+        state commit (one commit per superstep instead of N+1). Callers grep
+        history per node via ``git log -- graphs/<gsid>/nodes/<node_id>/``
+        as before; the commit message lists the node#iteration turns it
+        carries (``X-Primer-Graph-Node-Turns``).
 
-        Uses :meth:`StateRepo.read_state_file` to read the existing content
-        so this works on both local and sandbox (container/k8s) backends.
+        Reads the existing content from the pending buffer first (a prior
+        turn for the same node this superstep) then from the repo via
+        :meth:`StateRepo.read_state_file`, so it works on both local and
+        sandbox (container/k8s) backends.
         """
         rel_path = self._state_rel(f"nodes/{node_id}/messages.jsonl")
 
-        raw_existing = await self._state_repo.read_state_file(rel_path)
-        existing = raw_existing.decode("utf-8") if raw_existing else ""
+        if rel_path in self._pending_node_writes:
+            existing = self._pending_node_writes[rel_path]
+        else:
+            raw_existing = await self._state_repo.read_state_file(rel_path)
+            existing = raw_existing.decode("utf-8") if raw_existing else ""
         if existing and not existing.endswith("\n"):
             existing += "\n"
         appended = (
@@ -444,19 +462,9 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             + "\n"
         )
 
-        await self._state_repo.commit_arbitrary(
-            summary=(
-                f"graph {self._graph_session_id}: node {node_id} turn "
-                f"#{iteration}"
-            ),
-            files={rel_path: appended},
-            trailers={
-                _TRAILER_GRAPH: self._graph_session_id,
-                _TRAILER_OP: "node_turn",
-                "X-Primer-Graph-Node": node_id,
-                "X-Primer-Graph-Iteration": str(iteration),
-            },
-        )
+        # Buffer instead of committing; flushed in the next _save_state.
+        self._pending_node_writes[rel_path] = appended
+        self._pending_node_turn_tags.append(f"{node_id}#{iteration}")
 
     async def _save_state(
         self,
@@ -496,14 +504,26 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             trailers["X-Primer-Graph-Ended-Reason"] = ended_reason
         if ended_detail:
             trailers["X-Primer-Graph-Ended-Detail"] = ended_detail
+        # Flush any buffered node-turn writes from this superstep into the
+        # SAME commit as the state write, then clear the buffer.
+        files = {rel_state: body}
+        summary = (
+            f"graph {self._graph_session_id}: state @ iter {iteration} "
+            f"({status.value})"
+        )
+        if self._pending_node_writes:
+            files.update(self._pending_node_writes)
+            trailers["X-Primer-Graph-Node-Turns"] = ",".join(
+                self._pending_node_turn_tags
+            )
+            summary += f" +{len(self._pending_node_writes)} node turn(s)"
         await self._state_repo.commit_arbitrary(
-            summary=(
-                f"graph {self._graph_session_id}: state @ iter {iteration} "
-                f"({status.value})"
-            ),
-            files={rel_state: body},
+            summary=summary,
+            files=files,
             trailers=trailers,
         )
+        self._pending_node_writes = {}
+        self._pending_node_turn_tags = []
 
         # Mirror the agent executor: when the graph reaches its terminal
         # ENDED save, transition the on-disk session holder slot to ENDED

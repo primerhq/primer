@@ -402,13 +402,13 @@ class TestCycleHistoryAccumulates:
 
 
 # ===========================================================================
-# Git-versioned state (every turn-end creates a commit)
+# Git-versioned state (one commit per superstep, node turns folded in)
 # ===========================================================================
 
 
 class TestGitVersioning:
     @pytest.mark.asyncio
-    async def test_each_turn_end_produces_commit(self, tmp_path: Path) -> None:
+    async def test_superstep_commit_folds_in_node_turns(self, tmp_path: Path) -> None:
         graph = Graph(
             id="g-ws",
             description="A -> exit",
@@ -440,10 +440,19 @@ class TestGitVersioning:
         )
         await _drain(executor.invoke([]))
         commits = _git_log_oneline(repo.path)
-        assert len(commits) >= 3
+        assert len(commits) >= 2
         assert any("graph gsid-git: state @ iter" in c for c in commits)
-        assert any("graph gsid-git: node A turn" in c for c in commits)
+        # Node A's turn is now folded into the superstep state commit rather
+        # than committed on its own; the commit message records how many node
+        # turns it carried.
+        assert any("node turn(s)" in c for c in commits), commits
+        assert not any("graph gsid-git: node A turn #" in c for c in commits)
         assert any("(ended)" in c for c in commits), commits
+        # The node history still lands on disk (content unchanged).
+        msgs = (
+            executor.state_root / "nodes" / "A" / "messages.jsonl"
+        ).read_text()
+        assert msgs.strip()
 
     @pytest.mark.asyncio
     async def test_history_grep_by_graph_session(
