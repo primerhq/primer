@@ -21,6 +21,36 @@ def _provider(id_: str) -> ChannelProvider:
 
 
 @pytest.mark.asyncio
+async def test_start_client_logs_in_before_waiting_for_ready():
+    # Regression: wait_until_ready on an unlogged-in discord.Client raises
+    # "Client has not been properly initialised", so login() must happen
+    # first and the gateway loop must run via connect() (not start()).
+    from primer.channel.discord.connection import _start_client_as_task
+
+    calls: list[str] = []
+
+    class _FakeClient:
+        async def login(self, token):
+            calls.append("login")
+
+        async def connect(self):
+            calls.append("connect")  # background gateway loop
+
+        async def start(self, token, **kwargs):
+            calls.append("start")  # must NOT be used
+
+        async def wait_until_ready(self):
+            calls.append("ready")
+            if "login" not in calls:
+                raise RuntimeError("Client has not been properly initialised")
+
+    task = await _start_client_as_task(_FakeClient(), "tok", ready_wait=2.0)
+    assert calls[0] == "login"
+    assert "ready" in calls and "start" not in calls
+    task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_acquire_returns_same_client(monkeypatch):
     starts: list[str] = []
     closes: list[str] = []

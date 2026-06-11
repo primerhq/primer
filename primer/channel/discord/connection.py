@@ -31,9 +31,18 @@ def _build_client(cfg: DiscordChannelProviderConfig) -> Any:
 async def _start_client_as_task(
     client: Any, token: str, *, ready_wait: float = 30.0,
 ) -> asyncio.Task:
-    """Start the gateway connection on a background task; await ready."""
-    task = asyncio.create_task(client.start(token))
-    # Wait for the client to login + ready (or timeout).
+    """Start the gateway connection on a background task; await ready.
+
+    ``login`` first so the client runs discord.py's async setup hook (which
+    creates the internal ready event) before we wait on it; only then run the
+    gateway loop via ``connect`` on a background task. Calling
+    ``wait_until_ready`` on an unlogged-in client raises "Client has not been
+    properly initialised", so ``client.start`` (login + connect) cannot be
+    create_task'd and immediately waited on.
+    """
+    await client.login(token)
+    task = asyncio.create_task(client.connect())
+    # Wait for the gateway to reach READY (or timeout).
     try:
         await asyncio.wait_for(client.wait_until_ready(), timeout=ready_wait)
     except asyncio.TimeoutError as exc:
