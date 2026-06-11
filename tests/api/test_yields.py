@@ -27,6 +27,7 @@ from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind
 from primer.model.workspace_session import (
+    GraphSessionBinding,
     AgentSessionBinding,
     WorkspaceSession,
     SessionStatus,
@@ -256,6 +257,75 @@ class TestAskUserRespond:
         assert row.parked_status == "resumable"
         assert row.parked_state is not None
         assert row.parked_state["resume_event_payload"] == {"response": "Alice"}
+
+    async def test_respond_accepts_graph_park_via_checkpoint(self, app, client):
+        """A graph agent-node ask_user park (outer yield typed _approval)
+        can be answered over REST by matching the tool_call_id in the
+        checkpoint's pending_agent_yields and publishing to its event_key."""
+        now = datetime.now(timezone.utc)
+        ek = "ask_user:sess-gp:tc-g"
+        sess = WorkspaceSession(
+            id="sess-gp", workspace_id="ws-x",
+            binding=GraphSessionBinding(graph_id="g-x"),
+            status=SessionStatus.RUNNING, created_at=now,
+        )
+        sess.parked_status = "parked"
+        sess.parked_event_key = ek
+        sess.parked_event_keys = [ek]
+        sess.parked_at = now
+        sess.parked_until = now + timedelta(seconds=600)
+        sess.parked_state = {
+            "schema_version": 1,
+            "tool_call_id": "tc-g",
+            "yielded": {"tool_name": "_approval", "event_key": ek, "timeout": 600.0,
+                        "resume_metadata": {}, "event_keys": [ek]},
+            "llm_messages": [], "turn_no": 1, "started_at": now.isoformat(),
+            "resume_event_payload": None,
+            "graph_checkpoint": {"pending_agent_yields": [
+                {"node_id": "A", "tool_call_id": "tc-g", "event_key": ek,
+                 "tool_name": "ask_user", "resume_metadata": {"prompt": "color?"},
+                 "llm_messages": [], "iteration": 1}]},
+        }
+        await _seed_session(app, sess)
+        resp = await client.post(
+            "/v1/sessions/sess-gp/ask_user/respond",
+            json={"tool_call_id": "tc-g", "response": "blue"},
+        )
+        assert resp.status_code == 202
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = None
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            row = await storage.get("sess-gp")
+            if row is not None and row.parked_status == "resumable":
+                break
+        assert row is not None and row.parked_status == "resumable"
+        # multi-event accumulation map carries the reply
+        assert row.parked_state["resume_event_payloads"]["tc-g"]["payload"] == {"response": "blue"}
+
+    async def test_respond_graph_park_unknown_tcid_404(self, app, client):
+        now = datetime.now(timezone.utc)
+        ek = "ask_user:sess-gp2:tc-g"
+        sess = WorkspaceSession(
+            id="sess-gp2", workspace_id="ws-x",
+            binding=GraphSessionBinding(graph_id="g-x"),
+            status=SessionStatus.RUNNING, created_at=now)
+        sess.parked_status = "parked"; sess.parked_event_key = ek
+        sess.parked_event_keys = [ek]; sess.parked_at = now
+        sess.parked_state = {
+            "schema_version": 1, "tool_call_id": "tc-g",
+            "yielded": {"tool_name": "_approval", "event_key": ek, "resume_metadata": {}},
+            "llm_messages": [], "turn_no": 1, "started_at": now.isoformat(),
+            "resume_event_payload": None,
+            "graph_checkpoint": {"pending_agent_yields": [
+                {"node_id": "A", "tool_call_id": "tc-g", "event_key": ek,
+                 "tool_name": "ask_user", "resume_metadata": {}, "llm_messages": [], "iteration": 1}]},
+        }
+        await _seed_session(app, sess)
+        resp = await client.post(
+            "/v1/sessions/sess-gp2/ask_user/respond",
+            json={"tool_call_id": "nope", "response": "x"})
+        assert resp.status_code == 404
 
     async def test_respond_accepts_complex_response(self, app, client):
         sess = _make_parked_session(

@@ -221,6 +221,35 @@ async def post_ask_user_respond(
             f"Session {session_id!r} has no pending ask_user prompt"
         )
     yielded = blob.get("yielded") or {}
+    # Graph park: the outer yield is typed "_approval"; the real ask_user
+    # nodes live in the checkpoint's pending_agent_yields. Match the
+    # tool_call_id there and publish to that node's own event_key so a
+    # graph agent-node ask_user can be answered over REST (not only the
+    # channel path).
+    checkpoint = blob.get("graph_checkpoint")
+    if checkpoint:
+        ay = next(
+            (e for e in (checkpoint.get("pending_agent_yields") or [])
+             if e.get("tool_call_id") == body.tool_call_id
+             and e.get("tool_name") == "ask_user"),
+            None,
+        )
+        if ay is None:
+            raise NotFoundError(
+                f"No pending ask_user prompt with tool_call_id "
+                f"{body.tool_call_id!r} on session {session_id!r}"
+            )
+        ay_meta = ay.get("resume_metadata") or {}
+        _validate_response_against_schema(
+            response=body.response, schema=ay_meta.get("response_schema"),
+        )
+        ay_event_key = ay.get("event_key")
+        if not ay_event_key:
+            raise NotFoundError(
+                f"Session {session_id!r} agent yield is missing event_key"
+            )
+        await event_bus.publish(ay_event_key, {"response": body.response})
+        return {"status": "accepted"}
     if yielded.get("tool_name") != "ask_user":
         raise NotFoundError(
             f"Session {session_id!r} is parked on a different tool"
