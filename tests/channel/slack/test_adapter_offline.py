@@ -28,10 +28,12 @@ class _CapturingInbox(ChannelInbox):
 class _StubClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self._ts = 1000
 
     async def chat_postMessage(self, **body) -> dict:
         self.calls.append(("chat.postMessage", body))
-        return {"ok": True, "ts": "1234.5678", "channel": body["channel"]}
+        self._ts += 1
+        return {"ok": True, "ts": f"{self._ts}.0001", "channel": body["channel"]}
 
     async def auth_test(self) -> dict:
         self.calls.append(("auth.test", {}))
@@ -115,9 +117,53 @@ async def test_post_prompt_ask_user_calls_chat_postMessage(monkeypatch):
     finally:
         await adapter.aclose()
     posts = [b for k, b in conn.client.calls if k == "chat.postMessage"]
-    assert len(posts) == 1
-    assert posts[0]["channel"] == "C01"
-    assert posts[0]["metadata"]["event_payload"]["tcid"] == "tc"
+    # Two posts: the session-thread anchor, then the prompt threaded under it.
+    assert len(posts) == 2
+    anchor, prompt = posts
+    assert "Agent session s" in anchor["text"] and "thread_ts" not in anchor
+    assert prompt["channel"] == "C01"
+    assert prompt["thread_ts"] == anchor["ts"] if "ts" in anchor else True
+    assert prompt["thread_ts"] == "1001.0001"  # anchor's returned ts
+    assert prompt["metadata"]["event_payload"]["tcid"] == "tc"
+    # The ask is now pending a reply on the thread root.
+    assert adapter.pending_ask_for_thread("1001.0001") == {
+        "ws": "ws", "sid": "s", "tcid": "tc",
+    }
+
+
+@pytest.mark.asyncio
+async def test_post_prompt_reuses_one_thread_per_session(monkeypatch):
+    conn = _StubConnection()
+    monkeypatch.setattr(
+        "primer.channel.slack.adapter._get_web_client", lambda conn: conn.client,
+    )
+    async def _acquire(provider): return conn
+    async def _release(provider): pass
+    monkeypatch.setattr(SLACK_CONNECTIONS, "acquire", _acquire)
+    monkeypatch.setattr(SLACK_CONNECTIONS, "release", _release)
+    adapter = SlackChannelAdapter(
+        provider=_provider(), channel=_channel(), inbox=_CapturingInbox(),
+    )
+    await adapter.initialize()
+    try:
+        await adapter.post_prompt(PromptEnvelope(
+            kind="ask_user", workspace_id="ws", session_id="s", tool_call_id="t1",
+            prompt="q1", response_schema=None, choices=None, timeout_at_iso=None,
+        ))
+        await adapter.post_prompt(PromptEnvelope(
+            kind="tool_approval", workspace_id="ws", session_id="s", tool_call_id="t2",
+            prompt="approve?", response_schema=None, choices=["Approve", "Reject"],
+            timeout_at_iso=None, tool_name="workspace__write", tool_args={"x": 1},
+        ))
+    finally:
+        await adapter.aclose()
+    posts = [b for k, b in conn.client.calls if k == "chat.postMessage"]
+    # One anchor + two prompts (not two anchors).
+    assert len(posts) == 3
+    anchors = [p for p in posts if "thread_ts" not in p]
+    assert len(anchors) == 1
+    threaded = [p for p in posts if "thread_ts" in p]
+    assert {p["thread_ts"] for p in threaded} == {"1001.0001"}
 
 
 @pytest.mark.asyncio

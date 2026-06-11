@@ -8,6 +8,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+def session_thread_label(session_id: str) -> str:
+    """Human-facing title for a per-session conversation thread.
+
+    Channels that support threads (Slack, Discord) anchor one thread per agent
+    session and route every prompt (ask_user + tool approvals) into it.
+    """
+    return f"Agent session {session_id}"
+
+
 def format_tool_args(tool_args: dict[str, Any] | None) -> str:
     """Pretty-print tool-call arguments as JSON for channel rendering.
 

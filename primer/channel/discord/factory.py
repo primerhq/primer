@@ -40,7 +40,12 @@ def _install_handlers(provider_id: str, client: Any) -> None:
         if parsed is None:
             return
         verb, ws, sid, tcid = parsed
-        channel_id = str(interaction.channel_id or "")
+        # Approval buttons now live inside the session thread, so the
+        # interaction's channel is the Thread; resolve the adapter via the
+        # thread's parent channel (where the adapter is registered).
+        ch = interaction.channel
+        parent = getattr(ch, "parent_id", None)
+        channel_id = str(parent) if parent else str(interaction.channel_id or "")
         entry = DISCORD_CONNECTIONS.entry(provider_id)
         if entry is None:
             return
@@ -134,7 +139,7 @@ def _install_handlers(provider_id: str, client: Any) -> None:
             return
         if not isinstance(message.channel, discord.Thread):
             return
-        thread_id = str(message.channel.id)
+        thread_id = message.channel.id
         parent_id = str(message.channel.parent_id or "")
         entry = DISCORD_CONNECTIONS.entry(provider_id)
         if entry is None:
@@ -142,15 +147,16 @@ def _install_handlers(provider_id: str, client: Any) -> None:
         adapter = entry.adapters_by_channel_id.get(parent_id)
         if adapter is None:
             return
-        ids = adapter._thread_to_ids.get(thread_id)
+        ids = adapter._pending_ask.get(thread_id)
         if ids is None:
             return
         await adapter._handle_text_reply(
             **ids, text=message.content or "",
             discord_user_id=message.author.id if message.author else None,
         )
-        # Single-use: drop the entry so subsequent thread messages don't fire.
-        adapter._thread_to_ids.pop(thread_id, None)
+        # Consume: the ask is answered, so the next thread reply won't re-fire
+        # until another ask_user parks in this session.
+        adapter._pending_ask.pop(thread_id, None)
 
     # Bind the handlers to the real gateway event names. The base
     # ``discord.Client`` dispatches by looking up ``self.on_<event>`` (this is

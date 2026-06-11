@@ -154,16 +154,16 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         adapter = entry.adapters_by_channel_id.get(channel_id) if entry else None
         if adapter is None:
             return
-        payload = await adapter._lookup_thread_payload(
-            channel_id=channel_id, thread_ts=thread_ts,
-        )
-        if not payload or payload.get("kind") != "ask_user":
+        # A reply in a session thread carries thread_ts = the thread root ts.
+        ids = adapter.pending_ask_for_thread(thread_ts)
+        if ids is None:
             return
         await adapter._handle_text_reply(
-            ws=payload["ws"], sid=payload["sid"], tcid=payload["tcid"],
+            ws=ids["ws"], sid=ids["sid"], tcid=ids["tcid"],
             text=event.get("text", ""),
             slack_user_id=event.get("user"),
         )
+        adapter.clear_pending_ask(thread_ts)
 
 
 async def _slack_factory(

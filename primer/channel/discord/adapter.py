@@ -6,7 +6,8 @@ import logging
 from typing import Any
 
 from primer.channel.adapter import (
-    ChannelAdapter, PromptEnvelope, ResponseEnvelope, format_tool_args,
+    ChannelAdapter, PromptEnvelope, ResponseEnvelope,
+    format_tool_args, session_thread_label,
 )
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import ApprovalView
@@ -45,8 +46,12 @@ class DiscordChannelAdapter(ChannelAdapter):
         self._channel = channel
         self._inbox = inbox
         self._client: Any | None = None
-        # thread_id_str → {workspace_id, session_id, tool_call_id}
-        self._thread_to_ids: dict[str, dict[str, str]] = {}
+        # session_id → discord Thread id (one conversation thread per session)
+        self._session_threads: dict[str, int] = {}
+        # thread_id (int) → {workspace_id, session_id, tool_call_id} for the
+        # ask_user currently awaiting a reply in that thread (sessions park on
+        # one prompt at a time).
+        self._pending_ask: dict[int, dict[str, str]] = {}
 
     async def initialize(self) -> None:
         self._client = await DISCORD_CONNECTIONS.acquire(self._provider)
@@ -95,31 +100,52 @@ class DiscordChannelAdapter(ChannelAdapter):
             raise ProviderError(
                 f"discord channel {self._channel.external_id!r} not reachable"
             )
+        thread = await self._session_thread(channel, envelope.session_id)
         if envelope.kind == "tool_approval":
             view = ApprovalView(
                 ws=envelope.workspace_id,
                 sid=envelope.session_id,
                 tcid=envelope.tool_call_id,
             )
-            msg = await channel.send(
+            msg = await thread.send(
                 content=format_approval_content(envelope), view=view,
             )
-            return {"message_id": getattr(msg, "id", 0)}
+            return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         elif envelope.kind == "ask_user":
-            msg = await channel.send(content=envelope.prompt)
-            thread = await msg.create_thread(
-                name=(envelope.prompt or "agent question")[:80],
-                auto_archive_duration=60,
-            )
-            tid = str(thread.id)
-            self._thread_to_ids[tid] = {
+            msg = await thread.send(content=envelope.prompt)
+            self._pending_ask[thread.id] = {
                 "workspace_id": envelope.workspace_id,
                 "session_id": envelope.session_id,
                 "tool_call_id": envelope.tool_call_id,
             }
-            return {"message_id": getattr(msg, "id", 0), "thread_id": tid}
+            return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
+
+    async def _session_thread(self, channel: Any, session_id: str) -> Any:
+        """Get-or-create the one conversation thread for this session.
+
+        The first prompt posts a small anchor message and opens a named thread
+        off it; every later prompt for the same session (ask or approval) is
+        sent into that thread.
+        """
+        tid = self._session_threads.get(session_id)
+        if tid is not None:
+            thread = self._client.get_channel(tid)
+            if thread is None:
+                try:
+                    thread = await self._client.fetch_channel(tid)
+                except Exception:
+                    thread = None
+            if thread is not None:
+                return thread
+        label = session_thread_label(session_id)
+        anchor = await channel.send(content=f":thread: {label}")
+        thread = await anchor.create_thread(
+            name=label[:100], auto_archive_duration=60,
+        )
+        self._session_threads[session_id] = thread.id
+        return thread
 
     async def _handle_decision(
         self, *,

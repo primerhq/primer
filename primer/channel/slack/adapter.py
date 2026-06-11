@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 from primer.channel.adapter import (
-    ChannelAdapter, PromptEnvelope, ResponseEnvelope,
+    ChannelAdapter, PromptEnvelope, ResponseEnvelope, session_thread_label,
 )
 from primer.channel.slack.connection import SLACK_CONNECTIONS
 from primer.channel.slack.render import (
@@ -51,9 +51,11 @@ class SlackChannelAdapter(ChannelAdapter):
         self._channel = channel
         self._inbox = inbox
         self._conn: Any | None = None
-        # Per-channel cache: maps (channel_id, thread_ts) → payload dict
-        # populated at post-time; bounded by manual LRU eviction below.
-        self._thread_payload_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        # session_id → root message ts (the per-session conversation thread).
+        self._session_threads: dict[str, str] = {}
+        # thread root ts → {ws, sid, tcid} for the ask_user awaiting a reply in
+        # that thread (sessions park on one prompt at a time).
+        self._pending_ask: dict[str, dict[str, str]] = {}
 
     async def initialize(self) -> None:
         self._conn = await SLACK_CONNECTIONS.acquire(self._provider)
@@ -92,6 +94,7 @@ class SlackChannelAdapter(ChannelAdapter):
         if self._conn is None:
             raise ProviderError("SlackChannelAdapter used before initialize()")
         client = _get_web_client(self._conn)
+        root_ts = await self._session_root_ts(client, envelope.session_id)
         if envelope.kind == "ask_user":
             body = build_ask_user_message(
                 channel_id=self._channel.external_id, envelope=envelope,
@@ -102,28 +105,34 @@ class SlackChannelAdapter(ChannelAdapter):
             )
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
+        # Post every prompt into the session's conversation thread.
+        body["thread_ts"] = root_ts
         resp = await client.chat_postMessage(**body)
         ts = resp.get("ts", "")
-        if ts:
-            self._thread_payload_cache[
-                (self._channel.external_id, ts)
-            ] = {
+        if envelope.kind == "ask_user":
+            self._pending_ask[root_ts] = {
                 "ws": envelope.workspace_id,
                 "sid": envelope.session_id,
                 "tcid": envelope.tool_call_id,
-                "kind": envelope.kind,
             }
-            self._lru_evict()
-        return {"ts": ts, "channel": resp.get("channel", "")}
+        return {"ts": ts, "channel": resp.get("channel", ""), "thread_ts": root_ts}
 
-    def _lru_evict(self, cap: int = 1024) -> None:
-        if len(self._thread_payload_cache) <= cap:
-            return
-        # Drop the oldest insertions until under cap.
-        while len(self._thread_payload_cache) > cap:
-            self._thread_payload_cache.pop(
-                next(iter(self._thread_payload_cache)),
-            )
+    async def _session_root_ts(self, client: Any, session_id: str) -> str:
+        """Get-or-create the root message ts for this session's thread.
+
+        The first prompt posts a small anchor message to the channel; its ts is
+        the thread root every later prompt for the session replies under.
+        """
+        ts = self._session_threads.get(session_id)
+        if ts:
+            return ts
+        resp = await client.chat_postMessage(
+            channel=self._channel.external_id,
+            text=f":thread: {session_thread_label(session_id)}",
+        )
+        ts = resp.get("ts", "")
+        self._session_threads[session_id] = ts
+        return ts
 
     # ----- inbound helpers (called from handlers in factory.py) -----------
 
@@ -156,36 +165,12 @@ class SlackChannelAdapter(ChannelAdapter):
             platform_metadata={"slack_user_id": slack_user_id or ""},
         ))
 
-    async def _lookup_thread_payload(
-        self, *, channel_id: str, thread_ts: str,
-    ) -> dict[str, Any] | None:
-        cached = self._thread_payload_cache.get((channel_id, thread_ts))
-        if cached is not None:
-            return cached
-        # Fall back to conversations.history with include_all_metadata.
-        if self._conn is None:
-            return None
-        client = _get_web_client(self._conn)
-        try:
-            result = await client.conversations_history(
-                channel=channel_id, latest=thread_ts, oldest=thread_ts,
-                inclusive=True, limit=1, include_all_metadata=True,
-            )
-        except Exception:
-            logger.exception(
-                "slack: conversations.history lookup failed for %s/%s",
-                channel_id, thread_ts,
-            )
-            return None
-        msgs = result.get("messages") or []
-        if not msgs:
-            return None
-        meta = (msgs[0].get("metadata") or {}).get("event_payload") or {}
-        if meta.get("kind") not in ("ask_user", "tool_approval"):
-            return None
-        self._thread_payload_cache[(channel_id, thread_ts)] = meta
-        self._lru_evict()
-        return meta
+    def pending_ask_for_thread(self, thread_ts: str) -> dict[str, str] | None:
+        """The ask_user (ws/sid/tcid) awaiting a reply in this thread, if any."""
+        return self._pending_ask.get(thread_ts)
+
+    def clear_pending_ask(self, thread_ts: str) -> None:
+        self._pending_ask.pop(thread_ts, None)
 
 
 __all__ = ["REJECT_MODAL_CALLBACK_ID", "SlackChannelAdapter"]

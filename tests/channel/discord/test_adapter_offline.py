@@ -26,39 +26,49 @@ class _CapturingInbox(ChannelInbox):
         self.received.append(env)
 
 
-class _StubMessage:
-    def __init__(self, mid: int):
-        self.id = mid
-        self.content = ""
-    async def create_thread(self, *, name, auto_archive_duration):
-        return type("T", (), {
-            "id": self.id + 1,
-            "send": (lambda **kwargs: _async_none()),
-        })()
-
-
-def _async_none():
-    async def _():
-        return None
-    return _()
-
-
-class _StubChannel:
-    def __init__(self, cid: int):
-        self.id = cid
+class _StubThread:
+    def __init__(self, tid: int):
+        self.id = tid
         self.sent: list[dict[str, Any]] = []
     async def send(self, content=None, view=None, **kwargs):
         self.sent.append({"content": content, "view": view})
-        return _StubMessage(mid=999)
+        return _StubMessage(mid=self.id + 100)
+
+
+class _StubMessage:
+    def __init__(self, mid: int, client=None):
+        self.id = mid
+        self.content = ""
+        self._client = client
+    async def create_thread(self, *, name, auto_archive_duration):
+        th = _StubThread(self.id + 1)
+        if self._client is not None:
+            self._client.threads[th.id] = th
+        return th
+
+
+class _StubChannel:
+    def __init__(self, cid: int, client):
+        self.id = cid
+        self.sent: list[dict[str, Any]] = []
+        self._client = client
+    async def send(self, content=None, view=None, **kwargs):
+        self.sent.append({"content": content, "view": view})
+        return _StubMessage(mid=999, client=self._client)
 
 
 class _StubClient:
     def __init__(self) -> None:
-        self.channel = _StubChannel(cid=12345)
+        self.threads: dict[int, _StubThread] = {}
+        self.channel = _StubChannel(cid=12345, client=self)
     def get_channel(self, cid: int):
-        return self.channel if cid == self.channel.id else None
+        if cid == self.channel.id:
+            return self.channel
+        return self.threads.get(cid)
     async def fetch_channel(self, cid: int):
-        return self.channel
+        if cid == self.channel.id:
+            return self.channel
+        return self.threads.get(cid)
     @property
     def user(self):
         return type("U", (), {"id": 42})()
@@ -113,9 +123,14 @@ async def test_post_tool_approval_attaches_view(monkeypatch):
         ))
     finally:
         await adapter.aclose()
+    # The channel got the session-thread anchor (no view); the approval with
+    # its buttons went into the thread.
     assert len(client.channel.sent) == 1
-    sent = client.channel.sent[0]
-    assert sent["view"] is not None  # ApprovalView attached
+    assert client.channel.sent[0]["view"] is None
+    assert "Agent session s" in (client.channel.sent[0]["content"] or "")
+    thread = client.threads[1000]  # anchor msg id 999 -> thread id 1000
+    assert len(thread.sent) == 1
+    assert thread.sent[0]["view"] is not None  # ApprovalView attached in-thread
 
 
 def test_format_approval_content_uses_tool_name_and_pretty_args():
@@ -151,13 +166,44 @@ async def test_post_ask_user_creates_thread_and_caches_ids(monkeypatch):
             tool_call_id="tc", prompt="hi?", response_schema=None,
             choices=None, timeout_at_iso=None,
         ))
-        # Thread id = parent message id + 1 in our stub.
-        assert "1000" in adapter._thread_to_ids
-        assert adapter._thread_to_ids["1000"] == {
+        # Anchor msg id 999 -> thread id 1000; the ask is pending on it.
+        assert adapter._session_threads["s"] == 1000
+        assert adapter._pending_ask[1000] == {
             "workspace_id": "ws", "session_id": "s", "tool_call_id": "tc",
         }
+        assert client.threads[1000].sent[0]["content"] == "hi?"
     finally:
         await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_post_reuses_one_thread_per_session(monkeypatch):
+    client = _StubClient()
+    async def _acquire(_): return client
+    async def _release(_): pass
+    monkeypatch.setattr(DISCORD_CONNECTIONS, "acquire", _acquire)
+    monkeypatch.setattr(DISCORD_CONNECTIONS, "release", _release)
+    adapter = DiscordChannelAdapter(
+        provider=_provider(), channel=_channel(), inbox=_CapturingInbox(),
+    )
+    await adapter.initialize()
+    try:
+        await adapter.post_prompt(PromptEnvelope(
+            kind="ask_user", workspace_id="ws", session_id="s",
+            tool_call_id="t1", prompt="q1", response_schema=None,
+            choices=None, timeout_at_iso=None,
+        ))
+        await adapter.post_prompt(PromptEnvelope(
+            kind="tool_approval", workspace_id="ws", session_id="s",
+            tool_call_id="t2", prompt="approve?", response_schema=None,
+            choices=["Approve", "Reject"], timeout_at_iso=None,
+            tool_name="workspace__write", tool_args={"x": 1},
+        ))
+    finally:
+        await adapter.aclose()
+    # Exactly one anchor in the channel; both prompts in the single thread.
+    assert len(client.channel.sent) == 1
+    assert len(client.threads[1000].sent) == 2
 
 
 @pytest.mark.asyncio
