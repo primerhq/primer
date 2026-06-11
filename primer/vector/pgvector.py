@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from typing import Any, ClassVar, Literal
 
 import asyncpg
+from pgvector import HalfVector
 from pgvector.asyncpg import register_vector
 
 from primer.int.vector_store import VectorStore
@@ -233,8 +234,16 @@ class PgVectorStoreProvider(VectorStoreProvider):
                 'index_kind text NOT NULL, '
                 'dimensions integer NOT NULL, '
                 'distance text NOT NULL, '
+                "vector_type text NOT NULL DEFAULT 'vector', "
                 'created_at timestamptz NOT NULL DEFAULT now()'
                 ')'
+            )
+            # Idempotent migration for catalogues created before the
+            # halfvec feature: backfill the vector_type column.
+            await conn.execute(
+                f'ALTER TABLE "{self._schema}".primer_collections '
+                "ADD COLUMN IF NOT EXISTS vector_type text NOT NULL "
+                "DEFAULT 'vector'"
             )
 
         logger.info(
@@ -538,16 +547,20 @@ class PgVectorStore(VectorStore):
         if distance not in _DISTANCE_OPCLASS:
             raise BadRequestError(f"unknown distance {distance!r}")
 
+        use_halfvec = bool(self._provider.config.use_halfvec)
+        _validate_dimensions(dimensions, use_halfvec=use_halfvec)
+        vector_type = _vector_column_type(use_halfvec)
+
         table_name = _table_name_for_collection(collection_id)
         index_name = f"{table_name}_{self._index_suffix()}"
-        opclass = _DISTANCE_OPCLASS[distance]
+        opclass = _opclass_for(distance, vector_type)
 
         ddl_table = (
             f'CREATE TABLE IF NOT EXISTS "{self._schema}"."{table_name}" ('
             'document_id text NOT NULL, '
             'chunk_id text NOT NULL, '
             'text text NOT NULL, '
-            f'vector vector({dimensions}) NOT NULL, '
+            f'vector {vector_type}({dimensions}) NOT NULL, '
             "meta jsonb NOT NULL DEFAULT '{}'::jsonb, "
             'PRIMARY KEY (document_id, chunk_id)'
             ')'
@@ -572,7 +585,7 @@ class PgVectorStore(VectorStore):
                 # Catalogue lookup first to surface ConflictError on
                 # dimension/distance drift before we attempt DDL.
                 existing = await conn.fetchrow(
-                    f'SELECT dimensions, distance FROM '
+                    f'SELECT dimensions, distance, vector_type FROM '
                     f'"{self._schema}".primer_collections '
                     f'WHERE collection_id = $1',
                     collection_id,
@@ -594,6 +607,7 @@ class PgVectorStore(VectorStore):
                         index_name=index_name,
                         dimensions=dimensions,
                         distance=distance,
+                        vector_type=existing["vector_type"] or "vector",
                     )
                     return
 
@@ -605,14 +619,15 @@ class PgVectorStore(VectorStore):
                     await conn.execute(
                         f'INSERT INTO "{self._schema}".primer_collections '
                         f'(collection_id, table_name, index_name, '
-                        f'index_kind, dimensions, distance) '
-                        f'VALUES ($1, $2, $3, $4, $5, $6)',
+                        f'index_kind, dimensions, distance, vector_type) '
+                        f'VALUES ($1, $2, $3, $4, $5, $6, $7)',
                         collection_id,
                         table_name,
                         index_name,
                         self._index_kind(),
                         dimensions,
                         distance,
+                        vector_type,
                     )
         except ConflictError:
             raise
@@ -627,6 +642,7 @@ class PgVectorStore(VectorStore):
             index_name=index_name,
             dimensions=dimensions,
             distance=distance,
+            vector_type=vector_type,
         )
         logger.info(
             "Created vector collection %r (dimensions=%d, distance=%s, "
@@ -644,7 +660,8 @@ class PgVectorStore(VectorStore):
             return cached
         async with self._provider.pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT table_name, index_name, dimensions, distance FROM '
+                f'SELECT table_name, index_name, dimensions, distance, '
+                f'vector_type FROM '
                 f'"{self._schema}".primer_collections WHERE collection_id = $1',
                 collection_id,
             )
@@ -657,6 +674,7 @@ class PgVectorStore(VectorStore):
             index_name=row["index_name"],
             dimensions=int(row["dimensions"]),
             distance=row["distance"],
+            vector_type=row["vector_type"] or "vector",
         )
         self._collections[collection_id] = meta
         return meta
@@ -670,6 +688,12 @@ class PgVectorStore(VectorStore):
                 f"vector dimensionality {len(record.vector)} does not match "
                 f"collection {record.collection_id!r} dimensions={meta.dimensions}"
             )
+
+        value = (
+            HalfVector(record.vector)
+            if meta.vector_type == "halfvec"
+            else record.vector
+        )
 
         sql = (
             f'INSERT INTO "{self._schema}"."{meta.table_name}" '
@@ -687,7 +711,7 @@ class PgVectorStore(VectorStore):
                     record.document_id,
                     record.chunk_id,
                     record.text,
-                    record.vector,
+                    value,
                     json.dumps(record.meta),
                 )
         except Exception as exc:
@@ -709,6 +733,10 @@ class PgVectorStore(VectorStore):
                 f"collection {collection_id!r} dimensions={meta.dimensions}"
             )
 
+        qvector = (
+            HalfVector(vector) if meta.vector_type == "halfvec" else vector
+        )
+
         op = _DISTANCE_OPERATOR[meta.distance]
         # Normalise to "higher = more similar" regardless of native metric.
         if meta.distance == "ip":
@@ -729,7 +757,7 @@ class PgVectorStore(VectorStore):
 
         try:
             async with self._provider.pool.acquire() as conn:
-                rows = await conn.fetch(sql, vector, k)
+                rows = await conn.fetch(sql, qvector, k)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 
@@ -740,7 +768,7 @@ class PgVectorStore(VectorStore):
                     document_id=r["document_id"],
                     chunk_id=r["chunk_id"],
                     text=r["text"],
-                    vector=list(r["vector"]),
+                    vector=_vec_to_list(r["vector"]),
                     meta=_meta_from_json(r["meta"]),
                 ),
                 score=float(r["score"]) if r["score"] is not None else None,
@@ -775,7 +803,7 @@ class PgVectorStore(VectorStore):
                 document_id=r["document_id"],
                 chunk_id=r["chunk_id"],
                 text=r["text"],
-                vector=list(r["vector"]),
+                vector=_vec_to_list(r["vector"]),
                 meta=_meta_from_json(r["meta"]),
             )
             for r in rows
@@ -804,7 +832,7 @@ class PgVectorStore(VectorStore):
                 document_id=r["document_id"],
                 chunk_id=r["chunk_id"],
                 text=r["text"],
-                vector=list(r["vector"]),
+                vector=_vec_to_list(r["vector"]),
                 meta=_meta_from_json(r["meta"]),
             )
             for r in rows
@@ -873,7 +901,7 @@ class PgVectorStore(VectorStore):
 
 
 class _CollectionMeta:
-    __slots__ = ("table_name", "index_name", "dimensions", "distance")
+    __slots__ = ("table_name", "index_name", "dimensions", "distance", "vector_type")
 
     def __init__(
         self,
@@ -882,11 +910,13 @@ class _CollectionMeta:
         index_name: str,
         dimensions: int,
         distance: str,
+        vector_type: str = "vector",
     ) -> None:
         self.table_name = table_name
         self.index_name = index_name
         self.dimensions = dimensions
         self.distance = distance
+        self.vector_type = vector_type
 
 
 def _meta_from_json(value: Any) -> dict[str, Any]:
