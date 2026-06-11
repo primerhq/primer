@@ -20,6 +20,7 @@ class _Model(BaseModel):
     enabled: bool = False
     count: int = 0
     ratio: float = 0.0
+    tags: list[str] | None = None
 
 
 def _sql(predicate: Predicate) -> tuple[str, list]:
@@ -80,6 +81,45 @@ def test_compound_and_with_bool_and_str():
     sql, params = _sql(Predicate(left=left, op=Op.AND, right=right))
     assert sql == "((data->>'name' = $1) AND ((data->>'enabled')::boolean = $2))", sql
     assert params == ["x", True]
+
+
+def test_contains_renders_jsonb_existence_operator():
+    # CONTAINS targets a JSON array field: it must use the jsonb (->)
+    # accessor (not text ->>) and the ``?`` existence operator so a GIN
+    # index on the expression can back it.
+    sql, params = _sql(
+        Predicate(left=FieldRef(name="tags"), op=Op.CONTAINS, right=Value(value="x"))
+    )
+    assert sql == "(data->'tags' ? $1)", sql
+    assert params == ["x"]
+
+
+def test_contains_requires_fieldref_left():
+    import pytest
+
+    from primer.model.except_ import BadRequestError
+
+    with pytest.raises(BadRequestError):
+        _sql(
+            Predicate(
+                left=Value(value="x"), op=Op.CONTAINS, right=FieldRef(name="tags")
+            )
+        )
+
+
+def test_contains_requires_scalar_value_right():
+    import pytest
+
+    from primer.model.except_ import BadRequestError
+
+    with pytest.raises(BadRequestError):
+        _sql(
+            Predicate(
+                left=FieldRef(name="tags"),
+                op=Op.CONTAINS,
+                right=Value(value=["a", "b"]),
+            )
+        )
 
 
 from primer.model.storage import OrderBy

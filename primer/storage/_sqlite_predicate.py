@@ -153,6 +153,8 @@ class _SqlitePredicateTranslator:
             )
         if p.op == Op.IN:
             return self._render_in(p)
+        if p.op == Op.CONTAINS:
+            return self._render_contains(p)
         if p.op in (Op.IS_NULL, Op.IS_NOT_NULL):
             return self._render_null_check(p)
         if p.op in _COMPARISON_OPS:
@@ -195,6 +197,32 @@ class _SqlitePredicateTranslator:
             left_sql = f"CAST({_render_field_expr(self._model, p.left.name)} AS {cast})"
         placeholders = ", ".join(self.append_param(v) for v in values)
         return f"({left_sql} IN ({placeholders}))"
+
+    def _render_contains(self, p: Predicate) -> str:
+        """Render JSON-array membership via ``json_each``.
+
+        SQLite has no jsonb existence operator, so iterate the array at
+        the field's path and match any element equal to the scalar. A
+        missing path yields no ``json_each`` rows, so it never matches.
+        """
+        if not isinstance(p.left, FieldRef):
+            raise BadRequestError("CONTAINS requires a FieldRef on the left")
+        if not isinstance(p.right, Value) or isinstance(p.right.value, list):
+            raise BadRequestError(
+                "CONTAINS requires a scalar Value on the right"
+            )
+        parts = p.left.name.split(".")
+        if parts[0] not in self._model.model_fields:
+            raise BadRequestError(
+                f"field {p.left.name!r} is not declared on model "
+                f"{self._model.__name__!r}"
+            )
+        json_path = ("$." + ".".join(parts)).replace("'", "''")
+        placeholder = self.append_param(p.right.value)
+        return (
+            f"(EXISTS (SELECT 1 FROM json_each(data, '{json_path}') "
+            f"WHERE value = {placeholder}))"
+        )
 
     def _render_comparison(self, p: Predicate) -> str:
         sql_op = _COMPARISON_OPS[p.op]

@@ -132,6 +132,27 @@ def _render_field_expr(model_class: type[BaseModel], path: str) -> str:
     return expr
 
 
+def _render_jsonb_field_expr(model_class: type[BaseModel], path: str) -> str:
+    """SQL expression that yields the field's value as JSONB (not text).
+
+    Identical to :func:`_render_field_expr` but the final hop uses the
+    ``->`` (JSONB) accessor instead of ``->>`` (text), so the result can
+    feed JSONB operators such as ``?`` / ``@>``. Used by ``CONTAINS``.
+    """
+    if path == _PRIMARY_KEY_COLUMN:
+        raise BadRequestError("CONTAINS is not supported on the primary key")
+    parts = path.split(".")
+    if parts[0] not in model_class.model_fields:
+        raise BadRequestError(
+            f"field {path!r} is not declared on model {model_class.__name__!r}"
+        )
+    expr = "data"
+    for inner in parts[:-1]:
+        expr += f"->{_quote_jsonb_key(inner)}"
+    expr += f"->{_quote_jsonb_key(parts[-1])}"
+    return expr
+
+
 def _render_typed_field_expr(
     model_class: type[BaseModel], path: str
 ) -> str:
@@ -241,6 +262,9 @@ class _PredicateTranslator:
         if p.op == Op.IN:
             return self._render_in(p)
 
+        if p.op == Op.CONTAINS:
+            return self._render_contains(p)
+
         if p.op in (Op.IS_NULL, Op.IS_NOT_NULL):
             return self._render_null_check(p)
 
@@ -286,6 +310,24 @@ class _PredicateTranslator:
             left_sql = f"({_render_field_expr(self._model, p.left.name)})::{scalar_cast}"
         placeholder = self.append_param(values)
         return f"({left_sql} = ANY({placeholder}::{scalar_cast}[]))"
+
+    def _render_contains(self, p: Predicate) -> str:
+        """Render JSON-array membership as ``data->'field' ? $n``.
+
+        The ``?`` JSONB existence operator returns true when the right
+        scalar appears as an element of the array. A GIN index on the
+        same ``data->'field'`` expression backs it. asyncpg uses ``$n``
+        placeholders, so the literal ``?`` is unambiguous here.
+        """
+        if not isinstance(p.left, FieldRef):
+            raise BadRequestError("CONTAINS requires a FieldRef on the left")
+        if not isinstance(p.right, Value) or isinstance(p.right.value, list):
+            raise BadRequestError(
+                "CONTAINS requires a scalar Value on the right"
+            )
+        left_sql = _render_jsonb_field_expr(self._model, p.left.name)
+        placeholder = self.append_param(p.right.value)
+        return f"({left_sql} ? {placeholder})"
 
     def _render_comparison(self, p: Predicate) -> str:
         sql_op = _COMPARISON_OPS[p.op]

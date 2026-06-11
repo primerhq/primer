@@ -21,6 +21,29 @@ def test_session_adapter_kind():
     assert a.entity_table == "sessions"
 
 
+def test_session_entity_indexes_back_the_park_queries():
+    a = SessionClaimAdapter(session_storage=None)
+    ddl = a.entity_indexes('"public"."sessions"')
+    joined = "\n".join(ddl)
+    # All idempotent and scoped to the qualified table.
+    assert all(d.startswith("CREATE INDEX IF NOT EXISTS") for d in ddl)
+    assert all('"public"."sessions"' in d for d in ddl)
+    # Backs the claim-eligibility filter + listener primary lookups.
+    assert "(data->>'parked_status')" in joined
+    assert "(data->>'parked_event_key')" in joined
+    # GIN backs the multi-event membership fallback (Op.CONTAINS -> ?).
+    assert "gin" in joined.lower()
+    assert "(data->'parked_event_keys')" in joined
+
+
+def test_base_adapter_entity_indexes_default_empty():
+    # A non-overriding adapter declares no indexes.
+    from primer.claim.adapters.chats import ChatClaimAdapter
+
+    a = ChatClaimAdapter(chat_storage=None)
+    assert a.entity_indexes('"public"."chats"') == []
+
+
 def test_session_eligibility_sql():
     a = SessionClaimAdapter(session_storage=None)
     sql = a.eligibility_sql()

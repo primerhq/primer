@@ -64,6 +64,19 @@ class ClaimAdapter(ABC):
     @abstractmethod
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None: ...
 
+    def entity_indexes(self, qualified_table: str) -> list[str]:
+        """Return ``CREATE INDEX`` statements backing this adapter's queries.
+
+        Default: none. Adapters whose eligibility SQL (or the bus
+        listener's lookups) filter on JSONB fields override this to
+        declare backing indexes; the Postgres engine creates them
+        idempotently alongside the entity table. ``qualified_table`` is
+        the schema-qualified table name to target. Each statement MUST be
+        ``CREATE INDEX IF NOT EXISTS`` so creation is safe to repeat and
+        race with peer processes.
+        """
+        return []
+
 
 class ClaimEngine(ABC):
     @abstractmethod

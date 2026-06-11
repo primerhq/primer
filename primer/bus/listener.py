@@ -159,23 +159,29 @@ class YieldEventListener:
 
             # Multi-event-park fallback: a reply to a non-primary node, or a
             # second concurrent reply arriving while the session is already
-            # 'resumable'. Query both states so neither is dropped.
+            # 'resumable'. Match rows whose ``parked_event_keys`` array holds
+            # this key (CONTAINS -> the jsonb ``?`` operator, GIN-backed) and
+            # are still parked/resumable, so neither is dropped.
             if flipped == 0 and event.event_key.startswith(
                 ("ask_user:", "tool_approval:")
             ):
-                parked_pred = Predicate(
-                    left=FieldRef(name="parked_status"),
-                    op=Op.IN,
-                    right=Value(value=["parked", "resumable"]),
+                member_pred = Predicate(
+                    left=Predicate(
+                        left=FieldRef(name="parked_status"),
+                        op=Op.IN,
+                        right=Value(value=["parked", "resumable"]),
+                    ),
+                    op=Op.AND,
+                    right=Predicate(
+                        left=FieldRef(name="parked_event_keys"),
+                        op=Op.CONTAINS,
+                        right=Value(value=event.event_key),
+                    ),
                 )
                 page2 = await self._storage.find(
-                    parked_pred, OffsetPage(length=200),
+                    member_pred, OffsetPage(length=200),
                 )
-                members = [
-                    s for s in page2.items
-                    if event.event_key in (s.parked_event_keys or [])
-                ]
-                flipped += await self._flip_rows(members, event)
+                flipped += await self._flip_rows(page2.items, event)
 
             if flipped:
                 logger.info(

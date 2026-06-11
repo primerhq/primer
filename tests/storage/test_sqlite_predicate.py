@@ -18,6 +18,7 @@ class _Row(Identifiable):
     count: int
     rate: float
     active: bool
+    tags: list[str] | None = None
 
 
 def _T() -> _SqlitePredicateTranslator:
@@ -31,6 +32,29 @@ def test_eq_on_text_field():
     )
     assert sql == "(json_extract(data, '$.name') = ?)"
     assert params == ["x"]
+
+
+def test_contains_renders_json_each_membership():
+    # CONTAINS matches when a JSON array field contains the scalar; SQLite
+    # has no jsonb existence operator, so iterate the array via json_each.
+    t = _T()
+    sql, params = t.translate(
+        Predicate(left=FieldRef(name="tags"), op=Op.CONTAINS, right=Value(value="x"))
+    )
+    assert sql == (
+        "(EXISTS (SELECT 1 FROM json_each(data, '$.tags') WHERE value = ?))"
+    )
+    assert params == ["x"]
+
+
+def test_contains_requires_fieldref_left():
+    t = _T()
+    with pytest.raises(BadRequestError):
+        t.translate(
+            Predicate(
+                left=Value(value="x"), op=Op.CONTAINS, right=FieldRef(name="tags")
+            )
+        )
 
 
 def test_gt_on_int_field_casts():

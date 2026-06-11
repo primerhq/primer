@@ -17,6 +17,7 @@ class _Doc(Identifiable):
     count: int = 0
     note: Optional[str] = None
     secret: SecretStr | None = None
+    tags: list[str] | None = None
 
 
 @pytest.mark.asyncio
@@ -247,6 +248,32 @@ async def test_cursor_pagination_nullable_orderby_desc_no_drops_no_dupes(
     # Non-null descending first, NULLs last.
     assert seen[:3] == ["d4", "d2", "d0"]
     assert set(seen[-2:]) == {"d1", "d3"}
+
+
+@pytest.mark.asyncio
+async def test_contains_matches_array_membership(
+    sqlite_provider: SqliteStorageProvider,
+):
+    """Op.CONTAINS matches a row whose JSON array field holds the scalar,
+    and excludes rows missing the element or with no array at all."""
+    s = sqlite_provider.get_storage(_Doc)
+    await s.create(_Doc(id="m1", title="a", tags=["ev:1", "ev:2"]))
+    await s.create(_Doc(id="m2", title="b", tags=["ev:3"]))
+    await s.create(_Doc(id="m3", title="c", tags=None))
+    hit = await s.find(
+        Predicate(
+            left=FieldRef(name="tags"), op=Op.CONTAINS, right=Value(value="ev:2")
+        ),
+        OffsetPage(offset=0, length=10),
+    )
+    assert [d.id for d in hit.items] == ["m1"]
+    miss = await s.find(
+        Predicate(
+            left=FieldRef(name="tags"), op=Op.CONTAINS, right=Value(value="ev:9")
+        ),
+        OffsetPage(offset=0, length=10),
+    )
+    assert [d.id for d in miss.items] == []
 
 
 @pytest.mark.asyncio

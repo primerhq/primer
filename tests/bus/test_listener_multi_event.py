@@ -57,6 +57,19 @@ async def test_wakes_on_non_primary_member_key(tmp_path):
     assert got.parked_state["resume_event_payload"] == {"response": "blue"}
 
 
+async def test_non_member_key_does_not_wake_multi_event_park(tmp_path):
+    # A multi-event park must NOT wake on a key absent from its
+    # parked_event_keys array: the CONTAINS fallback must match exactly,
+    # not over-match. Guards the jsonb ``?`` containment semantics.
+    storage, engine, listener = await _build(tmp_path)
+    await storage.create(
+        _multi(["ask_user:s1:tc1", "ask_user:s1:tc2"], "ask_user:s1:tc1")
+    )
+    await listener._handle_event(_Event("ask_user:s1:tcX", {"response": "no"}))
+    got = await storage.get("s1")
+    assert got.parked_status == "parked"  # untouched
+
+
 async def test_single_event_path_unchanged_records_fired_key(tmp_path):
     storage, engine, listener = await _build(tmp_path)
     s = WorkspaceSession(

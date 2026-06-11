@@ -118,6 +118,17 @@ class PostgresClaimEngine(ClaimEngine):
                 # is its own autocommit statement, so a race on one table
                 # does not poison the others.
                 pass
+            # Create any adapter-declared backing indexes for this table.
+            # Each is CREATE INDEX IF NOT EXISTS (idempotent); a peer racing
+            # the same index raises CONCURRENT_CREATE_RACE, which we swallow.
+            for adapter in self._adapters.values():
+                if adapter.entity_table != table:
+                    continue
+                for ddl in adapter.entity_indexes(qualified):
+                    try:
+                        await conn.execute(ddl)
+                    except CONCURRENT_CREATE_RACE:
+                        pass
         self._entity_tables_ensured = True
 
     # ------------------------------------------------------------------

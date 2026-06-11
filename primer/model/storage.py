@@ -48,6 +48,13 @@ class Op(str, Enum):
     optimise to a native IN clause (SQL ``IN``, MongoDB ``$in``) but
     MUST evaluate the same set-membership semantics.
 
+    ``CONTAINS`` tests array membership: it expects a :class:`FieldRef`
+    naming a JSON array field on the left and a scalar :class:`Value` on
+    the right, and matches when the array contains that scalar. Backends
+    translate to a native containment check (Postgres ``jsonb ?``,
+    SQLite ``json_each``) and MAY use a GIN index on the array
+    expression. A missing or null array never matches.
+
     ``IS_NULL`` / ``IS_NOT_NULL`` are unary; they expect a
     :class:`FieldRef` on the left and the right operand is ignored.
     Match the SQL semantics: ``IS NULL`` is the only way to compare
@@ -76,6 +83,7 @@ class Op(str, Enum):
     GE = ">="
     LE = "<="
     IN = "in"
+    CONTAINS = "contains"
     IS_NULL = "is_null"
     IS_NOT_NULL = "is_not_null"
     AND = "and"

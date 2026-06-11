@@ -43,6 +43,29 @@ class SessionClaimAdapter(ClaimAdapter):
             "OR e.data->>'parked_status' = 'resumable'"
         )
 
+    def entity_indexes(self, qualified_table: str) -> list[str]:
+        # parked_status / parked_event_key / parked_event_keys all live inside
+        # the JSONB ``data`` column, so Postgres needs expression indexes to
+        # avoid sequential scans on the hot park paths:
+        #   * the partial btree on parked_status backs the claim-eligibility
+        #     filter (runs every claim cycle) and the listener's status guard;
+        #   * the partial btree on parked_event_key backs the listener's
+        #     primary keyed lookup (runs for every bus event);
+        #   * the GIN on parked_event_keys backs the multi-event membership
+        #     fallback (``Op.CONTAINS`` -> the jsonb ``?`` operator).
+        # All are partial / IF NOT EXISTS so they cost nothing on unparked
+        # rows and are safe to create repeatedly and race with peers.
+        return [
+            f"CREATE INDEX IF NOT EXISTS idx_sessions_parked_status "
+            f"ON {qualified_table} ((data->>'parked_status')) "
+            f"WHERE data->>'parked_status' IS NOT NULL",
+            f"CREATE INDEX IF NOT EXISTS idx_sessions_parked_event_key "
+            f"ON {qualified_table} ((data->>'parked_event_key')) "
+            f"WHERE data->>'parked_event_key' IS NOT NULL",
+            f"CREATE INDEX IF NOT EXISTS idx_sessions_parked_event_keys "
+            f"ON {qualified_table} USING gin ((data->'parked_event_keys'))",
+        ]
+
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
         if self._storage is None:
             raise RuntimeError(
