@@ -85,6 +85,18 @@ def test_describe_renders_yaml(mock_session):
     assert "model: gpt" in result.output
 
 
+def test_describe_honors_output_json(mock_session):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "a1", "model": "gpt"})
+
+    mock_session.set_handler(handler)
+    result = runner.invoke(
+        app, ["describe", "agent", "a1", "-o", "json"], obj=mock_session.session
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["id"] == "a1"
+
+
 def test_delete_calls_delete(mock_session):
     seen = {}
 

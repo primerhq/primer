@@ -65,6 +65,28 @@ def test_apply_replaces_when_present(mock_session, tmp_path: Path):
     assert "configured" in result.output
 
 
+def test_apply_unchanged_when_spec_matches(mock_session, tmp_path: Path):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "GET":
+            # server echoes the spec plus server-populated fields
+            return httpx.Response(200, json={
+                "id": "a1", "model": "gpt", "created_at": "2026-01-01T00:00:00Z",
+            })
+        return httpx.Response(200, json={"id": "a1"})
+
+    mock_session.set_handler(handler)
+    manifest = tmp_path / "a.yaml"
+    manifest.write_text("kind: agent\nspec:\n  id: a1\n  model: gpt\n")
+    result = runner.invoke(app, ["apply", "-f", str(manifest)], obj=mock_session.session)
+    assert result.exit_code == 0, result.output
+    assert "unchanged" in result.output
+    # No PUT should have been issued.
+    assert not any(m == "PUT" for m, _ in calls)
+
+
 def test_apply_requires_id(mock_session, tmp_path: Path):
     manifest = tmp_path / "a.yaml"
     manifest.write_text("kind: agent\nspec:\n  model: gpt\n")

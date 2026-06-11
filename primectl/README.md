@@ -35,6 +35,7 @@ primectl raw GET /v1/health
 ## Output formats
 
 `-o table` (default), `json`, `yaml`, `name` (ids only), `wide`.
+The -o flag is accepted by the read commands (get, describe, call, raw); write commands (create, apply, delete, edit) print a status line.
 
 ## Config
 

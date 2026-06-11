@@ -89,9 +89,14 @@ def register(app: typer.Typer) -> None:
         ctx: typer.Context,
         resource: str = typer.Argument(...),
         id: str = typer.Argument(...),
+        output: str = typer.Option(
+            None, "-o", "--output", help="Output: yaml (default), json, or name."
+        ),
     ) -> None:
-        """Show a single object in full (YAML)."""
+        """Show a single object in full (YAML by default)."""
         sess = _session(ctx)
+        if output is not None:
+            sess.output = output
         try:
             res = sess.registry.resolve(resource)
             resp = sess.client.request("get", f"{res.path_prefix}/{id}")
@@ -101,7 +106,10 @@ def register(app: typer.Typer) -> None:
         except (ApiError, ConnectionFailed) as exc:
             _fail(sess, exc)
             return
-        typer.echo(render(resp.json(), fmt="yaml"))
+        # A single object detail view: honor json/yaml/name; table/wide are
+        # meaningless for one object, so fall back to yaml.
+        fmt = sess.output if sess.output in ("json", "yaml", "name") else "yaml"
+        typer.echo(render(resp.json(), fmt=fmt))
 
     @app.command()
     def delete(
@@ -272,7 +280,7 @@ def _apply_one(sess: Session, res, ident: str, body: dict) -> None:
         sess.client.request("post", res.path_prefix, json=body)
         typer.echo(f"{res.name}/{ident} created")
         return
-    if existing == body:
+    if all(existing.get(k) == v for k, v in body.items()):
         typer.echo(f"{res.name}/{ident} unchanged")
         return
     sess.client.request("put", item_path, json=body)
