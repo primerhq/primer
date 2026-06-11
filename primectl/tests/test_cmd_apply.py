@@ -106,10 +106,8 @@ def test_create_unsupported_verb_errors(mock_session):
 
 def test_edit_unsupported_verb_errors(mock_session):
     # 'llm_provider' has no update_op (no PUT) in the fixture.
-    import httpx as _httpx
-
     def handler(request):
-        return _httpx.Response(200, json={"id": "p1", "provider": "openai"})
+        return httpx.Response(200, json={"id": "p1", "provider": "openai"})
 
     mock_session.set_handler(handler)
     result = runner.invoke(app, ["edit", "llm_provider", "p1"], obj=mock_session.session)
