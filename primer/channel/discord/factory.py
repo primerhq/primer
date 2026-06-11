@@ -152,13 +152,15 @@ def _install_handlers(provider_id: str, client: Any) -> None:
         # Single-use: drop the entry so subsequent thread messages don't fire.
         adapter._thread_to_ids.pop(thread_id, None)
 
-    # NB: register with explicit event names. ``client.event`` keys off the
-    # coroutine's __name__, which here is ``_on_interaction``/``_on_message``
-    # (leading underscore), so the handlers would be stored under the wrong
-    # attribute and never dispatched. ``add_listener(func, name)`` binds them
-    # to the real ``on_interaction``/``on_message`` gateway events.
-    client.add_listener(_on_interaction, "on_interaction")
-    client.add_listener(_on_message, "on_message")
+    # Bind the handlers to the real gateway event names. The base
+    # ``discord.Client`` dispatches by looking up ``self.on_<event>`` (this is
+    # exactly what ``@client.event`` does via setattr on the coroutine's
+    # __name__). Our handlers are named ``_on_interaction``/``_on_message``, so
+    # ``client.event`` would store them under the wrong attribute and they'd
+    # never fire; ``add_listener`` doesn't exist on the base Client. Assigning
+    # the correctly-named attributes directly is the supported registration.
+    client.on_interaction = _on_interaction
+    client.on_message = _on_message
 
 
 async def _discord_factory(
