@@ -93,3 +93,38 @@ def test_apply_requires_id(mock_session, tmp_path: Path):
     result = runner.invoke(app, ["apply", "-f", str(manifest)], obj=mock_session.session)
     assert result.exit_code != 0
     assert "id" in result.output.lower()
+
+
+def test_create_unsupported_verb_errors(mock_session):
+    # 'reports' is read-only (no create_op) in the fixture.
+    result = runner.invoke(
+        app, ["create", "report", "--set", "title=x"], obj=mock_session.session
+    )
+    assert result.exit_code == 1
+    assert "does not support create" in result.output
+
+
+def test_edit_unsupported_verb_errors(mock_session):
+    # 'llm_provider' has no update_op (no PUT) in the fixture.
+    import httpx as _httpx
+
+    def handler(request):
+        return _httpx.Response(200, json={"id": "p1", "provider": "openai"})
+
+    mock_session.set_handler(handler)
+    result = runner.invoke(app, ["edit", "llm_provider", "p1"], obj=mock_session.session)
+    assert result.exit_code == 1
+    assert "does not support" in result.output
+
+
+def test_apply_unsupported_update_errors(mock_session, tmp_path):
+    # Applying to an EXISTING llm_provider needs PUT, which it does not support.
+    def handler(request):
+        return httpx.Response(200, json={"id": "p1", "provider": "old"})
+
+    mock_session.set_handler(handler)
+    manifest = tmp_path / "p.yaml"
+    manifest.write_text("kind: llm_provider\nspec:\n  id: p1\n  provider: openai\n")
+    result = runner.invoke(app, ["apply", "-f", str(manifest)], obj=mock_session.session)
+    assert result.exit_code == 1
+    assert "does not support" in result.output

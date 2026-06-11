@@ -23,6 +23,13 @@ def _session(ctx: typer.Context) -> Session:
     return obj
 
 
+def _require_op(res, op, verb: str) -> None:
+    """Exit with a friendly error if the resource does not support a verb."""
+    if op is None:
+        typer.echo(f"resource {res.name!r} does not support {verb}", err=True)
+        raise typer.Exit(1)
+
+
 def _fail(sess: Session, exc: Exception) -> None:
     typer.echo(format_error(exc, server=sess.target.server), err=True)
     raise typer.Exit(exit_code_for(exc))
@@ -121,6 +128,7 @@ def register(app: typer.Typer) -> None:
         sess = _session(ctx)
         try:
             res = sess.registry.resolve(resource)
+            _require_op(res, res.delete_op, "delete")
             sess.client.request("delete", f"{res.path_prefix}/{id}")
         except UnknownResource as exc:
             typer.echo(str(exc), err=True)
@@ -146,6 +154,7 @@ def register(app: typer.Typer) -> None:
                 docs = parse_manifests(Path(file).read_text())
                 for kind, body in docs:
                     res = sess.registry.resolve(kind)
+                    _require_op(res, res.create_op, "create")
                     resp = sess.client.request("post", res.path_prefix, json=body)
                     ident = resp.json().get("id", body.get("id", "?"))
                     typer.echo(f"{res.name}/{ident} created")
@@ -154,6 +163,7 @@ def register(app: typer.Typer) -> None:
                 typer.echo("create needs a resource + --set, or -f FILE", err=True)
                 raise typer.Exit(1)
             res = sess.registry.resolve(resource)
+            _require_op(res, res.create_op, "create")
             body = _assemble_set(set_ or [])
             resp = sess.client.request("post", res.path_prefix, json=body)
             ident = resp.json().get("id", body.get("id", "?"))
@@ -205,6 +215,7 @@ def register(app: typer.Typer) -> None:
         sess = _session(ctx)
         try:
             res = sess.registry.resolve(resource)
+            _require_op(res, res.update_op, "edit")
             current = sess.client.request("get", f"{res.path_prefix}/{id}").json()
         except UnknownResource as exc:
             typer.echo(str(exc), err=True)
@@ -277,11 +288,13 @@ def _apply_one(sess: Session, res, ident: str, body: dict) -> None:
         else:
             raise
     if not exists:
+        _require_op(res, res.create_op, "create")
         sess.client.request("post", res.path_prefix, json=body)
         typer.echo(f"{res.name}/{ident} created")
         return
     if all(existing.get(k) == v for k, v in body.items()):
         typer.echo(f"{res.name}/{ident} unchanged")
         return
+    _require_op(res, res.update_op, "update")
     sess.client.request("put", item_path, json=body)
     typer.echo(f"{res.name}/{ident} configured")

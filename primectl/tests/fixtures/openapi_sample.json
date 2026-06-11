@@ -56,7 +56,15 @@
       "post": {"operationId": "discover_models_v1_llm_providers__discover_models_post",
         "responses": {"200": {"description": "ok"}}}
     },
-    "/v1/health": {"get": {"operationId": "health_v1_health_get", "responses": {"200": {"description": "ok"}}}}
+    "/v1/health": {"get": {"operationId": "health_v1_health_get", "responses": {"200": {"description": "ok"}}}},
+    "/v1/reports": {
+      "get": {"operationId": "_list_v1_reports_get", "responses": {"200": {"description": "ok"}}}
+    },
+    "/v1/reports/{entity_id}": {
+      "get": {"operationId": "_get_v1_reports__entity_id__get",
+        "parameters": [{"name": "entity_id", "in": "path", "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}}
+    }
   },
   "components": {"schemas": {
     "Agent": {"type": "object", "required": ["description", "model"], "properties": {

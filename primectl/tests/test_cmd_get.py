@@ -110,3 +110,10 @@ def test_delete_calls_delete(mock_session):
     assert result.exit_code == 0, result.output
     assert seen["method"] == "DELETE"
     assert seen["path"] == "/v1/agents/a1"
+
+
+def test_delete_unsupported_verb_errors(mock_session):
+    # 'reports' is read-only (no delete_op) in the fixture.
+    result = runner.invoke(app, ["delete", "report", "r1"], obj=mock_session.session)
+    assert result.exit_code == 1
+    assert "does not support delete" in result.output
