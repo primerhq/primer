@@ -94,6 +94,28 @@ async def test_vector_provider_rejects_over_2000_without_halfvec():
         await _drop_schema(schema)
 
 
+async def test_recreate_existing_halfvec_collection_ignores_flipped_flag():
+    # Flag only affects NEW collections: re-creating an existing 3072-dim
+    # halfvec collection through a provider whose use_halfvec was later turned
+    # off must return the existing collection, not reject on the 2000 ceiling.
+    if not await _pg_up():
+        pytest.skip("dogfood pg not reachable")
+    schema = "halfvec_test_" + uuid.uuid4().hex[:8]
+    p1 = await _provider(use_halfvec=True, schema=schema)
+    try:
+        await p1.get_vector_store().create_collection(
+            "c", dimensions=3072, distance="cosine")
+        # Fresh provider, same schema, flag flipped off -> cold _collections
+        # cache forces the catalogue-lookup short-circuit path.
+        p2 = await _provider(use_halfvec=False, schema=schema)
+        store2 = p2.get_vector_store()
+        # Must not raise on the 2000 ceiling for the pre-existing collection.
+        await store2.create_collection("c", dimensions=3072, distance="cosine")
+        assert store2._collections["c"].vector_type == "halfvec"
+    finally:
+        await _drop_schema(schema)
+
+
 async def test_standard_vector_collection_still_works():
     if not await _pg_up():
         pytest.skip("dogfood pg not reachable")

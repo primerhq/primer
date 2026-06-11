@@ -136,13 +136,13 @@ def _validate_dimensions(dimensions: int, *, use_halfvec: bool) -> None:
     if not use_halfvec and dimensions > VECTOR_MAX_DIMS:
         raise BadRequestError(
             f"embedding dimensions {dimensions} exceed the {VECTOR_MAX_DIMS}-"
-            f"column limit of the standard vector type; enable use_halfvec on "
+            f"dimension limit of the standard vector type; enable use_halfvec on "
             f"this semantic search provider (supports up to {HALFVEC_MAX_DIMS})"
         )
     if use_halfvec and dimensions > HALFVEC_MAX_DIMS:
         raise BadRequestError(
             f"embedding dimensions {dimensions} exceed pgvector's "
-            f"{HALFVEC_MAX_DIMS}-column limit for halfvec"
+            f"{HALFVEC_MAX_DIMS}-dimension limit for halfvec"
         )
 
 
@@ -547,43 +547,16 @@ class PgVectorStore(VectorStore):
         if distance not in _DISTANCE_OPCLASS:
             raise BadRequestError(f"unknown distance {distance!r}")
 
-        use_halfvec = bool(self._provider.config.use_halfvec)
-        _validate_dimensions(dimensions, use_halfvec=use_halfvec)
-        vector_type = _vector_column_type(use_halfvec)
-
         table_name = _table_name_for_collection(collection_id)
         index_name = f"{table_name}_{self._index_suffix()}"
-        opclass = _opclass_for(distance, vector_type)
-
-        ddl_table = (
-            f'CREATE TABLE IF NOT EXISTS "{self._schema}"."{table_name}" ('
-            'document_id text NOT NULL, '
-            'chunk_id text NOT NULL, '
-            'text text NOT NULL, '
-            f'vector {vector_type}({dimensions}) NOT NULL, '
-            "meta jsonb NOT NULL DEFAULT '{}'::jsonb, "
-            'PRIMARY KEY (document_id, chunk_id)'
-            ')'
-        )
-        ddl_doc_index = (
-            f'CREATE INDEX IF NOT EXISTS "{table_name}_document" '
-            f'ON "{self._schema}"."{table_name}" (document_id)'
-        )
-        ddl_meta_index = (
-            f'CREATE INDEX IF NOT EXISTS "{table_name}_meta_gin" '
-            f'ON "{self._schema}"."{table_name}" '
-            f'USING gin (meta jsonb_path_ops)'
-        )
-        ddl_ann = self._render_index_ddl(
-            table_name=table_name,
-            index_name=index_name,
-            opclass=opclass,
-        )
 
         try:
             async with self._provider.pool.acquire() as conn:
                 # Catalogue lookup first to surface ConflictError on
-                # dimension/distance drift before we attempt DDL.
+                # dimension/distance drift before we attempt DDL. An existing
+                # collection keeps its stored vector_type regardless of the
+                # provider's current use_halfvec flag, so dimension validation
+                # (which depends on that flag) only applies to NEW collections.
                 existing = await conn.fetchrow(
                     f'SELECT dimensions, distance, vector_type FROM '
                     f'"{self._schema}".primer_collections '
@@ -611,6 +584,37 @@ class PgVectorStore(VectorStore):
                     )
                     return
 
+                use_halfvec = bool(self._provider.config.use_halfvec)
+                _validate_dimensions(dimensions, use_halfvec=use_halfvec)
+                vector_type = _vector_column_type(use_halfvec)
+                opclass = _opclass_for(distance, vector_type)
+
+                ddl_table = (
+                    f'CREATE TABLE IF NOT EXISTS '
+                    f'"{self._schema}"."{table_name}" ('
+                    'document_id text NOT NULL, '
+                    'chunk_id text NOT NULL, '
+                    'text text NOT NULL, '
+                    f'vector {vector_type}({dimensions}) NOT NULL, '
+                    "meta jsonb NOT NULL DEFAULT '{}'::jsonb, "
+                    'PRIMARY KEY (document_id, chunk_id)'
+                    ')'
+                )
+                ddl_doc_index = (
+                    f'CREATE INDEX IF NOT EXISTS "{table_name}_document" '
+                    f'ON "{self._schema}"."{table_name}" (document_id)'
+                )
+                ddl_meta_index = (
+                    f'CREATE INDEX IF NOT EXISTS "{table_name}_meta_gin" '
+                    f'ON "{self._schema}"."{table_name}" '
+                    f'USING gin (meta jsonb_path_ops)'
+                )
+                ddl_ann = self._render_index_ddl(
+                    table_name=table_name,
+                    index_name=index_name,
+                    opclass=opclass,
+                )
+
                 async with conn.transaction():
                     await conn.execute(ddl_table)
                     await conn.execute(ddl_doc_index)
@@ -629,7 +633,7 @@ class PgVectorStore(VectorStore):
                         distance,
                         vector_type,
                     )
-        except ConflictError:
+        except (ConflictError, BadRequestError):
             raise
         except Exception as exc:
             raise ProviderError(
