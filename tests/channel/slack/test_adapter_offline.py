@@ -132,6 +132,30 @@ async def test_post_prompt_ask_user_calls_chat_postMessage(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_post_inform_threaded_plain_message(monkeypatch):
+    conn = _StubConnection()
+    monkeypatch.setattr("primer.channel.slack.adapter._get_web_client", lambda c: c.client)
+    async def _acquire(p): return conn
+    async def _release(p): pass
+    monkeypatch.setattr(SLACK_CONNECTIONS, "acquire", _acquire)
+    monkeypatch.setattr(SLACK_CONNECTIONS, "release", _release)
+    adapter = SlackChannelAdapter(provider=_provider(), channel=_channel(), inbox=_CapturingInbox())
+    await adapter.initialize()
+    try:
+        await adapter.post_prompt(PromptEnvelope(
+            kind="inform", workspace_id="ws", session_id="s", tool_call_id="",
+            prompt="status update", response_schema=None, choices=None, timeout_at_iso=None))
+    finally:
+        await adapter.aclose()
+    posts = [b for k, b in conn.client.calls if k == "chat.postMessage"]
+    inform = posts[-1]
+    assert inform["thread_ts"] == "1001.0001"  # threaded under the session anchor
+    assert inform.get("text") == "status update"
+    assert "blocks" not in inform
+    assert adapter._pending_ask == {}  # not tracked as a pending ask
+
+
+@pytest.mark.asyncio
 async def test_post_prompt_reuses_one_thread_per_session(monkeypatch):
     conn = _StubConnection()
     monkeypatch.setattr(

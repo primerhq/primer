@@ -95,6 +95,13 @@ class SlackChannelAdapter(ChannelAdapter):
             raise ProviderError("SlackChannelAdapter used before initialize()")
         client = _get_web_client(self._conn)
         root_ts = await self._session_root_ts(client, envelope.session_id)
+        if envelope.kind == "inform":
+            await client.chat_postMessage(
+                channel=self._channel.external_id,
+                thread_ts=root_ts,
+                text=envelope.prompt,
+            )
+            return {"ts": "", "channel": self._channel.external_id, "thread_ts": root_ts}
         if envelope.kind == "ask_user":
             body = build_ask_user_message(
                 channel_id=self._channel.external_id, envelope=envelope,

@@ -110,6 +110,36 @@ async def test_post_ask_user_sends_message_with_token(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_post_inform_plain_message(monkeypatch):
+    app = _StubApp()
+    async def _acquire(_): return app
+    async def _release(_): pass
+    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "acquire", _acquire)
+    monkeypatch.setattr(TELEGRAM_CONNECTIONS, "release", _release)
+    inbox = _CapturingInbox()
+    adapter = TelegramChannelAdapter(
+        provider=_provider(), channel=_channel(), inbox=inbox,
+    )
+    await adapter.initialize()
+    try:
+        await adapter.post_prompt(PromptEnvelope(
+            kind="inform", workspace_id="ws", session_id="s", tool_call_id="",
+            prompt="status update", response_schema=None, choices=None,
+            timeout_at_iso=None,
+        ))
+    finally:
+        await adapter.aclose()
+    sent = [s for s in app.bot.sent if "text" in s]
+    assert len(sent) == 1
+    assert sent[0]["text"] == "status update"
+    # Plain message: no inline keyboard / reply markup.
+    assert "reply_markup" not in sent[0]
+    # Informs expect no reply: no reply target / tag recorded.
+    assert dict(adapter._reply_targets) == {}
+    assert dict(adapter._tag_cache) == {}
+
+
+@pytest.mark.asyncio
 async def test_resolve_tag_from_cache_after_post(monkeypatch):
     app = _StubApp()
     async def _acquire(_): return app

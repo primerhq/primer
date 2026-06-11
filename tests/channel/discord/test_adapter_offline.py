@@ -149,6 +149,27 @@ def test_format_approval_content_uses_tool_name_and_pretty_args():
 
 
 @pytest.mark.asyncio
+async def test_post_inform_goes_to_thread_without_buttons(monkeypatch):
+    client = _StubClient()
+    async def _acquire(_): return client
+    async def _release(_): pass
+    monkeypatch.setattr(DISCORD_CONNECTIONS, "acquire", _acquire)
+    monkeypatch.setattr(DISCORD_CONNECTIONS, "release", _release)
+    adapter = DiscordChannelAdapter(provider=_provider(), channel=_channel(), inbox=_CapturingInbox())
+    await adapter.initialize()
+    try:
+        await adapter.post_prompt(PromptEnvelope(
+            kind="inform", workspace_id="ws", session_id="s", tool_call_id="",
+            prompt="status update", response_schema=None, choices=None, timeout_at_iso=None))
+    finally:
+        await adapter.aclose()
+    thread = client.threads[1000]
+    assert thread.sent[-1]["content"] == "status update"
+    assert thread.sent[-1]["view"] is None
+    assert adapter._pending_ask == {}
+
+
+@pytest.mark.asyncio
 async def test_post_ask_user_creates_thread_and_caches_ids(monkeypatch):
     client = _StubClient()
     async def _acquire(_): return client

@@ -119,6 +119,9 @@ class DiscordChannelAdapter(ChannelAdapter):
                 "tool_call_id": envelope.tool_call_id,
             }
             return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
+        elif envelope.kind == "inform":
+            msg = await thread.send(content=envelope.prompt)
+            return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
 

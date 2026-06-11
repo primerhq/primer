@@ -107,6 +107,11 @@ class TelegramChannelAdapter(ChannelAdapter):
     async def post_prompt(self, envelope: PromptEnvelope) -> dict[str, Any]:
         if self._app is None:
             raise ProviderError("TelegramChannelAdapter used before initialize()")
+        if envelope.kind == "inform":
+            msg = await self._app.bot.send_message(
+                chat_id=self._channel.external_id, text=envelope.prompt,
+            )
+            return {"message_id": getattr(msg, "message_id", 0)}
         if envelope.kind == "ask_user":
             body = build_ask_user_message(
                 chat_id=self._channel.external_id, envelope=envelope,
