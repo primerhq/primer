@@ -73,6 +73,35 @@ async def app(
     _app.state.web_search_registry = ws_registry
     _app.state.web_search_service = ws_service
 
+    # Bootstrap web-fetch reserved rows (LOCAL provider + active config
+    # singleton) at test startup. Matches the production lifespan.
+    from primer.api.app import _bootstrap_web_fetch
+    await _bootstrap_web_fetch(fake_storage_provider)
+
+    # Construct the web-fetch registry + service from the bootstrapped rows.
+    from primer.api.registries.web_fetch_registry import (
+        WebFetchRegistry,
+        default_web_fetch_factory,
+    )
+    from primer.model.web_fetch import (
+        ActiveWebFetchConfig,
+        WebFetchProvider,
+    )
+    from primer.web_fetch.service import WebFetchService
+
+    wf_registry = WebFetchRegistry(
+        storage=fake_storage_provider.get_storage(WebFetchProvider),
+        factory=default_web_fetch_factory,
+    )
+    wf_service = WebFetchService(
+        registry=wf_registry,
+        active_config_storage=fake_storage_provider.get_storage(
+            ActiveWebFetchConfig
+        ),
+    )
+    _app.state.web_fetch_registry = wf_registry
+    _app.state.web_fetch_service = wf_service
+
     forwarder = await _app.state.start_chat_tick_forwarder()
 
     # Start the worker pool if the app was built with one.

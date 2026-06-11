@@ -56,6 +56,11 @@ from primer.api.routers import (
 from primer.api.routers.auth import auth_router
 from primer.api.routers.semantic_search import semantic_search_router
 from primer.api.routers.user_docs import user_docs_router
+from primer.api.routers.web_fetch import (
+    web_fetch_active_config_router,
+    web_fetch_providers_helpers_router,
+    web_fetch_providers_router,
+)
 from primer.api.routers.web_search import (
     web_search_active_config_router,
     web_search_providers_helpers_router,
@@ -140,6 +145,38 @@ async def _bootstrap_web_search(storage_provider) -> None:
             logger.debug(
                 "bootstrap: active web-search config created concurrently"
             )
+
+
+async def _bootstrap_web_fetch(storage_provider) -> None:
+    """Idempotent: ensure the reserved LOCAL provider row + active config
+    singleton (single -> local) exist. Mirrors _bootstrap_web_search."""
+    from primer.model.web_fetch import (
+        ACTIVE_WEB_FETCH_CONFIG_ID, ActiveWebFetchConfig, LocalFetchConfig,
+        SingleFetchConfig, WebFetchProvider, WebFetchProviderType,
+    )
+    from primer.model.except_ import ConflictError
+
+    wf_storage = storage_provider.get_storage(WebFetchProvider)
+    if await wf_storage.get("local") is None:
+        try:
+            await wf_storage.create(WebFetchProvider(
+                id="local", provider_type=WebFetchProviderType.LOCAL,
+                config=LocalFetchConfig(),
+            ))
+            logger.info("bootstrap: created reserved web-fetch provider local")
+        except ConflictError:
+            logger.debug("bootstrap: web-fetch local row created concurrently")
+
+    ac_storage = storage_provider.get_storage(ActiveWebFetchConfig)
+    if await ac_storage.get(ACTIVE_WEB_FETCH_CONFIG_ID) is None:
+        try:
+            await ac_storage.create(ActiveWebFetchConfig(
+                id=ACTIVE_WEB_FETCH_CONFIG_ID,
+                config=SingleFetchConfig(provider_id="local"),
+            ))
+            logger.info("bootstrap: created reserved active web-fetch config (single -> local)")
+        except ConflictError:
+            logger.debug("bootstrap: active web-fetch config created concurrently")
 
 
 def _make_lifespan(config: AppConfig):
@@ -321,6 +358,25 @@ def _make_lifespan(config: AppConfig):
         app.state.web_search_registry = web_search_registry
         app.state.web_search_service = web_search_service
         logger.info("lifespan: web-search registry + service constructed")
+        await _bootstrap_web_fetch(storage_provider)
+        logger.info("bootstrap: web-fetch rows materialised")
+        from primer.api.registries.web_fetch_registry import (
+            WebFetchRegistry, default_web_fetch_factory,
+        )
+        from primer.model.web_fetch import ActiveWebFetchConfig, WebFetchProvider
+        from primer.web_fetch.service import WebFetchService
+
+        web_fetch_registry = WebFetchRegistry(
+            storage=storage_provider.get_storage(WebFetchProvider),
+            factory=default_web_fetch_factory,
+        )
+        web_fetch_service = WebFetchService(
+            registry=web_fetch_registry,
+            active_config_storage=storage_provider.get_storage(ActiveWebFetchConfig),
+        )
+        app.state.web_fetch_registry = web_fetch_registry
+        app.state.web_fetch_service = web_fetch_service
+        logger.info("lifespan: web-fetch registry + service constructed")
         # Build the always-on `web` toolset (web-search dispatching via
         # the WebSearchService + http-request primitives). Reserved id
         # without underscore.
@@ -1130,6 +1186,10 @@ def _make_lifespan(config: AppConfig):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("lifespan: web_search_registry aclose failed: %s", exc)
             try:
+                await web_fetch_registry.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("lifespan: web_fetch_registry aclose failed: %s", exc)
+            try:
                 await channel_registry.aclose()
             except Exception:
                 logger.exception("channel_registry.aclose failed")
@@ -1251,6 +1311,9 @@ def _mount_routers(
     app.include_router(web_search_providers_helpers_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(web_search_providers_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(web_search_active_config_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(web_fetch_providers_helpers_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(web_fetch_providers_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(web_fetch_active_config_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(user_docs_router, prefix=prefix, dependencies=auth_dep)
     # Phase 2 — compute (Agent + Graph)
     app.include_router(compute.agent_router, prefix=prefix, dependencies=auth_dep)
