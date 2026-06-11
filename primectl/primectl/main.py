@@ -15,8 +15,12 @@ app = typer.Typer(
 )
 
 from primectl.commands import crud as _crud  # noqa: E402
+from primectl.commands import call as _call  # noqa: E402
+from primectl.commands import raw as _raw  # noqa: E402
 
 _crud.register(app)
+_call.register(app)
+_raw.register(app)
 
 
 @app.callback()
