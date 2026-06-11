@@ -128,3 +128,67 @@ def test_apply_unsupported_update_errors(mock_session, tmp_path):
     result = runner.invoke(app, ["apply", "-f", str(manifest)], obj=mock_session.session)
     assert result.exit_code == 1
     assert "does not support" in result.output
+
+
+def test_create_with_set_posts_assembled_body(mock_session):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"id": "new-1"})
+
+    mock_session.set_handler(handler)
+    result = runner.invoke(
+        app,
+        ["create", "agent", "--set", "description=hi", "--set", "model=gpt"],
+        obj=mock_session.session,
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/v1/agents"
+    assert seen["body"] == {"description": "hi", "model": "gpt"}
+    assert "agent/new-1 created" in result.output
+
+
+def test_edit_flow_puts_edited_body(mock_session, monkeypatch):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"id": "a1", "model": "gpt"})
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "a1", "model": "claude"})
+
+    mock_session.set_handler(handler)
+    # Simulate the user editing the model in $EDITOR (typer.edit returns the
+    # edited envelope text).
+    monkeypatch.setattr(
+        "typer.edit",
+        lambda text: "kind: agent\nspec:\n  id: a1\n  model: claude\n",
+    )
+    result = runner.invoke(app, ["edit", "agent", "a1"], obj=mock_session.session)
+    assert result.exit_code == 0, result.output
+    assert seen["method"] == "PUT"
+    assert seen["path"] == "/v1/agents/a1"
+    assert seen["body"] == {"id": "a1", "model": "claude"}
+    assert "configured" in result.output
+
+
+def test_edit_no_changes_skips_put(mock_session, monkeypatch):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        return httpx.Response(200, json={"id": "a1", "model": "gpt"})
+
+    mock_session.set_handler(handler)
+    # typer.edit returns None when the user makes no change / aborts.
+    monkeypatch.setattr("typer.edit", lambda text: None)
+    result = runner.invoke(app, ["edit", "agent", "a1"], obj=mock_session.session)
+    assert result.exit_code == 0, result.output
+    assert "no changes" in result.output
+    assert "PUT" not in calls

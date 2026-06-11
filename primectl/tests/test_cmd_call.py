@@ -42,3 +42,27 @@ def test_raw_get(mock_session):
     result = runner.invoke(app, ["raw", "GET", "/v1/health", "-o", "json"], obj=mock_session.session)
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["status"] == "ok"
+
+
+def test_call_api_error_exits_nonzero(mock_session):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "no such agent"})
+
+    mock_session.set_handler(handler)
+    result = runner.invoke(
+        app, ["call", "agent", "status", "missing"], obj=mock_session.session
+    )
+    assert result.exit_code == 4  # ApiError 404 -> EXIT_NOT_FOUND
+    assert "not found" in result.output.lower()
+
+
+def test_raw_empty_body_prints_ok(mock_session):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204)  # no content
+
+    mock_session.set_handler(handler)
+    result = runner.invoke(
+        app, ["raw", "DELETE", "/v1/agents/a1"], obj=mock_session.session
+    )
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "ok"

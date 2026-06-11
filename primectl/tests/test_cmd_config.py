@@ -37,3 +37,28 @@ def test_view_redacts_token(tmp_path: Path, monkeypatch):
     assert result.exit_code == 0
     assert "supersecret" not in result.output
     assert "REDACTED" in result.output
+
+
+def test_current_context_prints_value(tmp_path: Path, monkeypatch):
+    cfgfile = tmp_path / "config.yaml"
+    monkeypatch.setenv("PRIMECTL_CONFIG", str(cfgfile))
+    runner.invoke(app, ["config", "set-context", "dogfood", "--server", "http://x"])
+    result = runner.invoke(app, ["config", "current-context"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "dogfood"
+
+
+def test_current_context_none_when_unset(tmp_path: Path, monkeypatch):
+    cfgfile = tmp_path / "config.yaml"
+    monkeypatch.setenv("PRIMECTL_CONFIG", str(cfgfile))
+    result = runner.invoke(app, ["config", "current-context"])
+    assert result.exit_code == 0
+    assert "(none)" in result.output
+
+
+def test_use_context_missing_errors(tmp_path: Path, monkeypatch):
+    cfgfile = tmp_path / "config.yaml"
+    monkeypatch.setenv("PRIMECTL_CONFIG", str(cfgfile))
+    result = runner.invoke(app, ["config", "use-context", "ghost"])
+    assert result.exit_code == 1
+    assert "no such context" in result.output.lower()
