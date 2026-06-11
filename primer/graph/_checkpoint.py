@@ -176,10 +176,13 @@ class _CheckpointMixin:
                 }
                 for p in self._pending_agent_yields
             ],
-            # Denormalised per-node dispatch info so the channel layer can
-            # send one prompt per pending node without re-deriving tool ids
-            # from the graph. tool_call entries resolve original_call here
-            # (the node tool_id is available at snapshot time).
+            # Denormalised per-node dispatch info for tool-call nodes ONLY:
+            # each bakes the graph node's tool_id into ``original_call``,
+            # which the channel layer can't recompute without the graph.
+            # Agent-yield dispatch entries are NOT stored here -- they are
+            # derived from ``pending_agent_yields`` at send time (see
+            # ``primer.worker.yield_runtime.merge_pending_dispatch``) so their
+            # resume_metadata lives in the blob once, not twice.
             "pending_dispatch": [
                 {
                     "kind": "_approval",
@@ -197,13 +200,6 @@ class _CheckpointMixin:
                     },
                 }
                 for p in self._pending_toolcalls
-            ] + [
-                {
-                    "kind": p.tool_name,
-                    "tool_call_id": p.tool_call_id,
-                    "resume_metadata": dict(p.resume_metadata),
-                }
-                for p in self._pending_agent_yields
             ],
         }
 

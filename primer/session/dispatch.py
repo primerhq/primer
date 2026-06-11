@@ -294,6 +294,7 @@ async def run_one_session_turn(
         from primer.worker.yield_runtime import (
             _dispatch_to_channels,
             _dispatch_to_channels_multi,
+            merge_pending_dispatch,
         )
 
         graph_checkpoint = getattr(park, "graph_checkpoint", None)
@@ -306,7 +307,7 @@ async def run_one_session_turn(
                 dispatcher=deps.channel_dispatcher,
                 workspace_id=session.workspace_id,
                 session_id=session.id,
-                pending=graph_checkpoint.get("pending_dispatch") or [],
+                pending=merge_pending_dispatch(graph_checkpoint),
                 already_sent=set(),
             )
         else:

@@ -504,6 +504,31 @@ async def _dispatch_to_channels(
         )
 
 
+def merge_pending_dispatch(checkpoint: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build the full per-node channel-dispatch list for a parked graph.
+
+    The checkpoint persists ``pending_dispatch`` only for tool-call nodes:
+    those entries bake the graph node's ``tool_id`` into ``original_call``,
+    which the channel layer can't recompute without the graph. Agent yields
+    are derived here from ``pending_agent_yields`` so their resume_metadata
+    is stored once, not duplicated into ``pending_dispatch`` as well.
+
+    Backward compatible: a pre-slim checkpoint that still carries agent-yield
+    entries inside ``pending_dispatch`` produces a duplicate here, but the
+    channel dispatcher dedups by ``tool_call_id`` so the prompt is sent once.
+    """
+    stored = list(checkpoint.get("pending_dispatch") or [])
+    derived = [
+        {
+            "kind": ay.get("tool_name", ""),
+            "tool_call_id": ay.get("tool_call_id"),
+            "resume_metadata": dict(ay.get("resume_metadata") or {}),
+        }
+        for ay in (checkpoint.get("pending_agent_yields") or [])
+    ]
+    return stored + derived
+
+
 async def _dispatch_to_channels_multi(
     *,
     dispatcher,
@@ -566,4 +591,5 @@ __all__ = [
     "classify_resume_payload",
     "make_cancelled_payload",
     "make_timeout_payload",
+    "merge_pending_dispatch",
 ]
