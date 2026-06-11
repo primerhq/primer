@@ -14,6 +14,10 @@ app = typer.Typer(
     add_completion=True,
 )
 
+from primectl.commands import crud as _crud  # noqa: E402
+
+_crud.register(app)
+
 
 @app.callback()
 def main(
