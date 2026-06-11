@@ -14,9 +14,13 @@ from primer.model.except_ import PrimerError
 
 
 # Default output ceiling applied when the caller gives no max_chars/max_lines.
-# Sits ABOVE the workspace large-result spill point (50 KiB) so workspace
-# agents still get file-spill, while non-workspace surfaces (chats, MCP) are
-# never flooded by a pathological page.
+# This is the ONLY bound on web-fetch output and it applies on every surface
+# (workspace agents, chats, MCP). Note: unlike workspace filesystem tools,
+# internal-toolset tool output is NOT spilled to a file by the large-result
+# handler (that envelope runs only on the WorkspaceTool dispatch path), so the
+# ceiling itself is what prevents a pathological page from flooding context.
+# A caller wanting more passes an explicit large max_chars; wanting less, a
+# smaller max_chars / max_lines.
 DEFAULT_MAX_CHARS = 100 * 1024
 
 # Below this many chars of extracted HTML content, the local adapter marks the

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from primer.model.except_ import NotFoundError
 from primer.model.web_fetch import WebFetchProvider, WebFetchProviderType
-from primer.web_fetch.adapter import WebFetchAdapter
+from primer.web_fetch.adapter import WebFetchAdapter, WebFetchProviderError
 
 if TYPE_CHECKING:
     from primer.int.storage import Storage
@@ -80,6 +80,10 @@ def default_web_fetch_factory(provider: WebFetchProvider) -> WebFetchAdapter:
         case WebFetchProviderType.EXA:
             from primer.web_fetch.exa import ExaAdapter
             return ExaAdapter(provider.config)
+        case _:
+            raise WebFetchProviderError(
+                f"no web-fetch adapter for provider_type {provider.provider_type!r}"
+            )
 
 
 __all__ = ["WebFetchRegistry", "default_web_fetch_factory"]
