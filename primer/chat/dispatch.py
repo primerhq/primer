@@ -263,7 +263,11 @@ async def _build_runner(
         approval_resolver=approval_resolver,
         chat_id=chat.id,
     )
-    runner = ChatTurnRunner(
+    # No inform sink is wired on the chat surface yet: inform_user in a chat
+    # returns delivered_to:0 for now. Chat-side inform delivery is deferred to
+    # the channels-drive-chats sub-project, which must persist the inform line
+    # without splitting a multi-tool batch's tool_result rows.
+    return ChatTurnRunner(
         agent=agent,
         llm=llm,
         llm_model=llm_model,
@@ -272,9 +276,6 @@ async def _build_runner(
         message_storage=msgs,
         cancel_event=cancel_event,
     )
-    from primer.agent.inform import ChatInformSink
-    tool_manager.set_inform_sink(ChatInformSink(runner=runner, chat=chat))
-    return runner
 
 
 async def _persist_build_error(

@@ -1,9 +1,13 @@
-"""One-way inform delivery sinks for the inform_user tool.
+"""One-way inform delivery sink for the inform_user tool.
 
 A sink is an async callable ``(message: str) -> int`` returning the number of
-destinations reached. SessionInformSink fans the message to the session's
-channels (best-effort) via a plain ``inform`` PromptEnvelope; ChatInformSink
-appends the message as an assistant-visible line so a chat user sees it inline.
+destinations actually reached. SessionInformSink fans the message to the
+session's channels (best-effort) via a plain ``inform`` PromptEnvelope.
+
+Chat-surface inform delivery is intentionally not implemented here yet: appending
+the line mid-tool-dispatch would split a multi-tool batch's tool_result rows and
+corrupt the next turn's reconstructed history. It is deferred to the
+channels-drive-chats sub-project, which will persist it without that hazard.
 """
 
 from __future__ import annotations
@@ -42,16 +46,9 @@ class SessionInformSink:
         except Exception:
             logger.exception("SessionInformSink: dispatch failed")
             return 0
-        return len(results or [])
-
-
-class ChatInformSink:
-    def __init__(self, *, runner: Any, chat: Any) -> None:
-        self._runner = runner
-        self._chat = chat
-
-    async def __call__(self, message: str) -> int:
-        await self._runner._append(
-            self._chat, kind="assistant_token", payload={"delta": message},
+        # The dispatcher returns one dict per channel; a failed delivery is an
+        # ``{"error": ...}`` entry. Count only the channels actually reached.
+        return sum(
+            1 for r in (results or [])
+            if not (isinstance(r, dict) and "error" in r)
         )
-        return 1

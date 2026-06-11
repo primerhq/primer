@@ -299,7 +299,8 @@ const r = await fetch("/v1/channels", {
   "channel_id": "ch-general",
   "enabled": true,
   "forward_ask_user": true,
-  "forward_tool_approval": true
+  "forward_tool_approval": true,
+  "forward_inform": true
 }
 ```
 
@@ -311,6 +312,7 @@ const r = await fetch("/v1/channels", {
 | `enabled` | no | boolean | Default `true`; disabled associations are skipped |
 | `forward_ask_user` | no | boolean | Default `true`; forward `ask_user` prompts to this channel |
 | `forward_tool_approval` | no | boolean | Default `true`; forward tool-approval requests to this channel |
+| `forward_inform` | no | boolean | Default `true`; forward one-way `inform_user` messages to this channel |
 
 The pair `(workspace_id, channel_id)` must be unique. A duplicate returns `409 /errors/conflict` naming both fields.
 

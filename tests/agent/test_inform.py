@@ -1,6 +1,6 @@
 import pytest
 
-from primer.agent.inform import ChatInformSink, SessionInformSink
+from primer.agent.inform import SessionInformSink
 
 
 @pytest.mark.asyncio
@@ -25,12 +25,10 @@ async def test_session_inform_sink_no_dispatcher_returns_zero():
 
 
 @pytest.mark.asyncio
-async def test_chat_inform_sink_appends_assistant_line():
-    appended = []
-    class _Runner:
-        async def _append(self, chat, *, kind, payload):
-            appended.append((kind, payload)); return None
-    sink = ChatInformSink(runner=_Runner(), chat=object())
-    n = await sink("hi there")
-    assert n == 1
-    assert appended == [("assistant_token", {"delta": "hi there"})]
+async def test_session_inform_sink_counts_only_reached_channels():
+    # A failed channel comes back as {"error": ...} and must NOT be counted.
+    class _Disp:
+        async def dispatch_prompt(self, *, envelope):
+            return [{"ok": True}, {"error": "boom"}]
+    sink = SessionInformSink(dispatcher=_Disp(), workspace_id="w", session_id="s")
+    assert await sink("hi") == 1
