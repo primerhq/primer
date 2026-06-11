@@ -1,14 +1,16 @@
 """Argument models and handler factories for the ``web`` toolset.
 
-Two tools live here:
+Three tools live here:
 
 * ``web-search`` — delegates to a :class:`WebSearchService` and returns
   a JSON-serialised ``[{title, url, snippet}, …]`` array.
+* ``web-fetch`` - delegates to a :class:`WebFetchService` and returns
+  clean markdown of a page's main content with a title/source header.
 * ``http-request`` — wraps :class:`httpx.AsyncClient` and returns a
   JSON-serialised ``{status, headers, body, truncated}`` object,
   capping the body at a configurable byte limit.
 
-Both handlers translate argument-validation failures into
+The handlers translate argument-validation failures into
 :class:`BadRequestError` (so the registry surfaces them) and
 upstream-runtime failures into a :class:`ToolCallResult` with
 ``is_error=True`` so the LLM can react on the next turn rather than
@@ -27,6 +29,11 @@ from pydantic import BaseModel, Field, HttpUrl, ValidationError
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import BadRequestError
 from primer.toolset._describe import make_tool
+from primer.web_fetch.adapter import (
+    FetchedPage,
+    WebFetchProviderError,
+    WebFetchUnavailable,
+)
 from primer.web_search.adapter import (
     SearchHit,
     WebSearchProviderError,
@@ -35,6 +42,7 @@ from primer.web_search.adapter import (
 
 
 if TYPE_CHECKING:
+    from primer.web_fetch.service import WebFetchService
     from primer.web_search.service import WebSearchService
 
 
@@ -110,6 +118,20 @@ class HttpRequestArgs(BaseModel):
     )
 
 
+class WebFetchArgs(BaseModel):
+    """Arguments for the ``web-fetch`` tool."""
+
+    url: HttpUrl = Field(..., description="Absolute URL of the page to read (http or https).")
+    max_chars: int | None = Field(
+        default=None, gt=0,
+        description="Optional: cap the returned markdown to this many characters.",
+    )
+    max_lines: int | None = Field(
+        default=None, gt=0,
+        description="Optional: cap the returned markdown to this many lines.",
+    )
+
+
 # ---- Tool descriptors (the JSON schemas the LLM sees) ----------------------
 
 
@@ -122,9 +144,9 @@ def make_web_search_descriptor(toolset_id: str) -> Tool:
             "title/url/snippet results."
         ),
         when=(
-            "Use when you need fact lookup, current events, or to find "
-            "canonical documentation pages; not for fetching a known URL "
-            "(use ``http-request``)."
+            "Use when you need fact lookup, current events, or to find canonical "
+            "documentation pages. To READ a result page, use ``web-fetch`` (not "
+            "``http-request``)."
         ),
         args_schema=WebSearchArgs.model_json_schema(),
         examples=[
@@ -143,14 +165,35 @@ def make_http_request_descriptor(toolset_id: str) -> Tool:
             "the response status, headers, and (byte-capped) body."
         ),
         when=(
-            "Use when you need to call a specific known URL or HTTP API; "
-            "not for open-ended web search (use ``web-search``). The body "
-            "is truncated past the configured byte cap."
+            "Use when you need JSON/API endpoints, webhooks, or to inspect raw "
+            "status/headers/bytes; NOT for reading human web pages (use "
+            "``web-fetch``). The body is truncated past the configured byte cap."
         ),
         args_schema=HttpRequestArgs.model_json_schema(),
         examples=[
             ToolExample(args={"url": "https://api.github.com/repos/python/cpython"}, returns="status, headers, JSON body"),
             ToolExample(args={"url": "https://api.example.com/items", "method": "POST", "body": "{\"x\": 1}"}, returns="the POST response"),
+        ],
+    )
+
+
+def make_web_fetch_descriptor(toolset_id: str) -> Tool:
+    return make_tool(
+        id="web-fetch",
+        toolset_id=toolset_id,
+        purpose=(
+            "Fetch a URL and return clean markdown of the page's main content "
+            "(navigation, sidebars, and scripts removed)."
+        ),
+        when=(
+            "Use when you need to READ a web page or document. For JSON/API "
+            "endpoints or to inspect raw headers/bytes, use ``http-request`` "
+            "instead. Pass ``max_chars``/``max_lines`` to bound the output."
+        ),
+        args_schema=WebFetchArgs.model_json_schema(),
+        examples=[
+            ToolExample(args={"url": "https://docs.python.org/3/whatsnew/3.13.html"}, returns="clean markdown of the page"),
+            ToolExample(args={"url": "https://example.com/article", "max_chars": 4000}, returns="first ~4000 chars of clean markdown"),
         ],
     )
 
@@ -275,12 +318,66 @@ def make_http_request_handler(
     return _handle
 
 
+def make_web_fetch_handler(service: "WebFetchService") -> ToolHandler:
+    """Build the async handler for the ``web-fetch`` tool.
+
+    Dispatches via the WebFetchService (active-config singleton -> provider /
+    aggregated fallback), returns clean markdown with a small title/source
+    header. Machine metadata goes in ``extended``.
+    """
+
+    async def _handle(arguments: dict[str, Any]) -> ToolCallResult:
+        try:
+            args = WebFetchArgs.model_validate(arguments)
+        except ValidationError as exc:
+            raise BadRequestError(f"web-fetch: invalid arguments: {exc}") from exc
+
+        try:
+            page: FetchedPage = await service.fetch(
+                url=str(args.url),
+                max_chars=args.max_chars,
+                max_lines=args.max_lines,
+            )
+        except WebFetchProviderError as exc:
+            logger.warning("web-fetch service misconfigured", extra={"error": str(exc)})
+            return ToolCallResult(output=f"web-fetch not available: {exc}", is_error=True)
+        except WebFetchUnavailable as exc:
+            logger.info("web-fetch all providers exhausted", extra={"error": str(exc)})
+            return ToolCallResult(output=f"web-fetch failed: {exc}", is_error=True)
+
+        header = f"# {page.title}\n" if page.title else ""
+        note = (
+            "\n\n(extracted content was short; the page may require JavaScript "
+            "rendering, configure a JS-capable web-fetch provider)"
+            if page.is_thin else ""
+        )
+        output = f"{header}Source: {page.final_url}\n\n{page.content_markdown}{note}"
+        return ToolCallResult(
+            output=output,
+            is_error=False,
+            extended={
+                "status": page.status,
+                "content_type": page.content_type,
+                "final_url": page.final_url,
+                "char_count": len(page.content_markdown),
+                "line_count": page.content_markdown.count("\n") + 1,
+                "truncated_by_limit": page.truncated_by_limit,
+                "is_thin": page.is_thin,
+            },
+        )
+
+    return _handle
+
+
 __all__ = [
     "HttpMethod",
     "HttpRequestArgs",
+    "WebFetchArgs",
     "WebSearchArgs",
     "make_http_request_descriptor",
     "make_http_request_handler",
+    "make_web_fetch_descriptor",
+    "make_web_fetch_handler",
     "make_web_search_descriptor",
     "make_web_search_handler",
 ]

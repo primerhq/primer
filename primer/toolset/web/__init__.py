@@ -1,12 +1,15 @@
 """Internal ``web`` toolset — built-in, immutable.
 
 Construct with :func:`build_web_toolset`; the returned
-:class:`InternalToolsetProvider` exposes two tools:
+:class:`InternalToolsetProvider` exposes three tools:
 
 * ``web-search`` — dispatches through a
   :class:`~primer.web_search.service.WebSearchService` (which consults
   the active-config singleton and routes to the appropriate adapter
   via the :class:`WebSearchRegistry`).
+* ``web-fetch`` - dispatches through a
+  :class:`~primer.web_fetch.service.WebFetchService` to fetch a URL and
+  return clean markdown of the page's main content.
 * ``http-request`` — backed by :class:`httpx.AsyncClient`.
 
 The toolset is "internal" in two senses:
@@ -31,15 +34,19 @@ from primer.toolset.internal import InternalToolsetProvider
 from primer.toolset.web.tools import (
     HttpMethod,
     HttpRequestArgs,
+    WebFetchArgs,
     WebSearchArgs,
     make_http_request_descriptor,
     make_http_request_handler,
+    make_web_fetch_descriptor,
+    make_web_fetch_handler,
     make_web_search_descriptor,
     make_web_search_handler,
 )
 
 
 if TYPE_CHECKING:
+    from primer.web_fetch.service import WebFetchService
     from primer.web_search.service import WebSearchService
 
 
@@ -49,6 +56,7 @@ _DEFAULT_RESPONSE_BODY_BYTE_CAP = 1_000_000  # 1 MB
 def build_web_toolset(
     *,
     web_search_service: "WebSearchService",
+    web_fetch_service: "WebFetchService",
     toolset_id: str = "web",
     http_client: httpx.AsyncClient | None = None,
     response_body_byte_cap: int = _DEFAULT_RESPONSE_BODY_BYTE_CAP,
@@ -98,6 +106,10 @@ def build_web_toolset(
             make_web_search_descriptor(toolset_id),
             make_web_search_handler(web_search_service),
         ),
+        "web-fetch": (
+            make_web_fetch_descriptor(toolset_id),
+            make_web_fetch_handler(web_fetch_service),
+        ),
         "http-request": (
             make_http_request_descriptor(toolset_id),
             make_http_request_handler(
@@ -112,6 +124,7 @@ def build_web_toolset(
 __all__ = [
     "HttpMethod",
     "HttpRequestArgs",
+    "WebFetchArgs",
     "WebSearchArgs",
     "build_web_toolset",
 ]

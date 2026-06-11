@@ -49,7 +49,10 @@ from tests.toolset.test_harness_toolset import _SP as _HarnessSP, _EventBus
 from tests.toolset.test_system import _SP as _SystemSP
 from tests.toolset.test_workspaces import _SP as _WorkspacesSP, _StubBackend
 from tests.toolset.test_search import stub_subsystem  # noqa: F401 - fixture reuse
-from tests.toolset.web.test_factory import _FakeWebSearchService
+from tests.toolset.web.test_factory import (
+    _FakeWebFetchService,
+    _FakeWebSearchService,
+)
 
 from tests.toolset._desc_conformance import assert_tool_conforms
 
@@ -105,6 +108,7 @@ def _build_providers():
         # a mock http client suffice (the mock needs no teardown).
         build_web_toolset(
             web_search_service=_FakeWebSearchService([]),
+            web_fetch_service=_FakeWebFetchService(),
             http_client=MagicMock(),
         ),
     ]

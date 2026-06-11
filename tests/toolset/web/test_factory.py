@@ -41,6 +41,13 @@ class _FakeWebSearchService:
         return list(self._hits[:count])
 
 
+class _FakeWebFetchService:
+    """Minimal stand-in for WebFetchService; list_tools never calls fetch()."""
+
+    async def fetch(self, *, url: str, max_chars, max_lines):  # pragma: no cover
+        raise AssertionError("fetch should not be called in these tests")
+
+
 def _ok_client() -> httpx.AsyncClient:
     def _h(req: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -58,13 +65,15 @@ class TestFactory:
         service = _FakeWebSearchService([])
         client = _ok_client()
         ts = build_web_toolset(
-            web_search_service=service, http_client=client
+            web_search_service=service,
+            web_fetch_service=_FakeWebFetchService(),
+            http_client=client,
         )
         try:
             assert isinstance(ts, InternalToolsetProvider)
             tools = [t async for t in ts.list_tools()]
             ids = sorted(t.id for t in tools)
-            assert ids == ["http-request", "web-search"]
+            assert ids == ["http-request", "web-fetch", "web-search"]
             for t in tools:
                 assert t.toolset_id == "web"
         finally:
@@ -76,6 +85,7 @@ class TestFactory:
         ts = build_web_toolset(
             toolset_id="my-web",
             web_search_service=_FakeWebSearchService([]),
+            web_fetch_service=_FakeWebFetchService(),
             http_client=client,
         )
         try:
@@ -91,7 +101,9 @@ class TestFactory:
         )
         client = _ok_client()
         ts = build_web_toolset(
-            web_search_service=service, http_client=client
+            web_search_service=service,
+            web_fetch_service=_FakeWebFetchService(),
+            http_client=client,
         )
         try:
             result = await ts.call(
@@ -112,6 +124,7 @@ class TestFactory:
         client = _ok_client()
         ts = build_web_toolset(
             web_search_service=_FakeWebSearchService([]),
+            web_fetch_service=_FakeWebFetchService(),
             http_client=client,
         )
         try:
@@ -131,6 +144,7 @@ class TestFactory:
         client = _ok_client()
         ts = build_web_toolset(
             web_search_service=_FakeWebSearchService([]),
+            web_fetch_service=_FakeWebFetchService(),
             http_client=client,
         )
         try:

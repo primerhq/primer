@@ -383,6 +383,7 @@ def _make_lifespan(config: AppConfig):
         logger.info("lifespan: building web toolset")
         web_toolset = build_web_toolset(
             web_search_service=web_search_service,
+            web_fetch_service=web_fetch_service,
         )
         logger.info("lifespan: web toolset built")
         provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001
@@ -1947,8 +1948,28 @@ def create_test_app(
         )
         app.state.web_search_registry = _test_ws_registry
         app.state.web_search_service = _test_ws_service
+        from primer.api.registries.web_fetch_registry import (
+            WebFetchRegistry as _WFR,
+            default_web_fetch_factory as _default_wf_factory,
+        )
+        from primer.model.web_fetch import (
+            ActiveWebFetchConfig as _ActiveWFCfg,
+            WebFetchProvider as _WFP,
+        )
+        from primer.web_fetch.service import WebFetchService as _WFS
+        _test_wf_registry = _WFR(
+            storage=storage_provider.get_storage(_WFP),
+            factory=_default_wf_factory,
+        )
+        _test_wf_service = _WFS(
+            registry=_test_wf_registry,
+            active_config_storage=storage_provider.get_storage(_ActiveWFCfg),
+        )
+        app.state.web_fetch_registry = _test_wf_registry
+        app.state.web_fetch_service = _test_wf_service
         web_toolset = build_web_toolset(
             web_search_service=_test_ws_service,
+            web_fetch_service=_test_wf_service,
         )
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001
