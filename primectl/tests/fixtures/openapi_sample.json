@@ -1,0 +1,70 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Primer", "version": "0.1.0"},
+  "paths": {
+    "/v1/agents": {
+      "get": {"operationId": "_list_v1_agents_get", "parameters": [
+        {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+        {"name": "offset", "in": "query", "schema": {}},
+        {"name": "cursor", "in": "query", "schema": {}},
+        {"name": "order_by", "in": "query", "schema": {}}
+      ], "responses": {"200": {"description": "ok"}}},
+      "post": {"operationId": "_create_v1_agents_post", "requestBody": {
+        "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Agent"}}}
+      }, "responses": {"201": {"description": "created"}}}
+    },
+    "/v1/agents/find": {
+      "post": {"operationId": "_find_v1_agents_find_post", "requestBody": {
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindRequest"}}}
+      }, "responses": {"200": {"description": "ok"}}}
+    },
+    "/v1/agents/search": {
+      "post": {"operationId": "agent_search_v1_agents_search_post", "responses": {"200": {"description": "ok"}}}
+    },
+    "/v1/agents/{agent_id}/status": {
+      "get": {"operationId": "agent_status_v1_agents__agent_id__status_get",
+        "parameters": [{"name": "agent_id", "in": "path", "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}}
+    },
+    "/v1/agents/{entity_id}": {
+      "get": {"operationId": "_get_v1_agents__entity_id__get",
+        "parameters": [{"name": "entity_id", "in": "path", "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}},
+      "put": {"operationId": "_replace_v1_agents__entity_id__put",
+        "parameters": [{"name": "entity_id", "in": "path", "schema": {"type": "string"}}],
+        "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Agent"}}}},
+        "responses": {"200": {"description": "ok"}}},
+      "delete": {"operationId": "_delete_v1_agents__entity_id__delete",
+        "parameters": [{"name": "entity_id", "in": "path", "schema": {"type": "string"}}],
+        "responses": {"204": {"description": "gone"}}}
+    },
+    "/v1/llm_providers": {
+      "get": {"operationId": "_list_v1_llm_providers_get", "responses": {"200": {"description": "ok"}}},
+      "post": {"operationId": "_create_v1_llm_providers_post", "requestBody": {
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LLMProvider"}}}},
+        "responses": {"201": {"description": "created"}}}
+    },
+    "/v1/llm_providers/{entity_id}": {
+      "get": {"operationId": "_get_v1_llm_providers__entity_id__get",
+        "parameters": [{"name": "entity_id", "in": "path", "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}},
+      "delete": {"operationId": "_delete_v1_llm_providers__entity_id__delete",
+        "parameters": [{"name": "entity_id", "in": "path", "schema": {"type": "string"}}],
+        "responses": {"204": {"description": "gone"}}}
+    },
+    "/v1/llm_providers/_discover_models": {
+      "post": {"operationId": "discover_models_v1_llm_providers__discover_models_post",
+        "responses": {"200": {"description": "ok"}}}
+    },
+    "/v1/health": {"get": {"operationId": "health_v1_health_get", "responses": {"200": {"description": "ok"}}}}
+  },
+  "components": {"schemas": {
+    "Agent": {"type": "object", "required": ["description", "model"], "properties": {
+      "id": {"type": "string"}, "description": {"type": "string"}, "model": {"type": "string"},
+      "temperature": {"type": "number"}, "tools": {"type": "array"}}},
+    "LLMProvider": {"type": "object", "required": ["provider"], "properties": {
+      "id": {"type": "string"}, "provider": {"type": "string"}, "base_url": {"type": "string"}}},
+    "FindRequest": {"type": "object", "properties": {
+      "predicate": {}, "page": {}, "order_by": {}}}
+  }}
+}
