@@ -117,10 +117,6 @@ class DiscordChannelAdapter(ChannelAdapter):
                 "session_id": envelope.session_id,
                 "tool_call_id": envelope.tool_call_id,
             }
-            try:
-                await thread.send("Reply in this thread to answer.")
-            except Exception:
-                logger.exception("discord: thread send failed")
             return {"message_id": getattr(msg, "id", 0), "thread_id": tid}
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
