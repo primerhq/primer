@@ -27,6 +27,11 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from primer.model.yield_ import YieldCancelled, YieldTimeout
+# Re-exported for back-compat; the canonical classifier lives in
+# yield_runtime so the graph + agent resume paths cannot drift.
+from primer.worker.yield_runtime import (
+    classify_approval_payload as _decision_from_payload,
+)
 
 
 if TYPE_CHECKING:
@@ -34,30 +39,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-
-def _decision_from_payload(
-    payload: "dict[str, Any] | YieldTimeout | YieldCancelled | Any",
-) -> tuple[str, str | None]:
-    """Classify the resume payload into (decision, reason).
-
-    Mirrors :func:`primer.worker.yield_runtime._resume_tool_approval`'s
-    decision tree so graph + agent parks behave identically when the
-    operator approves / rejects / lets the park time out / cancels.
-    """
-    if isinstance(payload, YieldTimeout):
-        return "rejected", "timed-out"
-    if isinstance(payload, YieldCancelled):
-        return "rejected", payload.reason or "cancelled"
-    if isinstance(payload, dict):
-        raw = payload.get("decision")
-        reason = payload.get("reason")
-        if raw == "approved":
-            return "approved", reason
-        if raw == "rejected":
-            return "rejected", reason
-        return "rejected", "malformed approval payload (missing decision)"
-    return "rejected", "malformed approval payload (non-dict)"
 
 
 async def resume_graph_from_checkpoint(

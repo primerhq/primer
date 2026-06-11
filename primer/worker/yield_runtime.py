@@ -322,6 +322,34 @@ def _parse_iso(value: str) -> datetime:
 # ===========================================================================
 
 
+def classify_approval_payload(
+    payload: "dict[str, Any] | YieldTimeout | YieldCancelled | Any",
+) -> tuple[str, str | None]:
+    """Classify a resume payload into ``(decision, reason)``.
+
+    The single source of truth for how an approval park interprets its
+    resume payload: a timeout or cancellation becomes a rejection with a
+    canned reason, an explicit ``{"decision": ...}`` dict is honoured, and
+    anything malformed fails closed to a rejection. Both the agent-session
+    resume (:func:`_resume_tool_approval`) and the graph resume adapter
+    (:func:`primer.worker.graph_resume._decision_from_payload`) call this so
+    the two paths cannot drift.
+    """
+    if isinstance(payload, YieldTimeout):
+        return "rejected", "timed-out"
+    if isinstance(payload, YieldCancelled):
+        return "rejected", payload.reason or "cancelled"
+    if isinstance(payload, dict):
+        raw = payload.get("decision")
+        reason = payload.get("reason")
+        if raw == "approved":
+            return "approved", reason
+        if raw == "rejected":
+            return "rejected", reason
+        return "rejected", "malformed approval payload (missing decision)"
+    return "rejected", "malformed approval payload (non-dict)"
+
+
 async def _resume_tool_approval(
     *,
     blob: dict,
@@ -366,28 +394,7 @@ async def _resume_tool_approval(
         arguments=original_raw.get("arguments") or {},
     )
 
-    decision: str
-    reason: str | None
-    if isinstance(payload, YieldTimeout):
-        decision = "rejected"
-        reason = "timed-out"
-    elif isinstance(payload, YieldCancelled):
-        decision = "rejected"
-        reason = payload.reason or "cancelled"
-    elif isinstance(payload, dict):
-        raw_decision = payload.get("decision")
-        if raw_decision == "approved":
-            decision = "approved"
-            reason = payload.get("reason")
-        elif raw_decision == "rejected":
-            decision = "rejected"
-            reason = payload.get("reason")
-        else:
-            decision = "rejected"
-            reason = "malformed approval payload (missing decision)"
-    else:
-        decision = "rejected"
-        reason = "malformed approval payload (non-dict)"
+    decision, reason = classify_approval_payload(payload)
 
     if decision == "approved":
         return await tool_manager.execute(original_call, bypass_approval=True)
