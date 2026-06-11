@@ -26,11 +26,10 @@ class ChannelDispatcher:
         self, *, envelope: PromptEnvelope,
     ) -> list[dict]:
         pairs = await self._registry.for_workspace(envelope.workspace_id)
-        forward_key = (
-            "forward_ask_user"
-            if envelope.kind == "ask_user"
-            else "forward_tool_approval"
-        )
+        forward_key = {
+            "ask_user": "forward_ask_user",
+            "inform": "forward_inform",
+        }.get(envelope.kind, "forward_tool_approval")
         eligible = [
             (adapter, assoc) for adapter, assoc in pairs
             if _flag(assoc, forward_key)

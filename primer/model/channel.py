@@ -212,6 +212,7 @@ class WorkspaceChannelAssociation(Identifiable):
     enabled: bool = Field(default=True)
     forward_ask_user: bool = Field(default=True)
     forward_tool_approval: bool = Field(default=True)
+    forward_inform: bool = Field(default=True)
 
 
 __all__ = [

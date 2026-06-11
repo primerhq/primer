@@ -61,6 +61,23 @@ async def test_dispatch_respects_per_envelope_forward_flag():
 
 
 @pytest.mark.asyncio
+async def test_inform_gated_by_forward_inform():
+    a_on, a_off = NullChannelAdapter(), NullChannelAdapter()
+    await a_on.initialize(); await a_off.initialize()
+    registry = _StubRegistry([
+        (a_on, {"forward_inform": True, "forward_ask_user": True,
+                "forward_tool_approval": True}),
+        (a_off, {"forward_inform": False, "forward_ask_user": True,
+                 "forward_tool_approval": True}),
+    ])
+    d = ChannelDispatcher(registry=registry)
+    res = await d.dispatch_prompt(envelope=_env(kind="inform"))
+    assert len(res) == 1
+    assert len(a_on.posted) == 1
+    assert a_off.posted == []
+
+
+@pytest.mark.asyncio
 async def test_dispatch_one_adapter_failure_does_not_block_others():
     class _Bad(NullChannelAdapter):
         async def post_prompt(self, envelope):
