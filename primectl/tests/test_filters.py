@@ -48,3 +48,17 @@ def test_unknown_op_raises():
 def test_malformed_filter_raises():
     with pytest.raises(FilterError):
         build_predicate(["noequals"])
+
+
+def test_url_value_is_not_treated_as_operator():
+    pred = build_predicate(["base_url=http://example.com:9000"])
+    assert pred["op"] == "="
+    assert pred["right"]["value"] == "http://example.com:9000"
+
+
+def test_unknown_op_error_mentions_str_escape():
+    import pytest as _pytest
+    from primectl.filters import FilterError as _FE
+    with _pytest.raises(_FE) as exc:
+        build_predicate(["a=bogus:1"])
+    assert "str:" in str(exc.value)

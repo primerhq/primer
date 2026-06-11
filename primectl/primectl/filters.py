@@ -71,8 +71,16 @@ def parse_filter(expr: str) -> tuple[str, str, Any]:
         if maybe_op in _OPS:
             op_symbol = _OPS[maybe_op]
             value_str = after
+        elif rest.startswith(f"{maybe_op}://"):
+            # A URL scheme (http://, https://, ...). The whole rest is the value.
+            value_str = rest
         elif maybe_op.isalpha():
-            raise FilterError(f"unknown operator {maybe_op!r} in {expr!r}")
+            valid = ", ".join(sorted(_OPS))
+            raise FilterError(
+                f"unknown operator {maybe_op!r} in {expr!r}. Valid operators: "
+                f"{valid}. To filter on a literal value containing a colon, "
+                f"prefix it with 'str:' (e.g. field=str:{rest})."
+            )
     return field, op_symbol, coerce_value(value_str)
 
 
