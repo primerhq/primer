@@ -137,6 +137,13 @@ The entities:
   (64), `hnsw_ef_search` (40), and `index_min_rows` (1000). There is no
   per-config distance field; `distance` is a per-collection argument on
   `create_collection` and stored on the Lance catalogue row.
+  The pgvector / pgvectorscale config family shares `_PgVectorBaseConfig`, which
+  exposes `use_halfvec` (default `false`). When enabled, NEW collections are
+  created with pgvector's `halfvec` column type (half precision, up to 4000
+  dimensions) instead of the standard `vector` type (max 2000); enable it for
+  embedding models above 2000 dims, e.g. `text-embedding-3-large` (3072). The
+  flag only affects collections created while it is on -- existing collections
+  keep their original type (tracked per collection, see section 7).
 - `Collection`: `search_provider_id` (required, `min_length=1`, immutable after
   create), `system: bool`, `harness_id`, plus the embedder reference and optional
   `search`.
@@ -227,7 +234,15 @@ task consumes an `asyncio.Queue[IngestEvent]` fed by the CRUD routers' after-hoo
 Vector data is physically persisted by the SSP backend:
 
 - **pgvector / pgvectorscale** (`primer/vector/pgvector.py`) persist embeddings in
-  Postgres tables.
+  Postgres tables. A catalogue table `primer_collections` records
+  `{collection_id, table_name, index_name, index_kind, dimensions, distance,
+  vector_type}`; `vector_type` (`vector` or `halfvec`, default `vector` via an
+  idempotent `ADD COLUMN IF NOT EXISTS` migration) is set from the provider's
+  `use_halfvec` flag at create time and then drives the index opclass and the
+  put / search codec (`halfvec` values are wrapped as `pgvector.HalfVector`),
+  so a collection keeps its type regardless of later flag changes. Creating a
+  collection whose dimensions exceed the type's ceiling (2000 for `vector`,
+  4000 for `halfvec`) raises `BadRequestError` before any DDL runs.
 - **LanceDB** (`primer/vector/lance.py`) persists to an on-disk directory (default
   `~/.primer/vector` for the reserved row). A catalogue table `_primer_collections`
   co-locates with the per-collection tables and records
