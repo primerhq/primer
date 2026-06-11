@@ -102,6 +102,19 @@ def _make_op(method: str, path: str, op_obj: dict) -> Operation:
     )
 
 
+def _action_name(plural: str, path: str) -> str:
+    """Derive an action name from a custom path under /v1/<plural>/.
+
+    Drops the plural prefix and any {param} segments, joins the rest with '-',
+    strips leading underscores, and turns '_' into '-'.
+    Example: /v1/llm_providers/_discover_models -> "discover-models".
+    """
+    tail = path[len(f"/v1/{plural}/"):]
+    segs = [s for s in tail.split("/") if s and not (s.startswith("{") and s.endswith("}"))]
+    raw = "-".join(segs)
+    return raw.lstrip("_").replace("_", "-")
+
+
 # /v1/<plural> exactly
 _RE_PLURAL = re.compile(r"^/v1/([^/]+)$")
 # /v1/<plural>/{param} exactly (single path param, no further segments)
@@ -190,6 +203,27 @@ def build_registry(spec: dict) -> ResourceRegistry:
             r.update_op = _make_op("put", path, methods["put"])
         if "delete" in methods:
             r.delete_op = _make_op("delete", path, methods["delete"])
+
+    # Pass 3: everything else under /v1/<plural>/... is a custom operation.
+    for path, methods in paths.items():
+        if _RE_PLURAL.match(path) or _RE_ITEM.match(path) or _RE_FIND.match(path):
+            continue
+        m = re.match(r"^/v1/([^/]+)/.+$", path)
+        if not m:
+            continue
+        plural = m.group(1)
+        if plural not in resources:
+            continue
+        r = resources[plural]
+        action = _action_name(plural, path)
+        if not action:
+            continue
+        for method, op_obj in methods.items():
+            if method not in ("get", "post", "put", "delete", "patch"):
+                continue
+            # First method wins the bare action name; extra methods get suffixed.
+            key = action if action not in r.custom_ops else f"{action}-{method}"
+            r.custom_ops[key] = _make_op(method, path, op_obj)
 
     # Entity schema ref: prefer create body, then update body, then get response.
     for r in resources.values():
