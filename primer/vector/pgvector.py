@@ -98,6 +98,62 @@ _DISTANCE_OPERATOR: dict[str, str] = {
     "ip": "<#>",
 }
 
+# Vector column-type selection + dimension ceilings for the halfvec feature.
+VECTOR_MAX_DIMS = 2000
+HALFVEC_MAX_DIMS = 4000
+
+# opclass per (distance, vector_type). The opclass NAME is identical for the
+# HNSW (pgvector) and DiskANN (pgvectorscale) access methods; each store's
+# _render_index_ddl plugs it into its own ``USING <method> (vector <opclass>)``.
+_VECTOR_OPCLASS: dict[tuple[str, str], str] = {
+    ("cosine", "vector"): "vector_cosine_ops",
+    ("l2", "vector"): "vector_l2_ops",
+    ("ip", "vector"): "vector_ip_ops",
+    ("cosine", "halfvec"): "halfvec_cosine_ops",
+    ("l2", "halfvec"): "halfvec_l2_ops",
+    ("ip", "halfvec"): "halfvec_ip_ops",
+}
+
+
+def _vector_column_type(use_halfvec: bool) -> str:
+    """Postgres column type for the embedding vector column."""
+    return "halfvec" if use_halfvec else "vector"
+
+
+def _opclass_for(distance: str, vector_type: str) -> str:
+    """Index opclass for a (distance metric, vector column type) pair."""
+    return _VECTOR_OPCLASS[(distance, vector_type)]
+
+
+def _validate_dimensions(dimensions: int, *, use_halfvec: bool) -> None:
+    """Raise BadRequestError when dimensions exceed the column type's ceiling.
+
+    The standard ``vector`` type caps at 2000 dims; ``halfvec`` at 4000.
+    Surfaces an actionable error before any DDL runs (replacing pgvector's
+    raw 'cannot have more than N dimensions' error).
+    """
+    if not use_halfvec and dimensions > VECTOR_MAX_DIMS:
+        raise BadRequestError(
+            f"embedding dimensions {dimensions} exceed the {VECTOR_MAX_DIMS}-"
+            f"column limit of the standard vector type; enable use_halfvec on "
+            f"this semantic search provider (supports up to {HALFVEC_MAX_DIMS})"
+        )
+    if use_halfvec and dimensions > HALFVEC_MAX_DIMS:
+        raise BadRequestError(
+            f"embedding dimensions {dimensions} exceed pgvector's "
+            f"{HALFVEC_MAX_DIMS}-column limit for halfvec"
+        )
+
+
+def _vec_to_list(value: Any) -> list[float]:
+    """Normalise a vector read back from pg (list, Vector, or HalfVector)
+    into a plain list of floats. HalfVector/Vector expose ``to_list``."""
+    if value is None:
+        return []
+    if hasattr(value, "to_list"):
+        return list(value.to_list())
+    return list(value)
+
 
 # ===========================================================================
 # Provider
