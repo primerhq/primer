@@ -999,6 +999,16 @@ class _PgVectorBaseConfig(_PostgresBaseConfig):
             "None disables scheduling (caller drives maintenance manually)."
         ),
     )
+    use_halfvec: bool = Field(
+        default=False,
+        description=(
+            "Store vectors as pgvector half-precision (halfvec, up to 4000 "
+            "dimensions) instead of the standard vector type (up to 2000). "
+            "Enable for embedding models above 2000 dimensions, e.g. "
+            "text-embedding-3-large (3072). Only affects collections created "
+            "while enabled; existing collections keep their original type."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_cron(self) -> "_PgVectorBaseConfig":
