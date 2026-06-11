@@ -59,6 +59,9 @@ primer = "primer.cli:app"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.uv.workspace]
+members = ["primectl"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["primer"]
 
