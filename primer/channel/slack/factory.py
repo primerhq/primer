@@ -53,11 +53,26 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         adapter = entry.adapters_by_channel_id.get(channel_id) if entry else None
         if adapter is None:
             return
+        user_id = body.get("user", {}).get("id")
         await adapter._handle_decision(
             ws=ws, sid=sid, tcid=tcid,
             decision="approved", reason=None,
-            slack_user_id=body.get("user", {}).get("id"),
+            slack_user_id=user_id,
         )
+        # Replace the buttons with an "Approved by @user" note.
+        from primer.channel.slack.render import build_decided_blocks
+        msg = body.get("message", {})
+        try:
+            await client.chat_update(
+                channel=channel_id, ts=msg.get("ts"),
+                blocks=build_decided_blocks(
+                    original_blocks=msg.get("blocks"),
+                    decision="approved", slack_user_id=user_id,
+                ),
+                text="Tool call approved",
+            )
+        except Exception:
+            logger.exception("slack: chat.update after approve failed")
 
     @app.action("reject")
     async def _on_reject(ack, body, client):
@@ -67,8 +82,12 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         except Exception:
             return
         from primer.channel.slack.render import build_reject_modal
+        # Carry the originating channel + message ts so the modal-submit
+        # handler can update the original message after the reason is given.
         view = build_reject_modal(
             workspace_id=ws, session_id=sid, tool_call_id=tcid,
+            channel_id=body.get("channel", {}).get("id"),
+            message_ts=body.get("message", {}).get("ts"),
         )
         try:
             await client.views_open(trigger_id=body["trigger_id"], view=view)
@@ -78,19 +97,19 @@ def _install_handlers(provider_id: str, app: Any) -> None:
     @app.view(REJECT_MODAL_CALLBACK_ID)
     async def _on_modal_submit(ack, body, view, client):
         await ack()
-        try:
-            verb, ws, sid, tcid = view["private_metadata"].split(":", 3)
-        except Exception:
+        # private_metadata: reject:ws:sid:tcid[:channel:ts]
+        parts = view.get("private_metadata", "").split(":")
+        if len(parts) < 4:
             return
+        ws, sid, tcid = parts[1], parts[2], parts[3]
+        channel_id = parts[4] if len(parts) > 4 and parts[4] else None
+        message_ts = parts[5] if len(parts) > 5 and parts[5] else None
         reason = (
             view["state"]["values"]["reason"]["reason_text"]["value"] or ""
         ).strip() or None
-        # Modal submissions don't carry the originating channel_id;
-        # we look it up from any adapter under this provider whose
-        # channel_id matches the original message's container. To
-        # keep this simple, we route the rejection by checking ALL
-        # adapters under the provider for one that has a pending
-        # post for that (ws, sid, tcid).
+        user_id = body.get("user", {}).get("id")
+        # Modal submissions don't carry the originating channel_id; route the
+        # rejection through any adapter under this provider (inbox dedupes).
         entry = SLACK_CONNECTIONS.entry(provider_id)
         if entry is None:
             return
@@ -98,9 +117,32 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             await adapter._handle_decision(
                 ws=ws, sid=sid, tcid=tcid,
                 decision="rejected", reason=reason,
-                slack_user_id=body.get("user", {}).get("id"),
+                slack_user_id=user_id,
             )
-            return  # first wins; the inbox dedupes anyway
+            break  # first wins; the inbox dedupes anyway
+        # Replace the buttons on the original message with a "Rejected" note.
+        if channel_id and message_ts:
+            from primer.channel.slack.render import build_decided_blocks
+            orig_blocks = None
+            try:
+                hist = await client.conversations_history(
+                    channel=channel_id, latest=message_ts,
+                    oldest=message_ts, inclusive=True, limit=1,
+                )
+                orig_blocks = (hist.get("messages") or [{}])[0].get("blocks")
+            except Exception:
+                logger.warning("slack: history lookup for reject update failed")
+            try:
+                await client.chat_update(
+                    channel=channel_id, ts=message_ts,
+                    blocks=build_decided_blocks(
+                        original_blocks=orig_blocks, decision="rejected",
+                        slack_user_id=user_id, reason=reason,
+                    ),
+                    text="Tool call rejected",
+                )
+            except Exception:
+                logger.exception("slack: chat.update after reject failed")
 
     @app.event("message")
     async def _on_message(event, client):

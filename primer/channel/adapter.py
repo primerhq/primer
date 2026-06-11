@@ -2,9 +2,25 @@
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+
+
+def format_tool_args(tool_args: dict[str, Any] | None) -> str:
+    """Pretty-print tool-call arguments as JSON for channel rendering.
+
+    Channels show this inside a code block instead of dumping the raw
+    ``repr`` of the dict. Falls back to ``str`` if the args are not
+    JSON-serialisable.
+    """
+    if not tool_args:
+        return "{}"
+    try:
+        return json.dumps(tool_args, indent=2, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(tool_args)
 
 
 @dataclass

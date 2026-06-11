@@ -118,6 +118,21 @@ async def test_post_tool_approval_attaches_view(monkeypatch):
     assert sent["view"] is not None  # ApprovalView attached
 
 
+def test_format_approval_content_uses_tool_name_and_pretty_args():
+    from primer.channel.discord.adapter import format_approval_content
+    content = format_approval_content(PromptEnvelope(
+        kind="tool_approval", workspace_id="ws", session_id="s",
+        tool_call_id="tc", prompt="Approve workspace__write({...})?",
+        response_schema=None, choices=["Approve", "Reject"],
+        timeout_at_iso=None, tool_name="workspace__write",
+        tool_args={"path": "hello.txt", "content": "hi"},
+    ))
+    assert "**Tool:** `workspace__write`" in content
+    assert '"path": "hello.txt"' in content       # pretty JSON
+    assert "```json" in content                    # fenced code block
+    assert "Approve workspace__write({" not in content  # not the raw repr
+
+
 @pytest.mark.asyncio
 async def test_post_ask_user_creates_thread_and_caches_ids(monkeypatch):
     client = _StubClient()

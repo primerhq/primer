@@ -69,6 +69,9 @@ def _install_handlers(provider_id: str, client: Any) -> None:
         if verb == "reject":
             if adapter is None:
                 return
+            # Capture the original message now; modal-submit interactions
+            # don't carry it, and we want to strip the buttons afterwards.
+            original_message = interaction.message
 
             async def _on_modal_submit(submitted: discord.Interaction, reason_text: str):
                 await adapter._handle_decision(
@@ -76,6 +79,22 @@ def _install_handlers(provider_id: str, client: Any) -> None:
                     decision="rejected", reason=reason_text or None,
                     discord_user_id=submitted.user.id if submitted.user else None,
                 )
+                # Replace the buttons with a "Rejected by @user" note.
+                try:
+                    if original_message is not None:
+                        note = (
+                            "\n\n✗ Rejected by <@"
+                            + str(submitted.user.id if submitted.user else "")
+                            + ">"
+                        )
+                        if reason_text:
+                            note += ": " + reason_text
+                        await original_message.edit(
+                            content=(original_message.content or "") + note,
+                            view=None,
+                        )
+                except Exception:
+                    logger.exception("discord: reject edit_message failed")
                 try:
                     await submitted.response.send_message(
                         content="✗ Rejection recorded.", ephemeral=True,

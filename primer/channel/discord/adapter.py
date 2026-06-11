@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from primer.channel.adapter import (
-    ChannelAdapter, PromptEnvelope, ResponseEnvelope,
+    ChannelAdapter, PromptEnvelope, ResponseEnvelope, format_tool_args,
 )
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import ApprovalView
@@ -15,6 +15,24 @@ from primer.model.except_ import ProviderError
 
 
 logger = logging.getLogger(__name__)
+
+# Discord message content caps at 2000 chars; keep args well under it.
+_DISCORD_ARGS_MAX = 1700
+
+
+def format_approval_content(envelope: PromptEnvelope) -> str:
+    """Render a tool-approval prompt as Discord markdown: tool name plus a
+    pretty-printed JSON code block, instead of the raw ``prompt`` string.
+    """
+    tool_name = envelope.tool_name or "(unknown tool)"
+    args_json = format_tool_args(envelope.tool_args)
+    if len(args_json) > _DISCORD_ARGS_MAX:
+        args_json = args_json[:_DISCORD_ARGS_MAX] + "\n... (truncated)"
+    return (
+        ":lock: **Tool approval requested**\n"
+        f"**Tool:** `{tool_name}`\n"
+        f"**Arguments:**\n```json\n{args_json}\n```"
+    )
 
 
 class DiscordChannelAdapter(ChannelAdapter):
@@ -83,7 +101,9 @@ class DiscordChannelAdapter(ChannelAdapter):
                 sid=envelope.session_id,
                 tcid=envelope.tool_call_id,
             )
-            msg = await channel.send(content=envelope.prompt, view=view)
+            msg = await channel.send(
+                content=format_approval_content(envelope), view=view,
+            )
             return {"message_id": getattr(msg, "id", 0)}
         elif envelope.kind == "ask_user":
             msg = await channel.send(content=envelope.prompt)
