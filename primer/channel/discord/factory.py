@@ -49,11 +49,8 @@ def _install_handlers(provider_id: str, client: Any) -> None:
         if verb == "approve":
             if adapter is None:
                 return
-            await adapter._handle_decision(
-                workspace_id=ws, session_id=sid, tool_call_id=tcid,
-                decision="approved", reason=None,
-                discord_user_id=interaction.user.id if interaction.user else None,
-            )
+            # Ack + strip the buttons first (Discord drops any interaction not
+            # answered within ~3s), then record the decision.
             try:
                 await interaction.response.edit_message(
                     content=(
@@ -64,6 +61,11 @@ def _install_handlers(provider_id: str, client: Any) -> None:
                 )
             except Exception:
                 logger.exception("discord: edit_message failed")
+            await adapter._handle_decision(
+                workspace_id=ws, session_id=sid, tool_call_id=tcid,
+                decision="approved", reason=None,
+                discord_user_id=interaction.user.id if interaction.user else None,
+            )
             return
 
         if verb == "reject":
@@ -74,12 +76,19 @@ def _install_handlers(provider_id: str, client: Any) -> None:
             original_message = interaction.message
 
             async def _on_modal_submit(submitted: discord.Interaction, reason_text: str):
+                # Ack the modal submission first (3s window), then record the
+                # decision and strip the buttons on the original message.
+                try:
+                    await submitted.response.send_message(
+                        content="✗ Rejection recorded.", ephemeral=True,
+                    )
+                except Exception:
+                    logger.exception("discord: modal ack failed")
                 await adapter._handle_decision(
                     workspace_id=ws, session_id=sid, tool_call_id=tcid,
                     decision="rejected", reason=reason_text or None,
                     discord_user_id=submitted.user.id if submitted.user else None,
                 )
-                # Replace the buttons with a "Rejected by @user" note.
                 try:
                     if original_message is not None:
                         note = (
@@ -95,12 +104,6 @@ def _install_handlers(provider_id: str, client: Any) -> None:
                         )
                 except Exception:
                     logger.exception("discord: reject edit_message failed")
-                try:
-                    await submitted.response.send_message(
-                        content="✗ Rejection recorded.", ephemeral=True,
-                    )
-                except Exception:
-                    logger.exception("discord: modal ack failed")
 
             modal = build_reject_modal(
                 ws=ws, sid=sid, tcid=tcid, on_submit=_on_modal_submit,
@@ -149,8 +152,13 @@ def _install_handlers(provider_id: str, client: Any) -> None:
         # Single-use: drop the entry so subsequent thread messages don't fire.
         adapter._thread_to_ids.pop(thread_id, None)
 
-    client.event(_on_interaction)
-    client.event(_on_message)
+    # NB: register with explicit event names. ``client.event`` keys off the
+    # coroutine's __name__, which here is ``_on_interaction``/``_on_message``
+    # (leading underscore), so the handlers would be stored under the wrong
+    # attribute and never dispatched. ``add_listener(func, name)`` binds them
+    # to the real ``on_interaction``/``on_message`` gateway events.
+    client.add_listener(_on_interaction, "on_interaction")
+    client.add_listener(_on_message, "on_message")
 
 
 async def _discord_factory(
