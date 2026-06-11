@@ -160,3 +160,25 @@ async def test_handle_decision_publishes_envelope(monkeypatch):
     assert env.kind == "tool_approval"
     assert env.decision == "rejected"
     assert env.reason == "no thanks"
+
+
+def test_bounded_dict_evicts_oldest():
+    from primer.channel.telegram.adapter import _BoundedDict
+    d = _BoundedDict(maxsize=3)
+    for i in range(5):
+        d[i] = i
+    assert list(d.keys()) == [2, 3, 4]  # oldest (0,1) evicted
+    # re-inserting refreshes recency
+    d[2] = "x"
+    d[5] = 5
+    assert list(d.keys()) == [3, 4, 2, 5][-3:]  # 3 evicted next, 2 kept (refreshed)
+
+
+def test_adapter_caches_are_bounded():
+    from primer.channel.telegram.adapter import (
+        _BoundedDict, _CACHE_MAXSIZE, TelegramChannelAdapter,
+    )
+    a = TelegramChannelAdapter(provider=_provider(), channel=_channel(), inbox=None)
+    assert isinstance(a._tag_cache, _BoundedDict)
+    assert isinstance(a._reply_targets, _BoundedDict)
+    assert a._tag_cache._maxsize == _CACHE_MAXSIZE

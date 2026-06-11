@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from typing import Any
 
 from primer.channel.adapter import (
@@ -20,6 +21,28 @@ from primer.model.except_ import ProviderError
 
 logger = logging.getLogger(__name__)
 
+# Max correlation entries kept per adapter. Sized for a busy bot's recent
+# in-flight prompts; older entries are evicted (their parks, if still open,
+# fall back to the storage row on resume).
+_CACHE_MAXSIZE = 10_000
+
+
+class _BoundedDict(OrderedDict):
+    """An insertion-ordered dict that evicts the oldest entry once it
+    exceeds ``maxsize``. Re-inserting an existing key refreshes its
+    recency (move-to-end)."""
+
+    def __init__(self, *, maxsize: int) -> None:
+        super().__init__()
+        self._maxsize = maxsize
+
+    def __setitem__(self, key, value) -> None:
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        while len(self) > self._maxsize:
+            self.popitem(last=False)
+
 
 class TelegramChannelAdapter(ChannelAdapter):
     """Per-channel Telegram adapter."""
@@ -31,12 +54,14 @@ class TelegramChannelAdapter(ChannelAdapter):
         self._channel = channel
         self._inbox = inbox
         self._app: Any | None = None
-        # tag -> ids, for the Approve/Reject button callbacks.
-        self._tag_cache: dict[str, dict[str, str]] = {}
+        # tag -> ids, for the Approve/Reject button callbacks. Bounded so a
+        # long-lived bot does not grow these caches without limit (one entry
+        # per prompt sent); the oldest correlations fall off first.
+        self._tag_cache: _BoundedDict = _BoundedDict(maxsize=_CACHE_MAXSIZE)
         # message_id -> {**ids, "kind": "ask_user" | "reject"}, so a text
         # reply is correlated by the message it replies to (no visible
         # token in the message body).
-        self._reply_targets: dict[int, dict[str, str]] = {}
+        self._reply_targets: _BoundedDict = _BoundedDict(maxsize=_CACHE_MAXSIZE)
 
     def remember_reply_target(
         self, *, message_id: int, ids: dict[str, str], kind: str,
