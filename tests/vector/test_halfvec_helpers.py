@@ -1,4 +1,15 @@
+import pytest
+
+from primer.model.except_ import BadRequestError
 from primer.model.provider import PgVectorConfig, PgVectorScaleConfig
+from primer.vector.pgvector import (
+    HALFVEC_MAX_DIMS,
+    VECTOR_MAX_DIMS,
+    _opclass_for,
+    _validate_dimensions,
+    _vec_to_list,
+    _vector_column_type,
+)
 
 
 def _common():
@@ -12,19 +23,6 @@ def test_use_halfvec_defaults_false_on_both_configs():
 
 def test_use_halfvec_can_be_enabled():
     assert PgVectorConfig(**_common(), use_halfvec=True).use_halfvec is True
-
-
-import pytest
-
-from primer.model.except_ import BadRequestError
-from primer.vector.pgvector import (
-    HALFVEC_MAX_DIMS,
-    VECTOR_MAX_DIMS,
-    _opclass_for,
-    _validate_dimensions,
-    _vec_to_list,
-    _vector_column_type,
-)
 
 
 def test_vector_column_type():
