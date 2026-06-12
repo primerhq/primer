@@ -46,10 +46,17 @@ class SlackChannelAdapter(ChannelAdapter):
         provider: ChannelProvider,
         channel: Channel,
         inbox,
+        storage_provider=None,
+        event_bus=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
         self._inbox = inbox
+        # Chat-surface wiring. Optional so existing callers (session/workspace
+        # channels) keep working; the chat dispatch path stays inactive when
+        # _sp is None.
+        self._sp = storage_provider
+        self._bus = event_bus
         self._conn: Any | None = None
         # session_id → root message ts (the per-session conversation thread).
         self._session_threads: dict[str, str] = {}
@@ -171,6 +178,25 @@ class SlackChannelAdapter(ChannelAdapter):
             decision=None, reason=None,
             platform_metadata={"slack_user_id": slack_user_id or ""},
         ))
+
+    async def handle_inbound_chat_message(
+        self, *, thread_ts: str | None, message_ts: str,
+        sender_name: str, text: str,
+    ):
+        """Multi-type inbound: top-level opens a new thread-chat; an in-thread
+        message routes to that thread's chat. The thread id is message_ts on a
+        top-level message (Slack threads anchor on the parent ts)."""
+        from primer.channel.chat_inbox import ChatResponseInbox
+        from primer.channel.chat_router import ChatChannelRouter
+        thread_external_id = thread_ts or message_ts
+        gate_inbox = ChatResponseInbox(
+            storage_provider=self._sp, event_bus=self._bus)
+        router = ChatChannelRouter(
+            storage_provider=self._sp, event_bus=self._bus, gate_inbox=gate_inbox)
+        chat, _created = await router.deliver_message(
+            channel_id=self._channel.id, thread_external_id=thread_external_id,
+            supports_threads=True, sender_name=sender_name, text=text)
+        return chat
 
     def pending_ask_for_thread(self, thread_ts: str) -> dict[str, str] | None:
         """The ask_user (ws/sid/tcid) awaiting a reply in this thread, if any."""

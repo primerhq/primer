@@ -146,34 +146,51 @@ def _install_handlers(provider_id: str, app: Any) -> None:
 
     @app.event("message")
     async def _on_message(event, client):
-        thread_ts = event.get("thread_ts")
-        if not thread_ts or event.get("bot_id"):
+        # Ignore bot/self messages and edits/deletes (no plain text payload).
+        if event.get("bot_id") or event.get("subtype"):
             return
+        thread_ts = event.get("thread_ts")
         channel_id = event["channel"]
         entry = SLACK_CONNECTIONS.entry(provider_id)
         adapter = entry.adapters_by_channel_id.get(channel_id) if entry else None
         if adapter is None:
             return
-        # A reply in a session thread carries thread_ts = the thread root ts.
-        ids = adapter.pending_ask_for_thread(thread_ts)
-        if ids is None:
+        # Session-prompt reply: a reply in a session thread carries
+        # thread_ts = the thread root ts that an ask_user is parked on. This
+        # path takes precedence so existing session gates keep working.
+        if thread_ts is not None:
+            ids = adapter.pending_ask_for_thread(thread_ts)
+            if ids is not None:
+                await adapter._handle_text_reply(
+                    ws=ids["ws"], sid=ids["sid"], tcid=ids["tcid"],
+                    text=event.get("text", ""),
+                    slack_user_id=event.get("user"),
+                )
+                adapter.clear_pending_ask(thread_ts)
+                return
+        # Chat-surface dispatch: on a chat-enabled adapter, a top-level message
+        # opens a new thread-chat and an in-thread message routes to its chat.
+        if getattr(adapter, "_sp", None) is None:
             return
-        await adapter._handle_text_reply(
-            ws=ids["ws"], sid=ids["sid"], tcid=ids["tcid"],
-            text=event.get("text", ""),
-            slack_user_id=event.get("user"),
+        sender_name = event.get("user") or "user"
+        await adapter.handle_inbound_chat_message(
+            thread_ts=thread_ts, message_ts=event.get("ts", ""),
+            sender_name=sender_name, text=event.get("text", ""),
         )
-        adapter.clear_pending_ask(thread_ts)
 
 
 async def _slack_factory(
     provider: ChannelProvider,
     channel: Channel,
     inbox,
+    *,
+    storage_provider=None,
+    event_bus=None,
     **_kw,
 ):
     adapter = SlackChannelAdapter(
         provider=provider, channel=channel, inbox=inbox,
+        storage_provider=storage_provider, event_bus=event_bus,
     )
     await adapter.initialize()
     # The connection is now acquired; install handlers on it once.
