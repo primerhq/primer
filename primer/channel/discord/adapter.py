@@ -186,27 +186,19 @@ class DiscordChannelAdapter(ChannelAdapter):
         ))
 
     async def _resolve_chat_thread(self, thread_ts: str | None) -> Any:
-        """Resolve a discord.py thread/channel object from a thread anchor id.
+        """Resolve (or create) the discord.py thread for a chat's anchor id.
 
-        ``thread_ts`` is the string Discord thread (or message) id stored in
-        ``ChatChannelBinding.thread_external_id``.  We try the client cache
-        first, then fall back to a REST fetch, mirroring the lookup path in
-        ``_session_thread``.  If ``thread_ts`` is None we fall back to the
-        parent channel itself.
+        ``thread_ts`` is the string id stored in
+        ``ChatChannelBinding.thread_external_id``: for a top-level message it is
+        the anchor MESSAGE id (no thread exists yet); for an in-thread reply it
+        is the thread id. We first look up an existing thread/channel with that
+        id; if none exists we treat ``thread_ts`` as the anchor message and open
+        a thread off it (Discord gives the thread the anchor message's id, so it
+        matches both this binding and inbound thread replies). ``None`` -> the
+        parent channel.
         """
         if self._client is None:
             raise ProviderError("DiscordChannelAdapter used before initialize()")
-        if thread_ts is not None:
-            tid = int(thread_ts)
-            thread = self._client.get_channel(tid)
-            if thread is None:
-                try:
-                    thread = await self._client.fetch_channel(tid)
-                except Exception:
-                    thread = None
-            if thread is not None:
-                return thread
-        # Fall back to the parent channel
         parent_id = int(self._channel.external_id)
         channel = self._client.get_channel(parent_id)
         if channel is None:
@@ -215,7 +207,37 @@ class DiscordChannelAdapter(ChannelAdapter):
             raise ProviderError(
                 f"discord channel {self._channel.external_id!r} not reachable"
             )
-        return channel
+        if thread_ts is None:
+            return channel
+        tid = int(thread_ts)
+        # Existing thread (created on a prior relay, or the in-thread case)?
+        thread = self._client.get_channel(tid)
+        if thread is None:
+            try:
+                thread = await self._client.fetch_channel(tid)
+            except Exception:
+                thread = None
+        if thread is not None:
+            return thread
+        # No thread yet: open one off the anchor message so chat replies stay
+        # in a per-chat thread instead of the parent channel.
+        try:
+            anchor = await channel.fetch_message(tid)
+        except Exception:
+            return channel  # anchor gone / unreachable: degrade to the channel
+        try:
+            return await anchor.create_thread(
+                name=f"chat {tid}"[:100], auto_archive_duration=60,
+            )
+        except Exception:
+            # Thread may already exist (race): resolve it once more, else channel.
+            thread = self._client.get_channel(tid)
+            if thread is None:
+                try:
+                    thread = await self._client.fetch_channel(tid)
+                except Exception:
+                    thread = None
+            return thread if thread is not None else channel
 
     async def post_chat_message(
         self, text: str, *, thread_ts: str | None = None
