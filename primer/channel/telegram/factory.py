@@ -40,6 +40,17 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         if adapter is None:
             return
         data = cq.data or ""
+        if data.startswith("pick_agent:") and getattr(adapter, "_sp", None) is not None:
+            notice = await adapter.apply_agent_pick(callback_data=data)
+            try:
+                await context.bot.send_message(chat_id=cq.message.chat.id, text=notice)
+            except Exception:
+                logger.exception("telegram: agent-pick notice send failed")
+            return
+        if (data.startswith("chat_ok:") or data.startswith("chat_no:")) and \
+                getattr(adapter, "_sp", None) is not None:
+            await adapter.apply_chat_decision_button(callback_data=data)
+            return
         if data.startswith("a:"):
             tag = data[2:]
             ids = await adapter._resolve_tag(tag)

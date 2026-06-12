@@ -16,6 +16,7 @@ from primer.channel.telegram.render import (
     compute_tag,
 )
 from primer.model.channel import Channel, ChannelProvider
+from primer.model.chats import Chat
 from primer.model.except_ import ProviderError
 
 
@@ -229,6 +230,21 @@ class TelegramChannelAdapter(ChannelAdapter):
                 res = await ex.set_agent(chat_id=chat.id, agent_id=parsed.arg)
                 return res.text
             if parsed.verb == "agent":
+                from primer.channel.chat_router import ChatChannelRouter as _R
+                router = _R(storage_provider=self._sp)
+                chat, _ = await router.resolve_or_create(
+                    channel_id=self._channel.id, thread_external_id=None,
+                    supports_threads=False)
+                kb = await self.build_agent_picker_keyboard(chat_id=chat.id)
+                if self._app is not None:
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton(b["text"], callback_data=b["callback_data"])
+                         for b in row] for row in kb])
+                    await self._app.bot.send_message(
+                        chat_id=self._channel.external_id,
+                        text="Pick an agent:", reply_markup=markup)
+                    return None
                 return "Reply with /agent <agent-id> to switch."
             return None
         gate_inbox = ChatResponseInbox(
@@ -239,6 +255,42 @@ class TelegramChannelAdapter(ChannelAdapter):
             channel_id=self._channel.id, thread_external_id=None,
             supports_threads=False, sender_name=sender_name, text=text)
         return None
+
+    async def build_agent_picker_keyboard(
+        self, *, chat_id: str,
+    ) -> list[list[dict[str, str]]]:
+        """One inline button per agent; callback_data carries the selection."""
+        from primer.channel.commands import CommandExecutor
+        res = await CommandExecutor(storage_provider=self._sp).agent_picker()
+        rows: list[list[dict[str, str]]] = []
+        for opt in res.items:
+            rows.append([{
+                "text": opt["label"],
+                "callback_data": f"pick_agent:{chat_id}:{opt['agent_id']}",
+            }])
+        return rows
+
+    async def apply_agent_pick(self, *, callback_data: str) -> str:
+        """Handle a 'pick_agent:<chat>:<agent>' callback. Returns a notice."""
+        from primer.channel.commands import CommandExecutor
+        _, chat_id, agent_id = callback_data.split(":", 2)
+        res = await CommandExecutor(storage_provider=self._sp).set_agent(
+            chat_id=chat_id, agent_id=agent_id)
+        return res.text or "Agent switched."
+
+    async def apply_chat_decision_button(self, *, callback_data: str) -> None:
+        """Handle 'chat_ok:<chat>' / 'chat_no:<chat>' approval buttons."""
+        from primer.channel.chat_inbox import ChatResponseInbox
+        verb, chat_id = callback_data.split(":", 1)
+        chat = await self._sp.get_storage(Chat).get(chat_id)
+        if chat is None or chat.pending_tool_call is None:
+            return
+        decision = "approved" if verb == "chat_ok" else "rejected"
+        inbox = ChatResponseInbox(
+            storage_provider=self._sp, event_bus=self._bus)
+        await inbox.handle_chat_decision(
+            chat_id=chat_id, pending=chat.pending_tool_call,
+            decision=decision, reason=None, sender="telegram")
 
     async def post_chat_message(self, text: str) -> dict[str, Any]:
         """Outbound chat relay: send a plain message to the channel."""
