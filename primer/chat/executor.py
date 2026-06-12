@@ -705,30 +705,14 @@ class ChatTurnRunner:
         await self._persist_chat(chat)
 
     async def abandon_pending(self, chat: Chat, pending: dict) -> None:
-        """Abandon a pending (awaiting-input) tool call on cancel.
-
-        Persists a synthetic cancelled ``tool_result`` for the pending
-        call so the unpaired ``tool_use`` row gets a partner (history
-        stays valid) and clears ``chat.pending_tool_call``. Used by the
-        dispatch layer when a cancel arrives while the chat is awaiting
-        the human's reply: the pending call is dropped and the next
-        message is processed as a fresh turn instead of being swallowed
-        as the answer.
-        """
-        tool_call_id = pending.get("tool_call_id")
-        await self._append(chat, kind="tool_result", payload={
-            "id": tool_call_id, "name": str(pending.get("mode") or ""),
-            "result": "cancelled by user", "error": True,
-        })
-        # Close the originally-parked turn with a terminal row so the
-        # next drain advances past the prompting user_message rather than
-        # re-serving it. Without this the parked turn has no terminal and
-        # _find_next_user_message would re-issue the original prompt.
-        await self._append(chat, kind="cancelled", payload={
-            "reason": "cancel_while_awaiting_input",
-        })
-        chat.pending_tool_call = None
-        await self._chats.update(chat)
+        """Abandon a pending (awaiting-input) tool call on cancel. Delegates to
+        the shared helper so the switch endpoint can reuse the same logic."""
+        from primer.chat.pending import abandon_pending_rows
+        await abandon_pending_rows(
+            chat, pending=pending, messages=self._messages, chats=self._chats,
+            result_text="cancelled by user",
+            terminal_reason="cancel_while_awaiting_input",
+        )
 
     # Tokens that read as an affirmative approval. Matched case-folded
     # against the reply's whitespace-split tokens.
