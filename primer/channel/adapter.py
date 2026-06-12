@@ -7,6 +7,19 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from primer.model.channel import ChannelProviderType
+
+# Channels that anchor one thread per chat (multi-type). Telegram has no
+# threads (single-type: one 1:1 chat per channel).
+_THREADED_PROVIDERS = frozenset({
+    ChannelProviderType.SLACK, ChannelProviderType.DISCORD,
+})
+
+
+def provider_supports_threads(provider_type: ChannelProviderType) -> bool:
+    """True for multi-type channels (Slack/Discord), False for Telegram."""
+    return provider_type in _THREADED_PROVIDERS
+
 
 def session_thread_label(session_id: str) -> str:
     """Human-facing title for a per-session conversation thread.
@@ -88,4 +101,5 @@ __all__ = [
     "ChannelAdapter",
     "PromptEnvelope",
     "ResponseEnvelope",
+    "provider_supports_threads",
 ]
