@@ -131,6 +131,19 @@ class SlackChannelAdapter(ChannelAdapter):
             }
         return {"ts": ts, "channel": resp.get("channel", ""), "thread_ts": root_ts}
 
+    async def post_chat_message(
+        self, text: str, *, thread_ts: str | None = None,
+    ) -> dict:
+        """Outbound chat relay: stream into the thread (native) or post whole."""
+        from primer.channel.slack.streaming import stream_or_post
+        if self._conn is None:
+            raise ProviderError("SlackChannelAdapter used before initialize()")
+        client = _get_web_client(self._conn)
+        await stream_or_post(
+            client=client, channel=self._channel.external_id,
+            thread_ts=thread_ts, text=text)
+        return {"ok": True}
+
     async def _session_root_ts(self, client: Any, session_id: str) -> str:
         """Get-or-create the root message ts for this session's thread.
 
