@@ -54,6 +54,59 @@ async def test_agent_picker_keyboard_options(tmp_path: Path):
     assert "pick_agent:chat-1:agent-y" in datas
 
 
+async def _setup_many(tmp_path, count: int):
+    p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "many.sqlite"))
+    await p.initialize()
+    for i in range(count):
+        await p.get_storage(Agent).create(Agent(
+            id=f"agent-{i:02d}", description=f"A{i:02d}",
+            model={"provider_id": "lp", "model_name": "m"}))
+    cp = ChannelProvider(
+        id="cp-1", provider=ChannelProviderType.TELEGRAM,
+        config=TelegramChannelProviderConfig(bot_token=SecretStr("123456:ABCDEFGHIJKLMNOP")))
+    ch = Channel(id="ch-1", provider_id="cp-1", external_id="555")
+    await p.get_storage(ChannelProvider).create(cp)
+    await p.get_storage(Channel).create(ch)
+    adapter = TelegramChannelAdapter(
+        provider=cp, channel=ch, inbox=None,
+        storage_provider=p, event_bus=InMemoryEventBus())
+    return p, adapter
+
+
+@pytest.mark.asyncio
+async def test_agent_picker_pagination(tmp_path: Path):
+    p, adapter = await _setup_many(tmp_path, 20)
+
+    # Page 0: 8 agent buttons + a nav row with only "Next >".
+    kb0 = await adapter.build_agent_picker_keyboard(chat_id="c", page=0)
+    agent_rows0 = [r for r in kb0 if r[0]["callback_data"].startswith("pick_agent:")]
+    nav0 = [r for r in kb0 if r[0]["callback_data"].startswith("agentpage:")]
+    assert len(agent_rows0) == 8
+    assert len(nav0) == 1
+    assert [b["text"] for b in nav0[0]] == ["Next >"]
+    assert nav0[0][0]["callback_data"] == "agentpage:c:1"
+    assert all(r[0]["callback_data"].startswith("pick_agent:c:") for r in agent_rows0)
+
+    # Page 1: 8 agents + nav row with both "< Prev" and "Next >".
+    kb1 = await adapter.build_agent_picker_keyboard(chat_id="c", page=1)
+    agent_rows1 = [r for r in kb1 if r[0]["callback_data"].startswith("pick_agent:")]
+    nav1 = [r for r in kb1 if r[0]["callback_data"].startswith("agentpage:")]
+    assert len(agent_rows1) == 8
+    assert len(nav1) == 1
+    assert [b["text"] for b in nav1[0]] == ["< Prev", "Next >"]
+    assert nav1[0][0]["callback_data"] == "agentpage:c:0"
+    assert nav1[0][1]["callback_data"] == "agentpage:c:2"
+
+    # Page 2 (last): remainder (20 - 16 = 4) + nav row with only "< Prev".
+    kb2 = await adapter.build_agent_picker_keyboard(chat_id="c", page=2)
+    agent_rows2 = [r for r in kb2 if r[0]["callback_data"].startswith("pick_agent:")]
+    nav2 = [r for r in kb2 if r[0]["callback_data"].startswith("agentpage:")]
+    assert len(agent_rows2) == 4
+    assert len(nav2) == 1
+    assert [b["text"] for b in nav2[0]] == ["< Prev"]
+    assert nav2[0][0]["callback_data"] == "agentpage:c:1"
+
+
 @pytest.mark.asyncio
 async def test_apply_agent_pick(tmp_path: Path):
     p, adapter = await _setup(tmp_path)

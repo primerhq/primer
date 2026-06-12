@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # fall back to the storage row on resume).
 _CACHE_MAXSIZE = 10_000
 
+# Agents shown per page in the /agent inline-keyboard picker.
+_AGENTS_PER_PAGE = 8
+
 
 class _BoundedDict(OrderedDict):
     """An insertion-ordered dict that evicts the oldest entry once it
@@ -260,17 +263,32 @@ class TelegramChannelAdapter(ChannelAdapter):
         return None
 
     async def build_agent_picker_keyboard(
-        self, *, chat_id: str,
+        self, *, chat_id: str, page: int = 0,
     ) -> list[list[dict[str, str]]]:
-        """One inline button per agent; callback_data carries the selection."""
+        """One inline button per agent for the current page, plus a Prev/Next
+        nav row when there is more than one page."""
         from primer.channel.commands import CommandExecutor
         res = await CommandExecutor(storage_provider=self._sp).agent_picker()
+        items = res.items
+        total = len(items)
+        pages = max(1, (total + _AGENTS_PER_PAGE - 1) // _AGENTS_PER_PAGE)
+        page = max(0, min(page, pages - 1))
+        start = page * _AGENTS_PER_PAGE
         rows: list[list[dict[str, str]]] = []
-        for opt in res.items:
+        for opt in items[start:start + _AGENTS_PER_PAGE]:
             rows.append([{
                 "text": opt["label"],
                 "callback_data": f"pick_agent:{chat_id}:{opt['agent_id']}",
             }])
+        nav: list[dict[str, str]] = []
+        if page > 0:
+            nav.append({"text": "< Prev",
+                        "callback_data": f"agentpage:{chat_id}:{page - 1}"})
+        if page < pages - 1:
+            nav.append({"text": "Next >",
+                        "callback_data": f"agentpage:{chat_id}:{page + 1}"})
+        if nav:
+            rows.append(nav)
         return rows
 
     async def apply_agent_pick(self, *, callback_data: str) -> str:

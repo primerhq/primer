@@ -40,6 +40,19 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         if adapter is None:
             return
         data = cq.data or ""
+        if data.startswith("agentpage:") and getattr(adapter, "_sp", None) is not None:
+            try:
+                _, chat_id, page_s = data.split(":", 2)
+                kb = await adapter.build_agent_picker_keyboard(
+                    chat_id=chat_id, page=int(page_s))
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(b["text"], callback_data=b["callback_data"])
+                     for b in row] for row in kb])
+                await cq.edit_message_reply_markup(reply_markup=markup)
+            except Exception:
+                logger.exception("telegram: agent-page nav failed")
+            return
         if data.startswith("pick_agent:") and getattr(adapter, "_sp", None) is not None:
             notice = await adapter.apply_agent_pick(callback_data=data)
             try:
