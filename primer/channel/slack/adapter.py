@@ -49,6 +49,7 @@ class SlackChannelAdapter(ChannelAdapter):
         storage_provider=None,
         event_bus=None,
         claim_engine=None,
+        artifact_registry=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
@@ -59,6 +60,7 @@ class SlackChannelAdapter(ChannelAdapter):
         self._sp = storage_provider
         self._bus = event_bus
         self._claim_engine = claim_engine
+        self._artifacts = artifact_registry
         self._conn: Any | None = None
         # session_id → root message ts (the per-session conversation thread).
         self._session_threads: dict[str, str] = {}

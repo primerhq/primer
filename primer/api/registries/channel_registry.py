@@ -45,6 +45,7 @@ class ChannelRegistry:
         storage_provider: object | None = None,
         event_bus: object | None = None,
         claim_engine: object | None = None,
+        artifact_registry: object | None = None,
     ) -> None:
         self._channels = channel_storage
         self._providers = channel_provider_storage
@@ -53,12 +54,17 @@ class ChannelRegistry:
         self._storage_provider = storage_provider
         self._event_bus = event_bus
         self._claim_engine = claim_engine
+        self._artifact_registry = artifact_registry
         self._adapters: dict[str, ChannelAdapter] = {}
         self._lock = asyncio.Lock()
 
     def set_claim_engine(self, claim_engine: object | None) -> None:
         """Late-bind the claim engine (built after this registry at boot)."""
         self._claim_engine = claim_engine
+
+    def set_artifact_registry(self, artifact_registry: object | None) -> None:
+        """Late-bind the artifact registry (built after this registry at boot)."""
+        self._artifact_registry = artifact_registry
 
     def peek_adapter(self, channel_id: str) -> ChannelAdapter | None:
         """Return the already-built adapter for ``channel_id``, or None.
@@ -96,6 +102,7 @@ class ChannelRegistry:
                 storage_provider=self._storage_provider,
                 event_bus=self._event_bus,
                 claim_engine=self._claim_engine,
+                artifact_registry=self._artifact_registry,
             )
             await adapter.initialize()
             self._adapters[channel_id] = adapter

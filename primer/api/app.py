@@ -319,6 +319,7 @@ def _make_lifespan(config: AppConfig):
             inbox=channel_inbox,
             storage_provider=storage_provider,
             event_bus=getattr(app.state, "event_bus", None),
+            artifact_registry=artifact_storage_registry,
         )
         channel_dispatcher = ChannelDispatcher(registry=channel_registry)
         app.state.channel_inbox = channel_inbox

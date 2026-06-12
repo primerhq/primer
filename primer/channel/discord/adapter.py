@@ -42,6 +42,7 @@ class DiscordChannelAdapter(ChannelAdapter):
     def __init__(
         self, *, provider: ChannelProvider, channel: Channel, inbox,
         storage_provider=None, event_bus=None, claim_engine=None,
+        artifact_registry=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
@@ -52,6 +53,7 @@ class DiscordChannelAdapter(ChannelAdapter):
         self._sp = storage_provider
         self._bus = event_bus
         self._claim_engine = claim_engine
+        self._artifacts = artifact_registry
         self._client: Any | None = None
         # session_id → discord Thread id (one conversation thread per session)
         self._session_threads: dict[str, int] = {}

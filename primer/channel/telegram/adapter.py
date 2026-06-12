@@ -54,6 +54,7 @@ class TelegramChannelAdapter(ChannelAdapter):
     def __init__(
         self, *, provider: ChannelProvider, channel: Channel, inbox,
         storage_provider=None, event_bus=None, claim_engine=None,
+        artifact_registry=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
@@ -64,6 +65,7 @@ class TelegramChannelAdapter(ChannelAdapter):
         self._sp = storage_provider
         self._bus = event_bus
         self._claim_engine = claim_engine
+        self._artifacts = artifact_registry
         self._app: Any | None = None
         # tag -> ids, for the Approve/Reject button callbacks. Bounded so a
         # long-lived bot does not grow these caches without limit (one entry

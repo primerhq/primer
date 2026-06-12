@@ -439,12 +439,13 @@ async def _discord_factory(
     storage_provider=None,
     event_bus=None,
     claim_engine=None,
+    artifact_registry=None,
     **_kw,
 ):
     adapter = DiscordChannelAdapter(
         provider=provider, channel=channel, inbox=inbox,
         storage_provider=storage_provider, event_bus=event_bus,
-        claim_engine=claim_engine,
+        claim_engine=claim_engine, artifact_registry=artifact_registry,
     )
     await adapter.initialize()
     conn = DISCORD_CONNECTIONS.entry(provider.id)

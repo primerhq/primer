@@ -97,3 +97,40 @@ async def test_deliver_routes_to_gate_when_pending(tmp_path: Path):
         sender_name="Bob", text="yes")
     assert gate.calls == [(chat.id, {"tool_call_id": "tc-1", "mode": "ask_user"},
                            "yes", "Bob")]
+
+
+@pytest.mark.asyncio
+async def test_deliver_with_media_parts(tmp_path: Path):
+    from primer.model.chat import ImagePart
+    p = await _provider(tmp_path)
+    bus = InMemoryEventBus()
+    r = ChatChannelRouter(storage_provider=p, event_bus=bus,
+                          gate_inbox=_RecordingGateInbox())
+    chat, _ = await r.deliver_message(
+        channel_id="ch-1", thread_external_id=None, supports_threads=False,
+        sender_name="ana", text="look at this",
+        media_parts=[ImagePart(artifact_id="artifact-1", mime_type="image/png")])
+    rows = await _user_rows(p, chat.id)
+    assert len(rows) == 1
+    parts = rows[0].payload["parts"]
+    assert parts[0]["type"] == "text"
+    assert "[ana] look at this" in parts[0]["text"]
+    assert parts[1]["type"] == "image"
+    assert parts[1]["artifact_id"] == "artifact-1"
+
+
+@pytest.mark.asyncio
+async def test_deliver_media_only_no_caption(tmp_path: Path):
+    from primer.model.chat import ImagePart
+    p = await _provider(tmp_path)
+    bus = InMemoryEventBus()
+    r = ChatChannelRouter(storage_provider=p, event_bus=bus,
+                          gate_inbox=_RecordingGateInbox())
+    chat, _ = await r.deliver_message(
+        channel_id="ch-1", thread_external_id=None, supports_threads=False,
+        sender_name="ana", text="",
+        media_parts=[ImagePart(artifact_id="artifact-2", mime_type="image/png")])
+    rows = await _user_rows(p, chat.id)
+    parts = rows[0].payload["parts"]
+    # No caption -> a single image part (no empty text part).
+    assert [pp["type"] for pp in parts] == ["image"]

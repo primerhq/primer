@@ -114,10 +114,16 @@ class ChatChannelRouter:
     async def deliver_message(
         self, *, channel_id: str, thread_external_id: str | None,
         supports_threads: bool, sender_name: str, text: str,
+        media_parts: list | None = None,
     ) -> tuple[Chat, bool]:
         """Route an inbound chat message: resolve-or-create the chat, then
         either resolve its pending gate or append an attributed user_message
-        and flip the chat claimable. Returns (chat, created)."""
+        and flip the chat claimable. Returns (chat, created).
+
+        ``media_parts`` carries already-built media parts (image/document/
+        audio) for the message; the attributed text becomes the leading
+        TextPart and the media parts follow. A media reply to a pending gate
+        degrades to its caption text (gates are text-only)."""
         chat, created = await self.resolve_or_create(
             channel_id=channel_id, thread_external_id=thread_external_id,
             supports_threads=supports_threads)
@@ -127,8 +133,12 @@ class ChatChannelRouter:
                 text=text, sender=sender_name)
             return chat, created
         attributed = f"[{sender_name}] {text}" if sender_name else text
+        parts: list = []
+        if text or not media_parts:
+            parts.append(TextPart(text=attributed))
+        parts.extend(media_parts or [])
         await append_user_message(
-            chat=chat, parts=[TextPart(text=attributed)],
+            chat=chat, parts=parts,
             storage_provider=self._sp)
         latest = await self._sp.get_storage(Chat).get(chat.id)
         if latest is not None:
