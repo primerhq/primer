@@ -80,7 +80,10 @@ async def run_subagent(
         toolset_providers[tid] = await provider_registry.get_toolset(tid)
     non_yielding: list[str] = []
     for scoped in agent.tools:
-        tid, _, bare = scoped.partition("__")
+        # Split on the LAST "__": bare tool ids can't contain it, but toolset
+        # ids can (e.g. operator/MCP-named) - mirror _toolset_ids_from_scoped's
+        # rsplit so the toolset_providers key matches.
+        tid, _, bare = scoped.rpartition("__")
         prov = toolset_providers.get(tid)
         if prov is not None and not prov.is_yielding(bare):
             non_yielding.append(scoped)
