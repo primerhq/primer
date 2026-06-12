@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from primer.model.common import Identifiable
 
@@ -57,6 +57,18 @@ The set mirrors the M6 spec (§8.5). Each row in ``chat_messages``
 carries the kind plus a kind-specific ``payload`` JSON blob — see
 the spec for the per-kind schema.
 """
+
+
+class ChatChannelBinding(BaseModel):
+    """Where a chat emits + how it is listed per channel.
+
+    ``thread_external_id is None`` => single-type channel (the whole channel
+    is the chat). Otherwise the Slack ``thread_ts`` / Discord thread id that
+    identifies the per-chat thread on a multi-type channel.
+    """
+
+    channel_id: str = Field(..., min_length=1)
+    thread_external_id: str | None = Field(default=None)
 
 
 class Chat(Identifiable):
@@ -144,6 +156,14 @@ class Chat(Identifiable):
             "pending_tool_call (which awaits a human reply)."
         ),
     )
+    channel_binding: ChatChannelBinding | None = Field(
+        default=None,
+        description=(
+            "Set when this chat is driven by a channel. Carries the channel id "
+            "and (multi-type only) the thread id. Outbound relay reads this; "
+            "inbound thread->chat lookup matches on it."
+        ),
+    )
 
 
 class ChatMessage(Identifiable):
@@ -179,6 +199,7 @@ class ChatMessage(Identifiable):
 
 __all__ = [
     "Chat",
+    "ChatChannelBinding",
     "ChatMessage",
     "ChatMessageKind",
     "ChatStatus",
