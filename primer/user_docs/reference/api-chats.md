@@ -18,6 +18,7 @@ Chats are user-driven conversations with a single agent, persisted as top-level 
 | Method | Path | Summary |
 |--------|------|---------|
 | POST | `/v1/chats` | Create a new chat bound to an agent |
+| POST | `/v1/chats/{chat_id}/agent` | Switch the chat's current agent |
 | GET | `/v1/chats` | List chats (paginated) |
 | GET | `/v1/chats/{chat_id}` | Get a chat by id |
 | DELETE | `/v1/chats/{chat_id}` | End (or hard-delete) a chat |
@@ -75,6 +76,61 @@ const chat = await r.json();
 | `created_at` | string | ISO-8601 timestamp |
 
 **Errors:** `404` agent not found, `422` missing `agent_id`.
+
+---
+
+## POST /v1/chats/{chat_id}/agent
+
+Switches the chat's current agent mid-conversation. The agent and its system
+prompt are resolved fresh at the start of every turn from `chat.agent_id`, so
+updating that field is the entire switch: the next turn runs under the new
+agent with the full prior conversation as shared context. History is never
+rewritten - only the system prompt and tool set change from the next turn on.
+
+If the chat is paused on a pending gate (an `ask_user` question or a tool
+`_approval`), that gate is auto-rejected before the switch so the append-only
+message log stays valid: a rejected `tool_result` plus a `cancelled` row are
+appended and `pending_tool_call` is cleared. Switching to the agent the chat is
+already bound to is an idempotent no-op that returns the unchanged chat.
+
+**Request body**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `agent_id` | string | yes | Id of the agent to switch this chat to |
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -X POST https://primer.example/v1/chats/chat-abc123/agent \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "agent-researcher"}'
+--- python
+import httpx
+r = httpx.post(
+    "https://primer.example/v1/chats/chat-abc123/agent",
+    headers={"Authorization": f"Bearer {token}"},
+    json={"agent_id": "agent-researcher"},
+)
+r.raise_for_status()
+chat = r.json()
+--- javascript
+const r = await fetch("/v1/chats/chat-abc123/agent", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ agent_id: "agent-researcher" }),
+});
+const chat = await r.json();
+```
+
+**Response: 200** - the updated `Chat` object, with `agent_id` set to the new
+agent. Switching to the same agent returns the chat unchanged (idempotent).
+
+**Errors:** `404` chat not found or target agent not found, `409` the chat has
+ended, `422` missing or empty `agent_id`.
 
 ---
 

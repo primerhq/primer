@@ -67,6 +67,23 @@ the console replays every message that arrived during the gap -- nothing is
 lost. The Send button is re-enabled once the socket is back to "live".
 ```
 
+## Switching the agent
+
+A chat is not locked to the agent it was created with. You can change the agent
+mid-conversation using the agent dropdown in the chat header (or the
+`POST /v1/chats/{id}/agent` endpoint). Pick a different agent and the switch
+takes effect on the next turn.
+
+The conversation history is preserved across the switch. The new agent sees the
+full prior exchange as context; only the system prompt and the available tools
+change from the next turn onward. Nothing in the message log is rewritten or
+replayed under the new agent.
+
+If a tool approval or an `ask_user` question is pending when you switch, it is
+auto-rejected first so the conversation can hand off cleanly. The pending card
+clears and the agent receives a rejection result for that call. Switching to the
+agent the chat is already bound to does nothing.
+
 ## Attach a file
 
 Click the paperclip button to the left of the composer, or drag and drop
