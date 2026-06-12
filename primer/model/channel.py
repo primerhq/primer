@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, ClassVar, Union
+from typing import Annotated, ClassVar, Literal, Union
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
@@ -215,11 +215,48 @@ class WorkspaceChannelAssociation(Identifiable):
     forward_inform: bool = Field(default=True)
 
 
+class ChatChannelAssociation(Identifiable):
+    """Per-channel chat configuration. Binds a channel to the CHAT surface.
+
+    Distinct from :class:`WorkspaceChannelAssociation` (which binds a channel
+    to workspace SESSIONS). The single/multi XOR constraints between the two
+    are enforced in the association routers' ``on_pre_create`` hooks.
+    """
+
+    _id_prefix: ClassVar[str] = "chat-channel-association"
+
+    channel_id: str = Field(..., min_length=1)
+    default_agent_id: str = Field(
+        ..., min_length=1,
+        description="Agent every new chat on this channel starts with.",
+    )
+    enabled: bool = Field(default=True)
+    relay_mode: Literal["final", "all"] = Field(
+        default="final",
+        description=(
+            "Outbound verbosity. 'final' = only the final assistant message "
+            "per turn; 'all' = each assistant message + compact tool-activity "
+            "notes."
+        ),
+    )
+    forward_ask_user: bool = Field(default=True)
+    forward_tool_approval: bool = Field(default=True)
+    forward_inform: bool = Field(default=True)
+    active_chat_id: str | None = Field(
+        default=None,
+        description=(
+            "Single-type channels only: the channel's current 1:1 chat. "
+            "None on multi-type channels (threads carry the binding)."
+        ),
+    )
+
+
 __all__ = [
     "Channel",
     "ChannelProvider",
     "ChannelProviderConfig",
     "ChannelProviderType",
+    "ChatChannelAssociation",
     "DiscordChannelProviderConfig",
     "SlackChannelProviderConfig",
     "TelegramChannelProviderConfig",
