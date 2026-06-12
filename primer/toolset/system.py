@@ -49,6 +49,11 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
+from primer.agent.invoke import (
+    InvocationDepthExceeded,
+    invocation_depth_guard,
+    run_subagent,
+)
 from primer.model.agent import Agent
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
@@ -1443,6 +1448,64 @@ def build_system_toolset(
     # ---- Collection / Document extras --------------------------------
     registry.update(_collection_extras(storage_provider=storage_provider))
     registry.update(_document_extras(storage_provider=storage_provider))
+
+    # ---- Dynamic invocation: invoke_agent ----------------------------
+    class _InvokeAgentArgs(BaseModel):
+        agent_id: str = Field(..., min_length=1, description="Agent to run.")
+        prompt: str = Field(
+            ..., min_length=1, description="Input for the subagent."
+        )
+
+    async def _invoke_agent_handler(
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
+        try:
+            args = _InvokeAgentArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        try:
+            with invocation_depth_guard():
+                text = await run_subagent(
+                    agent_id=args.agent_id,
+                    prompt=args.prompt,
+                    storage_provider=storage_provider,
+                    provider_registry=provider_registry,
+                )
+        except InvocationDepthExceeded as exc:
+            return _err(
+                f"invocation depth exceeded: {exc}", error_type="bad-request"
+            )
+        except ValueError as exc:
+            return _err(str(exc), error_type="bad-request")
+        return _ok({"output": text})
+
+    registry["invoke_agent"] = (
+        make_tool(
+            id="invoke_agent",
+            toolset_id=toolset_id,
+            purpose=(
+                "Run another agent once on a prompt and get its text back "
+                "(subagent). Returns ``{output: <text>}``."
+            ),
+            when=(
+                "Use when you want a specialised agent to handle a "
+                "self-contained subtask and return a result; not for handing "
+                "the whole conversation off (use ``switch_to_agent``)."
+            ),
+            args_schema=_InvokeAgentArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={
+                        "agent_id": "agent-researcher",
+                        "prompt": "Summarise the RFC.",
+                    },
+                    returns="``{output: <summary>}``",
+                    note="blocking subagent",
+                ),
+            ],
+        ),
+        _invoke_agent_handler,
+    )
 
     logger.info(
         "system toolset assembled with %d tools (id=%s)",
