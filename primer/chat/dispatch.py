@@ -74,6 +74,68 @@ class ChatDispatchDeps:
     # of provider_registry resolution. Tests pin a fake LLM here.
     fake_llm: Any | None = None
 
+    # Optional chat->channel relay. None in pure-storage tests / unbound chats.
+    chat_channel_dispatcher: Any | None = None
+
+
+async def _relay_final_text(deps: "ChatDispatchDeps", chat_id: str) -> None:
+    """Post the turn's final assistant text to the bound channel (relay_mode
+    'final'). No-op when no dispatcher is wired or the chat is unbound."""
+    if deps.chat_channel_dispatcher is None:
+        return
+    msgs = deps.storage_provider.get_storage(ChatMessage)
+    pred = Predicate(
+        left=FieldRef(name="chat_id"), op=Op.EQ, right=Value(value=chat_id))
+    rows: list[ChatMessage] = []
+    offset = 0
+    while True:
+        page = await msgs.find(
+            pred, OffsetPage(offset=offset, length=200),
+            order_by=[OrderBy(field="seq", direction="asc")])
+        rows.extend(page.items)
+        if len(page.items) < 200:
+            break
+        offset += 200
+    last_done = max(
+        (i for i, r in enumerate(rows) if r.kind == "done"), default=None)
+    if last_done is None:
+        return
+    prev_done = max(
+        (i for i in range(last_done) if rows[i].kind == "done"), default=-1)
+    chunks: list[str] = []
+    for r in rows[prev_done + 1:last_done]:
+        if r.kind == "assistant_token":
+            delta = (r.payload or {}).get("delta")
+            if isinstance(delta, str):
+                chunks.append(delta)
+    text = "".join(chunks).strip()
+    if text:
+        await deps.chat_channel_dispatcher.relay_text(chat_id=chat_id, text=text)
+
+
+async def _forward_chat_gate(deps: "ChatDispatchDeps", chat_id: str) -> None:
+    """Forward a freshly-set pending gate to the bound channel."""
+    if deps.chat_channel_dispatcher is None:
+        return
+    from primer.channel.adapter import PromptEnvelope
+    chat = await deps.storage_provider.get_storage(Chat).get(chat_id)
+    if chat is None or chat.pending_tool_call is None:
+        return
+    pending = chat.pending_tool_call
+    mode = pending.get("mode")
+    kind = "tool_approval" if mode == "approval" else "ask_user"
+    if mode == "approval":
+        original = pending.get("original_call") or {}
+        prompt = f"Approve running `{original.get('name', '?')}`?"
+    else:
+        prompt = "The agent is asking for your input."
+    env = PromptEnvelope(
+        kind=kind, workspace_id="", session_id=chat_id,
+        tool_call_id=pending.get("tool_call_id", ""), prompt=prompt,
+        response_schema=pending.get("response_schema"), choices=None,
+        timeout_at_iso=None)
+    await deps.chat_channel_dispatcher.dispatch_gate(chat_id=chat_id, envelope=env)
+
 
 async def run_one_chat_turn(
     deps: ChatDispatchDeps,
@@ -182,6 +244,9 @@ async def run_one_chat_turn(
                         if cleared is not None and cleared.cancel_requested_at is not None:
                             cleared.cancel_requested_at = None
                             await chat_storage.update(cleared)
+                    # Resumed continuation reached a terminal row: relay the
+                    # turn's final assistant text to the bound channel.
+                    await _relay_final_text(deps, chat_id)
                 except YieldToWorker as exc:
                     from primer.chat.executor import _is_switch_tool
                     if _is_switch_tool(exc):
@@ -189,6 +254,7 @@ async def run_one_chat_turn(
                             runner, chat, exc, deps,
                         )
                     await runner.soft_yield(chat, exc)
+                    await _forward_chat_gate(deps, chat_id)
                     return "idle"
                 except Exception:
                     logger.exception(
@@ -221,11 +287,15 @@ async def run_one_chat_turn(
                     if refreshed is not None and refreshed.cancel_requested_at is not None:
                         refreshed.cancel_requested_at = None
                         await chat_storage.update(refreshed)
+                # Turn reached a terminal row: relay its final assistant
+                # text to the bound channel (no-op when unbound).
+                await _relay_final_text(deps, chat_id)
             except YieldToWorker as exc:
                 from primer.chat.executor import _is_switch_tool
                 if _is_switch_tool(exc):
                     return await _apply_switch_handoff(runner, chat, exc, deps)
                 await runner.soft_yield(chat, exc)
+                await _forward_chat_gate(deps, chat_id)
                 return "idle"
             except Exception:
                 logger.exception(

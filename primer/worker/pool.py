@@ -952,11 +952,20 @@ class WorkerPool:
             "turn_status": "running",
         }))
 
+        chat_channel_dispatcher = None
+        if self._channel_dispatcher is not None:
+            from primer.channel.chat_dispatcher import ChatChannelDispatcher
+            chat_channel_dispatcher = ChatChannelDispatcher(
+                storage_provider=self._storage,
+                registry=self._channel_dispatcher._registry,
+            )
+
         deps = ChatDispatchDeps(
             storage_provider=self._storage,
             provider_registry=self._provider_registry,
             event_bus=self._event_bus,
             chat_tick_router=self._chat_tick_router,
+            chat_channel_dispatcher=chat_channel_dispatcher,
         )
         # run_one_chat_turn returns the terminal turn_status DISPOSITION;
         # it no longer writes turn_status itself. We map it to the
