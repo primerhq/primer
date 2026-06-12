@@ -56,7 +56,14 @@ class ChatChannelDispatcher:
         try:
             post_chat = getattr(adapter, "post_chat_message", None)
             if post_chat is not None:
-                await post_chat(text)
+                thread_ts = chat.channel_binding.thread_external_id
+                try:
+                    if thread_ts is not None:
+                        await post_chat(text, thread_ts=thread_ts)
+                    else:
+                        await post_chat(text)
+                except TypeError:
+                    await post_chat(text)
             else:
                 env = PromptEnvelope(
                     kind="inform", workspace_id="",
