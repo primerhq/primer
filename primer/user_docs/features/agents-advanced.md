@@ -78,6 +78,45 @@ Do not set a high retry count on tools that perform writes. A network timeout th
 
 Temperature (Advanced tab) controls model output randomness. Leave it blank to use the provider's default. Set it to a low value (0.1-0.3) for deterministic extraction or structured output tasks. Use higher values (0.7-1.0) for creative or open-ended generation.
 
+## Calling other agents and graphs
+
+An agent can invoke other agents and graphs as part of its own turn. Three tools cover the patterns; bind them from the Tools tab like any other tool.
+
+### invoke_agent (run a subagent)
+
+`system__invoke_agent` runs another agent once on a prompt and returns its text. The call is blocking and stateless: the subagent sees its own system prompt plus the prompt you pass, NOT the caller's conversation, and nothing is persisted as a separate chat. Use it to delegate a self-contained subtask to a specialist and fold the result back into your own reasoning.
+
+| Argument | Meaning |
+|---|---|
+| `agent_id` | The agent to run |
+| `prompt` | The input for the subagent |
+
+The subagent's tool surface excludes yielding tools (ask_user, approval gates, invoke_graph): a subagent runs inline and cannot pause for a human. It returns `{output: <text>}`. Nested invocations are capped by an invocation-depth limit (default 8, set `PRIMER_MAX_INVOCATION_DEPTH`) so a cycle of agents calling each other cannot recurse forever; exceeding it returns a tool error rather than crashing the turn.
+
+`invoke_agent` works from chats, sessions, and graphs because it does not depend on the surface.
+
+### switch_to_agent (hand off the chat)
+
+`system__switch_to_agent` hands the CURRENT chat off to another agent and ends the current turn. Unlike `invoke_agent`, it does not return a value to the caller: the chat's agent changes and the new agent runs the handoff prompt as the next turn, with the full prior conversation as shared context.
+
+| Argument | Meaning |
+|---|---|
+| `agent_id` | The agent to hand off to |
+| `prompt` | The instruction the new agent runs next |
+
+This is the tool-driven equivalent of the agent dropdown in the chat header (see [chats](chats.md) and the [switch endpoint](../reference/api-chats.md)). It is chat-only: a workspace session has no single conversation to retarget, so the tool returns an error there. Use `switch_to_agent` to route the rest of a conversation to a better-suited agent; use `invoke_agent` for a one-off result you want to keep reasoning from.
+
+### invoke_graph (run a graph in the session)
+
+`workspaces__invoke_graph` runs another graph inside the current workspace session and returns its output. The invoked graph's state nests under the session's state tree (a separate, git-traceable subtree), so its turns and files are captured alongside the session.
+
+| Argument | Meaning |
+|---|---|
+| `graph_id` | The graph to run |
+| `input` | The graph input |
+
+`invoke_graph` is a workspace-session tool: it requires a session and is not offered in plain chats. It supports full human-in-the-loop: if the invoked graph hits an approval node or an agent that asks the user, the session parks exactly as a top-level graph would, and resumes from the invoked graph's checkpoint once the human replies, returning the graph's output when it finishes. The same invocation-depth limit applies.
+
 ## Automate this
 
 ```ref:reference/api-agents
