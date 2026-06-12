@@ -74,7 +74,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
 
     async def _on_message(update, context):
         msg = update.message
-        if msg is None or not msg.reply_to_message:
+        if msg is None:
             return
         chat_id = str(msg.chat.id)
         entry = TELEGRAM_CONNECTIONS.entry(provider_id)
@@ -82,6 +82,19 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             return
         adapter = entry.adapters_by_chat_id.get(chat_id)
         if adapter is None:
+            return
+        # Chat-surface dispatch: a non-reply message on a chat-enabled adapter
+        # is a chat turn or a /command. Reply messages (and adapters without a
+        # storage_provider) fall through to the session gate-reply path below.
+        if not msg.reply_to_message and getattr(adapter, "_sp", None) is not None:
+            notice = await adapter.handle_inbound_chat_text(
+                sender_name=msg.from_user.full_name if msg.from_user else "user",
+                text=msg.text or "",
+            )
+            if notice:
+                await context.bot.send_message(chat_id=msg.chat.id, text=notice)
+            return
+        if not msg.reply_to_message:
             return
         target = adapter.resolve_reply_target(msg.reply_to_message.message_id)
         if target is None:
@@ -100,7 +113,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             )
 
     app.add_handler(CallbackQueryHandler(_on_callback))
-    app.add_handler(MessageHandler(filters.REPLY & ~filters.COMMAND, _on_message))
+    app.add_handler(MessageHandler(filters.TEXT, _on_message))
 
 
 async def _telegram_factory(

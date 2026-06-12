@@ -49,10 +49,16 @@ class TelegramChannelAdapter(ChannelAdapter):
 
     def __init__(
         self, *, provider: ChannelProvider, channel: Channel, inbox,
+        storage_provider=None, event_bus=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
         self._inbox = inbox
+        # Chat-surface wiring. Optional so existing callers (session/workspace
+        # channels) keep working; the chat dispatch path stays inactive when
+        # _sp is None.
+        self._sp = storage_provider
+        self._bus = event_bus
         self._app: Any | None = None
         # tag -> ids, for the Approve/Reject button callbacks. Bounded so a
         # long-lived bot does not grow these caches without limit (one entry
@@ -186,6 +192,61 @@ class TelegramChannelAdapter(ChannelAdapter):
                 "telegram_user_id": telegram_user_id or 0,
             },
         ))
+
+    async def handle_inbound_chat_text(
+        self, *, sender_name: str, text: str,
+    ) -> str | None:
+        """Dispatch a single-type inbound message: command or chat turn.
+        Returns a notice string to post back (commands) or None (routed to a
+        turn)."""
+        if self._sp is None:
+            return None
+        from primer.channel.chat_inbox import ChatResponseInbox
+        from primer.channel.chat_router import ChatChannelRouter
+        from primer.channel.commands import CommandExecutor, parse_command
+        parsed = parse_command(text)
+        if parsed is not None:
+            ex = CommandExecutor(storage_provider=self._sp)
+            if parsed.verb == "new":
+                res = await ex.new_single_chat(channel_id=self._channel.id)
+                return res.text
+            if parsed.verb == "list":
+                res = await ex.list_chats(channel_id=self._channel.id)
+                if not res.items:
+                    return "No chats yet."
+                return "\n".join(
+                    f"- {it['title']} ({it['agent_id']}) {it['chat_id']}"
+                    for it in res.items)
+            if parsed.verb == "switch" and parsed.arg:
+                res = await ex.switch_active_chat(
+                    channel_id=self._channel.id, chat_id=parsed.arg)
+                return res.text
+            if parsed.verb == "agent" and parsed.arg:
+                router = ChatChannelRouter(storage_provider=self._sp)
+                chat, _ = await router.resolve_or_create(
+                    channel_id=self._channel.id, thread_external_id=None,
+                    supports_threads=False)
+                res = await ex.set_agent(chat_id=chat.id, agent_id=parsed.arg)
+                return res.text
+            if parsed.verb == "agent":
+                return "Reply with /agent <agent-id> to switch."
+            return None
+        gate_inbox = ChatResponseInbox(
+            storage_provider=self._sp, event_bus=self._bus)
+        router = ChatChannelRouter(
+            storage_provider=self._sp, event_bus=self._bus, gate_inbox=gate_inbox)
+        await router.deliver_message(
+            channel_id=self._channel.id, thread_external_id=None,
+            supports_threads=False, sender_name=sender_name, text=text)
+        return None
+
+    async def post_chat_message(self, text: str) -> dict[str, Any]:
+        """Outbound chat relay: send a plain message to the channel."""
+        if self._app is None:
+            raise ProviderError("TelegramChannelAdapter used before initialize()")
+        msg = await self._app.bot.send_message(
+            chat_id=self._channel.external_id, text=text)
+        return {"message_id": getattr(msg, "message_id", 0)}
 
 
 __all__ = ["TelegramChannelAdapter"]
