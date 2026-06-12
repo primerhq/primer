@@ -10,9 +10,12 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from primer.chat.enqueue import append_user_message
+from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
 from primer.model.agent import Agent
 from primer.model.channel import ChatChannelAssociation
+from primer.model.chat import TextPart
 from primer.model.chats import Chat, ChatChannelBinding
 from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage
@@ -22,8 +25,13 @@ from primer.storage.q import Q
 class ChatChannelRouter:
     """Maps inbound channel messages to their bound Chat."""
 
-    def __init__(self, *, storage_provider: StorageProvider) -> None:
+    def __init__(
+        self, *, storage_provider: StorageProvider,
+        event_bus: "EventBus | None" = None, gate_inbox=None,
+    ) -> None:
         self._sp = storage_provider
+        self._bus = event_bus
+        self._gate_inbox = gate_inbox
 
     async def _association(self, channel_id: str) -> ChatChannelAssociation:
         page = await self._sp.get_storage(ChatChannelAssociation).find(
@@ -100,6 +108,33 @@ class ChatChannelRouter:
         assoc.active_chat_id = chat.id
         await self._sp.get_storage(ChatChannelAssociation).update(assoc)
         return chat, True
+
+    async def deliver_message(
+        self, *, channel_id: str, thread_external_id: str | None,
+        supports_threads: bool, sender_name: str, text: str,
+    ) -> tuple[Chat, bool]:
+        """Route an inbound chat message: resolve-or-create the chat, then
+        either resolve its pending gate or append an attributed user_message
+        and flip the chat claimable. Returns (chat, created)."""
+        chat, created = await self.resolve_or_create(
+            channel_id=channel_id, thread_external_id=thread_external_id,
+            supports_threads=supports_threads)
+        if chat.pending_tool_call is not None and self._gate_inbox is not None:
+            await self._gate_inbox.handle_chat_response(
+                chat_id=chat.id, pending=chat.pending_tool_call,
+                text=text, sender=sender_name)
+            return chat, created
+        attributed = f"[{sender_name}] {text}" if sender_name else text
+        await append_user_message(
+            chat=chat, parts=[TextPart(text=attributed)],
+            storage_provider=self._sp)
+        latest = await self._sp.get_storage(Chat).get(chat.id)
+        if latest is not None:
+            latest.turn_status = "claimable"
+            await self._sp.get_storage(Chat).update(latest)
+        if self._bus is not None:
+            await self._bus.publish("chat-claimable", {"chat_id": chat.id})
+        return chat, created
 
 
 __all__ = ["ChatChannelRouter"]
