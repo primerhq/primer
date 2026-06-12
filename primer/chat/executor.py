@@ -1164,9 +1164,10 @@ class ChatTurnRunner:
     ) -> ChatMessage:
         """Persist one chat_message row + bump the chat's last_seq.
 
-        Refreshes a small set of WS-mutated fields from storage before
-        writing the chat row back so concurrent operator state (an
-        ``interrupt`` setting ``cancel_requested_at``) survives.
+        Writes the chat row via :meth:`_persist_chat`, which refreshes the
+        externally-mutable fields from storage first (``cancel_requested_at``
+        from an ``interrupt``, ``agent_id`` from a mid-chat agent switch) so a
+        concurrent change isn't clobbered by this turn's stale in-memory copy.
         """
         next_seq = chat.last_seq + 1
         row = ChatMessage(
