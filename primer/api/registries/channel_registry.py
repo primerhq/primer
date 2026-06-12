@@ -113,6 +113,41 @@ class ChannelRegistry:
             result.append((adapter, assoc))
         return result
 
+    async def warm_chat_channels(self) -> int:
+        """Eagerly start the adapter for every enabled ChatChannelAssociation
+        so chat-driven bots come online (poll / connect) at boot.
+
+        Session channels are warmed by the first outbound park; a chat is
+        user-initiated and has no other start trigger, so without this the bot
+        would never begin receiving messages. Per-adapter failures are logged,
+        not raised. Returns the count of adapters started. No-op when no
+        storage_provider is wired.
+        """
+        if self._storage_provider is None:
+            return 0
+        from primer.model.channel import ChatChannelAssociation
+
+        page = await self._storage_provider.get_storage(
+            ChatChannelAssociation,
+        ).find(
+            Predicate(
+                left=FieldRef(name="enabled"), op=Op.EQ,
+                right=Value(value=True),
+            ),
+            OffsetPage(offset=0, length=500),
+        )
+        started = 0
+        for assoc in page.items:
+            try:
+                await self.get_adapter(assoc.channel_id)
+                started += 1
+            except Exception as exc:
+                logger.warning(
+                    "warm_chat_channels: failed to start %s: %s",
+                    assoc.channel_id, exc,
+                )
+        return started
+
     async def invalidate(self, *, channel_id: str | None = None) -> None:
         async with self._lock:
             if channel_id is None:
