@@ -168,7 +168,7 @@ async def test_chat_switch_to_agent_hands_off_and_target_replies(
         tools=["system__switch_to_agent"],
         rules=[
             Rule(
-                emit_tool="switch_to_agent",
+                emit_tool="system__switch_to_agent",
                 emit_args={
                     "agent_id": agent_b["agent_id"],
                     "prompt": "you take over now",

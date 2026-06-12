@@ -173,7 +173,7 @@ async def test_chat_invoke_agent_surfaces_subagent_output(
         rules=[
             Rule(when_tool_result=True, emit_text=done_marker),
             Rule(
-                emit_tool="invoke_agent",
+                emit_tool="system__invoke_agent",
                 emit_args={
                     "agent_id": agent_b["agent_id"],
                     "prompt": "summarise",

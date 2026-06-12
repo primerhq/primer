@@ -107,7 +107,7 @@ async def test_session_invoke_graph_runs_child_graph_to_completion(
         rules=[
             Rule(when_tool_result=True, emit_text=done_marker),
             Rule(
-                emit_tool="invoke_graph",
+                emit_tool="workspaces__invoke_graph",
                 emit_args={"graph_id": gid, "input": "go"},
             ),
         ],
@@ -150,6 +150,19 @@ async def test_session_invoke_graph_runs_child_graph_to_completion(
         # continuation that emitted the final reply).
         assert final.get("turn_no", 0) > 0, (
             f"invoke_graph session ran zero turns: {final!r}"
+        )
+        # Strong, non-vacuous signal: invoke_graph nests the invoked graph's
+        # state under the session as a ``<gsid>__invoke_<tcid>`` subtree on the
+        # local workspace root. A graceful tool error (unresolved services,
+        # missing graph) returns a tool_result WITHOUT running a child graph,
+        # so this subtree would be absent. Its presence proves a real child
+        # WorkspaceGraphExecutor ran namespaced under the session.
+        invoke_subtrees = [
+            p for p in tmp_path.rglob("*__invoke_*") if p.is_dir()
+        ]
+        assert invoke_subtrees, (
+            f"no '__invoke_' child-graph state subtree found under {tmp_path}; "
+            f"invoke_graph did not run a namespaced child graph"
         )
     finally:
         if session_id is not None and workspace_id is not None:
