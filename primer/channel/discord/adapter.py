@@ -184,6 +184,46 @@ class DiscordChannelAdapter(ChannelAdapter):
             platform_metadata={"discord_user_id": discord_user_id or 0},
         ))
 
+    async def _resolve_chat_thread(self, thread_ts: str | None) -> Any:
+        """Resolve a discord.py thread/channel object from a thread anchor id.
+
+        ``thread_ts`` is the string Discord thread (or message) id stored in
+        ``ChatChannelBinding.thread_external_id``.  We try the client cache
+        first, then fall back to a REST fetch, mirroring the lookup path in
+        ``_session_thread``.  If ``thread_ts`` is None we fall back to the
+        parent channel itself.
+        """
+        if self._client is None:
+            raise ProviderError("DiscordChannelAdapter used before initialize()")
+        if thread_ts is not None:
+            tid = int(thread_ts)
+            thread = self._client.get_channel(tid)
+            if thread is None:
+                try:
+                    thread = await self._client.fetch_channel(tid)
+                except Exception:
+                    thread = None
+            if thread is not None:
+                return thread
+        # Fall back to the parent channel
+        parent_id = int(self._channel.external_id)
+        channel = self._client.get_channel(parent_id)
+        if channel is None:
+            channel = await self._client.fetch_channel(parent_id)
+        if channel is None:
+            raise ProviderError(
+                f"discord channel {self._channel.external_id!r} not reachable"
+            )
+        return channel
+
+    async def post_chat_message(
+        self, text: str, *, thread_ts: str | None = None
+    ) -> dict[str, Any]:
+        """Full-payload outbound relay into the chat's thread."""
+        target = await self._resolve_chat_thread(thread_ts)
+        await target.send(content=text)
+        return {"thread_id": thread_ts}
+
     async def handle_inbound_chat_message(
         self, *, thread_id: str | None, message_id: str,
         sender_name: str, text: str,
