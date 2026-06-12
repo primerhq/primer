@@ -18,8 +18,8 @@ class _TextDeltaLike:
 
     ``_stream_subgraph_node`` collects subgraph text via
     ``getattr(sub_event, "type", None) == "text-delta"`` then
-    ``getattr(sub_event, "text", None)`` — duck-typed, never an
-    isinstance check — so a plain object with those two attributes is a
+    ``getattr(sub_event, "text", None)`` - duck-typed, never an
+    isinstance check - so a plain object with those two attributes is a
     faithful stand-in for that code path.
     """
 

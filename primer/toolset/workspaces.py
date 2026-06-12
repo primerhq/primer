@@ -544,13 +544,13 @@ async def _watch_files_handler(
 
 
 # ===========================================================================
-# invoke_graph — yielding tool (dynamic invocation). Runs a target graph
+# invoke_graph - yielding tool (dynamic invocation). Runs a target graph
 # inside the current workspace session, namespaced under the session's
 # state (a child WorkspaceGraphExecutor), and returns its output text.
 # Declared yielding (``-> ToolCallResult | Yielded``) so the provider
 # classifies it as a session-only tool and excludes it from MCP; the
 # happy (non-parking) path returns a ToolCallResult. Parking/resume is a
-# later task — this handler does not yet surface a Yielded.
+# later task - this handler does not yet surface a Yielded.
 # ===========================================================================
 
 
@@ -1602,7 +1602,7 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    # invoke_graph — yielding tool (dynamic invocation). Runs another
+    # invoke_graph - yielding tool (dynamic invocation). Runs another
     # graph inside this session, namespaced under the session's state.
     name, entry = _tool(
         "invoke_graph",
