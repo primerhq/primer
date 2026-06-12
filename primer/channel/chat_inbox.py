@@ -26,9 +26,11 @@ class ChatResponseInbox:
 
     def __init__(
         self, *, storage_provider: StorageProvider, event_bus: EventBus,
+        claim_engine=None,
     ) -> None:
         self._sp = storage_provider
         self._bus = event_bus
+        self._claim_engine = claim_engine
 
     async def _append_and_claim(self, *, chat_id: str, text: str) -> None:
         chat = await self._sp.get_storage(Chat).get(chat_id)
@@ -42,6 +44,9 @@ class ChatResponseInbox:
             latest.turn_status = "claimable"
             await self._sp.get_storage(Chat).update(latest)
         await self._bus.publish("chat-claimable", {"chat_id": chat_id})
+        if self._claim_engine is not None:
+            from primer.int.claim import ClaimKind
+            await self._claim_engine.upsert(ClaimKind.CHAT, chat_id, priority=10)
 
     async def handle_chat_response(
         self, *, chat_id: str, pending: dict, text: str, sender: str,

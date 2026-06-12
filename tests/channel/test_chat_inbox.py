@@ -39,6 +39,28 @@ async def _user_rows(p):
     return [r for r in rows if r.kind == "user_message"]
 
 
+class _RecClaim:
+    def __init__(self):
+        self.calls = []
+
+    async def upsert(self, kind, entity_id, *, priority=0):
+        self.calls.append((kind, entity_id, priority))
+
+
+@pytest.mark.asyncio
+async def test_append_and_claim_wakes_worker_via_claim_engine(tmp_path: Path):
+    from primer.int.claim import ClaimKind
+
+    p = await _provider_with_pending(tmp_path, mode="ask_user")
+    claim = _RecClaim()
+    inbox = ChatResponseInbox(
+        storage_provider=p, event_bus=InMemoryEventBus(), claim_engine=claim)
+    await inbox.handle_chat_response(
+        chat_id="chat-1", pending={"tool_call_id": "tc-1", "mode": "ask_user"},
+        text="ship it", sender="Alice")
+    assert claim.calls == [(ClaimKind.CHAT, "chat-1", 10)]
+
+
 @pytest.mark.asyncio
 async def test_ask_user_reply_appended_and_claimable(tmp_path: Path):
     p = await _provider_with_pending(tmp_path, mode="ask_user")

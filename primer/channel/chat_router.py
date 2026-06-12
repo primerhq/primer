@@ -28,10 +28,12 @@ class ChatChannelRouter:
     def __init__(
         self, *, storage_provider: StorageProvider,
         event_bus: "EventBus | None" = None, gate_inbox=None,
+        claim_engine=None,
     ) -> None:
         self._sp = storage_provider
         self._bus = event_bus
         self._gate_inbox = gate_inbox
+        self._claim_engine = claim_engine
 
     async def _association(self, channel_id: str) -> ChatChannelAssociation:
         page = await self._sp.get_storage(ChatChannelAssociation).find(
@@ -134,6 +136,9 @@ class ChatChannelRouter:
             await self._sp.get_storage(Chat).update(latest)
         if self._bus is not None:
             await self._bus.publish("chat-claimable", {"chat_id": chat.id})
+        if self._claim_engine is not None:
+            from primer.int.claim import ClaimKind
+            await self._claim_engine.upsert(ClaimKind.CHAT, chat.id, priority=10)
         return chat, created
 
 

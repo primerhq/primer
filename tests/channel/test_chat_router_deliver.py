@@ -25,6 +25,14 @@ class _RecordingGateInbox:
         self.calls.append((chat_id, pending, text, sender))
 
 
+class _RecClaim:
+    def __init__(self):
+        self.calls = []
+
+    async def upsert(self, kind, entity_id, *, priority=0):
+        self.calls.append((kind, entity_id, priority))
+
+
 async def _provider(tmp_path):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
@@ -56,6 +64,21 @@ async def test_deliver_appends_attributed_and_flips_claimable(tmp_path: Path):
     assert ums[-1].payload["content"] == "[Alice] deploy staging"
     refreshed = await p.get_storage(Chat).get(chat.id)
     assert refreshed.turn_status == "claimable"
+
+
+@pytest.mark.asyncio
+async def test_deliver_wakes_worker_via_claim_engine(tmp_path: Path):
+    from primer.int.claim import ClaimKind
+
+    p = await _provider(tmp_path)
+    claim = _RecClaim()
+    r = ChatChannelRouter(storage_provider=p, event_bus=InMemoryEventBus(),
+                          gate_inbox=_RecordingGateInbox(), claim_engine=claim)
+    chat, _ = await r.deliver_message(
+        channel_id="ch-1", thread_external_id=None, supports_threads=False,
+        sender_name="Alice", text="deploy staging")
+
+    assert claim.calls == [(ClaimKind.CHAT, chat.id, 10)]
 
 
 @pytest.mark.asyncio

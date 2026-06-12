@@ -44,6 +44,7 @@ class ChannelRegistry:
         inbox: "ChannelInbox",
         storage_provider: object | None = None,
         event_bus: object | None = None,
+        claim_engine: object | None = None,
     ) -> None:
         self._channels = channel_storage
         self._providers = channel_provider_storage
@@ -51,8 +52,13 @@ class ChannelRegistry:
         self._inbox = inbox
         self._storage_provider = storage_provider
         self._event_bus = event_bus
+        self._claim_engine = claim_engine
         self._adapters: dict[str, ChannelAdapter] = {}
         self._lock = asyncio.Lock()
+
+    def set_claim_engine(self, claim_engine: object | None) -> None:
+        """Late-bind the claim engine (built after this registry at boot)."""
+        self._claim_engine = claim_engine
 
     async def get_adapter(self, channel_id: str) -> ChannelAdapter:
         cached = self._adapters.get(channel_id)
@@ -76,6 +82,7 @@ class ChannelRegistry:
                 provider, channel, self._inbox,
                 storage_provider=self._storage_provider,
                 event_bus=self._event_bus,
+                claim_engine=self._claim_engine,
             )
             await adapter.initialize()
             self._adapters[channel_id] = adapter

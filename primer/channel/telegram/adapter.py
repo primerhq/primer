@@ -50,7 +50,7 @@ class TelegramChannelAdapter(ChannelAdapter):
 
     def __init__(
         self, *, provider: ChannelProvider, channel: Channel, inbox,
-        storage_provider=None, event_bus=None,
+        storage_provider=None, event_bus=None, claim_engine=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
@@ -60,6 +60,7 @@ class TelegramChannelAdapter(ChannelAdapter):
         # _sp is None.
         self._sp = storage_provider
         self._bus = event_bus
+        self._claim_engine = claim_engine
         self._app: Any | None = None
         # tag -> ids, for the Approve/Reject button callbacks. Bounded so a
         # long-lived bot does not grow these caches without limit (one entry
@@ -248,9 +249,11 @@ class TelegramChannelAdapter(ChannelAdapter):
                 return "Reply with /agent <agent-id> to switch."
             return None
         gate_inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus)
+            storage_provider=self._sp, event_bus=self._bus,
+            claim_engine=self._claim_engine)
         router = ChatChannelRouter(
-            storage_provider=self._sp, event_bus=self._bus, gate_inbox=gate_inbox)
+            storage_provider=self._sp, event_bus=self._bus, gate_inbox=gate_inbox,
+            claim_engine=self._claim_engine)
         await router.deliver_message(
             channel_id=self._channel.id, thread_external_id=None,
             supports_threads=False, sender_name=sender_name, text=text)
@@ -287,7 +290,8 @@ class TelegramChannelAdapter(ChannelAdapter):
             return
         decision = "approved" if verb == "chat_ok" else "rejected"
         inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus)
+            storage_provider=self._sp, event_bus=self._bus,
+            claim_engine=self._claim_engine)
         await inbox.handle_chat_decision(
             chat_id=chat_id, pending=chat.pending_tool_call,
             decision=decision, reason=None, sender="telegram")

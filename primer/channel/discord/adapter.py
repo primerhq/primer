@@ -41,7 +41,7 @@ class DiscordChannelAdapter(ChannelAdapter):
 
     def __init__(
         self, *, provider: ChannelProvider, channel: Channel, inbox,
-        storage_provider=None, event_bus=None,
+        storage_provider=None, event_bus=None, claim_engine=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
@@ -51,6 +51,7 @@ class DiscordChannelAdapter(ChannelAdapter):
         # _sp is None.
         self._sp = storage_provider
         self._bus = event_bus
+        self._claim_engine = claim_engine
         self._client: Any | None = None
         # session_id → discord Thread id (one conversation thread per session)
         self._session_threads: dict[str, int] = {}
@@ -235,9 +236,11 @@ class DiscordChannelAdapter(ChannelAdapter):
         from primer.channel.chat_router import ChatChannelRouter
         thread_external_id = thread_id or message_id
         gate_inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus)
+            storage_provider=self._sp, event_bus=self._bus,
+            claim_engine=self._claim_engine)
         router = ChatChannelRouter(
-            storage_provider=self._sp, event_bus=self._bus, gate_inbox=gate_inbox)
+            storage_provider=self._sp, event_bus=self._bus, gate_inbox=gate_inbox,
+            claim_engine=self._claim_engine)
         chat, _ = await router.deliver_message(
             channel_id=self._channel.id, thread_external_id=thread_external_id,
             supports_threads=True, sender_name=sender_name, text=text)

@@ -299,22 +299,9 @@ def _make_lifespan(config: AppConfig):
         app.state.channel_inbox = channel_inbox
         app.state.channel_registry = channel_registry
         app.state.channel_dispatcher = channel_dispatcher
-        # Bring chat-driven bots online: session channels start on the first
-        # outbound park, but a chat is user-initiated and has no other start
-        # trigger, so warm the enabled chat-channel adapters. Run it in the
-        # BACKGROUND so server readiness is not gated on bot gateway connects
-        # (a Discord gateway can take seconds to reach READY).
-        async def _warm_chat_channels() -> None:
-            try:
-                warmed = await channel_registry.warm_chat_channels()
-                if warmed:
-                    logger.info("warmed %d chat-channel adapter(s)", warmed)
-            except Exception:
-                logger.exception("warm_chat_channels failed during startup")
-
-        app.state.chat_channel_warm_task = asyncio.create_task(
-            _warm_chat_channels(),
-        )
+        # The chat-channel warm task is deferred until AFTER the claim engine is
+        # built (~app.state.claim_engine below) so warmed adapters receive it and
+        # can wake the worker on inbound chat messages.
         workspace_registry = WorkspaceRegistry(storage_provider)
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
@@ -698,6 +685,28 @@ def _make_lifespan(config: AppConfig):
                 app.state.coordinator_sweeper = coordinator_sweeper
         app.state.event_bus = event_bus
         app.state.claim_engine = claim_engine
+
+        # Now that the claim engine exists, hand it to the channel registry so
+        # warmed (and lazily built) adapters can wake the worker via
+        # claim_engine.upsert on inbound chat messages. Then bring chat-driven
+        # bots online: session channels start on the first outbound park, but a
+        # chat is user-initiated and has no other start trigger, so warm the
+        # enabled chat-channel adapters. Run it in the BACKGROUND so server
+        # readiness is not gated on bot gateway connects (a Discord gateway can
+        # take seconds to reach READY).
+        channel_registry.set_claim_engine(claim_engine)
+
+        async def _warm_chat_channels() -> None:
+            try:
+                warmed = await channel_registry.warm_chat_channels()
+                if warmed:
+                    logger.info("warmed %d chat-channel adapter(s)", warmed)
+            except Exception:
+                logger.exception("warm_chat_channels failed during startup")
+
+        app.state.chat_channel_warm_task = asyncio.create_task(
+            _warm_chat_channels(),
+        )
 
         # Build the always-on _workspaces toolset now that the scheduler,
         # claim engine, and event bus exist (any may be None when no
