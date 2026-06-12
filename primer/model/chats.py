@@ -135,6 +135,15 @@ class Chat(Identifiable):
             "NOT park; this is purely in-conversation state."
         ),
     )
+    pending_handoff: str | None = Field(
+        default=None,
+        description=(
+            "Set by switch_to_agent: the prompt the NEXT turn runs with the "
+            "newly-switched agent. The dispatch loop injects it as a "
+            "user_message + flips claimable, then clears it. Distinct from "
+            "pending_tool_call (which awaits a human reply)."
+        ),
+    )
 
 
 class ChatMessage(Identifiable):

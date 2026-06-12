@@ -191,6 +191,21 @@ async def run_one_chat_turn(
                         refreshed.cancel_requested_at = None
                         await chat_storage.update(refreshed)
             except YieldToWorker as exc:
+                from primer.chat.executor import _is_switch_tool
+                if _is_switch_tool(exc):
+                    await runner.handle_switch(chat, exc)
+                    fresh = await chat_storage.get(chat.id)
+                    if fresh is not None and fresh.pending_handoff:
+                        from primer.chat.enqueue import append_user_message
+                        from primer.model.chat import TextPart
+                        await append_user_message(
+                            chat=fresh,
+                            parts=[TextPart(text=fresh.pending_handoff)],
+                            storage_provider=deps.storage_provider,
+                        )
+                        fresh.pending_handoff = None
+                        await chat_storage.update(fresh)
+                    return "claimable"  # re-serve: new claim runs the new agent
                 await runner.soft_yield(chat, exc)
                 return "idle"
             except Exception:

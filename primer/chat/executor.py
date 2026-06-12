@@ -94,6 +94,11 @@ def _is_soft_yield_tool(exc: YieldToWorker) -> bool:
     return exc.yielded.tool_name in _SOFT_YIELD_TOOLS
 
 
+def _is_switch_tool(exc: YieldToWorker) -> bool:
+    """True when the yield is a switch_to_agent handoff."""
+    return exc.yielded.tool_name == "switch_to_agent"
+
+
 # Substrings that indicate the upstream model/provider refused our
 # request because of a multimodal content part (image / document /
 # audio / video) rather than a generic protocol failure. LM Studio +
@@ -704,6 +709,16 @@ class ChatTurnRunner:
         chat.pending_tool_call = pending
         await self._persist_chat(chat)
 
+    async def handle_switch(self, chat: Chat, exc: YieldToWorker) -> None:
+        """End the turn and stage a handoff to another agent. The dispatch loop
+        injects ``pending_handoff`` as the next turn (run by the new agent)."""
+        meta = exc.yielded.resume_metadata or {}
+        chat.agent_id = meta.get("agent_id") or chat.agent_id
+        chat.pending_handoff = meta.get("prompt") or ""
+        # Authoritative write of THIS switch (NOT via _persist_chat, which would
+        # re-read the old agent_id from storage and clobber our own change).
+        await self._chats.update(chat)
+
     async def abandon_pending(self, chat: Chat, pending: dict) -> None:
         """Abandon a pending (awaiting-input) tool call on cancel. Delegates to
         the shared helper so the switch endpoint can reuse the same logic."""
@@ -1178,6 +1193,7 @@ class ChatTurnRunner:
         if latest is not None:
             chat.cancel_requested_at = latest.cancel_requested_at
             chat.agent_id = latest.agent_id
+            chat.pending_handoff = latest.pending_handoff
         await self._chats.update(chat)
 
     async def _sanitize_unsupported_attachments(self, chat: Chat) -> int:
