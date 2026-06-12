@@ -144,6 +144,74 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             except Exception:
                 logger.exception("slack: chat.update after reject failed")
 
+    async def _run_slash(command, body, client) -> None:
+        """Shared body for the /new, /list, /agent slash commands.
+
+        Slack delivers slash commands at the channel level (no thread_ts in
+        the payload), so chat targeting falls back to the channel. Posts a
+        plain-text rendering of the CommandResult; a Block Kit picker can
+        replace the agent list once Task 20's blocks module exists.
+        """
+        from primer.channel.slack.commands import handle_slash_command
+        channel_id = body.get("channel_id")
+        entry = SLACK_CONNECTIONS.entry(provider_id)
+        adapter = (
+            entry.adapters_by_channel_id.get(channel_id) if entry else None
+        )
+        if adapter is None or getattr(adapter, "_sp", None) is None:
+            return
+        try:
+            res = await handle_slash_command(
+                storage_provider=adapter._sp,
+                command=command,
+                text=(body.get("text") or "").strip(),
+                channel_id=adapter._channel.id,
+                thread_ts=None,
+            )
+        except Exception:
+            logger.exception("slack: slash command %s failed", command)
+            return
+        if res.kind == "list":
+            if res.items:
+                lines = [
+                    f"- {it['title']} ({it['chat_id']}) -> {it['agent_id']}"
+                    for it in res.items
+                ]
+                text = "Chats on this channel:\n" + "\n".join(lines)
+            else:
+                text = "No chats yet on this channel."
+        elif res.kind == "agent_picker":
+            if res.items:
+                lines = [
+                    f"- {it['label']} ({it['agent_id']})" for it in res.items
+                ]
+                text = "Pick an agent:\n" + "\n".join(lines)
+            else:
+                text = "No agents available."
+        else:
+            text = res.text or ""
+        if not text:
+            return
+        try:
+            await client.chat_postMessage(channel=channel_id, text=text)
+        except Exception:
+            logger.exception("slack: posting slash result for %s failed", command)
+
+    @app.command("/new")
+    async def _on_new(ack, body, client):
+        await ack()
+        await _run_slash("/new", body, client)
+
+    @app.command("/list")
+    async def _on_list(ack, body, client):
+        await ack()
+        await _run_slash("/list", body, client)
+
+    @app.command("/agent")
+    async def _on_agent(ack, body, client):
+        await ack()
+        await _run_slash("/agent", body, client)
+
     @app.event("message")
     async def _on_message(event, client):
         # Ignore bot/self messages and edits/deletes (no plain text payload).
