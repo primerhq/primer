@@ -51,15 +51,19 @@ class ChatChannelDispatcher:
         chat, assoc = resolved
         if not assoc.forward_inform:
             return False
-        env = PromptEnvelope(
-            kind="inform", workspace_id="",
-            session_id=chat.channel_binding.thread_external_id or "",
-            tool_call_id="", prompt=text, response_schema=None,
-            choices=None, timeout_at_iso=None)
         adapter = await self._registry.get_adapter(
             chat.channel_binding.channel_id)
         try:
-            await adapter.post_prompt(env)
+            post_chat = getattr(adapter, "post_chat_message", None)
+            if post_chat is not None:
+                await post_chat(text)
+            else:
+                env = PromptEnvelope(
+                    kind="inform", workspace_id="",
+                    session_id=chat.channel_binding.thread_external_id or "",
+                    tool_call_id="", prompt=text, response_schema=None,
+                    choices=None, timeout_at_iso=None)
+                await adapter.post_prompt(env)
             return True
         except Exception as exc:
             logger.warning("chat relay post failed for %s: %s", chat_id, exc)

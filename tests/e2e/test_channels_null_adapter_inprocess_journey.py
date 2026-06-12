@@ -128,6 +128,7 @@ async def test_t0856_null_channel_adapter_dispatch_and_inbox_journey(
         provider: ChannelProvider,
         channel: Channel,
         inbox: Any,
+        **_kw,
     ) -> ChannelAdapter:
         adapter = NullChannelAdapter()
         captured.append(adapter)

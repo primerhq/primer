@@ -42,11 +42,15 @@ class ChannelRegistry:
         channel_provider_storage: Storage[ChannelProvider],
         association_storage: Storage[WorkspaceChannelAssociation],
         inbox: "ChannelInbox",
+        storage_provider: object | None = None,
+        event_bus: object | None = None,
     ) -> None:
         self._channels = channel_storage
         self._providers = channel_provider_storage
         self._associations = association_storage
         self._inbox = inbox
+        self._storage_provider = storage_provider
+        self._event_bus = event_bus
         self._adapters: dict[str, ChannelAdapter] = {}
         self._lock = asyncio.Lock()
 
@@ -68,7 +72,11 @@ class ChannelRegistry:
                 raise NotFoundError(
                     f"ChannelProvider {channel.provider_id!r} does not exist"
                 )
-            adapter = await build_adapter(provider, channel, self._inbox)
+            adapter = await build_adapter(
+                provider, channel, self._inbox,
+                storage_provider=self._storage_provider,
+                event_bus=self._event_bus,
+            )
             await adapter.initialize()
             self._adapters[channel_id] = adapter
             return adapter

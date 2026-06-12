@@ -170,6 +170,7 @@ async def _slack_factory(
     provider: ChannelProvider,
     channel: Channel,
     inbox,
+    **_kw,
 ):
     adapter = SlackChannelAdapter(
         provider=provider, channel=channel, inbox=inbox,

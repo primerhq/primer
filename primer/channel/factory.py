@@ -14,7 +14,7 @@ from primer.model.except_ import ConfigError
 
 
 AdapterFactory = Callable[
-    [ChannelProvider, Channel, object],
+    ...,
     Awaitable[ChannelAdapter],
 ]
 
@@ -41,6 +41,9 @@ def build_adapter(
     provider_row: ChannelProvider,
     channel_row: Channel,
     inbox: object,
+    *,
+    storage_provider: object | None = None,
+    event_bus: object | None = None,
 ) -> Awaitable[ChannelAdapter]:
     factory = _FACTORIES.get(provider_row.provider)
     if factory is None:
@@ -54,7 +57,10 @@ def build_adapter(
             "is not installed; see Spec 3."
             + sub_spec_map[provider_row.provider]
         )
-    return factory(provider_row, channel_row, inbox)
+    return factory(
+        provider_row, channel_row, inbox,
+        storage_provider=storage_provider, event_bus=event_bus,
+    )
 
 
 def clear_factories_for_tests() -> None:

@@ -131,9 +131,13 @@ async def _telegram_factory(
     provider: ChannelProvider,
     channel: Channel,
     inbox,
+    *,
+    storage_provider=None,
+    event_bus=None,
 ):
     adapter = TelegramChannelAdapter(
         provider=provider, channel=channel, inbox=inbox,
+        storage_provider=storage_provider, event_bus=event_bus,
     )
     await adapter.initialize()
     conn = TELEGRAM_CONNECTIONS.entry(provider.id)

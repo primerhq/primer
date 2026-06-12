@@ -134,6 +134,7 @@ async def test_t0857_null_channel_adapter_tool_approval_journey(
         provider: ChannelProvider,
         channel: Channel,
         inbox: Any,
+        **_kw,
     ) -> ChannelAdapter:
         adapter = NullChannelAdapter()
         captured.append(adapter)

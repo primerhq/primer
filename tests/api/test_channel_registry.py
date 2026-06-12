@@ -38,7 +38,7 @@ async def test_for_workspace_returns_only_enabled_pairs(tmp_path: Path):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
     try:
-        async def _factory(provider_row, channel_row, inbox):
+        async def _factory(provider_row, channel_row, inbox, **_kw):
             adapter = NullChannelAdapter()
             await adapter.initialize()
             return adapter
@@ -91,7 +91,7 @@ async def test_get_adapter_caches_per_channel_id(tmp_path: Path):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
     try:
-        async def _factory(provider_row, channel_row, inbox):
+        async def _factory(provider_row, channel_row, inbox, **_kw):
             adapter = NullChannelAdapter()
             await adapter.initialize()
             return adapter

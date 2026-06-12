@@ -292,6 +292,8 @@ def _make_lifespan(config: AppConfig):
             channel_provider_storage=storage_provider.get_storage(ChannelProvider),
             association_storage=storage_provider.get_storage(WorkspaceChannelAssociation),
             inbox=channel_inbox,
+            storage_provider=storage_provider,
+            event_bus=getattr(app.state, "event_bus", None),
         )
         channel_dispatcher = ChannelDispatcher(registry=channel_registry)
         app.state.channel_inbox = channel_inbox

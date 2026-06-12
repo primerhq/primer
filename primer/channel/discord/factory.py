@@ -173,6 +173,7 @@ async def _discord_factory(
     provider: ChannelProvider,
     channel: Channel,
     inbox,
+    **_kw,
 ):
     adapter = DiscordChannelAdapter(
         provider=provider, channel=channel, inbox=inbox,
