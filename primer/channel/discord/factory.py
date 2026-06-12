@@ -6,8 +6,13 @@ import logging
 from typing import Any
 
 import discord
+from discord import app_commands
 
 from primer.channel.discord.adapter import DiscordChannelAdapter
+from primer.channel.discord.commands import (
+    agent_autocomplete_choices,
+    handle_app_command,
+)
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import (
     REJECT_MODAL_CUSTOM_ID_PREFIX,
@@ -196,6 +201,142 @@ def _install_handlers(provider_id: str, client: Any) -> None:
     # the correctly-named attributes directly is the supported registration.
     client.on_interaction = _on_interaction
     client.on_message = _on_message
+
+    # ------------------------------------------------------------------ #
+    # Application-command tree (slash commands + autocomplete)
+    # ------------------------------------------------------------------ #
+    # Build a CommandTree against the client.  We register three commands:
+    #   /agent [value]  - with-value: switch thread's chat agent; no-arg: picker
+    #   /new            - multi-type new: show agent picker
+    #   /list           - list chats in this channel
+    #
+    # NOTE: syncing the tree to Discord requires `await tree.sync()` after the
+    # client reaches READY. We wire a one-shot on_ready handler that syncs
+    # globally (all guilds). This is harmless when the tree is already in sync
+    # and is rate-limited by Discord to ~once per hour in production. Sync is
+    # NOT required for the unit tests (pure helpers, no live gateway).
+    # ------------------------------------------------------------------ #
+    try:
+        tree = app_commands.CommandTree(client)
+    except Exception:
+        logger.exception("discord: app_commands.CommandTree creation failed")
+        return
+
+    def _resolve_sp(entry_id: str):
+        """Return the storage_provider from the first registered adapter, if any."""
+        entry = DISCORD_CONNECTIONS.entry(entry_id)
+        if entry is None:
+            return None
+        for adapter in entry.adapters_by_channel_id.values():
+            sp = getattr(adapter, "_sp", None)
+            if sp is not None:
+                return sp
+        return None
+
+    @tree.command(name="new", description="Start a new chat (pick agent)")
+    async def _cmd_new(interaction: discord.Interaction):
+        sp = _resolve_sp(provider_id)
+        if sp is None:
+            await interaction.response.send_message(
+                "Chat not configured for this channel.", ephemeral=True)
+            return
+        channel_id = str(interaction.channel_id or "")
+        try:
+            res = await handle_app_command(
+                storage_provider=sp, command="new", channel_id=channel_id,
+                arg=None, thread_id=None)
+        except Exception as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        lines = [f"{i['label']} (`{i['agent_id']}`)" for i in (res.items or [])]
+        text = "Available agents:\n" + "\n".join(lines) if lines else "No agents found."
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @tree.command(name="list", description="List chats in this channel")
+    async def _cmd_list(interaction: discord.Interaction):
+        sp = _resolve_sp(provider_id)
+        if sp is None:
+            await interaction.response.send_message(
+                "Chat not configured for this channel.", ephemeral=True)
+            return
+        channel_id = str(interaction.channel_id or "")
+        try:
+            res = await handle_app_command(
+                storage_provider=sp, command="list", channel_id=channel_id,
+                arg=None, thread_id=None)
+        except Exception as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        lines = [
+            f"{item.get('title') or item['chat_id']} (agent: {item['agent_id']})"
+            for item in (res.items or [])
+        ]
+        text = "\n".join(lines) if lines else "No chats yet."
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @tree.command(name="agent", description="Switch agent for this thread (or pick one)")
+    @app_commands.describe(value="Agent ID to switch to; omit to list available agents")
+    async def _cmd_agent(interaction: discord.Interaction, value: str = ""):
+        sp = _resolve_sp(provider_id)
+        if sp is None:
+            await interaction.response.send_message(
+                "Chat not configured for this channel.", ephemeral=True)
+            return
+        channel_id = str(interaction.channel_id or "")
+        ch = interaction.channel
+        thread_id = (
+            str(ch.id) if isinstance(ch, discord.Thread) else None
+        )
+        try:
+            res = await handle_app_command(
+                storage_provider=sp, command="agent", channel_id=channel_id,
+                arg=value or None, thread_id=thread_id)
+        except Exception as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        if res.kind == "agent_picker":
+            lines = [
+                f"{item['label']} (`{item['agent_id']}`)" for item in (res.items or [])
+            ]
+            text = "Available agents:\n" + "\n".join(lines) if lines else "No agents."
+        else:
+            text = res.text or "Done."
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @_cmd_agent.autocomplete("value")
+    async def _agent_autocomplete(
+        interaction: discord.Interaction, current: str,
+    ) -> list[app_commands.Choice[str]]:
+        sp = _resolve_sp(provider_id)
+        if sp is None:
+            return []
+        try:
+            choices = await agent_autocomplete_choices(
+                storage_provider=sp, current=current)
+        except Exception:
+            logger.exception("discord: agent autocomplete failed")
+            return []
+        return [
+            app_commands.Choice(name=c["name"], value=c["value"])
+            for c in choices
+        ]
+
+    # Sync once the gateway is READY. on_ready can fire multiple times on
+    # reconnects; guard with a flag so we only sync once per provider.
+    _synced: list[bool] = [False]
+
+    async def _on_ready():
+        if _synced[0]:
+            return
+        _synced[0] = True
+        try:
+            await tree.sync()
+            logger.info("discord: app_commands synced for provider %s", provider_id)
+        except Exception:
+            logger.exception(
+                "discord: tree.sync() failed for provider %s", provider_id)
+
+    client.on_ready = _on_ready
 
 
 async def _discord_factory(
