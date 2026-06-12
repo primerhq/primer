@@ -702,7 +702,7 @@ class ChatTurnRunner:
             return
         await self._append(chat, kind="assistant_token", payload={"delta": prompt})
         chat.pending_tool_call = pending
-        await self._chats.update(chat)
+        await self._persist_chat(chat)
 
     async def abandon_pending(self, chat: Chat, pending: dict) -> None:
         """Abandon a pending (awaiting-input) tool call on cancel.
@@ -787,7 +787,7 @@ class ChatTurnRunner:
         })
         await self._messages.update(excluded)
         chat.pending_tool_call = None
-        await self._chats.update(chat)
+        await self._persist_chat(chat)
 
     # ------------------------------------------------------------------
     # Event translation
@@ -1179,11 +1179,21 @@ class ChatTurnRunner:
         )
         await self._messages.create(row)
         chat.last_seq = next_seq
+        await self._persist_chat(chat)
+        return row
+
+    async def _persist_chat(self, chat: Chat) -> None:
+        """Update the chat row, preserving fields an external actor may have
+        changed concurrently while a turn holds a stale in-memory copy:
+        ``cancel_requested_at`` (an interrupt frame) and ``agent_id`` (a
+        mid-chat agent switch). Without this the running turn's writes would
+        clobber them.
+        """
         latest = await self._chats.get(chat.id)
         if latest is not None:
             chat.cancel_requested_at = latest.cancel_requested_at
+            chat.agent_id = latest.agent_id
         await self._chats.update(chat)
-        return row
 
     async def _sanitize_unsupported_attachments(self, chat: Chat) -> int:
         """Walk the persisted chat history and rewrite every
