@@ -635,6 +635,19 @@ class WorkerPool:
                     payload=resume_payload.payload,
                     tool_manager=tool_manager,
                 )
+            elif tool_name == "invoke_graph":
+                ig_result = await self._resume_invoke_graph(
+                    parked=parked,
+                    payload=resume_payload.payload,
+                    tool_manager=tool_manager,
+                )
+                if ig_result.repark is not None:
+                    # Child graph hit another gate - re-park the AGENT session
+                    # on the remaining key(s), preserving the agent turn.
+                    return self._repark_invoke_graph_outcome(
+                        session, parked, ig_result.repark,
+                    )
+                tool_result_part = ig_result.tool_result
             else:
                 hook = get_resume_hook(tool_name)
                 hook_result = hook(parked.yielded.resume_metadata, resume_payload.payload)
@@ -808,6 +821,95 @@ class WorkerPool:
                 parked_state=parked_state.to_jsonable(),
                 parked_event_key=repark.yielded.event_key,
                 parked_event_keys=repark.yielded.event_keys,
+                parked_until=now + timedelta(seconds=timeout),
+                parked_at=now,
+            ),
+        )
+
+    async def _resume_invoke_graph(self, *, parked, payload, tool_manager):
+        """Resume an invoke_graph park: rebuild the child WorkspaceGraphExecutor
+        from the session's GraphInvocationServices + the stored child checkpoint,
+        resume it, and return its output as a tool_result (or a repark when the
+        child graph hits another gate)."""
+        import json
+        from dataclasses import dataclass
+        from primer.graph.invoke_graph import resume_invoke_graph
+        from primer.model.chat import ToolResultPart
+
+        @dataclass
+        class _IGResume:
+            tool_result: "ToolResultPart | None" = None
+            repark: "Any | None" = None
+
+        md = parked.yielded.resume_metadata or {}
+        services = getattr(tool_manager, "_graph_services", None)
+        agent_tcid = parked.tool_call_id or "unknown"
+        if services is None or parked.graph_checkpoint is None:
+            return _IGResume(tool_result=ToolResultPart(
+                id=agent_tcid,
+                output=json.dumps({
+                    "rejected": True,
+                    "reason": "invoke_graph resume services/checkpoint missing",
+                    "tool_name": "invoke_graph",
+                }),
+                error=True,
+            ))
+        graph = await services.resolve_graph(md["graph_id"])
+        child = await services.build_child_executor(graph=graph, gsid=md["sub_gsid"])
+        child_tcid = md.get("child_tcid")
+        agent_tool_result = await self._graph_agent_tool_result(
+            parked.graph_checkpoint, child_tcid, payload,
+        )
+        out, repark = await resume_invoke_graph(
+            child=child,
+            checkpoint=parked.graph_checkpoint,
+            payload=payload,
+            resumed_tcid=child_tcid,
+            agent_tool_result=agent_tool_result,
+        )
+        if repark is not None:
+            return _IGResume(repark=repark)
+        return _IGResume(tool_result=ToolResultPart(
+            id=agent_tcid, output=json.dumps({"output": out}), error=False,
+        ))
+
+    def _repark_invoke_graph_outcome(self, session, parked, child_repark):
+        """Re-park the AGENT session when the invoked child graph hits another
+        gate during resume. Re-stamp the child's repark as invoke_graph (new
+        checkpoint), preserve the agent turn's llm_messages + invoke_graph
+        tool_call_id so the eventual completion pairs correctly."""
+        from datetime import timedelta
+        from primer.graph.invoke_graph import _restamp_as_invoke_graph
+        from primer.int.claim import ParkRequest, ReleaseOutcome
+
+        md = parked.yielded.resume_metadata or {}
+        restamped = _restamp_as_invoke_graph(
+            child_repark,
+            sub_gsid=md["sub_gsid"],
+            graph_id=md["graph_id"],
+            agent_tool_call_id=parked.tool_call_id or "unknown",
+        )
+        now = datetime.now(timezone.utc)
+        timeout = (
+            restamped.yielded.timeout
+            if restamped.yielded.timeout is not None
+            else 3600.0
+        )
+        new_parked = ParkedState(
+            yielded=restamped.yielded,
+            llm_messages=parked.llm_messages,
+            turn_no=session.turn_no,
+            started_at=now,
+            tool_call_id=parked.tool_call_id,
+            graph_checkpoint=restamped.graph_checkpoint,
+        )
+        return ReleaseOutcome(
+            success=True,
+            drop_lease=True,
+            park=ParkRequest(
+                parked_state=new_parked.to_jsonable(),
+                parked_event_key=restamped.yielded.event_key,
+                parked_event_keys=restamped.yielded.event_keys,
                 parked_until=now + timedelta(seconds=timeout),
                 parked_at=now,
             ),
