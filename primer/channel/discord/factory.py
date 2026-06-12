@@ -137,26 +137,55 @@ def _install_handlers(provider_id: str, client: Any) -> None:
     async def _on_message(message: discord.Message):
         if message.author and message.author.bot:
             return
-        if not isinstance(message.channel, discord.Thread):
-            return
-        thread_id = message.channel.id
-        parent_id = str(message.channel.parent_id or "")
         entry = DISCORD_CONNECTIONS.entry(provider_id)
         if entry is None:
             return
-        adapter = entry.adapters_by_channel_id.get(parent_id)
-        if adapter is None:
+        in_thread = isinstance(message.channel, discord.Thread)
+        if in_thread:
+            thread_id = message.channel.id
+            parent_id = str(message.channel.parent_id or "")
+            adapter = entry.adapters_by_channel_id.get(parent_id)
+            if adapter is None:
+                return
+            # Session-prompt reply: an ask_user parked on this thread takes
+            # precedence so existing session gates keep working.
+            ids = adapter._pending_ask.get(thread_id)
+            if ids is not None:
+                await adapter._handle_text_reply(
+                    **ids, text=message.content or "",
+                    discord_user_id=message.author.id if message.author else None,
+                )
+                # Consume: the ask is answered, so the next thread reply won't
+                # re-fire until another ask_user parks in this session.
+                adapter._pending_ask.pop(thread_id, None)
+                return
+            # Chat-surface dispatch: an in-thread message routes to that
+            # thread's chat (thread id = the discord thread id).
+            if getattr(adapter, "_sp", None) is None:
+                return
+            sender_name = (
+                getattr(message.author, "display_name", None)
+                or getattr(message.author, "name", None) or "user"
+            )
+            await adapter.handle_inbound_chat_message(
+                thread_id=str(thread_id), message_id=str(message.id),
+                sender_name=sender_name, text=message.content or "",
+            )
             return
-        ids = adapter._pending_ask.get(thread_id)
-        if ids is None:
+        # Top-level message in the channel: open a new thread-chat anchored on
+        # the message id. Only on chat-enabled adapters.
+        channel_id = str(getattr(message.channel, "id", "") or "")
+        adapter = entry.adapters_by_channel_id.get(channel_id)
+        if adapter is None or getattr(adapter, "_sp", None) is None:
             return
-        await adapter._handle_text_reply(
-            **ids, text=message.content or "",
-            discord_user_id=message.author.id if message.author else None,
+        sender_name = (
+            getattr(message.author, "display_name", None)
+            or getattr(message.author, "name", None) or "user"
         )
-        # Consume: the ask is answered, so the next thread reply won't re-fire
-        # until another ask_user parks in this session.
-        adapter._pending_ask.pop(thread_id, None)
+        await adapter.handle_inbound_chat_message(
+            thread_id=None, message_id=str(message.id),
+            sender_name=sender_name, text=message.content or "",
+        )
 
     # Bind the handlers to the real gateway event names. The base
     # ``discord.Client`` dispatches by looking up ``self.on_<event>`` (this is
@@ -173,10 +202,14 @@ async def _discord_factory(
     provider: ChannelProvider,
     channel: Channel,
     inbox,
+    *,
+    storage_provider=None,
+    event_bus=None,
     **_kw,
 ):
     adapter = DiscordChannelAdapter(
         provider=provider, channel=channel, inbox=inbox,
+        storage_provider=storage_provider, event_bus=event_bus,
     )
     await adapter.initialize()
     conn = DISCORD_CONNECTIONS.entry(provider.id)

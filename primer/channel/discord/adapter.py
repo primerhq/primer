@@ -41,10 +41,16 @@ class DiscordChannelAdapter(ChannelAdapter):
 
     def __init__(
         self, *, provider: ChannelProvider, channel: Channel, inbox,
+        storage_provider=None, event_bus=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
         self._inbox = inbox
+        # Chat-surface wiring. Optional so existing callers (session/workspace
+        # channels) keep working; the chat dispatch path stays inactive when
+        # _sp is None.
+        self._sp = storage_provider
+        self._bus = event_bus
         self._client: Any | None = None
         # session_id → discord Thread id (one conversation thread per session)
         self._session_threads: dict[str, int] = {}
@@ -177,6 +183,25 @@ class DiscordChannelAdapter(ChannelAdapter):
             response=text, decision=None, reason=None,
             platform_metadata={"discord_user_id": discord_user_id or 0},
         ))
+
+    async def handle_inbound_chat_message(
+        self, *, thread_id: str | None, message_id: str,
+        sender_name: str, text: str,
+    ):
+        """Multi-type inbound: a top-level message opens a new thread-chat; an
+        in-thread message routes to that thread's chat. The thread id is the
+        message id on a top-level message (the new thread anchors on it)."""
+        from primer.channel.chat_inbox import ChatResponseInbox
+        from primer.channel.chat_router import ChatChannelRouter
+        thread_external_id = thread_id or message_id
+        gate_inbox = ChatResponseInbox(
+            storage_provider=self._sp, event_bus=self._bus)
+        router = ChatChannelRouter(
+            storage_provider=self._sp, event_bus=self._bus, gate_inbox=gate_inbox)
+        chat, _ = await router.deliver_message(
+            channel_id=self._channel.id, thread_external_id=thread_external_id,
+            supports_threads=True, sender_name=sender_name, text=text)
+        return chat
 
 
 __all__ = ["DiscordChannelAdapter"]
