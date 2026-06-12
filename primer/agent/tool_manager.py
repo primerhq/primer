@@ -30,7 +30,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -102,6 +102,7 @@ class ToolExecutionManager:
         provider_registry: object | None = None,
         tools: list[str] | None = None,
         chat_id: str | None = None,
+        graph_invocation_services: "Any | None" = None,
     ) -> None:
         self._toolsets: dict[str, ToolsetProvider] = dict(toolset_providers or {})
         self._workspace_tools: dict[str, "WorkspaceTool"] = dict(workspace_tools or {})
@@ -109,6 +110,10 @@ class ToolExecutionManager:
         self._approval_resolver = approval_resolver
         self._provider_registry = provider_registry
         self._chat_id = chat_id
+        # Per-session GraphInvocationServices bundle for invoke_graph (typed
+        # Any to avoid importing primer.graph here). None outside a
+        # workspace-session dispatch; stamped onto the workspace ToolContext.
+        self._graph_services = graph_invocation_services
         self._inform_sink: "Callable[[str], Awaitable[int]] | None" = None
         # The agent's scoped-tool surface. Filters list_tools() to just
         # the listed ids and execute() rejects calls for anything else.
@@ -167,6 +172,7 @@ class ToolExecutionManager:
         approval_resolver: ApprovalResolver | None = None,
         provider_registry: object | None = None,
         tools: list[str] | None = None,
+        graph_invocation_services: "Any | None" = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -174,6 +180,8 @@ class ToolExecutionManager:
         and registers it; ``toolset_providers`` are passed through.
         ``tools`` (when supplied) is the agent's scoped tool surface —
         see :class:`primer.model.agent.Agent.tools`.
+        ``graph_invocation_services`` (when supplied) wires invoke_graph
+        so the dispatched tool can run a child graph in this session.
         """
         ws_tools = {t.id: t for t in session.workspace_tools}
         return cls(
@@ -183,6 +191,7 @@ class ToolExecutionManager:
             approval_resolver=approval_resolver,
             provider_registry=provider_registry,
             tools=tools,
+            graph_invocation_services=graph_invocation_services,
         )
 
     async def list_tools(
@@ -408,6 +417,7 @@ class ToolExecutionManager:
                 session_id=sess.session_id,
                 workspace_id=sess.workspace_id,
                 inform=self._inform_sink,
+                graph_services=self._graph_services,
             )
         elif self._chat_id is not None:
             ctx = ToolContext(

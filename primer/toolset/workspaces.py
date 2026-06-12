@@ -214,6 +214,11 @@ class _LogArgs(BaseModel):
     limit: int = Field(default=50, ge=1, le=500)
 
 
+class _InvokeGraphArgs(BaseModel):
+    graph_id: str = Field(..., min_length=1, description="Graph to run.")
+    input: str = Field(..., min_length=1, description="Input for the graph.")
+
+
 # ===========================================================================
 # Pagination helpers
 # ===========================================================================
@@ -536,6 +541,60 @@ async def _watch_files_handler(
             "registered_at_iso": datetime.now(timezone.utc).isoformat(),
         },
     )
+
+
+# ===========================================================================
+# invoke_graph — yielding tool (dynamic invocation). Runs a target graph
+# inside the current workspace session, namespaced under the session's
+# state (a child WorkspaceGraphExecutor), and returns its output text.
+# Declared yielding (``-> ToolCallResult | Yielded``) so the provider
+# classifies it as a session-only tool and excludes it from MCP; the
+# happy (non-parking) path returns a ToolCallResult. Parking/resume is a
+# later task — this handler does not yet surface a Yielded.
+# ===========================================================================
+
+
+async def _invoke_graph_handler(
+    arguments: dict[str, Any],
+    *,
+    ctx: ToolContext,
+) -> ToolCallResult | Yielded:
+    from primer.agent.invoke import (
+        InvocationDepthExceeded,
+        invocation_depth_guard,
+    )
+    from primer.graph.invoke_graph import run_invoke_graph
+
+    try:
+        args = _InvokeGraphArgs.model_validate(arguments)
+    except ValidationError as exc:
+        return _err_from_validation(exc)
+    if ctx.session_id is None or ctx.workspace_id is None:
+        return _err(
+            "invoke_graph is only available in workspace sessions",
+            error_type="bad-request",
+        )
+    services = getattr(ctx, "graph_services", None)
+    if services is None:
+        return _err(
+            "invoke_graph services are not available in this context",
+            error_type="bad-request",
+        )
+    try:
+        with invocation_depth_guard():
+            text = await run_invoke_graph(
+                graph_id=args.graph_id,
+                graph_input=args.input,
+                services=services,
+                tool_call_id=ctx.tool_call_id,
+            )
+    except InvocationDepthExceeded as exc:
+        return _err(
+            f"invocation depth exceeded: {exc}", error_type="bad-request"
+        )
+    except (NotFoundError, ValueError) as exc:
+        return _err(str(exc), error_type="bad-request")
+    return _ok({"output": text})
 
 
 # ===========================================================================
@@ -1538,6 +1597,32 @@ def build_workspaces_toolset(
             ),
             ToolExample(
                 args={"paths": ["src"], "timeout_seconds": 30, "batch_window_ms": 500},
+            ),
+        ],
+    )
+    registry[name] = entry
+
+    # invoke_graph — yielding tool (dynamic invocation). Runs another
+    # graph inside this session, namespaced under the session's state.
+    name, entry = _tool(
+        "invoke_graph",
+        (
+            "Run another graph inside the current workspace session and "
+            "get its output text. The invoked graph's state nests under "
+            "this session."
+        ),
+        (
+            "Use when you need to delegate a self-contained multi-step "
+            "workflow to a graph from within a session; for a single "
+            "agent use invoke_agent."
+        ),
+        _InvokeGraphArgs,
+        _invoke_graph_handler,
+        examples=[
+            ToolExample(
+                args={"graph_id": "graph-review", "input": "Review the diff."},
+                returns="{output: <graph output text>}",
+                note="runs a subgraph in this session; can park on HITL",
             ),
         ],
     )

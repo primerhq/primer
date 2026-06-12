@@ -203,6 +203,11 @@ class ToolContext:
         Optional async sink for one-way inform delivery. Takes the
         message and returns the number of destinations reached.
         ``None`` when no channel/chat delivery is wired for this turn.
+    graph_services
+        Per-session GraphInvocationServices bundle for invoke_graph;
+        ``None`` outside a workspace-session tool dispatch. Typed ``Any``
+        to avoid a layering import cycle (primer.graph depends on this
+        module, not vice versa).
     """
 
     tool_call_id: str
@@ -211,6 +216,7 @@ class ToolContext:
     parked_at: datetime | None = None
     chat_id: str | None = None
     inform: Callable[[str], Awaitable[int]] | None = None
+    graph_services: Any | None = None
 
 
 # ===========================================================================

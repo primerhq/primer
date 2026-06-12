@@ -1130,6 +1130,85 @@ class WorkerPool:
         inner = getattr(wrapped, "_executor", None)
         return inner if inner is not None else wrapped
 
+    def _build_graph_invocation_services(
+        self, *, workspace, workspace_session, graph_session_id: str,
+    ):
+        """Build the GraphInvocationServices bundle for invoke_graph, or None
+        when this workspace can't host a child graph executor (no state_repo /
+        no holder session). Mirrors the per-node resolvers in
+        _build_graph_executor so an invoked graph nests under the session's
+        state with full parity (routers, approvals, subgraphs)."""
+        from primer.agent.tool_manager import ToolExecutionManager
+        from primer.graph.invoke_graph import GraphInvocationServices
+        from primer.graph.workspace_executor import WorkspaceGraphExecutor
+        from primer.model.agent import Agent
+        from primer.model.except_ import NotFoundError
+        from primer.model.graph import Graph
+
+        state_repo = getattr(workspace, "state_repo", None)
+        if state_repo is None or workspace_session is None:
+            return None
+
+        async def agent_resolver(agent_id: str):
+            row = await self._storage.get_storage(Agent).get(agent_id)
+            if row is None:
+                raise NotFoundError(f"Agent {agent_id!r} not found")
+            return row
+
+        async def llm_resolver(agent):
+            llm = await self._provider_registry.get_llm(agent.model.provider_id)
+            llm_model = await self._resolve_llm_model(agent)
+            return llm, llm_model
+
+        async def tool_manager_resolver(agent):
+            toolset_ids = _toolset_ids_from_scoped(agent.tools)
+            toolset_providers: dict = {}
+            for tid in toolset_ids:
+                toolset_providers[tid] = await self._provider_registry.get_toolset(tid)
+            return ToolExecutionManager.for_workspace(
+                toolset_providers=toolset_providers,
+                session=workspace_session,
+                approval_resolver=self._approval_resolver,
+                provider_registry=self._provider_registry,
+                tools=agent.tools,
+            )
+
+        async def graph_resolver(graph_id: str):
+            row = await self._storage.get_storage(Graph).get(graph_id)
+            if row is None:
+                raise NotFoundError(f"Graph {graph_id!r} not found")
+            return row
+
+        async def toolset_resolver(toolset_id: str):
+            return await self._provider_registry.get_toolset(toolset_id)
+
+        router_registry = getattr(self, "_router_registry", None)
+
+        async def build_child_executor(*, graph, gsid: str):
+            return WorkspaceGraphExecutor(
+                graph=graph,
+                agent_resolver=agent_resolver,
+                llm_resolver=llm_resolver,
+                tool_manager_resolver=tool_manager_resolver,
+                state_repo=state_repo,
+                graph_session_id=gsid,
+                workspace_session=workspace_session,
+                graph_resolver=graph_resolver,
+                router_registry=router_registry,
+                principal=None,
+                owns_session_lifecycle=False,
+                toolset_resolver=toolset_resolver,
+                approval_resolver=self._approval_resolver,
+            )
+
+        return GraphInvocationServices(
+            resolve_graph=graph_resolver,
+            build_child_executor=build_child_executor,
+            session_id=workspace_session.session_id,
+            workspace_id=workspace_session.workspace_id,
+            graph_session_id=graph_session_id,
+        )
+
     async def _build_agent_executor(self, session: WorkspaceSession, workspace):
         """Build a turn-driver around :class:`WorkspaceAgentExecutor`.
 
@@ -1195,12 +1274,18 @@ class WorkerPool:
         # ``tools`` list is the agent's scoped-tool surface — the
         # manager exposes exactly those tools to the LLM and rejects
         # dispatch on anything else.
+        gis = self._build_graph_invocation_services(
+            workspace=workspace,
+            workspace_session=agent_session,
+            graph_session_id=session.id,
+        )
         tool_manager = ToolExecutionManager.for_workspace(
             toolset_providers=toolset_providers,
             session=agent_session,
             approval_resolver=self._approval_resolver,
             provider_registry=self._provider_registry,
             tools=agent.tools,
+            graph_invocation_services=gis,
         )
 
         from primer.agent.inform import SessionInformSink
@@ -1317,12 +1402,18 @@ class WorkerPool:
                 )
                 toolset_providers[toolset_id] = provider
             if workspace_session is not None:
+                gis = self._build_graph_invocation_services(
+                    workspace=workspace,
+                    workspace_session=workspace_session,
+                    graph_session_id=session.id,
+                )
                 return ToolExecutionManager.for_workspace(
                     toolset_providers=toolset_providers,
                     session=workspace_session,
                     approval_resolver=self._approval_resolver,
                     provider_registry=self._provider_registry,
                     tools=agent.tools,
+                    graph_invocation_services=gis,
                 )
             return ToolExecutionManager(
                 toolset_providers=toolset_providers,
