@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 _HANDLERS_INSTALLED: set[str] = set()
 
 
-def _install_handlers(provider_id: str, client: Any) -> None:
+def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
     if provider_id in _HANDLERS_INSTALLED:
         return
     _HANDLERS_INSTALLED.add(provider_id)
@@ -303,6 +304,19 @@ def _install_handlers(provider_id: str, client: Any) -> None:
             text = res.text or "Done."
         await interaction.response.send_message(text, ephemeral=True)
 
+    @tree.command(name="help", description="Show available commands")
+    async def _cmd_help(interaction: discord.Interaction):
+        try:
+            res = await handle_app_command(
+                storage_provider=_resolve_sp(provider_id) or None,
+                command="help", channel_id=str(interaction.channel_id or ""),
+                arg=None, thread_id=None)
+            text = res.text or "No help available."
+        except Exception:
+            from primer.channel.commands import help_text
+            text = help_text(supports_threads=True)
+        await interaction.response.send_message(text, ephemeral=True)
+
     @_cmd_agent.autocomplete("value")
     async def _agent_autocomplete(
         interaction: discord.Interaction, current: str,
@@ -325,18 +339,45 @@ def _install_handlers(provider_id: str, client: Any) -> None:
     # reconnects; guard with a flag so we only sync once per provider.
     _synced: list[bool] = [False]
 
-    async def _on_ready():
+    async def _sync_tree() -> None:
         if _synced[0]:
             return
         _synced[0] = True
         try:
-            await tree.sync()
-            logger.info("discord: app_commands synced for provider %s", provider_id)
+            # Guild-scoped sync propagates instantly (global sync can take up
+            # to ~1 hour). Resolve the guild from the configured channel.
+            guild = None
+            try:
+                ch = client.get_channel(int(channel.external_id))
+                if ch is None:
+                    ch = await client.fetch_channel(int(channel.external_id))
+                guild = getattr(ch, "guild", None)
+            except Exception:
+                guild = None
+            if guild is not None:
+                tree.copy_global_to(guild=guild)
+                await tree.sync(guild=guild)
+                logger.info(
+                    "discord: app_commands synced to guild %s for provider %s",
+                    guild.id, provider_id)
+            else:
+                await tree.sync()
+                logger.info(
+                    "discord: app_commands globally synced for provider %s",
+                    provider_id)
         except Exception:
+            _synced[0] = False
             logger.exception(
                 "discord: tree.sync() failed for provider %s", provider_id)
 
+    async def _on_ready() -> None:
+        await _sync_tree()
+
     client.on_ready = _on_ready
+    # The factory connects the client BEFORE installing handlers, so on_ready
+    # may have already fired - sync now if the client is already ready.
+    if client.is_ready():
+        asyncio.create_task(_sync_tree())
 
 
 async def _discord_factory(
@@ -357,7 +398,7 @@ async def _discord_factory(
     await adapter.initialize()
     conn = DISCORD_CONNECTIONS.entry(provider.id)
     if conn is not None:
-        _install_handlers(provider.id, conn.client)
+        _install_handlers(provider.id, conn.client, channel)
     return adapter
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from primer.channel.commands import CommandExecutor, CommandResult
+from primer.channel.commands import CommandExecutor, CommandResult, help_text
 from primer.int.storage_provider import StorageProvider
 
 
@@ -20,6 +20,9 @@ async def handle_slash_command(
         return await ex.agent_picker()
     if verb == "new":
         return await ex.agent_picker()
+    if verb == "help":
+        return CommandResult(
+            kind="notice", text=help_text(supports_threads=True))
     return CommandResult(kind="notice", text=f"unknown command {command!r}")
 
 

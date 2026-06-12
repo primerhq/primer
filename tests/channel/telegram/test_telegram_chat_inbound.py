@@ -54,6 +54,16 @@ async def test_plain_message_routes_to_chat(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_help_command_returns_help_text(tmp_path: Path):
+    from primer.channel.commands import help_text
+    p, adapter = await _setup(tmp_path)
+    notice = await adapter.handle_inbound_chat_text(
+        sender_name="Alice", text="/help")
+    assert notice == help_text(supports_threads=False)
+    assert "/switch" in notice
+
+
+@pytest.mark.asyncio
 async def test_new_command_creates_fresh_chat(tmp_path: Path):
     p, adapter = await _setup(tmp_path)
     await adapter.handle_inbound_chat_text(sender_name="Alice", text="hi")

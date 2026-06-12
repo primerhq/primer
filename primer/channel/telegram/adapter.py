@@ -208,10 +208,14 @@ class TelegramChannelAdapter(ChannelAdapter):
             return None
         from primer.channel.chat_inbox import ChatResponseInbox
         from primer.channel.chat_router import ChatChannelRouter
-        from primer.channel.commands import CommandExecutor, parse_command
+        from primer.channel.commands import (
+            CommandExecutor, help_text, parse_command,
+        )
         parsed = parse_command(text)
         if parsed is not None:
             ex = CommandExecutor(storage_provider=self._sp)
+            if parsed.verb == "help":
+                return help_text(supports_threads=False)
             if parsed.verb == "new":
                 res = await ex.new_single_chat(channel_id=self._channel.id)
                 return res.text

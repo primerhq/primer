@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from primer.channel.chat_router import ChatChannelRouter
-from primer.channel.commands import CommandExecutor, CommandResult
+from primer.channel.commands import CommandExecutor, CommandResult, help_text
 from primer.int.storage_provider import StorageProvider
 from primer.model.except_ import NotFoundError
 
@@ -29,6 +29,9 @@ async def handle_app_command(
     ex = CommandExecutor(storage_provider=storage_provider)
     if command == "list":
         return await ex.list_chats(channel_id=channel_id)
+    if command == "help":
+        return CommandResult(
+            kind="notice", text=help_text(supports_threads=True))
     if command == "new":
         return await ex.agent_picker()  # multi-type /new = pick
     if command == "agent":

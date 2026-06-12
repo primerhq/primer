@@ -185,6 +185,60 @@ class DiscordChannelAdapter(ChannelAdapter):
             platform_metadata={"discord_user_id": discord_user_id or 0},
         ))
 
+    async def _chat_thread_name(self, thread_ts: str) -> str:
+        """Build a friendly thread name: "{agent label}: {first words}".
+
+        Resolves the Chat bound to (this channel, thread_ts), its agent's
+        ``description`` (falling back to the agent id), and the first ~6 words
+        of the chat's first user_message. Returns "chat" if anything is
+        missing; the caller wraps this in try/except for a hard fallback.
+        """
+        from primer.model.agent import Agent
+        from primer.model.chats import Chat, ChatMessage
+        from primer.model.storage import OffsetPage, OrderBy
+        from primer.storage.q import Q
+
+        chats = self._sp.get_storage(Chat)
+        chat = None
+        offset = 0
+        while True:
+            page = await chats.find(None, OffsetPage(offset=offset, length=200))
+            for c in page.items:
+                b = c.channel_binding
+                if (
+                    b is not None
+                    and b.channel_id == self._channel.id
+                    and b.thread_external_id == thread_ts
+                ):
+                    chat = c
+                    break
+            if chat is not None or len(page.items) < 200:
+                break
+            offset += 200
+        if chat is None:
+            return "chat"
+        agent = await self._sp.get_storage(Agent).get(chat.agent_id)
+        label = (agent.description if agent is not None else None) or chat.agent_id
+        # First user_message's content -> first ~6 words.
+        snippet = ""
+        msgs = self._sp.get_storage(ChatMessage)
+        mpage = await msgs.find(
+            Q(ChatMessage).where("chat_id", chat.id).build(),
+            OffsetPage(offset=0, length=50),
+            order_by=[OrderBy(field="seq", direction="asc")],
+        )
+        for m in mpage.items:
+            if m.kind == "user_message":
+                content = (m.payload or {}).get("content") or ""
+                content = content.strip()
+                # Strip a leading "[sender] " attribution prefix if present.
+                if content.startswith("[") and "] " in content:
+                    content = content.split("] ", 1)[1]
+                snippet = " ".join(content.split()[:6])
+                break
+        name = f"{label}: {snippet}" if snippet else str(label)
+        return name[:100] or "chat"
+
     async def _resolve_chat_thread(self, thread_ts: str | None) -> Any:
         """Resolve (or create) the discord.py thread for a chat's anchor id.
 
@@ -226,8 +280,12 @@ class DiscordChannelAdapter(ChannelAdapter):
         except Exception:
             return channel  # anchor gone / unreachable: degrade to the channel
         try:
+            name = await self._chat_thread_name(thread_ts)
+        except Exception:
+            name = f"chat {tid}"
+        try:
             return await anchor.create_thread(
-                name=f"chat {tid}"[:100], auto_archive_duration=60,
+                name=name[:100], auto_archive_duration=60,
             )
         except Exception:
             # Thread may already exist (race): resolve it once more, else channel.

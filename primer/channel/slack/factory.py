@@ -241,6 +241,11 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         await ack()
         await _run_slash("/agent", body, client)
 
+    @app.command("/help")
+    async def _on_help(ack, body, client):
+        await ack()
+        await _run_slash("/help", body, client)
+
     @app.event("message")
     async def _on_message(event, client):
         # Ignore bot/self messages and edits/deletes (no plain text payload).

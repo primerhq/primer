@@ -19,7 +19,7 @@ from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage, OrderBy
 from primer.storage.q import Q
 
-_VERBS = frozenset({"new", "list", "switch", "agent"})
+_VERBS = frozenset({"new", "list", "switch", "agent", "help"})
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,28 @@ def parse_command(text: str | None) -> ParsedCommand | None:
         return None
     arg = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
     return ParsedCommand(verb=verb, arg=arg)
+
+
+def help_text(*, supports_threads: bool) -> str:
+    """A friendly multi-line help string, scaled to the channel type.
+
+    ``supports_threads=True`` (multi-type: Slack/Discord) drops ``/switch``
+    (threads ARE the switch UI) and notes that each new thread is a new chat.
+    ``supports_threads=False`` (single-type: Telegram) includes ``/switch``.
+    """
+    lines = [
+        "Commands:",
+        "/new - start a fresh chat",
+        "/list - list your chats",
+    ]
+    if not supports_threads:
+        lines.append("/switch <chat-id> - switch to a previous chat")
+    lines.append("/agent - switch the agent (pick from a list)")
+    lines.append("/help - show this help")
+    if supports_threads:
+        lines.append("")
+        lines.append("Tip: each new thread is a new chat.")
+    return "\n".join(lines)
 
 
 @dataclass
@@ -179,4 +201,7 @@ class CommandExecutor:
             text=f"Switched agent to {agent.description or agent_id}.")
 
 
-__all__ = ["CommandExecutor", "CommandResult", "ParsedCommand", "parse_command"]
+__all__ = [
+    "CommandExecutor", "CommandResult", "ParsedCommand",
+    "help_text", "parse_command",
+]
