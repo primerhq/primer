@@ -200,9 +200,20 @@ class SlackChannelAdapter(ChannelAdapter):
     ):
         """Multi-type inbound: top-level opens a new thread-chat; an in-thread
         message routes to that thread's chat. The thread id is message_ts on a
-        top-level message (Slack threads anchor on the parent ts)."""
+        top-level message (Slack threads anchor on the parent ts).
+
+        A message typed as a /command in a thread is intercepted and handled
+        in-thread (interactive /agent select, etc.) instead of being routed as
+        a chat turn. Slack native slash commands carry no thread_ts, so this is
+        the only path that can target a specific thread's chat."""
         from primer.channel.chat_inbox import ChatResponseInbox
         from primer.channel.chat_router import ChatChannelRouter
+        from primer.channel.commands import parse_command
+        parsed = parse_command(text)
+        if parsed is not None:
+            await self._handle_thread_command(
+                parsed=parsed, thread_ts=thread_ts or message_ts)
+            return None
         thread_external_id = thread_ts or message_ts
         gate_inbox = ChatResponseInbox(
             storage_provider=self._sp, event_bus=self._bus,
@@ -214,6 +225,68 @@ class SlackChannelAdapter(ChannelAdapter):
             channel_id=self._channel.id, thread_external_id=thread_external_id,
             supports_threads=True, sender_name=sender_name, text=text)
         return chat
+
+    async def _handle_thread_command(self, *, parsed, thread_ts: str) -> None:
+        """Handle a /command typed inside a chat thread: render the result
+        in-thread. /agent shows an interactive select dropdown seeded with
+        THIS thread's chat so picking switches it."""
+        from primer.channel.chat_router import ChatChannelRouter
+        from primer.channel.commands import CommandExecutor, help_text
+        from primer.channel.slack.blocks import build_agent_select_blocks
+        if self._sp is None or self._conn is None:
+            return
+        client = _get_web_client(self._conn)
+        channel = self._channel.external_id
+        ex = CommandExecutor(storage_provider=self._sp)
+        # Resolve THIS thread's chat so commands target it.
+        router = ChatChannelRouter(storage_provider=self._sp)
+        chat, _ = await router.resolve_or_create(
+            channel_id=self._channel.id, thread_external_id=thread_ts,
+            supports_threads=True)
+
+        async def _post(text=None, blocks=None):
+            kwargs = {"channel": channel, "thread_ts": thread_ts}
+            if blocks is not None:
+                kwargs["blocks"] = blocks
+                kwargs["text"] = text or "Pick an agent:"
+            else:
+                kwargs["text"] = text or ""
+            await client.chat_postMessage(**kwargs)
+
+        verb = parsed.verb
+        if verb == "agent":
+            if parsed.arg:
+                res = await ex.set_agent(chat_id=chat.id, agent_id=parsed.arg)
+                await _post(text=res.text or "Agent switched.")
+            else:
+                picker = await ex.agent_picker()
+                if not picker.items:
+                    await _post(text="No agents available.")
+                    return
+                blocks = build_agent_select_blocks(result=picker, chat_id=chat.id)
+                await _post(text="Pick an agent:", blocks=blocks)
+            return
+        if verb == "list":
+            res = await ex.list_chats(channel_id=self._channel.id)
+            if res.items:
+                lines = [f"- {it['title']} ({it['agent_id']})" for it in res.items]
+                await _post(text="Chats on this channel:\n" + "\n".join(lines))
+            else:
+                await _post(text="No chats yet.")
+            return
+        if verb == "help":
+            await _post(text=help_text(supports_threads=True))
+            return
+        if verb == "new":
+            await _post(
+                text="Post a new top-level message in the channel to start a "
+                "new chat.")
+            return
+        if verb == "switch":
+            await _post(
+                text="On Slack, each thread is its own chat - use a new thread "
+                "instead of /switch.")
+            return
 
     def pending_ask_for_thread(self, thread_ts: str) -> dict[str, str] | None:
         """The ask_user (ws/sid/tcid) awaiting a reply in this thread, if any."""

@@ -210,13 +210,10 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             else:
                 text = "No chats yet on this channel."
         elif res.kind == "agent_picker":
-            if res.items:
-                lines = [
-                    f"- {it['label']} ({it['agent_id']})" for it in res.items
-                ]
-                text = "Pick an agent:\n" + "\n".join(lines)
-            else:
-                text = "No agents available."
+            # Native slash commands carry no thread_ts, so they cannot target a
+            # specific thread's chat. Point users at the in-thread path, which
+            # renders an interactive select seeded with that thread's chat.
+            text = "To switch an agent, type `/agent` inside a chat thread."
         else:
             text = res.text or ""
         if not text:
