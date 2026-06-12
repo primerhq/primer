@@ -73,7 +73,37 @@ def build_reject_modal(
     return modal
 
 
+class _AgentSelect(ui.Select):
+    """Single-pick agent dropdown; ``on_pick(interaction, agent_id)`` is
+    awaited with the chosen agent id."""
+
+    def __init__(self, *, options, on_pick) -> None:
+        self._on_pick = on_pick
+        super().__init__(
+            placeholder="Pick an agent",
+            min_values=1, max_values=1,
+            options=[
+                discord.SelectOption(
+                    label=str(o["label"])[:100], value=str(o["agent_id"]),
+                )
+                for o in options[:25]  # Discord caps a select at 25 options
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self._on_pick(interaction, self.values[0])
+
+
+class AgentSelectView(ui.View):
+    """Ephemeral view holding the agent-picker dropdown."""
+
+    def __init__(self, *, options, on_pick, timeout: float = 180.0) -> None:
+        super().__init__(timeout=timeout)
+        self.add_item(_AgentSelect(options=options, on_pick=on_pick))
+
+
 __all__ = [
+    "AgentSelectView",
     "ApprovalView",
     "REJECT_MODAL_CUSTOM_ID_PREFIX",
     "build_approval_custom_ids",

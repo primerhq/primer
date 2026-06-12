@@ -288,6 +288,12 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
         thread_id = (
             str(ch.id) if isinstance(ch, discord.Thread) else None
         )
+        # Agent switching is per-thread/per-chat: require a thread.
+        if thread_id is None:
+            await interaction.response.send_message(
+                "Run /agent inside a chat thread to switch its agent.",
+                ephemeral=True)
+            return
         try:
             res = await handle_app_command(
                 storage_provider=sp, command="agent", channel_id=channel_id,
@@ -295,14 +301,37 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
         except Exception as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
-        if res.kind == "agent_picker":
-            lines = [
-                f"{item['label']} (`{item['agent_id']}`)" for item in (res.items or [])
-            ]
-            text = "Available agents:\n" + "\n".join(lines) if lines else "No agents."
-        else:
-            text = res.text or "Done."
-        await interaction.response.send_message(text, ephemeral=True)
+        if value:
+            # Direct switch via /agent value:<id> - confirm explicitly.
+            await interaction.response.send_message(
+                f"OK - {res.text or 'Agent switched.'}", ephemeral=True)
+            return
+
+        from primer.channel.discord.views import AgentSelectView
+        opts = res.items or []
+        if not opts:
+            await interaction.response.send_message("No agents.", ephemeral=True)
+            return
+
+        async def _on_pick(pick_inter: discord.Interaction, agent_id: str) -> None:
+            try:
+                r2 = await handle_app_command(
+                    storage_provider=sp, command="agent",
+                    channel_id=channel_id, arg=agent_id, thread_id=thread_id)
+                msg = r2.text or "Agent switched."
+            except Exception as exc:
+                msg = f"Could not switch: {exc}"
+            # Confirm the switch (ephemeral). edit the picker message so the
+            # dropdown is replaced by the confirmation.
+            try:
+                await pick_inter.response.edit_message(content=f"OK - {msg}", view=None)
+            except Exception:
+                await pick_inter.response.send_message(msg, ephemeral=True)
+
+        view = AgentSelectView(options=opts, on_pick=_on_pick)
+        await interaction.response.send_message(
+            "Pick an agent:", view=view, ephemeral=True)
+        return
 
     @tree.command(name="help", description="Show available commands")
     async def _cmd_help(interaction: discord.Interaction):

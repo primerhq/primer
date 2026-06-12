@@ -9,10 +9,27 @@ import pytest
 discord = pytest.importorskip("discord")
 from primer.channel.discord.views import (
     REJECT_MODAL_CUSTOM_ID_PREFIX,
+    AgentSelectView,
     ApprovalView,
     build_approval_custom_ids,
     decode_custom_id,
 )
+
+
+def test_agent_select_view_builds_with_options():
+    async def _on_pick(interaction, agent_id):  # noqa: ANN001
+        return None
+
+    view = AgentSelectView(
+        options=[
+            {"agent_id": "a", "label": "A"},
+            {"agent_id": "b", "label": "B"},
+        ],
+        on_pick=_on_pick,
+    )
+    select = view.children[0]
+    assert len(select.options) == 2
+    assert {o.value for o in select.options} == {"a", "b"}
 
 
 def test_build_custom_ids_are_under_100_chars():
