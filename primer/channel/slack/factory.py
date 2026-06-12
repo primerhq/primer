@@ -94,6 +94,35 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         except Exception:
             logger.exception("slack: views.open failed")
 
+    @app.action("pick_agent")
+    async def _on_pick_agent(ack, body, client):
+        await ack()
+        try:
+            value = body["actions"][0]["selected_option"]["value"]
+        except Exception:
+            logger.warning("slack: malformed pick_agent payload")
+            return
+        channel_id = body.get("channel", {}).get("id")
+        entry = SLACK_CONNECTIONS.entry(provider_id)
+        adapter = entry.adapters_by_channel_id.get(channel_id) if entry else None
+        if adapter is None or getattr(adapter, "_sp", None) is None:
+            return
+        from primer.channel.slack.blocks import parse_agent_selection
+        try:
+            notice = await parse_agent_selection(
+                storage_provider=adapter._sp, selected_value=value)
+        except Exception:
+            logger.exception("slack: pick_agent set_agent failed")
+            return
+        try:
+            thread_ts = body.get("message", {}).get("thread_ts")
+            await client.chat_postMessage(
+                channel=channel_id, text=notice,
+                **({"thread_ts": thread_ts} if thread_ts else {}),
+            )
+        except Exception:
+            logger.exception("slack: pick_agent post notice failed")
+
     @app.view(REJECT_MODAL_CALLBACK_ID)
     async def _on_modal_submit(ack, body, view, client):
         await ack()
