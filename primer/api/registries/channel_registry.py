@@ -134,7 +134,7 @@ class ChannelRegistry:
                 left=FieldRef(name="enabled"), op=Op.EQ,
                 right=Value(value=True),
             ),
-            OffsetPage(offset=0, length=500),
+            OffsetPage(offset=0, length=200),
         )
         started = 0
         for assoc in page.items:
