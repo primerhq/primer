@@ -234,14 +234,34 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                 return sp
         return None
 
+    def _resolve_adapter(interaction: discord.Interaction):
+        """Resolve the chat adapter for the interaction's channel/thread.
+
+        Commands run in a thread report the thread as ``interaction.channel``;
+        the adapter is keyed by the PARENT channel snowflake. Returns the
+        adapter (which carries ``_sp`` and the primer ``_channel``) or None.
+        """
+        entry = DISCORD_CONNECTIONS.entry(provider_id)
+        if entry is None:
+            return None
+        ch = interaction.channel
+        parent = (
+            ch.parent_id if isinstance(ch, discord.Thread)
+            else interaction.channel_id
+        )
+        if parent is None:
+            return None
+        return entry.adapters_by_channel_id.get(str(parent))
+
     @tree.command(name="new", description="Start a new chat (pick agent)")
     async def _cmd_new(interaction: discord.Interaction):
-        sp = _resolve_sp(provider_id)
+        adapter = _resolve_adapter(interaction)
+        sp = getattr(adapter, "_sp", None) if adapter is not None else None
         if sp is None:
             await interaction.response.send_message(
                 "Chat not configured for this channel.", ephemeral=True)
             return
-        channel_id = str(interaction.channel_id or "")
+        channel_id = adapter._channel.id
         try:
             res = await handle_app_command(
                 storage_provider=sp, command="new", channel_id=channel_id,
@@ -255,12 +275,13 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
 
     @tree.command(name="list", description="List chats in this channel")
     async def _cmd_list(interaction: discord.Interaction):
-        sp = _resolve_sp(provider_id)
+        adapter = _resolve_adapter(interaction)
+        sp = getattr(adapter, "_sp", None) if adapter is not None else None
         if sp is None:
             await interaction.response.send_message(
                 "Chat not configured for this channel.", ephemeral=True)
             return
-        channel_id = str(interaction.channel_id or "")
+        channel_id = adapter._channel.id
         try:
             res = await handle_app_command(
                 storage_provider=sp, command="list", channel_id=channel_id,
@@ -278,12 +299,13 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
     @tree.command(name="agent", description="Switch agent for this thread (or pick one)")
     @app_commands.describe(value="Agent ID to switch to; omit to list available agents")
     async def _cmd_agent(interaction: discord.Interaction, value: str = ""):
-        sp = _resolve_sp(provider_id)
+        adapter = _resolve_adapter(interaction)
+        sp = getattr(adapter, "_sp", None) if adapter is not None else None
         if sp is None:
             await interaction.response.send_message(
                 "Chat not configured for this channel.", ephemeral=True)
             return
-        channel_id = str(interaction.channel_id or "")
+        channel_id = adapter._channel.id
         ch = interaction.channel
         thread_id = (
             str(ch.id) if isinstance(ch, discord.Thread) else None
