@@ -1347,11 +1347,13 @@ def _mount_routers(
     from primer.api.routers.channels import (
         make_channel_provider_router,
         make_channel_router,
+        make_chat_channel_association_router,
         make_workspace_channel_association_router,
     )
     app.include_router(make_channel_provider_router(), prefix=prefix, dependencies=auth_dep)
     app.include_router(make_channel_router(), prefix=prefix, dependencies=auth_dep)
     app.include_router(make_workspace_channel_association_router(), prefix=prefix, dependencies=auth_dep)
+    app.include_router(make_chat_channel_association_router(), prefix=prefix, dependencies=auth_dep)
     # Harness REST router.
     from primer.api.routers.harness import harness_router
     app.include_router(harness_router, dependencies=auth_dep)

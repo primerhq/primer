@@ -9,9 +9,16 @@ from fastapi import APIRouter, Request
 from primer.api.deps import get_storage_provider
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
+from primer.channel.adapter import provider_supports_threads
+from primer.channel.constraints import (
+    AssociationCounts,
+    check_chat_association_allowed,
+    check_workspace_association_allowed,
+)
 from primer.model.channel import (
     Channel,
     ChannelProvider,
+    ChatChannelAssociation,
     WorkspaceChannelAssociation,
 )
 from primer.model.except_ import ConflictError
@@ -37,6 +44,42 @@ def _get_channel_storage(request: Request):
 
 def _get_association_storage(request: Request):
     return get_storage_provider(request).get_storage(WorkspaceChannelAssociation)
+
+
+def _get_chat_association_storage(request: Request):
+    return get_storage_provider(request).get_storage(ChatChannelAssociation)
+
+
+# ---------------------------------------------------------------------------
+# Single/multi constraint helpers (shared by both association pre-create hooks)
+# ---------------------------------------------------------------------------
+
+
+async def _channel_supports_threads(sp, channel_id: str) -> bool:
+    channel = await sp.get_storage(Channel).get(channel_id)
+    if channel is None:
+        # Let reference checks surface the real error; default to single-type
+        # (the stricter rule) so we never silently over-allow.
+        return False
+    provider = await sp.get_storage(ChannelProvider).get(channel.provider_id)
+    if provider is None:
+        return False
+    return provider_supports_threads(provider.provider)
+
+
+async def _count_associations(sp, channel_id: str) -> AssociationCounts:
+    ws_page = await sp.get_storage(WorkspaceChannelAssociation).find(
+        Q(WorkspaceChannelAssociation).where("channel_id", channel_id).build(),
+        OffsetPage(offset=0, length=200),
+    )
+    chat_page = await sp.get_storage(ChatChannelAssociation).find(
+        Q(ChatChannelAssociation).where("channel_id", channel_id).build(),
+        OffsetPage(offset=0, length=200),
+    )
+    return AssociationCounts(
+        workspace_assocs=len(ws_page.items),
+        chat_assocs=len(chat_page.items),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +181,22 @@ async def _association_on_pre_create(
             f"channel_id={entity.channel_id!r} already exists "
             f"(id={page.items[0].id!r})"
         )
+    # Single/multi constraint: a single-type channel allows exactly one
+    # association of any kind. Enforced here on the workspace-association path
+    # in addition to the (workspace_id, channel_id) uniqueness check above.
+    supports = await _channel_supports_threads(sp, entity.channel_id)
+    counts = await _count_associations(sp, entity.channel_id)
+    check_workspace_association_allowed(supports_threads=supports, counts=counts)
+
+
+async def _chat_association_on_pre_create(
+    entity: ChatChannelAssociation, request: Request,
+) -> None:
+    """Enforce the single/multi constraint on the chat-association path."""
+    sp = get_storage_provider(request)
+    supports = await _channel_supports_threads(sp, entity.channel_id)
+    counts = await _count_associations(sp, entity.channel_id)
+    check_chat_association_allowed(supports_threads=supports, counts=counts)
 
 
 def make_workspace_channel_association_router() -> APIRouter:
@@ -175,8 +234,33 @@ def make_workspace_channel_association_router() -> APIRouter:
     return router
 
 
+def make_chat_channel_association_router() -> APIRouter:
+    """Flat CRUD at /v1/chat_channel_associations + scoped under a channel."""
+    router = APIRouter(tags=["chat_channel_associations"])
+    flat = make_crud_router(
+        model_cls=ChatChannelAssociation,
+        storage_dep=_get_chat_association_storage,
+        plural="chat_channel_associations",
+        tag="chat_channel_associations",
+        on_pre_create=_chat_association_on_pre_create,
+    )
+    router.include_router(flat)
+    scoped = make_crud_router(
+        model_cls=ChatChannelAssociation,
+        storage_dep=_get_chat_association_storage,
+        plural="chat_associations",
+        tag="chat_channel_associations",
+        scope_field="channel_id",
+        parent_path_segment="channels",
+        on_pre_create=_chat_association_on_pre_create,
+    )
+    router.include_router(scoped)
+    return router
+
+
 __all__ = [
     "make_channel_provider_router",
     "make_channel_router",
+    "make_chat_channel_association_router",
     "make_workspace_channel_association_router",
 ]
