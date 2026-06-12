@@ -598,7 +598,7 @@ class ChatTurnRunner:
                 try:
                     rp = await self._tools.execute(tc)
                 except YieldToWorker as exc:
-                    if not _is_soft_yield_tool(exc):
+                    if not _is_soft_yield_tool(exc) and not _is_switch_tool(exc):
                         # Out of scope on the chat surface (mcp_task
                         # deferred; sleep/watch unreachable). Fail closed
                         # inline like a normal tool error so the agent

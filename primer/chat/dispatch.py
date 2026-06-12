@@ -36,6 +36,32 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_INTERVAL_SECONDS = 10.0
 
 
+async def _apply_switch_handoff(
+    runner: ChatTurnRunner,
+    chat: Chat,
+    exc: YieldToWorker,
+    deps: ChatDispatchDeps,
+) -> str:
+    """End the current turn, switch the chat's agent, and queue the handoff
+    prompt as the next user_message so the new agent runs it. Returns the
+    turn_status the caller should release with (``'claimable'`` — the queued
+    handoff is re-served and runs under the new agent)."""
+    from primer.chat.enqueue import append_user_message
+
+    await runner.handle_switch(chat, exc)
+    chat_storage = deps.storage_provider.get_storage(Chat)
+    fresh = await chat_storage.get(chat.id)
+    if fresh is not None and fresh.pending_handoff:
+        await append_user_message(
+            chat=fresh,
+            parts=[TextPart(text=fresh.pending_handoff)],
+            storage_provider=deps.storage_provider,
+        )
+        fresh.pending_handoff = None
+        await chat_storage.update(fresh)
+    return "claimable"  # re-serve: new claim runs the new agent
+
+
 @dataclass
 class ChatDispatchDeps:
     """Bundle of runtime dependencies the worker injects per task."""
@@ -157,6 +183,11 @@ async def run_one_chat_turn(
                             cleared.cancel_requested_at = None
                             await chat_storage.update(cleared)
                 except YieldToWorker as exc:
+                    from primer.chat.executor import _is_switch_tool
+                    if _is_switch_tool(exc):
+                        return await _apply_switch_handoff(
+                            runner, chat, exc, deps,
+                        )
                     await runner.soft_yield(chat, exc)
                     return "idle"
                 except Exception:
@@ -193,19 +224,7 @@ async def run_one_chat_turn(
             except YieldToWorker as exc:
                 from primer.chat.executor import _is_switch_tool
                 if _is_switch_tool(exc):
-                    await runner.handle_switch(chat, exc)
-                    fresh = await chat_storage.get(chat.id)
-                    if fresh is not None and fresh.pending_handoff:
-                        from primer.chat.enqueue import append_user_message
-                        from primer.model.chat import TextPart
-                        await append_user_message(
-                            chat=fresh,
-                            parts=[TextPart(text=fresh.pending_handoff)],
-                            storage_provider=deps.storage_provider,
-                        )
-                        fresh.pending_handoff = None
-                        await chat_storage.update(fresh)
-                    return "claimable"  # re-serve: new claim runs the new agent
+                    return await _apply_switch_handoff(runner, chat, exc, deps)
                 await runner.soft_yield(chat, exc)
                 return "idle"
             except Exception:
