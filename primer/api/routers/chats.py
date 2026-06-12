@@ -109,6 +109,60 @@ async def create_chat(
     return await chats_storage.create(chat)
 
 
+class ChatSwitchAgentBody(BaseModel):
+    """Body of ``POST /v1/chats/{id}/agent``."""
+
+    agent_id: str = Field(
+        ..., min_length=1,
+        description="Id of the agent to switch this chat to.",
+    )
+
+
+@chats_router.post(
+    "/chats/{chat_id}/agent",
+    response_model=Chat,
+    summary="Switch the chat's current agent (auto-rejects any pending gate)",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def switch_chat_agent(
+    body: ChatSwitchAgentBody,
+    chat_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+    agents=Depends(get_agent_storage),
+) -> Chat:
+    """Re-point a chat at a different agent for its next turn.
+
+    The agent + its system prompt are resolved fresh each turn from
+    ``chat.agent_id``, so updating that field is the entire switch — the
+    conversation history is shared context the new agent inherits. Any
+    pending gate (ask_user / approval) is auto-rejected first so the
+    append-only history stays valid before the handoff.
+    """
+    chats_storage = sp.get_storage(Chat)
+    chat = await chats_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+    if chat.status == "ended":
+        raise ConflictError(f"Chat {chat_id!r} has ended")
+    agent = await agents.get(body.agent_id)
+    if agent is None:
+        raise NotFoundError(f"Agent {body.agent_id!r} does not exist")
+    if chat.agent_id == body.agent_id:
+        return chat  # idempotent no-op
+    if chat.pending_tool_call is not None:
+        from primer.chat.pending import abandon_pending_rows
+        messages_storage = sp.get_storage(ChatMessage)
+        await abandon_pending_rows(
+            chat, pending=chat.pending_tool_call,
+            messages=messages_storage, chats=chats_storage,
+            result_text="auto-rejected: agent switched",
+            terminal_reason="agent_switch",
+        )
+    chat.agent_id = body.agent_id
+    await chats_storage.update(chat)
+    return chat
+
+
 @chats_router.get(
     "/chats",
     summary="List chats (paginated)",
@@ -1002,6 +1056,7 @@ def _parse_user_message_parts(frame: dict[str, Any]) -> list:
 
 __all__ = [
     "ChatCreateBody",
+    "ChatSwitchAgentBody",
     "CompactResponse",
     "chats_router",
     "compact_chat",
@@ -1010,4 +1065,5 @@ __all__ = [
     "get_chat",
     "list_chat_messages",
     "list_chats",
+    "switch_chat_agent",
 ]

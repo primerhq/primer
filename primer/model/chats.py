@@ -72,10 +72,11 @@ class Chat(Identifiable):
         ...,
         min_length=1,
         description=(
-            "Agent that handles every turn of this chat. Pinned at "
-            "creation — switching agents mid-chat would discard the "
-            "system prompt + tool context the conversation has built "
-            "up. Future work: optionally pin an LLM provider override."
+            "The chat's CURRENT agent - it handles the next turn. Switchable "
+            "mid-chat via POST /v1/chats/{id}/agent, which auto-resolves any "
+            "pending gate first. The agent + its system prompt are resolved "
+            "fresh each turn and never stored in history, so switching keeps "
+            "the full conversation as shared context."
         ),
     )
     created_at: datetime = Field(...)
