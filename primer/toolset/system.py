@@ -66,6 +66,7 @@ from primer.model.except_ import (
 )
 from primer.model.graph import Graph, GraphThread
 from primer.model.provider import (
+    ArtifactStorageProvider,
     CrossEncoderProvider,
     EmbeddingProvider,
     LLMProvider,
@@ -332,6 +333,14 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
                 "password": "secret",
                 "database": "primer",
             },
+        },
+    ),
+    "artifact_storage_provider": _EntityHint(
+        sample_id="artifact-storage-1",
+        create_body={
+            "id": "artifact-storage-1",
+            "provider": "db",
+            "config": {},
         },
     ),
     "toolset": _EntityHint(
@@ -1363,6 +1372,7 @@ def build_system_toolset(
         ("agent_thread", "agent_threads", Thread, None, None, None),
         ("graph_thread", "graph_threads", GraphThread, None, None, None),
         ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp),
+        ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, None, None),
         ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, None, None),
         ("channel_provider", "channel_providers", ChannelProvider, None, None, None),
         ("channel", "channels", Channel, None, None, None),

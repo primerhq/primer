@@ -32,6 +32,9 @@ class _StubRegistry:
     def __init__(self, adapter):
         self._a = adapter
 
+    def peek_adapter(self, channel_id):
+        return self._a
+
     async def get_adapter(self, channel_id):
         return self._a
 

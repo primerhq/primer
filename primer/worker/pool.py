@@ -85,6 +85,7 @@ class WorkerPool:
         channel_dispatcher=None,
         event_bus: "EventBus | None" = None,
         chat_tick_router: "ChatTickRouter | None" = None,
+        artifact_storage_registry: Any | None = None,
         engine: "ClaimEngine",
     ) -> None:
         self.config = config
@@ -104,6 +105,7 @@ class WorkerPool:
         self._channel_dispatcher = channel_dispatcher
         self._event_bus = event_bus
         self._chat_tick_router = chat_tick_router
+        self._artifact_storage_registry = artifact_storage_registry
         self._engine = engine
 
         self._worker_id: str = ""
@@ -958,6 +960,11 @@ class WorkerPool:
             chat_channel_dispatcher = ChatChannelDispatcher(
                 storage_provider=self._storage,
                 registry=self._channel_dispatcher._registry,
+                # Out-of-proc workers never warm inbound gateways, so relay
+                # peeks the (cold) registry and falls back to the bus; the
+                # API process fulfils the post. In-proc (api+worker) the
+                # shared registry is warm and relay posts directly.
+                event_bus=self._event_bus,
             )
 
         deps = ChatDispatchDeps(
@@ -966,6 +973,7 @@ class WorkerPool:
             event_bus=self._event_bus,
             chat_tick_router=self._chat_tick_router,
             chat_channel_dispatcher=chat_channel_dispatcher,
+            artifact_storage_registry=self._artifact_storage_registry,
         )
         # run_one_chat_turn returns the terminal turn_status DISPOSITION;
         # it no longer writes turn_status itself. We map it to the

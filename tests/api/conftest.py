@@ -44,6 +44,10 @@ async def app(
         storage_provider=fake_storage_provider,  # type: ignore[arg-type]
         provider_registry=fake_provider_registry,
     )
+    # Seed the reserved default artifact provider (parity with the lifespan).
+    if getattr(_app.state, "seed_artifact_default", None) is not None:
+        await _app.state.seed_artifact_default()
+
     # Bootstrap web-search reserved rows (DDG provider + active config
     # singleton) at test startup. Matches the production lifespan.
     from primer.api.app import _bootstrap_web_search

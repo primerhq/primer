@@ -269,6 +269,31 @@ def _make_lifespan(config: AppConfig):
         )
         app.state.semantic_search_registry = semantic_search_registry
 
+        # Artifact storage (chat media bytes). Build the registry and seed the
+        # reserved default DB-backed provider so media works with zero operator
+        # config. Idempotent: a concurrent boot may race the create.
+        from primer.api.registries.artifact_storage_registry import (
+            DEFAULT_ARTIFACT_PROVIDER_ID,
+            ArtifactStorageRegistry,
+        )
+        from primer.model.provider import ArtifactStorageProvider
+        _asp_storage = storage_provider.get_storage(ArtifactStorageProvider)
+        artifact_storage_registry = ArtifactStorageRegistry(
+            storage=_asp_storage,
+            storage_provider=storage_provider,
+        )
+        app.state.artifact_storage_registry = artifact_storage_registry
+        try:
+            if await _asp_storage.get(DEFAULT_ARTIFACT_PROVIDER_ID) is None:
+                await _asp_storage.create(ArtifactStorageProvider(
+                    id=DEFAULT_ARTIFACT_PROVIDER_ID, provider="db",
+                ))
+                logger.info(
+                    "bootstrap: created reserved default artifact provider (db)",
+                )
+        except Exception:
+            logger.exception("seeding default artifact provider failed")
+
         from primer.agent.approval import ApprovalResolver
         from primer.model.tool_approval import ToolApprovalPolicy
 
@@ -696,6 +721,17 @@ def _make_lifespan(config: AppConfig):
         # take seconds to reach READY).
         channel_registry.set_claim_engine(claim_engine)
 
+        # Only a process that OWNS inbound may open channel gateways. Warming a
+        # chat adapter opens its inbound listener (Telegram long-poll / Slack
+        # socket / Discord gateway); doing that in a worker-only process would
+        # be a SECOND inbound connection competing with the API's (Telegram 409
+        # Conflict; duplicate Slack/Discord deliveries). Worker-only processes
+        # relay outbound over the bus instead (see _forward_chat_relays_from_bus
+        # below + ChatChannelDispatcher), so they must NOT warm.
+        owns_inbound = config.runtime_mode in (
+            RuntimeMode.API, RuntimeMode.API_PLUS_WORKER,
+        )
+
         async def _warm_chat_channels() -> None:
             try:
                 warmed = await channel_registry.warm_chat_channels()
@@ -704,9 +740,12 @@ def _make_lifespan(config: AppConfig):
             except Exception:
                 logger.exception("warm_chat_channels failed during startup")
 
-        app.state.chat_channel_warm_task = asyncio.create_task(
-            _warm_chat_channels(),
-        )
+        if owns_inbound:
+            app.state.chat_channel_warm_task = asyncio.create_task(
+                _warm_chat_channels(),
+            )
+        else:
+            app.state.chat_channel_warm_task = None
 
         # Build the always-on _workspaces toolset now that the scheduler,
         # claim engine, and event bus exist (any may be None when no
@@ -931,6 +970,64 @@ def _make_lifespan(config: AppConfig):
             chat_tick_task = None
             app.state.chat_tick_forwarder_task = None
 
+        # Chat -> channel relay forwarder. An out-of-proc worker cannot post to
+        # a channel (it deliberately does not own the inbound gateway), so it
+        # publishes a tiny ``chat:<id>:relay`` signal; the inbound-owning
+        # process re-derives the text/gate from storage and posts via its warm
+        # adapter. Only runs where inbound lives (API / api+worker). In a
+        # single api+worker process the worker posts directly via the shared
+        # warm registry and never publishes, so this stays idle there.
+        async def _forward_chat_relays_from_bus() -> None:
+            from primer.channel.chat_dispatcher import (
+                ChatChannelDispatcher,
+                derive_chat_gate_envelope,
+                derive_final_relay_text,
+                parse_relay_event_key,
+            )
+
+            relayer = ChatChannelDispatcher(
+                storage_provider=storage_provider,
+                registry=channel_registry,
+                event_bus=None,  # never republish: terminal, no bus loop
+                allow_build=True,  # inbound-owning: may warm the adapter
+            )
+            sub = event_bus.subscribe()
+            try:
+                async for event in sub:
+                    cid = parse_relay_event_key(event.event_key)
+                    if cid is None:
+                        continue
+                    kind = (event.payload or {}).get("kind")
+                    try:
+                        if kind == "text":
+                            text = await derive_final_relay_text(
+                                storage_provider, cid)
+                            if text:
+                                await relayer.relay_text(chat_id=cid, text=text)
+                        elif kind == "gate":
+                            env = await derive_chat_gate_envelope(
+                                storage_provider, cid)
+                            if env is not None:
+                                await relayer.dispatch_gate(
+                                    chat_id=cid, envelope=env)
+                    except Exception:
+                        logger.exception(
+                            "chat relay forwarder: post for %s failed", cid)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                await sub.aclose()
+
+        if event_bus is not None and owns_inbound:
+            chat_relay_task = asyncio.create_task(
+                _forward_chat_relays_from_bus(),
+                name="chat-relay-forwarder",
+            )
+            app.state.chat_relay_forwarder_task = chat_relay_task
+        else:
+            chat_relay_task = None
+            app.state.chat_relay_forwarder_task = None
+
         # Process-local router for session tick events. One bus subscription
         # per process feeds it; WS handlers subscribe per-session.
         from primer.session.tick_router import SessionTickRouter
@@ -986,6 +1083,7 @@ def _make_lifespan(config: AppConfig):
                 channel_dispatcher=channel_dispatcher,
                 event_bus=event_bus,
                 chat_tick_router=chat_tick_router,
+                artifact_storage_registry=artifact_storage_registry,
                 engine=claim_engine,
             )
             logger.info("lifespan: worker_pool.start() begin")
@@ -1182,6 +1280,15 @@ def _make_lifespan(config: AppConfig):
                         pass
                 except Exception:
                     logger.exception("session_tick_task teardown failed")
+            if chat_relay_task is not None:
+                try:
+                    chat_relay_task.cancel()
+                    try:
+                        await chat_relay_task
+                    except asyncio.CancelledError:
+                        pass
+                except Exception:
+                    logger.exception("chat_relay_task teardown failed")
             if _claim_depth_task is not None:
                 try:
                     _claim_depth_task.cancel()
@@ -1229,6 +1336,12 @@ def _make_lifespan(config: AppConfig):
                 await semantic_search_registry.aclose()
             except Exception:
                 logger.exception("semantic_search_registry.aclose failed")
+            try:
+                asr = getattr(app.state, "artifact_storage_registry", None)
+                if asr is not None:
+                    await asr.aclose()
+            except Exception:
+                logger.exception("artifact_storage_registry.aclose failed")
             try:
                 await workspace_registry.aclose()
             except Exception:
@@ -1332,6 +1445,8 @@ def _mount_routers(
     from primer.api.routers.tools import tools_router
     app.include_router(tools_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(semantic_search_router, prefix=prefix, dependencies=auth_dep)
+    from primer.api.routers.artifact_storage import artifact_storage_router
+    app.include_router(artifact_storage_router, prefix=prefix, dependencies=auth_dep)
     # web_search_providers_helpers_router MUST be registered before
     # web_search_providers_router so GET /web_search_providers/_types is
     # matched by the literal route rather than being captured as id="_types"
@@ -2012,6 +2127,25 @@ def create_test_app(
     app.state.misc_toolset = misc_toolset
     app.state.web_toolset = web_toolset
     app.state.semantic_search_registry = _test_ssp_registry
+    # Artifact storage registry + reserved default (parity with the lifespan).
+    from primer.api.registries.artifact_storage_registry import (
+        DEFAULT_ARTIFACT_PROVIDER_ID as _ART_DEFAULT,
+        ArtifactStorageRegistry as _ArtReg,
+    )
+    from primer.model.provider import ArtifactStorageProvider as _ASP
+    _art_storage = storage_provider.get_storage(_ASP)
+    app.state.artifact_storage_registry = _ArtReg(
+        storage=_art_storage, storage_provider=storage_provider,
+    )
+
+    async def _seed_artifact_default() -> None:
+        try:
+            if await _art_storage.get(_ART_DEFAULT) is None:
+                await _art_storage.create(_ASP(id=_ART_DEFAULT, provider="db"))
+        except Exception:
+            logger.exception("test app: seeding default artifact provider failed")
+
+    app.state.seed_artifact_default = _seed_artifact_default
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
     app.state.search_toolset = None
@@ -2158,6 +2292,7 @@ def create_test_app(
             semantic_search_registry=_test_ssp_registry,
             event_bus=_test_event_bus,
             chat_tick_router=_chat_tick_router,
+            artifact_storage_registry=app.state.artifact_storage_registry,
             engine=_claim_engine,
         )
         app.state.worker_pool = _pool

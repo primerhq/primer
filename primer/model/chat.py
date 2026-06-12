@@ -126,15 +126,26 @@ class _BinarySourceMixin(BaseModel):
     """Validation shared by binary-bearing parts (image, document, audio, video).
 
     Each such part must carry the payload via at least one of ``data``,
-    ``url``, or ``file_id``; the adapter chooses which surface to forward
-    based on the target provider.
+    ``url``, ``file_id``, or ``artifact_id``; the adapter chooses which surface
+    to forward based on the target provider.
     """
+
+    artifact_id: str | None = Field(
+        default=None,
+        description=(
+            "Reference to a stored artifact (chat media bytes) in the "
+            "ArtifactStorage backend. The bytes are rehydrated into ``data`` "
+            "at turn time and at outbound-relay time; LLM provider adapters "
+            "never see this field."
+        ),
+    )
 
     @model_validator(mode="after")
     def _require_one_source(self) -> "_BinarySourceMixin":
-        if not (self.data or self.url or self.file_id):  # type: ignore[attr-defined]
+        if not (self.data or self.url or self.file_id or self.artifact_id):  # type: ignore[attr-defined]
             raise ValueError(
-                "at least one of 'data', 'url', or 'file_id' must be provided"
+                "at least one of 'data', 'url', 'file_id', or 'artifact_id' "
+                "must be provided"
             )
         return self
 

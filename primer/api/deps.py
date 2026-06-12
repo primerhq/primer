@@ -109,6 +109,27 @@ def get_semantic_search_storage(
     return storage_provider.get_storage(SemanticSearchProvider)
 
 
+def get_artifact_storage_registry(request: Request):
+    """Return the per-process ArtifactStorageRegistry stored on app.state."""
+    reg = getattr(request.app.state, "artifact_storage_registry", None)
+    if reg is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "/errors/subsystem-inactive",
+                "title": "Artifact storage registry not configured",
+            },
+        )
+    return reg
+
+
+def get_artifact_storage_provider_storage(
+    storage_provider=Depends(get_storage_provider),
+) -> "Storage":
+    from primer.model.provider import ArtifactStorageProvider
+    return storage_provider.get_storage(ArtifactStorageProvider)
+
+
 def get_workspace_registry(request: Request) -> WorkspaceRegistry:
     """Resolve the live :class:`WorkspaceRegistry`.
 

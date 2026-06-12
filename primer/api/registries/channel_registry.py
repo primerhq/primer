@@ -60,6 +60,19 @@ class ChannelRegistry:
         """Late-bind the claim engine (built after this registry at boot)."""
         self._claim_engine = claim_engine
 
+    def peek_adapter(self, channel_id: str) -> ChannelAdapter | None:
+        """Return the already-built adapter for ``channel_id``, or None.
+
+        Cache-only: unlike :meth:`get_adapter` this never builds or
+        ``initialize()``-s an adapter. The chat-relay path uses it so an
+        out-of-proc worker (which deliberately does NOT warm inbound channel
+        gateways) cannot lazily open a *second* inbound connection just to
+        post an outbound message. When this returns None the caller routes
+        the relay over the event bus to the process that owns the warm
+        adapter instead of building one here.
+        """
+        return self._adapters.get(channel_id)
+
     async def get_adapter(self, channel_id: str) -> ChannelAdapter:
         cached = self._adapters.get(channel_id)
         if cached is not None:

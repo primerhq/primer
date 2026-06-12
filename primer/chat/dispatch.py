@@ -77,63 +77,64 @@ class ChatDispatchDeps:
     # Optional chat->channel relay. None in pure-storage tests / unbound chats.
     chat_channel_dispatcher: Any | None = None
 
+    # Optional artifact registry for rehydrating media parts (artifact_id ->
+    # inline data) before the LLM turn. None in pure-storage tests; parts then
+    # pass through unhydrated (harmless for text-only chats).
+    artifact_storage_registry: Any | None = None
+
+
+async def _hydrate_media_parts(deps: "ChatDispatchDeps", parts: list) -> list:
+    """Replace ``artifact_id`` references with inline ``data`` so the LLM turn
+    sees the bytes. No-op when no artifact registry is wired or no part
+    references an artifact."""
+    reg = deps.artifact_storage_registry
+    if reg is None or not any(getattr(p, "artifact_id", None) for p in parts):
+        return parts
+    try:
+        store = await reg.get_default()
+    except Exception:
+        logger.warning("media hydration: no default artifact store; skipping")
+        return parts
+    from primer.channel.media import hydrate_part
+    out = []
+    for p in parts:
+        if getattr(p, "artifact_id", None):
+            try:
+                out.append(await hydrate_part(store, p))
+            except Exception:
+                logger.warning("media hydration failed for a part; dropping it")
+                continue
+        else:
+            out.append(p)
+    return out
+
 
 async def _relay_final_text(deps: "ChatDispatchDeps", chat_id: str) -> None:
     """Post the turn's final assistant text to the bound channel (relay_mode
-    'final'). No-op when no dispatcher is wired or the chat is unbound."""
+    'final'). No-op when no dispatcher is wired or the chat is unbound.
+
+    Text derivation lives in :func:`derive_final_relay_text` so the API-side
+    relay forwarder reconstructs the exact same text from storage after an
+    out-of-proc worker signals a relay over the bus."""
     if deps.chat_channel_dispatcher is None:
         return
-    msgs = deps.storage_provider.get_storage(ChatMessage)
-    pred = Predicate(
-        left=FieldRef(name="chat_id"), op=Op.EQ, right=Value(value=chat_id))
-    rows: list[ChatMessage] = []
-    offset = 0
-    while True:
-        page = await msgs.find(
-            pred, OffsetPage(offset=offset, length=200),
-            order_by=[OrderBy(field="seq", direction="asc")])
-        rows.extend(page.items)
-        if len(page.items) < 200:
-            break
-        offset += 200
-    last_done = max(
-        (i for i, r in enumerate(rows) if r.kind == "done"), default=None)
-    if last_done is None:
-        return
-    prev_done = max(
-        (i for i in range(last_done) if rows[i].kind == "done"), default=-1)
-    chunks: list[str] = []
-    for r in rows[prev_done + 1:last_done]:
-        if r.kind == "assistant_token":
-            delta = (r.payload or {}).get("delta")
-            if isinstance(delta, str):
-                chunks.append(delta)
-    text = "".join(chunks).strip()
+    from primer.channel.chat_dispatcher import derive_final_relay_text
+    text = await derive_final_relay_text(deps.storage_provider, chat_id)
     if text:
         await deps.chat_channel_dispatcher.relay_text(chat_id=chat_id, text=text)
 
 
 async def _forward_chat_gate(deps: "ChatDispatchDeps", chat_id: str) -> None:
-    """Forward a freshly-set pending gate to the bound channel."""
+    """Forward a freshly-set pending gate to the bound channel.
+
+    The envelope is built by :func:`derive_chat_gate_envelope` (shared with
+    the API-side relay forwarder) from the persisted ``pending_tool_call``."""
     if deps.chat_channel_dispatcher is None:
         return
-    from primer.channel.adapter import PromptEnvelope
-    chat = await deps.storage_provider.get_storage(Chat).get(chat_id)
-    if chat is None or chat.pending_tool_call is None:
+    from primer.channel.chat_dispatcher import derive_chat_gate_envelope
+    env = await derive_chat_gate_envelope(deps.storage_provider, chat_id)
+    if env is None:
         return
-    pending = chat.pending_tool_call
-    mode = pending.get("mode")
-    kind = "tool_approval" if mode == "approval" else "ask_user"
-    if mode == "approval":
-        original = pending.get("original_call") or {}
-        prompt = f"Approve running `{original.get('name', '?')}`?"
-    else:
-        prompt = "The agent is asking for your input."
-    env = PromptEnvelope(
-        kind=kind, workspace_id="", session_id=chat_id,
-        tool_call_id=pending.get("tool_call_id", ""), prompt=prompt,
-        response_schema=pending.get("response_schema"), choices=None,
-        timeout_at_iso=None)
     await deps.chat_channel_dispatcher.dispatch_gate(chat_id=chat_id, envelope=env)
 
 
@@ -270,9 +271,10 @@ async def run_one_chat_turn(
                     await chat_storage.update(final)
                 return "idle"
             try:
+                turn_parts = await _hydrate_media_parts(deps, _parts_from(next_um))
                 async for row in runner.run_turn(
                     chat,
-                    _parts_from(next_um),
+                    turn_parts,
                     already_persisted_user_msg=next_um,
                 ):
                     await deps.event_bus.publish(

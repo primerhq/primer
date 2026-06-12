@@ -132,6 +132,41 @@ async def test_api_plus_worker_mode_starts_worker_pool(
         assert len(workers) == 1
 
 
+async def test_worker_only_mode_does_not_warm_or_forward_chat_channels(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_storage_provider: _FakeStorageProvider,
+) -> None:
+    """A worker-only process must NOT open inbound channel gateways: it
+    neither warms chat adapters nor runs the relay forwarder (it relays
+    outbound over the bus instead). Both belong to the inbound owner."""
+    monkeypatch.setattr(
+        "primer.api.app._build_storage_provider",
+        lambda _cfg: mock_storage_provider,
+    )
+    cfg = AppConfig(runtime_mode=RuntimeMode.WORKER, scheduler=None)
+    app = create_app(cfg)
+    async with app.router.lifespan_context(app):
+        assert app.state.chat_channel_warm_task is None
+        assert app.state.chat_relay_forwarder_task is None
+
+
+async def test_api_plus_worker_mode_warms_and_forwards_chat_channels(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_storage_provider: _FakeStorageProvider,
+) -> None:
+    """An inbound-owning process warms chat adapters and runs the chat-relay
+    bus forwarder."""
+    monkeypatch.setattr(
+        "primer.api.app._build_storage_provider",
+        lambda _cfg: mock_storage_provider,
+    )
+    cfg = AppConfig(runtime_mode=RuntimeMode.API_PLUS_WORKER, scheduler=None)
+    app = create_app(cfg)
+    async with app.router.lifespan_context(app):
+        assert app.state.chat_channel_warm_task is not None
+        assert app.state.chat_relay_forwarder_task is not None
+
+
 async def test_worker_only_mode_does_not_mount_entity_routers(
     monkeypatch: pytest.MonkeyPatch,
     mock_storage_provider: _FakeStorageProvider,
