@@ -6,13 +6,18 @@ and return a CommandResult; each adapter renders it natively.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from primer.int.storage_provider import StorageProvider
 from primer.model.agent import Agent
-from primer.model.chats import Chat
+from primer.model.channel import ChatChannelAssociation
+from primer.model.chats import Chat, ChatChannelBinding, ChatMessage
+from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage, OrderBy
+from primer.storage.q import Q
 
 _VERBS = frozenset({"new", "list", "switch", "agent"})
 
@@ -105,6 +110,73 @@ class CommandExecutor:
                 break
             offset += 200
         return CommandResult(kind="agent_picker", items=out)
+
+    async def _association(self, channel_id: str) -> ChatChannelAssociation:
+        page = await self._sp.get_storage(ChatChannelAssociation).find(
+            Q(ChatChannelAssociation).where("channel_id", channel_id).build(),
+            OffsetPage(offset=0, length=1),
+        )
+        if not page.items:
+            raise NotFoundError(
+                f"no ChatChannelAssociation for channel {channel_id!r}")
+        return page.items[0]
+
+    async def new_single_chat(self, *, channel_id: str) -> CommandResult:
+        """Single-type /new: detach current chat, create a fresh active one."""
+        assoc = await self._association(channel_id)
+        agent = await self._sp.get_storage(Agent).get(assoc.default_agent_id)
+        if agent is None:
+            raise NotFoundError(
+                f"default agent {assoc.default_agent_id!r} does not exist")
+        chat = await self._sp.get_storage(Chat).create(Chat(
+            id=f"chat-{uuid.uuid4().hex[:12]}",
+            agent_id=assoc.default_agent_id,
+            created_at=datetime.now(timezone.utc),
+            channel_binding=ChatChannelBinding(channel_id=channel_id),
+        ))
+        assoc.active_chat_id = chat.id
+        await self._sp.get_storage(ChatChannelAssociation).update(assoc)
+        return CommandResult(
+            kind="notice", text="Started a fresh chat with the default agent.")
+
+    async def switch_active_chat(
+        self, *, channel_id: str, chat_id: str,
+    ) -> CommandResult:
+        assoc = await self._association(channel_id)
+        target = await self._sp.get_storage(Chat).get(chat_id)
+        if target is None or (
+            target.channel_binding is None
+            or target.channel_binding.channel_id != channel_id
+        ):
+            raise NotFoundError(
+                f"chat {chat_id!r} is not a chat on channel {channel_id!r}")
+        assoc.active_chat_id = chat_id
+        await self._sp.get_storage(ChatChannelAssociation).update(assoc)
+        return CommandResult(
+            kind="notice", text=f"Switched to chat {target.title or chat_id}.")
+
+    async def set_agent(self, *, chat_id: str, agent_id: str) -> CommandResult:
+        from primer.chat.pending import abandon_pending_rows
+        chats = self._sp.get_storage(Chat)
+        chat = await chats.get(chat_id)
+        if chat is None:
+            raise NotFoundError(f"chat {chat_id!r} does not exist")
+        agent = await self._sp.get_storage(Agent).get(agent_id)
+        if agent is None:
+            raise NotFoundError(f"Agent {agent_id!r} does not exist")
+        if chat.agent_id == agent_id:
+            return CommandResult(kind="notice", text="Already that agent.")
+        if chat.pending_tool_call is not None:
+            await abandon_pending_rows(
+                chat, pending=chat.pending_tool_call,
+                messages=self._sp.get_storage(ChatMessage), chats=chats,
+                result_text="auto-rejected: agent switched",
+                terminal_reason="agent_switch")
+        chat.agent_id = agent_id
+        await chats.update(chat)
+        return CommandResult(
+            kind="notice",
+            text=f"Switched agent to {agent.description or agent_id}.")
 
 
 __all__ = ["CommandExecutor", "CommandResult", "ParsedCommand", "parse_command"]
