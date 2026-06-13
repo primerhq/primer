@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, ClassVar, Literal, Union
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from primer.model.common import Identifiable
 
@@ -192,14 +192,87 @@ class ChannelProvider(Identifiable):
         return self
 
 
+class ChatConfig(BaseModel):
+    """Chat-surface settings for a channel room."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether channel-initiated chats are allowed on this room.",
+    )
+    default_agent: str | None = Field(
+        default=None,
+        description="Agent each new chat starts with; required when enabled.",
+    )
+    allowed_agents: list[str] = Field(
+        default_factory=list,
+        description="Agents /agent may switch to; [] = any.",
+    )
+    relay_mode: Literal["final", "all"] = Field(
+        default="final",
+        description="Outbound chat verbosity.",
+    )
+
+    @model_validator(mode="after")
+    def _default_in_allowed(self) -> "ChatConfig":
+        if self.allowed_agents and self.default_agent and self.default_agent not in self.allowed_agents:
+            raise ValueError(
+                "default_agent must be one of allowed_agents when allowed_agents is non-empty"
+            )
+        if self.enabled and not self.default_agent:
+            raise ValueError("default_agent is required when chats are enabled")
+        return self
+
+
+class SlackChannelConfig(BaseModel):
+    """Per-room config for a Slack channel."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chats: ChatConfig = Field(default_factory=ChatConfig)
+
+
+class DiscordChannelConfig(BaseModel):
+    """Per-room config for a Discord channel."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chats: ChatConfig = Field(default_factory=ChatConfig)
+
+
+class TelegramChannelConfig(BaseModel):
+    """Per-room config for a Telegram channel."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chats: ChatConfig = Field(default_factory=ChatConfig)
+
+
 class Channel(Identifiable):
     """One conversational target within a ChannelProvider."""
 
     _id_prefix: ClassVar[str] = "channel"
 
-    provider_id: str = Field(..., min_length=1)
-    external_id: str = Field(..., min_length=1)
-    label: str = Field(default="", max_length=200)
+    provider_id: str = Field(..., description="FK to ChannelProvider.id.")
+    provider: ChannelProviderType = Field(..., description="Platform; discriminates config.")
+    external_id: str = Field(..., description="Platform room/chat id.")
+    label: str | None = Field(default=None, max_length=200)
+    config: SlackChannelConfig | DiscordChannelConfig | TelegramChannelConfig = Field(
+        default_factory=SlackChannelConfig,
+        description="Provider-specific config; must match provider.",
+    )
+
+    @model_validator(mode="after")
+    def _config_matches_provider(self) -> "Channel":
+        expected = {
+            ChannelProviderType.SLACK: SlackChannelConfig,
+            ChannelProviderType.DISCORD: DiscordChannelConfig,
+            ChannelProviderType.TELEGRAM: TelegramChannelConfig,
+        }[self.provider]
+        if not isinstance(self.config, expected):
+            raise ValueError(f"provider={self.provider.value!r} requires {expected.__name__}")
+        return self
 
 
 class WorkspaceChannelAssociation(Identifiable):
@@ -257,8 +330,12 @@ __all__ = [
     "ChannelProviderConfig",
     "ChannelProviderType",
     "ChatChannelAssociation",
+    "ChatConfig",
+    "DiscordChannelConfig",
     "DiscordChannelProviderConfig",
+    "SlackChannelConfig",
     "SlackChannelProviderConfig",
+    "TelegramChannelConfig",
     "TelegramChannelProviderConfig",
     "WorkspaceChannelAssociation",
 ]
