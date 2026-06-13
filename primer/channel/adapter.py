@@ -64,6 +64,9 @@ class PromptEnvelope:
     # Artifact-backed media parts (as dicts) to upload alongside the prompt,
     # e.g. workspace files attached to ask_user / inform_user. None == no media.
     media: list[dict[str, Any]] | None = None
+    # Optional attribution context surfaced in channel gate posts.
+    workspace_name: str | None = None
+    session_label: str | None = None
 
 
 @dataclass
