@@ -32,7 +32,7 @@ Subsystems exercised in one test:
      `PUT /workspaces/{id}/channel_association` route (the channel
      link is a field on the workspace, not a standalone row)
   8. Agent CRUD with model + tools list referencing the toolset
-  9. Three independent cascade-block 409 envelopes — pin the detail
+  9. Three independent cascade-block 409 envelopes - pin the detail
      string carries the blocking row id (operator can find the
      cause without running follow-up queries)
  10. Correct teardown order — confirms the live HTTP path actually
