@@ -176,6 +176,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             await adapter.handle_inbound_chat_message(
                 thread_id=str(thread_id), message_id=str(message.id),
                 sender_name=sender_name, text=message.content or "",
+                attachments=list(getattr(message, "attachments", None) or []),
             )
             return
         # Top-level message in the channel: open a new thread-chat anchored on
@@ -191,6 +192,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
         await adapter.handle_inbound_chat_message(
             thread_id=None, message_id=str(message.id),
             sender_name=sender_name, text=message.content or "",
+            attachments=list(getattr(message, "attachments", None) or []),
         )
 
     # Bind the handlers to the real gateway event names. The base

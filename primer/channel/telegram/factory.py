@@ -110,11 +110,17 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         # Chat-surface dispatch: a non-reply message on a chat-enabled adapter
         # is a chat turn or a /command. Reply messages (and adapters without a
         # storage_provider) fall through to the session gate-reply path below.
+        has_media = any((
+            msg.photo, msg.document, msg.audio, msg.voice, msg.video,
+        ))
         if not msg.reply_to_message and getattr(adapter, "_sp", None) is not None:
-            notice = await adapter.handle_inbound_chat_text(
-                sender_name=msg.from_user.full_name if msg.from_user else "user",
-                text=msg.text or "",
-            )
+            sender_name = msg.from_user.full_name if msg.from_user else "user"
+            if has_media:
+                notice = await adapter.handle_inbound_chat_media(
+                    sender_name=sender_name, msg=msg)
+            else:
+                notice = await adapter.handle_inbound_chat_text(
+                    sender_name=sender_name, text=msg.text or "")
             if notice:
                 await context.bot.send_message(chat_id=msg.chat.id, text=notice)
             return
@@ -137,7 +143,17 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             )
 
     app.add_handler(CallbackQueryHandler(_on_callback))
-    app.add_handler(MessageHandler(filters.TEXT, _on_message))
+    # Text plus inbound media (photo/document/audio/voice/video). The caption
+    # carries the user text on media messages.
+    media_filter = (
+        filters.TEXT
+        | filters.PHOTO
+        | filters.Document.ALL
+        | filters.AUDIO
+        | filters.VOICE
+        | filters.VIDEO
+    )
+    app.add_handler(MessageHandler(media_filter, _on_message))
 
 
 async def _telegram_factory(

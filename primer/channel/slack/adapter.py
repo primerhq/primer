@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
+
 from primer.channel.adapter import (
     ChannelAdapter, PromptEnvelope, ResponseEnvelope, session_thread_label,
 )
@@ -199,6 +201,7 @@ class SlackChannelAdapter(ChannelAdapter):
     async def handle_inbound_chat_message(
         self, *, thread_ts: str | None, message_ts: str,
         sender_name: str, text: str,
+        files: list[dict] | None = None,
     ):
         """Multi-type inbound: top-level opens a new thread-chat; an in-thread
         message routes to that thread's chat. The thread id is message_ts on a
@@ -207,7 +210,12 @@ class SlackChannelAdapter(ChannelAdapter):
         A message typed as a /command in a thread is intercepted and handled
         in-thread (interactive /agent select, etc.) instead of being routed as
         a chat turn. Slack native slash commands carry no thread_ts, so this is
-        the only path that can target a specific thread's chat."""
+        the only path that can target a specific thread's chat.
+
+        Slack ``event["files"]`` (images, documents, audio) are downloaded,
+        stored as artifacts and delivered alongside the text as media parts;
+        the text becomes the leading caption. Files that are too large or fail
+        to download are skipped (the turn still lands as text)."""
         from primer.channel.chat_inbox import ChatResponseInbox
         from primer.channel.chat_router import ChatChannelRouter
         from primer.channel.commands import parse_command
@@ -216,6 +224,7 @@ class SlackChannelAdapter(ChannelAdapter):
             await self._handle_thread_command(
                 parsed=parsed, thread_ts=thread_ts or message_ts)
             return None
+        text, media_parts = await self._collect_inbound_media(text, files)
         thread_external_id = thread_ts or message_ts
         gate_inbox = ChatResponseInbox(
             storage_provider=self._sp, event_bus=self._bus,
@@ -225,8 +234,55 @@ class SlackChannelAdapter(ChannelAdapter):
             claim_engine=self._claim_engine)
         chat, _created = await router.deliver_message(
             channel_id=self._channel.id, thread_external_id=thread_external_id,
-            supports_threads=True, sender_name=sender_name, text=text)
+            supports_threads=True, sender_name=sender_name, text=text,
+            media_parts=media_parts or None)
         return chat
+
+    async def _collect_inbound_media(
+        self, text: str, files: list[dict] | None,
+    ) -> tuple[str, list]:
+        """Download each Slack file, store it as an artifact and build the
+        referencing chat Part. Returns ``(text, media_parts)`` where text may
+        gain a " [attachment skipped: too large]" note for rejected files.
+
+        Media is skipped wholesale when the artifact registry or the storage
+        provider is absent. Per-file: oversized/disallowed media (MediaError)
+        and non-200 downloads are skipped without raising."""
+        if not files:
+            return text, []
+        if self._artifacts is None or self._sp is None:
+            return text, []
+        from primer.channel.media import MediaError, store_inbound_media
+        store = await self._artifacts.get_default()
+        token = self._provider.config.bot_token.get_secret_value()
+        parts: list = []
+        for f in files:
+            url = f.get("url_private_download") or f.get("url_private")
+            if not url:
+                continue
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        url, headers={"Authorization": f"Bearer {token}"})
+            except Exception:  # noqa: BLE001 — download is best-effort
+                logger.warning("slack: media download raised for %s", url,
+                               exc_info=True)
+                continue
+            if getattr(resp, "status_code", 0) != 200:
+                logger.warning(
+                    "slack: media download for %s returned %s", url,
+                    getattr(resp, "status_code", "?"))
+                continue
+            try:
+                part = await store_inbound_media(
+                    store, data=resp.content,
+                    mime_type=f.get("mimetype"),
+                    filename=f.get("name") or f.get("title"))
+            except MediaError:
+                text = (text or "") + " [attachment skipped: too large]"
+                continue
+            parts.append(part)
+        return text, parts
 
     async def _handle_thread_command(self, *, parsed, thread_ts: str) -> None:
         """Handle a /command typed inside a chat thread: render the result

@@ -307,16 +307,60 @@ class DiscordChannelAdapter(ChannelAdapter):
         await target.send(content=text)
         return {"thread_id": thread_ts}
 
+    async def _build_media_parts(
+        self, attachments: list, text: str,
+    ) -> tuple[list, str]:
+        """Turn discord Attachments into persisted, artifact-backed chat Parts.
+
+        Returns ``(parts, text)`` where ``text`` may gain a
+        " [attachment skipped: ...]" note for any attachment the media layer
+        rejects (too large / disallowed type). Media is skipped entirely (parts
+        empty, text unchanged) when no artifact store is wired or chat is off
+        (``self._artifacts is None`` / ``self._sp is None``)."""
+        from primer.channel.media import MediaError, store_inbound_media
+
+        if not attachments or self._artifacts is None or self._sp is None:
+            return [], text
+        try:
+            store = await self._artifacts.get_default()
+        except Exception:
+            logger.exception("discord: artifact store unavailable; skipping media")
+            return [], text
+        parts: list = []
+        for att in attachments:
+            try:
+                data = await att.read()
+                part = await store_inbound_media(
+                    store, data=data,
+                    mime_type=getattr(att, "content_type", None),
+                    filename=getattr(att, "filename", None),
+                )
+            except MediaError:
+                text = (text or "") + " [attachment skipped: too large]"
+                continue
+            except Exception:
+                logger.exception("discord: failed to ingest attachment; skipping")
+                text = (text or "") + " [attachment skipped]"
+                continue
+            parts.append(part)
+        return parts, text
+
     async def handle_inbound_chat_message(
         self, *, thread_id: str | None, message_id: str,
-        sender_name: str, text: str,
+        sender_name: str, text: str, attachments: list | None = None,
     ):
         """Multi-type inbound: a top-level message opens a new thread-chat; an
         in-thread message routes to that thread's chat. The thread id is the
-        message id on a top-level message (the new thread anchors on it)."""
+        message id on a top-level message (the new thread anchors on it).
+
+        ``attachments`` is the raw ``discord.Message.attachments`` list (each
+        with ``.read()``, ``.content_type``, ``.filename``); each is stored as
+        an artifact-backed media Part and routed alongside the caption text."""
         from primer.channel.chat_inbox import ChatResponseInbox
         from primer.channel.chat_router import ChatChannelRouter
         thread_external_id = thread_id or message_id
+        media_parts, text = await self._build_media_parts(
+            attachments or [], text)
         gate_inbox = ChatResponseInbox(
             storage_provider=self._sp, event_bus=self._bus,
             claim_engine=self._claim_engine)
@@ -325,7 +369,8 @@ class DiscordChannelAdapter(ChannelAdapter):
             claim_engine=self._claim_engine)
         chat, _ = await router.deliver_message(
             channel_id=self._channel.id, thread_external_id=thread_external_id,
-            supports_threads=True, sender_name=sender_name, text=text)
+            supports_threads=True, sender_name=sender_name, text=text,
+            media_parts=media_parts or None)
         return chat
 
 

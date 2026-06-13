@@ -246,7 +246,10 @@ def _install_handlers(provider_id: str, app: Any) -> None:
     @app.event("message")
     async def _on_message(event, client):
         # Ignore bot/self messages and edits/deletes (no plain text payload).
-        if event.get("bot_id") or event.get("subtype"):
+        # A "file_share" subtype carries the user's uploaded files, so it is
+        # let through (any other subtype - edits, deletes, joins - is dropped).
+        subtype = event.get("subtype")
+        if event.get("bot_id") or (subtype and subtype != "file_share"):
             return
         thread_ts = event.get("thread_ts")
         channel_id = event["channel"]
@@ -275,6 +278,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         await adapter.handle_inbound_chat_message(
             thread_ts=thread_ts, message_ts=event.get("ts", ""),
             sender_name=sender_name, text=event.get("text", ""),
+            files=event.get("files"),
         )
 
 

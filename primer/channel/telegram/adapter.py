@@ -66,6 +66,8 @@ class TelegramChannelAdapter(ChannelAdapter):
         self._bus = event_bus
         self._claim_engine = claim_engine
         self._artifacts = artifact_registry
+        # Inbound media limits/compression tunables. Tests may override.
+        self._media_config = None
         self._app: Any | None = None
         # tag -> ids, for the Approve/Reject button callbacks. Bounded so a
         # long-lived bot does not grow these caches without limit (one entry
@@ -266,6 +268,101 @@ class TelegramChannelAdapter(ChannelAdapter):
         await router.deliver_message(
             channel_id=self._channel.id, thread_external_id=None,
             supports_threads=False, sender_name=sender_name, text=text)
+        return None
+
+    async def _extract_media_parts(self, msg) -> tuple[list, str]:
+        """Download every attachment on ``msg`` and build artifact-backed
+        chat media parts. Returns ``(parts, skipped_note)`` where
+        ``skipped_note`` is a short suffix to append to the caption when one
+        or more attachments were rejected (too large / disallowed type).
+
+        Media is skipped entirely (empty parts) when the adapter has no
+        artifact registry wired (text-only deployments)."""
+        if self._artifacts is None or self._app is None:
+            return [], ""
+        from primer.channel.media import (
+            MediaError, store_inbound_media,
+        )
+
+        store = await self._artifacts.get_default()
+
+        # (file_id, mime_type, filename) for each attachment on the message.
+        attachments: list[tuple[str, str | None, str | None]] = []
+        photo = getattr(msg, "photo", None)
+        if photo:
+            # PhotoSize list is ascending by resolution; take the highest.
+            attachments.append((photo[-1].file_id, "image/jpeg", None))
+        document = getattr(msg, "document", None)
+        if document is not None:
+            attachments.append((
+                document.file_id,
+                getattr(document, "mime_type", None),
+                getattr(document, "file_name", None),
+            ))
+        audio = getattr(msg, "audio", None)
+        if audio is not None:
+            attachments.append((
+                audio.file_id, getattr(audio, "mime_type", None), None))
+        voice = getattr(msg, "voice", None)
+        if voice is not None:
+            attachments.append((voice.file_id, "audio/ogg", None))
+        video = getattr(msg, "video", None)
+        if video is not None:
+            attachments.append((
+                video.file_id, getattr(video, "mime_type", None), None))
+
+        parts: list = []
+        skipped = 0
+        for file_id, mime, filename in attachments:
+            try:
+                tg_file = await self._app.bot.get_file(file_id)
+                data = bytes(await tg_file.download_as_bytearray())
+                part = await store_inbound_media(
+                    store, data=data, mime_type=mime, filename=filename,
+                    config=self._media_config,
+                )
+                parts.append(part)
+            except MediaError:
+                skipped += 1
+            except Exception:  # noqa: BLE001 — one bad attachment must not drop the turn
+                logger.exception("telegram: media download/store failed")
+                skipped += 1
+        note = " [attachment skipped: too large]" if skipped else ""
+        return parts, note
+
+    async def handle_inbound_chat_media(
+        self, *, sender_name: str, msg,
+    ) -> str | None:
+        """Dispatch an inbound message carrying media. The user text is the
+        caption (``msg.caption``; None -> ""). Media attachments are downloaded
+        and stored, then the turn is routed through the chat router with the
+        caption as the leading TextPart and the media parts following.
+
+        A caption that parses as a command is handled as a text command (media
+        is ignored — commands are text-only)."""
+        if self._sp is None:
+            return None
+        caption = getattr(msg, "caption", None) or ""
+        from primer.channel.commands import parse_command
+        if parse_command(caption) is not None:
+            return await self.handle_inbound_chat_text(
+                sender_name=sender_name, text=caption)
+
+        parts, note = await self._extract_media_parts(msg)
+        text = caption + note if (caption or note) else ""
+
+        from primer.channel.chat_inbox import ChatResponseInbox
+        from primer.channel.chat_router import ChatChannelRouter
+        gate_inbox = ChatResponseInbox(
+            storage_provider=self._sp, event_bus=self._bus,
+            claim_engine=self._claim_engine)
+        router = ChatChannelRouter(
+            storage_provider=self._sp, event_bus=self._bus,
+            gate_inbox=gate_inbox, claim_engine=self._claim_engine)
+        await router.deliver_message(
+            channel_id=self._channel.id, thread_external_id=None,
+            supports_threads=False, sender_name=sender_name, text=text,
+            media_parts=parts)
         return None
 
     async def build_agent_picker_keyboard(
