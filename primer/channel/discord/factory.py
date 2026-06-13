@@ -223,10 +223,10 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
     # ------------------------------------------------------------------ #
     # Application-command tree (slash commands + autocomplete)
     # ------------------------------------------------------------------ #
-    # Build a CommandTree against the client.  We register three commands:
+    # Build a CommandTree against the client.  We register two commands:
     #   /agent [value]  - with-value: switch thread's chat agent; no-arg: picker
-    #   /new            - multi-type new: show agent picker
-    #   /list           - list chats in this channel
+    #   /help           - show available commands
+    # (No /new or /list: a new thread is a new chat; threads are the chat list.)
     #
     # NOTE: syncing the tree to Discord requires `await tree.sync()` after the
     # client reaches READY. We wire a one-shot on_ready handler that syncs
@@ -270,48 +270,8 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             return None
         return entry.adapters_by_channel_id.get(str(parent))
 
-    @tree.command(name="new", description="Start a new chat (pick agent)")
-    async def _cmd_new(interaction: discord.Interaction):
-        adapter = _resolve_adapter(interaction)
-        sp = getattr(adapter, "_sp", None) if adapter is not None else None
-        if sp is None:
-            await interaction.response.send_message(
-                "Chat not configured for this channel.", ephemeral=True)
-            return
-        channel_id = adapter._channel.id
-        try:
-            res = await handle_app_command(
-                storage_provider=sp, command="new", channel_id=channel_id,
-                arg=None, thread_id=None)
-        except Exception as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        lines = [f"{i['label']} (`{i['agent_id']}`)" for i in (res.items or [])]
-        text = "Available agents:\n" + "\n".join(lines) if lines else "No agents found."
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @tree.command(name="list", description="List chats in this channel")
-    async def _cmd_list(interaction: discord.Interaction):
-        adapter = _resolve_adapter(interaction)
-        sp = getattr(adapter, "_sp", None) if adapter is not None else None
-        if sp is None:
-            await interaction.response.send_message(
-                "Chat not configured for this channel.", ephemeral=True)
-            return
-        channel_id = adapter._channel.id
-        try:
-            res = await handle_app_command(
-                storage_provider=sp, command="list", channel_id=channel_id,
-                arg=None, thread_id=None)
-        except Exception as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        lines = [
-            f"{item.get('title') or item['chat_id']} (agent: {item['agent_id']})"
-            for item in (res.items or [])
-        ]
-        text = "\n".join(lines) if lines else "No chats yet."
-        await interaction.response.send_message(text, ephemeral=True)
+    # No /new or /list on Discord: a new thread is a new chat, and the
+    # channel's threads are the chat list.
 
     @tree.command(name="agent", description="Switch agent for this thread (or pick one)")
     @app_commands.describe(value="Agent ID to switch to; omit to list available agents")

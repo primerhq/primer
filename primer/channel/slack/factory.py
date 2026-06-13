@@ -300,16 +300,8 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         except Exception:
             logger.exception("slack: pick_chat_agent update failed")
 
-    @app.command("/new")
-    async def _on_new(ack, body, client):
-        await ack()
-        await _run_slash("/new", body, client)
-
-    @app.command("/list")
-    async def _on_list(ack, body, client):
-        await ack()
-        await _run_slash("/list", body, client)
-
+    # No /new or /list on Slack: a new thread is a new chat, and the channel's
+    # threads are the chat list.
     @app.command("/agent")
     async def _on_agent(ack, body, client):
         await ack()

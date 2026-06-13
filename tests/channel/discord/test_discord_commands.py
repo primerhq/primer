@@ -42,20 +42,6 @@ async def test_autocomplete_filters_by_prefix(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_list_command(tmp_path: Path):
-    p = await _provider(tmp_path)
-    await p.get_storage(Chat).create(Chat(
-        id="chat-1", agent_id="agent-x", created_at=datetime.now(timezone.utc),
-        title="hi", channel_binding=ChatChannelBinding(
-            channel_id="ch-1", thread_external_id="t-1")))
-    res = await handle_app_command(
-        storage_provider=p, command="list", channel_id="ch-1", arg=None,
-        thread_id=None)
-    assert res.kind == "list"
-    assert res.items[0]["chat_id"] == "chat-1"
-
-
-@pytest.mark.asyncio
 async def test_agent_command_with_value_switches(tmp_path: Path):
     p = await _provider(tmp_path)
     await p.get_storage(Chat).create(Chat(

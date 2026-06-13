@@ -52,22 +52,22 @@ def parse_command(text: str | None) -> ParsedCommand | None:
 def help_text(*, supports_threads: bool) -> str:
     """A friendly multi-line help string, scaled to the channel type.
 
-    ``supports_threads=True`` (multi-type: Slack/Discord) drops ``/switch``
-    (threads ARE the switch UI) and notes that each new thread is a new chat.
-    ``supports_threads=False`` (single-type: Telegram) includes ``/switch``.
+    ``supports_threads=True`` (multi-type: Slack/Discord) offers only
+    ``/agent`` + ``/help``: a new thread IS a new chat and the thread list IS
+    the chat list, so ``/new`` / ``/list`` / ``/switch`` are unnecessary.
+    ``supports_threads=False`` (single-type: Telegram) has no threads, so it
+    keeps ``/new`` / ``/list`` / ``/switch`` for explicit chat management.
     """
-    lines = [
-        "Commands:",
-        "/new - start a fresh chat",
-        "/list - list your chats",
-    ]
+    lines = ["Commands:"]
     if not supports_threads:
+        lines.append("/new - start a fresh chat")
+        lines.append("/list - list your chats")
         lines.append("/switch <chat-id> - switch to a previous chat")
     lines.append("/agent - switch the agent (pick from a list)")
     lines.append("/help - show this help")
     if supports_threads:
         lines.append("")
-        lines.append("Tip: each new thread is a new chat.")
+        lines.append("Tip: each thread is a chat - start a new thread for a new one.")
     return "\n".join(lines)
 
 

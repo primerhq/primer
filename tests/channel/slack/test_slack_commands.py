@@ -32,20 +32,6 @@ async def _provider(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_list_command_returns_blocks(tmp_path: Path):
-    p = await _provider(tmp_path)
-    await p.get_storage(Chat).create(Chat(
-        id="chat-1", agent_id="agent-x", created_at=datetime.now(timezone.utc),
-        title="hi", channel_binding=ChatChannelBinding(
-            channel_id="ch-1", thread_external_id="t-1")))
-    res = await handle_slash_command(
-        storage_provider=p, command="/list", text="", channel_id="ch-1",
-        thread_ts=None)
-    assert res.kind == "list"
-    assert res.items[0]["chat_id"] == "chat-1"
-
-
-@pytest.mark.asyncio
 async def test_agent_command_returns_chat_picker(tmp_path: Path):
     # Native /agent (no thread context) now drives a paginated CHAT picker;
     # choosing a chat then opens its agent select.

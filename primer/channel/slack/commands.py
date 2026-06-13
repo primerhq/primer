@@ -14,16 +14,14 @@ async def handle_slash_command(
     the switch UI). /agent in a thread targets that thread's chat."""
     ex = CommandExecutor(storage_provider=storage_provider)
     verb = command.lstrip("/").lower()
-    if verb == "list":
-        return await ex.list_chats(channel_id=channel_id)
+    # /new and /list are intentionally NOT offered on Slack: a new thread is a
+    # new chat, and the channel's threads are the chat list.
     if verb == "agent":
         # Native slash command (no thread context): drive a paginated chat
         # picker, then an agent picker, so the operator targets a specific
         # chat. kind="chat_picker" carries the channel's chats.
         chats = await ex.list_chats(channel_id=channel_id)
         return CommandResult(kind="chat_picker", items=chats.items)
-    if verb == "new":
-        return await ex.agent_picker()
     if verb == "help":
         return CommandResult(
             kind="notice", text=help_text(supports_threads=True))

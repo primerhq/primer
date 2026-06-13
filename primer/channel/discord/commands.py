@@ -29,13 +29,11 @@ async def handle_app_command(
     arg: str | None, thread_id: str | None,
 ) -> CommandResult:
     ex = CommandExecutor(storage_provider=storage_provider)
-    if command == "list":
-        return await ex.list_chats(channel_id=channel_id)
+    # No "new"/"list" on Discord: a new thread is a new chat, and the channel's
+    # threads are the chat list.
     if command == "help":
         return CommandResult(
             kind="notice", text=help_text(supports_threads=True))
-    if command == "new":
-        return await ex.agent_picker(channel_id=channel_id)  # multi-type /new = pick
     if command == "agent":
         if not arg:
             return await ex.agent_picker(channel_id=channel_id)
