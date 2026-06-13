@@ -1,41 +1,47 @@
-"""UI E2E: channels operator-onboarding journey across the 3 Designer surfaces.
+"""UI E2E: channels operator-onboarding journey.
 
 Multi-page journey that walks an operator standing up a brand-new
-channel routing setup via the console — across the three new
-Channels sub-pages the Designer's redesign added (Providers /
-Channels / Associations).
+channel routing setup via the console — from provider, to a
+chat-enabled channel, to linking that channel onto a workspace.
+
+The Designer's Channels surface is two sub-pages (Providers /
+Channels); the per-workspace channel link now lives on the
+WORKSPACE DETAIL page (the standalone "Associations" page + nav
+item were removed when WorkspaceChannelAssociation became a field
+on the Workspace row).
 
 Pages traversed:
 
   /console/ (initial nav) → /channels/providers → New-provider
-  modal → submit → row visible →
-  /channels/channels → New-channel modal → submit → row visible →
-  /channels/associations → New-association modal → submit → row
-  visible (workspace+channel join created).
+  modal → submit → provider detail →
+  /channels/channels → New-channel modal (with the "Chats"
+  fieldset: enabled + default_agent) → submit → row visible →
+  /workspaces/{wid}?tab=channels → "Link channel" modal → submit
+  → channel shown as linked on the workspace.
 
 Multi-subsystem exercise in one test:
 
   1. Channels Providers list + create modal with discriminated
-     config (we drive the Discord path: 60-char bot_token +
-     enable_dms toggle).
+     config (we drive the Discord path: 60-char bot_token).
   2. Channels list + create modal with provider-reference integrity
-     (the dropdown lists the just-created provider; submit creates
-     a Channel under it).
-  3. Associations list + create modal with workspace + channel
-     dropdowns (the dropdowns are populated from the live
-     /workspaces and /channels endpoints; submit POSTs a
-     WorkspaceChannelAssociation that survives a list reload).
-  4. End-to-end cross-page nav between the 3 new sidebar entries
-     (sidebar links work + each list page renders without console
-     errors).
+     (the dropdown lists the just-created provider) PLUS the Chats
+     fieldset — chats enabled + a default_agent picked from the
+     live /agents endpoint.
+  3. Workspace-detail Channels tab → Link-channel modal: the
+     channel dropdown is populated from the live /channels endpoint;
+     submit PUTs /workspaces/{wid}/channel_association and the link
+     survives a refetch.
+  4. End-to-end cross-page nav between the channels sidebar entries
+     and the workspace detail page (links work + each list page
+     renders without console errors).
 
-Covers backlog item U0108. First UI test to walk the Designer's
-Channels surface end-to-end as an integrated operator flow rather
-than 3 separate single-page tests.
+Covers backlog item U0108.
 
-API-seeds the WorkspaceProvider + Template + Workspace via httpx
-(no UI for those — WorkspaceTemplate creation is API-only); then
-drives the 3 channel-related creates through the UI.
+API-seeds an Agent (for the channel's default_agent) plus the
+WorkspaceProvider + Template + Workspace via httpx (no UI for those
+— WorkspaceTemplate creation is API-only); then drives the
+provider + channel creates through the UI and links the channel to
+the workspace on the workspace detail page.
 """
 
 from __future__ import annotations
@@ -50,14 +56,45 @@ from playwright.sync_api import expect
 _FAKE_DISCORD_TOKEN = "x" * 60
 
 
-def _seed_workspace(base_url: str, suffix: str, tmp_path) -> dict[str, str]:
-    """Seed WorkspaceProvider + Template + Workspace via API. Returns ids."""
+def _seed(base_url: str, suffix: str) -> dict[str, str]:
+    """Seed Agent + WorkspaceProvider + Template + Workspace via API.
+
+    Returns ids. The Agent is needed so the channel-create modal's
+    "Chats" fieldset has a default_agent to select; the workspace is
+    the link target on the workspace detail page.
+    """
     ids = {
+        "agent": f"ag-108-{suffix}",
+        "llm": f"llm-108-{suffix}",
         "wp": f"wp-108-{suffix}",
         "tpl": f"tpl-108-{suffix}",
         "workspace": "",
     }
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        r = c.post(
+            "/v1/llm_providers",
+            json={
+                "id": ids["llm"],
+                "provider": "ollama",
+                "config": {"url": "http://127.0.0.1:9999"},
+                "models": [{"name": "fake-model", "context_length": 4096}],
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        assert r.status_code == 201, r.text
+        r = c.post(
+            "/v1/agents",
+            json={
+                "id": ids["agent"],
+                "description": "U0108 channels journey default agent",
+                "model": {
+                    "provider_id": ids["llm"], "model_name": "fake-model",
+                },
+                "tools": [],
+                "system_prompt": ["u0108"],
+            },
+        )
+        assert r.status_code == 201, r.text
         r = c.post(
             "/v1/workspace_providers",
             json={
@@ -86,14 +123,17 @@ def _seed_workspace(base_url: str, suffix: str, tmp_path) -> dict[str, str]:
 def _cleanup(base_url: str, ids: dict[str, str], cp_id: str, ch_id: str) -> None:
     """Best-effort unwind in reverse dependency order."""
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        # Associations cascade-delete when their workspace is deleted, so
-        # just remove the workspace and the four channel-side entities.
+        # The workspace carries the channel link as a field, so deleting
+        # the workspace drops it. Then remove the channel-side entities
+        # and the agent/llm.
         for url in (
             f"/v1/workspaces/{ids['workspace']}" if ids.get("workspace") else None,
             f"/v1/workspace_templates/{ids['tpl']}",
             f"/v1/workspace_providers/{ids['wp']}",
             f"/v1/channels/{ch_id}" if ch_id else None,
             f"/v1/channel_providers/{cp_id}" if cp_id else None,
+            f"/v1/agents/{ids['agent']}",
+            f"/v1/llm_providers/{ids['llm']}",
         ):
             if url is None:
                 continue
@@ -113,35 +153,30 @@ def test_u0108_channels_operator_onboarding_journey(
     base_url: str,
     console_url: str,
     unique_suffix: str,
-    tmp_path,
 ) -> None:
-    """U0108 — Walk a 3-page channel-setup flow via the Designer's UI.
+    """U0108 — Walk a provider→channel→workspace-link setup flow via UI.
 
     Steps:
 
-      1. API-seed a Workspace (WorkspaceTemplate creation is API-only).
+      1. API-seed an Agent + a Workspace (WorkspaceTemplate creation
+         is API-only).
       2. Navigate /channels/providers → click "New provider" → fill
-         id + bot_token (Discord) → submit → modal closes + new
-         provider row visible in the list.
+         id + bot_token (Discord) → submit → provider detail page.
       3. Navigate /channels/channels → "New channel" → pick the
-         provider just created + fill external_id + label → submit
-         → channel row visible.
-      4. Navigate /channels/associations → "New association" → pick
-         our workspace + the channel just created → submit →
-         association row visible.
+         provider just created + fill external_id, enable Chats +
+         pick the seeded agent as default_agent → submit → channel
+         row visible.
+      4. Navigate /workspaces/{wid}?tab=channels → "Link channel"
+         modal → pick the channel just created → submit → the
+         channel shows as linked on the workspace.
 
     Pages traversed:
       /console/ → /channels/providers → /channels/channels →
-      /channels/associations.
-
-    All three modals are exercised, plus the live cross-page
-    reference-integrity flow (the channel-create dropdown picks up
-    the just-created provider; the association-create dropdowns
-    pick up the workspace + channel created earlier in the same
-    session).
+      /workspaces/{wid}?tab=channels.
     """
-    ids = _seed_workspace(base_url, unique_suffix, tmp_path)
+    ids = _seed(base_url, unique_suffix)
     wid = ids["workspace"]
+    agent_id = ids["agent"]
     cp_id = f"cp-108-{unique_suffix}"
     ch_id = f"ch-108-{unique_suffix}"
     cleanup_cp = cp_id
@@ -153,7 +188,6 @@ def test_u0108_channels_operator_onboarding_journey(
             f"{console_url}#/channels/providers",
             wait_until="domcontentloaded",
         )
-        # Page renders; "New provider" CTA is reachable.
         new_provider_btn = page.get_by_role(
             "button", name="New provider", exact=True,
         )
@@ -164,22 +198,20 @@ def test_u0108_channels_operator_onboarding_journey(
         expect(modal).to_be_visible(timeout=5_000)
 
         # The id field is the first input in the modal (placeholder
-        # "auto-generated", same pattern as U0107's graph modal).
+        # "auto-generated").
         modal.get_by_placeholder("auto-generated", exact=False).first.fill(cp_id)
 
-        # The Provider select defaults to "slack"; switch to discord.
+        # The platform select defaults to "slack"; switch to discord.
         modal.locator("select.select").first.select_option("discord")
 
-        # Discord config asks for bot_token (password input). Designer
-        # renders inputs of type=password for tokens.
+        # Discord config asks for bot_token (password input).
         modal.locator("input[type=password]").first.fill(_FAKE_DISCORD_TOKEN)
 
-        # Submit. Designer's provider modal Btn label is "Create provider".
+        # Submit. Provider modal Btn label is "Create provider".
         modal.get_by_role("button", name="Create provider", exact=True).click()
 
         # Modal closes; Designer's onSuccess navigates to the new
-        # provider's detail page. Confirm we're there (URL contains
-        # the cp_id and the detail-page Probe button is visible).
+        # provider's detail page.
         expect(page.locator(".modal")).not_to_be_visible(timeout=10_000)
         page.wait_for_url(
             f"**/console/#/channels/providers/{cp_id}**", timeout=15_000,
@@ -188,7 +220,7 @@ def test_u0108_channels_operator_onboarding_journey(
             timeout=10_000,
         )
 
-        # ----- 2. /channels/channels → New channel ----------------------
+        # ----- 2. /channels/channels → New channel (with Chats) ---------
         page.goto(
             f"{console_url}#/channels/channels",
             wait_until="domcontentloaded",
@@ -206,7 +238,7 @@ def test_u0108_channels_operator_onboarding_journey(
         modal.get_by_placeholder("auto-generated", exact=False).first.fill(ch_id)
 
         # provider dropdown (first select in the modal); pick the one
-        # we just created.
+        # we just created. Option text is "{id} ({provider})".
         modal.locator("select.select").first.select_option(cp_id)
 
         # external_id input — placeholder is "C0123ABC456 / chat-id /
@@ -215,59 +247,74 @@ def test_u0108_channels_operator_onboarding_journey(
             f"snowflake-{unique_suffix}",
         )
 
-        # Submit. Designer's modal Btn label is "Create channel".
+        # ----- Chats fieldset: enable + pick the seeded default_agent.
+        # The "Enabled" checkbox is the only checkbox in the modal.
+        chats_enabled = modal.locator("input[type=checkbox]").first
+        chats_enabled.check()
+
+        # The default_agent select is the second select.mono in the modal
+        # (the first is the provider dropdown). Wait for the seeded agent
+        # to be available as an option, then select it.
+        default_agent_select = modal.locator("select.select").nth(1)
+        expect(
+            default_agent_select.locator(f"option[value='{agent_id}']")
+        ).to_be_attached(timeout=10_000)
+        default_agent_select.select_option(agent_id)
+
+        # Submit. Channel modal Btn label is "Create channel".
         modal.get_by_role("button", name="Create channel", exact=True).click()
 
-        # Modal closes; channel row visible.
+        # Modal closes; channel row visible in the list.
         expect(page.locator(".modal")).not_to_be_visible(timeout=10_000)
         ch_row = page.locator("tbody tr", has_text=ch_id)
         expect(ch_row).to_be_visible(timeout=15_000)
 
-        # ----- 3. /channels/associations → New association --------------
+        # Verify the chats config landed via the API (the UI doesn't
+        # surface it on the list row).
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            r = c.get(f"/v1/channels/{ch_id}")
+            assert r.status_code == 200, r.text
+            chats = r.json().get("config", {}).get("chats", {})
+            assert chats.get("enabled") is True, r.json()
+            assert chats.get("default_agent") == agent_id, r.json()
+
+        # ----- 3. Workspace detail → Channels tab → Link channel --------
         page.goto(
-            f"{console_url}#/channels/associations",
+            f"{console_url}#/workspaces/{wid}?tab=channels",
             wait_until="domcontentloaded",
         )
-        new_assoc_btn = page.get_by_role(
-            "button", name="New association", exact=True,
-        )
-        # The "New association" button is disabled until workspaces +
-        # channels both load (channels.jsx:822). Wait for it to be
-        # enabled before clicking — Playwright won't auto-wait for that
-        # via to_be_visible alone.
-        expect(new_assoc_btn).to_be_enabled(timeout=15_000)
-        new_assoc_btn.click()
+        # The link/change CTA. With no channel linked yet, label is
+        # "Link channel".
+        link_btn = page.get_by_role(
+            "button", name="Link channel", exact=True,
+        ).first
+        expect(link_btn).to_be_visible(timeout=20_000)
+        link_btn.click()
 
         modal = page.locator(".modal").first
         expect(modal).to_be_visible(timeout=5_000)
 
-        # Workspace dropdown is the first select in the association
-        # modal; channel dropdown is the second. Wait for the dropdowns
-        # to have options (Designer's modal initializes state from props
-        # but doesn't re-sync when props change later).
-        ws_select = modal.locator("select.select").nth(0)
-        ch_select = modal.locator("select.select").nth(1)
-        # Both selects must already have our seeded ids selectable.
-        expect(ws_select.locator(f"option[value='{wid}']")).to_be_attached(
-            timeout=10_000,
-        )
-        expect(ch_select.locator(f"option[value='{ch_id}']")).to_be_attached(
-            timeout=10_000,
-        )
-        ws_select.select_option(wid)
-        ch_select.select_option(ch_id)
+        # The channel dropdown lists live channels; pick ours.
+        channel_select = modal.locator("select.select").first
+        expect(
+            channel_select.locator(f"option[value='{ch_id}']")
+        ).to_be_attached(timeout=10_000)
+        channel_select.select_option(ch_id)
 
-        # Submit. Modal Btn label is just "Create" (verified at
-        # channels.jsx:957).
-        modal.get_by_role("button", name="Create", exact=True).click()
+        # Submit. The modal's primary Btn label is "Link channel".
+        modal.get_by_role("button", name="Link channel", exact=True).click()
 
-        # Modal closes; the association row appears in the list. The
-        # association id is backend-allocated so we anchor on the
-        # workspace_id + channel_id appearing together in a single row.
+        # Modal closes; the workspace now shows the channel as linked.
         expect(page.locator(".modal")).not_to_be_visible(timeout=10_000)
-        assoc_row = page.locator("tbody tr").filter(
-            has_text=wid,
-        ).filter(has_text=ch_id)
-        expect(assoc_row.first).to_be_visible(timeout=15_000)
+        expect(page.get_by_text(ch_id, exact=False).first).to_be_visible(
+            timeout=15_000,
+        )
+
+        # Confirm the link landed server-side.
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            r = c.get(f"/v1/workspaces/{wid}")
+            assert r.status_code == 200, r.text
+            assoc = r.json().get("channel_association") or {}
+            assert assoc.get("channel_id") == ch_id, r.json()
     finally:
         _cleanup(base_url, ids, cleanup_cp, cleanup_ch)
