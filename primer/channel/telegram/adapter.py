@@ -7,7 +7,7 @@ from collections import OrderedDict
 from typing import Any
 
 from primer.channel.adapter import (
-    ChannelAdapter, PromptEnvelope, ResponseEnvelope,
+    ChannelAdapter, PromptEnvelope, ResponseEnvelope, attribution_header,
 )
 from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
 from primer.channel.telegram.render import (
@@ -123,9 +123,11 @@ class TelegramChannelAdapter(ChannelAdapter):
         if self._app is None:
             raise ProviderError("TelegramChannelAdapter used before initialize()")
         await self._post_envelope_media(envelope)
+        header = attribution_header(envelope)
         if envelope.kind == "inform":
             msg = await self._app.bot.send_message(
-                chat_id=self._channel.external_id, text=envelope.prompt,
+                chat_id=self._channel.external_id,
+                text=header + envelope.prompt,
             )
             return {"message_id": getattr(msg, "message_id", 0)}
         if envelope.kind == "ask_user":
@@ -138,6 +140,8 @@ class TelegramChannelAdapter(ChannelAdapter):
             )
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
+        if header:
+            body["text"] = header + body["text"]
         tag = compute_tag(
             workspace_id=envelope.workspace_id,
             session_id=envelope.session_id,

@@ -45,6 +45,20 @@ def format_tool_args(tool_args: dict[str, Any] | None) -> str:
         return str(tool_args)
 
 
+def attribution_header(env: "PromptEnvelope") -> str:
+    """Return a one-line attribution prefix for gate posts.
+
+    Returns an empty string when neither workspace_name nor session_label is
+    set so callers can unconditionally prepend without adding blank lines to
+    messages that carry no attribution context.
+    """
+    if not (env.workspace_name or env.session_label):
+        return ""
+    ws = env.workspace_name or "workspace"
+    sess = env.session_label or "session"
+    return f"\U0001F6E0 Workspace: {ws} · Session: {sess}\n"
+
+
 @dataclass
 class PromptEnvelope:
     """Provider-agnostic ask-user / approval payload."""
@@ -104,6 +118,7 @@ class ChannelAdapter(ABC):
 
 
 __all__ = [
+    "attribution_header",
     "ChannelAdapter",
     "PromptEnvelope",
     "ResponseEnvelope",

@@ -7,7 +7,7 @@ from typing import Any
 
 from primer.channel.adapter import (
     ChannelAdapter, PromptEnvelope, ResponseEnvelope,
-    format_tool_args, session_thread_label,
+    attribution_header, format_tool_args, session_thread_label,
 )
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import ApprovalView
@@ -111,6 +111,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             )
         thread = await self._session_thread(channel, envelope.session_id)
         await self._post_thread_media(thread, envelope)
+        header = attribution_header(envelope)
         if envelope.kind == "tool_approval":
             view = ApprovalView(
                 ws=envelope.workspace_id,
@@ -118,11 +119,11 @@ class DiscordChannelAdapter(ChannelAdapter):
                 tcid=envelope.tool_call_id,
             )
             msg = await thread.send(
-                content=format_approval_content(envelope), view=view,
+                content=header + format_approval_content(envelope), view=view,
             )
             return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         elif envelope.kind == "ask_user":
-            msg = await thread.send(content=envelope.prompt)
+            msg = await thread.send(content=header + envelope.prompt)
             self._pending_ask[thread.id] = {
                 "workspace_id": envelope.workspace_id,
                 "session_id": envelope.session_id,
@@ -130,7 +131,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             }
             return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         elif envelope.kind == "inform":
-            msg = await thread.send(content=envelope.prompt)
+            msg = await thread.send(content=header + envelope.prompt)
             return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")

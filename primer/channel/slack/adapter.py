@@ -14,7 +14,8 @@ from typing import Any
 import httpx
 
 from primer.channel.adapter import (
-    ChannelAdapter, PromptEnvelope, ResponseEnvelope, session_thread_label,
+    ChannelAdapter, PromptEnvelope, ResponseEnvelope,
+    attribution_header, session_thread_label,
 )
 from primer.channel.slack.connection import SLACK_CONNECTIONS
 from primer.channel.slack.render import (
@@ -114,11 +115,12 @@ class SlackChannelAdapter(ChannelAdapter):
             parts = await hydrate_media_dicts(self._artifacts, media)
             if parts:
                 await self.post_chat_media(parts, thread_ts=root_ts)
+        header = attribution_header(envelope)
         if envelope.kind == "inform":
             await client.chat_postMessage(
                 channel=self._channel.external_id,
                 thread_ts=root_ts,
-                text=envelope.prompt,
+                text=header + envelope.prompt,
             )
             return {"ts": "", "channel": self._channel.external_id, "thread_ts": root_ts}
         if envelope.kind == "ask_user":
@@ -131,6 +133,8 @@ class SlackChannelAdapter(ChannelAdapter):
             )
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
+        if header:
+            body["text"] = header + body["text"]
         # Post every prompt into the session's conversation thread.
         body["thread_ts"] = root_ts
         resp = await client.chat_postMessage(**body)
