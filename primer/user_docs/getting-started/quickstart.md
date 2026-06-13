@@ -52,7 +52,7 @@ Every field in the agent create modal.
 
 ## Step 3 - Chat, and switch agents mid-conversation
 
-Open Chats and start a new chat with **topic-scout**. Ask it for five blog topics on a theme you like, for example "sustainable living". Once you see the suggestions, use the agent switcher in the chat composer to switch the same chat to **outline-editor**, then continue the conversation by asking it to outline topic 3.
+Open Chats and start a new chat with **topic-scout**. Ask it for five blog topics on a theme you like, for example "our product launch". Once you see the suggestions, use the agent switcher in the chat composer to switch the same chat to **outline-editor**, then continue the conversation by asking it to outline topic 3.
 
 The key idea: both agents share the same conversation history. outline-editor can see the topics topic-scout produced, and you did not have to copy anything between windows.
 
@@ -107,7 +107,9 @@ Workspace providers, templates, and the file tools.
 
 ## Step 6 - Build and run a graph (watch, draft, judge)
 
-Now tie everything together with a graph. Create a new graph with these nodes:
+Now tie everything together with a graph. First, create three small agents for the graph nodes: **outline-watcher** (with the `workspaces__watch_files` tool), **draft-writer**, and **completeness-judge** -- or reuse existing ones if you already have them.
+
+Create a new graph with these nodes:
 
 - **start** -- the entry point.
 - **watcher** -- an agent node with the `workspaces__watch_files` tool; its system prompt tells it to wait until `outline.md` appears in the workspace.
