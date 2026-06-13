@@ -2,11 +2,11 @@
 
 The §3 directive prescribes a journey that registers
 ``NullChannelAdapter`` as the factory for a platform, creates a
-ChannelProvider+Channel+Association triple, then exercises BOTH the
-outbound dispatch path (worker park → adapter.post_prompt was called)
-and the inbound response path (`ChannelInbox.handle_response(...)`
-publishes onto the event bus → bus subscriber receives the
-``ask_user:…`` event).
+ChannelProvider + Channel, binds a Workspace to that channel via its
+``channel_association`` link, then exercises BOTH the outbound dispatch
+path (worker park → adapter.post_prompt was called) and the inbound
+response path (`ChannelInbox.handle_response(...)` publishes onto the
+event bus → bus subscriber receives the ``ask_user:…`` event).
 
 Why in-process: the NullChannelAdapter factory is registered via a
 module-level call. The live e2e server is a separate process — we
@@ -19,14 +19,15 @@ Subsystems exercised in one test:
   1. Registry + factory wiring: `register_adapter_factory(SLACK, ...)`
      installs a captured NullChannelAdapter; ChannelRegistry's lazy
      adapter-build path resolves to it.
-  2. ChannelProvider + Channel + WorkspaceChannelAssociation + the
-     workspace ladder, all created via in-process storage interfaces.
-  3. ChannelDispatcher.dispatch_prompt() fans the ask_user envelope
-     to the matched association's adapter; the NullChannelAdapter's
+  2. ChannelProvider + Channel + the workspace ladder, all created via
+     in-process storage interfaces. The Workspace's ``channel_association``
+     link is what binds the workspace to the channel (the old
+     WorkspaceChannelAssociation model is gone).
+  3. ChannelDispatcher.dispatch_prompt() fans the ask_user envelope to
+     the channel the workspace is bound to; the NullChannelAdapter's
      ``posted`` list captures the envelope for assertion.
-  4. ChannelDispatcher honours the `forward_ask_user` /
-     `forward_tool_approval` flags — an association with both flags
-     False is filtered out before dispatch.
+  4. dispatch_prompt fan-out is scoped by workspace_id: a DIFFERENT
+     workspace with no channel_association receives nothing.
   5. ChannelInbox.handle_response() builds the right event_key
      (`ask_user:{sid}:{tcid}`) and publishes onto the event bus.
   6. A pre-subscribed bus listener receives the published event
@@ -41,6 +42,7 @@ of the channels subsystem. No LLM, no real network, no Postgres.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -62,7 +64,6 @@ from primer.model.channel import (
     ChannelProvider,
     ChannelProviderType,
     SlackChannelProviderConfig,
-    WorkspaceChannelAssociation,
 )
 from primer.model.provider import (
     SqliteConfig,
@@ -75,6 +76,31 @@ from primer.model.scheduler import (
     SchedulerProviderConfig,
     SchedulerProviderType,
 )
+from primer.model.workspace import (
+    Workspace,
+    WorkspaceChannelLink,
+    WorkspaceRuntimeMeta,
+)
+
+
+def _make_workspace(workspace_id: str, channel_id: str | None) -> Workspace:
+    """Build a minimal persisted Workspace row, optionally bound to a
+    channel via its ``channel_association`` link."""
+    return Workspace(
+        id=workspace_id,
+        template_id="tpl-t856",
+        provider_id="wp-t856",
+        created_at=datetime.now(timezone.utc),
+        runtime_meta=WorkspaceRuntimeMeta(
+            url="ws://localhost:5959",
+            token="runtime-token",
+        ),
+        channel_association=(
+            WorkspaceChannelLink(channel_id=channel_id)
+            if channel_id is not None
+            else None
+        ),
+    )
 
 
 # ===========================================================================
@@ -97,17 +123,15 @@ async def test_t0856_null_channel_adapter_dispatch_and_inbox_journey(
          table first so test ordering doesn't matter.
       2. Build app with SQLite + in-memory scheduler. Enter lifespan
          — registries are built; the event bus is an InMemoryEventBus.
-      3. Seed ChannelProvider (slack) + Channel + WorkspaceProvider +
-         Template + Workspace + 2 associations:
-           * assoc_A links workspace_a to the channel, forward_ask_user=True
-           * assoc_B links workspace_b (a DIFFERENT workspace) — should
-             NOT receive dispatches when we fan out for workspace_a.
+      3. Seed ChannelProvider (slack) + Channel + 2 Workspace rows:
+           * workspace_a is bound to the channel via channel_association.
+           * workspace_b has NO channel_association — it must NOT receive
+             a dispatch (pins per-workspace scoping).
       4. Construct PromptEnvelope(kind="ask_user", workspace_id=A, ...)
          and call dispatcher.dispatch_prompt(envelope=...).
       5. Assert the captured NullChannelAdapter's `posted` list now
-         contains the envelope. Exactly 1 post (workspace_b's
-         association is for a different workspace, so it's not in
-         the for_workspace(A) result).
+         contains the envelope. Exactly 1 post (workspace_b is not
+         bound to any channel).
       6. Subscribe to the event bus. Construct a ResponseEnvelope
          with the matching tool_call_id and call inbox.handle_response.
       7. Drain one event from the subscription; assert event_key =
@@ -116,7 +140,8 @@ async def test_t0856_null_channel_adapter_dispatch_and_inbox_journey(
     Pinned invariants:
       * The factory-built adapter wins (NullChannelAdapter, not a
         real Slack one).
-      * dispatch_prompt fan-out is scoped by workspace_id.
+      * dispatch_prompt fan-out is scoped by workspace_id via the
+        workspace's channel_association link.
       * ChannelInbox.handle_response composes the right event_key
         (`ask_user:{sid}:{tcid}`) and publishes via the bus.
       * Bus subscriber receives the published event end-to-end.
@@ -164,7 +189,7 @@ async def test_t0856_null_channel_adapter_dispatch_and_inbox_journey(
             # ----- 3. Seed entities via in-process storage -----------
             cp_storage = sp.get_storage(ChannelProvider)
             ch_storage = sp.get_storage(Channel)
-            assoc_storage = sp.get_storage(WorkspaceChannelAssociation)
+            ws_storage = sp.get_storage(Workspace)
 
             cp = ChannelProvider(
                 id="cp-t856",
@@ -179,6 +204,7 @@ async def test_t0856_null_channel_adapter_dispatch_and_inbox_journey(
             ch = Channel(
                 id="ch-t856",
                 provider_id="cp-t856",
+                provider=ChannelProviderType.SLACK,
                 external_id="C0123ABC456",
                 label="T0856 test channel",
             )
@@ -187,28 +213,13 @@ async def test_t0856_null_channel_adapter_dispatch_and_inbox_journey(
             workspace_a = "ws-t856-A"
             workspace_b = "ws-t856-B"
 
-            assoc_a = WorkspaceChannelAssociation(
-                id="assoc-t856-A",
-                workspace_id=workspace_a,
-                channel_id="ch-t856",
-                enabled=True,
-                forward_ask_user=True,
-                forward_tool_approval=True,
-            )
-            await assoc_storage.create(assoc_a)
+            # workspace_a is bound to the channel.
+            await ws_storage.create(_make_workspace(workspace_a, "ch-t856"))
 
-            # workspace_b is a DIFFERENT workspace — its association
-            # must NOT receive the workspace_a dispatch. Pins the
-            # workspace-scoping of dispatch_prompt.
-            assoc_b = WorkspaceChannelAssociation(
-                id="assoc-t856-B",
-                workspace_id=workspace_b,
-                channel_id="ch-t856",
-                enabled=True,
-                forward_ask_user=True,
-                forward_tool_approval=True,
-            )
-            await assoc_storage.create(assoc_b)
+            # workspace_b is a DIFFERENT workspace with NO channel
+            # association — it must NOT receive the workspace_a dispatch.
+            # Pins the workspace-scoping of dispatch_prompt.
+            await ws_storage.create(_make_workspace(workspace_b, None))
 
             # ----- 4. Construct + dispatch ask_user envelope ---------
             prompt_env = PromptEnvelope(
@@ -226,9 +237,7 @@ async def test_t0856_null_channel_adapter_dispatch_and_inbox_journey(
             # ----- 5. Assert NullChannelAdapter captured the envelope
             assert len(captured) == 1, (
                 f"expected exactly 1 factory-built adapter (for the "
-                f"workspace_a association); got {len(captured)} — "
-                f"factory may have been invoked for workspace_b's "
-                f"association too, violating per-workspace scoping"
+                f"channel workspace_a is bound to); got {len(captured)}"
             )
             adapter = captured[0]
             assert len(adapter.posted) == 1, (
@@ -246,6 +255,28 @@ async def test_t0856_null_channel_adapter_dispatch_and_inbox_journey(
             # NullChannelAdapter contract.
             assert len(results) == 1, results
             assert results[0].get("posted") is True, results
+
+            # A dispatch for workspace_b (no channel_association) fans
+            # out to nothing — proving per-workspace scoping.
+            prompt_env_b = PromptEnvelope(
+                kind="ask_user",
+                workspace_id=workspace_b,
+                session_id="sess-t856",
+                tool_call_id="tc-t856",
+                prompt="What's the answer?",
+                response_schema=None,
+                choices=None,
+                timeout_at_iso=None,
+            )
+            results_b = await dispatcher.dispatch_prompt(envelope=prompt_env_b)
+            assert results_b == [], (
+                f"workspace_b has no channel_association; dispatch must "
+                f"fan out to nothing, got {results_b!r}"
+            )
+            assert len(captured) == 1, (
+                f"no new adapter should be built for the unbound "
+                f"workspace_b; got {len(captured)} total"
+            )
 
             # ----- 6. Subscribe to bus + handle a ResponseEnvelope --
             subscription = event_bus.subscribe()
