@@ -28,8 +28,8 @@ Subsystems exercised in one test:
   5. Workspace-scoped Session create (auto_start=False — no worker
      pool running in this in-process app)
   6. ToolApprovalPolicy CRUD (§2 surface)
-  7. ChannelProvider + Channel + WorkspaceChannelAssociation CRUD
-     (§3 surface)
+  7. ChannelProvider + Channel CRUD + workspace channel link via
+     PUT /workspaces/{id}/channel_association (§3 surface)
   8. SemanticSearchProvider CRUD (§7 surface)
   9. InternalCollections config probe (GET — confirms the router
      mounts cleanly against SQLite even when no config is set)
@@ -242,7 +242,6 @@ async def test_t0852_sqlite_multi_router_crud_journey(tmp_path: Path) -> None:
             # =============================================================
             cp_id = "t852-cp"
             ch_id = "t852-ch"
-            assoc_id = "t852-assoc"
             r = await client.post(
                 "/v1/channel_providers",
                 json={
@@ -257,19 +256,22 @@ async def test_t0852_sqlite_multi_router_crud_journey(tmp_path: Path) -> None:
                 json={
                     "id": ch_id,
                     "provider_id": cp_id,
+                    "provider": "discord",
                     "external_id": "snowflake-t852",
                 },
             )
             assert r.status_code == 201, r.text
-            r = await client.post(
-                "/v1/workspace_channel_associations",
-                json={
-                    "id": assoc_id,
-                    "workspace_id": workspace_id,
-                    "channel_id": ch_id,
-                },
+            # Link the channel to the workspace (channel_association is a
+            # field on the Workspace row now, set via a focused PUT route).
+            r = await client.put(
+                f"/v1/workspaces/{workspace_id}/channel_association",
+                json={"channel_id": ch_id},
             )
-            assert r.status_code == 201, r.text
+            assert r.status_code == 200, r.text
+            assert (
+                r.json().get("channel_association", {}).get("channel_id")
+                == ch_id
+            ), r.text
 
             # =============================================================
             # 7. SemanticSearchProvider — §7 surface against SQLite
@@ -314,19 +316,15 @@ async def test_t0852_sqlite_multi_router_crud_journey(tmp_path: Path) -> None:
             # =============================================================
             # 10. Cleanup: DELETE in reverse-dependency order
             # =============================================================
-            # The order matters because the cascade-blocks (channel and
-            # channel_provider) are enforced server-side — incorrect
-            # order would 409. This pins that the SQLite adapter's
-            # predicate engine evaluates the cascade-check predicates
+            # The order matters because the channel_provider cascade-block
+            # is enforced server-side — deleting a provider while a channel
+            # references it would 409. This pins that the SQLite adapter's
+            # predicate engine evaluates the cascade-check predicate
             # correctly (same shape as the Postgres adapter's).
             for url, expected in (
                 # SSP first — no dependents.
                 (f"/v1/ssp/{ssp_id}", (200, 204)),
-                # Association before channel before channel_provider.
-                (
-                    f"/v1/workspace_channel_associations/{assoc_id}",
-                    (200, 204),
-                ),
+                # Channel before channel_provider.
                 (f"/v1/channels/{ch_id}", (200, 204)),
                 (f"/v1/channel_providers/{cp_id}", (200, 204)),
                 # Tool-approval policy is standalone.
