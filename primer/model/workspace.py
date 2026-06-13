@@ -1065,6 +1065,11 @@ class WorkspaceRuntimeMeta(BaseModel):
     )
 
 
+class WorkspaceChannelLink(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    channel_id: str = Field(..., description="The room-Channel this workspace forwards gates to.")
+
+
 class Workspace(Identifiable):
     """Persisted record of a materialised workspace.
 
@@ -1134,6 +1139,10 @@ class Workspace(Identifiable):
         ...,
         description="Connection coordinates for the runtime inside this workspace.",
     )
+    channel_association: WorkspaceChannelLink | None = Field(
+        default=None,
+        description="Channel this workspace's session gates forward to. Mutable post-create.",
+    )
 
 
 # ===========================================================================
@@ -1182,6 +1191,7 @@ __all__ = [
     "ResourceLimits",
     "VolumeMount",
     "Workspace",
+    "WorkspaceChannelLink",
     "WorkspaceDiagnosticResult",
     "WorkspaceProvider",
     "WorkspaceProviderConfig",
