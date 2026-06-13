@@ -72,7 +72,7 @@ Turn mechanics, the agent switcher, and streaming.
 
 ## Step 4 - Enable internal collections and a search-and-invoke agent
 
-**Part A: enable the collections.** Go to Internal Collections and click Activate. Choose the bundled local embedder and the local Lance store -- neither requires an API key. Once active, click Bootstrap to index primer's own agents, graphs, and tools into the collection.
+**Part A: enable the collections.** Go to Internal Collections and click Configure. Choose the bundled local embedder and the pre-configured `lance` semantic search provider -- it is local and file-based, so it needs no API key. After saving, the subsystem is in the configured state; click Bootstrap now to index primer's own agents, graphs, tools, and knowledge collections. The subsystem becomes active once bootstrapping completes.
 
 ```embed:internal-collections-enable
 ```
@@ -93,7 +93,7 @@ The internal collections and the search toolset.
 
 Go to Workspaces and create a new workspace using the default local provider. Give it a name like "blog-assistant".
 
-Next, create a small **brief-writer** agent and give it the tool `workspaces__write`. Start a workspace session bound to that agent and the workspace you just created. In the session, instruct the agent to write the outline from Step 3 into a file called `outline.md` in the workspace.
+Next, create a small **brief-writer** agent and give it the tool `workspaces__write_workspace_file`. Start a workspace session bound to that agent and the workspace you just created. Because this is a fresh session with a different agent, it does not share the Step 3 chat history -- paste the outline text produced in Step 3 directly into the session's instructions so brief-writer has the content it needs. Then instruct the agent to write that outline into a file called `outline.md` in the workspace.
 
 ```embed:workspaces
 ```
@@ -110,21 +110,21 @@ Workspace providers, templates, and the file tools.
 Now tie everything together with a graph. Create a new graph with these nodes:
 
 - **start** -- the entry point.
-- **watcher** -- an agent node with the `watch_files` tool; its system prompt tells it to wait until `outline.md` appears in the workspace.
+- **watcher** -- an agent node with the `workspaces__watch_files` tool; its system prompt tells it to wait until `outline.md` appears in the workspace.
 - **draft-writer** -- an agent node that reads the outline and writes a full blog draft.
 - **completeness-judge** -- an agent node with a `response_format` that returns `accept` or `reject` plus brief feedback.
 - **done** -- the end node that renders the finished draft.
 
 Wire the edges: start to watcher, watcher to draft-writer, draft-writer to judge. Add a conditional router on the judge: `reject` loops back to draft-writer (set `max_iterations` to cap the loop), and `accept` continues to done.
 
-**How the park-resume works.** When the watcher node calls `watch_files`, the graph suspends (parks) instead of holding an open connection. The run stays parked until the file-change event fires. Writing `outline.md` in your workspace (Step 5 does exactly this) wakes the graph, and the producer-judge loop then runs to completion on its own.
+**How the park-resume works.** When the watcher node calls `workspaces__watch_files`, the graph suspends (parks) instead of holding an open connection. The run stays parked until the file-change event fires. Writing `outline.md` in your workspace (Step 5 does exactly this) wakes the graph, and the producer-judge loop then runs to completion on its own.
 
 ```embed:quickstart-graph
 ```
 
 ```mermaid
 flowchart LR
-    s([start]) --> w[watcher: watch_files - parks here]
+    s([start]) --> w[watcher: workspaces__watch_files - parks here]
     w -->|file written| d[draft-writer]
     d --> j{completeness-judge}
     j -->|reject + feedback| d
