@@ -6,7 +6,7 @@ mcp_tools:
   - system::create_channel_provider
   - system::create_channel
   - system::create_agent
-  - system::create_workspace_channel_association
+  - system::set_workspace_channel_association
   - workspaces::create_workspace
   - workspaces::list_workspace_sessions
   - workspaces::get_workspace_session
@@ -88,24 +88,18 @@ Response:
 Scope the agent's `tools` to the collection-search tools from the `system` toolset (ids are `<toolset>__<tool>`) so it can retrieve from `company-docs`. The bot strips the `@answer-bot` handle before the text reaches the agent, so do not rely on the agent seeing its own name.
 
 ### 5. Bind the channel to the workspace
-`system::create_workspace_channel_association`
+`system::set_workspace_channel_association`
 ```json
 {
-  "entity": {
-    "id": "wca-ops-help",
-    "workspace_id": "ws-1",
-    "channel_id": "ops-help",
-    "enabled": true,
-    "forward_ask_user": true,
-    "forward_tool_approval": true
-  }
+  "workspace_id": "ws-1",
+  "channel_id": "ops-help"
 }
 ```
 Response:
 ```json
-{ "id": "wca-ops-help" }
+{ "ok": true, "workspace_id": "ws-1", "channel_id": "ops-help" }
 ```
-The association is what routes an incoming Slack message in `#ops-help` to a session in `ws-1`. `forward_ask_user: true` surfaces the agent's `ask_user` prompts back in Slack.
+The association routes all session gates (`ask_user`, tool approval, `inform`) from sessions in `ws-1` to the `#ops-help` channel. All gate types forward automatically; no per-flag configuration is needed.
 
 ### 6. Test the bot
 Post `@answer-bot what is the SLA?` in the `#ops-help` Slack channel. The channel adapter delivers the message and starts a session. List the workspace's sessions to find it:

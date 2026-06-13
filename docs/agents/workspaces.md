@@ -27,6 +27,8 @@ mcp_tools:
   - workspaces::get_workspace_session
   - workspaces::list_workspace_sessions
   - workspaces::cancel_workspace_session
+  - system::set_workspace_channel_association
+  - system::clear_workspace_channel_association
 ---
 
 # Workspaces - execution sandboxes
@@ -68,8 +70,14 @@ Three rows make up the workspace surface:
   set. Workspaces created from a template start with the template's
   config; subsequent edits diverge.
 - `Workspace` - the live instance. `id`, `provider_id`,
-  `template_id` (nullable), `status`. The actual filesystem +
-  state repo are bound to this row.
+  `template_id` (nullable), `status`, and `channel_association`
+  (nullable). The actual filesystem + state repo are bound to this
+  row. `channel_association: {channel_id}` names the Channel that
+  all session gates (`ask_user`, tool approval, `inform`) from this
+  workspace's sessions forward to. It is mutable: set it at create
+  time in the body, or update it later with
+  `system::set_workspace_channel_association` /
+  `system::clear_workspace_channel_association`.
 
 The fixed directory layout under each workspace:
 - (workspace root) - files the agent reads and writes; arbitrary
@@ -161,6 +169,27 @@ it's called from a context with no implicit session.
 - `workspaces::get_workspace_file_info` - stat a file.
 - `workspaces::delete_workspace_file` - remove a file.
 - `workspaces::get_workspace_log` - read the workspace log.
+
+### Channel association
+
+A workspace can be linked to a Channel so that all session gates
+(`ask_user`, tool approval, `inform`) from its sessions forward to
+that channel automatically.
+
+- `system::set_workspace_channel_association` - set or overwrite the
+  association. Body: `workspace_id`, `channel_id`. Returns
+  `{ok: true, workspace_id, channel_id}`. Both the workspace and
+  the channel must exist (returns not-found error otherwise).
+- `system::clear_workspace_channel_association` - remove the
+  association (sets `channel_association` to null). Body:
+  `workspace_id`. Returns `{ok: true, workspace_id}`.
+
+The REST equivalents are:
+- `PUT /v1/workspaces/{id}/channel_association {"channel_id": "..."}`.
+- `DELETE /v1/workspaces/{id}/channel_association`.
+
+See [channels](channels.md) for how the Channel is configured and
+how the routing works.
 
 ### Sessions
 

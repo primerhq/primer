@@ -219,15 +219,18 @@ def capture_triggers(c):
 def capture_channels(c):
     providers = c.get("/v1/channel_providers?limit=200").json()
     channels = c.get("/v1/channels?limit=200").json()
-    associations = c.get("/v1/workspace_channel_associations?limit=200").json()
+    workspaces = c.get("/v1/workspaces?limit=200").json()
 
     # NOTE: seeding a real channel provider requires live Slack/Telegram/Discord
     # credentials. Captured with empty-but-valid envelopes.
+    # Channel.config.chats carries chat enablement (enabled, default_agent,
+    # allowed_agents, relay_mode). Workspace.channel_association carries the
+    # single channel a workspace's session gates forward to (set/clear via
+    # PUT/DELETE /v1/workspaces/{id}/channel_association).
     save("channels", {
         "GET /channel_providers?limit=200": providers,
         "GET /channels?limit=200": channels,
-        "GET /workspace_channel_associations?limit=200": associations,
-        "GET /workspaces?limit=200": c.get("/v1/workspaces?limit=200").json(),
+        "GET /workspaces?limit=200": workspaces,
         "_note": "channel_providers empty-valid: seeding requires live platform credentials",
     })
 

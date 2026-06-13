@@ -1,7 +1,7 @@
 ---
 slug: channels
 title: Channels - multi-platform messaging
-summary: How primer routes ask_user / tool approval prompts to Slack, Telegram, and Discord, and how channel events fire triggers.
+summary: How primer routes ask_user / tool approval prompts to Slack, Telegram, and Discord, and how channel events drive chats and workspace session gates.
 related: [triggers-and-subscriptions, tool-approval, yielding]
 mcp_tools:
   - system::list_channel_providers
@@ -14,9 +14,8 @@ mcp_tools:
   - system::create_channel
   - system::update_channel
   - system::delete_channel
-  - system::list_workspace_channel_associations
-  - system::create_workspace_channel_association
-  - system::delete_workspace_channel_association
+  - system::set_workspace_channel_association
+  - system::clear_workspace_channel_association
 ---
 
 # Channels - multi-platform messaging
@@ -27,150 +26,170 @@ Channels let primer reach humans through their existing messaging
 tools instead of forcing them into the operator console. Three
 adapter implementations exist today - Slack, Telegram, and Discord -
 each backed by an external app/bot integration the operator
-configures via a `ChannelProvider` row. Channels are the bridge
-between a running primer session that needs human input (an
-`ask_user` yield, a `_approval` gate) and the human responsible for
-answering. They're also the source side for channel-kind triggers:
-a message in a watched channel can fire a trigger that spins up a
-fresh agent.
+configures via a `ChannelProvider` row. A Channel is per-room: one
+Slack channel, one Discord guild channel, one Telegram chat. Its
+`config.chats` block controls whether incoming messages on that room
+start primer chats (with which agent, allowed switches, and output
+verbosity).
 
-The vocabulary is three layers. A **ChannelProvider** is the
-integration-level config: which platform, what credentials, what OAuth
-scope. A **Channel** is a specific account or workspace within that
-platform (one Slack workspace, one Discord guild, one Telegram chat).
-A **WorkspaceChannelAssociation** binds a primer Workspace to a
-Channel and sets two forwarding flags: `forward_ask_user` and
-`forward_tool_approval`. Both flags default off; the operator opts in
-per association.
+Channels also serve as the bridge between a running primer session
+that needs human input (an `ask_user` yield, a tool-approval gate)
+and the human responsible for answering. When a workspace has a
+channel association, all session gates from that workspace's sessions
+forward to the associated channel automatically. Channels are also
+the source side for channel-kind triggers: a message in a watched
+channel can fire a trigger that spins up a fresh agent.
 
-The fanout pattern is fire-and-forget: when a session yields with
-`ask_user` or hits an approval gate, the `ChannelDispatcher` posts to
-every enabled association in parallel. Posts that fail (Slack outage,
-Telegram rate limit, Discord interaction expiry) log a WARN but don't
-block the worker - the session has already parked. Conversely, the
-**first response wins**: whichever platform's reply lands first in the
-`ChannelInbox` publishes a `subscription_matched` event and the session
-resumes. Late responses from other platforms are accepted but produce
-no effect (the scheduler sees the session already resumable and the
-publish is a no-op).
+The vocabulary is three layers. A **ChannelProvider** holds the
+integration-level credentials: which platform, what tokens, what
+OAuth scope. A **Channel** is a specific room within that provider
+with its own per-room config. A **Workspace** can have a
+`channel_association` pointing at a Channel; session gates from that
+workspace forward to that channel.
+
+A **ChannelCorrelation** is the persistent routing record keyed on
+`(channel_id, anchor)` where anchor is a thread id (Slack/Discord)
+or a gate message id (Telegram). It maps to either a chat or a
+pending session gate. This is the durable store that lets a single
+channel serve many workspaces and standalone chats simultaneously
+while still routing replies to the right target.
 
 ## Mental model
 
 ChannelProvider:
-- `id`, `provider_type` (`slack | telegram | discord`).
-- `config` - discriminated by `provider_type`. For Slack:
-  `{client_id, client_secret, signing_secret, bot_token, oauth_token,
-  workspace_id}`. For Telegram: `{bot_token}`. For Discord:
-  `{app_id, public_key, bot_token}`.
+- `id`, `provider` (`slack | telegram | discord`).
+- `config` - discriminated by `provider`. For Slack:
+  `{app_token, bot_token, signing_secret}`. For Telegram:
+  `{bot_token, poll_timeout_seconds}`. For Discord:
+  `{bot_token, enable_dms}`.
+- Secrets are write-only; GET / list responses redact them.
 
 Channel:
-- `id`, `provider_id` (FK to ChannelProvider).
-- `external_id` - the platform's id for this account (Slack
-  channel id, Discord guild id, Telegram chat id).
-- `label` - operator-facing name.
+- `id`, `provider_id` (FK to ChannelProvider), `provider`
+  (platform enum, must match provider's platform), `external_id`
+  (platform's room id), `label`.
+- `config` - provider-discriminated per-room config:
+  `SlackChannelConfig | DiscordChannelConfig | TelegramChannelConfig`.
+  Each has a `chats: ChatConfig` block.
 
-WorkspaceChannelAssociation:
-- `id`, `workspace_id`, `channel_id`.
-- `forward_ask_user` (bool), `forward_tool_approval` (bool).
-- `enabled` (bool) - toggle the whole association without deleting.
+ChatConfig (inside `config.chats`):
+- `enabled` (bool, default false) - whether incoming messages on this
+  room start primer chats.
+- `default_agent` - agent each new chat begins with; required when
+  `enabled=true`.
+- `allowed_agents` (list of agent ids, default `[]`) - agents the
+  `/agent` command may switch to; empty means any agent is allowed.
+- `relay_mode` (`"final"` | `"all"`, default `"final"`) - controls
+  which chat messages are relayed back to the platform. `"final"`
+  sends only the last assistant turn; `"all"` streams every turn.
+
+Workspace:
+- `channel_association: {channel_id} | null` - the single Channel
+  this workspace's session gates forward to. Set at create time or
+  mutated via `set_workspace_channel_association` /
+  `clear_workspace_channel_association`.
+
+ChannelCorrelation (DB, internal):
+- Keyed `(channel_id, anchor)`.
+- `kind`: `"chat"` or `"session"`.
+- For `kind="chat"`: `chat_id`.
+- For `kind="session"`: `workspace_id`, `session_id`, `tool_call_id`
+  (the currently-pending gate).
+- Anchor = thread id (Slack/Discord) / gate message id (Telegram)
+  / `"__active_chat__"` for single-type channels.
+
+One channel can simultaneously serve many workspaces (session gates)
+and standalone chats. Each open thread or gate has its own
+ChannelCorrelation row; the inbound router resolves the anchor from
+the incoming message and dispatches to the right destination.
 
 The dispatch flow for an `ask_user`:
 
-1. Tool returns `Yielded(tool_name="ask_user", event_key="ask_user:<sid>:<tcid>", ...)`.
+1. Tool returns `Yielded(tool_name="ask_user", ...)`.
 2. Worker parks the session.
-3. ChannelDispatcher (separate from the worker) is asked to dispatch
-   the prompt. It queries the workspace's associations with
-   `forward_ask_user=true AND enabled=true`.
-4. For each association, the per-platform adapter's `post_prompt()`
-   constructs the message (with a callback id round-trip token) and
-   posts to the platform's API.
-5. Posts run in parallel; failures don't block others.
+3. The dispatcher posts the prompt to the channel associated with the
+   workspace. The message carries a `Workspace: <name> · Session:
+   <label>` attribution header so the human knows which workflow is
+   asking.
+4. The adapter writes a `ChannelCorrelation(kind="session")` row for
+   the reply anchor.
 
 The response path:
 
 1. Platform delivers the user's reply to primer's inbound webhook.
-2. `ChannelInbox.handle_response(envelope)` decodes the round-trip
-   token to recover `(workspace_id, session_id, tcid)`.
-3. The inbox publishes `subscription_matched(event_key="ask_user:<sid>:<tcid>")`.
-4. The first publish marks the session resumable; subsequent ones
-   no-op via the `mark_resumable` atomic guard.
+2. `ChannelInboundRouter.route` resolves the anchor against
+   `ChannelCorrelation`.
+3. For `kind="session"`: publishes `ask_user:{sid}:{tcid}` onto the
+   event bus.
+4. The first publish triggers `mark_resumable`; subsequent ones
+   no-op via the atomic guard.
 
-Tool approval forwarding works identically with `event_key=
-"tool_approval:<sid>:<tcid>"`.
-
-The round-trip identifier mechanism varies per platform. Slack uses
-the `value` field of an interactive button. Telegram uses
-`callback_data`. Discord uses `custom_id`. All three are encoded the
-same way: an 8-byte digest of `(workspace_id, session_id, tcid)`
-plus the explicit ids. The inbox has a process-local cache mapping
-digest → ids; cache miss falls back to a storage scan. The cache is
-an optimisation, not truth.
+Tool approval forwarding works identically, producing a
+`tool_approval:{sid}:{tcid}` event.
 
 ## Lifecycle and states
 
-A ChannelProvider has no lifecycle beyond its config. A Channel
-the same. A WorkspaceChannelAssociation has `enabled`. The
-**dispatch attempt** has these moments:
+A ChannelProvider has no lifecycle beyond its config. A Channel has
+no lifecycle state (config is mutable via PUT). A Workspace's
+`channel_association` is mutable at any time.
+
+The **dispatch attempt** has these moments:
 
 - **dispatched** - post sent, awaiting response. The session is
-  parked; the user hasn't replied.
+  parked; the user has not replied.
 - **resolved by reply** - a response arrived; first one wins; session
   resumes.
-- **resolved by timeout** - the yield's timeout fired; the session
-  resumes with `YieldTimeout`. Late channel replies still come in
-  but produce no effect.
-- **resolved by cancellation** - operator cancelled the session;
-  yield cancellation runs. Late channel replies again do nothing.
-- **post failed** - the post itself errored. Logged WARN. The
-  session is still parked; if no other platform succeeded, the user
-  will never see the prompt. This is a serious UX bug from the
-  human's perspective; monitor logs.
-
-There's no "post-resolve" hook to tell channels "this prompt was
-answered, please disable the button" - late clickers just see no
-effect.
+- **resolved by timeout** - the yield's timeout fired; session
+  resumes with `YieldTimeout`. Late channel replies produce no effect.
+- **resolved by cancellation** - operator cancelled the session.
+- **post failed** - the post itself errored. Logged WARN. The session
+  stays parked; the user never sees the prompt. Monitor server logs.
 
 ## MCP tools
 
 Channels are operator-config; the CRUD tools are available via the
-system toolset for completeness but agents rarely need to touch
-them.
+system toolset for completeness but agents rarely need to touch them.
 
 ### ChannelProvider CRUD
 
 - `system::list_channel_providers`
 - `system::get_channel_provider`
-- `system::create_channel_provider` - body needs `provider_type`,
+- `system::create_channel_provider` - body needs `provider`,
   `config`, and an optional `id`. Omit `id` and the server assigns
-  `channel-provider-<hex>` (e.g. `channel-provider-3f9a1c8d`);
-  supply one to use it verbatim. Immutable after creation. Secrets
+  `channel-provider-<hex>`; supply one to use it verbatim. Secrets
   in `config` are write-only; GET / list responses redact them.
 - `system::update_channel_provider`
-- `system::delete_channel_provider` - cascade-blocked if any
-  Channel references it.
+- `system::delete_channel_provider` - cascade-blocked if any Channel
+  references it.
 
 ### Channel CRUD
 
 - `system::list_channels`, `system::get_channel`,
   `system::create_channel`, `system::update_channel`,
   `system::delete_channel`.
-- `create_channel` body needs `provider_id`, `external_id`,
-  `label`, and an optional `id`. Omit `id` and the server assigns
-  `channel-<hex>` (e.g. `channel-3f9a1c8d`); supply one to use it
-  verbatim. Immutable after creation. External_id must match the
-  platform's actual id.
+- `create_channel` body needs `provider_id`, `provider`,
+  `external_id`, optional `label`, optional `id`, and optional
+  `config`. Omit `id` and the server assigns `channel-<hex>`.
+  `provider` must match the referenced provider's platform. The pair
+  `(provider_id, external_id)` must be unique.
+- `config.chats` controls chat enablement for the room. Set
+  `config.chats.enabled=true` and `config.chats.default_agent=<id>`
+  to allow incoming messages to start chats on this room.
 
-### Association CRUD
+### Workspace channel association
 
-- `system::list_workspace_channel_associations`
-- `system::create_workspace_channel_association` - body needs
-  `workspace_id`, `channel_id`, `forward_ask_user`,
-  `forward_tool_approval`, `enabled`, and an optional `id`. Omit
-  `id` and the server assigns
-  `workspace-channel-association-<hex>`; supply one to use it
-  verbatim. Immutable after creation.
-- `system::delete_workspace_channel_association` - instant; the
-  next dispatch sees no row for this association.
+- `system::set_workspace_channel_association` - sets
+  `workspace.channel_association` to `{channel_id}`. Body:
+  `workspace_id`, `channel_id`. Returns `{ok: true, workspace_id,
+  channel_id}`. Overwrites any existing association.
+- `system::clear_workspace_channel_association` - sets
+  `workspace.channel_association` to null. Body: `workspace_id`.
+  Returns `{ok: true, workspace_id}`.
+
+After setting an association, all `ask_user`, `tool_approval`, and
+`inform` gates from sessions in that workspace forward to the
+associated channel. No per-gate flags; the association implies all
+gates forward.
 
 ## Workflows
 
@@ -180,11 +199,19 @@ them.
 Slack channel #ops-pager.
 
 1. Operator already has the Slack app installed and the OAuth flow
-   complete. They create the ChannelProvider via the console:
+   complete. They create the ChannelProvider:
 
-   ```
-   POST /v1/channel_providers
-   { "id": "cp-slack", "provider_type": "slack", "config": {...creds...} }
+   ```json
+   {
+     "tool": "system::create_channel_provider",
+     "arguments": {
+       "entity": {
+         "id": "cp-slack",
+         "provider": "slack",
+         "config": {"app_token": "xapp-...", "bot_token": "xoxb-..."}
+       }
+     }
+   }
    ```
 
 2. Create the Channel row for #ops-pager:
@@ -193,10 +220,13 @@ Slack channel #ops-pager.
    {
      "tool": "system::create_channel",
      "arguments": {
-       "id": "ch-ops-pager",
-       "provider_id": "cp-slack",
-       "external_id": "C012ABCDEF",
-       "label": "#ops-pager"
+       "entity": {
+         "id": "ch-ops-pager",
+         "provider_id": "cp-slack",
+         "provider": "slack",
+         "external_id": "C012ABCDEF",
+         "label": "#ops-pager"
+       }
      }
    }
    ```
@@ -205,28 +235,68 @@ Slack channel #ops-pager.
 
    ```json
    {
-     "tool": "system::create_workspace_channel_association",
+     "tool": "system::set_workspace_channel_association",
      "arguments": {
-       "id": "wca-ws-incidents-ops-pager",
        "workspace_id": "ws-incidents",
-       "channel_id": "ch-ops-pager",
-       "forward_ask_user": true,
-       "forward_tool_approval": false,
-       "enabled": true
+       "channel_id": "ch-ops-pager"
      }
    }
    ```
 
 4. Next time a session in `ws-incidents` yields with `ask_user`, a
-   Slack message appears in #ops-pager with the question. A reply
-   resumes the session.
+   Slack message appears in #ops-pager (with a `Workspace: incidents
+   · Session: <label>` header) with the question. A reply resumes
+   the session.
 
-### Workflow 2 - agent observes a channel-driven trigger
+### Workflow 2 - enable chats on a Telegram room
 
-**Goal.** Agent wants to know whether a channel is wired up to fire
-triggers. It can inspect the channel surface.
+**Goal.** Incoming DMs to a Telegram bot start a chat with a
+`helpdesk` agent.
 
-1. List channels:
+1. Create the channel with chats enabled:
+
+   ```json
+   {
+     "tool": "system::create_channel",
+     "arguments": {
+       "entity": {
+         "id": "ch-tg-helpdesk",
+         "provider_id": "cp-telegram",
+         "provider": "telegram",
+         "external_id": "987654321",
+         "label": "helpdesk-dm",
+         "config": {
+           "chats": {
+             "enabled": true,
+             "default_agent": "helpdesk",
+             "relay_mode": "final"
+           }
+         }
+       }
+     }
+   }
+   ```
+
+2. Incoming DMs now start a chat with the `helpdesk` agent. The
+   conversation persists across messages in the same Telegram chat.
+
+### Workflow 3 - inspect channels and check workspace association
+
+**Goal.** Agent wants to see which channel a workspace forwards to.
+
+1. Get the workspace:
+
+```json
+{
+  "tool": "workspaces::get_workspace",
+  "arguments": {"id": "ws-target"}
+}
+```
+
+Returns the workspace row; `channel_association` is either
+`{"channel_id": "ch-ops-pager"}` or `null`.
+
+2. List channels if you need to enumerate available channels:
 
 ```json
 {
@@ -235,54 +305,40 @@ triggers. It can inspect the channel surface.
 }
 ```
 
-Returns `[{"id": "ch-ops-pager", "provider_id": "cp-slack", ...}]`.
-
-2. List associated workspaces:
-
-```json
-{
-  "tool": "system::list_workspace_channel_associations",
-  "arguments": {"limit": 100}
-}
-```
-
-3. The agent infers (or asks the user) which channels are bound to
-   triggers it cares about. Triggers themselves are inspected via
-   `trigger::list` and `trigger::get`.
-
 ## Gotchas
 
-- **`enabled=false` skips both forward flags.** Disabling an
-  association silences both `ask_user` and tool-approval forwarding
-  without distinguishing - there's no per-flag enable. Use the two
-  forward flags to choose; use `enabled` to mute the whole link.
-- **Dispatch is fire-and-forget.** A slow channel post does NOT
-  block the worker's lease release. The session parks immediately.
-- **First reply wins, late replies no-op.** If you receive a Slack
-  ack and a Discord ack at nearly the same instant, primer accepts
-  whichever landed first. The "loser" platform's reply is logged
-  but produces no state change.
-- **Failed posts produce no visible error.** They WARN to the
-  server log. Operators relying on Slack forwards need to monitor
-  for these errors - the user/operator on the receiving end can't
-  tell the difference between "no prompt was sent" and "prompt
-  failed to deliver".
+- **Association implies all gates forward.** There are no per-gate
+  flags. If a workspace is associated with a channel, all `ask_user`,
+  `tool_approval`, and `inform` gates from its sessions forward to
+  that channel.
+- **One channel, many workspaces.** A single channel can serve
+  multiple workspaces simultaneously. Each workspace's session gates
+  open a separate thread or message on the channel, attributed with
+  a `Workspace: <name> · Session: <label>` header.
+- **Chats and session gates coexist on the same channel.** A channel
+  with `config.chats.enabled=true` handles both incoming user
+  messages (chats) and session gate replies from workspace
+  associations. ChannelCorrelation rows keep them separate.
+- **`config.chats.default_agent` is required when
+  `config.chats.enabled=true`.** Omitting it returns `422`.
+- **`allowed_agents` restricts `/agent` switching.** An empty list
+  allows any agent. A non-empty list restricts the `/agent <id>`
+  command to those ids only.
+- **Dispatch is fire-and-forget.** A slow channel post does NOT block
+  the worker's lease release. The session parks immediately.
+- **First reply wins, late replies no-op.** If a Slack reply and a
+  REST response arrive nearly simultaneously, primer accepts whichever
+  lands first. The other is silently absorbed.
+- **Failed posts produce no visible error to the user.** They WARN to
+  the server log. Monitor for these errors; the human on the receiving
+  end cannot tell the difference between "no prompt was sent" and
+  "prompt failed to deliver".
 - **No post-resolve notification.** Once a yield resolves (reply,
-  timeout, cancellation), the channel button isn't updated. Late
-  clickers see "no response" silently. Don't promise users
-  "your click was registered" - they may have clicked after
-  resolution.
-- **The platform round-trip id is opaque.** Slack `value`, Discord
-  `custom_id`, Telegram `callback_data` are all primer-encoded
-  payloads. Don't try to parse them outside primer's inbox.
+  timeout, cancellation), any channel button is not updated. Late
+  clickers see no effect silently.
 - **Secrets are redacted in GET/list responses.** Re-fetching a
-  ChannelProvider row and re-POSTing it would zero out the secrets.
-  Updates must be partial - only fields you actually want to change.
-- **Sub-spec adapters lag the core spec.** The Slack / Telegram /
-  Discord implementations may have feature gaps relative to the
-  core dispatcher (e.g. interactive components on Telegram are
-  limited to inline keyboards). Test the actual reply UX in each
-  platform before relying on it.
+  ChannelProvider and re-POSTing it would zero out the secrets.
+  Updates must be partial.
 
 ## Related
 

@@ -2,10 +2,10 @@
 slug: api-channels
 title: Channels API
 section: reference
-summary: REST endpoints to configure channel providers (Slack, Telegram, Discord), channels, and workspace associations.
+summary: REST endpoints to configure channel providers (Slack, Telegram, Discord), channels, and workspace channel associations.
 ---
 
-Channel providers hold the credentials for a messaging platform (Slack, Telegram, or Discord). Channels are the individual conversational targets within a provider (a Slack channel, a Telegram chat id, a Discord guild channel). WorkspaceChannelAssociations link a workspace to a channel so that `ask_user` prompts and tool-approval requests are forwarded to the platform and the human reply resumes the parked session.
+Channel providers hold the credentials for a messaging platform (Slack, Telegram, or Discord). Channels are the individual conversational rooms within a provider (a Slack channel, a Telegram chat id, a Discord channel). A Workspace can carry a `channel_association` that names the Channel all session gates (`ask_user`, tool approval, `inform`) from its sessions forward to. Chat config lives on the Channel itself (`config.chats`).
 
 ```ref:concepts/chats
 How chats, ask_user, and the channel bridge fit together.
@@ -31,18 +31,8 @@ Configure channel providers in the console.
 | GET | `/v1/channels/{entity_id}` | Get a channel |
 | PUT | `/v1/channels/{entity_id}` | Replace a channel |
 | DELETE | `/v1/channels/{entity_id}` | Delete a channel |
-| GET | `/v1/workspace_channel_associations` | List associations |
-| POST | `/v1/workspace_channel_associations` | Create an association |
-| POST | `/v1/workspace_channel_associations/find` | Find associations by predicate |
-| GET | `/v1/workspace_channel_associations/{entity_id}` | Get an association |
-| PUT | `/v1/workspace_channel_associations/{entity_id}` | Replace an association |
-| DELETE | `/v1/workspace_channel_associations/{entity_id}` | Delete an association |
-| GET | `/v1/workspaces/{workspace_id}/channel_associations` | List associations for a workspace |
-| POST | `/v1/workspaces/{workspace_id}/channel_associations` | Create an association under a workspace |
-| POST | `/v1/workspaces/{workspace_id}/channel_associations/find` | Find associations for a workspace |
-| GET | `/v1/workspaces/{workspace_id}/channel_associations/{entity_id}` | Get an association under a workspace |
-| PUT | `/v1/workspaces/{workspace_id}/channel_associations/{entity_id}` | Replace an association under a workspace |
-| DELETE | `/v1/workspaces/{workspace_id}/channel_associations/{entity_id}` | Delete an association under a workspace |
+| PUT | `/v1/workspaces/{workspace_id}/channel_association` | Set workspace channel association |
+| DELETE | `/v1/workspaces/{workspace_id}/channel_association` | Clear workspace channel association |
 
 ## ChannelProvider object
 
@@ -231,8 +221,17 @@ const {items} = await r.json()
 {
   "id": "ch-general",
   "provider_id": "slack-main",
+  "provider": "slack",
   "external_id": "C0123ABCDEF",
-  "label": "#general"
+  "label": "#general",
+  "config": {
+    "chats": {
+      "enabled": false,
+      "default_agent": null,
+      "allowed_agents": [],
+      "relay_mode": "final"
+    }
+  }
 }
 ```
 
@@ -240,10 +239,21 @@ const {items} = await r.json()
 |-------|----------|------|-------------|
 | `id` | no | string | Identifier. If omitted, the server assigns a type-prefixed id (e.g. `channel-3f9a1c8d`). Immutable after creation |
 | `provider_id` | yes | string | Id of the parent ChannelProvider; must exist (FK validated at create time) |
+| `provider` | yes | string | Platform enum: `"slack"`, `"telegram"`, or `"discord"`. Must match the referenced provider's platform |
 | `external_id` | yes | string | Platform-side channel id (Slack channel id, Telegram chat id, Discord channel snowflake) |
-| `label` | no | string | Human-readable label (max 200 chars, default empty string) |
+| `label` | no | string | Human-readable label (max 200 chars, default null) |
+| `config` | no | ChannelConfig | Per-room config; provider-discriminated (see below). Defaults to an empty config for the platform |
 
-The pair `(provider_id, external_id)` must be unique. A duplicate returns `409 /errors/conflict` naming both fields and the existing channel id. A non-existent `provider_id` returns `422` (FK error), not `409`.
+The pair `(provider_id, external_id)` must be unique. A duplicate returns `409 /errors/conflict`. A non-existent `provider_id` returns `422`, not `409`.
+
+**Channel config** is provider-discriminated. Each variant has a `chats` block:
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `config.chats.enabled` | no | boolean | Default `false`. When `true`, incoming messages on this room start primer chats |
+| `config.chats.default_agent` | yes when enabled | string | Agent id each new chat begins with; required when `chats.enabled=true` |
+| `config.chats.allowed_agents` | no | list of strings | Agent ids the `/agent` command may switch to; `[]` means any agent is allowed |
+| `config.chats.relay_mode` | no | string | `"final"` (default) or `"all"`. Controls which assistant turns are relayed back to the platform |
 
 ## Create a channel
 
@@ -257,6 +267,7 @@ curl -X POST https://your-host/v1/channels \
   -d '{
     "id": "ch-general",
     "provider_id": "slack-main",
+    "provider": "slack",
     "external_id": "C0123ABCDEF",
     "label": "#general"
   }'
@@ -268,6 +279,7 @@ r = httpx.post(
     json={
         "id": "ch-general",
         "provider_id": "slack-main",
+        "provider": "slack",
         "external_id": "C0123ABCDEF",
         "label": "#general",
     },
@@ -280,110 +292,142 @@ const r = await fetch("/v1/channels", {
   body: JSON.stringify({
     id: "ch-general",
     provider_id: "slack-main",
+    provider: "slack",
     external_id: "C0123ABCDEF",
     label: "#general"
   })
 })
 ```
 
-**Errors:**
-- `422` - `provider_id` does not exist or required field missing
-- `409` - `(provider_id, external_id)` already registered
-
-## WorkspaceChannelAssociation object
-
-```json
-{
-  "id": "assoc-ws-general",
-  "workspace_id": "ws-prod",
-  "channel_id": "ch-general",
-  "enabled": true,
-  "forward_ask_user": true,
-  "forward_tool_approval": true,
-  "forward_inform": true
-}
-```
-
-| Field | Required | Type | Description |
-|-------|----------|------|-------------|
-| `id` | no | string | Identifier. If omitted, the server assigns a type-prefixed id (e.g. `workspace-channel-association-3f9a1c8d`). Immutable after creation |
-| `workspace_id` | yes | string | Id of the workspace (min length 1) |
-| `channel_id` | yes | string | Id of the channel (min length 1) |
-| `enabled` | no | boolean | Default `true`; disabled associations are skipped |
-| `forward_ask_user` | no | boolean | Default `true`; forward `ask_user` prompts to this channel |
-| `forward_tool_approval` | no | boolean | Default `true`; forward tool-approval requests to this channel |
-| `forward_inform` | no | boolean | Default `true`; forward one-way `inform_user` messages to this channel |
-
-The pair `(workspace_id, channel_id)` must be unique. A duplicate returns `409 /errors/conflict` naming both fields.
-
-## Create an association
-
-`POST /v1/workspace_channel_associations` - returns `201 Created`.
+To enable chats on the channel:
 
 ```code-tabs:curl,python,javascript
 --- curl
-curl -X POST https://your-host/v1/workspace_channel_associations \
+curl -X POST https://your-host/v1/channels \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "assoc-ws-general",
-    "workspace_id": "ws-prod",
-    "channel_id": "ch-general",
-    "forward_ask_user": true,
-    "forward_tool_approval": true
+    "id": "ch-helpdesk",
+    "provider_id": "slack-main",
+    "provider": "slack",
+    "external_id": "C0456DEFGHI",
+    "label": "#helpdesk",
+    "config": {
+      "chats": {
+        "enabled": true,
+        "default_agent": "helpdesk-agent",
+        "relay_mode": "final"
+      }
+    }
   }'
 --- python
 import httpx
 r = httpx.post(
-    "https://your-host/v1/workspace_channel_associations",
+    "https://your-host/v1/channels",
     headers={"Authorization": f"Bearer {token}"},
     json={
-        "id": "assoc-ws-general",
-        "workspace_id": "ws-prod",
-        "channel_id": "ch-general",
-        "forward_ask_user": True,
-        "forward_tool_approval": True,
+        "id": "ch-helpdesk",
+        "provider_id": "slack-main",
+        "provider": "slack",
+        "external_id": "C0456DEFGHI",
+        "label": "#helpdesk",
+        "config": {
+            "chats": {
+                "enabled": True,
+                "default_agent": "helpdesk-agent",
+                "relay_mode": "final",
+            }
+        },
     },
 )
 assert r.status_code == 201
 --- javascript
-const r = await fetch("/v1/workspace_channel_associations", {
+const r = await fetch("/v1/channels", {
   method: "POST",
   headers: {"Authorization": `Bearer ${token}`, "Content-Type": "application/json"},
   body: JSON.stringify({
-    id: "assoc-ws-general",
-    workspace_id: "ws-prod",
-    channel_id: "ch-general",
-    forward_ask_user: true,
-    forward_tool_approval: true
+    id: "ch-helpdesk",
+    provider_id: "slack-main",
+    provider: "slack",
+    external_id: "C0456DEFGHI",
+    label: "#helpdesk",
+    config: {
+      chats: {enabled: true, default_agent: "helpdesk-agent", relay_mode: "final"}
+    }
   })
 })
 ```
 
 **Errors:**
-- `409` - `(workspace_id, channel_id)` pair already associated
-- `422` - required field missing
+- `422` - `provider_id` does not exist, `provider` mismatches the provider's platform, `chats.enabled=true` without `chats.default_agent`, or required field missing
+- `409` - `(provider_id, external_id)` already registered
 
-## Delete an association
+## Workspace channel association
 
-`DELETE /v1/workspace_channel_associations/{entity_id}` - returns `200 OK`.
+A workspace can be linked to a channel so that all session gates
+(`ask_user`, tool approval, `inform`) from its sessions forward to
+that channel. The association is a single nullable field on the
+workspace row, not a separate resource.
+
+### Set workspace channel association
+
+`PUT /v1/workspaces/{workspace_id}/channel_association` - returns `200 OK`.
+
+Body:
+
+```json
+{"channel_id": "ch-general"}
+```
 
 ```code-tabs:curl,python,javascript
 --- curl
-curl -X DELETE https://your-host/v1/workspace_channel_associations/assoc-ws-general \
+curl -X PUT https://your-host/v1/workspaces/ws-prod/channel_association \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"channel_id": "ch-general"}'
+--- python
+import httpx
+r = httpx.put(
+    "https://your-host/v1/workspaces/ws-prod/channel_association",
+    headers={"Authorization": f"Bearer {token}"},
+    json={"channel_id": "ch-general"},
+)
+assert r.status_code == 200
+--- javascript
+await fetch("/v1/workspaces/ws-prod/channel_association", {
+  method: "PUT",
+  headers: {"Authorization": `Bearer ${token}`, "Content-Type": "application/json"},
+  body: JSON.stringify({channel_id: "ch-general"})
+})
+```
+
+**Errors:**
+- `404` - workspace or channel does not exist
+
+### Clear workspace channel association
+
+`DELETE /v1/workspaces/{workspace_id}/channel_association` - returns `200 OK`.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -X DELETE https://your-host/v1/workspaces/ws-prod/channel_association \
   -H "Authorization: Bearer $TOKEN"
 --- python
 import httpx
 r = httpx.delete(
-    "https://your-host/v1/workspace_channel_associations/assoc-ws-general",
+    "https://your-host/v1/workspaces/ws-prod/channel_association",
     headers={"Authorization": f"Bearer {token}"},
 )
+assert r.status_code == 200
 --- javascript
-await fetch("/v1/workspace_channel_associations/assoc-ws-general", {
+await fetch("/v1/workspaces/ws-prod/channel_association", {
   method: "DELETE",
   headers: {"Authorization": `Bearer ${token}`}
 })
 ```
+
+**Errors:**
+- `404` - workspace does not exist
 
 ## Errors note
 

@@ -6,7 +6,7 @@ mcp_tools:
   - system::create_channel_provider
   - system::create_channel
   - system::create_agent
-  - system::create_workspace_channel_association
+  - system::set_workspace_channel_association
   - system::create_tool_approval_policy
   - workspaces::create_workspace
   - workspaces::list_workspace_sessions
@@ -88,24 +88,18 @@ Response:
 Instruct the agent in its prompt to skip its own messages; a pattern that matches the bot's own output creates a moderation loop.
 
 ### 5. Bind the channel to the workspace
-`system::create_workspace_channel_association`
+`system::set_workspace_channel_association`
 ```json
 {
-  "entity": {
-    "id": "wca-general-mod",
-    "workspace_id": "ws-1",
-    "channel_id": "general-mod",
-    "enabled": true,
-    "forward_ask_user": false,
-    "forward_tool_approval": true
-  }
+  "workspace_id": "ws-1",
+  "channel_id": "general-mod"
 }
 ```
 Response:
 ```json
-{ "id": "wca-general-mod" }
+{ "ok": true, "workspace_id": "ws-1", "channel_id": "general-mod" }
 ```
-`forward_tool_approval: true` delivers the approval prompt for a parked `delete_message` call back into Discord. The association routes each incoming Discord message to a session in `ws-1`.
+The association routes all session gates (`ask_user`, tool approval, `inform`) from sessions in `ws-1` to the Discord channel. Tool approval prompts for parked `delete_message` calls are delivered to Discord; all gate types forward automatically.
 
 ### 6. Create the required approval policy on delete_message
 `system::create_tool_approval_policy`

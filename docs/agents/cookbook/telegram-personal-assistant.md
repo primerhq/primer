@@ -6,7 +6,7 @@ mcp_tools:
   - system::create_channel_provider
   - system::create_channel
   - system::create_agent
-  - system::create_workspace_channel_association
+  - system::set_workspace_channel_association
   - workspaces::create_workspace
   - workspaces::list_workspace_sessions
   - workspaces::get_workspace_session
@@ -87,24 +87,18 @@ Response:
 Scope `tools` to the toolsets the assistant needs (here a `web` search tool). The chat thread carries history, so the agent sees prior turns without re-stating them.
 
 ### 5. Bind the channel to the workspace
-`system::create_workspace_channel_association`
+`system::set_workspace_channel_association`
 ```json
 {
-  "entity": {
-    "id": "wca-personal-dm",
-    "workspace_id": "ws-1",
-    "channel_id": "personal-dm",
-    "enabled": true,
-    "forward_ask_user": true,
-    "forward_tool_approval": true
-  }
+  "workspace_id": "ws-1",
+  "channel_id": "personal-dm"
 }
 ```
 Response:
 ```json
-{ "id": "wca-personal-dm" }
+{ "ok": true, "workspace_id": "ws-1", "channel_id": "personal-dm" }
 ```
-The association routes each DM to a turn in a persistent chat. `forward_ask_user: true` delivers the agent's `ask_user` prompts to Telegram.
+The association routes all session gates (`ask_user`, tool approval, `inform`) from sessions in `ws-1` to the Telegram channel. All gate types forward automatically; `ask_user` prompts from the agent are delivered to Telegram.
 
 ### 6. Test the assistant
 DM the bot in Telegram. The adapter delivers the message and starts a session for the turn. Find it:
