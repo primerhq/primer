@@ -15,13 +15,8 @@ async def handle_slash_command(
     ex = CommandExecutor(storage_provider=storage_provider)
     verb = command.lstrip("/").lower()
     # /new and /list are intentionally NOT offered on Slack: a new thread is a
-    # new chat, and the channel's threads are the chat list.
-    if verb == "agent":
-        # Native slash command (no thread context): drive a paginated chat
-        # picker, then an agent picker, so the operator targets a specific
-        # chat. kind="chat_picker" carries the channel's chats.
-        chats = await ex.list_chats(channel_id=channel_id)
-        return CommandResult(kind="chat_picker", items=chats.items)
+    # new chat, and the channel's threads are the chat list. /agent opens a
+    # modal handled directly in the factory (it needs the trigger_id), not here.
     if verb == "help":
         return CommandResult(
             kind="notice", text=help_text(supports_threads=True))

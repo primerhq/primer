@@ -22,6 +22,7 @@ from primer.channel.slack.adapter import (
     REJECT_MODAL_CALLBACK_ID,
     SlackChannelAdapter,
 )
+from primer.channel.slack.blocks import AGENT_SWITCH_MODAL_CALLBACK_ID
 from primer.channel.slack.connection import SLACK_CONNECTIONS
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
@@ -209,22 +210,6 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                 text = "Chats on this channel:\n" + "\n".join(lines)
             else:
                 text = "No chats yet on this channel."
-        elif res.kind == "chat_picker":
-            # Native /agent has no thread context -> render a paginated chat
-            # picker; choosing a chat opens its agent select.
-            if not res.items:
-                text = "No chats yet on this channel. Post a message to start one."
-            else:
-                from primer.channel.slack.blocks import build_chat_select_blocks
-                try:
-                    await client.chat_postMessage(
-                        channel=channel_id,
-                        blocks=build_chat_select_blocks(res.items, page=0),
-                        text="Pick a chat to switch its agent:",
-                    )
-                except Exception:
-                    logger.exception("slack: posting chat picker failed")
-                return
         else:
             text = res.text or ""
         if not text:
@@ -234,78 +219,65 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         except Exception:
             logger.exception("slack: posting slash result for %s failed", command)
 
-    async def _adapter_for_body(body):
-        cid = body.get("channel", {}).get("id")
-        entry = SLACK_CONNECTIONS.entry(provider_id)
-        adapter = entry.adapters_by_channel_id.get(cid) if entry else None
-        if adapter is None or getattr(adapter, "_sp", None) is None:
-            return None
-        return adapter
-
-    async def _on_chat_page(ack, body, client):
-        """Re-render the paginated chat picker for another page (in place)."""
-        await ack()
-        adapter = await _adapter_for_body(body)
-        if adapter is None:
-            return
-        try:
-            page = int(body["actions"][0]["value"])
-        except Exception:
-            return
-        from primer.channel.commands import CommandExecutor
-        from primer.channel.slack.blocks import build_chat_select_blocks
-        res = await CommandExecutor(storage_provider=adapter._sp).list_chats(
-            channel_id=adapter._channel.id)
-        msg = body.get("message", {})
-        try:
-            await client.chat_update(
-                channel=body["channel"]["id"], ts=msg.get("ts"),
-                blocks=build_chat_select_blocks(res.items, page=page),
-                text="Pick a chat to switch its agent:")
-        except Exception:
-            logger.exception("slack: chat_page update failed")
-
-    @app.action("chat_page_prev")
-    async def _on_chat_page_prev(ack, body, client):
-        await _on_chat_page(ack, body, client)
-
-    @app.action("chat_page_next")
-    async def _on_chat_page_next(ack, body, client):
-        await _on_chat_page(ack, body, client)
-
-    @app.action("pick_chat_agent")
-    async def _on_pick_chat_agent(ack, body, client):
-        """A chat was chosen from the paginated picker -> show its agent select."""
-        await ack()
-        adapter = await _adapter_for_body(body)
-        if adapter is None:
-            return
-        try:
-            chat_id = body["actions"][0]["selected_option"]["value"]
-        except Exception:
-            logger.warning("slack: malformed pick_chat_agent payload")
-            return
-        from primer.channel.commands import CommandExecutor
-        from primer.channel.slack.blocks import build_agent_select_blocks
-        picker = await CommandExecutor(storage_provider=adapter._sp).agent_picker(
-            channel_id=adapter._channel.id)
-        if not picker.items:
-            return
-        msg = body.get("message", {})
-        try:
-            await client.chat_update(
-                channel=body["channel"]["id"], ts=msg.get("ts"),
-                blocks=build_agent_select_blocks(result=picker, chat_id=chat_id),
-                text="Pick an agent:")
-        except Exception:
-            logger.exception("slack: pick_chat_agent update failed")
-
     # No /new or /list on Slack: a new thread is a new chat, and the channel's
     # threads are the chat list.
     @app.command("/agent")
     async def _on_agent(ack, body, client):
+        # Open a modal (pop-up) with a Chat + Agent select. Native slash
+        # commands carry no thread context, so the operator picks the chat
+        # explicitly; the modal closes on submit, leaving no channel clutter.
         await ack()
-        await _run_slash("/agent", body, client)
+        channel_id = body.get("channel_id")
+        entry = SLACK_CONNECTIONS.entry(provider_id)
+        adapter = entry.adapters_by_channel_id.get(channel_id) if entry else None
+        if adapter is None or getattr(adapter, "_sp", None) is None:
+            return
+        from primer.channel.commands import CommandExecutor
+        from primer.channel.slack.blocks import build_agent_switch_modal
+        ex = CommandExecutor(storage_provider=adapter._sp)
+        chats = (await ex.list_chats(channel_id=adapter._channel.id)).items
+        agents = (await ex.agent_picker(channel_id=adapter._channel.id)).items
+        try:
+            await client.views_open(
+                trigger_id=body["trigger_id"],
+                view=build_agent_switch_modal(
+                    chats, agents, channel_external_id=channel_id),
+            )
+        except Exception:
+            logger.exception("slack: views.open for /agent modal failed")
+
+    @app.view(AGENT_SWITCH_MODAL_CALLBACK_ID)
+    async def _on_agent_modal_submit(ack, body, view, client):
+        await ack()  # closes the modal
+        from primer.channel.slack.blocks import read_agent_switch_submission
+        sel = read_agent_switch_submission(view)
+        if sel is None:
+            return  # info-only modal (no chats/agents): nothing to apply
+        chat_id, agent_id = sel
+        channel_ext = view.get("private_metadata", "")
+        entry = SLACK_CONNECTIONS.entry(provider_id)
+        adapter = entry.adapters_by_channel_id.get(channel_ext) if entry else None
+        if adapter is None or getattr(adapter, "_sp", None) is None:
+            return
+        from primer.channel.commands import CommandExecutor
+        from primer.model.chats import Chat
+        try:
+            res = await CommandExecutor(storage_provider=adapter._sp).set_agent(
+                chat_id=chat_id, agent_id=agent_id, channel_id=adapter._channel.id)
+        except Exception:
+            logger.exception("slack: set_agent from modal failed")
+            return
+        # Confirm inside the target chat's thread (no lingering channel message).
+        try:
+            chat = await adapter._sp.get_storage(Chat).get(chat_id)
+            binding = chat.channel_binding if chat is not None else None
+            tts = binding.thread_external_id if binding is not None else None
+            if tts:
+                await client.chat_postMessage(
+                    channel=channel_ext, thread_ts=tts,
+                    text=res.text or "Agent switched.")
+        except Exception:
+            logger.exception("slack: posting agent-switch confirmation failed")
 
     @app.command("/help")
     async def _on_help(ack, body, client):

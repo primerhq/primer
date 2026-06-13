@@ -6,56 +6,80 @@ from primer.channel.commands import CommandExecutor, CommandResult
 from primer.int.storage_provider import StorageProvider
 
 
-CHATS_PER_PAGE = 8
+AGENT_SWITCH_MODAL_CALLBACK_ID = "agent_switch_modal"
+
+# Slack static_select caps at 100 options. Channels with more chats/agents than
+# this show the most recent 100 (chats are listed newest-first).
+_SELECT_OPTION_CAP = 100
 
 
-def build_chat_select_blocks(chats: list[dict], *, page: int = 0) -> list[dict]:
-    """Paginated chat picker: a static_select of the page's chats plus a
-    Prev/Next nav row. Picking a chat (action ``pick_chat_agent``, value =
-    chat_id) advances to the agent select for that chat; the nav buttons
-    (``chat_page_prev`` / ``chat_page_next``, value = target page) re-render
-    this picker. Used by the native Slack ``/agent`` command, which carries no
-    thread context, so the operator picks the chat explicitly."""
-    total = len(chats)
-    pages = max(1, (total + CHATS_PER_PAGE - 1) // CHATS_PER_PAGE)
-    page = max(0, min(page, pages - 1))
-    start = page * CHATS_PER_PAGE
-    window = chats[start:start + CHATS_PER_PAGE]
-    options = [
-        {
-            "text": {"type": "plain_text",
-                     "text": (f"{c['title']} ({c['agent_id']})")[:75]},
-            "value": c["chat_id"],
-        }
-        for c in window
+def build_agent_switch_modal(
+    chats: list[dict], agents: list[dict], *, channel_external_id: str,
+) -> dict:
+    """A Slack modal (pop-up) for switching a chat's agent: a Chat select + an
+    Agent select, submitted together. Replaces the old in-channel picker
+    messages so nothing lingers in the conversation. ``private_metadata``
+    carries the Slack channel id so the view-submission handler can resolve the
+    adapter. When there are no chats (or no agents) an info-only modal is
+    returned instead (no submit)."""
+    if not chats:
+        return _info_modal("No chats yet on this channel. Post a message to start one.")
+    if not agents:
+        return _info_modal("No agents are available for this channel.")
+    chat_opts = [
+        {"text": {"type": "plain_text",
+                  "text": (f"{c['title']} ({c['agent_id']})")[:75]},
+         "value": c["chat_id"]}
+        for c in chats[:_SELECT_OPTION_CAP]
     ]
-    blocks: list[dict] = [{
-        "type": "section",
-        "text": {"type": "mrkdwn",
-                 "text": f"Pick a chat to switch its agent (page {page + 1}/{pages}):"},
-        "accessory": {
-            "type": "static_select",
-            "action_id": "pick_chat_agent",
-            "placeholder": {"type": "plain_text", "text": "Choose a chat"},
-            "options": options,
-        },
-    }]
-    nav: list[dict] = []
-    if page > 0:
-        nav.append({
-            "type": "button", "action_id": "chat_page_prev",
-            "text": {"type": "plain_text", "text": "< Prev"},
-            "value": str(page - 1),
-        })
-    if page < pages - 1:
-        nav.append({
-            "type": "button", "action_id": "chat_page_next",
-            "text": {"type": "plain_text", "text": "Next >"},
-            "value": str(page + 1),
-        })
-    if nav:
-        blocks.append({"type": "actions", "elements": nav})
-    return blocks
+    agent_opts = [
+        {"text": {"type": "plain_text", "text": a["label"][:75]},
+         "value": a["agent_id"]}
+        for a in agents[:_SELECT_OPTION_CAP]
+    ]
+    return {
+        "type": "modal",
+        "callback_id": AGENT_SWITCH_MODAL_CALLBACK_ID,
+        "private_metadata": channel_external_id,
+        "title": {"type": "plain_text", "text": "Switch agent"},
+        "submit": {"type": "plain_text", "text": "Switch"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {"type": "input", "block_id": "chat_b",
+             "label": {"type": "plain_text", "text": "Chat"},
+             "element": {"type": "static_select", "action_id": "chat_s",
+                         "placeholder": {"type": "plain_text", "text": "Choose a chat"},
+                         "options": chat_opts}},
+            {"type": "input", "block_id": "agent_b",
+             "label": {"type": "plain_text", "text": "Agent"},
+             "element": {"type": "static_select", "action_id": "agent_s",
+                         "placeholder": {"type": "plain_text", "text": "Choose an agent"},
+                         "options": agent_opts}},
+        ],
+    }
+
+
+def _info_modal(message: str) -> dict:
+    return {
+        "type": "modal",
+        "callback_id": AGENT_SWITCH_MODAL_CALLBACK_ID,
+        "title": {"type": "plain_text", "text": "Switch agent"},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": [{"type": "section",
+                    "text": {"type": "mrkdwn", "text": message}}],
+    }
+
+
+def read_agent_switch_submission(view: dict) -> tuple[str, str] | None:
+    """Pull (chat_id, agent_id) from a submitted agent-switch modal view, or
+    None when the info-only modal (no inputs) was submitted/closed."""
+    try:
+        state = view["state"]["values"]
+        chat_id = state["chat_b"]["chat_s"]["selected_option"]["value"]
+        agent_id = state["agent_b"]["agent_s"]["selected_option"]["value"]
+    except (KeyError, TypeError):
+        return None
+    return chat_id, agent_id
 
 
 def build_agent_select_blocks(
@@ -96,7 +120,9 @@ async def parse_agent_selection(
 
 
 __all__ = [
+    "AGENT_SWITCH_MODAL_CALLBACK_ID",
     "build_agent_select_blocks",
-    "build_chat_select_blocks",
+    "build_agent_switch_modal",
     "parse_agent_selection",
+    "read_agent_switch_submission",
 ]

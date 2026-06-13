@@ -1,61 +1,60 @@
-"""Paginated chat picker for native Slack /agent + handle_slash_command."""
+"""Slack /agent modal: build_agent_switch_modal + submission parsing."""
 
 from __future__ import annotations
 
-import pytest
-
-from primer.channel.slack.blocks import CHATS_PER_PAGE, build_chat_select_blocks
+from primer.channel.slack.blocks import (
+    AGENT_SWITCH_MODAL_CALLBACK_ID,
+    build_agent_switch_modal,
+    read_agent_switch_submission,
+)
 
 
 def _chats(n):
     return [{"chat_id": f"c{i}", "title": f"chat {i}", "agent_id": "ag"} for i in range(n)]
 
 
-def test_chat_picker_first_page_has_next_only():
-    blocks = build_chat_select_blocks(_chats(20), page=0)
-    sel = blocks[0]["accessory"]
-    assert sel["action_id"] == "pick_chat_agent"
-    assert len(sel["options"]) == CHATS_PER_PAGE
-    assert sel["options"][0]["value"] == "c0"
-    nav = [e["action_id"] for e in blocks[1]["elements"]]
-    assert nav == ["chat_page_next"]  # page 0: next only
-    assert blocks[1]["elements"][0]["value"] == "1"
+def _agents():
+    return [{"agent_id": "a1", "label": "Agent One"}, {"agent_id": "a2", "label": "Agent Two"}]
 
 
-def test_chat_picker_middle_page_has_prev_and_next():
-    blocks = build_chat_select_blocks(_chats(20), page=1)
-    nav = [e["action_id"] for e in blocks[1]["elements"]]
-    assert nav == ["chat_page_prev", "chat_page_next"]
+def test_modal_has_chat_and_agent_selects():
+    v = build_agent_switch_modal(_chats(3), _agents(), channel_external_id="C1")
+    assert v["type"] == "modal"
+    assert v["callback_id"] == AGENT_SWITCH_MODAL_CALLBACK_ID
+    assert v["private_metadata"] == "C1"
+    assert v["submit"]["text"] == "Switch"
+    block_ids = [b["block_id"] for b in v["blocks"]]
+    assert block_ids == ["chat_b", "agent_b"]
+    chat_opts = v["blocks"][0]["element"]["options"]
+    assert chat_opts[0]["value"] == "c0"
+    agent_opts = v["blocks"][1]["element"]["options"]
+    assert {o["value"] for o in agent_opts} == {"a1", "a2"}
 
 
-def test_chat_picker_last_page_prev_only():
-    blocks = build_chat_select_blocks(_chats(20), page=2)  # 20 -> pages 0,1,2
-    sel = blocks[0]["accessory"]
-    assert len(sel["options"]) == 20 - 2 * CHATS_PER_PAGE
-    nav = [e["action_id"] for e in blocks[1]["elements"]]
-    assert nav == ["chat_page_prev"]
+def test_modal_caps_options_at_100():
+    v = build_agent_switch_modal(_chats(150), _agents(), channel_external_id="C1")
+    assert len(v["blocks"][0]["element"]["options"]) == 100
 
 
-def test_single_page_no_nav():
-    blocks = build_chat_select_blocks(_chats(3), page=0)
-    assert len(blocks) == 1  # no actions block
+def test_no_chats_is_info_modal_without_submit():
+    v = build_agent_switch_modal([], _agents(), channel_external_id="C1")
+    assert v["type"] == "modal"
+    assert "submit" not in v  # info-only: no submit button
+    assert "No chats" in v["blocks"][0]["text"]["text"]
 
 
-@pytest.mark.asyncio
-async def test_slash_agent_returns_chat_picker(tmp_path):
-    from datetime import datetime, timezone
-    from primer.channel.slack.commands import handle_slash_command
-    from primer.model.chats import Chat, ChatChannelBinding
-    from primer.model.provider import SqliteConfig
-    from primer.storage.sqlite import SqliteStorageProvider
-    p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
-    await p.initialize()
-    await p.get_storage(Chat).create(Chat(
-        id="chat-1", agent_id="ag", created_at=datetime.now(timezone.utc),
-        title="hello", channel_binding=ChatChannelBinding(
-            channel_id="ch-sl", thread_external_id="t1")))
-    res = await handle_slash_command(
-        storage_provider=p, command="/agent", text="", channel_id="ch-sl",
-        thread_ts=None)
-    assert res.kind == "chat_picker"
-    assert [c["chat_id"] for c in res.items] == ["chat-1"]
+def test_no_agents_is_info_modal():
+    v = build_agent_switch_modal(_chats(2), [], channel_external_id="C1")
+    assert "submit" not in v
+
+
+def test_read_submission_extracts_chat_and_agent():
+    view = {"state": {"values": {
+        "chat_b": {"chat_s": {"selected_option": {"value": "chat-7"}}},
+        "agent_b": {"agent_s": {"selected_option": {"value": "agent-x"}}},
+    }}}
+    assert read_agent_switch_submission(view) == ("chat-7", "agent-x")
+
+
+def test_read_submission_none_for_info_modal():
+    assert read_agent_switch_submission({"state": {"values": {}}}) is None
