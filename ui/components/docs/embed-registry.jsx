@@ -116,7 +116,7 @@
     "llm-provider-openrouter": {
       component: "ProvidersPage",
       fixtures: "llm-provider-openrouter",
-      props: { onOpen: function () {}, pushToast: function () {} },
+      props: { kind: "llm", pushToast: function () {} },
     },
     "quickstart-agents": {
       component: "AgentsPage",
