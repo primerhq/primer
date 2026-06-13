@@ -264,6 +264,7 @@ class ChatTurnRunner:
         chat_storage: Storage[Chat],
         message_storage: Storage[ChatMessage],
         cancel_event: asyncio.Event | None = None,
+        artifact_storage: object | None = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -272,12 +273,30 @@ class ChatTurnRunner:
         self._chats = chat_storage
         self._messages = message_storage
         self._cancel_event = cancel_event
+        # Optional artifact store: when a tool returns media (MCP image/audio),
+        # convert + store it so the tool_result row carries media parts the
+        # channel relay can forward. None -> tool media is not surfaced.
+        self._artifacts = artifact_storage
         # Pre-turn auto-compaction state.
         self._marker_persisted: bool = False
         # Last Usage event consumed from the LLM stream; populated by
         # ``_record_usage`` when the provider reports per-turn counts.
         self._last_input_tokens: int | None = None
         self._last_output_tokens: int | None = None
+
+    async def _tool_media_parts(self, rp: "ToolResultPart") -> list:
+        """Convert a tool result's media blocks into artifact-backed media
+        parts (stored bytes + artifact_id). [] when no artifact store is wired
+        or the result carried no media."""
+        media = getattr(rp, "media", None)
+        if not media or self._artifacts is None:
+            return []
+        from primer.channel.media import parts_from_tool_media
+        try:
+            return await parts_from_tool_media(self._artifacts, media)
+        except Exception:
+            logger.warning("tool media capture failed; skipping", exc_info=True)
+            return []
 
     async def run_turn(
         self,
@@ -623,15 +642,21 @@ class ChatTurnRunner:
                         error=True,
                     )
                 tool_result_parts.append(rp)
+                payload = {
+                    "id": tc.id,
+                    "name": tc.name,
+                    "result": rp.output,
+                    "error": bool(rp.error),
+                }
+                media_parts = await self._tool_media_parts(rp)
+                if media_parts:
+                    payload["media"] = [
+                        p.model_dump(mode="json") for p in media_parts
+                    ]
                 yield await self._append(
                     chat,
                     kind="tool_result",
-                    payload={
-                        "id": tc.id,
-                        "name": tc.name,
-                        "result": rp.output,
-                        "error": bool(rp.error),
-                    },
+                    payload=payload,
                 )
 
             if yield_exc is not None:

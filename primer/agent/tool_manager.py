@@ -447,10 +447,22 @@ class ToolExecutionManager:
                 },
             )
             return ToolResultPart(id=call.id, output=str(exc), error=True)
+        # Surface any non-text content blocks (MCP image/audio/embedded
+        # resource) so callers that relay tool-produced media can find them.
+        media_blocks = None
+        if result.extended:
+            content = result.extended.get("content")
+            if isinstance(content, list):
+                media_blocks = [
+                    c for c in content
+                    if isinstance(c, dict)
+                    and c.get("type") in ("image", "audio", "resource")
+                ] or None
         return ToolResultPart(
             id=call.id,
             output=result.output,
             error=result.is_error,
+            media=media_blocks,
         )
 
     async def _dispatch_workspace(

@@ -386,6 +386,15 @@ async def _build_runner(
     # returns delivered_to:0 for now. Chat-side inform delivery is deferred to
     # the channels-drive-chats sub-project, which must persist the inform line
     # without splitting a multi-tool batch's tool_result rows.
+    # Resolve the default artifact store (if wired) so tool-produced media
+    # (MCP image/audio results) is captured into tool_result rows and can be
+    # relayed to the bound channel.
+    artifact_store = None
+    if deps.artifact_storage_registry is not None:
+        try:
+            artifact_store = await deps.artifact_storage_registry.get_default()
+        except Exception:
+            logger.warning("chat runner: no default artifact store available")
     return ChatTurnRunner(
         agent=agent,
         llm=llm,
@@ -394,6 +403,7 @@ async def _build_runner(
         chat_storage=chats,
         message_storage=msgs,
         cancel_event=cancel_event,
+        artifact_storage=artifact_store,
     )
 
 

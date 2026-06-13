@@ -155,6 +155,50 @@ async def store_inbound_media(
     return cls(**kwargs)
 
 
+async def parts_from_tool_media(
+    artifact_storage: ArtifactStorage,
+    blocks: list[dict],
+    *,
+    config: MediaConfig | None = None,
+) -> list[Part]:
+    """Convert raw tool-result media blocks (MCP image/audio/embedded-resource
+    content) into artifact-backed chat Parts. base64 ``data`` is decoded,
+    stored, and returned as a media Part (artifact_id, no inline data). Bad or
+    oversized blocks are skipped (best-effort)."""
+    import base64
+
+    out: list[Part] = []
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        b64 = None
+        mime = None
+        if btype in ("image", "audio"):
+            b64 = block.get("data")
+            mime = block.get("mimeType")
+        elif btype == "resource":
+            res = block.get("resource") or {}
+            b64 = res.get("blob")
+            mime = res.get("mimeType")
+        if not b64 or not isinstance(b64, str):
+            continue
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except Exception:
+            continue
+        try:
+            part = await store_inbound_media(
+                artifact_storage, data=data, mime_type=mime, config=config)
+        except MediaError:
+            continue
+        except Exception:
+            logger.warning("parts_from_tool_media: store failed; skipping block")
+            continue
+        out.append(part)
+    return out
+
+
 _MEDIA_PART_TYPES = (ImagePart, DocumentPart, AudioPart, VideoPart)
 
 
@@ -192,5 +236,6 @@ __all__ = [
     "hydrate_part",
     "is_allowed",
     "part_cls_for_mime",
+    "parts_from_tool_media",
     "store_inbound_media",
 ]

@@ -318,6 +318,15 @@ class ToolResultPart(BaseModel):
         default=False,
         description="True if the output represents a tool execution failure or denial rather than a successful result.",
     )
+    media: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Raw non-text content blocks the tool returned (e.g. MCP "
+            "image/audio/embedded-resource blocks). Carried from "
+            "ToolCallResult.extended so callers can surface tool-produced "
+            "media; ignored by LLM adapters (they read ``output``)."
+        ),
+    )
 
 
 class ToolCallResult(BaseModel):
