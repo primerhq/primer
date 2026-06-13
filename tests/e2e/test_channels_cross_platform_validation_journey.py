@@ -1,11 +1,11 @@
 """E2E: §3-§6 cross-platform ChannelProvider validation +
-Channel/Association uniqueness operator journey.
+Channel uniqueness operator journey.
 
 ONE pytest function walks every observable corner of the
 ChannelProvider validation contract across all three platforms
-(Slack, Telegram, Discord) plus the cross-router Channel and
-WorkspaceChannelAssociation uniqueness/foreign-key surfaces. Bundles
-several backlog-pending micro-pins into one realistic operator walk.
+(Slack, Telegram, Discord) plus the cross-router Channel
+uniqueness/foreign-key surfaces. Bundles several backlog-pending
+micro-pins into one realistic operator walk.
 
 Steps:
 
@@ -24,24 +24,19 @@ Steps:
   8. Channel — POST same (provider_id, external_id) again → 409
      /errors/conflict; detail names both fields and the existing id
      (T0845).
-  9. WorkspaceChannelAssociation — POST flat → 201; POST same
-     (workspace_id, channel_id) again → 409 /errors/conflict (T0848).
-  10. Reverse-order cleanup: association → channel → providers.
+  9. Reverse-order cleanup: channel → providers.
 
 Subsystems exercised in one test:
   * Channel router validation hooks (_channel_on_pre_create:
     provider-existence + uniqueness)
-  * WorkspaceChannelAssociation router uniqueness hook
-    (_association_on_pre_create)
   * Pydantic model validators on each platform's config
     (SlackChannelProviderConfig._validate_tokens, TelegramConfig
     ._validate, DiscordConfig._validate)
   * Secret round-trip: api keys + tokens stored as SecretStr
     and masked on GET response
 
-Covers backlog items T0838, T0839, T0840, T0841, T0844, T0845,
-T0848. 7 pending items bundled into one journey. Multi-platform,
-multi-router, multi-entity, in one function.
+Covers backlog items T0838, T0839, T0840, T0841, T0844, T0845.
+Multi-platform, multi-router, multi-entity, in one function.
 
 Pinned invariants:
   * Every platform's model validator runs server-side; bad tokens
@@ -50,9 +45,12 @@ Pinned invariants:
     THEN uniqueness — wrong provider_id surfaces as 422, not 409.
   * Channel uniqueness is on (provider_id, external_id); the
     conflict detail names BOTH fields.
-  * Association uniqueness is on (workspace_id, channel_id); the
-    conflict detail names BOTH fields.
   * No 5xx leaks across any invalid input.
+
+NOTE: the WorkspaceChannelAssociation uniqueness step (formerly T0848)
+was removed with the association model; workspace-to-channel binding is
+now Workspace.channel_association (a single nullable link, no uniqueness
+constraint to exercise).
 """
 
 from __future__ import annotations
@@ -91,7 +89,6 @@ async def test_t0860_channels_cross_platform_validation_journey(
     """
     cp_storage_urls: list[str] = []
     ch_id: str | None = None
-    assoc_id: str | None = None
     try:
         # ----- 1. Slack — valid tokens accepted, secrets masked ----
         slack_id = f"cp-slack-t860-{unique_suffix}"
@@ -189,6 +186,7 @@ async def test_t0860_channels_cross_platform_validation_journey(
             json={
                 "id": f"ch-noprov-{unique_suffix}",
                 "provider_id": f"does-not-exist-{unique_suffix}",
+                "provider": "slack",
                 "external_id": "C0123ABC999",
                 "label": "T0860 dead-ref channel",
             },
@@ -205,6 +203,7 @@ async def test_t0860_channels_cross_platform_validation_journey(
             json={
                 "id": ch_id,
                 "provider_id": slack_id,
+                "provider": "slack",
                 "external_id": ch_external_id,
                 "label": "T0860 cross-platform channel",
             },
@@ -217,6 +216,7 @@ async def test_t0860_channels_cross_platform_validation_journey(
             json={
                 "id": f"ch-t860-dup-{unique_suffix}",
                 "provider_id": slack_id,
+                "provider": "slack",
                 "external_id": ch_external_id,
                 "label": "duplicate pair",
             },
@@ -234,56 +234,8 @@ async def test_t0860_channels_cross_platform_validation_journey(
             f"conflict detail should name the existing channel id; "
             f"got: {detail!r}"
         )
-
-        # ----- 9. Association — flat POST + duplicate → 409 --------
-        workspace_id = f"ws-t860-{unique_suffix}"
-        assoc_id = f"assoc-t860-{unique_suffix}"
-        r = await client.post(
-            "/v1/workspace_channel_associations",
-            json={
-                "id": assoc_id,
-                "workspace_id": workspace_id,
-                "channel_id": ch_id,
-                "enabled": True,
-                "forward_ask_user": True,
-                "forward_tool_approval": True,
-            },
-        )
-        assert r.status_code == 201, r.text
-
-        r = await client.post(
-            "/v1/workspace_channel_associations",
-            json={
-                "id": f"assoc-t860-dup-{unique_suffix}",
-                "workspace_id": workspace_id,
-                "channel_id": ch_id,
-                "enabled": True,
-                "forward_ask_user": True,
-                "forward_tool_approval": True,
-            },
-        )
-        assert r.status_code == 409, r.text
-        env = r.json()
-        assert env["type"].endswith("/conflict"), env
-        detail = env.get("detail") or ""
-        # Conflict detail names both fields + existing id per
-        # _association_on_pre_create.
-        assert workspace_id in detail and ch_id in detail, (
-            f"conflict detail should name both fields; got: {detail!r}"
-        )
-        assert assoc_id in detail, (
-            f"conflict detail should name the existing assoc id; "
-            f"got: {detail!r}"
-        )
     finally:
-        # Reverse-order unwind: association → channel → providers.
-        if assoc_id is not None:
-            try:
-                await client.delete(
-                    f"/v1/workspace_channel_associations/{assoc_id}"
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        # Reverse-order unwind: channel → providers.
         if ch_id is not None:
             try:
                 await client.delete(f"/v1/channels/{ch_id}")
