@@ -7,8 +7,8 @@ chat-enabled channel, to linking that channel onto a workspace.
 The Designer's Channels surface is two sub-pages (Providers /
 Channels); the per-workspace channel link now lives on the
 WORKSPACE DETAIL page (the standalone "Associations" page + nav
-item were removed when WorkspaceChannelAssociation became a field
-on the Workspace row).
+item were removed when the channel link became a field on the
+Workspace row).
 
 Pages traversed:
 
