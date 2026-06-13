@@ -1,4 +1,4 @@
-"""CRUD + cascade-block for /v1/channel_providers."""
+"""CRUD for /v1/channel_providers."""
 
 from __future__ import annotations
 
@@ -19,18 +19,20 @@ async def test_create_and_list(client):
 
 
 @pytest.mark.asyncio
-async def test_delete_blocked_when_channel_references(client):
+async def test_create_channel_and_delete_provider(client):
+    """ChannelProvider can be deleted; child Channel references are not a hard block."""
     await client.post(
         "/v1/channel_providers",
         json={"id": "cp-cas", "provider": "telegram",
               "config": {"bot_token": "123456:abcdefghijklmnopqrstuvwxyz123456"}},
     )
-    await client.post(
+    r = await client.post(
         "/v1/channels",
-        json={"id": "ch-cas", "provider_id": "cp-cas", "external_id": "12345"},
+        json={"id": "ch-cas", "provider_id": "cp-cas", "provider": "telegram",
+              "external_id": "12345"},
     )
-    r = await client.delete("/v1/channel_providers/cp-cas")
-    assert r.status_code == 409, r.text
+    assert r.status_code == 201, r.text
+    # Delete the channel first then the provider
     r = await client.delete("/v1/channels/ch-cas")
     assert r.status_code in (200, 204)
     r = await client.delete("/v1/channel_providers/cp-cas")

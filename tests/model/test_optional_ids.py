@@ -40,7 +40,7 @@ import re as _re
 from primer.model.agent import Agent
 from primer.model.graph import Graph
 from primer.model.collection import Collection, Document
-from primer.model.channel import Channel, ChannelProvider, WorkspaceChannelAssociation
+from primer.model.channel import Channel, ChannelProvider
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
 from primer.model.provider import (
@@ -55,7 +55,6 @@ _PREFIXES = {
     CrossEncoderProvider: "cross-encoder-provider",
     SemanticSearchProvider: "semantic-search-provider",
     ChannelProvider: "channel-provider", Channel: "channel",
-    WorkspaceChannelAssociation: "workspace-channel-association",
     ToolApprovalPolicy: "tool-approval-policy",
     WorkspaceProvider: "workspace-provider",
     WorkspaceTemplate: "workspace-template",

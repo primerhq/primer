@@ -9,10 +9,13 @@ from primer.model.channel import (
     Channel,
     ChannelProvider,
     ChannelProviderType,
+    ChatConfig,
+    DiscordChannelConfig,
     DiscordChannelProviderConfig,
+    SlackChannelConfig,
     SlackChannelProviderConfig,
+    TelegramChannelConfig,
     TelegramChannelProviderConfig,
-    WorkspaceChannelAssociation,
 )
 
 
@@ -51,22 +54,82 @@ def test_provider_row_discriminator_mismatch_rejected():
 
 
 def test_channel_minimal_fields():
-    c = Channel(id="ch-1", provider_id="cp-1", external_id="C0123")
-    assert c.label == ""
+    c = Channel(id="ch-1", provider_id="cp-1", provider=ChannelProviderType.SLACK, external_id="C0123")
+    assert c.label is None
+    assert isinstance(c.config, SlackChannelConfig)
 
 
-def test_channel_external_id_required():
+def test_channel_external_id_is_required_field():
+    """external_id is a required field; omitting it raises ValidationError."""
     with pytest.raises(ValidationError):
-        Channel(id="ch-2", provider_id="cp-1", external_id="")
+        Channel(id="ch-2", provider_id="cp-1", provider=ChannelProviderType.SLACK)
 
 
-def test_association_defaults_forward_both():
-    a = WorkspaceChannelAssociation(
-        id="a-1", workspace_id="ws-1", channel_id="ch-1",
+def test_channel_provider_is_required():
+    with pytest.raises((ValidationError, TypeError)):
+        Channel(id="ch-3", provider_id="cp-1", external_id="C0001")
+
+
+def test_channel_config_defaults_to_empty_for_provider():
+    slack_ch = Channel(id="ch-s", provider_id="cp-1", provider=ChannelProviderType.SLACK, external_id="C1")
+    assert isinstance(slack_ch.config, SlackChannelConfig)
+    assert slack_ch.config.chats.enabled is False
+
+    tg_ch = Channel(id="ch-t", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM, external_id="123")
+    assert isinstance(tg_ch.config, TelegramChannelConfig)
+
+    dc_ch = Channel(id="ch-d", provider_id="cp-1", provider=ChannelProviderType.DISCORD, external_id="99999")
+    assert isinstance(dc_ch.config, DiscordChannelConfig)
+
+
+def test_channel_config_mismatch_rejected():
+    """A Slack channel with a Telegram config must be rejected."""
+    with pytest.raises(ValidationError):
+        Channel(
+            id="ch-bad",
+            provider_id="cp-1",
+            provider=ChannelProviderType.SLACK,
+            external_id="C1",
+            config=TelegramChannelConfig(),
+        )
+
+
+def test_chat_config_defaults():
+    cfg = ChatConfig()
+    assert cfg.enabled is False
+    assert cfg.default_agent is None
+    assert cfg.allowed_agents == []
+    assert cfg.relay_mode == "final"
+
+
+def test_chat_config_enabled_requires_default_agent():
+    with pytest.raises(ValidationError):
+        ChatConfig(enabled=True)
+
+
+def test_chat_config_allowed_agents_must_include_default():
+    with pytest.raises(ValidationError):
+        ChatConfig(enabled=True, default_agent="agent-a", allowed_agents=["agent-b"])
+
+
+def test_chat_config_valid_with_default_in_allowed():
+    cfg = ChatConfig(enabled=True, default_agent="agent-a", allowed_agents=["agent-a", "agent-b"])
+    assert cfg.enabled is True
+    assert cfg.default_agent == "agent-a"
+
+
+def test_channel_config_chats_enabled_roundtrip():
+    ch = Channel(
+        id="ch-cfg",
+        provider_id="cp-1",
+        provider=ChannelProviderType.SLACK,
+        external_id="C-cfg",
+        config=SlackChannelConfig(
+            chats=ChatConfig(enabled=True, default_agent="agent-x")
+        ),
     )
-    assert a.enabled is True
-    assert a.forward_ask_user is True
-    assert a.forward_tool_approval is True
+    assert ch.config.chats.enabled is True
+    assert ch.config.chats.default_agent == "agent-x"
 
 
 def test_slack_config_requires_xapp_prefix():

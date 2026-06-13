@@ -1405,9 +1405,10 @@ class TestWorkspacesToolsetRegistration:
         ):
             assert name in names, f"missing {name}"
         # 24 original + watch_files (yielding-tools M4) +
-        # create_workspace_session + cancel_workspace_session
-        # (session-tools) = 27.
-        assert len(names) == 27
+        # create_workspace_session + cancel_workspace_session (session-tools) +
+        # set_workspace_channel_association + clear_workspace_channel_association
+        # (channel-association redesign, added to workspace toolset) = 28.
+        assert len(names) == 28
         assert "watch_files" in names
         assert "create_workspace_session" in names
         assert "cancel_workspace_session" in names

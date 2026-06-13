@@ -204,7 +204,6 @@ _CRUD_ENTITIES = [
     ("tool_approval_policy", "tool_approval_policies"),
     ("channel_provider", "channel_providers"),
     ("channel", "channels"),
-    ("workspace_channel_association", "workspace_channel_associations"),
 ]
 
 
