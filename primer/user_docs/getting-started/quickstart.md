@@ -77,7 +77,7 @@ Turn mechanics, the agent switcher, and streaming.
 ```embed:internal-collections-enable
 ```
 
-**Part B: create a router agent.** Create a new agent called **content-router**. Give it the tools `search__search_agents` and `system__call_tool`, and a system prompt along the lines of: "Search the agents collection for the best agent for the user's request, then invoke that agent with the task."
+**Part B: create a router agent.** Create a new agent called **content-router**. Give it the tools `search__search_agents` and `system__invoke_agent`, and a system prompt along the lines of: "Search the agents collection for the best agent for the user's request, then invoke that agent with the task." (`search__search_agents` finds the agent; `system__invoke_agent` runs it.)
 
 Now open a new chat with content-router and ask: "Find an agent that can outline a blog post and run it on the topic you pick." The agent searches the internal collection, finds outline-editor by description, and calls it -- all without you naming it explicitly.
 
