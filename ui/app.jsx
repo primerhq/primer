@@ -56,7 +56,6 @@ function App() {
       if (path.startsWith("/channels/providers/") && params.id) return "channel-provider-detail";
       if (path.startsWith("/channels/providers")) return "channel-providers";
       if (path.startsWith("/channels/channels")) return "channels";
-      if (path.startsWith("/channels/associations")) return "channel-associations";
       return "channel-providers";
     }
     if (root === "workers") return "workers";
@@ -386,7 +385,6 @@ function App() {
       approvals: "/approvals",
       "channel-providers": "/channels/providers",
       channels: "/channels/channels",
-      "channel-associations": "/channels/associations",
       "channel-provider-detail": (e) => `/channels/providers/${e}`,
       chats: "/chats",
       "chat-detail": (e) => `/chats/${e}`,
@@ -553,17 +551,6 @@ function App() {
       </>
     );
     pageBody = <ChannelsPage onNavigate={navigate} pushToast={pushToast} />;
-  } else if (page === "channel-associations") {
-    pageHeader = (
-      <>
-        <div>
-          <div className="crumb"><a onClick={() => navigate("dashboard")}>Channels</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Associations</span></div>
-          <h1 className="page-title">Workspace ↔ channel associations</h1>
-          <div className="page-sub">Which workspaces fan out to which channels, with per-tool flags</div>
-        </div>
-      </>
-    );
-    pageBody = <AssociationsPage onNavigate={navigate} pushToast={pushToast} />;
   } else if (page === "semantic-search") {
     pageHeader = (
       <>

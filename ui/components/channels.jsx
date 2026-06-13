@@ -9,7 +9,6 @@ const { apiFetch, useResource, useMutation, useRouter, useViewport } = window.pr
 
 const CH_LIST_PROVIDERS = "channels:providers";
 const CH_LIST_CHANNELS = "channels:channels";
-const CH_LIST_ASSOCIATIONS = "channels:associations";
 const CH_DETAIL_PREFIX = "channel-provider-detail:";
 
 const CH_PROVIDER_FIELDS = {
@@ -611,7 +610,7 @@ function ChannelsPage({ onNavigate, pushToast }) {
   const del = useMutation(
     (cid) => apiFetch("DELETE", `/channels/${encodeURIComponent(cid)}`),
     {
-      invalidates: [CH_LIST_CHANNELS, CH_LIST_ASSOCIATIONS],
+      invalidates: [CH_LIST_CHANNELS],
       onSuccess: () => {
         if (pushToast) pushToast({ kind: "warning", title: "Channel deleted" });
       },
@@ -787,6 +786,28 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
   const [label, setLabel] = React.useState(existing?.label || "");
   const [fieldErrors, setFieldErrors] = React.useState({});
 
+  // Chats config state
+  const [chatsEnabled, setChatsEnabled] = React.useState(
+    existing?.config?.chats?.enabled ?? false
+  );
+  const [chatsDefaultAgent, setChatsDefaultAgent] = React.useState(
+    existing?.config?.chats?.default_agent || ""
+  );
+  const [chatsAllowedAgents, setChatsAllowedAgents] = React.useState(
+    existing?.config?.chats?.allowed_agents || []
+  );
+  const [chatsRelayMode, setChatsRelayMode] = React.useState(
+    existing?.config?.chats?.relay_mode || "final"
+  );
+
+  // Fetch agents for default_agent / allowed_agents pickers
+  const agentsRes = useResource(
+    "channels:agents",
+    (signal) => apiFetch("GET", "/agents?limit=200", null, { signal }),
+    {}
+  );
+  const agentItems = agentsRes.data?.items ?? [];
+
   const create = useMutation(
     (body) => isEdit
       ? apiFetch("PUT", "/channels/" + encodeURIComponent(existing.id), body)
@@ -813,11 +834,23 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
 
   const submit = () => {
     setFieldErrors({});
+    // Derive provider type from the selected ChannelProvider so the server
+    // gets the provider string even on creates (avoids a second lookup).
+    const selectedProvider = providers.find((p) => p.id === providerId);
     const body = {
       ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       provider_id: providerId,
+      ...(selectedProvider ? { provider: selectedProvider.provider } : {}),
       external_id: externalId,
       ...(label ? { label } : {}),
+      config: {
+        chats: {
+          enabled: chatsEnabled,
+          default_agent: chatsDefaultAgent || null,
+          allowed_agents: chatsAllowedAgents,
+          relay_mode: chatsRelayMode,
+        },
+      },
     };
     create.mutate(body);
   };
@@ -888,348 +921,76 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
         />
         {fieldErrors["body.label"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.label"]}</div>}
       </div>
-    </Modal>
-  );
-}
 
-// ============== Associations ==============
-
-function AssociationsPage({ onNavigate, pushToast }) {
-  const { isMobile } = useViewport();
-  const [showNew, setShowNew] = React.useState(false);
-  const [editing, setEditing] = React.useState(null);
-
-  const associations = useResource(
-    CH_LIST_ASSOCIATIONS,
-    (signal) => apiFetch("GET", "/workspace_channel_associations?limit=200", null, { signal }),
-    {},
-  );
-  const channels = useResource(
-    CH_LIST_CHANNELS,
-    (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
-    {},
-  );
-  const workspaces = useResource(
-    "channels:workspaces",
-    (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
-    {},
-  );
-
-  const items = associations.data?.items ?? [];
-  const channelItems = channels.data?.items ?? [];
-  const workspaceItems = workspaces.data?.items ?? [];
-
-  const updateAssoc = useMutation(
-    ({ aid, body }) => apiFetch("PUT", `/workspace_channel_associations/${encodeURIComponent(aid)}`, body),
-    {
-      invalidates: [CH_LIST_ASSOCIATIONS],
-      onError: CH_toastErr(pushToast, "Update failed"),
-    },
-  );
-
-  const deleteAssoc = useMutation(
-    (aid) => apiFetch("DELETE", `/workspace_channel_associations/${encodeURIComponent(aid)}`),
-    {
-      invalidates: [CH_LIST_ASSOCIATIONS],
-      onSuccess: () => {
-        if (pushToast) pushToast({ kind: "warning", title: "Association removed" });
-      },
-      onError: CH_toastErr(pushToast, "Delete failed"),
-    },
-  );
-
-  const toggle = (row, field) => {
-    // WorkspaceChannelAssociation PUT replaces the whole row — partial
-    // bodies 422 with "Field required" on id/workspace_id/channel_id.
-    // Build the full body from the current row, then patch the one
-    // field being toggled.
-    updateAssoc.mutate({ aid: row.id, body: { ...row, [field]: !row[field] } });
-  };
-
-  return (
-    <div className="col" style={{ gap: 14 }}>
-      <div className="filter-bar">
-        <div className="input-icon">
-          <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter associations…" />
+      <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 12, marginTop: 4 }}>
+        <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Chats config</div>
+        <div className="field">
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+            <input
+              type="checkbox"
+              checked={chatsEnabled}
+              onChange={(e) => setChatsEnabled(e.target.checked)}
+            />
+            <span>Enabled <span className="muted">— allow inbound chat messages on this channel</span></span>
+          </label>
         </div>
-        <div style={{ marginLeft: "auto" }}>
-          <Btn
-            size="sm"
-            kind="primary"
-            icon="plus"
-            onClick={() => setShowNew(true)}
-            disabled={workspaceItems.length === 0 || channelItems.length === 0}
+        <div className="field">
+          <label className="field-label">default agent <span className="hint">optional</span></label>
+          <select
+            className="select mono"
+            value={chatsDefaultAgent}
+            onChange={(e) => setChatsDefaultAgent(e.target.value)}
+            style={{ width: "100%" }}
           >
-            New association
-          </Btn>
+            <option value="">(none)</option>
+            {agentItems.map((a) => (
+              <option key={a.id} value={a.id}>{a.id}</option>
+            ))}
+          </select>
+          <div className="field-help">Agent used for new chats when no agent is specified</div>
+        </div>
+        <div className="field">
+          <label className="field-label">allowed agents <span className="hint">optional · multi-select</span></label>
+          {agentItems.length === 0 ? (
+            <div className="muted text-sm">No agents registered.</div>
+          ) : (
+            <select
+              className="select mono"
+              multiple
+              value={chatsAllowedAgents}
+              onChange={(e) => {
+                const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
+                setChatsAllowedAgents(selected);
+              }}
+              style={{ width: "100%", minHeight: 80 }}
+            >
+              {agentItems.map((a) => (
+                <option key={a.id} value={a.id}>{a.id}</option>
+              ))}
+            </select>
+          )}
+          <div className="field-help">Restrict which agents users can invoke. Empty = all agents allowed.</div>
+        </div>
+        <div className="field">
+          <label className="field-label">relay mode</label>
+          <select
+            className="select mono"
+            value={chatsRelayMode}
+            onChange={(e) => setChatsRelayMode(e.target.value)}
+            style={{ width: "100%" }}
+          >
+            <option value="final">final — only relay the last agent message</option>
+            <option value="all">all — relay every agent message</option>
+          </select>
         </div>
       </div>
-
-      {associations.error && !associations.data && (
-        <Banner
-          kind="error"
-          title={associations.error.title || "Couldn't load associations"}
-          detail={associations.error.detail || associations.error.message}
-          actions={<Btn size="sm" icon="refresh" onClick={associations.refetch}>Retry</Btn>}
-        />
-      )}
-
-      {isMobile ? (
-        <CardList
-          items={items}
-          empty="No associations yet."
-          renderCard={(a) => {
-            const ch = channelItems.find((c) => c.id === a.channel_id);
-            const flags = [];
-            if (a.enabled) flags.push("enabled");
-            if (a.forward_ask_user) flags.push("ask_user");
-            if (a.forward_tool_approval) flags.push("tool_approval");
-            return (
-              <Card
-                title={a.workspace_id}
-                subtitle={`${a.channel_id}${ch && ch.label ? " · " + ch.label : ""}`}
-                pill={
-                  <span className={`pill ${a.enabled ? "pill-ended" : "pill-paused"}`}>
-                    <span className="dot"></span>{a.enabled ? "on" : "off"}
-                  </span>
-                }
-                meta={flags.join(" · ") || "no flags"}
-                onClick={() => setEditing(a)}
-              />
-            );
-          }}
-        />
-      ) : (
-      <div className="tbl-wrap">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>Workspace</th>
-              <th>Channel</th>
-              <th>Enabled</th>
-              <th>Forward ask_user</th>
-              <th>Forward tool_approval</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.length === 0 && !associations.loading && (
-              <tr><td colSpan={6}>
-                <div className="empty" style={{ padding: 20 }}>
-                  <div className="head">No associations</div>
-                  <div className="sub">Link a workspace to a channel to start fan-out.</div>
-                </div>
-              </td></tr>
-            )}
-            {items.map((a) => {
-              const ch = channelItems.find((c) => c.id === a.channel_id);
-              return (
-                <tr key={a.id} style={{ opacity: a.enabled ? 1 : 0.5 }}>
-                  <td className="mono">
-                    <a style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => onNavigate("workspace-detail", a.workspace_id)}>{a.workspace_id}</a>
-                  </td>
-                  <td className="mono">
-                    {a.channel_id} {ch && <span className="muted text-sm">· {ch.label}</span>}
-                  </td>
-                  <td><Toggle on={a.enabled} onChange={() => toggle(a, "enabled")} /></td>
-                  <td><Toggle on={a.forward_ask_user} onChange={() => toggle(a, "forward_ask_user")} /></td>
-                  <td><Toggle on={a.forward_tool_approval} onChange={() => toggle(a, "forward_tool_approval")} /></td>
-                  <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }}>
-                    <button
-                      className="icon-btn"
-                      style={{ width: 22, height: 22, marginRight: 4 }}
-                      title="Edit association"
-                      onClick={() => setEditing(a)}
-                    >
-                      <Icon name="edit" size={10} />
-                    </button>
-                    <button
-                      className="icon-btn"
-                      style={{ width: 22, height: 22 }}
-                      title="Remove association"
-                      onClick={() => deleteAssoc.mutate(a.id)}
-                      disabled={deleteAssoc.loading}
-                    >
-                      <Icon name="x" size={10} />
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      )}
-
-      {isMobile && workspaceItems.length > 0 && channelItems.length > 0 && (
-        <Fab icon="plus" label="New association" onClick={() => setShowNew(true)} />
-      )}
-
-      {showNew && (
-        <NewAssociationModal
-          workspaces={workspaceItems}
-          channels={channelItems}
-          onClose={() => setShowNew(false)}
-          onCreated={() => {
-            setShowNew(false);
-            if (pushToast) pushToast({ kind: "success", title: "Association created" });
-          }}
-          pushToast={pushToast}
-        />
-      )}
-      {editing && (
-        <NewAssociationModal
-          workspaces={workspaceItems}
-          channels={channelItems}
-          existing={editing}
-          onClose={() => setEditing(null)}
-          onCreated={() => {
-            const editedId = editing.id;
-            setEditing(null);
-            if (pushToast) pushToast({ kind: "info", title: "Association updated", detail: editedId });
-          }}
-          pushToast={pushToast}
-        />
-      )}
-    </div>
-  );
-}
-
-function NewAssociationModal({ workspaces, channels, onClose, onCreated, pushToast, existing }) {
-  const isEdit = !!existing;
-  const [workspaceId, setWorkspaceId] = React.useState(
-    existing?.workspace_id || workspaces[0]?.id || ""
-  );
-  const [channelId, setChannelId] = React.useState(
-    existing?.channel_id || channels[0]?.id || ""
-  );
-  const [enabled, setEnabled] = React.useState(
-    existing?.enabled != null ? !!existing.enabled : true
-  );
-  const [forwardAskUser, setForwardAskUser] = React.useState(
-    existing?.forward_ask_user != null ? !!existing.forward_ask_user : true
-  );
-  const [forwardToolApproval, setForwardToolApproval] = React.useState(
-    existing?.forward_tool_approval != null ? !!existing.forward_tool_approval : true
-  );
-  const [fieldErrors, setFieldErrors] = React.useState({});
-
-  const create = useMutation(
-    (body) => isEdit
-      ? apiFetch("PUT", "/workspace_channel_associations/" + encodeURIComponent(existing.id), body)
-      : apiFetch("POST", "/workspace_channel_associations", body),
-    {
-      invalidates: [CH_LIST_ASSOCIATIONS],
-      onSuccess: () => onCreated(),
-      onError: (err) => {
-        if (err.status === 422 && Array.isArray(err.fieldErrors)) {
-          const map = {};
-          for (const fe of err.fieldErrors) map[(fe.loc || []).join(".")] = fe.msg;
-          setFieldErrors(map);
-        } else {
-          if (pushToast) pushToast({
-            kind: "error",
-            title: err.title || (isEdit ? "Save failed" : "Create failed"),
-            detail: err.detail || err.message,
-            requestId: err.requestId,
-          });
-        }
-      },
-    },
-  );
-
-  const submit = () => {
-    setFieldErrors({});
-    // Create: WorkspaceChannelAssociation requires explicit id —
-    // make_crud_router doesn't allocate one for this entity. Mint a
-    // short opaque id; server 409s on duplicate.
-    // Edit: preserve the existing id (PUT replace).
-    create.mutate({
-      id: isEdit ? existing.id : "assoc-" + Math.random().toString(36).slice(2, 14),
-      workspace_id: workspaceId,
-      channel_id: channelId,
-      enabled,
-      forward_ask_user: forwardAskUser,
-      forward_tool_approval: forwardToolApproval,
-    });
-  };
-
-  const canSubmit = !!workspaceId && !!channelId && !create.loading;
-
-  return (
-    <Modal
-      title={isEdit ? `Edit association · ${existing.id}` : "New workspace channel association"}
-      onClose={onClose}
-      footer={
-        <>
-          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" onClick={submit} disabled={!canSubmit}>
-            {create.loading ? "Creating…" : "Create"}
-          </Btn>
-        </>
-      }
-    >
-      <div className="field">
-        <label className="field-label">workspace</label>
-        <select className="select mono" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} style={{ width: "100%" }}>
-          {workspaces.map((w) => <option key={w.id} value={w.id}>{w.id}</option>)}
-        </select>
-        {fieldErrors["body.workspace_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.workspace_id"]}</div>}
-      </div>
-      <div className="field">
-        <label className="field-label">channel</label>
-        <select className="select mono" value={channelId} onChange={(e) => setChannelId(e.target.value)} style={{ width: "100%" }}>
-          {channels.map((c) => <option key={c.id} value={c.id}>{c.id}{c.label ? ` · ${c.label}` : ""}</option>)}
-        </select>
-        {fieldErrors["body.channel_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.channel_id"]}</div>}
-      </div>
-      <div className="field" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          <span>Enabled <span className="muted">— adapter fan-outs route here</span></span>
-        </label>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-          <input type="checkbox" checked={forwardAskUser} onChange={(e) => setForwardAskUser(e.target.checked)} />
-          <span>Forward ask_user <span className="muted">— channel-mediated user prompts</span></span>
-        </label>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-          <input type="checkbox" checked={forwardToolApproval} onChange={(e) => setForwardToolApproval(e.target.checked)} />
-          <span>Forward tool_approval <span className="muted">— channel-mediated approvals</span></span>
-        </label>
-      </div>
     </Modal>
-  );
-}
-
-function Toggle({ on, onChange }) {
-  return (
-    <button
-      onClick={onChange}
-      style={{
-        width: 32, height: 18, borderRadius: 10,
-        background: on ? "var(--accent)" : "var(--bg-2)",
-        border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
-        cursor: "pointer", padding: 0, position: "relative", transition: "0.15s",
-      }}
-    >
-      <span style={{
-        position: "absolute", top: 1, left: on ? 15 : 1,
-        width: 14, height: 14, borderRadius: "50%",
-        background: on ? "var(--accent-fg)" : "var(--text-3)",
-        transition: "0.15s",
-      }} />
-    </button>
   );
 }
 
 window.ChannelProvidersPage = ChannelProvidersPage;
 window.ChannelProviderDetail = ChannelProviderDetail;
 window.ChannelsPage = ChannelsPage;
-window.AssociationsPage = AssociationsPage;
-// Legacy mock exports kept as empty stubs — app.jsx reads
-// `window.CHANNELS_DATA` for the sidebar count. Task 14/15 owns
-// the proper sidebar wiring; until then keep the export present
-// so accessing `.length` doesn't break.
-window.CHANNEL_ASSOCIATIONS = [];
+// Legacy mock export kept as empty stub — app.jsx reads
+// `window.CHANNELS_DATA` for the sidebar count.
 window.CHANNELS_DATA = [];

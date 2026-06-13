@@ -478,7 +478,7 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
   const filesPanel = <WS_FilesTab wid={wid} pushToast={pushToast} />;
   const sessionsPanel = <WS_SessionsTab wid={wid} onOpen={onOpenSession} />;
   const logPanel = <WS_LogTab wid={wid} />;
-  const channelsPanel = <WS_ChannelsTab wid={wid} pushToast={pushToast} />;
+  const channelsPanel = <WS_ChannelsTab wid={wid} ws={ws} pushToast={pushToast} />;
   const configPanel = <WS_ConfigTab wid={wid} ws={ws} />;
   const destroyPanel = <WS_DestroyTab wid={wid} pushToast={pushToast} sessionsForBadge={sessionsForBadge} />;
 
@@ -1462,80 +1462,104 @@ function WS_CommitDiff({ wid, sha }) {
 }
 
 // ============================================================================
-// Channels tab — workspace-scoped channel associations
+// Channels tab — workspace-owned channel association
 // ============================================================================
 
-function WS_ChannelsTab({ wid, pushToast }) {
+function WS_ChannelsTab({ wid, ws, pushToast }) {
   const { useResource, useMutation, apiFetch } = window.primerApi;
   const [showLink, setShowLink] = React.useState(false);
 
-  // GET on the flat endpoint and filter client-side — the scoped GET path is
-  // not exposed (only POST scoped). Use the flat list and narrow by wid.
-  const all = useResource(
-    `workspace-channels:${wid}`,
-    (signal) => apiFetch("GET", "/workspace_channel_associations?limit=200", null, { signal }),
-    { deps: [wid] }
-  );
-  const rows = (all.data?.items ?? []).filter((a) => a.workspace_id === wid);
+  // The current association lives on the workspace row itself.
+  const wsData = ws.data || {};
+  const currentAssoc = wsData.channel_association || null;
+  const linkedChannelId = currentAssoc?.channel_id || null;
 
+  // Fetch channels list for display (label) + link picker
   const channelsList = useResource(
-    `workspace-channels-options:${wid}`,
+    "workspace-channels-options",
     (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
-    { deps: [wid] }
+    {}
   );
   const channels = channelsList.data?.items ?? [];
+
+  const linkedChannel = linkedChannelId
+    ? channels.find((c) => c.id === linkedChannelId) || null
+    : null;
+
+  const unlink = useMutation(
+    () => apiFetch("DELETE", `/workspaces/${encodeURIComponent(wid)}/channel_association`),
+    {
+      invalidates: [`workspace-detail:${wid}`],
+      onSuccess: () => {
+        if (typeof pushToast === "function") {
+          pushToast({ kind: "warning", title: "Channel unlinked" });
+        }
+        ws.refetch && ws.refetch();
+      },
+      onError: _wsToastErr(pushToast, "Unlink failed"),
+    }
+  );
 
   return (
     <div style={{ padding: 14 }}>
       <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
         <div>
-          <div className="text-sm muted">Channels associated with this workspace</div>
+          <div className="text-sm muted">Channel associated with this workspace</div>
         </div>
-        <div style={{ marginLeft: "auto" }}>
-          <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowLink(true)}>Link channel</Btn>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          {linkedChannelId && (
+            <Btn
+              size="sm"
+              kind="danger"
+              icon="x"
+              disabled={unlink.loading}
+              onClick={() => unlink.mutate()}
+            >
+              {unlink.loading ? "Unlinking…" : "Unlink"}
+            </Btn>
+          )}
+          <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowLink(true)}>
+            {linkedChannelId ? "Change channel" : "Link channel"}
+          </Btn>
         </div>
       </div>
 
-      {all.error && rows.length === 0 ? (
+      {ws.error && !wsData.id ? (
         <Banner
           kind="error"
-          title={all.error.title || "Couldn't load channels"}
-          detail={all.error.detail || all.error.message}
-          actions={<Btn size="sm" icon="refresh" onClick={all.refetch}>Retry</Btn>}
+          title={ws.error.title || "Couldn't load workspace"}
+          detail={ws.error.detail || ws.error.message}
+          actions={<Btn size="sm" icon="refresh" onClick={ws.refetch}>Retry</Btn>}
         />
-      ) : rows.length === 0 ? (
+      ) : !linkedChannelId ? (
         <div className="empty">
           <div className="ico-wrap"><Icon name="bell" size={18} /></div>
-          <div className="head">No channels linked</div>
+          <div className="head">No channel linked</div>
           <div className="sub">Link an external channel (Slack, Telegram, Discord) to fan out yielding-tool events from this workspace.</div>
           <div className="actions">
             <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowLink(true)}>Link channel</Btn>
           </div>
         </div>
       ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Association</th>
-                <th>Channel</th>
-                <th>Enabled</th>
-                <th>ask_user</th>
-                <th>tool_approval</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((a) => (
-                <tr key={a.id}>
-                  <td className="mono">{a.id}</td>
-                  <td className="mono">{a.channel_id}</td>
-                  <td className="mono">{a.enabled ? "yes" : "no"}</td>
-                  <td className="mono">{a.forward_ask_user ? "yes" : "no"}</td>
-                  <td className="mono">{a.forward_tool_approval ? "yes" : "no"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="panel">
+          <div className="panel-body">
+            <dl className="kv" style={{ gridTemplateColumns: "140px 1fr" }}>
+              <dt>channel id</dt>
+              <dd className="mono">{linkedChannelId}</dd>
+              {linkedChannel && linkedChannel.label && (
+                <>
+                  <dt>label</dt>
+                  <dd>{linkedChannel.label}</dd>
+                </>
+              )}
+              {linkedChannel && linkedChannel.provider_id && (
+                <>
+                  <dt>provider</dt>
+                  <dd className="mono">{linkedChannel.provider_id}</dd>
+                </>
+              )}
+            </dl>
+          </div>
         </div>
       )}
 
@@ -1544,6 +1568,7 @@ function WS_ChannelsTab({ wid, pushToast }) {
           wid={wid}
           channels={channels}
           onClose={() => setShowLink(false)}
+          onLinked={() => { ws.refetch && ws.refetch(); }}
           pushToast={pushToast}
         />
       )}
@@ -1551,20 +1576,17 @@ function WS_ChannelsTab({ wid, pushToast }) {
   );
 }
 
-function WS_LinkChannelModal({ wid, channels, onClose, pushToast }) {
+function WS_LinkChannelModal({ wid, channels, onClose, onLinked, pushToast }) {
   const { useMutation, apiFetch } = window.primerApi;
   const [channelId, setChannelId] = React.useState(channels[0]?.id || "");
-  const [enabled, setEnabled] = React.useState(true);
-  const [forwardAsk, setForwardAsk] = React.useState(true);
-  const [forwardApproval, setForwardApproval] = React.useState(true);
-  const [assocId, setAssocId] = React.useState("");
 
   const link = useMutation(
-    (body) => apiFetch("POST", `/workspaces/${encodeURIComponent(wid)}/channel_associations`, body),
+    (body) => apiFetch("PUT", `/workspaces/${encodeURIComponent(wid)}/channel_association`, body),
     {
-      invalidates: [`workspace-channels:${wid}`],
+      invalidates: [`workspace-detail:${wid}`],
       onSuccess: () => {
         onClose();
+        if (typeof onLinked === "function") onLinked();
         if (typeof pushToast === "function") {
           pushToast({ kind: "success", title: "Channel linked" });
         }
@@ -1575,15 +1597,7 @@ function WS_LinkChannelModal({ wid, channels, onClose, pushToast }) {
 
   const onLink = () => {
     if (!channelId) return;
-    const body = {
-      id: assocId || `wca-${wid.slice(0, 6)}-${channelId.slice(0, 6)}-${Math.random().toString(36).slice(2, 8)}`,
-      workspace_id: wid,
-      channel_id: channelId,
-      enabled,
-      forward_ask_user: forwardAsk,
-      forward_tool_approval: forwardApproval,
-    };
-    link.mutate(body);
+    link.mutate({ channel_id: channelId });
   };
 
   return (
@@ -1593,7 +1607,9 @@ function WS_LinkChannelModal({ wid, channels, onClose, pushToast }) {
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon="plus" disabled={!channelId || link.loading} onClick={onLink}>Link</Btn>
+          <Btn kind="primary" icon="check" disabled={!channelId || link.loading} onClick={onLink}>
+            {link.loading ? "Linking…" : "Link channel"}
+          </Btn>
         </>
       }
     >
@@ -1612,30 +1628,13 @@ function WS_LinkChannelModal({ wid, channels, onClose, pushToast }) {
             value={channelId}
             onChange={(e) => setChannelId(e.target.value)}
           >
-            {channels.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
+            {channels.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.id}{c.label ? ` · ${c.label}` : ""}
+              </option>
+            ))}
           </select>
         )}
-      </div>
-      <div className="field">
-        <label className="field-label">association id <span className="hint">optional</span></label>
-        <input
-          className="input mono"
-          value={assocId}
-          onChange={(e) => setAssocId(e.target.value)}
-          placeholder="(auto-generated)"
-          style={{ width: "100%" }}
-        />
-      </div>
-      <div className="field" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /><span>Enabled</span>
-        </label>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-          <input type="checkbox" checked={forwardAsk} onChange={(e) => setForwardAsk(e.target.checked)} /><span>Forward ask_user prompts</span>
-        </label>
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-          <input type="checkbox" checked={forwardApproval} onChange={(e) => setForwardApproval(e.target.checked)} /><span>Forward tool_approval requests</span>
-        </label>
       </div>
     </Modal>
   );
