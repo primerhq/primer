@@ -401,6 +401,7 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
         create_body={
             "id": "chan-1",
             "provider_id": "slack-1",
+            "provider": "slack",
             "external_id": "C12345",
         },
     ),
