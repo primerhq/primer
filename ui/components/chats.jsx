@@ -430,7 +430,7 @@ function CT_NewChatModal({ onClose, pushToast }) {
 // (POST /v1/chats/{id}/agent), paginated + searchable picker.
 // ============================================================================
 
-function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, placement = "down", disabled = false }) {
+function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, placement = "down", disabled = false, triggerStyle = null }) {
   const { useResource, useMutation, apiFetch } = window.primerApi;
   const [open, setOpen] = React.useState(false);
   const [q, setQ] = React.useState("");
@@ -468,8 +468,14 @@ function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, placement = "down
   );
 
   return (
-    <span className="agent-switcher" style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
-      <button className="chip" onClick={() => !disabled && setOpen((v) => !v)} title="Switch agent" disabled={disabled}>
+    <span className="agent-switcher" style={{ position: "relative", display: "inline-flex", alignItems: "stretch" }}>
+      <button
+        className="chip"
+        onClick={() => !disabled && setOpen((v) => !v)}
+        title="Switch agent"
+        disabled={disabled}
+        style={{ display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", ...(triggerStyle || {}) }}
+      >
         agent <span className="mono">{currentAgentId}</span>
         <Icon name={placement === "up" ? "chevron-up" : "chevron-down"} size={11} />
       </button>
@@ -1212,6 +1218,14 @@ function ChatDetail({ chatId, onBack, pushToast }) {
                 }
           }
         >
+          <CT_AgentSwitcher
+            chatId={cid}
+            currentAgentId={chatAgent}
+            pushToast={pushToast}
+            placement="up"
+            disabled={chatStatus === "ended"}
+            triggerStyle={{ padding: "0 12px", borderRadius: 6, alignSelf: "stretch" }}
+          />
           <button
             type="button"
             title="Attach files (images, PDFs)"
@@ -1240,15 +1254,6 @@ function ChatDetail({ chatId, onBack, pushToast }) {
             style={{ display: "none" }}
             onChange={(e) => handleFilesPicked(e.target.files)}
           />
-          <span style={{ display: "flex", alignItems: "center" }}>
-            <CT_AgentSwitcher
-              chatId={cid}
-              currentAgentId={chatAgent}
-              pushToast={pushToast}
-              placement="up"
-              disabled={chatStatus === "ended"}
-            />
-          </span>
           <textarea
             className="textarea"
             value={composer}
