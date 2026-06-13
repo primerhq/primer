@@ -307,6 +307,25 @@ class DiscordChannelAdapter(ChannelAdapter):
         await target.send(content=text)
         return {"thread_id": thread_ts}
 
+    async def post_chat_media(
+        self, parts: list, *, thread_ts: str | None = None,
+    ) -> dict[str, Any]:
+        """Outbound media relay: upload each hydrated media part as a file into
+        the chat's thread."""
+        import io
+
+        import discord
+        target = await self._resolve_chat_thread(thread_ts)
+        sent = 0
+        for part in parts:
+            data = getattr(part, "data", None)
+            if not data:
+                continue
+            filename = getattr(part, "filename", None) or "file"
+            await target.send(file=discord.File(io.BytesIO(data), filename=filename))
+            sent += 1
+        return {"sent": sent, "thread_id": thread_ts}
+
     async def _build_media_parts(
         self, attachments: list, text: str,
     ) -> tuple[list, str]:

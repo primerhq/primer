@@ -965,6 +965,7 @@ class WorkerPool:
                 # API process fulfils the post. In-proc (api+worker) the
                 # shared registry is warm and relay posts directly.
                 event_bus=self._event_bus,
+                artifact_registry=self._artifact_storage_registry,
             )
 
         deps = ChatDispatchDeps(

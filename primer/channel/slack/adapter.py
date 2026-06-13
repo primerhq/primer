@@ -150,6 +150,30 @@ class SlackChannelAdapter(ChannelAdapter):
             thread_ts=thread_ts, text=text)
         return {"ok": True}
 
+    async def post_chat_media(
+        self, parts: list, *, thread_ts: str | None = None,
+    ) -> dict:
+        """Outbound media relay: upload each hydrated media part to the channel
+        (into the thread when set) via files_upload_v2."""
+        if self._conn is None:
+            raise ProviderError("SlackChannelAdapter used before initialize()")
+        client = _get_web_client(self._conn)
+        sent = 0
+        for part in parts:
+            data = getattr(part, "data", None)
+            if not data:
+                continue
+            filename = getattr(part, "filename", None) or "file"
+            kwargs = {
+                "channel": self._channel.external_id,
+                "file": data, "filename": filename,
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+            await client.files_upload_v2(**kwargs)
+            sent += 1
+        return {"sent": sent}
+
     async def _session_root_ts(self, client: Any, session_id: str) -> str:
         """Get-or-create the root message ts for this session's thread.
 

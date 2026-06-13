@@ -425,5 +425,33 @@ class TelegramChannelAdapter(ChannelAdapter):
             chat_id=self._channel.external_id, text=text)
         return {"message_id": getattr(msg, "message_id", 0)}
 
+    async def post_chat_media(
+        self, parts: list, *, thread_ts: str | None = None,
+    ) -> dict[str, Any]:
+        """Outbound media relay: upload each hydrated media part (inline bytes)
+        to the channel via the matching Telegram send method."""
+        import io
+        if self._app is None:
+            raise ProviderError("TelegramChannelAdapter used before initialize()")
+        sent = 0
+        for part in parts:
+            data = getattr(part, "data", None)
+            if not data:
+                continue
+            mime = (getattr(part, "mime_type", None) or "").lower()
+            filename = getattr(part, "filename", None) or "file"
+            buf = io.BytesIO(data)
+            chat_id = self._channel.external_id
+            if mime.startswith("image/"):
+                await self._app.bot.send_photo(chat_id=chat_id, photo=buf)
+            elif mime.startswith("audio/"):
+                await self._app.bot.send_audio(chat_id=chat_id, audio=buf)
+            else:
+                buf.name = filename
+                await self._app.bot.send_document(
+                    chat_id=chat_id, document=buf, filename=filename)
+            sent += 1
+        return {"sent": sent}
+
 
 __all__ = ["TelegramChannelAdapter"]

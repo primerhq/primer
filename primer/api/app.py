@@ -982,6 +982,7 @@ def _make_lifespan(config: AppConfig):
             from primer.channel.chat_dispatcher import (
                 ChatChannelDispatcher,
                 derive_chat_gate_envelope,
+                derive_final_relay_media,
                 derive_final_relay_text,
                 parse_relay_event_key,
             )
@@ -991,6 +992,7 @@ def _make_lifespan(config: AppConfig):
                 registry=channel_registry,
                 event_bus=None,  # never republish: terminal, no bus loop
                 allow_build=True,  # inbound-owning: may warm the adapter
+                artifact_registry=artifact_storage_registry,
             )
             sub = event_bus.subscribe()
             try:
@@ -1011,6 +1013,12 @@ def _make_lifespan(config: AppConfig):
                             if env is not None:
                                 await relayer.dispatch_gate(
                                     chat_id=cid, envelope=env)
+                        elif kind == "media":
+                            mparts = await derive_final_relay_media(
+                                storage_provider, cid)
+                            if mparts:
+                                await relayer.relay_media(
+                                    chat_id=cid, parts=mparts)
                     except Exception:
                         logger.exception(
                             "chat relay forwarder: post for %s failed", cid)

@@ -11,9 +11,28 @@ from primer.channel.adapter import PromptEnvelope
 from primer.channel.chat_dispatcher import (
     ChatChannelDispatcher,
     derive_chat_gate_envelope,
+    derive_final_relay_media,
     derive_final_relay_text,
     parse_relay_event_key,
 )
+
+
+class _MemArtifacts:
+    def __init__(self):
+        from primer.int.artifact_storage import ArtifactBlob
+        self._blob_cls = ArtifactBlob
+        self.blobs = {}
+        self._n = 0
+
+    async def put(self, *, data, mime_type, filename=None):
+        self._n += 1
+        aid = f"artifact-{self._n}"
+        self.blobs[aid] = self._blob_cls(
+            data=data, mime_type=mime_type, filename=filename)
+        return aid
+
+    async def get(self, artifact_id):
+        return self.blobs.get(artifact_id)
 from primer.channel.null_adapter import NullChannelAdapter
 from primer.model.channel import ChatChannelAssociation
 from primer.model.chats import Chat, ChatChannelBinding, ChatMessage
@@ -230,3 +249,105 @@ async def test_allow_build_uses_get_adapter(tmp_path: Path):
     ok = await d.dispatch_gate(chat_id="chat-1", envelope=env)
     assert ok is True
     assert adapter.posted[0].kind == "ask_user"
+
+
+async def _seed_media_turn(p, chat_id="chat-1"):
+    """A done-terminated turn whose tool_result row carries an image media part
+    in a forward-compat ``media`` list (the shape a media-returning tool will
+    persist)."""
+    from primer.model.chat import ImagePart
+    now = datetime.now(timezone.utc)
+    msgs = p.get_storage(ChatMessage)
+    img = ImagePart(artifact_id="artifact-9", mime_type="image/png").model_dump(mode="json")
+    rows = [
+        ("user_message", {"content": "make a chart"}),
+        ("tool_result", {"id": "tc1", "name": "chart", "result": "ok",
+                          "media": [img]}),
+        ("done", {}),
+    ]
+    for seq, (kind, payload) in enumerate(rows, start=1):
+        await msgs.create(ChatMessage(
+            id=ChatMessage.make_id(chat_id, seq), chat_id=chat_id, seq=seq,
+            kind=kind, payload=payload, created_at=now))
+
+
+@pytest.mark.asyncio
+async def test_derive_final_relay_media(tmp_path: Path):
+    p = await _provider(tmp_path)
+    await _seed_media_turn(p)
+    media = await derive_final_relay_media(p, "chat-1")
+    assert len(media) == 1
+    assert media[0].artifact_id == "artifact-9"
+
+
+@pytest.mark.asyncio
+async def test_relay_media_cold_publishes_signal(tmp_path: Path):
+    from primer.model.chat import ImagePart
+    p = await _provider(tmp_path)
+    bus = _RecordingBus()
+    d = ChatChannelDispatcher(
+        storage_provider=p, registry=_ColdRegistry(), event_bus=bus)
+    ok = await d.relay_media(
+        chat_id="chat-1",
+        parts=[ImagePart(artifact_id="artifact-9", mime_type="image/png")])
+    assert ok is True
+    assert bus.published == [("chat:chat-1:relay", {"kind": "media"})]
+
+
+@pytest.mark.asyncio
+async def test_relay_media_warm_posts_via_adapter(tmp_path: Path):
+    from primer.model.chat import ImagePart
+
+    class _MediaAdapter:
+        def __init__(self):
+            self.posted = []
+
+        async def post_chat_media(self, parts, *, thread_ts=None):
+            self.posted.append((parts, thread_ts))
+            return {"sent": len(parts)}
+
+    p = await _provider(tmp_path)
+    adapter = _MediaAdapter()
+    d = ChatChannelDispatcher(storage_provider=p, registry=_StubRegistry(adapter))
+    ok = await d.relay_media(
+        chat_id="chat-1",
+        parts=[ImagePart(data=b"PNG", mime_type="image/png")])
+    assert ok is True
+    assert len(adapter.posted) == 1
+    parts, thread_ts = adapter.posted[0]
+    assert thread_ts == "t-9"
+    assert parts[0].data == b"PNG"
+
+
+@pytest.mark.asyncio
+async def test_relay_media_hydrates_before_post(tmp_path: Path):
+    from primer.int.artifact_storage import ArtifactBlob
+    from primer.model.chat import ImagePart
+
+    class _MediaAdapter:
+        def __init__(self):
+            self.posted = []
+
+        async def post_chat_media(self, parts, *, thread_ts=None):
+            self.posted.append(parts)
+
+    class _ArtReg:
+        def __init__(self, store):
+            self._store = store
+
+        async def get_default(self):
+            return self._store
+
+    p = await _provider(tmp_path)
+    store = _MemArtifacts()
+    aid = await store.put(data=b"IMGBYTES", mime_type="image/png")
+    adapter = _MediaAdapter()
+    d = ChatChannelDispatcher(
+        storage_provider=p, registry=_StubRegistry(adapter),
+        artifact_registry=_ArtReg(store))
+    await d.relay_media(
+        chat_id="chat-1",
+        parts=[ImagePart(artifact_id=aid, mime_type="image/png")])
+    posted = adapter.posted[0]
+    assert posted[0].data == b"IMGBYTES"
+    assert posted[0].artifact_id is None

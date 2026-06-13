@@ -94,6 +94,59 @@ async def derive_final_relay_text(
     return text or None
 
 
+async def derive_final_relay_media(
+    storage_provider: StorageProvider, chat_id: str,
+) -> list:
+    """Re-derive the media parts produced by the LAST completed turn.
+
+    Scans the rows between the previous and final ``done`` rows (the same
+    window as :func:`derive_final_relay_text`) and collects any media parts
+    persisted in a row's ``payload['parts']`` (or a forward-compat
+    ``payload['media']``). Returns [] when the turn produced no media. Storage
+    is the source of truth, so this is identical inline (worker) or after a
+    bus signal (API forwarder)."""
+    from pydantic import TypeAdapter
+
+    from primer.channel.media import collect_media_parts
+    from primer.model.chat import Part
+
+    msgs = storage_provider.get_storage(ChatMessage)
+    rows: list[ChatMessage] = []
+    offset = 0
+    while True:
+        page = await msgs.find(
+            Q(ChatMessage).where("chat_id", chat_id).build(),
+            OffsetPage(offset=offset, length=200),
+            order_by=[OrderBy(field="seq", direction="asc")],
+        )
+        rows.extend(page.items)
+        if len(page.items) < 200:
+            break
+        offset += 200
+    last_done = max(
+        (i for i, r in enumerate(rows) if r.kind == "done"), default=None)
+    if last_done is None:
+        return []
+    prev_done = max(
+        (i for i in range(last_done) if rows[i].kind == "done"), default=-1)
+    adapter = TypeAdapter(Part)
+    out: list = []
+    for r in rows[prev_done + 1:last_done]:
+        payload = r.payload or {}
+        for key in ("parts", "media"):
+            entries = payload.get(key)
+            if not isinstance(entries, list):
+                continue
+            parsed: list = []
+            for entry in entries:
+                try:
+                    parsed.append(adapter.validate_python(entry))
+                except Exception:
+                    continue
+            out.extend(collect_media_parts(parsed))
+    return out
+
+
 async def derive_chat_gate_envelope(
     storage_provider: StorageProvider, chat_id: str,
 ) -> PromptEnvelope | None:
@@ -143,11 +196,13 @@ class ChatChannelDispatcher:
         registry: "ChannelRegistry",
         event_bus: "EventBus | None" = None,
         allow_build: bool = False,
+        artifact_registry: object | None = None,
     ) -> None:
         self._sp = storage_provider
         self._registry = registry
         self._bus = event_bus
         self._allow_build = allow_build
+        self._artifacts = artifact_registry
 
     async def _resolve(
         self, chat_id: str,
@@ -218,6 +273,57 @@ class ChatChannelDispatcher:
             logger.warning("chat relay post failed for %s: %s", chat_id, exc)
             return False
 
+    async def relay_media(self, *, chat_id: str, parts: list) -> bool:
+        """Relay the turn's media parts to the bound channel.
+
+        Mirrors :meth:`relay_text`: warm adapter -> upload directly; cold
+        (out-of-proc worker) -> publish a ``media`` relay signal for the
+        inbound-owning process to fulfil. Parts are hydrated (artifact_id ->
+        inline bytes) before upload when an artifact registry is wired."""
+        if not parts:
+            return False
+        resolved = await self._resolve(chat_id)
+        if resolved is None:
+            return False
+        chat, assoc = resolved
+        if not assoc.forward_inform:
+            return False
+        adapter = await self._adapter_for(chat.channel_binding.channel_id)
+        if adapter is None:
+            return await self._publish_relay(chat_id, "media")
+        post_media = getattr(adapter, "post_chat_media", None)
+        if post_media is None:
+            return False
+        hydrated = await self._hydrate_all(parts)
+        try:
+            await post_media(
+                hydrated, thread_ts=chat.channel_binding.thread_external_id,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("chat media relay failed for %s: %s", chat_id, exc)
+            return False
+
+    async def _hydrate_all(self, parts: list) -> list:
+        """Load artifact bytes into each media part before a channel upload.
+        No-op when no artifact registry is wired (parts assumed already
+        carrying inline data, e.g. in tests)."""
+        if self._artifacts is None:
+            return parts
+        try:
+            store = await self._artifacts.get_default()
+        except Exception:
+            logger.warning("chat media relay: no default artifact store")
+            return parts
+        from primer.channel.media import hydrate_part
+        out = []
+        for p in parts:
+            try:
+                out.append(await hydrate_part(store, p))
+            except Exception:
+                logger.warning("chat media relay: hydrate failed; dropping part")
+        return out
+
     async def dispatch_gate(
         self, *, chat_id: str, envelope: PromptEnvelope,
     ) -> bool:
@@ -246,6 +352,7 @@ class ChatChannelDispatcher:
 __all__ = [
     "ChatChannelDispatcher",
     "derive_chat_gate_envelope",
+    "derive_final_relay_media",
     "derive_final_relay_text",
     "parse_relay_event_key",
     "relay_event_key",

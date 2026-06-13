@@ -124,6 +124,17 @@ async def _relay_final_text(deps: "ChatDispatchDeps", chat_id: str) -> None:
         await deps.chat_channel_dispatcher.relay_text(chat_id=chat_id, text=text)
 
 
+async def _relay_final_media(deps: "ChatDispatchDeps", chat_id: str) -> None:
+    """Relay any media parts produced by the completed turn to the bound
+    channel. No-op when no dispatcher is wired or the turn produced no media."""
+    if deps.chat_channel_dispatcher is None:
+        return
+    from primer.channel.chat_dispatcher import derive_final_relay_media
+    parts = await derive_final_relay_media(deps.storage_provider, chat_id)
+    if parts:
+        await deps.chat_channel_dispatcher.relay_media(chat_id=chat_id, parts=parts)
+
+
 async def _forward_chat_gate(deps: "ChatDispatchDeps", chat_id: str) -> None:
     """Forward a freshly-set pending gate to the bound channel.
 
@@ -246,8 +257,9 @@ async def run_one_chat_turn(
                             cleared.cancel_requested_at = None
                             await chat_storage.update(cleared)
                     # Resumed continuation reached a terminal row: relay the
-                    # turn's final assistant text to the bound channel.
+                    # turn's final assistant text + media to the bound channel.
                     await _relay_final_text(deps, chat_id)
+                    await _relay_final_media(deps, chat_id)
                 except YieldToWorker as exc:
                     from primer.chat.executor import _is_switch_tool
                     if _is_switch_tool(exc):
@@ -290,8 +302,9 @@ async def run_one_chat_turn(
                         refreshed.cancel_requested_at = None
                         await chat_storage.update(refreshed)
                 # Turn reached a terminal row: relay its final assistant
-                # text to the bound channel (no-op when unbound).
+                # text + media to the bound channel (no-op when unbound).
                 await _relay_final_text(deps, chat_id)
+                await _relay_final_media(deps, chat_id)
             except YieldToWorker as exc:
                 from primer.chat.executor import _is_switch_tool
                 if _is_switch_tool(exc):
