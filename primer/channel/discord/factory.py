@@ -300,10 +300,13 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
         except Exception as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
-        if value:
-            # Direct switch via /agent value:<id> - confirm explicitly.
+        # Any notice (a direct /agent value:<id> switch, a disabled-switch
+        # short-circuit, or a not-allowed agent) carries its message in
+        # res.text; surface it verbatim. Only the no-arg, switching-enabled
+        # path returns an agent_picker to render as a dropdown.
+        if res.kind == "notice":
             await interaction.response.send_message(
-                f"OK - {res.text or 'Agent switched.'}", ephemeral=True)
+                res.text or "Done.", ephemeral=True)
             return
 
         from primer.channel.discord.views import AgentSelectView
