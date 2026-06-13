@@ -87,6 +87,7 @@ class ChatChannelRouter:
                     b is not None
                     and b.channel_id == channel_id
                     and b.thread_external_id == thread_external_id
+                    and c.status != "ended"
                 ):
                     return c
             if len(page.items) < 200:

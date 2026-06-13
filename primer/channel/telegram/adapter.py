@@ -78,6 +78,15 @@ class TelegramChannelAdapter(ChannelAdapter):
         # token in the message body).
         self._reply_targets: _BoundedDict = _BoundedDict(maxsize=_CACHE_MAXSIZE)
 
+    def remember_reply_target(
+        self, *, message_id: int, ids: dict[str, str], kind: str,
+    ) -> None:
+        """Record a rejection-prompt reply target keyed by the bot message the
+        user will reply to. Only the tool-rejection text-reason flow uses this
+        (the reject prompt sent after the Reject button); ask_user replies are
+        correlated via the persistent CorrelationStore instead."""
+        self._reply_targets[message_id] = {**ids, "kind": kind}
+
     def resolve_reply_target(self, message_id: int) -> dict[str, str] | None:
         """Look up a rejection-prompt reply target by the bot message it replies to.
 
