@@ -7,8 +7,8 @@ summary: Authentication, base URL, error envelope (RFC 7807), and pagination for
 
 All API routes are under `/v1`. The OpenAPI schema is served at `/v1/openapi.json`; the Swagger UI at `/v1/docs`.
 
-```ref:getting-started/welcome
-Quick-start and deployment setup.
+```ref:getting-started/introduction
+Introduction and quick-start setup.
 ```
 
 ```ref:concepts/what-is-an-agent

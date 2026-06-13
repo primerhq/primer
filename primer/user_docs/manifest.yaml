@@ -4,14 +4,8 @@ sections:
     icon: zap
     order: 1
     docs:
-      - welcome
-      - install
-      - first-login
-      - first-agent
-      - configuration
-      - environments
-      - dashboard-tour
-      - upgrading
+      - introduction
+      - quickstart
   - id: concepts
     title: Concepts
     icon: graph
