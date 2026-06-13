@@ -1,0 +1,169 @@
+{
+  "GET /graphs?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "blog-draft-loop",
+        "description": "Iterative blog draft loop - draft, judge, revise until complete",
+        "nodes": [
+          {
+            "kind": "begin",
+            "id": "start",
+            "description": null,
+            "input_schema": null
+          },
+          {
+            "kind": "agent",
+            "id": "watcher",
+            "agent_id": "topic-scout",
+            "input_template": "Identify the blog topic to expand: {{ instructions }}",
+            "response_format": null,
+            "description": null,
+            "input_schema": null
+          },
+          {
+            "kind": "agent",
+            "id": "draft-writer",
+            "agent_id": "outline-editor",
+            "input_template": "Write a full draft from this outline: {{ nodes.watcher.text }}",
+            "response_format": null,
+            "description": null,
+            "input_schema": null
+          },
+          {
+            "kind": "agent",
+            "id": "completeness-judge",
+            "agent_id": "outline-editor",
+            "input_template": "Judge whether this draft is complete and ready to publish. Reply with PASS or FAIL and a one-line reason.\n\nDraft:\n{{ nodes.draft-writer.text }}",
+            "response_format": null,
+            "description": null,
+            "input_schema": null
+          },
+          {
+            "kind": "end",
+            "id": "done",
+            "description": null,
+            "output_template": "{{ nodes.draft-writer.text }}",
+            "output_schema": null
+          }
+        ],
+        "edges": [
+          { "kind": "static", "from_node": "start", "to_node": "watcher" },
+          { "kind": "static", "from_node": "watcher", "to_node": "draft-writer" },
+          { "kind": "static", "from_node": "draft-writer", "to_node": "completeness-judge" },
+          {
+            "kind": "conditional",
+            "from_node": "completeness-judge",
+            "branches": [
+              { "condition": "nodes.completeness-judge.text contains 'PASS'", "to_node": "done" },
+              { "condition": "nodes.completeness-judge.text contains 'FAIL'", "to_node": "draft-writer" }
+            ]
+          }
+        ],
+        "max_iterations": 5,
+        "harness_id": null
+      }
+    ]
+  },
+  "GET /graphs/{id}": {
+    "id": "blog-draft-loop",
+    "description": "Iterative blog draft loop - draft, judge, revise until complete",
+    "nodes": [
+      {
+        "kind": "begin",
+        "id": "start",
+        "description": null,
+        "input_schema": null
+      },
+      {
+        "kind": "agent",
+        "id": "watcher",
+        "agent_id": "topic-scout",
+        "input_template": "Identify the blog topic to expand: {{ instructions }}",
+        "response_format": null,
+        "description": null,
+        "input_schema": null
+      },
+      {
+        "kind": "agent",
+        "id": "draft-writer",
+        "agent_id": "outline-editor",
+        "input_template": "Write a full draft from this outline: {{ nodes.watcher.text }}",
+        "response_format": null,
+        "description": null,
+        "input_schema": null
+      },
+      {
+        "kind": "agent",
+        "id": "completeness-judge",
+        "agent_id": "outline-editor",
+        "input_template": "Judge whether this draft is complete and ready to publish. Reply with PASS or FAIL and a one-line reason.\n\nDraft:\n{{ nodes.draft-writer.text }}",
+        "response_format": null,
+        "description": null,
+        "input_schema": null
+      },
+      {
+        "kind": "end",
+        "id": "done",
+        "description": null,
+        "output_template": "{{ nodes.draft-writer.text }}",
+        "output_schema": null
+      }
+    ],
+    "edges": [
+      { "kind": "static", "from_node": "start", "to_node": "watcher" },
+      { "kind": "static", "from_node": "watcher", "to_node": "draft-writer" },
+      { "kind": "static", "from_node": "draft-writer", "to_node": "completeness-judge" },
+      {
+        "kind": "conditional",
+        "from_node": "completeness-judge",
+        "branches": [
+          { "condition": "nodes.completeness-judge.text contains 'PASS'", "to_node": "done" },
+          { "condition": "nodes.completeness-judge.text contains 'FAIL'", "to_node": "draft-writer" }
+        ]
+      }
+    ],
+    "max_iterations": 5,
+    "harness_id": null
+  },
+  "GET /agents?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 2,
+    "total": 2,
+    "items": [
+      {
+        "id": "topic-scout",
+        "description": "Brainstorms blog post topics for a theme",
+        "model": {
+          "provider_id": "openrouter-free",
+          "model_name": "meta-llama/llama-3.1-8b-instruct:free"
+        },
+        "temperature": 0.7,
+        "tools": [],
+        "system_prompt": ["You suggest sharp, specific blog post topics for a given theme.", "Return a numbered list of five. No preamble."],
+        "compaction_prompt": [],
+        "harness_id": null
+      },
+      {
+        "id": "outline-editor",
+        "description": "Turns a chosen topic into a structured outline",
+        "model": {
+          "provider_id": "openrouter-free",
+          "model_name": "meta-llama/llama-3.1-8b-instruct:free"
+        },
+        "temperature": 0.3,
+        "tools": [],
+        "system_prompt": ["You turn a single blog topic into a tight outline.", "Output Markdown only."],
+        "compaction_prompt": [],
+        "harness_id": null
+      }
+    ]
+  },
+  "GET /tools/catalogue": {
+    "items": []
+  }
+}

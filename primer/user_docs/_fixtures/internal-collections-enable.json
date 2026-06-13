@@ -1,0 +1,22 @@
+{
+  "GET /internal_collections/config": {
+    "embedding_provider_id": "local-minilm",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "search_provider_id": "local-lance",
+    "activated_at": "2026-06-14T09:00:00Z"
+  },
+  "GET /internal_collections/bootstrap/status": {
+    "status": "succeeded",
+    "phase": "finalize",
+    "phase_done": 7,
+    "phase_total": 7,
+    "counts": {
+      "agents": 2,
+      "graphs": 1,
+      "tools": 70,
+      "collections": 0
+    },
+    "started_at": "2026-06-14T09:00:00Z",
+    "error": null
+  }
+}

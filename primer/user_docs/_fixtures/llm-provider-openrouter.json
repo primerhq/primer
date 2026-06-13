@@ -1,0 +1,23 @@
+{
+  "GET /llm_providers?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "openrouter-free",
+        "provider": "openrouter",
+        "models": [{ "name": "meta-llama/llama-3.1-8b-instruct:free", "context_length": 16000 }],
+        "config": { "app_name": "primer-quickstart" }
+      }
+    ]
+  },
+  "GET /embedding_providers?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
+  }
+}

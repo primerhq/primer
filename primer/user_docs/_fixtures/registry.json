@@ -11,6 +11,11 @@
     "graph-canvas",
     "workers-stats",
     "collection-list",
-    "api-token-create"
+    "api-token-create",
+    "llm-provider-openrouter",
+    "quickstart-agents",
+    "chat-agent-switch",
+    "internal-collections-enable",
+    "quickstart-graph"
   ]
 }

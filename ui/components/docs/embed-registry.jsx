@@ -113,6 +113,31 @@
       fixtures: "api-token-create",
       props: {},
     },
+    "llm-provider-openrouter": {
+      component: "ProvidersPage",
+      fixtures: "llm-provider-openrouter",
+      props: { onOpen: function () {}, pushToast: function () {} },
+    },
+    "quickstart-agents": {
+      component: "AgentsPage",
+      fixtures: "quickstart-agents",
+      props: { onOpen: function () {}, pushToast: function () {} },
+    },
+    "chat-agent-switch": {
+      component: "ChatsPage",
+      fixtures: "chat-agent-switch",
+      props: { onOpen: function () {}, pushToast: function () {} },
+    },
+    "internal-collections-enable": {
+      component: "InternalCollectionsPage",
+      fixtures: "internal-collections-enable",
+      props: { pushToast: function () {} },
+    },
+    "quickstart-graph": {
+      component: "GraphsPage",
+      fixtures: "quickstart-graph",
+      props: { onOpen: function () {}, pushToast: function () {} },
+    },
   };
 
   window.DocsEmbedRegistry = REGISTRY;

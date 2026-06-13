@@ -1,0 +1,108 @@
+{
+  "GET /chats?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "chat-blog-launch-001",
+        "agent_id": "outline-editor",
+        "created_at": "2026-06-14T09:00:00.000000Z",
+        "status": "active",
+        "title": "Blog topics for our launch",
+        "last_seq": 4,
+        "turn_status": "idle",
+        "cancel_requested_at": null,
+        "pending_tool_call": null
+      }
+    ]
+  },
+  "GET /chats/{id}": {
+    "id": "chat-blog-launch-001",
+    "agent_id": "outline-editor",
+    "created_at": "2026-06-14T09:00:00.000000Z",
+    "status": "active",
+    "title": "Blog topics for our launch",
+    "last_seq": 4,
+    "turn_status": "idle",
+    "cancel_requested_at": null,
+    "pending_tool_call": null
+  },
+  "GET /chats/{id}/messages": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 4,
+    "total": 4,
+    "items": [
+      {
+        "seq": 1,
+        "role": "user",
+        "parts": [{ "kind": "text", "text": "Give me five blog topics for our product launch." }],
+        "created_at": "2026-06-14T09:00:05.000000Z"
+      },
+      {
+        "seq": 2,
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "1. How we built a multi-agent platform in six months\n2. Why we bet on open-weight models for our launch\n3. The unexpected lessons from our beta program\n4. How primer makes your agents observable by default\n5. From prototype to production: our infrastructure story"
+          }
+        ],
+        "created_at": "2026-06-14T09:00:08.000000Z"
+      },
+      {
+        "seq": 3,
+        "role": "user",
+        "parts": [{ "kind": "text", "text": "Great - please outline topic 3." }],
+        "created_at": "2026-06-14T09:01:00.000000Z"
+      },
+      {
+        "seq": 4,
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "# The unexpected lessons from our beta program\n\n## Setting the scene\nWhat we shipped vs. what we thought we were shipping.\n\n## Lesson 1 - Users ignored the features we were proudest of\nThe feature that took two weeks sat untouched; the one-liner shortcut was used constantly.\n\n## Lesson 2 - Observability is not optional\nWhen an agent silently fails, no one knows why - and they blame the product, not the model.\n\n## Lesson 3 - Feedback loops collapse iteration time\nTeams that ran daily retrospectives shipped usable agents twice as fast.\n\n## What we changed before launch\nThree concrete adjustments that came directly from beta feedback."
+          }
+        ],
+        "created_at": "2026-06-14T09:01:05.000000Z"
+      }
+    ]
+  },
+  "GET /agents?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 2,
+    "total": 2,
+    "items": [
+      {
+        "id": "topic-scout",
+        "description": "Brainstorms blog post topics for a theme",
+        "model": {
+          "provider_id": "openrouter-free",
+          "model_name": "meta-llama/llama-3.1-8b-instruct:free"
+        },
+        "temperature": 0.7,
+        "tools": [],
+        "system_prompt": ["You suggest sharp, specific blog post topics for a given theme.", "Return a numbered list of five. No preamble."],
+        "compaction_prompt": [],
+        "harness_id": null
+      },
+      {
+        "id": "outline-editor",
+        "description": "Turns a chosen topic into a structured outline",
+        "model": {
+          "provider_id": "openrouter-free",
+          "model_name": "meta-llama/llama-3.1-8b-instruct:free"
+        },
+        "temperature": 0.3,
+        "tools": [],
+        "system_prompt": ["You turn a single blog topic into a tight outline: a working title, three to five section headings, and one line under each.", "Output Markdown only."],
+        "compaction_prompt": [],
+        "harness_id": null
+      }
+    ]
+  }
+}
