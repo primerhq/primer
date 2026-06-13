@@ -126,10 +126,8 @@ async def test_post_prompt_ask_user_calls_chat_postMessage(monkeypatch):
     assert prompt["thread_ts"] == anchor["ts"] if "ts" in anchor else True
     assert prompt["thread_ts"] == "1001.0001"  # anchor's returned ts
     assert prompt["metadata"]["event_payload"]["tcid"] == "tc"
-    # The ask is now pending a reply on the thread root.
-    assert adapter.pending_ask_for_thread("1001.0001") == {
-        "ws": "ws", "sid": "s", "tcid": "tc",
-    }
+    # No in-memory pending_ask: correlation is handled by the persistent store.
+    assert not hasattr(adapter, "_pending_ask")
 
 
 @pytest.mark.asyncio
@@ -153,7 +151,8 @@ async def test_post_inform_threaded_plain_message(monkeypatch):
     assert inform["thread_ts"] == "1001.0001"  # threaded under the session anchor
     assert inform.get("text") == "status update"
     assert "blocks" not in inform
-    assert adapter._pending_ask == {}  # not tracked as a pending ask
+    # No in-memory pending_ask: correlation is handled by the persistent store.
+    assert not hasattr(adapter, "_pending_ask")
 
 
 @pytest.mark.asyncio

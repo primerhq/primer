@@ -57,10 +57,6 @@ class DiscordChannelAdapter(ChannelAdapter):
         self._client: Any | None = None
         # session_id → discord Thread id (one conversation thread per session)
         self._session_threads: dict[str, int] = {}
-        # thread_id (int) → {workspace_id, session_id, tool_call_id} for the
-        # ask_user currently awaiting a reply in that thread (sessions park on
-        # one prompt at a time).
-        self._pending_ask: dict[int, dict[str, str]] = {}
 
     async def initialize(self) -> None:
         self._client = await DISCORD_CONNECTIONS.acquire(self._provider)
@@ -124,11 +120,22 @@ class DiscordChannelAdapter(ChannelAdapter):
             return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         elif envelope.kind == "ask_user":
             msg = await thread.send(content=header + envelope.prompt)
-            self._pending_ask[thread.id] = {
-                "workspace_id": envelope.workspace_id,
-                "session_id": envelope.session_id,
-                "tool_call_id": envelope.tool_call_id,
-            }
+            # Persist the correlation so inbound reply routing is durable.
+            if self._sp is not None:
+                from primer.channel.correlation import CorrelationStore
+                try:
+                    await CorrelationStore(self._sp).upsert_session(
+                        channel_id=self._channel.id,
+                        anchor=str(thread.id),
+                        workspace_id=envelope.workspace_id,
+                        session_id=envelope.session_id,
+                        tool_call_id=envelope.tool_call_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "discord: failed to persist ask_user correlation "
+                        "for thread %s", thread.id, exc_info=True,
+                    )
             return {"message_id": getattr(msg, "id", 0), "thread_id": thread.id}
         elif envelope.kind == "inform":
             msg = await thread.send(content=header + envelope.prompt)

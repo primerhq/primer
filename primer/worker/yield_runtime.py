@@ -426,6 +426,8 @@ def _build_prompt_envelope(
     session_id: str,
     fallback_tool_call_id: str,
     metadata: dict[str, Any],
+    workspace_name: str | None = None,
+    session_label: str | None = None,
 ) -> "PromptEnvelope | None":
     """Build the channel PromptEnvelope for one parked human-interaction.
 
@@ -446,6 +448,8 @@ def _build_prompt_envelope(
             response_schema=metadata.get("response_schema"),
             choices=None,
             timeout_at_iso=None,
+            workspace_name=workspace_name,
+            session_label=session_label,
         )
     if kind == "_approval":
         original = metadata.get("original_call") or {}
@@ -467,6 +471,8 @@ def _build_prompt_envelope(
             timeout_at_iso=None,
             tool_name=original.get("name"),
             tool_args=original.get("arguments") or {},
+            workspace_name=workspace_name,
+            session_label=session_label,
         )
     return None
 
@@ -498,6 +504,8 @@ async def _dispatch_to_channels(
     yielded,
     workspace_registry=None,
     artifact_registry=None,
+    workspace_name: str | None = None,
+    session_label: str | None = None,
 ) -> None:
     """Fan a parked-on-user-input session out to every channel
     associated with the session's workspace.
@@ -516,6 +524,8 @@ async def _dispatch_to_channels(
         session_id=session.id,
         fallback_tool_call_id=_tool_call_id_from_event_key(yielded.event_key),
         metadata=metadata,
+        workspace_name=workspace_name,
+        session_label=session_label,
     )
     if envelope is None:
         return
@@ -567,6 +577,8 @@ async def _dispatch_to_channels_multi(
     session_id: str,
     pending: list[dict[str, Any]],
     already_sent: set[str],
+    workspace_name: str | None = None,
+    session_label: str | None = None,
 ) -> set[str]:
     """Send one channel prompt per pending human-interaction node.
 
@@ -591,6 +603,8 @@ async def _dispatch_to_channels_multi(
             session_id=session_id,
             fallback_tool_call_id=tcid,
             metadata=p.get("resume_metadata") or {},
+            workspace_name=workspace_name,
+            session_label=session_label,
         )
         if envelope is None:
             continue

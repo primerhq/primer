@@ -103,11 +103,9 @@ async def test_post_ask_user_sends_message_with_token(monkeypatch):
     assert "[primer:" not in sent[0]["text"]
     assert sent[0]["parse_mode"] == "HTML"
     assert sent[0]["chat_id"] == 123456789
-    # ask_user replies are correlated by the message id (stub returns 42).
-    assert adapter.resolve_reply_target(42) == {
-        "workspace_id": "ws", "session_id": "s",
-        "tool_call_id": "tc", "kind": "ask_user",
-    }
+    # ask_user replies are now correlated via the persistent store, not
+    # in-memory _reply_targets (which is only used for the reject-reason path).
+    assert adapter.resolve_reply_target(42) is None
 
 
 @pytest.mark.asyncio

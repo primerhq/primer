@@ -126,20 +126,48 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             return
         if not msg.reply_to_message:
             return
-        target = adapter.resolve_reply_target(msg.reply_to_message.message_id)
+        replied_mid = msg.reply_to_message.message_id
+        user_id = msg.from_user.id if msg.from_user else None
+        # Session ask_user: try the persistent store first (survives restarts),
+        # then fall back to the in-memory _reply_targets cache.
+        sp = getattr(adapter, "_sp", None)
+        if sp is not None:
+            from primer.channel.correlation import CorrelationStore
+            try:
+                rec = await CorrelationStore(sp).lookup(
+                    adapter._channel.id, str(replied_mid),
+                )
+            except Exception:
+                rec = None
+            if rec is not None and rec.kind == "session":
+                await adapter._handle_text_reply(
+                    workspace_id=rec.workspace_id,
+                    session_id=rec.session_id,
+                    tool_call_id=rec.tool_call_id,
+                    text=msg.text or "",
+                    telegram_user_id=user_id,
+                )
+                try:
+                    await CorrelationStore(sp).clear(
+                        adapter._channel.id, str(replied_mid),
+                    )
+                except Exception:
+                    pass
+                # Remove from in-memory cache if it was also stored there.
+                adapter._reply_targets.pop(replied_mid, None)
+                return
+        # Fallback: in-memory cache for the tool-rejection reason path.
+        # (The Reject button sends a follow-up text prompt; that reply target
+        # is stored in _reply_targets with kind="reject".)
+        target = adapter.resolve_reply_target(replied_mid)
         if target is None:
             return
         kind = target.get("kind")
         ids = {k: target[k] for k in ("workspace_id", "session_id", "tool_call_id")}
-        user_id = msg.from_user.id if msg.from_user else None
         if kind == "reject":
             await adapter._handle_decision(
                 **ids, decision="rejected", reason=msg.text or "",
                 telegram_user_id=user_id,
-            )
-        elif kind == "ask_user":
-            await adapter._handle_text_reply(
-                **ids, text=msg.text or "", telegram_user_id=user_id,
             )
 
     app.add_handler(CallbackQueryHandler(_on_callback))

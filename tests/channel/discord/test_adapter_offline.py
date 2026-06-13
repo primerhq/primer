@@ -167,7 +167,8 @@ async def test_post_inform_goes_to_thread_without_buttons(monkeypatch):
     thread = client.threads[1000]
     assert thread.sent[-1]["content"] == "status update"
     assert thread.sent[-1]["view"] is None
-    assert adapter._pending_ask == {}
+    # No session correlation cached in memory (inform gates don't park).
+    assert not hasattr(adapter, "_pending_ask")
 
 
 @pytest.mark.asyncio
@@ -188,12 +189,11 @@ async def test_post_ask_user_creates_thread_and_caches_ids(monkeypatch):
             tool_call_id="tc", prompt="hi?", response_schema=None,
             choices=None, timeout_at_iso=None,
         ))
-        # Anchor msg id 999 -> thread id 1000; the ask is pending on it.
+        # Anchor msg id 999 -> thread id 1000; ask prompt sent into the thread.
         assert adapter._session_threads["s"] == 1000
-        assert adapter._pending_ask[1000] == {
-            "workspace_id": "ws", "session_id": "s", "tool_call_id": "tc",
-        }
         assert client.threads[1000].sent[0]["content"] == "hi?"
+        # No in-memory dict: correlation is handled by the persistent store.
+        assert not hasattr(adapter, "_pending_ask")
     finally:
         await adapter.aclose()
 

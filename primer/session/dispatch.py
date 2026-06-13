@@ -29,6 +29,7 @@ from typing import Any, Awaitable, Callable
 from primer.int.claim import ClaimKind, Lease, ParkRequest, ReleaseOutcome
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
+from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
     SessionMessageKind,
     SessionMessageRecord,
@@ -305,6 +306,10 @@ async def run_one_session_turn(
 
         graph_checkpoint = getattr(park, "graph_checkpoint", None)
         multi_keys = getattr(yielded, "event_keys", None)
+        # Resolve workspace attribution fields for the channel prompt header.
+        ws_name, sess_label = await _resolve_attribution(
+            deps.storage_provider, session,
+        )
         if multi_keys and graph_checkpoint:
             # Multi-event graph park: one prompt per pending node. The
             # re-park path (after a reply) never re-dispatches, so each
@@ -315,6 +320,8 @@ async def run_one_session_turn(
                 session_id=session.id,
                 pending=merge_pending_dispatch(graph_checkpoint),
                 already_sent=set(),
+                workspace_name=ws_name,
+                session_label=sess_label,
             )
         else:
             await _dispatch_to_channels(
@@ -323,6 +330,8 @@ async def run_one_session_turn(
                 yielded=yielded_stamped,
                 workspace_registry=deps.workspace_registry,
                 artifact_registry=deps.artifact_registry,
+                workspace_name=ws_name,
+                session_label=sess_label,
             )
 
         # The executor stamps YieldToWorker.llm_messages with the in-progress
@@ -644,6 +653,24 @@ async def _transition_session_status(
             "dispatch: failed to transition session %s to %s",
             session.id, new_status.value,
         )
+
+
+async def _resolve_attribution(
+    storage_provider,
+    session: WorkspaceSession,
+) -> tuple[str | None, str | None]:
+    """Return ``(workspace_name, session_label)`` for the attribution header.
+
+    Loads the Workspace row to get its human-readable name. Falls back to
+    ``workspace_id`` when the row is missing or has no name. Never raises.
+    """
+    workspace_name: str | None = None
+    try:
+        ws = await storage_provider.get_storage(Workspace).get(session.workspace_id)
+        workspace_name = (ws.name if ws is not None else None) or session.workspace_id
+    except Exception:
+        workspace_name = session.workspace_id
+    return workspace_name, session.id
 
 
 async def _cancel_watcher(

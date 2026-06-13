@@ -78,12 +78,12 @@ class TelegramChannelAdapter(ChannelAdapter):
         # token in the message body).
         self._reply_targets: _BoundedDict = _BoundedDict(maxsize=_CACHE_MAXSIZE)
 
-    def remember_reply_target(
-        self, *, message_id: int, ids: dict[str, str], kind: str,
-    ) -> None:
-        self._reply_targets[message_id] = {**ids, "kind": kind}
-
     def resolve_reply_target(self, message_id: int) -> dict[str, str] | None:
+        """Look up a rejection-prompt reply target by the bot message it replies to.
+
+        Only used for the tool-rejection text-reason flow (the reject prompt
+        sent after the user presses the Reject button). ask_user replies are
+        routed via the persistent CorrelationStore instead."""
         return self._reply_targets.get(message_id)
 
     async def initialize(self) -> None:
@@ -155,12 +155,24 @@ class TelegramChannelAdapter(ChannelAdapter):
         self._tag_cache[tag] = ids
         msg = await self._app.bot.send_message(**body)
         message_id = getattr(msg, "message_id", 0)
-        # ask_user is answered by a text reply -> correlate by message id.
+        # ask_user is answered by a text reply -> persist correlation in store.
         # tool_approval is answered by the inline buttons (callback_data).
         if envelope.kind == "ask_user" and message_id:
-            self.remember_reply_target(
-                message_id=message_id, ids=ids, kind="ask_user",
-            )
+            if self._sp is not None:
+                from primer.channel.correlation import CorrelationStore
+                try:
+                    await CorrelationStore(self._sp).upsert_session(
+                        channel_id=self._channel.id,
+                        anchor=str(message_id),
+                        workspace_id=envelope.workspace_id,
+                        session_id=envelope.session_id,
+                        tool_call_id=envelope.tool_call_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "telegram: failed to persist ask_user correlation "
+                        "for message %s", message_id, exc_info=True,
+                    )
         return {"message_id": message_id}
 
     async def _resolve_tag(self, tag: str) -> dict[str, str] | None:

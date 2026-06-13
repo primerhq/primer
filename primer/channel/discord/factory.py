@@ -153,18 +153,33 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             adapter = entry.adapters_by_channel_id.get(parent_id)
             if adapter is None:
                 return
-            # Session-prompt reply: an ask_user parked on this thread takes
-            # precedence so existing session gates keep working.
-            ids = adapter._pending_ask.get(thread_id)
-            if ids is not None:
-                await adapter._handle_text_reply(
-                    **ids, text=message.content or "",
-                    discord_user_id=message.author.id if message.author else None,
-                )
-                # Consume: the ask is answered, so the next thread reply won't
-                # re-fire until another ask_user parks in this session.
-                adapter._pending_ask.pop(thread_id, None)
-                return
+            # Session-prompt reply: the store is the authoritative source.
+            # A thread reply that matches a parked ask_user correlation is
+            # consumed here before chat-surface dispatch.
+            sp = getattr(adapter, "_sp", None)
+            if sp is not None:
+                from primer.channel.correlation import CorrelationStore
+                try:
+                    rec = await CorrelationStore(sp).lookup(
+                        adapter._channel.id, str(thread_id),
+                    )
+                except Exception:
+                    rec = None
+                if rec is not None and rec.kind == "session":
+                    await adapter._handle_text_reply(
+                        workspace_id=rec.workspace_id,
+                        session_id=rec.session_id,
+                        tool_call_id=rec.tool_call_id,
+                        text=message.content or "",
+                        discord_user_id=message.author.id if message.author else None,
+                    )
+                    try:
+                        await CorrelationStore(sp).clear(
+                            adapter._channel.id, str(thread_id),
+                        )
+                    except Exception:
+                        pass
+                    return
             # Chat-surface dispatch: an in-thread message routes to that
             # thread's chat (thread id = the discord thread id).
             if getattr(adapter, "_sp", None) is None:

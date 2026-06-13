@@ -258,18 +258,33 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         if adapter is None:
             return
         # Session-prompt reply: a reply in a session thread carries
-        # thread_ts = the thread root ts that an ask_user is parked on. This
-        # path takes precedence so existing session gates keep working.
+        # thread_ts = the thread root ts that an ask_user is parked on. The
+        # store is the authoritative source; the path takes precedence over
+        # chat-surface dispatch so existing session gates keep working.
         if thread_ts is not None:
-            ids = adapter.pending_ask_for_thread(thread_ts)
-            if ids is not None:
-                await adapter._handle_text_reply(
-                    ws=ids["ws"], sid=ids["sid"], tcid=ids["tcid"],
-                    text=event.get("text", ""),
-                    slack_user_id=event.get("user"),
-                )
-                adapter.clear_pending_ask(thread_ts)
-                return
+            sp = getattr(adapter, "_sp", None)
+            if sp is not None:
+                from primer.channel.correlation import CorrelationStore
+                try:
+                    rec = await CorrelationStore(sp).lookup(
+                        adapter._channel.id, thread_ts,
+                    )
+                except Exception:
+                    rec = None
+                if rec is not None and rec.kind == "session":
+                    await adapter._handle_text_reply(
+                        ws=rec.workspace_id, sid=rec.session_id,
+                        tcid=rec.tool_call_id,
+                        text=event.get("text", ""),
+                        slack_user_id=event.get("user"),
+                    )
+                    try:
+                        await CorrelationStore(sp).clear(
+                            adapter._channel.id, thread_ts,
+                        )
+                    except Exception:
+                        pass
+                    return
         # Chat-surface dispatch: on a chat-enabled adapter, a top-level message
         # opens a new thread-chat and an in-thread message routes to its chat.
         if getattr(adapter, "_sp", None) is None:

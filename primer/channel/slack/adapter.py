@@ -67,9 +67,6 @@ class SlackChannelAdapter(ChannelAdapter):
         self._conn: Any | None = None
         # session_id → root message ts (the per-session conversation thread).
         self._session_threads: dict[str, str] = {}
-        # thread root ts → {ws, sid, tcid} for the ask_user awaiting a reply in
-        # that thread (sessions park on one prompt at a time).
-        self._pending_ask: dict[str, dict[str, str]] = {}
 
     async def initialize(self) -> None:
         self._conn = await SLACK_CONNECTIONS.acquire(self._provider)
@@ -140,11 +137,22 @@ class SlackChannelAdapter(ChannelAdapter):
         resp = await client.chat_postMessage(**body)
         ts = resp.get("ts", "")
         if envelope.kind == "ask_user":
-            self._pending_ask[root_ts] = {
-                "ws": envelope.workspace_id,
-                "sid": envelope.session_id,
-                "tcid": envelope.tool_call_id,
-            }
+            # Persist the correlation so inbound reply routing is durable.
+            if self._sp is not None:
+                from primer.channel.correlation import CorrelationStore
+                try:
+                    await CorrelationStore(self._sp).upsert_session(
+                        channel_id=self._channel.id,
+                        anchor=root_ts,
+                        workspace_id=envelope.workspace_id,
+                        session_id=envelope.session_id,
+                        tool_call_id=envelope.tool_call_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "slack: failed to persist ask_user correlation "
+                        "for thread %s", root_ts, exc_info=True,
+                    )
         return {"ts": ts, "channel": resp.get("channel", ""), "thread_ts": root_ts}
 
     async def post_chat_message(
@@ -410,12 +418,6 @@ class SlackChannelAdapter(ChannelAdapter):
                 "instead of /switch.")
             return
 
-    def pending_ask_for_thread(self, thread_ts: str) -> dict[str, str] | None:
-        """The ask_user (ws/sid/tcid) awaiting a reply in this thread, if any."""
-        return self._pending_ask.get(thread_ts)
-
-    def clear_pending_ask(self, thread_ts: str) -> None:
-        self._pending_ask.pop(thread_ts, None)
 
 
 __all__ = ["REJECT_MODAL_CALLBACK_ID", "SlackChannelAdapter"]
