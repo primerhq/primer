@@ -209,11 +209,22 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                 text = "Chats on this channel:\n" + "\n".join(lines)
             else:
                 text = "No chats yet on this channel."
-        elif res.kind == "agent_picker":
-            # Native slash commands carry no thread_ts, so they cannot target a
-            # specific thread's chat. Point users at the in-thread path, which
-            # renders an interactive select seeded with that thread's chat.
-            text = "To switch an agent, type `/agent` inside a chat thread."
+        elif res.kind == "chat_picker":
+            # Native /agent has no thread context -> render a paginated chat
+            # picker; choosing a chat opens its agent select.
+            if not res.items:
+                text = "No chats yet on this channel. Post a message to start one."
+            else:
+                from primer.channel.slack.blocks import build_chat_select_blocks
+                try:
+                    await client.chat_postMessage(
+                        channel=channel_id,
+                        blocks=build_chat_select_blocks(res.items, page=0),
+                        text="Pick a chat to switch its agent:",
+                    )
+                except Exception:
+                    logger.exception("slack: posting chat picker failed")
+                return
         else:
             text = res.text or ""
         if not text:
@@ -222,6 +233,72 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             await client.chat_postMessage(channel=channel_id, text=text)
         except Exception:
             logger.exception("slack: posting slash result for %s failed", command)
+
+    async def _adapter_for_body(body):
+        cid = body.get("channel", {}).get("id")
+        entry = SLACK_CONNECTIONS.entry(provider_id)
+        adapter = entry.adapters_by_channel_id.get(cid) if entry else None
+        if adapter is None or getattr(adapter, "_sp", None) is None:
+            return None
+        return adapter
+
+    async def _on_chat_page(ack, body, client):
+        """Re-render the paginated chat picker for another page (in place)."""
+        await ack()
+        adapter = await _adapter_for_body(body)
+        if adapter is None:
+            return
+        try:
+            page = int(body["actions"][0]["value"])
+        except Exception:
+            return
+        from primer.channel.commands import CommandExecutor
+        from primer.channel.slack.blocks import build_chat_select_blocks
+        res = await CommandExecutor(storage_provider=adapter._sp).list_chats(
+            channel_id=adapter._channel.id)
+        msg = body.get("message", {})
+        try:
+            await client.chat_update(
+                channel=body["channel"]["id"], ts=msg.get("ts"),
+                blocks=build_chat_select_blocks(res.items, page=page),
+                text="Pick a chat to switch its agent:")
+        except Exception:
+            logger.exception("slack: chat_page update failed")
+
+    @app.action("chat_page_prev")
+    async def _on_chat_page_prev(ack, body, client):
+        await _on_chat_page(ack, body, client)
+
+    @app.action("chat_page_next")
+    async def _on_chat_page_next(ack, body, client):
+        await _on_chat_page(ack, body, client)
+
+    @app.action("pick_chat_agent")
+    async def _on_pick_chat_agent(ack, body, client):
+        """A chat was chosen from the paginated picker -> show its agent select."""
+        await ack()
+        adapter = await _adapter_for_body(body)
+        if adapter is None:
+            return
+        try:
+            chat_id = body["actions"][0]["selected_option"]["value"]
+        except Exception:
+            logger.warning("slack: malformed pick_chat_agent payload")
+            return
+        from primer.channel.commands import CommandExecutor
+        from primer.channel.slack.blocks import build_agent_select_blocks
+        picker = await CommandExecutor(storage_provider=adapter._sp).agent_picker(
+            channel_id=adapter._channel.id)
+        if not picker.items:
+            return
+        msg = body.get("message", {})
+        try:
+            await client.chat_update(
+                channel=body["channel"]["id"], ts=msg.get("ts"),
+                blocks=build_agent_select_blocks(result=picker, chat_id=chat_id),
+                text="Pick an agent:")
+        except Exception:
+            logger.exception("slack: pick_chat_agent update failed")
 
     @app.command("/new")
     async def _on_new(ack, body, client):

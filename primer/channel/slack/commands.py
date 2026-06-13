@@ -17,7 +17,11 @@ async def handle_slash_command(
     if verb == "list":
         return await ex.list_chats(channel_id=channel_id)
     if verb == "agent":
-        return await ex.agent_picker()
+        # Native slash command (no thread context): drive a paginated chat
+        # picker, then an agent picker, so the operator targets a specific
+        # chat. kind="chat_picker" carries the channel's chats.
+        chats = await ex.list_chats(channel_id=channel_id)
+        return CommandResult(kind="chat_picker", items=chats.items)
     if verb == "new":
         return await ex.agent_picker()
     if verb == "help":
