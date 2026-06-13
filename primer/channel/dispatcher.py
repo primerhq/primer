@@ -25,19 +25,11 @@ class ChannelDispatcher:
     async def dispatch_prompt(
         self, *, envelope: PromptEnvelope,
     ) -> list[dict]:
-        pairs = await self._registry.for_workspace(envelope.workspace_id)
-        forward_key = {
-            "ask_user": "forward_ask_user",
-            "inform": "forward_inform",
-        }.get(envelope.kind, "forward_tool_approval")
-        eligible = [
-            (adapter, assoc) for adapter, assoc in pairs
-            if _flag(assoc, forward_key)
-        ]
-        if not eligible:
+        adapters = await self._registry.for_workspace(envelope.workspace_id)
+        if not adapters:
             return []
 
-        async def _one(adapter, _assoc) -> dict:
+        async def _one(adapter) -> dict:
             try:
                 return await adapter.post_prompt(envelope)
             except Exception as exc:
@@ -48,17 +40,10 @@ class ChannelDispatcher:
                 return {"error": str(exc)}
 
         results = await asyncio.gather(
-            *[_one(a, assoc) for a, assoc in eligible],
+            *[_one(a) for a in adapters],
             return_exceptions=False,
         )
         return list(results)
-
-
-def _flag(assoc, name: str) -> bool:
-    """Read a boolean flag from a Pydantic row OR a dict (test stub)."""
-    if isinstance(assoc, dict):
-        return bool(assoc.get(name))
-    return bool(getattr(assoc, name, None))
 
 
 __all__ = ["ChannelDispatcher"]

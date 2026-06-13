@@ -1,8 +1,6 @@
-"""ChannelDispatcher fans out to all enabled channels for a workspace."""
+"""ChannelDispatcher fans out to all channel adapters for a workspace."""
 
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 
@@ -12,11 +10,11 @@ from primer.channel.null_adapter import NullChannelAdapter
 
 
 class _StubRegistry:
-    def __init__(self, pairs: list[tuple[NullChannelAdapter, dict]]) -> None:
-        self._pairs = pairs
+    def __init__(self, adapters: list[NullChannelAdapter]) -> None:
+        self._adapters = adapters
 
     async def for_workspace(self, workspace_id: str):
-        return self._pairs
+        return self._adapters
 
 
 def _env(*, kind: str = "ask_user") -> PromptEnvelope:
@@ -33,13 +31,10 @@ def _env(*, kind: str = "ask_user") -> PromptEnvelope:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_fans_out_to_all_enabled():
+async def test_dispatch_fans_out_to_all_adapters():
     a, b = NullChannelAdapter(), NullChannelAdapter()
     await a.initialize(); await b.initialize()
-    registry = _StubRegistry([
-        (a, {"forward_ask_user": True}),
-        (b, {"forward_ask_user": True}),
-    ])
+    registry = _StubRegistry([a, b])
     d = ChannelDispatcher(registry=registry)
     await d.dispatch_prompt(envelope=_env())
     assert len(a.posted) == 1
@@ -47,34 +42,11 @@ async def test_dispatch_fans_out_to_all_enabled():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_respects_per_envelope_forward_flag():
-    a, b = NullChannelAdapter(), NullChannelAdapter()
-    await a.initialize(); await b.initialize()
-    registry = _StubRegistry([
-        (a, {"forward_ask_user": False, "forward_tool_approval": True}),
-        (b, {"forward_ask_user": True,  "forward_tool_approval": True}),
-    ])
+async def test_dispatch_no_adapters_returns_empty():
+    registry = _StubRegistry([])
     d = ChannelDispatcher(registry=registry)
-    await d.dispatch_prompt(envelope=_env(kind="ask_user"))
-    assert a.posted == []
-    assert len(b.posted) == 1
-
-
-@pytest.mark.asyncio
-async def test_inform_gated_by_forward_inform():
-    a_on, a_off = NullChannelAdapter(), NullChannelAdapter()
-    await a_on.initialize(); await a_off.initialize()
-    registry = _StubRegistry([
-        (a_on, {"forward_inform": True, "forward_ask_user": True,
-                "forward_tool_approval": True}),
-        (a_off, {"forward_inform": False, "forward_ask_user": True,
-                 "forward_tool_approval": True}),
-    ])
-    d = ChannelDispatcher(registry=registry)
-    res = await d.dispatch_prompt(envelope=_env(kind="inform"))
-    assert len(res) == 1
-    assert len(a_on.posted) == 1
-    assert a_off.posted == []
+    result = await d.dispatch_prompt(envelope=_env())
+    assert result == []
 
 
 @pytest.mark.asyncio
@@ -84,10 +56,9 @@ async def test_dispatch_one_adapter_failure_does_not_block_others():
             raise RuntimeError("network down")
     bad, good = _Bad(), NullChannelAdapter()
     await bad.initialize(); await good.initialize()
-    registry = _StubRegistry([
-        (bad, {"forward_ask_user": True}),
-        (good, {"forward_ask_user": True}),
-    ])
+    registry = _StubRegistry([bad, good])
     d = ChannelDispatcher(registry=registry)
-    await d.dispatch_prompt(envelope=_env())
+    results = await d.dispatch_prompt(envelope=_env())
     assert len(good.posted) == 1
+    # error dict from bad adapter is included in results
+    assert any("error" in r for r in results)

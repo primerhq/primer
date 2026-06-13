@@ -1,8 +1,9 @@
-"""ChannelRegistry.warm_chat_channels starts bots for enabled chat associations.
+"""ChannelRegistry.warm_chat_channels starts bots for channels with
+config.chats.enabled=True.
 
 Chat-driven bots are user-initiated, so unlike session channels (warmed by the
 first outbound park) they have no other start trigger. warm_chat_channels eagerly
-initializes the adapter for each enabled ChatChannelAssociation at boot.
+initializes the adapter for each Channel whose chat config is enabled at boot.
 """
 
 from __future__ import annotations
@@ -23,9 +24,9 @@ from primer.model.channel import (
     Channel,
     ChannelProvider,
     ChannelProviderType,
-    ChatChannelAssociation,
+    ChatConfig,
+    TelegramChannelConfig,
     TelegramChannelProviderConfig,
-    WorkspaceChannelAssociation,
 )
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
@@ -54,23 +55,31 @@ async def test_warm_starts_enabled_chat_adapters(tmp_path: Path):
     await p.initialize()
     cp = p.get_storage(ChannelProvider)
     ch = p.get_storage(Channel)
-    cca = p.get_storage(ChatChannelAssociation)
     await cp.create(ChannelProvider(
         id="cp-1", provider=ChannelProviderType.TELEGRAM,
         config=TelegramChannelProviderConfig(
             bot_token=SecretStr("123456:ABCDEFGHIJKLMNOP"))))
-    await ch.create(Channel(id="ch-1", provider_id="cp-1", external_id="555"))
-    await ch.create(Channel(id="ch-2", provider_id="cp-1", external_id="556"))
-    # ch-1 enabled chat assoc -> warmed; ch-2 disabled -> skipped.
-    await cca.create(ChatChannelAssociation(
-        id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
-    await cca.create(ChatChannelAssociation(
-        id="cca-2", channel_id="ch-2", default_agent_id="agent-x", enabled=False))
+    # ch-1 has chats enabled -> warmed; ch-2 disabled -> skipped.
+    await ch.create(Channel(
+        id="ch-1", provider_id="cp-1",
+        provider=ChannelProviderType.TELEGRAM,
+        external_id="555",
+        config=TelegramChannelConfig(
+            chats=ChatConfig(enabled=True, default_agent="agent-x"),
+        ),
+    ))
+    await ch.create(Channel(
+        id="ch-2", provider_id="cp-1",
+        provider=ChannelProviderType.TELEGRAM,
+        external_id="556",
+        config=TelegramChannelConfig(
+            chats=ChatConfig(enabled=False),
+        ),
+    ))
 
     reg = ChannelRegistry(
         channel_storage=ch,
         channel_provider_storage=cp,
-        association_storage=p.get_storage(WorkspaceChannelAssociation),
         inbox=ChannelInbox(event_bus=None),
         storage_provider=p,
     )
@@ -89,7 +98,6 @@ async def test_warm_noop_without_storage_provider(tmp_path: Path):
     reg = ChannelRegistry(
         channel_storage=p.get_storage(Channel),
         channel_provider_storage=p.get_storage(ChannelProvider),
-        association_storage=p.get_storage(WorkspaceChannelAssociation),
         inbox=ChannelInbox(event_bus=None),
     )
     assert await reg.warm_chat_channels() == 0

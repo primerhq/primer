@@ -3,6 +3,7 @@ the factory-registry hook so we don't depend on any real platform."""
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -20,9 +21,9 @@ from primer.model.channel import (
     ChannelProvider,
     ChannelProviderType,
     SlackChannelProviderConfig,
-    WorkspaceChannelAssociation,
 )
 from primer.model.provider import SqliteConfig
+from primer.model.workspace import Workspace, WorkspaceChannelLink, WorkspaceRuntimeMeta
 from primer.storage.sqlite import SqliteStorageProvider
 
 
@@ -33,8 +34,22 @@ def _factory_isolation():
     clear_factories_for_tests()
 
 
+def _make_workspace(id: str, channel_id: str | None = None, template_id: str = "t-1", provider_id: str = "p-1") -> Workspace:
+    return Workspace(
+        id=id,
+        template_id=template_id,
+        provider_id=provider_id,
+        created_at=datetime.now(timezone.utc),
+        runtime_meta=WorkspaceRuntimeMeta(
+            url="ws://localhost:5959",
+            token=SecretStr("test-token"),
+        ),
+        channel_association=WorkspaceChannelLink(channel_id=channel_id) if channel_id else None,
+    )
+
+
 @pytest.mark.asyncio
-async def test_for_workspace_returns_only_enabled_pairs(tmp_path: Path):
+async def test_for_workspace_returns_adapter_for_linked_channel(tmp_path: Path):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
     try:
@@ -46,7 +61,7 @@ async def test_for_workspace_returns_only_enabled_pairs(tmp_path: Path):
 
         cp_storage = p.get_storage(ChannelProvider)
         c_storage = p.get_storage(Channel)
-        a_storage = p.get_storage(WorkspaceChannelAssociation)
+        ws_storage = p.get_storage(Workspace)
         await cp_storage.create(ChannelProvider(
             id="cp-1", provider=ChannelProviderType.SLACK,
             config=SlackChannelProviderConfig(
@@ -55,31 +70,62 @@ async def test_for_workspace_returns_only_enabled_pairs(tmp_path: Path):
         ),
         ))
         await c_storage.create(Channel(
-            id="ch-1", provider_id="cp-1", external_id="C1",
+            id="ch-1", provider_id="cp-1",
+            provider=ChannelProviderType.SLACK,
+            external_id="C1",
         ))
         await c_storage.create(Channel(
-            id="ch-2", provider_id="cp-1", external_id="C2",
+            id="ch-2", provider_id="cp-1",
+            provider=ChannelProviderType.SLACK,
+            external_id="C2",
         ))
-        await a_storage.create(WorkspaceChannelAssociation(
-            id="a-1", workspace_id="ws-1", channel_id="ch-1",
-            enabled=True,
-        ))
-        await a_storage.create(WorkspaceChannelAssociation(
-            id="a-2", workspace_id="ws-1", channel_id="ch-2",
-            enabled=False,
-        ))
+        # ws-1 links to ch-1; ws-2 has no association
+        await ws_storage.create(_make_workspace("ws-1", channel_id="ch-1"))
+        await ws_storage.create(_make_workspace("ws-2"))
+
         inbox = ChannelInbox(event_bus=None)
         reg = ChannelRegistry(
             channel_storage=c_storage,
             channel_provider_storage=cp_storage,
-            association_storage=a_storage,
             inbox=inbox,
+            storage_provider=p,
         )
         try:
-            pairs = await reg.for_workspace("ws-1")
-            assert len(pairs) == 1
-            assert isinstance(pairs[0][0], NullChannelAdapter)
-            assert pairs[0][1].channel_id == "ch-1"
+            adapters = await reg.for_workspace("ws-1")
+            assert len(adapters) == 1
+            assert isinstance(adapters[0], NullChannelAdapter)
+
+            # Workspace with no association returns empty list
+            no_adapters = await reg.for_workspace("ws-2")
+            assert no_adapters == []
+
+            # Unknown workspace returns empty list
+            unknown = await reg.for_workspace("ws-unknown")
+            assert unknown == []
+        finally:
+            await reg.aclose()
+    finally:
+        await p.aclose()
+
+
+@pytest.mark.asyncio
+async def test_for_workspace_no_storage_provider(tmp_path: Path):
+    """for_workspace returns [] when no storage_provider is wired."""
+    p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
+    await p.initialize()
+    try:
+        cp_storage = p.get_storage(ChannelProvider)
+        c_storage = p.get_storage(Channel)
+        inbox = ChannelInbox(event_bus=None)
+        reg = ChannelRegistry(
+            channel_storage=c_storage,
+            channel_provider_storage=cp_storage,
+            inbox=inbox,
+            # no storage_provider
+        )
+        try:
+            result = await reg.for_workspace("ws-1")
+            assert result == []
         finally:
             await reg.aclose()
     finally:
@@ -107,13 +153,14 @@ async def test_get_adapter_caches_per_channel_id(tmp_path: Path):
         ),
         ))
         await c_storage.create(Channel(
-            id="ch-1", provider_id="cp-1", external_id="C1",
+            id="ch-1", provider_id="cp-1",
+            provider=ChannelProviderType.SLACK,
+            external_id="C1",
         ))
         inbox = ChannelInbox(event_bus=None)
         reg = ChannelRegistry(
             channel_storage=c_storage,
             channel_provider_storage=cp_storage,
-            association_storage=p.get_storage(WorkspaceChannelAssociation),
             inbox=inbox,
         )
         try:

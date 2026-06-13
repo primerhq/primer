@@ -148,14 +148,7 @@ class WorkspaceRegistry:
         return await backend.create(template, overrides=overrides)
 
     async def destroy(self, workspace_id: str) -> None:
-        """Destroy the live workspace AND drop the persisted row.
-
-        Cascades: all WorkspaceChannelAssociation rows for this workspace
-        are deleted before the workspace row itself is removed.
-        """
-        from primer.model.channel import WorkspaceChannelAssociation
-        from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
-
+        """Destroy the live workspace AND drop the persisted row."""
         row = await self.get_workspace_row(workspace_id)
         backend = await self.get_backend(row.provider_id)
         try:
@@ -165,22 +158,6 @@ class WorkspaceRegistry:
             # the row so callers can re-materialise without a stale
             # collision.
             pass
-
-        # Cascade: delete all channel associations for this workspace.
-        a_storage = self._sp.get_storage(WorkspaceChannelAssociation)
-        page = await a_storage.find(
-            Predicate(
-                left=FieldRef(name="workspace_id"),
-                op=Op.EQ,
-                right=Value(value=workspace_id),
-            ),
-            OffsetPage(offset=0, length=200),
-        )
-        for assoc in page.items:
-            try:
-                await a_storage.delete(assoc.id)
-            except NotFoundError:
-                pass
 
         await self._sp.get_storage(WorkspaceRow).delete(workspace_id)
 

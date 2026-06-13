@@ -306,7 +306,7 @@ def _make_lifespan(config: AppConfig):
         from primer.channel.dispatcher import ChannelDispatcher
         from primer.channel.inbox import ChannelInbox
         from primer.model.channel import (
-            Channel, ChannelProvider, WorkspaceChannelAssociation,
+            Channel, ChannelProvider,
         )
 
         channel_inbox = ChannelInbox(
@@ -315,7 +315,6 @@ def _make_lifespan(config: AppConfig):
         channel_registry = ChannelRegistry(
             channel_storage=storage_provider.get_storage(Channel),
             channel_provider_storage=storage_provider.get_storage(ChannelProvider),
-            association_storage=storage_provider.get_storage(WorkspaceChannelAssociation),
             inbox=channel_inbox,
             storage_provider=storage_provider,
             event_bus=getattr(app.state, "event_bus", None),
@@ -1494,17 +1493,13 @@ def _mount_routers(
     # Tool approval policies.
     from primer.api.routers.tool_approval import make_tool_approval_router
     app.include_router(make_tool_approval_router(), prefix=prefix, dependencies=auth_dep)
-    # Channel providers, channels, and workspace channel associations.
+    # Channel providers and channels.
     from primer.api.routers.channels import (
         make_channel_provider_router,
         make_channel_router,
-        make_chat_channel_association_router,
-        make_workspace_channel_association_router,
     )
     app.include_router(make_channel_provider_router(), prefix=prefix, dependencies=auth_dep)
     app.include_router(make_channel_router(), prefix=prefix, dependencies=auth_dep)
-    app.include_router(make_workspace_channel_association_router(), prefix=prefix, dependencies=auth_dep)
-    app.include_router(make_chat_channel_association_router(), prefix=prefix, dependencies=auth_dep)
     # Harness REST router.
     from primer.api.routers.harness import harness_router
     app.include_router(harness_router, dependencies=auth_dep)
@@ -2326,14 +2321,13 @@ def create_test_app(
     from primer.model.channel import (
         Channel as _Channel,
         ChannelProvider as _ChannelProvider,
-        WorkspaceChannelAssociation as _WCA,
     )
     _test_channel_inbox = _CI(event_bus=None)
     _test_channel_registry = _CR(
         channel_storage=storage_provider.get_storage(_Channel),
         channel_provider_storage=storage_provider.get_storage(_ChannelProvider),
-        association_storage=storage_provider.get_storage(_WCA),
         inbox=_test_channel_inbox,
+        storage_provider=storage_provider,
     )
     _test_channel_dispatcher = _CD(registry=_test_channel_registry)
     app.state.channel_inbox = _test_channel_inbox

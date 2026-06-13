@@ -83,7 +83,6 @@ from primer.model.thread import Thread
 from primer.model.channel import (
     Channel,
     ChannelProvider,
-    WorkspaceChannelAssociation,
 )
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.model.yield_ import ToolContext, Yielded
@@ -403,14 +402,6 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
             "id": "chan-1",
             "provider_id": "slack-1",
             "external_id": "C12345",
-        },
-    ),
-    "workspace_channel_association": _EntityHint(
-        sample_id="wca-1",
-        create_body={
-            "id": "wca-1",
-            "workspace_id": "ws-1",
-            "channel_id": "chan-1",
         },
     ),
 }
@@ -1376,7 +1367,6 @@ def build_system_toolset(
         ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, None, None),
         ("channel_provider", "channel_providers", ChannelProvider, None, None, None),
         ("channel", "channels", Channel, None, None, None),
-        ("workspace_channel_association", "workspace_channel_associations", WorkspaceChannelAssociation, None, None, None),
     ]
     for label, plural, cls, on_c, on_u, on_d in crud_specs:
         registry.update(

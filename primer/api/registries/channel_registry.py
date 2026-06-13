@@ -19,10 +19,9 @@ from primer.int.storage import Storage
 from primer.model.channel import (
     Channel,
     ChannelProvider,
-    WorkspaceChannelAssociation,
 )
 from primer.model.except_ import NotFoundError
-from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from primer.model.storage import OffsetPage
 
 
 if TYPE_CHECKING:
@@ -40,7 +39,6 @@ class ChannelRegistry:
         *,
         channel_storage: Storage[Channel],
         channel_provider_storage: Storage[ChannelProvider],
-        association_storage: Storage[WorkspaceChannelAssociation],
         inbox: "ChannelInbox",
         storage_provider: object | None = None,
         event_bus: object | None = None,
@@ -49,7 +47,6 @@ class ChannelRegistry:
     ) -> None:
         self._channels = channel_storage
         self._providers = channel_provider_storage
-        self._associations = association_storage
         self._inbox = inbox
         self._storage_provider = storage_provider
         self._event_bus = event_bus
@@ -110,39 +107,35 @@ class ChannelRegistry:
 
     async def for_workspace(
         self, workspace_id: str,
-    ) -> list[tuple[ChannelAdapter, WorkspaceChannelAssociation]]:
-        page = await self._associations.find(
-            Predicate(
-                left=Predicate(
-                    left=FieldRef(name="workspace_id"),
-                    op=Op.EQ,
-                    right=Value(value=workspace_id),
-                ),
-                op=Op.AND,
-                right=Predicate(
-                    left=FieldRef(name="enabled"),
-                    op=Op.EQ,
-                    right=Value(value=True),
-                ),
-            ),
-            OffsetPage(offset=0, length=200),
-        )
-        result: list[tuple[ChannelAdapter, WorkspaceChannelAssociation]] = []
-        for assoc in page.items:
-            try:
-                adapter = await self.get_adapter(assoc.channel_id)
-            except Exception as exc:
-                logger.warning(
-                    "ChannelRegistry: build_adapter failed for %s: %s",
-                    assoc.channel_id, exc,
-                )
-                continue
-            result.append((adapter, assoc))
-        return result
+    ) -> list[ChannelAdapter]:
+        """Return the channel adapter for this workspace, if any.
+
+        Loads the Workspace row and follows its ``channel_association``
+        link (at most one).  Returns an empty list when the workspace
+        has no association or it cannot be resolved.
+        """
+        if self._storage_provider is None:
+            return []
+        from primer.model.workspace import Workspace
+
+        ws = await self._storage_provider.get_storage(Workspace).get(workspace_id)
+        if ws is None or ws.channel_association is None:
+            return []
+        channel_id = ws.channel_association.channel_id
+        try:
+            adapter = await self.get_adapter(channel_id)
+        except Exception as exc:
+            logger.warning(
+                "ChannelRegistry: build_adapter failed for %s: %s",
+                channel_id, exc,
+            )
+            return []
+        return [adapter]
 
     async def warm_chat_channels(self) -> int:
-        """Eagerly start the adapter for every enabled ChatChannelAssociation
-        so chat-driven bots come online (poll / connect) at boot.
+        """Eagerly start the adapter for every Channel whose
+        ``config.chats.enabled`` is True so chat-driven bots come online
+        (poll / connect) at boot.
 
         Session channels are warmed by the first outbound park; a chat is
         user-initiated and has no other start trigger, so without this the bot
@@ -152,27 +145,29 @@ class ChannelRegistry:
         """
         if self._storage_provider is None:
             return 0
-        from primer.model.channel import ChatChannelAssociation
 
-        page = await self._storage_provider.get_storage(
-            ChatChannelAssociation,
-        ).find(
-            Predicate(
-                left=FieldRef(name="enabled"), op=Op.EQ,
-                right=Value(value=True),
-            ),
-            OffsetPage(offset=0, length=200),
-        )
+        channel_storage = self._storage_provider.get_storage(Channel)
         started = 0
-        for assoc in page.items:
-            try:
-                await self.get_adapter(assoc.channel_id)
-                started += 1
-            except Exception as exc:
-                logger.warning(
-                    "warm_chat_channels: failed to start %s: %s",
-                    assoc.channel_id, exc,
-                )
+        offset = 0
+        while True:
+            page = await channel_storage.list(OffsetPage(offset=offset, length=200))
+            items = list(page.items)
+            for channel in items:
+                cfg = getattr(channel, "config", None)
+                chats = getattr(cfg, "chats", None) if cfg is not None else None
+                if chats is None or not getattr(chats, "enabled", False):
+                    continue
+                try:
+                    await self.get_adapter(channel.id)
+                    started += 1
+                except Exception as exc:
+                    logger.warning(
+                        "warm_chat_channels: failed to start %s: %s",
+                        channel.id, exc,
+                    )
+            if len(items) < 200:
+                break
+            offset += 200
         return started
 
     async def invalidate(self, *, channel_id: str | None = None) -> None:
