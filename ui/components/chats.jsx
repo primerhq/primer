@@ -430,7 +430,7 @@ function CT_NewChatModal({ onClose, pushToast }) {
 // (POST /v1/chats/{id}/agent), paginated + searchable picker.
 // ============================================================================
 
-function CT_AgentSwitcher({ chatId, currentAgentId, pushToast }) {
+function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, placement = "down", disabled = false }) {
   const { useResource, useMutation, apiFetch } = window.primerApi;
   const [open, setOpen] = React.useState(false);
   const [q, setQ] = React.useState("");
@@ -468,12 +468,15 @@ function CT_AgentSwitcher({ chatId, currentAgentId, pushToast }) {
   );
 
   return (
-    <span className="agent-switcher" style={{ position: "relative" }}>
-      <button className="chip" onClick={() => setOpen((v) => !v)} title="Switch agent">
-        agent <span className="mono">{currentAgentId}</span> <Icon name="chevron-down" size={11} />
+    <span className="agent-switcher" style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+      <button className="chip" onClick={() => !disabled && setOpen((v) => !v)} title="Switch agent" disabled={disabled}>
+        agent <span className="mono">{currentAgentId}</span>
+        <Icon name={placement === "up" ? "chevron-up" : "chevron-down"} size={11} />
       </button>
       {open && (
-        <div className="popover" style={{ position: "absolute", top: "100%", left: 0, zIndex: 50,
+        <div className="popover" style={{ position: "absolute",
+              ...(placement === "up" ? { bottom: "100%", marginBottom: 6 } : { top: "100%", marginTop: 6 }),
+              left: 0, zIndex: 50,
               width: 300, background: "var(--bg-1)", border: "1px solid var(--border)",
               borderRadius: 8, padding: 8, boxShadow: "0 6px 24px rgba(0,0,0,.3)" }}>
           <input className="input" placeholder="Search agents…" value={q}
@@ -1075,7 +1078,6 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           ) : (
             <span className="mono">{cid}</span>
           )}
-          <span className="sub">· <CT_AgentSwitcher chatId={cid} currentAgentId={chatAgent} pushToast={pushToast} /></span>
           <div className="right" style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <window.TokenMeter
               inputTokens={usage.input_tokens}
@@ -1238,6 +1240,15 @@ function ChatDetail({ chatId, onBack, pushToast }) {
             style={{ display: "none" }}
             onChange={(e) => handleFilesPicked(e.target.files)}
           />
+          <span style={{ display: "flex", alignItems: "center" }}>
+            <CT_AgentSwitcher
+              chatId={cid}
+              currentAgentId={chatAgent}
+              pushToast={pushToast}
+              placement="up"
+              disabled={chatStatus === "ended"}
+            />
+          </span>
           <textarea
             className="textarea"
             value={composer}
