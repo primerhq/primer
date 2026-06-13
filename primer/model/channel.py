@@ -215,7 +215,7 @@ class ChatConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _default_in_allowed(self) -> "ChatConfig":
+    def _validate_chat_constraints(self) -> "ChatConfig":
         if self.allowed_agents and self.default_agent and self.default_agent not in self.allowed_agents:
             raise ValueError(
                 "default_agent must be one of allowed_agents when allowed_agents is non-empty"
@@ -259,9 +259,40 @@ class Channel(Identifiable):
     external_id: str = Field(..., description="Platform room/chat id.")
     label: str | None = Field(default=None, max_length=200)
     config: SlackChannelConfig | DiscordChannelConfig | TelegramChannelConfig = Field(
-        default_factory=SlackChannelConfig,
+        default=None,
         description="Provider-specific config; must match provider.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_config_type(cls, values):
+        """When ``config`` is a plain dict (or absent), construct the correct concrete type.
+
+        Pydantic union parsing always picks the first matching variant
+        (``SlackChannelConfig`` for ``{}``) regardless of the ``provider`` value.
+        We intercept *before* field parsing so we can inject the correct concrete
+        type from the provider name. When ``config`` is absent (None or missing),
+        we default to ``{}`` and build the right empty config.
+        """
+        if not isinstance(values, dict):
+            return values
+        provider_val = values.get("provider")
+        if provider_val is None:
+            return values
+        pv = provider_val.value if hasattr(provider_val, "value") else str(provider_val)
+        cls_map = {
+            "slack": SlackChannelConfig,
+            "telegram": TelegramChannelConfig,
+            "discord": DiscordChannelConfig,
+        }
+        config_cls = cls_map.get(pv)
+        if config_cls is None:
+            return values
+        config_val = values.get("config")
+        if config_val is None or isinstance(config_val, dict):
+            values = dict(values)
+            values["config"] = config_cls(**(config_val or {}))
+        return values
 
     @model_validator(mode="after")
     def _config_matches_provider(self) -> "Channel":
