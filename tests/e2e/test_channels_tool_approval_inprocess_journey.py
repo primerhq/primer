@@ -4,10 +4,9 @@ Sibling to T0856 (which pinned the ``ask_user`` branch end-to-end).
 This test pins the OTHER half of the channels contract:
 
   * Outbound — ``ChannelDispatcher.dispatch_prompt`` with
-    ``PromptEnvelope.kind="tool_approval"`` fans out only to
-    associations with ``forward_tool_approval=True``. An association
-    that forwards ask_user but NOT tool_approval is filtered out
-    (inverse of T0856's per-flag check).
+    ``PromptEnvelope.kind="tool_approval"`` fans out to the channel the
+    workspace is bound to (via its ``channel_association`` link) and
+    carries the ``tool_approval`` kind through to the adapter.
   * Inbound — ``ChannelInbox.handle_response`` with
     ``ResponseEnvelope.kind="tool_approval"`` composes the event_key
     ``tool_approval:{sid}:{tcid}`` and publishes a payload carrying
@@ -21,13 +20,12 @@ Subsystems exercised in one test:
 
   1. Registry + factory wiring: ``register_adapter_factory(SLACK, ...)``
      installs a captured NullChannelAdapter; the dispatcher's lazy
-     adapter-build path resolves to it for the matched association.
-  2. ChannelProvider + Channel + WorkspaceChannelAssociation × 2 with
-     mismatched forward_* flags, all created via in-process storage.
-  3. ChannelDispatcher honours BOTH flag bits independently — an
-     association with ``forward_ask_user=True / forward_tool_approval=
-     False`` is filtered out for a tool_approval dispatch, even though
-     it would receive an ask_user dispatch.
+     adapter-build path resolves to it for the bound workspace.
+  2. ChannelProvider + Channel + a Workspace row bound to the channel
+     via its ``channel_association`` link, all created via in-process
+     storage.
+  3. ChannelDispatcher resolves the channel from the workspace's
+     channel_association and posts the tool_approval envelope to it.
   4. ChannelInbox builds the correct event_key
      (``tool_approval:{sid}:{tcid}``) and publishes
      ``{decision, reason}`` onto the bus.
@@ -39,11 +37,17 @@ Subsystems exercised in one test:
 
 Covers backlog item T0857. No HTTP — pure in-process orchestration
 of the channels subsystem. No LLM, no real network, no Postgres.
+
+NOTE: the old per-flag routing (forward_ask_user / forward_tool_approval
+on a WorkspaceChannelAssociation) was removed with the association
+model; a workspace now binds to at most one channel and every gate
+kind forwards to it.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -65,7 +69,6 @@ from primer.model.channel import (
     ChannelProvider,
     ChannelProviderType,
     SlackChannelProviderConfig,
-    WorkspaceChannelAssociation,
 )
 from primer.model.except_ import BadRequestError
 from primer.model.provider import (
@@ -78,6 +81,11 @@ from primer.model.scheduler import (
     RuntimeMode,
     SchedulerProviderConfig,
     SchedulerProviderType,
+)
+from primer.model.workspace import (
+    Workspace,
+    WorkspaceChannelLink,
+    WorkspaceRuntimeMeta,
 )
 
 
@@ -97,16 +105,11 @@ async def test_t0857_null_channel_adapter_tool_approval_journey(
       1. Register a capture-aware factory for ChannelProviderType.SLACK
          that returns a NullChannelAdapter.
       2. Build app with SQLite + in-memory scheduler. Enter lifespan.
-      3. Seed ChannelProvider (slack) + Channel + 2 associations on
-         the SAME workspace with mismatched flags:
-           * assoc_approve_only: forward_ask_user=False,
-             forward_tool_approval=True
-           * assoc_ask_only:     forward_ask_user=True,
-             forward_tool_approval=False  (inverse — should be filtered
-             out for a tool_approval dispatch)
+      3. Seed ChannelProvider (slack) + Channel + a Workspace bound to
+         the channel via its channel_association link.
       4. Dispatch a PromptEnvelope(kind="tool_approval", ...). The
-         dispatcher must fan out to EXACTLY ONE adapter — the one
-         backing assoc_approve_only — pinning the inverse-flag routing.
+         dispatcher resolves the workspace's channel and posts to
+         EXACTLY ONE adapter, carrying the tool_approval kind through.
       5. Subscribe to the event bus. Call inbox.handle_response with a
          ResponseEnvelope(kind="tool_approval", decision="approved",
          reason="looks fine"). Assert the event_key is
@@ -117,9 +120,8 @@ async def test_t0857_null_channel_adapter_tool_approval_journey(
          to silently no-op on a typo'd envelope.
 
     Pinned invariants:
-      * Routing flags are independent: forward_tool_approval=False
-        on an association blocks tool_approval dispatch even when
-        forward_ask_user=True.
+      * A tool_approval envelope reaches the channel the workspace is
+        bound to, carrying kind="tool_approval".
       * Inbox event_key for tool_approval is exactly
         ``tool_approval:{sid}:{tcid}`` (NOT ``ask_user:{...}``).
       * Inbox payload for tool_approval carries decision AND reason
@@ -170,7 +172,7 @@ async def test_t0857_null_channel_adapter_tool_approval_journey(
             # ----- 3. Seed entities via in-process storage -----------
             cp_storage = sp.get_storage(ChannelProvider)
             ch_storage = sp.get_storage(Channel)
-            assoc_storage = sp.get_storage(WorkspaceChannelAssociation)
+            ws_storage = sp.get_storage(Workspace)
 
             cp = ChannelProvider(
                 id="cp-t857",
@@ -185,38 +187,25 @@ async def test_t0857_null_channel_adapter_tool_approval_journey(
             ch = Channel(
                 id="ch-t857",
                 provider_id="cp-t857",
+                provider=ChannelProviderType.SLACK,
                 external_id="C0123ABC457",
                 label="T0857 test channel",
             )
             await ch_storage.create(ch)
 
             workspace_id = "ws-t857"
-
-            # assoc_approve_only: only forwards tool_approval. Must
-            # receive the tool_approval dispatch below.
-            assoc_approve_only = WorkspaceChannelAssociation(
-                id="assoc-t857-approve",
-                workspace_id=workspace_id,
-                channel_id="ch-t857",
-                enabled=True,
-                forward_ask_user=False,
-                forward_tool_approval=True,
+            ws = Workspace(
+                id=workspace_id,
+                template_id="tpl-t857",
+                provider_id="wp-t857",
+                created_at=datetime.now(timezone.utc),
+                runtime_meta=WorkspaceRuntimeMeta(
+                    url="ws://localhost:5959",
+                    token="runtime-token",
+                ),
+                channel_association=WorkspaceChannelLink(channel_id="ch-t857"),
             )
-            await assoc_storage.create(assoc_approve_only)
-
-            # assoc_ask_only: only forwards ask_user. The dispatcher
-            # MUST filter this one out for a tool_approval dispatch
-            # even though both associations point at the SAME workspace
-            # and SAME channel. This pins independent per-flag routing.
-            assoc_ask_only = WorkspaceChannelAssociation(
-                id="assoc-t857-ask",
-                workspace_id=workspace_id,
-                channel_id="ch-t857",
-                enabled=True,
-                forward_ask_user=True,
-                forward_tool_approval=False,
-            )
-            await assoc_storage.create(assoc_ask_only)
+            await ws_storage.create(ws)
 
             # ----- 4. Dispatch a tool_approval envelope --------------
             prompt_env = PromptEnvelope(
@@ -231,14 +220,11 @@ async def test_t0857_null_channel_adapter_tool_approval_journey(
             )
             results = await dispatcher.dispatch_prompt(envelope=prompt_env)
 
-            # ----- 5. Exactly one adapter captured (the approve_only
-            # one); inverse-flag association was filtered out --------
+            # ----- 5. Exactly one adapter captured (the channel the
+            # workspace is bound to); tool_approval kind carried -----
             assert len(captured) == 1, (
-                f"expected exactly 1 factory-built adapter (the "
-                f"forward_tool_approval=True association); got "
-                f"{len(captured)} — dispatcher may have ignored the "
-                f"per-flag routing and fanned out to the inverse "
-                f"association too"
+                f"expected exactly 1 factory-built adapter (the channel "
+                f"the workspace is bound to); got {len(captured)}"
             )
             adapter = captured[0]
             assert len(adapter.posted) == 1, (
