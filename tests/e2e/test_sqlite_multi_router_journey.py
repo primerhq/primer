@@ -317,7 +317,7 @@ async def test_t0852_sqlite_multi_router_crud_journey(tmp_path: Path) -> None:
             # 10. Cleanup: DELETE in reverse-dependency order
             # =============================================================
             # The order matters because the channel_provider cascade-block
-            # is enforced server-side — deleting a provider while a channel
+            # is enforced server-side - deleting a provider while a channel
             # references it would 409. This pins that the SQLite adapter's
             # predicate engine evaluates the cascade-check predicate
             # correctly (same shape as the Postgres adapter's).
