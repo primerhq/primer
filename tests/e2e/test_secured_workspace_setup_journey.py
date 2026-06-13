@@ -3,13 +3,12 @@
 Multi-subsystem user-journey that walks the role of a SecOps
 operator standing up a workspace that requires approval for
 sensitive tool calls AND routes ask_user prompts through a chat
-channel. The single test exercises the THREE independent cascade-
+channel. The single test exercises the TWO independent cascade-
 block invariants the platform pins:
 
   1. Toolset DELETE blocked while a ToolApprovalPolicy
      references it (§2 directive: "cascade-block on Toolset delete")
-  2. Channel DELETE blocked while an Association references it (§3)
-  3. ChannelProvider DELETE blocked while a Channel references it (§3)
+  2. ChannelProvider DELETE blocked while a Channel references it (§3)
 
 Plus a deliberate negative-cascade probe — WorkspaceProvider DELETE
 is NOT blocked by a referencing WorkspaceTemplate (no on_delete on
@@ -18,7 +17,7 @@ future refactor from silently introducing the cascade we just
 asserted doesn't exist.
 
 Then walks the correct unwind order, asserting each step succeeds
-cleanly. Across 8 routers + 3 cascade-aware DELETEs + 1 negative
+cleanly. Across 8 routers + 2 cascade-aware DELETEs + 1 negative
 cascade probe, in one test.
 
 Subsystems exercised in one test:
@@ -29,9 +28,11 @@ Subsystems exercised in one test:
   4. ChannelProvider CRUD (Discord variant)
   5. Channel CRUD with `provider_id` reference integrity
   6. WorkspaceProvider + Template + Workspace ladder
-  7. WorkspaceChannelAssociation CRUD bridging workspace ↔ channel
+  7. Workspace channel association via the focused
+     `PUT /workspaces/{id}/channel_association` route (the channel
+     link is a field on the workspace, not a standalone row)
   8. Agent CRUD with model + tools list referencing the toolset
-  9. Four independent cascade-block 409 envelopes — pin the detail
+  9. Three independent cascade-block 409 envelopes — pin the detail
      string carries the blocking row id (operator can find the
      cause without running follow-up queries)
  10. Correct teardown order — confirms the live HTTP path actually
@@ -66,7 +67,7 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path,
 ) -> None:
     """T0853 — Stand up a workspace with an approval-gated toolset
-    and a chat-channel routing layer, then assert the four cascade
+    and a chat-channel routing layer, then assert the cascade
     invariants over real HTTP.
 
     Steps:
@@ -77,16 +78,17 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
       4. Seed ChannelProvider (Discord with valid bot_token).
       5. Seed Channel under the ChannelProvider.
       6. Seed WorkspaceProvider + Template + Workspace ladder.
-      7. Seed WorkspaceChannelAssociation bridging workspace ↔ channel.
+      7. Link the channel to the workspace via
+         PUT /workspaces/{id}/channel_association.
       8. Seed Agent with the user toolset in its first-class tools list.
       9. Cascade-block primer — try each DELETE in the WRONG order
          and assert the 409 envelope carries the blocking row id:
            a. DELETE toolset → 409 (policy blocks)
-           b. DELETE channel → 409 (association blocks)
-           c. DELETE channel_provider → 409 (channel blocks)
-           d. DELETE workspace_provider → 409 (template blocks)
-     10. Correct unwind: policy → toolset; workspace → cascade-deletes
-         association; then channel → channel_provider; then template
+           b. DELETE channel_provider → 409 (channel blocks)
+           c. DELETE workspace_provider → 409 (template blocks)
+     10. Correct unwind: policy → toolset; workspace (carries the
+         channel link as a field, so deleting it drops the link);
+         then channel → channel_provider; then template
          → workspace_provider; then agent + llm_provider.
 
     Every cascade-block assertion includes the /errors/internal leak
@@ -100,7 +102,6 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
     ch_id = f"sw-ch-{unique_suffix}"
     wp_id = f"sw-wp-{unique_suffix}"
     tpl_id = f"sw-tpl-{unique_suffix}"
-    assoc_id = f"sw-assoc-{unique_suffix}"
     agent_id = f"sw-ag-{unique_suffix}"
     workspace_id: str | None = None
     seeded_urls: list[str] = []
@@ -149,6 +150,7 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
         r = await client.post("/v1/channels", json={
             "id": ch_id,
             "provider_id": cp_id,
+            "provider": "discord",
             "external_id": f"snowflake-{unique_suffix}",
             "label": "T0853 secured-ops",
         })
@@ -178,16 +180,15 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
         workspace_id = r.json()["id"]
         seeded_urls.append(f"/v1/workspaces/{workspace_id}")
 
-        # ----- 7. WorkspaceChannelAssociation -----------------------------
-        r = await client.post(
-            "/v1/workspace_channel_associations", json={
-                "id": assoc_id,
-                "workspace_id": workspace_id,
-                "channel_id": ch_id,
-                "enabled": True,
-            },
+        # ----- 7. Link channel to workspace (channel_association field) ---
+        r = await client.put(
+            f"/v1/workspaces/{workspace_id}/channel_association",
+            json={"channel_id": ch_id},
         )
-        assert r.status_code == 201, r.text
+        assert r.status_code == 200, r.text
+        assert r.json().get("channel_association", {}).get("channel_id") == ch_id, (
+            r.text
+        )
 
         # ----- 8. Agent referencing the toolset ---------------------------
         r = await client.post("/v1/agents", json={
@@ -216,22 +217,14 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
         )
         assert "/errors/internal" not in json.dumps(body), body
 
-        # ----- 9b. Channel blocked by association (§3) --------------------
-        r = await client.delete(f"/v1/channels/{ch_id}")
-        assert r.status_code == 409, r.text
-        body = r.json()
-        assert body["type"].endswith("/conflict"), body
-        assert assoc_id in body.get("detail", ""), body
-        assert "/errors/internal" not in json.dumps(body), body
-
-        # ----- 9c. ChannelProvider blocked by channel (§3) ----------------
+        # ----- 9b. ChannelProvider blocked by channel (§3) ----------------
         r = await client.delete(f"/v1/channel_providers/{cp_id}")
         assert r.status_code == 409, r.text
         body = r.json()
         assert body["type"].endswith("/conflict"), body
         assert ch_id in body.get("detail", ""), body
 
-        # ----- 9d. Negative-cascade probe: WorkspaceProvider DELETE is
+        # ----- 9c. Negative-cascade probe: WorkspaceProvider DELETE is
         # NOT blocked by a referencing WorkspaceTemplate (no on_delete
         # handler on the provider router — see workspaces.py:145-151).
         # Confirming this in the same journey freezes the contract: a
@@ -278,18 +271,9 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
         r = await client.delete(f"/v1/toolsets/{toolset_id}")
         assert r.status_code in (200, 204), r.text
 
-        # Delete workspace → association cascade-deletes (per T0851 + §3.5).
+        # Delete workspace → the channel_association field goes with it.
         r = await client.delete(f"/v1/workspaces/{workspace_id}")
         assert r.status_code in (200, 204), r.text
-
-        # Association row is gone after the cascade.
-        r = await client.get(
-            f"/v1/workspace_channel_associations/{assoc_id}"
-        )
-        assert r.status_code == 404, (
-            f"expected association {assoc_id!r} to cascade-delete with "
-            f"workspace; got {r.status_code} {r.text!r}"
-        )
 
         # Channel + ChannelProvider now un-blocked.
         r = await client.delete(f"/v1/channels/{ch_id}")
