@@ -49,7 +49,8 @@ async def _setup(tmp_path, monkeypatch):
         id="ch-1", provider_id="cp-1", provider=ChannelProviderType.SLACK,
         external_id="C123",
         config=SlackChannelConfig(chats={
-            "enabled": True, "default_agent": "agent-x"}))
+            "enabled": True, "default_agent": "agent-x",
+            "allow_agent_switch": True}))
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
     adapter = SlackChannelAdapter(

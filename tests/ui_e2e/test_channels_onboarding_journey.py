@@ -248,9 +248,11 @@ def test_u0108_channels_operator_onboarding_journey(
         )
 
         # ----- Chats fieldset: enable + pick the seeded default_agent.
-        # The "Enabled" checkbox is the only checkbox in the modal.
-        chats_enabled = modal.locator("input[type=checkbox]").first
-        chats_enabled.check()
+        # "Chats enabled" is a switch-style toggle button; clicking it reveals
+        # the rest of the chat controls (default_agent, relay mode, etc.).
+        chats_enabled = modal.get_by_test_id("channel-chats-enabled")
+        chats_enabled.click()
+        expect(chats_enabled).to_have_attribute("aria-checked", "true")
 
         # The default_agent select is the second select.mono in the modal
         # (the first is the provider dropdown). Wait for the seeded agent

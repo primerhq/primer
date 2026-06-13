@@ -67,6 +67,18 @@ async def test_help_command_returns_help_text(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_agent_command_blocked_when_flag_off(tmp_path: Path):
+    """allow_agent_switch defaults off, so /agent (picker and <id>) is refused."""
+    p, adapter = await _setup(tmp_path)
+    notice = await adapter.handle_inbound_chat_text(
+        sender_name="Alice", text="/agent")
+    assert notice == "Agent switching is disabled on this channel."
+    notice = await adapter.handle_inbound_chat_text(
+        sender_name="Alice", text="/agent agent-x")
+    assert notice == "Agent switching is disabled on this channel."
+
+
+@pytest.mark.asyncio
 async def test_new_command_creates_fresh_chat(tmp_path: Path):
     p, adapter = await _setup(tmp_path)
     await adapter.handle_inbound_chat_text(sender_name="Alice", text="hi")

@@ -235,6 +235,14 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         from primer.channel.commands import CommandExecutor
         from primer.channel.slack.blocks import build_agent_switch_modal
         ex = CommandExecutor(storage_provider=adapter._sp)
+        if not await ex.agent_switch_allowed(adapter._channel.id):
+            try:
+                await client.chat_postEphemeral(
+                    channel=channel_id, user=body.get("user_id"),
+                    text="Agent switching is disabled on this channel.")
+            except Exception:
+                logger.exception("slack: ephemeral switch-disabled notice failed")
+            return
         chats = (await ex.list_chats(channel_id=adapter._channel.id)).items
         agents = (await ex.agent_picker(channel_id=adapter._channel.id)).items
         try:

@@ -77,8 +77,13 @@ ChatConfig (inside `config.chats`):
   room start primer chats.
 - `default_agent` - agent each new chat begins with; required when
   `enabled=true`.
-- `allowed_agents` (list of agent ids, default `[]`) - agents the
-  `/agent` command may switch to; empty means any agent is allowed.
+- `allow_agent_switch` (bool, default false) - whether users may change
+  a chat's agent with `/agent`. Off by default, so enabling chats does
+  not implicitly let anyone reassign the agent. `allowed_agents` only
+  applies when this is on.
+- `allowed_agents` (list of agent ids, default `[]`) - when agent
+  switching is allowed, restricts `/agent` to these agents; empty means
+  any agent is allowed. Ignored when `allow_agent_switch` is off.
 - `relay_mode` (`"final"` | `"all"`, default `"final"`) - controls
   which chat messages are relayed back to the platform. `"final"`
   sends only the last assistant turn; `"all"` streams every turn.
@@ -321,9 +326,13 @@ Returns the workspace row; `channel_association` is either
   associations. ChannelCorrelation rows keep them separate.
 - **`config.chats.default_agent` is required when
   `config.chats.enabled=true`.** Omitting it returns `422`.
-- **`allowed_agents` restricts `/agent` switching.** An empty list
-  allows any agent. A non-empty list restricts the `/agent <id>`
-  command to those ids only.
+- **`/agent` switching is gated by `allow_agent_switch`.** It is off by
+  default; while off, `/agent` (and the in-thread / modal picker)
+  returns "Agent switching is disabled on this channel." Turn it on to
+  let users reassign a chat's agent.
+- **`allowed_agents` restricts `/agent` switching.** Applies only when
+  `allow_agent_switch` is on. An empty list allows any agent; a
+  non-empty list restricts `/agent <id>` to those ids only.
 - **Dispatch is fire-and-forget.** A slow channel post does NOT block
   the worker's lease release. The session parks immediately.
 - **First reply wins, late replies no-op.** If a Slack reply and a

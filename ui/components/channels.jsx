@@ -776,6 +776,120 @@ function ChannelsPage({ onNavigate, pushToast }) {
   );
 }
 
+// CH_Toggle — a switch-style on/off control (used for the chat-config toggles
+// that progressively reveal the rest of the chat controls).
+function CH_Toggle({ checked, onChange, label, help, disabled, testid }) {
+  return (
+    <label
+      style={{
+        display: "flex", alignItems: "flex-start", gap: 10,
+        cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        disabled={disabled}
+        data-testid={testid}
+        onClick={() => !disabled && onChange(!checked)}
+        style={{
+          flex: "0 0 auto", width: 34, height: 20, borderRadius: 999,
+          border: "1px solid var(--border)", padding: 0, marginTop: 1,
+          background: checked ? "var(--accent)" : "var(--bg-2)",
+          position: "relative", cursor: disabled ? "default" : "pointer",
+          transition: "background 0.12s ease",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute", top: 1, left: checked ? 15 : 1,
+            width: 16, height: 16, borderRadius: "50%",
+            background: checked ? "var(--accent-fg)" : "var(--text-3)",
+            transition: "left 0.12s ease",
+          }}
+        />
+      </button>
+      <span style={{ fontSize: 12.5, lineHeight: 1.4 }}>
+        {label}
+        {help && <span className="muted"> — {help}</span>}
+      </span>
+    </label>
+  );
+}
+
+// CH_AllowedAgentsPicker — a searchable, paginated multi-select for the
+// allowed-agents list. Selection is a set of agent ids; a search box filters by
+// id and the filtered results are paged so a large fleet stays manageable.
+function CH_AllowedAgentsPicker({
+  agentItems, selected, onChange, search, onSearch, page, onPage, perPage,
+}) {
+  const selectedSet = new Set(selected);
+  const needle = search.trim().toLowerCase();
+  const filtered = needle
+    ? agentItems.filter((a) => a.id.toLowerCase().includes(needle))
+    : agentItems;
+  const pageCount = Math.max(1, Math.ceil(filtered.length / perPage));
+  const safePage = Math.min(page, pageCount - 1);
+  const start = safePage * perPage;
+  const pageItems = filtered.slice(start, start + perPage);
+
+  const toggle = (id) => {
+    const next = new Set(selectedSet);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    onChange(Array.from(next));
+  };
+
+  if (agentItems.length === 0) {
+    return <div className="muted text-sm">No agents registered.</div>;
+  }
+
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+      <div style={{ position: "relative", borderBottom: "1px solid var(--border)" }}>
+        <Icon name="search" size={13} className="icon" style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", opacity: 0.6 }} />
+        <input
+          className="input"
+          placeholder="Search agents…"
+          value={search}
+          onChange={(e) => onSearch(e.target.value)}
+          data-testid="channel-allowed-agents-search"
+          style={{ width: "100%", border: "none", borderRadius: 0, paddingLeft: 28 }}
+        />
+      </div>
+      <div style={{ maxHeight: 200, overflowY: "auto" }}>
+        {pageItems.length === 0 ? (
+          <div className="muted text-sm" style={{ padding: "10px 12px" }}>No matching agents.</div>
+        ) : pageItems.map((a) => (
+          <label
+            key={a.id}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12.5 }}
+          >
+            <input
+              type="checkbox"
+              checked={selectedSet.has(a.id)}
+              onChange={() => toggle(a.id)}
+            />
+            <span className="mono">{a.id}</span>
+          </label>
+        ))}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", borderTop: "1px solid var(--border)", background: "var(--bg-2)" }}>
+        <span className="muted text-sm">
+          {selectedSet.size} selected{filtered.length !== agentItems.length ? ` · ${filtered.length} match` : ""}
+        </span>
+        {pageCount > 1 && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <Btn kind="ghost" disabled={safePage <= 0} onClick={() => onPage(safePage - 1)}>‹</Btn>
+            <span className="muted text-sm">{safePage + 1}/{pageCount}</span>
+            <Btn kind="ghost" disabled={safePage >= pageCount - 1} onClick={() => onPage(safePage + 1)}>›</Btn>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function NewChannelModal({ providers, onClose, onCreated, pushToast, existing }) {
   const isEdit = !!existing;
   const [id, setId] = React.useState(existing?.id || "");
@@ -793,12 +907,19 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
   const [chatsDefaultAgent, setChatsDefaultAgent] = React.useState(
     existing?.config?.chats?.default_agent || ""
   );
+  const [chatsAllowAgentSwitch, setChatsAllowAgentSwitch] = React.useState(
+    existing?.config?.chats?.allow_agent_switch ?? false
+  );
   const [chatsAllowedAgents, setChatsAllowedAgents] = React.useState(
     existing?.config?.chats?.allowed_agents || []
   );
   const [chatsRelayMode, setChatsRelayMode] = React.useState(
     existing?.config?.chats?.relay_mode || "final"
   );
+  // Search + pagination for the allowed-agents picker.
+  const [agentSearch, setAgentSearch] = React.useState("");
+  const [agentPage, setAgentPage] = React.useState(0);
+  const AGENTS_PER_PAGE = 8;
 
   // Fetch agents for default_agent / allowed_agents pickers
   const agentsRes = useResource(
@@ -847,7 +968,8 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
         chats: {
           enabled: chatsEnabled,
           default_agent: chatsDefaultAgent || null,
-          allowed_agents: chatsAllowedAgents,
+          allow_agent_switch: chatsAllowAgentSwitch,
+          allowed_agents: chatsAllowAgentSwitch ? chatsAllowedAgents : [],
           relay_mode: chatsRelayMode,
         },
       },
@@ -925,64 +1047,70 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
       <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 12, marginTop: 4 }}>
         <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Chats config</div>
         <div className="field">
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-            <input
-              type="checkbox"
-              checked={chatsEnabled}
-              onChange={(e) => setChatsEnabled(e.target.checked)}
-            />
-            <span>Enabled <span className="muted">— allow inbound chat messages on this channel</span></span>
-          </label>
+          <CH_Toggle
+            checked={chatsEnabled}
+            onChange={setChatsEnabled}
+            label="Chats enabled"
+            help="allow inbound chat messages on this channel"
+            testid="channel-chats-enabled"
+          />
         </div>
-        <div className="field">
-          <label className="field-label">default agent <span className="hint">optional</span></label>
-          <select
-            className="select mono"
-            value={chatsDefaultAgent}
-            onChange={(e) => setChatsDefaultAgent(e.target.value)}
-            style={{ width: "100%" }}
-          >
-            <option value="">(none)</option>
-            {agentItems.map((a) => (
-              <option key={a.id} value={a.id}>{a.id}</option>
-            ))}
-          </select>
-          <div className="field-help">Agent used for new chats when no agent is specified</div>
-        </div>
-        <div className="field">
-          <label className="field-label">allowed agents <span className="hint">optional · multi-select</span></label>
-          {agentItems.length === 0 ? (
-            <div className="muted text-sm">No agents registered.</div>
-          ) : (
-            <select
-              className="select mono"
-              multiple
-              value={chatsAllowedAgents}
-              onChange={(e) => {
-                const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
-                setChatsAllowedAgents(selected);
-              }}
-              style={{ width: "100%", minHeight: 80 }}
-            >
-              {agentItems.map((a) => (
-                <option key={a.id} value={a.id}>{a.id}</option>
-              ))}
-            </select>
-          )}
-          <div className="field-help">Restrict which agents users can invoke. Empty = all agents allowed.</div>
-        </div>
-        <div className="field">
-          <label className="field-label">relay mode</label>
-          <select
-            className="select mono"
-            value={chatsRelayMode}
-            onChange={(e) => setChatsRelayMode(e.target.value)}
-            style={{ width: "100%" }}
-          >
-            <option value="final">final — only relay the last agent message</option>
-            <option value="all">all — relay every agent message</option>
-          </select>
-        </div>
+        {chatsEnabled && (
+          <>
+            <div className="field">
+              <label className="field-label">default agent <span className="hint">optional</span></label>
+              <select
+                className="select mono"
+                value={chatsDefaultAgent}
+                onChange={(e) => setChatsDefaultAgent(e.target.value)}
+                style={{ width: "100%" }}
+              >
+                <option value="">(none)</option>
+                {agentItems.map((a) => (
+                  <option key={a.id} value={a.id}>{a.id}</option>
+                ))}
+              </select>
+              <div className="field-help">Agent used for new chats when no agent is specified</div>
+            </div>
+            <div className="field">
+              <CH_Toggle
+                checked={chatsAllowAgentSwitch}
+                onChange={setChatsAllowAgentSwitch}
+                label="Allow agent switching"
+                help="let users change a chat's agent with /agent"
+                testid="channel-allow-agent-switch"
+              />
+            </div>
+            {chatsAllowAgentSwitch && (
+              <div className="field">
+                <label className="field-label">allowed agents <span className="hint">optional · restricts /agent</span></label>
+                <CH_AllowedAgentsPicker
+                  agentItems={agentItems}
+                  selected={chatsAllowedAgents}
+                  onChange={setChatsAllowedAgents}
+                  search={agentSearch}
+                  onSearch={(v) => { setAgentSearch(v); setAgentPage(0); }}
+                  page={agentPage}
+                  onPage={setAgentPage}
+                  perPage={AGENTS_PER_PAGE}
+                />
+                <div className="field-help">Restrict which agents users can switch to. None selected = all agents allowed.</div>
+              </div>
+            )}
+            <div className="field">
+              <label className="field-label">relay mode</label>
+              <select
+                className="select mono"
+                value={chatsRelayMode}
+                onChange={(e) => setChatsRelayMode(e.target.value)}
+                style={{ width: "100%" }}
+              >
+                <option value="final">final — only relay the last agent message</option>
+                <option value="all">all — relay every agent message</option>
+              </select>
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   );

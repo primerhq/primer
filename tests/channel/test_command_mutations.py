@@ -29,7 +29,8 @@ async def _provider(tmp_path):
         id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
         external_id="555",
         config=TelegramChannelConfig(chats={
-            "enabled": True, "default_agent": "agent-x"})))
+            "enabled": True, "default_agent": "agent-x",
+            "allow_agent_switch": True})))
     return p
 
 
@@ -90,3 +91,36 @@ async def test_agent_switch_repoints_chat(tmp_path: Path):
     assert res.kind == "notice"
     refreshed = await p.get_storage(Chat).get(chat.id)
     assert refreshed.agent_id == "agent-y"
+
+
+@pytest.mark.asyncio
+async def test_agent_switch_blocked_when_flag_off(tmp_path: Path):
+    """allow_agent_switch defaults off: set_agent refuses and leaves the chat."""
+    p = await _provider(tmp_path)
+    # Flip the channel's flag back off.
+    channel = await p.get_storage(Channel).get("ch-1")
+    channel.config.chats.allow_agent_switch = False
+    await p.get_storage(Channel).update(channel)
+    now = datetime.now(timezone.utc)
+    chat = await p.get_storage(Chat).create(Chat(
+        id="chat-1", agent_id="agent-x", created_at=now,
+        channel_binding=ChatChannelBinding(channel_id="ch-1")))
+    ex = CommandExecutor(storage_provider=p)
+    res = await ex.set_agent(chat_id=chat.id, agent_id="agent-y")
+    assert res.kind == "notice"
+    assert "disabled" in res.text.lower()
+    refreshed = await p.get_storage(Chat).get(chat.id)
+    assert refreshed.agent_id == "agent-x"
+
+
+@pytest.mark.asyncio
+async def test_agent_switch_allowed_reads_flag(tmp_path: Path):
+    p = await _provider(tmp_path)
+    ex = CommandExecutor(storage_provider=p)
+    assert await ex.agent_switch_allowed("ch-1") is True
+    # Unknown channel is treated as not-allowed.
+    assert await ex.agent_switch_allowed("ch-nope") is False
+    channel = await p.get_storage(Channel).get("ch-1")
+    channel.config.chats.allow_agent_switch = False
+    await p.get_storage(Channel).update(channel)
+    assert await ex.agent_switch_allowed("ch-1") is False

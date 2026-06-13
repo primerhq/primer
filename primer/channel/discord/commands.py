@@ -35,6 +35,10 @@ async def handle_app_command(
         return CommandResult(
             kind="notice", text=help_text(supports_threads=True))
     if command == "agent":
+        if not await ex.agent_switch_allowed(channel_id):
+            return CommandResult(
+                kind="notice",
+                text="Agent switching is disabled on this channel.")
         if not arg:
             return await ex.agent_picker(channel_id=channel_id)
         if thread_id is None:

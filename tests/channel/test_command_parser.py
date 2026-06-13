@@ -34,8 +34,10 @@ def test_help_text_single_type_includes_switch():
     assert "/agent" in txt and "/help" in txt
 
 
-def test_help_text_multi_type_omits_switch():
+def test_help_text_multi_type_omits_chat_management():
+    # Thread-capable channels (Slack/Discord): a new thread is a new chat and
+    # the thread list is the chat list, so /new, /list and /switch are omitted.
     txt = help_text(supports_threads=True)
     assert "/switch" not in txt
-    assert "/new" in txt and "/list" in txt
+    assert "/new" not in txt and "/list" not in txt
     assert "/agent" in txt and "/help" in txt

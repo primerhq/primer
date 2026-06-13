@@ -29,7 +29,8 @@ async def _provider(tmp_path):
         id="ch-1", provider_id="cp-1", provider=ChannelProviderType.DISCORD,
         external_id="9001",
         config=DiscordChannelConfig(chats={
-            "enabled": True, "default_agent": "agent-x"})))
+            "enabled": True, "default_agent": "agent-x",
+            "allow_agent_switch": True})))
     return p
 
 
@@ -53,3 +54,22 @@ async def test_agent_command_with_value_switches(tmp_path: Path):
         arg="agent-y", thread_id="t-1")
     assert res.kind == "notice"
     assert (await p.get_storage(Chat).get("chat-1")).agent_id == "agent-y"
+
+
+@pytest.mark.asyncio
+async def test_agent_command_blocked_when_flag_off(tmp_path: Path):
+    """With allow_agent_switch off, /agent is refused before touching the chat."""
+    p = await _provider(tmp_path)
+    channel = await p.get_storage(Channel).get("ch-1")
+    channel.config.chats.allow_agent_switch = False
+    await p.get_storage(Channel).update(channel)
+    await p.get_storage(Chat).create(Chat(
+        id="chat-1", agent_id="agent-x", created_at=datetime.now(timezone.utc),
+        channel_binding=ChatChannelBinding(
+            channel_id="ch-1", thread_external_id="t-1")))
+    res = await handle_app_command(
+        storage_provider=p, command="agent", channel_id="ch-1",
+        arg="agent-y", thread_id="t-1")
+    assert res.kind == "notice"
+    assert "disabled" in res.text.lower()
+    assert (await p.get_storage(Chat).get("chat-1")).agent_id == "agent-x"

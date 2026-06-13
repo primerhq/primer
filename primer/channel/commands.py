@@ -107,6 +107,15 @@ class CommandExecutor:
             raise NotFoundError(f"no Channel {channel_id!r}")
         return channel.config.chats
 
+    async def agent_switch_allowed(self, channel_id: str) -> bool:
+        """Whether /agent switching is enabled on this channel (operator flag).
+        Returns False for an unknown channel."""
+        try:
+            cfg = await self._chat_config(channel_id)
+        except NotFoundError:
+            return False
+        return bool(cfg.allow_agent_switch)
+
     async def list_chats(self, *, channel_id: str) -> CommandResult:
         chats = self._sp.get_storage(Chat)
         out: list[dict[str, Any]] = []
@@ -204,13 +213,19 @@ class CommandExecutor:
         agent = await self._sp.get_storage(Agent).get(agent_id)
         if agent is None:
             raise NotFoundError(f"Agent {agent_id!r} does not exist")
-        # Enforce allowed_agents from the room Channel config. Resolve the
-        # channel from the chat's binding when not passed explicitly.
+        # Gate on the room Channel config. Resolve the channel from the chat's
+        # binding when not passed explicitly.
         room_id = channel_id
         if room_id is None and chat.channel_binding is not None:
             room_id = chat.channel_binding.channel_id
         if room_id is not None:
             cfg = await self._chat_config(room_id)
+            # Switching must be explicitly enabled by the operator (off by
+            # default), then optionally restricted to allowed_agents.
+            if not cfg.allow_agent_switch:
+                return CommandResult(
+                    kind="notice",
+                    text="Agent switching is disabled on this channel.")
             if cfg.allowed_agents and agent_id not in cfg.allowed_agents:
                 return CommandResult(
                     kind="notice",

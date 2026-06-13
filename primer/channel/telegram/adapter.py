@@ -259,6 +259,9 @@ class TelegramChannelAdapter(ChannelAdapter):
                 res = await ex.switch_active_chat(
                     channel_id=self._channel.id, chat_id=parsed.arg)
                 return res.text
+            if parsed.verb == "agent" and not await ex.agent_switch_allowed(
+                self._channel.id):
+                return "Agent switching is disabled on this channel."
             if parsed.verb == "agent" and parsed.arg:
                 router = ChatChannelRouter(storage_provider=self._sp)
                 chat, _ = await router.resolve_or_create(
