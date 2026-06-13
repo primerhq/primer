@@ -64,7 +64,8 @@ def _provider() -> ChannelProvider:
 
 
 def _channel() -> Channel:
-    return Channel(id="ch-1", provider_id="cp-1", external_id="C01")
+    return Channel(id="ch-1", provider_id="cp-1",
+                   provider=ChannelProviderType.SLACK, external_id="C01")
 
 
 @pytest.mark.asyncio

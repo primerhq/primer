@@ -22,7 +22,7 @@ from primer.int.artifact_storage import ArtifactBlob
 from primer.model.agent import Agent
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
-    ChatChannelAssociation, TelegramChannelProviderConfig,
+    TelegramChannelConfig, TelegramChannelProviderConfig,
 )
 from primer.model.chats import Chat, ChatMessage
 from primer.model.storage import OffsetPage
@@ -137,11 +137,13 @@ async def _setup(tmp_path, *, with_artifacts=True, files=None):
         id="cp-1", provider=ChannelProviderType.TELEGRAM,
         config=TelegramChannelProviderConfig(
             bot_token=SecretStr("123456:ABCDEFGHIJKLMNOP")))
-    ch = Channel(id="ch-1", provider_id="cp-1", external_id="555")
+    ch = Channel(
+        id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
+        external_id="555",
+        config=TelegramChannelConfig(chats={
+            "enabled": True, "default_agent": "agent-x"}))
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
-    await p.get_storage(ChatChannelAssociation).create(ChatChannelAssociation(
-        id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
 
     store = _MemArtifacts()
     registry = _FakeRegistry(store) if with_artifacts else None

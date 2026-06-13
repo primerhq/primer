@@ -12,7 +12,7 @@ from primer.channel.slack.adapter import SlackChannelAdapter
 from primer.model.agent import Agent
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
-    ChatChannelAssociation, SlackChannelProviderConfig,
+    SlackChannelConfig, SlackChannelProviderConfig,
 )
 from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import SqliteConfig
@@ -30,11 +30,13 @@ async def _setup(tmp_path):
         id="cp-1", provider=ChannelProviderType.SLACK,
         config=SlackChannelProviderConfig(
             app_token=SecretStr("xapp-t"), bot_token=SecretStr("xoxb-t")))
-    ch = Channel(id="ch-1", provider_id="cp-1", external_id="C123")
+    ch = Channel(
+        id="ch-1", provider_id="cp-1", provider=ChannelProviderType.SLACK,
+        external_id="C123",
+        config=SlackChannelConfig(chats={
+            "enabled": True, "default_agent": "agent-x"}))
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
-    await p.get_storage(ChatChannelAssociation).create(ChatChannelAssociation(
-        id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
     adapter = SlackChannelAdapter(
         provider=cp, channel=ch, inbox=None,
         storage_provider=p, event_bus=InMemoryEventBus())

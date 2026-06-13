@@ -18,7 +18,7 @@ from primer.channel.slack.adapter import SlackChannelAdapter
 from primer.int.artifact_storage import ArtifactBlob
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
-    ChatChannelAssociation, SlackChannelProviderConfig,
+    SlackChannelConfig, SlackChannelProviderConfig,
 )
 from primer.model.agent import Agent
 from primer.model.chats import Chat, ChatMessage
@@ -116,21 +116,22 @@ def _make_provider() -> ChannelProvider:
 
 def _make_channel() -> Channel:
     return Channel(
-        id="ch-1", provider_id="prov-1", external_id="C123",
-        label="primer-testing",
+        id="ch-1", provider_id="prov-1", provider=ChannelProviderType.SLACK,
+        external_id="C123", label="primer-testing",
+        config=SlackChannelConfig(chats={
+            "enabled": True, "default_agent": "agent-x"}),
     )
 
 
 async def _make_sp(tmp_path) -> SqliteStorageProvider:
     sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "media.sqlite"))
     await sp.initialize()
-    # Channel ch-1 needs an association + a real agent so the router can
-    # resolve-or-create a chat for the inbound message.
+    # Channel ch-1 needs chats enabled (config.chats.default_agent) + a real
+    # agent so the router can resolve-or-create a chat for the inbound message.
     await sp.get_storage(Agent).create(Agent(
         id="agent-x", description="Xavier",
         model={"provider_id": "lp", "model_name": "m"}))
-    await sp.get_storage(ChatChannelAssociation).create(ChatChannelAssociation(
-        id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
+    await sp.get_storage(Channel).create(_make_channel())
     return sp
 
 

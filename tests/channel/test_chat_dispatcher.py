@@ -34,7 +34,6 @@ class _MemArtifacts:
     async def get(self, artifact_id):
         return self.blobs.get(artifact_id)
 from primer.channel.null_adapter import NullChannelAdapter
-from primer.model.channel import ChatChannelAssociation
 from primer.model.chats import Chat, ChatChannelBinding, ChatMessage
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
@@ -71,12 +70,9 @@ class _RecordingBus:
         self.published.append((event_key, payload or {}))
 
 
-async def _provider(tmp_path, *, forward_inform=True):
+async def _provider(tmp_path):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
-    await p.get_storage(ChatChannelAssociation).create(ChatChannelAssociation(
-        id="cca-1", channel_id="ch-1", default_agent_id="agent-x",
-        forward_inform=forward_inform))
     await p.get_storage(Chat).create(Chat(
         id="chat-1", agent_id="agent-x", created_at=datetime.now(timezone.utc),
         channel_binding=ChatChannelBinding(channel_id="ch-1", thread_external_id="t-9")))
@@ -94,15 +90,6 @@ async def test_relay_text_posts_inform(tmp_path: Path):
     assert env.kind == "inform"
     assert env.prompt == "all done"
     assert env.session_id == "t-9"  # thread id carried as the routing key
-
-
-@pytest.mark.asyncio
-async def test_relay_text_suppressed_when_forward_inform_off(tmp_path: Path):
-    p = await _provider(tmp_path, forward_inform=False)
-    adapter = NullChannelAdapter()
-    d = ChatChannelDispatcher(storage_provider=p, registry=_StubRegistry(adapter))
-    await d.relay_text(chat_id="chat-1", text="all done")
-    assert adapter.posted == []
 
 
 @pytest.mark.asyncio

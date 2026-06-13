@@ -12,7 +12,7 @@ from primer.channel.discord.adapter import DiscordChannelAdapter
 from primer.model.agent import Agent
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
-    ChatChannelAssociation, DiscordChannelProviderConfig,
+    DiscordChannelConfig, DiscordChannelProviderConfig,
 )
 from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import SqliteConfig
@@ -29,11 +29,13 @@ async def _setup(tmp_path):
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.DISCORD,
         config=DiscordChannelProviderConfig(bot_token=SecretStr("x" * 40)))
-    ch = Channel(id="ch-1", provider_id="cp-1", external_id="9001")
+    ch = Channel(
+        id="ch-1", provider_id="cp-1", provider=ChannelProviderType.DISCORD,
+        external_id="9001",
+        config=DiscordChannelConfig(chats={
+            "enabled": True, "default_agent": "agent-x"}))
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
-    await p.get_storage(ChatChannelAssociation).create(ChatChannelAssociation(
-        id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
     adapter = DiscordChannelAdapter(
         provider=cp, channel=ch, inbox=None,
         storage_provider=p, event_bus=InMemoryEventBus())

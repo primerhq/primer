@@ -69,7 +69,8 @@ def _adapter(client) -> DiscordChannelAdapter:
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.DISCORD,
         config=DiscordChannelProviderConfig(bot_token=SecretStr("x" * 40)))
-    ch = Channel(id="ch-1", provider_id="cp-1", external_id="9001")
+    ch = Channel(id="ch-1", provider_id="cp-1",
+                 provider=ChannelProviderType.DISCORD, external_id="9001")
     a = DiscordChannelAdapter(provider=cp, channel=ch, inbox=None)
     a._client = client
     return a

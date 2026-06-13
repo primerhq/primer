@@ -1,8 +1,12 @@
 """Resolve-or-create the Chat bound to a channel (thread) for inbound routing.
 
 Multi-type: a thread maps 1:1 to a Chat whose channel_binding ==
-(channel_id, thread_id). Single-type: the channel's ChatChannelAssociation
-holds active_chat_id (the current 1:1 chat).
+(channel_id, thread_id). Single-type: the active-chat correlation record
+(``ACTIVE_CHAT_ANCHOR``) holds the current 1:1 chat id.
+
+The room's default agent + chat-enablement come from the room ``Channel``'s
+``config.chats`` (``ChatConfig``); routing/active-chat state lives in the
+``CorrelationStore`` rather than a per-channel association row.
 """
 
 from __future__ import annotations
@@ -11,15 +15,15 @@ import uuid
 from datetime import datetime, timezone
 
 from primer.chat.enqueue import append_user_message
+from primer.channel.correlation import ACTIVE_CHAT_ANCHOR, CorrelationStore
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
 from primer.model.agent import Agent
-from primer.model.channel import ChatChannelAssociation
+from primer.model.channel import Channel
 from primer.model.chat import TextPart
 from primer.model.chats import Chat, ChatChannelBinding
 from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage
-from primer.storage.q import Q
 
 
 class ChatChannelRouter:
@@ -27,24 +31,30 @@ class ChatChannelRouter:
 
     def __init__(
         self, *, storage_provider: StorageProvider,
+        correlation_store: CorrelationStore | None = None,
         event_bus: "EventBus | None" = None, gate_inbox=None,
         claim_engine=None,
     ) -> None:
         self._sp = storage_provider
+        self._correlation = correlation_store or CorrelationStore(storage_provider)
         self._bus = event_bus
         self._gate_inbox = gate_inbox
         self._claim_engine = claim_engine
 
-    async def _association(self, channel_id: str) -> ChatChannelAssociation:
-        page = await self._sp.get_storage(ChatChannelAssociation).find(
-            Q(ChatChannelAssociation).where("channel_id", channel_id).build(),
-            OffsetPage(offset=0, length=1),
-        )
-        if not page.items:
-            raise NotFoundError(
-                f"no ChatChannelAssociation for channel {channel_id!r}"
-            )
-        return page.items[0]
+    async def _default_agent_id(self, channel_id: str) -> str:
+        """Resolve the room's default agent from ``Channel.config.chats``.
+
+        Raises ``NotFoundError`` when the channel is unknown, ``ValueError``
+        when chats are disabled or no default_agent is configured."""
+        channel = await self._sp.get_storage(Channel).get(channel_id)
+        if channel is None:
+            raise NotFoundError(f"no Channel {channel_id!r}")
+        chats = channel.config.chats
+        if not chats.enabled:
+            raise ValueError(f"chats are disabled on channel {channel_id!r}")
+        if not chats.default_agent:
+            raise ValueError(f"no default_agent configured on channel {channel_id!r}")
+        return chats.default_agent
 
     async def _new_chat(
         self, *, agent_id: str, channel_id: str, thread_external_id: str | None,
@@ -88,7 +98,7 @@ class ChatChannelRouter:
         supports_threads: bool,
     ) -> tuple[Chat, bool]:
         """Return (chat, created). created=True when a fresh chat was made."""
-        assoc = await self._association(channel_id)
+        agent_id = await self._default_agent_id(channel_id)
         if supports_threads:
             if thread_external_id is not None:
                 existing = await self._find_thread_chat(
@@ -96,19 +106,25 @@ class ChatChannelRouter:
                 if existing is not None and existing.status != "ended":
                     return existing, False
             chat = await self._new_chat(
-                agent_id=assoc.default_agent_id, channel_id=channel_id,
+                agent_id=agent_id, channel_id=channel_id,
                 thread_external_id=thread_external_id)
+            # Record the thread->chat correlation so inbound routing can find
+            # this chat by its thread anchor on later messages.
+            if thread_external_id is not None:
+                await self._correlation.upsert_chat(
+                    channel_id=channel_id, anchor=thread_external_id,
+                    chat_id=chat.id)
             return chat, True
-        # single-type: track active_chat_id on the association
-        if assoc.active_chat_id is not None:
-            current = await self._sp.get_storage(Chat).get(assoc.active_chat_id)
+        # single-type: the active-chat correlation tracks the current chat.
+        active = await self._correlation.lookup(channel_id, ACTIVE_CHAT_ANCHOR)
+        if active is not None and active.chat_id is not None:
+            current = await self._sp.get_storage(Chat).get(active.chat_id)
             if current is not None and current.status != "ended":
                 return current, False
         chat = await self._new_chat(
-            agent_id=assoc.default_agent_id, channel_id=channel_id,
+            agent_id=agent_id, channel_id=channel_id,
             thread_external_id=None)
-        assoc.active_chat_id = chat.id
-        await self._sp.get_storage(ChatChannelAssociation).update(assoc)
+        await self._correlation.set_active_chat(channel_id, chat.id)
         return chat, True
 
     async def deliver_message(

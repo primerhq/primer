@@ -82,7 +82,8 @@ def _provider() -> ChannelProvider:
 
 
 def _channel() -> Channel:
-    return Channel(id="ch-1", provider_id="cp-1", external_id="12345")
+    return Channel(id="ch-1", provider_id="cp-1",
+                   provider=ChannelProviderType.DISCORD, external_id="12345")
 
 
 @pytest.mark.asyncio

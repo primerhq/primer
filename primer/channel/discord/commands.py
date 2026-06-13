@@ -10,9 +10,11 @@ from primer.model.except_ import NotFoundError
 
 async def agent_autocomplete_choices(
     *, storage_provider: StorageProvider, current: str,
+    channel_id: str | None = None,
 ) -> list[dict[str, str]]:
     """Discord autocomplete choices: [{name, value}] filtered by substring."""
-    res = await CommandExecutor(storage_provider=storage_provider).agent_picker()
+    res = await CommandExecutor(storage_provider=storage_provider).agent_picker(
+        channel_id=channel_id)
     needle = (current or "").lower()
     out: list[dict[str, str]] = []
     for opt in res.items:
@@ -33,17 +35,18 @@ async def handle_app_command(
         return CommandResult(
             kind="notice", text=help_text(supports_threads=True))
     if command == "new":
-        return await ex.agent_picker()  # multi-type /new = pick
+        return await ex.agent_picker(channel_id=channel_id)  # multi-type /new = pick
     if command == "agent":
         if not arg:
-            return await ex.agent_picker()
+            return await ex.agent_picker(channel_id=channel_id)
         if thread_id is None:
             raise NotFoundError("no thread to switch the agent on")
         router = ChatChannelRouter(storage_provider=storage_provider)
         chat, _ = await router.resolve_or_create(
             channel_id=channel_id, thread_external_id=thread_id,
             supports_threads=True)
-        return await ex.set_agent(chat_id=chat.id, agent_id=arg)
+        return await ex.set_agent(
+            chat_id=chat.id, agent_id=arg, channel_id=channel_id)
     return CommandResult(kind="notice", text=f"unknown command {command!r}")
 
 

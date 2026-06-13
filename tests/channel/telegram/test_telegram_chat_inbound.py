@@ -8,11 +8,12 @@ import pytest
 from pydantic import SecretStr
 
 from primer.bus.in_memory import InMemoryEventBus
+from primer.channel.correlation import ACTIVE_CHAT_ANCHOR, CorrelationStore
 from primer.channel.telegram.adapter import TelegramChannelAdapter
 from primer.model.agent import Agent
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
-    ChatChannelAssociation, TelegramChannelProviderConfig,
+    TelegramChannelConfig, TelegramChannelProviderConfig,
 )
 from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import SqliteConfig
@@ -29,11 +30,13 @@ async def _setup(tmp_path):
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.TELEGRAM,
         config=TelegramChannelProviderConfig(bot_token=SecretStr("123456:ABCDEFGHIJKLMNOP")))
-    ch = Channel(id="ch-1", provider_id="cp-1", external_id="555")
+    ch = Channel(
+        id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
+        external_id="555",
+        config=TelegramChannelConfig(chats={
+            "enabled": True, "default_agent": "agent-x"}))
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
-    await p.get_storage(ChatChannelAssociation).create(ChatChannelAssociation(
-        id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
     adapter = TelegramChannelAdapter(
         provider=cp, channel=ch, inbox=None,
         storage_provider=p, event_bus=InMemoryEventBus())
@@ -67,9 +70,8 @@ async def test_help_command_returns_help_text(tmp_path: Path):
 async def test_new_command_creates_fresh_chat(tmp_path: Path):
     p, adapter = await _setup(tmp_path)
     await adapter.handle_inbound_chat_text(sender_name="Alice", text="hi")
-    cca = await p.get_storage(ChatChannelAssociation).get("cca-1")
-    first = cca.active_chat_id
+    store = CorrelationStore(p)
+    first = (await store.lookup("ch-1", ACTIVE_CHAT_ANCHOR)).chat_id
     notice = await adapter.handle_inbound_chat_text(sender_name="Alice", text="/new")
     assert notice is not None and "fresh" in notice.lower()
-    cca2 = await p.get_storage(ChatChannelAssociation).get("cca-1")
-    assert cca2.active_chat_id != first
+    assert (await store.lookup("ch-1", ACTIVE_CHAT_ANCHOR)).chat_id != first

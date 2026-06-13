@@ -13,7 +13,7 @@ from primer.channel.telegram.adapter import TelegramChannelAdapter
 from primer.model.agent import Agent
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
-    ChatChannelAssociation, TelegramChannelProviderConfig,
+    TelegramChannelConfig, TelegramChannelProviderConfig,
 )
 from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import SqliteConfig
@@ -31,11 +31,13 @@ async def _setup(tmp_path):
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.TELEGRAM,
         config=TelegramChannelProviderConfig(bot_token=SecretStr("123456:ABCDEFGHIJKLMNOP")))
-    ch = Channel(id="ch-1", provider_id="cp-1", external_id="555")
+    ch = Channel(
+        id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
+        external_id="555",
+        config=TelegramChannelConfig(chats={
+            "enabled": True, "default_agent": "agent-x"}))
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
-    await p.get_storage(ChatChannelAssociation).create(ChatChannelAssociation(
-        id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
     adapter = TelegramChannelAdapter(
         provider=cp, channel=ch, inbox=None,
         storage_provider=p, event_bus=InMemoryEventBus())
@@ -64,7 +66,9 @@ async def _setup_many(tmp_path, count: int):
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.TELEGRAM,
         config=TelegramChannelProviderConfig(bot_token=SecretStr("123456:ABCDEFGHIJKLMNOP")))
-    ch = Channel(id="ch-1", provider_id="cp-1", external_id="555")
+    ch = Channel(
+        id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
+        external_id="555")
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
     adapter = TelegramChannelAdapter(

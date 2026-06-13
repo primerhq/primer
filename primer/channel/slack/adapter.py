@@ -250,8 +250,6 @@ class SlackChannelAdapter(ChannelAdapter):
         stored as artifacts and delivered alongside the text as media parts;
         the text becomes the leading caption. Files that are too large or fail
         to download are skipped (the turn still lands as text)."""
-        from primer.channel.chat_inbox import ChatResponseInbox
-        from primer.channel.chat_router import ChatChannelRouter
         from primer.channel.commands import parse_command
         parsed = parse_command(text)
         if parsed is not None:
@@ -259,18 +257,48 @@ class SlackChannelAdapter(ChannelAdapter):
                 parsed=parsed, thread_ts=thread_ts or message_ts)
             return None
         text, media_parts = await self._collect_inbound_media(text, files)
+        router = self._inbound_router()
+        if router is None:
+            return None
+        # Top-level message (no thread_ts) opens a new thread-chat keyed on
+        # message_ts; an in-thread message routes to thread_ts's chat.
+        await router.route(
+            channel=self._channel,
+            anchor=thread_ts,
+            reply_to=message_ts,
+            is_thread_channel=True,
+            sender=sender_name,
+            text=text,
+            media_parts=media_parts or None,
+        )
+        # Resolve the resulting chat for callers/tests (side-effect already done).
         thread_external_id = thread_ts or message_ts
+        return await self._resolve_thread_chat(thread_external_id)
+
+    def _inbound_router(self):
+        """Build a ChannelInboundRouter from the adapter's wiring, or None when
+        chat-surface dispatch is not configured (no storage provider)."""
+        if self._sp is None:
+            return None
+        from primer.channel.chat_inbox import ChatResponseInbox
+        from primer.channel.correlation import CorrelationStore
+        from primer.channel.inbound_router import ChannelInboundRouter
         gate_inbox = ChatResponseInbox(
             storage_provider=self._sp, event_bus=self._bus,
             claim_engine=self._claim_engine)
+        return ChannelInboundRouter(
+            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
+            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
+
+    async def _resolve_thread_chat(self, thread_external_id: str):
+        """Look up the chat bound to (this channel, thread_external_id)."""
+        from primer.channel.chat_router import ChatChannelRouter
+        from primer.channel.correlation import CorrelationStore
         router = ChatChannelRouter(
-            storage_provider=self._sp, event_bus=self._bus, gate_inbox=gate_inbox,
-            claim_engine=self._claim_engine)
-        chat, _created = await router.deliver_message(
-            channel_id=self._channel.id, thread_external_id=thread_external_id,
-            supports_threads=True, sender_name=sender_name, text=text,
-            media_parts=media_parts or None)
-        return chat
+            storage_provider=self._sp,
+            correlation_store=CorrelationStore(self._sp))
+        return await router._find_thread_chat(
+            channel_id=self._channel.id, thread_external_id=thread_external_id)
 
     async def _collect_inbound_media(
         self, text: str, files: list[dict] | None,
@@ -348,10 +376,12 @@ class SlackChannelAdapter(ChannelAdapter):
         verb = parsed.verb
         if verb == "agent":
             if parsed.arg:
-                res = await ex.set_agent(chat_id=chat.id, agent_id=parsed.arg)
+                res = await ex.set_agent(
+                    chat_id=chat.id, agent_id=parsed.arg,
+                    channel_id=self._channel.id)
                 await _post(text=res.text or "Agent switched.")
             else:
-                picker = await ex.agent_picker()
+                picker = await ex.agent_picker(channel_id=self._channel.id)
                 if not picker.items:
                     await _post(text="No agents available.")
                     return

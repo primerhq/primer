@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from primer.channel.chat_dispatcher import ChatChannelDispatcher
-from primer.model.channel import ChatChannelAssociation
 from primer.model.chats import Chat, ChatChannelBinding
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
@@ -43,8 +42,6 @@ class _StubRegistry:
 async def test_relay_prefers_post_chat_message(tmp_path: Path):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
-    await p.get_storage(ChatChannelAssociation).create(ChatChannelAssociation(
-        id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
     await p.get_storage(Chat).create(Chat(
         id="chat-1", agent_id="agent-x", created_at=datetime.now(timezone.utc),
         channel_binding=ChatChannelBinding(channel_id="ch-1")))

@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING
 
 from primer.channel.adapter import PromptEnvelope
 from primer.int.storage_provider import StorageProvider
-from primer.model.channel import ChatChannelAssociation
 from primer.model.chats import Chat, ChatMessage
 from primer.model.storage import OffsetPage, OrderBy
 from primer.storage.q import Q
@@ -204,20 +203,16 @@ class ChatChannelDispatcher:
         self._allow_build = allow_build
         self._artifacts = artifact_registry
 
-    async def _resolve(
-        self, chat_id: str,
-    ) -> tuple[Chat, ChatChannelAssociation] | None:
+    async def _resolve(self, chat_id: str) -> Chat | None:
+        """Return the bound chat, or None when it has no channel binding.
+
+        Chats now ALWAYS forward to their bound channel; there are no
+        per-association forward flags. A channel_binding is the sole gate.
+        """
         chat = await self._sp.get_storage(Chat).get(chat_id)
         if chat is None or chat.channel_binding is None:
             return None
-        page = await self._sp.get_storage(ChatChannelAssociation).find(
-            Q(ChatChannelAssociation)
-            .where("channel_id", chat.channel_binding.channel_id).build(),
-            OffsetPage(offset=0, length=1),
-        )
-        if not page.items or not page.items[0].enabled:
-            return None
-        return chat, page.items[0]
+        return chat
 
     async def _adapter_for(self, channel_id: str):
         """Resolve the adapter to post through, honouring the build policy.
@@ -241,11 +236,8 @@ class ChatChannelDispatcher:
         return True
 
     async def relay_text(self, *, chat_id: str, text: str) -> bool:
-        resolved = await self._resolve(chat_id)
-        if resolved is None:
-            return False
-        chat, assoc = resolved
-        if not assoc.forward_inform:
+        chat = await self._resolve(chat_id)
+        if chat is None:
             return False
         adapter = await self._adapter_for(chat.channel_binding.channel_id)
         if adapter is None:
@@ -282,11 +274,8 @@ class ChatChannelDispatcher:
         inline bytes) before upload when an artifact registry is wired."""
         if not parts:
             return False
-        resolved = await self._resolve(chat_id)
-        if resolved is None:
-            return False
-        chat, assoc = resolved
-        if not assoc.forward_inform:
+        chat = await self._resolve(chat_id)
+        if chat is None:
             return False
         adapter = await self._adapter_for(chat.channel_binding.channel_id)
         if adapter is None:
@@ -327,16 +316,8 @@ class ChatChannelDispatcher:
     async def dispatch_gate(
         self, *, chat_id: str, envelope: PromptEnvelope,
     ) -> bool:
-        resolved = await self._resolve(chat_id)
-        if resolved is None:
-            return False
-        chat, assoc = resolved
-        flag = {
-            "ask_user": assoc.forward_ask_user,
-            "tool_approval": assoc.forward_tool_approval,
-            "inform": assoc.forward_inform,
-        }.get(envelope.kind, assoc.forward_tool_approval)
-        if not flag:
+        chat = await self._resolve(chat_id)
+        if chat is None:
             return False
         adapter = await self._adapter_for(chat.channel_binding.channel_id)
         if adapter is None:

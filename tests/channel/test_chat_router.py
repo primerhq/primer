@@ -7,8 +7,11 @@ from pathlib import Path
 import pytest
 
 from primer.channel.chat_router import ChatChannelRouter
+from primer.channel.correlation import ACTIVE_CHAT_ANCHOR, CorrelationStore
 from primer.model.agent import Agent
-from primer.model.channel import ChatChannelAssociation
+from primer.model.channel import (
+    Channel, ChannelProviderType, TelegramChannelConfig,
+)
 from primer.model.chats import Chat
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
@@ -20,8 +23,11 @@ async def _provider(tmp_path):
     await p.get_storage(Agent).create(
         Agent(id="agent-x", description="X",
               model={"provider_id": "lp", "model_name": "m"}))
-    await p.get_storage(ChatChannelAssociation).create(
-        ChatChannelAssociation(id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
+    await p.get_storage(Channel).create(Channel(
+        id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
+        external_id="555",
+        config=TelegramChannelConfig(chats={
+            "enabled": True, "default_agent": "agent-x"})))
     return p
 
 
@@ -53,8 +59,8 @@ async def test_single_type_uses_active_chat_id(tmp_path: Path):
     assert created is True
     assert chat.channel_binding.thread_external_id is None
 
-    cca = await p.get_storage(ChatChannelAssociation).get("cca-1")
-    assert cca.active_chat_id == chat.id
+    rec = await CorrelationStore(p).lookup("ch-1", ACTIVE_CHAT_ANCHOR)
+    assert rec is not None and rec.chat_id == chat.id
 
     again, created2 = await r.resolve_or_create(
         channel_id="ch-1", thread_external_id=None, supports_threads=False)

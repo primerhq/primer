@@ -33,7 +33,8 @@ async def _setup(tmp_path: Path):
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.DISCORD,
         config=DiscordChannelProviderConfig(bot_token=SecretStr("x" * 40)))
-    ch = Channel(id="ch-1", provider_id="cp-1", external_id="9001")
+    ch = Channel(id="ch-1", provider_id="cp-1",
+                 provider=ChannelProviderType.DISCORD, external_id="9001")
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
     adapter = DiscordChannelAdapter(

@@ -8,8 +8,11 @@ from pathlib import Path
 import pytest
 
 from primer.channel.commands import CommandExecutor
+from primer.channel.correlation import ACTIVE_CHAT_ANCHOR, CorrelationStore
 from primer.model.agent import Agent
-from primer.model.channel import ChatChannelAssociation
+from primer.model.channel import (
+    Channel, ChannelProviderType, TelegramChannelConfig,
+)
 from primer.model.chats import Chat, ChatChannelBinding
 from primer.model.except_ import NotFoundError
 from primer.model.provider import SqliteConfig
@@ -22,9 +25,17 @@ async def _provider(tmp_path):
     for aid, nm in [("agent-x", "X"), ("agent-y", "Y")]:
         await p.get_storage(Agent).create(
             Agent(id=aid, description=nm, model={"provider_id": "lp", "model_name": "m"}))
-    await p.get_storage(ChatChannelAssociation).create(ChatChannelAssociation(
-        id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
+    await p.get_storage(Channel).create(Channel(
+        id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
+        external_id="555",
+        config=TelegramChannelConfig(chats={
+            "enabled": True, "default_agent": "agent-x"})))
     return p
+
+
+async def _active_chat_id(p, channel_id="ch-1"):
+    rec = await CorrelationStore(p).lookup(channel_id, ACTIVE_CHAT_ANCHOR)
+    return rec.chat_id if rec is not None else None
 
 
 @pytest.mark.asyncio
@@ -34,16 +45,14 @@ async def test_new_single_type_detaches_and_creates(tmp_path: Path):
     old = await p.get_storage(Chat).create(Chat(
         id="chat-old", agent_id="agent-x", created_at=now,
         channel_binding=ChatChannelBinding(channel_id="ch-1")))
-    cca = await p.get_storage(ChatChannelAssociation).get("cca-1")
-    cca.active_chat_id = old.id
-    await p.get_storage(ChatChannelAssociation).update(cca)
+    await CorrelationStore(p).set_active_chat("ch-1", old.id)
 
     ex = CommandExecutor(storage_provider=p)
     res = await ex.new_single_chat(channel_id="ch-1")
     assert res.kind == "notice"
-    cca2 = await p.get_storage(ChatChannelAssociation).get("cca-1")
-    assert cca2.active_chat_id != old.id
-    fresh = await p.get_storage(Chat).get(cca2.active_chat_id)
+    new_active = await _active_chat_id(p)
+    assert new_active != old.id
+    fresh = await p.get_storage(Chat).get(new_active)
     assert fresh.agent_id == "agent-x"
     assert fresh.channel_binding.channel_id == "ch-1"
 
@@ -58,8 +67,7 @@ async def test_switch_reattaches_active_chat(tmp_path: Path):
     ex = CommandExecutor(storage_provider=p)
     res = await ex.switch_active_chat(channel_id="ch-1", chat_id=prior.id)
     assert res.kind == "notice"
-    cca = await p.get_storage(ChatChannelAssociation).get("cca-1")
-    assert cca.active_chat_id == prior.id
+    assert await _active_chat_id(p) == prior.id
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,9 @@ import pytest
 from primer.bus.in_memory import InMemoryEventBus
 from primer.channel.chat_router import ChatChannelRouter
 from primer.model.agent import Agent
-from primer.model.channel import ChatChannelAssociation
+from primer.model.channel import (
+    Channel, ChannelProviderType, TelegramChannelConfig,
+)
 from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import SqliteConfig
 from primer.model.storage import OffsetPage
@@ -38,8 +40,11 @@ async def _provider(tmp_path):
     await p.initialize()
     await p.get_storage(Agent).create(
         Agent(id="agent-x", description="X", model={"provider_id": "lp", "model_name": "m"}))
-    await p.get_storage(ChatChannelAssociation).create(
-        ChatChannelAssociation(id="cca-1", channel_id="ch-1", default_agent_id="agent-x"))
+    await p.get_storage(Channel).create(Channel(
+        id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
+        external_id="555",
+        config=TelegramChannelConfig(chats={
+            "enabled": True, "default_agent": "agent-x"})))
     return p
 
 

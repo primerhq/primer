@@ -11,13 +11,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from primer.channel.correlation import CorrelationStore
 from primer.int.storage_provider import StorageProvider
 from primer.model.agent import Agent
-from primer.model.channel import ChatChannelAssociation
+from primer.model.channel import Channel
 from primer.model.chats import Chat, ChatChannelBinding, ChatMessage
 from primer.model.except_ import NotFoundError
 from primer.model.storage import OffsetPage, OrderBy
-from primer.storage.q import Q
 
 _VERBS = frozenset({"new", "list", "switch", "agent", "help"})
 
@@ -91,10 +91,21 @@ class CommandResult:
 
 
 class CommandExecutor:
-    """Executes parsed commands against chats/associations."""
+    """Executes parsed commands against chats + the room Channel config."""
 
-    def __init__(self, *, storage_provider: StorageProvider) -> None:
+    def __init__(
+        self, *, storage_provider: StorageProvider,
+        correlation_store: CorrelationStore | None = None,
+    ) -> None:
         self._sp = storage_provider
+        self._correlation = correlation_store or CorrelationStore(storage_provider)
+
+    async def _chat_config(self, channel_id: str):
+        """Return the room Channel's ChatConfig (raises if channel unknown)."""
+        channel = await self._sp.get_storage(Channel).get(channel_id)
+        if channel is None:
+            raise NotFoundError(f"no Channel {channel_id!r}")
+        return channel.config.chats
 
     async def list_chats(self, *, channel_id: str) -> CommandResult:
         chats = self._sp.get_storage(Chat)
@@ -120,9 +131,24 @@ class CommandExecutor:
             offset += 200
         return CommandResult(kind="list", items=out)
 
-    async def agent_picker(self) -> CommandResult:
-        agents = self._sp.get_storage(Agent)
+    async def agent_picker(
+        self, *, channel_id: str | None = None,
+    ) -> CommandResult:
+        """List pickable agents. When *channel_id* is given and the room's
+        ``allowed_agents`` is non-empty, list only those (preserving order);
+        otherwise list every agent in storage."""
+        allowed: list[str] = []
+        if channel_id is not None:
+            cfg = await self._chat_config(channel_id)
+            allowed = list(cfg.allowed_agents)
         out: list[dict[str, Any]] = []
+        if allowed:
+            for aid in allowed:
+                a = await self._sp.get_storage(Agent).get(aid)
+                label = (a.description if a is not None else None) or aid
+                out.append({"agent_id": aid, "label": label})
+            return CommandResult(kind="agent_picker", items=out)
+        agents = self._sp.get_storage(Agent)
         offset = 0
         while True:
             page = await agents.list(OffsetPage(offset=offset, length=200))
@@ -133,38 +159,29 @@ class CommandExecutor:
             offset += 200
         return CommandResult(kind="agent_picker", items=out)
 
-    async def _association(self, channel_id: str) -> ChatChannelAssociation:
-        page = await self._sp.get_storage(ChatChannelAssociation).find(
-            Q(ChatChannelAssociation).where("channel_id", channel_id).build(),
-            OffsetPage(offset=0, length=1),
-        )
-        if not page.items:
-            raise NotFoundError(
-                f"no ChatChannelAssociation for channel {channel_id!r}")
-        return page.items[0]
-
     async def new_single_chat(self, *, channel_id: str) -> CommandResult:
         """Single-type /new: detach current chat, create a fresh active one."""
-        assoc = await self._association(channel_id)
-        agent = await self._sp.get_storage(Agent).get(assoc.default_agent_id)
+        cfg = await self._chat_config(channel_id)
+        if not cfg.enabled or not cfg.default_agent:
+            raise ValueError(f"chats are not enabled on channel {channel_id!r}")
+        default_agent = cfg.default_agent
+        agent = await self._sp.get_storage(Agent).get(default_agent)
         if agent is None:
             raise NotFoundError(
-                f"default agent {assoc.default_agent_id!r} does not exist")
+                f"default agent {default_agent!r} does not exist")
         chat = await self._sp.get_storage(Chat).create(Chat(
             id=f"chat-{uuid.uuid4().hex[:12]}",
-            agent_id=assoc.default_agent_id,
+            agent_id=default_agent,
             created_at=datetime.now(timezone.utc),
             channel_binding=ChatChannelBinding(channel_id=channel_id),
         ))
-        assoc.active_chat_id = chat.id
-        await self._sp.get_storage(ChatChannelAssociation).update(assoc)
+        await self._correlation.set_active_chat(channel_id, chat.id)
         return CommandResult(
             kind="notice", text="Started a fresh chat with the default agent.")
 
     async def switch_active_chat(
         self, *, channel_id: str, chat_id: str,
     ) -> CommandResult:
-        assoc = await self._association(channel_id)
         target = await self._sp.get_storage(Chat).get(chat_id)
         if target is None or (
             target.channel_binding is None
@@ -172,12 +189,13 @@ class CommandExecutor:
         ):
             raise NotFoundError(
                 f"chat {chat_id!r} is not a chat on channel {channel_id!r}")
-        assoc.active_chat_id = chat_id
-        await self._sp.get_storage(ChatChannelAssociation).update(assoc)
+        await self._correlation.set_active_chat(channel_id, chat_id)
         return CommandResult(
             kind="notice", text=f"Switched to chat {target.title or chat_id}.")
 
-    async def set_agent(self, *, chat_id: str, agent_id: str) -> CommandResult:
+    async def set_agent(
+        self, *, chat_id: str, agent_id: str, channel_id: str | None = None,
+    ) -> CommandResult:
         from primer.chat.pending import abandon_pending_rows
         chats = self._sp.get_storage(Chat)
         chat = await chats.get(chat_id)
@@ -186,6 +204,17 @@ class CommandExecutor:
         agent = await self._sp.get_storage(Agent).get(agent_id)
         if agent is None:
             raise NotFoundError(f"Agent {agent_id!r} does not exist")
+        # Enforce allowed_agents from the room Channel config. Resolve the
+        # channel from the chat's binding when not passed explicitly.
+        room_id = channel_id
+        if room_id is None and chat.channel_binding is not None:
+            room_id = chat.channel_binding.channel_id
+        if room_id is not None:
+            cfg = await self._chat_config(room_id)
+            if cfg.allowed_agents and agent_id not in cfg.allowed_agents:
+                return CommandResult(
+                    kind="notice",
+                    text=f"Agent {agent_id!r} is not allowed on this channel.")
         if chat.agent_id == agent_id:
             return CommandResult(kind="notice", text="Already that agent.")
         if chat.pending_tool_call is not None:

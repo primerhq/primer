@@ -25,7 +25,8 @@ class _FakeClient:
 
 
 def _channel() -> Channel:
-    return Channel(id="ch-1", provider_id="cp-1", external_id="9001")
+    return Channel(id="ch-1", provider_id="cp-1",
+                   provider=ChannelProviderType.DISCORD, external_id="9001")
 
 
 def test_handlers_bound_to_real_gateway_event_names():

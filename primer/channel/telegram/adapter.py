@@ -215,7 +215,6 @@ class TelegramChannelAdapter(ChannelAdapter):
         turn)."""
         if self._sp is None:
             return None
-        from primer.channel.chat_inbox import ChatResponseInbox
         from primer.channel.chat_router import ChatChannelRouter
         from primer.channel.commands import (
             CommandExecutor, help_text, parse_command,
@@ -264,16 +263,31 @@ class TelegramChannelAdapter(ChannelAdapter):
                     return None
                 return "Reply with /agent <agent-id> to switch."
             return None
+        router = self._inbound_router()
+        if router is None:
+            return None
+        await router.route(
+            channel=self._channel, anchor=None, reply_to=None,
+            is_thread_channel=False, sender=sender_name, text=text)
+        return None
+
+    def _inbound_router(self):
+        """Build a ChannelInboundRouter from the adapter's wiring, or None when
+        chat-surface dispatch is not configured (no storage provider).
+
+        Telegram is single-type (``is_thread_channel=False``); the router falls
+        to the active-chat path for every non-command message."""
+        if self._sp is None:
+            return None
+        from primer.channel.chat_inbox import ChatResponseInbox
+        from primer.channel.correlation import CorrelationStore
+        from primer.channel.inbound_router import ChannelInboundRouter
         gate_inbox = ChatResponseInbox(
             storage_provider=self._sp, event_bus=self._bus,
             claim_engine=self._claim_engine)
-        router = ChatChannelRouter(
-            storage_provider=self._sp, event_bus=self._bus, gate_inbox=gate_inbox,
-            claim_engine=self._claim_engine)
-        await router.deliver_message(
-            channel_id=self._channel.id, thread_external_id=None,
-            supports_threads=False, sender_name=sender_name, text=text)
-        return None
+        return ChannelInboundRouter(
+            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
+            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
 
     async def _extract_media_parts(self, msg) -> tuple[list, str]:
         """Download every attachment on ``msg`` and build artifact-backed
@@ -356,18 +370,13 @@ class TelegramChannelAdapter(ChannelAdapter):
         parts, note = await self._extract_media_parts(msg)
         text = caption + note if (caption or note) else ""
 
-        from primer.channel.chat_inbox import ChatResponseInbox
-        from primer.channel.chat_router import ChatChannelRouter
-        gate_inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus,
-            claim_engine=self._claim_engine)
-        router = ChatChannelRouter(
-            storage_provider=self._sp, event_bus=self._bus,
-            gate_inbox=gate_inbox, claim_engine=self._claim_engine)
-        await router.deliver_message(
-            channel_id=self._channel.id, thread_external_id=None,
-            supports_threads=False, sender_name=sender_name, text=text,
-            media_parts=parts)
+        router = self._inbound_router()
+        if router is None:
+            return None
+        await router.route(
+            channel=self._channel, anchor=None, reply_to=None,
+            is_thread_channel=False, sender=sender_name, text=text,
+            media_parts=parts or None)
         return None
 
     async def build_agent_picker_keyboard(

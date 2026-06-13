@@ -391,22 +391,49 @@ class DiscordChannelAdapter(ChannelAdapter):
         ``attachments`` is the raw ``discord.Message.attachments`` list (each
         with ``.read()``, ``.content_type``, ``.filename``); each is stored as
         an artifact-backed media Part and routed alongside the caption text."""
-        from primer.channel.chat_inbox import ChatResponseInbox
-        from primer.channel.chat_router import ChatChannelRouter
-        thread_external_id = thread_id or message_id
         media_parts, text = await self._build_media_parts(
             attachments or [], text)
+        router = self._inbound_router()
+        if router is None:
+            return None
+        # Top-level (thread_id None) opens a new thread-chat keyed on
+        # message_id; an in-thread message routes to thread_id's chat.
+        await router.route(
+            channel=self._channel,
+            anchor=thread_id,
+            reply_to=message_id,
+            is_thread_channel=True,
+            sender=sender_name,
+            text=text,
+            media_parts=media_parts or None,
+        )
+        thread_external_id = thread_id or message_id
+        return await self._resolve_thread_chat(thread_external_id)
+
+    def _inbound_router(self):
+        """Build a ChannelInboundRouter, or None when chat-surface dispatch is
+        not configured (no storage provider)."""
+        if self._sp is None:
+            return None
+        from primer.channel.chat_inbox import ChatResponseInbox
+        from primer.channel.correlation import CorrelationStore
+        from primer.channel.inbound_router import ChannelInboundRouter
         gate_inbox = ChatResponseInbox(
             storage_provider=self._sp, event_bus=self._bus,
             claim_engine=self._claim_engine)
+        return ChannelInboundRouter(
+            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
+            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
+
+    async def _resolve_thread_chat(self, thread_external_id: str):
+        """Look up the chat bound to (this channel, thread_external_id)."""
+        from primer.channel.chat_router import ChatChannelRouter
+        from primer.channel.correlation import CorrelationStore
         router = ChatChannelRouter(
-            storage_provider=self._sp, event_bus=self._bus, gate_inbox=gate_inbox,
-            claim_engine=self._claim_engine)
-        chat, _ = await router.deliver_message(
-            channel_id=self._channel.id, thread_external_id=thread_external_id,
-            supports_threads=True, sender_name=sender_name, text=text,
-            media_parts=media_parts or None)
-        return chat
+            storage_provider=self._sp,
+            correlation_store=CorrelationStore(self._sp))
+        return await router._find_thread_chat(
+            channel_id=self._channel.id, thread_external_id=thread_external_id)
 
 
 __all__ = ["DiscordChannelAdapter"]
