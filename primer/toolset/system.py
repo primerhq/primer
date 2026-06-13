@@ -85,6 +85,10 @@ from primer.model.channel import (
     ChannelProvider,
 )
 from primer.model.tool_approval import ToolApprovalPolicy
+from primer.model.workspace import (
+    Workspace,
+    WorkspaceChannelLink,
+)
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
@@ -1429,6 +1433,130 @@ def build_system_toolset(
             ],
         ),
         _invalidate_ssp_handler,
+    )
+
+    # ---- Workspace channel-association tools -------------------------
+    class _SetWorkspaceChannelAssociationArgs(BaseModel):
+        workspace_id: str = Field(
+            ..., min_length=1, description="Id of the Workspace to update."
+        )
+        channel_id: str = Field(
+            ..., min_length=1, description="Id of the Channel to associate."
+        )
+
+    _workspace_storage = storage_provider.get_storage(Workspace)
+    _channel_storage = storage_provider.get_storage(Channel)
+
+    async def _set_workspace_channel_association_handler(
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
+        try:
+            args = _SetWorkspaceChannelAssociationArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        ws = await _workspace_storage.get(args.workspace_id)
+        if ws is None:
+            return _err(
+                f"Workspace {args.workspace_id!r} does not exist",
+                error_type="not-found",
+            )
+        channel = await _channel_storage.get(args.channel_id)
+        if channel is None:
+            return _err(
+                f"Channel {args.channel_id!r} does not exist",
+                error_type="not-found",
+            )
+        updated = ws.model_copy(
+            update={
+                "channel_association": WorkspaceChannelLink(
+                    channel_id=args.channel_id
+                )
+            }
+        )
+        try:
+            await _workspace_storage.update(updated)
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
+        return _ok(
+            {
+                "ok": True,
+                "workspace_id": args.workspace_id,
+                "channel_id": args.channel_id,
+            }
+        )
+
+    registry["set_workspace_channel_association"] = (
+        make_tool(
+            id="set_workspace_channel_association",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=(
+                "Associate a Channel with a Workspace so that session "
+                "gates (ask_user / tool_approval) forward to that channel."
+            ),
+            when=(
+                "Use when you want session gates on a workspace to notify "
+                "a Slack / Telegram / Discord channel; pass both ids and "
+                "the association is stored on the Workspace row. Returns "
+                "``type=not-found`` for unknown workspace or channel."
+            ),
+            args_schema=_SetWorkspaceChannelAssociationArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"workspace_id": "ws-1", "channel_id": "chan-1"},
+                    returns="``{ok: true, workspace_id, channel_id}``",
+                )
+            ],
+        ),
+        _set_workspace_channel_association_handler,
+    )
+
+    class _ClearWorkspaceChannelAssociationArgs(BaseModel):
+        workspace_id: str = Field(
+            ..., min_length=1, description="Id of the Workspace to update."
+        )
+
+    async def _clear_workspace_channel_association_handler(
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
+        try:
+            args = _ClearWorkspaceChannelAssociationArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        ws = await _workspace_storage.get(args.workspace_id)
+        if ws is None:
+            return _err(
+                f"Workspace {args.workspace_id!r} does not exist",
+                error_type="not-found",
+            )
+        updated = ws.model_copy(update={"channel_association": None})
+        try:
+            await _workspace_storage.update(updated)
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
+        return _ok({"ok": True, "workspace_id": args.workspace_id})
+
+    registry["clear_workspace_channel_association"] = (
+        make_tool(
+            id="clear_workspace_channel_association",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=(
+                "Remove the channel association from a Workspace so that "
+                "session gates are no longer forwarded to any channel."
+            ),
+            when=(
+                "Use when you want to detach the channel from a workspace; "
+                "safe to call even if no association is set (no-op). "
+                "Returns ``type=not-found`` for an unknown workspace."
+            ),
+            args_schema=_ClearWorkspaceChannelAssociationArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"workspace_id": "ws-1"},
+                    returns="``{ok: true, workspace_id}``",
+                )
+            ],
+        ),
+        _clear_workspace_channel_association_handler,
     )
 
     # ---- Provider-specific fetch_models ------------------------------
