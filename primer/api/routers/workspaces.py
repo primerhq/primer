@@ -31,6 +31,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
+    get_storage_provider,
     get_workspace_provider_storage,
     get_workspace_registry,
     get_workspace_storage,
@@ -56,6 +57,7 @@ from primer.model.storage import (
 from primer.model.workspace import (
     FileEntry,
     Workspace as WorkspaceRow,
+    WorkspaceChannelLink,
     WorkspaceDiagnosticResult,
     WorkspaceProvider,
     WorkspaceTemplate,
@@ -98,6 +100,14 @@ class WorkspaceCreateBody(BaseModel):
         description=(
             "Optional per-instantiation overrides (env additions, "
             "extra files, additional init commands)."
+        ),
+    )
+    channel_association: WorkspaceChannelLink | None = Field(
+        default=None,
+        description=(
+            "Optional channel association to set at create time. "
+            "When set, the workspace row is created with this "
+            "channel_association already populated."
         ),
     )
 
@@ -457,6 +467,7 @@ async def create_workspace(
         created_at=datetime.now(timezone.utc),
         phase="running",
         runtime_meta=live.runtime_meta,
+        channel_association=body.channel_association,
     )
     await workspace_storage.create(row)
     return row
@@ -499,6 +510,87 @@ async def rename_workspace(
     updated = row.model_copy(update={"name": new_name})
     await storage.update(updated)
     return updated
+
+
+class _ChannelAssociationBody(BaseModel):
+    """Body of ``PUT /v1/workspaces/{id}/channel_association``."""
+
+    channel_id: str = Field(..., min_length=1, description="Channel id to associate.")
+
+
+@workspace_router.put(
+    "/workspaces/{workspace_id}/channel_association",
+    response_model=WorkspaceRow,
+    summary="Set the channel association for a Workspace",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def set_workspace_channel_association(
+    workspace_id: str = Path(..., description="Workspace id"),
+    body: _ChannelAssociationBody = Body(...),
+    workspace_storage=Depends(get_workspace_storage),
+    sp=Depends(get_storage_provider),
+) -> WorkspaceRow:
+    """Attach a Channel to this workspace.
+
+    After this call, session gates (ask_user / tool_approval) on this
+    workspace forward to the designated channel. Validates that the
+    channel exists and that the workspace is not in a terminating phase.
+    """
+    from primer.model.channel import Channel
+
+    row = await workspace_storage.get(workspace_id)
+    if row is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    if row.phase == "terminating":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "workspace_terminating",
+                "message": (
+                    f"Workspace {workspace_id!r} is terminating and "
+                    "cannot have its channel association changed."
+                ),
+            },
+        )
+    channel_storage = sp.get_storage(Channel)
+    channel = await channel_storage.get(body.channel_id)
+    if channel is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "channel_not_found",
+                "channel_id": body.channel_id,
+                "message": f"Channel {body.channel_id!r} does not exist.",
+            },
+        )
+    updated = row.model_copy(
+        update={"channel_association": WorkspaceChannelLink(channel_id=body.channel_id)}
+    )
+    await workspace_storage.update(updated)
+    return updated
+
+
+@workspace_router.delete(
+    "/workspaces/{workspace_id}/channel_association",
+    status_code=204,
+    summary="Clear the channel association for a Workspace",
+    responses=common_responses(404, 500),
+)
+async def clear_workspace_channel_association(
+    workspace_id: str = Path(..., description="Workspace id"),
+    workspace_storage=Depends(get_workspace_storage),
+) -> None:
+    """Detach the channel association from this workspace.
+
+    After this call, session gates on this workspace are no longer
+    forwarded to any channel. No-ops silently if the association was
+    already cleared.
+    """
+    row = await workspace_storage.get(workspace_id)
+    if row is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    updated = row.model_copy(update={"channel_association": None})
+    await workspace_storage.update(updated)
 
 
 @workspace_router.delete(
