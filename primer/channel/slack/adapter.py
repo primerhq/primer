@@ -108,6 +108,12 @@ class SlackChannelAdapter(ChannelAdapter):
             raise ProviderError("SlackChannelAdapter used before initialize()")
         client = _get_web_client(self._conn)
         root_ts = await self._session_root_ts(client, envelope.session_id)
+        media = getattr(envelope, "media", None)
+        if media and self._artifacts is not None:
+            from primer.channel.media import hydrate_media_dicts
+            parts = await hydrate_media_dicts(self._artifacts, media)
+            if parts:
+                await self.post_chat_media(parts, thread_ts=root_ts)
         if envelope.kind == "inform":
             await client.chat_postMessage(
                 channel=self._channel.external_id,

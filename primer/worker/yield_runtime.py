@@ -471,11 +471,33 @@ def _build_prompt_envelope(
     return None
 
 
+async def _resolve_files_to_media(
+    *, workspace_registry, artifact_registry, workspace_id, files,
+) -> "list[dict] | None":
+    """Read ask_user/inform workspace files into artifact-backed media part
+    dicts for a PromptEnvelope. None when files/registries are missing."""
+    import logging
+    if not files or workspace_registry is None or artifact_registry is None:
+        return None
+    from primer.channel.media import media_from_workspace_files
+    try:
+        workspace = await workspace_registry.get_workspace(workspace_id)
+        store = await artifact_registry.get_default()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "ask_user files: workspace/artifact resolve failed")
+        return None
+    parts = await media_from_workspace_files(workspace, store, files)
+    return [p.model_dump(mode="json") for p in parts] or None
+
+
 async def _dispatch_to_channels(
     *,
     dispatcher,
     session,
     yielded,
+    workspace_registry=None,
+    artifact_registry=None,
 ) -> None:
     """Fan a parked-on-user-input session out to every channel
     associated with the session's workspace.
@@ -487,15 +509,24 @@ async def _dispatch_to_channels(
     import logging
     if dispatcher is None:
         return
+    metadata = yielded.resume_metadata or {}
     envelope = _build_prompt_envelope(
         kind=yielded.tool_name,
         workspace_id=session.workspace_id,
         session_id=session.id,
         fallback_tool_call_id=_tool_call_id_from_event_key(yielded.event_key),
-        metadata=yielded.resume_metadata or {},
+        metadata=metadata,
     )
     if envelope is None:
         return
+    # Attach any ask_user `files` as media (read from the workspace + stored).
+    if envelope.kind == "ask_user" and metadata.get("files"):
+        envelope.media = await _resolve_files_to_media(
+            workspace_registry=workspace_registry,
+            artifact_registry=artifact_registry,
+            workspace_id=session.workspace_id,
+            files=metadata.get("files"),
+        )
     try:
         await dispatcher.dispatch_prompt(envelope=envelope)
     except Exception:

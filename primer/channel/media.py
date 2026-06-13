@@ -199,12 +199,77 @@ async def parts_from_tool_media(
     return out
 
 
+async def media_from_workspace_files(
+    workspace,
+    artifact_storage: ArtifactStorage,
+    paths: list[str],
+    *,
+    config: MediaConfig | None = None,
+) -> list[Part]:
+    """Read each workspace-relative path, store it, and return an
+    artifact-backed media Part. ``workspace`` is any object with
+    ``async read_file(path) -> bytes``. MIME is guessed from the extension.
+    Missing/oversized/disallowed files are skipped (best-effort)."""
+    import mimetypes
+    import os
+
+    out: list[Part] = []
+    for path in paths or []:
+        try:
+            data = await workspace.read_file(path)
+        except Exception:
+            logger.warning("media_from_workspace_files: read failed for %r", path)
+            continue
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        mime = mimetypes.guess_type(path)[0]
+        filename = os.path.basename(path) or "file"
+        try:
+            part = await store_inbound_media(
+                artifact_storage, data=data, mime_type=mime,
+                filename=filename, config=config)
+        except MediaError:
+            logger.warning("media_from_workspace_files: %r rejected (size/type)", path)
+            continue
+        except Exception:
+            logger.warning("media_from_workspace_files: store failed for %r", path)
+            continue
+        out.append(part)
+    return out
+
+
 _MEDIA_PART_TYPES = (ImagePart, DocumentPart, AudioPart, VideoPart)
 
 
 def collect_media_parts(parts: list[Part]) -> list[Part]:
     """Return the binary media parts (image/document/audio/video) from a list."""
     return [p for p in parts if isinstance(p, _MEDIA_PART_TYPES)]
+
+
+async def hydrate_media_dicts(artifact_registry, media: list[dict] | None) -> list:
+    """Parse PromptEnvelope.media dicts into Parts and hydrate them to inline
+    bytes (via the registry's default store) so an adapter can upload them.
+    Returns [] when no media / no registry."""
+    if not media or artifact_registry is None:
+        return []
+    from pydantic import TypeAdapter
+    adapter = TypeAdapter(Part)
+    try:
+        store = await artifact_registry.get_default()
+    except Exception:
+        logger.warning("hydrate_media_dicts: no default artifact store")
+        return []
+    out: list = []
+    for d in media:
+        try:
+            part = adapter.validate_python(d)
+        except Exception:
+            continue
+        try:
+            out.append(await hydrate_part(store, part))
+        except Exception:
+            logger.warning("hydrate_media_dicts: hydrate failed; skipping")
+    return out
 
 
 async def hydrate_part(artifact_storage: ArtifactStorage, part: Part) -> Part:
@@ -233,8 +298,10 @@ __all__ = [
     "collect_media_parts",
     "compress_image",
     "enforce_limits",
+    "hydrate_media_dicts",
     "hydrate_part",
     "is_allowed",
+    "media_from_workspace_files",
     "part_cls_for_mime",
     "parts_from_tool_media",
     "store_inbound_media",

@@ -61,6 +61,9 @@ class PromptEnvelope:
     # format the call cleanly instead of parsing it out of ``prompt``.
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
+    # Artifact-backed media parts (as dicts) to upload alongside the prompt,
+    # e.g. workspace files attached to ask_user / inform_user. None == no media.
+    media: list[dict[str, Any]] | None = None
 
 
 @dataclass

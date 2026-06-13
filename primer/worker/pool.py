@@ -504,6 +504,8 @@ class WorkerPool:
             build_executor=_build_executor_with_shim_registration,
             turn_log_writer_factory=_turn_log_factory,
             channel_dispatcher=self._channel_dispatcher,
+            workspace_registry=self._workspace_registry,
+            artifact_registry=self._artifact_storage_registry,
         )
 
         outcome = ReleaseOutcome(success=False, drop_lease=True)
@@ -1413,6 +1415,8 @@ class WorkerPool:
             dispatcher=self._channel_dispatcher,
             workspace_id=agent_session.workspace_id,
             session_id=agent_session.session_id,
+            workspace_registry=self._workspace_registry,
+            artifact_registry=self._artifact_storage_registry,
         ))
 
         executor = WorkspaceAgentExecutor(

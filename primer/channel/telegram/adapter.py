@@ -122,6 +122,7 @@ class TelegramChannelAdapter(ChannelAdapter):
     async def post_prompt(self, envelope: PromptEnvelope) -> dict[str, Any]:
         if self._app is None:
             raise ProviderError("TelegramChannelAdapter used before initialize()")
+        await self._post_envelope_media(envelope)
         if envelope.kind == "inform":
             msg = await self._app.bot.send_message(
                 chat_id=self._channel.external_id, text=envelope.prompt,
@@ -424,6 +425,17 @@ class TelegramChannelAdapter(ChannelAdapter):
         msg = await self._app.bot.send_message(
             chat_id=self._channel.external_id, text=text)
         return {"message_id": getattr(msg, "message_id", 0)}
+
+    async def _post_envelope_media(self, envelope: PromptEnvelope) -> None:
+        """Upload any media attached to an ask_user/inform prompt (workspace
+        files) to the chat before the prompt text."""
+        media = getattr(envelope, "media", None)
+        if not media or self._artifacts is None:
+            return
+        from primer.channel.media import hydrate_media_dicts
+        parts = await hydrate_media_dicts(self._artifacts, media)
+        if parts:
+            await self.post_chat_media(parts)
 
     async def post_chat_media(
         self, parts: list, *, thread_ts: str | None = None,

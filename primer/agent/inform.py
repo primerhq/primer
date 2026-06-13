@@ -23,14 +23,34 @@ logger = logging.getLogger(__name__)
 
 class SessionInformSink:
     def __init__(self, *, dispatcher: Any | None,
-                 workspace_id: str, session_id: str) -> None:
+                 workspace_id: str, session_id: str,
+                 workspace_registry: Any | None = None,
+                 artifact_registry: Any | None = None) -> None:
         self._dispatcher = dispatcher
         self._workspace_id = workspace_id
         self._session_id = session_id
+        self._workspace_registry = workspace_registry
+        self._artifacts = artifact_registry
 
-    async def __call__(self, message: str) -> int:
+    async def _resolve_media(self, files: list[str] | None) -> list[dict] | None:
+        """Read workspace files -> artifact-backed media part dicts. None when
+        no files, no workspace registry, or no artifact registry."""
+        if not files or self._workspace_registry is None or self._artifacts is None:
+            return None
+        from primer.channel.media import media_from_workspace_files
+        try:
+            workspace = await self._workspace_registry.get_workspace(self._workspace_id)
+            store = await self._artifacts.get_default()
+        except Exception:
+            logger.warning("SessionInformSink: workspace/artifact resolve failed")
+            return None
+        parts = await media_from_workspace_files(workspace, store, files)
+        return [p.model_dump(mode="json") for p in parts] or None
+
+    async def __call__(self, message: str, files: list[str] | None = None) -> int:
         if self._dispatcher is None:
             return 0
+        media = await self._resolve_media(files)
         envelope = PromptEnvelope(
             kind="inform",
             workspace_id=self._workspace_id,
@@ -40,6 +60,7 @@ class SessionInformSink:
             response_schema=None,
             choices=None,
             timeout_at_iso=None,
+            media=media,
         )
         try:
             results = await self._dispatcher.dispatch_prompt(envelope=envelope)

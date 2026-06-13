@@ -262,6 +262,15 @@ class _AskUserArgs(BaseModel):
             "can decide whether to retry or proceed."
         ),
     )
+    files: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional workspace-relative file paths to attach to the prompt. "
+            "Each file is read from the session's workspace, stored, and sent "
+            "to the channel as media (image/document/audio) alongside the "
+            "prompt text. Ignored on the chat surface (no workspace)."
+        ),
+    )
 
 
 def ask_user_resume(
@@ -341,6 +350,7 @@ async def _ask_user_handler(
             "prompt": args.prompt,
             "response_schema": args.response_schema,
             "tool_call_id": ctx.tool_call_id,
+            "files": args.files or None,
         },
     )
 
@@ -367,6 +377,14 @@ class _InformUserArgs(BaseModel):
             "is awaited; the agent continues immediately."
         ),
     )
+    files: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional workspace-relative file paths to attach. Each is read "
+            "from the session's workspace, stored, and sent to the channel as "
+            "media alongside the message. Ignored on the chat surface."
+        ),
+    )
 
 
 async def _inform_user_handler(
@@ -382,7 +400,14 @@ async def _inform_user_handler(
     except ValidationError as exc:
         return _err_from_validation(exc)
     sink = getattr(ctx, "inform", None)
-    delivered = await sink(args.message) if sink is not None else 0
+    if sink is None:
+        return _ok({"delivered_to": 0})
+    # Pass files only when present so simpler sinks (no files support) keep
+    # their one-arg signature.
+    if args.files:
+        delivered = await sink(args.message, files=args.files)
+    else:
+        delivered = await sink(args.message)
     return _ok({"delivered_to": int(delivered)})
 
 

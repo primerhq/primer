@@ -100,6 +100,12 @@ class SessionDispatchDeps:
     # None -> no channel forwarding (the park still succeeds).
     channel_dispatcher: Any | None = None
 
+    # Optional registries for resolving ask_user/inform `files` into media
+    # attached to the channel prompt. Both must be set for file attachments to
+    # resolve; None -> files are ignored.
+    workspace_registry: Any | None = None
+    artifact_registry: Any | None = None
+
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -315,6 +321,8 @@ async def run_one_session_turn(
                 dispatcher=deps.channel_dispatcher,
                 session=session,
                 yielded=yielded_stamped,
+                workspace_registry=deps.workspace_registry,
+                artifact_registry=deps.artifact_registry,
             )
 
         # The executor stamps YieldToWorker.llm_messages with the in-progress

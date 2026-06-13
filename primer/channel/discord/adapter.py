@@ -110,6 +110,7 @@ class DiscordChannelAdapter(ChannelAdapter):
                 f"discord channel {self._channel.external_id!r} not reachable"
             )
         thread = await self._session_thread(channel, envelope.session_id)
+        await self._post_thread_media(thread, envelope)
         if envelope.kind == "tool_approval":
             view = ApprovalView(
                 ws=envelope.workspace_id,
@@ -307,15 +308,20 @@ class DiscordChannelAdapter(ChannelAdapter):
         await target.send(content=text)
         return {"thread_id": thread_ts}
 
-    async def post_chat_media(
-        self, parts: list, *, thread_ts: str | None = None,
-    ) -> dict[str, Any]:
-        """Outbound media relay: upload each hydrated media part as a file into
-        the chat's thread."""
+    async def _post_thread_media(self, thread: Any, envelope: PromptEnvelope) -> None:
+        """Upload any media attached to an ask_user/inform prompt (workspace
+        files) into the session thread before the prompt text."""
+        media = getattr(envelope, "media", None)
+        if not media or self._artifacts is None:
+            return
+        from primer.channel.media import hydrate_media_dicts
+        parts = await hydrate_media_dicts(self._artifacts, media)
+        await self._send_media_parts(thread, parts)
+
+    async def _send_media_parts(self, target: Any, parts: list) -> int:
         import io
 
         import discord
-        target = await self._resolve_chat_thread(thread_ts)
         sent = 0
         for part in parts:
             data = getattr(part, "data", None)
@@ -324,6 +330,15 @@ class DiscordChannelAdapter(ChannelAdapter):
             filename = getattr(part, "filename", None) or "file"
             await target.send(file=discord.File(io.BytesIO(data), filename=filename))
             sent += 1
+        return sent
+
+    async def post_chat_media(
+        self, parts: list, *, thread_ts: str | None = None,
+    ) -> dict[str, Any]:
+        """Outbound media relay: upload each hydrated media part as a file into
+        the chat's thread."""
+        target = await self._resolve_chat_thread(thread_ts)
+        sent = await self._send_media_parts(target, parts)
         return {"sent": sent, "thread_id": thread_ts}
 
     async def _build_media_parts(
