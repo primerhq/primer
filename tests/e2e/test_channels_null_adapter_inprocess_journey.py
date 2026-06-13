@@ -21,8 +21,8 @@ Subsystems exercised in one test:
      adapter-build path resolves to it.
   2. ChannelProvider + Channel + the workspace ladder, all created via
      in-process storage interfaces. The Workspace's ``channel_association``
-     link is what binds the workspace to the channel (the old
-     WorkspaceChannelAssociation model is gone).
+     link is what binds the workspace to the channel (the old standalone
+     association model is gone).
   3. ChannelDispatcher.dispatch_prompt() fans the ask_user envelope to
      the channel the workspace is bound to; the NullChannelAdapter's
      ``posted`` list captures the envelope for assertion.

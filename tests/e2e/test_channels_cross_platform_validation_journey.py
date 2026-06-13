@@ -47,10 +47,10 @@ Pinned invariants:
     conflict detail names BOTH fields.
   * No 5xx leaks across any invalid input.
 
-NOTE: the WorkspaceChannelAssociation uniqueness step (formerly T0848)
-was removed with the association model; workspace-to-channel binding is
-now Workspace.channel_association (a single nullable link, no uniqueness
-constraint to exercise).
+NOTE: the workspace-to-channel uniqueness step (formerly T0848) was
+removed with the standalone association model; workspace-to-channel
+binding is now Workspace.channel_association (a single nullable link,
+no uniqueness constraint to exercise).
 """
 
 from __future__ import annotations

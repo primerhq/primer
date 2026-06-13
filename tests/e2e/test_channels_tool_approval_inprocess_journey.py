@@ -39,9 +39,9 @@ Covers backlog item T0857. No HTTP — pure in-process orchestration
 of the channels subsystem. No LLM, no real network, no Postgres.
 
 NOTE: the old per-flag routing (forward_ask_user / forward_tool_approval
-on a WorkspaceChannelAssociation) was removed with the association
-model; a workspace now binds to at most one channel and every gate
-kind forwards to it.
+on the standalone association model) was removed with that model; a
+workspace now binds to at most one channel via its channel_association
+field and every gate kind forwards to it.
 """
 
 from __future__ import annotations
