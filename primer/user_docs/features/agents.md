@@ -166,7 +166,7 @@ This is the tool-driven equivalent of the agent dropdown in the chat header. It 
 
 ### `invoke_graph` (run a graph in the session)
 
-`workspaces__invoke_graph` runs another graph inside the current workspace session and returns its output. The invoked graph's state nests under the session's state tree.
+`workspace_ext__invoke_graph` runs another graph inside the current workspace session and returns its output. The invoked graph's state nests under the session's state tree.
 
 | Argument | Meaning |
 |---|---|

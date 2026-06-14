@@ -189,7 +189,7 @@
           "model_name": "meta-llama/llama-3.1-8b-instruct:free"
         },
         "temperature": 0.1,
-        "tools": ["workspaces__watch_files"],
+        "tools": ["workspace_ext__watch_files"],
         "system_prompt": ["You watch for files in the workspace and report their contents when they appear."],
         "compaction_prompt": [],
         "harness_id": null

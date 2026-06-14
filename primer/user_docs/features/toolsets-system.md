@@ -2,7 +2,7 @@
 slug: toolsets-system
 title: Toolsets & tools
 section: features
-summary: The seven reserved toolsets (system, search, workspaces, misc, web, harness, trigger) and how to explore their tools from the console or an agent.
+summary: The eight reserved toolsets (system, search, workspaces, misc, web, harness, trigger, workspace_ext) and how to explore their tools from the console or an agent.
 ---
 
 ## Concept
@@ -35,19 +35,20 @@ flowchart LR
 
 Binding determines what the agent can request. The approval layer (a separate mechanism) determines what actually executes.
 
-### The seven reserved toolsets
+### The eight reserved toolsets
 
-Primer ships seven built-in toolsets that are always available without registration. They are reserved by id; you cannot create a user toolset with the same id.
+Primer ships eight built-in toolsets that are always available without registration. They are reserved by id; you cannot create a user toolset with the same id.
 
 | Toolset | What it covers |
 |---|---|
-| `system` | Full CRUD over every platform entity (agents, graphs, collections, providers, toolsets, channels, workspaces, triggers, approval policies). Plus meta-tools: `list_toolset_tools`, `call_tool`, `invoke_agent`, `switch_to_agent`. |
+| `system` | Full CRUD over every platform entity (agents, graphs, collections, providers, toolsets, channels, workspaces, triggers, approval policies). Plus meta-tools: `list_toolset_tools`, `call_tool`, `invoke_agent`, `switch_to_agent`, and the yielding `ask_user` (chat-capable; soft-yields on a chat surface). |
 | `web` | Web search (`web-search`), raw HTTP fetch (`web-fetch`, `http-request`). Requires a web search provider to be configured for `web-search`. |
-| `workspaces` | Manage workspaces from the outside: provider, template, workspace, and session CRUD, plus `watch_files` and `invoke_graph`. Bound explicitly, like any toolset, by agents that orchestrate other workspaces and sessions. (Separately, the in-workspace access tools `ls`, `read`, `write`, `edit`, `glob`, `grep`, and `exec` are auto-registered with every agent that runs in a workspace session; those are not part of this toolset. See the Workspace toolset page.) |
-| `misc` | Portable stateless utilities: `get_datetime`, `sleep`, `ask_user`, `inform_user`, `uuid_v4`, `hash`, `calculate`. |
+| `workspaces` | The orchestration toolset: manage workspaces from the outside (provider, template, workspace, and session CRUD, plus remote file and log tools). Bound explicitly, like any toolset, by agents that orchestrate other workspaces and sessions. (Separately, the in-workspace access tools `ls`, `read`, `write`, `edit`, `glob`, `grep`, and `exec` are auto-registered with every agent that runs in a workspace session; those are not part of this toolset. See the Workspace toolset page.) |
+| `misc` | Portable stateless utilities: `get_datetime`, `inform_user`, `uuid_v4`, `hash`, `calculate`. |
 | `search` | Semantic search over internal collections: `search_agents`, `search_graphs`, `search_collections`, `search_tools`, `search_ai_docs`. These tools are only enabled when the internal search subsystem (internal collections) is enabled and active; until then they are unavailable. |
-| `trigger` | Manage triggers and subscriptions. Includes the yielding tool `subscribe_to_trigger`, which parks the calling session until a trigger fires. |
+| `trigger` | Manage triggers and subscriptions (trigger and subscription CRUD, plus `fire_now`). |
 | `harness` | Lifecycle management for harnesses (`harness__list`, `harness__get`, `harness__register`, `harness__fetch`, `harness__install`, `harness__sync`, `harness__uninstall`, `harness__update`, `harness__update_overrides`). |
+| `workspace_ext` | The workspace-only yielding tools (`sleep`, `watch_files`, `invoke_graph`, `subscribe_to_trigger`). Bound explicitly on an agent, but registered only when the agent runs in a workspace session; suppressed when the agent is invoked on a chat (keeps these heavy yielding tools out of chat context). |
 
 ### Yielding tools
 
@@ -55,13 +56,18 @@ Yielding tools are a first-class concept that makes event-driven agentic AI poss
 
 Key yielding tools:
 
-| Tool | Resumes when |
-|---|---|
-| `misc__ask_user` | A human answers via the pending questions queue (degrades to a conversational turn on a chat surface) |
-| The tool-approval gate | An approver makes an approve/reject decision |
-| `workspaces__watch_files` | A watched file changes |
-| `trigger__subscribe_to_trigger` | The named trigger fires |
-| `misc__sleep` | A timer event after N seconds elapses |
+| Tool | Toolset | Resumes when |
+|---|---|---|
+| `system__ask_user` | `system` | A human answers via the pending questions queue (degrades to a conversational turn on a chat surface) |
+| The tool-approval gate | (gate, not a tool) | An approver makes an approve/reject decision |
+| `workspace_ext__watch_files` | `workspace_ext` | A watched file changes |
+| `workspace_ext__subscribe_to_trigger` | `workspace_ext` | The named trigger fires |
+| `workspace_ext__sleep` | `workspace_ext` | A timer event after N seconds elapses |
+| `workspace_ext__invoke_graph` | `workspace_ext` | A nested graph completes (parks on its human-in-the-loop steps) |
+
+`system__ask_user` lives in the `system` toolset and works on both chats and workspace sessions; on a chat surface it soft-yields (degrades to a conversational turn) rather than parking. `system__switch_to_agent` is the chat handoff (also in `system`; see below).
+
+The four `workspace_ext` tools (`sleep`, `watch_files`, `invoke_graph`, `subscribe_to_trigger`) are **workspace-session only**. An agent binds the `workspace_ext` toolset explicitly on its Tools tab, but the tools are registered with the model only when the agent runs in a workspace session. When the same agent is invoked on a chat, the `workspace_ext` tools are suppressed (not registered in the model's tool context). This keeps these heavy yielding tools out of chat context.
 
 ### Switching agents
 
@@ -94,7 +100,7 @@ Tools are not configured on a "toolsets" page. They are bound per agent, on the 
 
 ### Tool id syntax
 
-When referencing a tool by its full scoped id (for example, in MCP exposure allowlists or policy configurations), the convention is `toolset_id__tool_id`, using double underscores as a separator; for example `system__invoke_agent`, `misc__ask_user`, `search__search_agents`.
+When referencing a tool by its full scoped id (for example, in MCP exposure allowlists or policy configurations), the convention is `toolset_id__tool_id`, using double underscores as a separator; for example `system__invoke_agent`, `system__ask_user`, `search__search_agents`.
 
 Tool ids are being standardized to all-underscores (`toolset_id__tool_id`). The `web` toolset is the current exception: its bare tool names still use hyphens (`web-search`, `web-fetch`, `http-request`), so their scoped ids are `web__web-search`, `web__web-fetch`, `web__http-request`.
 
@@ -105,7 +111,7 @@ This walkthrough discovers what tools the `misc` toolset exposes, then calls one
 1. Open **Agents** and open or create an agent that has the `system` toolset bound to it.
 2. Start a new **session** or **chat** with that agent.
 3. Ask the agent: "Use `list_toolset_tools` to show me the tools in the `misc` toolset."
-4. The agent calls `system__list_toolset_tools` with `{"toolset_id": "misc"}` and returns the tool list including `get_datetime`, `sleep`, `ask_user`, `uuid_v4`, `hash`, and `calculate`.
+4. The agent calls `system__list_toolset_tools` with `{"toolset_id": "misc"}` and returns the tool list including `get_datetime`, `inform_user`, `uuid_v4`, `hash`, and `calculate`.
 5. Ask: "Now call `get_datetime` for me." The agent calls `system__call_tool` with `{"toolset_id": "misc", "tool_name": "get_datetime", "arguments": {}}` and returns the current timestamp.
 
 The same pattern works for any registered toolset, built-in or MCP.

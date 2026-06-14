@@ -28,7 +28,7 @@ Each subscription can carry a **payload template** - a Jinja2 string rendered ag
 
 ### The park and resume model
 
-The `subscribe_to_trigger` yielding tool bridges a running agent into the trigger system. When an agent calls this tool with a trigger id, the session parks immediately and releases its worker. No compute is consumed while parked. When the trigger fires, the `parked_session` subscription dispatcher wakes the session and delivers the fire context as the tool result. The agent picks up from where it left off.
+The `workspace_ext__subscribe_to_trigger` yielding tool bridges a running agent into the trigger system. It lives in the `workspace_ext` toolset (bound explicitly on the agent, registered only when the agent runs in a workspace session). When an agent calls this tool with a trigger id, the session parks immediately and releases its worker. No compute is consumed while parked. When the trigger fires, the `parked_session` subscription dispatcher wakes the session and delivers the fire context as the tool result. The agent picks up from where it left off.
 
 ```mermaid
 sequenceDiagram

@@ -20,7 +20,7 @@ The MCP exposure configuration is a single global record with two fields: a `ena
 
 Not every tool can be added to the allowlist. Two categories are always excluded:
 
-- **Yielding tools** - tools that park a session on an event bus (such as `subscribe_to_trigger` and `workspaces__watch_files`). MCP v1 has no pause/resume primitive, so a round-trip to a yielding tool is impossible over MCP.
+- **Yielding tools** - tools that park a session on an event bus (such as `workspace_ext__subscribe_to_trigger` and `workspace_ext__watch_files`). MCP v1 has no pause/resume primitive, so a round-trip to a yielding tool is impossible over MCP.
 - **Workspace session tools that need an agent session context** - tools that read the current `session_id` from the agent runtime context. These are meaningless outside an agent loop.
 
 Tools from user-defined Toolset rows are also excluded. The MCP endpoint is for primer's own built-in toolsets, not for relaying to external MCP servers that you have mounted as toolsets.

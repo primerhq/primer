@@ -310,7 +310,7 @@ const {skipped, results} = await r.json()
 | `kind` | yes | `"chat_message"` |
 | `chat_id` | yes | Id of the target chat |
 
-`parked_session`: resume a session parked on `subscribe_to_trigger`. Created automatically by the engine when an agent calls the `trigger__subscribe_to_trigger` yielding tool; rarely created directly via REST:
+`parked_session`: resume a session parked on `subscribe_to_trigger`. Created automatically by the engine when an agent calls the `workspace_ext__subscribe_to_trigger` yielding tool; rarely created directly via REST:
 
 | Field | Required | Description |
 |-------|----------|-------------|
