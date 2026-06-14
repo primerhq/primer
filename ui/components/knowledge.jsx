@@ -65,6 +65,11 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
     (signal) => apiFetch("GET", "/ssp?limit=200", null, { signal }),
     { pollMs: null },
   );
+  const cerProviders = useResource(
+    "collections:cer-providers",
+    (signal) => apiFetch("GET", "/cross_encoder_providers?limit=200", null, { signal }),
+    { pollMs: null },
+  );
 
   const [selected, setSelected] = React.useState(null);
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -170,6 +175,7 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
             pushToast={pushToast}
             embedProviders={embedProviders.data?.items ?? []}
             sspProviders={sspProviders.data?.items ?? []}
+            cerProviders={cerProviders.data?.items ?? []}
             onOpenDocs={() => {
               if (typeof onOpen === "function") onOpen(sel.id);
               else navigate("/knowledge/documents", { collection: sel.id });
@@ -189,6 +195,7 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
         <KN_NewCollectionModal
           embedProviders={embedProviders.data?.items ?? []}
           sspProviders={sspProviders.data?.items ?? []}
+          cerProviders={cerProviders.data?.items ?? []}
           pushToast={pushToast}
           onClose={() => setCreateOpen(false)}
           onCreate={(c) => {
@@ -204,7 +211,7 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
   );
 }
 
-function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onNavigate, embedProviders, sspProviders }) {
+function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onNavigate, embedProviders, sspProviders, cerProviders }) {
   const { useResource, apiFetch } = window.primerApi;
   const isSystem = !!c.system;
   const isManaged = !!c.harness_id;
@@ -285,6 +292,7 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onN
           existing={c}
           embedProviders={embedProviders || []}
           sspProviders={sspProviders || []}
+          cerProviders={cerProviders || []}
           pushToast={pushToast}
           onClose={() => setEditOpen(false)}
           onCreate={() => {
@@ -669,7 +677,7 @@ function KN_CollectionSearchModal({ collection, pushToast, onClose }) {
   );
 }
 
-function KN_NewCollectionModal({ embedProviders, sspProviders = [], pushToast, onClose, onCreate, existing }) {
+function KN_NewCollectionModal({ embedProviders, sspProviders = [], cerProviders = [], pushToast, onClose, onCreate, existing }) {
   const isEdit = !!existing;
   const { useMutation, apiFetch } = window.primerApi;
   const [id, setId] = React.useState(existing?.id || "");
@@ -679,12 +687,32 @@ function KN_NewCollectionModal({ embedProviders, sspProviders = [], pushToast, o
   const [searchProviderId, setSearchProviderId] = React.useState(existing?.search_provider_id || "");
   const [fieldErrors, setFieldErrors] = React.useState({});
 
+  // MMR state
+  const [mmrEnabled, setMmrEnabled] = React.useState(!!(existing?.search?.mmr));
+  const [mmrLambda, setMmrLambda] = React.useState(
+    existing?.search?.mmr?.lambda_mult != null ? String(existing.search.mmr.lambda_mult) : "0.5"
+  );
+  const [mmrFetchK, setMmrFetchK] = React.useState(
+    existing?.search?.mmr?.fetch_k != null ? String(existing.search.mmr.fetch_k) : ""
+  );
+
+  // Cross-encoder reranker (CER) state
+  const [cerEnabled, setCerEnabled] = React.useState(!!(existing?.search?.cer));
+  const [cerProviderId, setCerProviderId] = React.useState(existing?.search?.cer?.provider_id || "");
+  const [cerModel, setCerModel] = React.useState(existing?.search?.cer?.model || "");
+  const [cerTopN, setCerTopN] = React.useState(
+    existing?.search?.cer?.top_n != null ? String(existing.search.cer.top_n) : "100"
+  );
+
   React.useEffect(() => {
     if (!providerId && embedProviders.length > 0) setProviderId(embedProviders[0].id);
   }, [embedProviders, providerId]);
   React.useEffect(() => {
     if (!searchProviderId && sspProviders.length > 0) setSearchProviderId(sspProviders[0].id);
   }, [sspProviders, searchProviderId]);
+  React.useEffect(() => {
+    if (cerEnabled && !cerProviderId && cerProviders.length > 0) setCerProviderId(cerProviders[0].id);
+  }, [cerProviders, cerProviderId, cerEnabled]);
 
   // Model options come from the selected provider's row (T0025 — no live
   // introspection; the provider stores its declared model list).
@@ -695,6 +723,14 @@ function KN_NewCollectionModal({ embedProviders, sspProviders = [], pushToast, o
       setModel(modelOptions[0].name);
     }
   }, [modelOptions]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectedCerProvider = cerProviders.find((p) => p.id === cerProviderId);
+  const cerModelOptions = selectedCerProvider?.models ?? [];
+  React.useEffect(() => {
+    if (cerEnabled && cerModelOptions.length > 0 && !cerModelOptions.some((m) => m.name === cerModel)) {
+      setCerModel(cerModelOptions[0].name);
+    }
+  }, [cerModelOptions, cerEnabled]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const create = useMutation(
     (body) => isEdit
@@ -726,11 +762,28 @@ function KN_NewCollectionModal({ embedProviders, sspProviders = [], pushToast, o
 
   const submit = async () => {
     setFieldErrors({});
+    // Build search config
+    let search = null;
+    const mmrPart = mmrEnabled ? {
+      lambda_mult: parseFloat(mmrLambda) || 0.5,
+      fetch_k: mmrFetchK ? (parseInt(mmrFetchK, 10) || null) : null,
+    } : null;
+    const cerPart = cerEnabled && cerProviderId && cerModel ? {
+      provider_id: cerProviderId,
+      model: cerModel,
+      top_n: parseInt(cerTopN, 10) || 100,
+    } : null;
+    if (mmrPart || cerPart) {
+      search = {};
+      if (mmrPart) search.mmr = mmrPart;
+      if (cerPart) search.cer = cerPart;
+    }
     const body = {
       ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       description: description || null,
       embedder: { provider_id: providerId, model },
       search_provider_id: searchProviderId,
+      search,
     };
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
@@ -774,17 +827,29 @@ function KN_NewCollectionModal({ embedProviders, sspProviders = [], pushToast, o
         />
       </div>
       <div className="field">
-        <label className="field-label">Embedding provider</label>
-        <select
-          className="select"
-          value={providerId}
-          onChange={(e) => setProviderId(e.target.value)}
-          style={{ width: "100%" }}
-        >
-          <option value="">-- pick a provider --</option>
-          {embedProviders.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
-        </select>
-        {embedProviders.length === 0 && (
+        <label className="field-label">
+          Embedding provider
+          {isEdit && <span className="hint">locked after create</span>}
+        </label>
+        {isEdit ? (
+          <input
+            className="input"
+            value={providerId}
+            disabled
+            style={{ width: "100%", opacity: 0.6 }}
+          />
+        ) : (
+          <select
+            className="select"
+            value={providerId}
+            onChange={(e) => setProviderId(e.target.value)}
+            style={{ width: "100%" }}
+          >
+            <option value="">-- pick a provider --</option>
+            {embedProviders.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+          </select>
+        )}
+        {!isEdit && embedProviders.length === 0 && (
           <div className="field-help" style={{ color: "var(--amber)" }}>
             No embedding providers configured. Create one at /providers/embedding first.
           </div>
@@ -792,17 +857,29 @@ function KN_NewCollectionModal({ embedProviders, sspProviders = [], pushToast, o
         {fieldErrors["body.embedder.provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.embedder.provider_id"]}</div>}
       </div>
       <div className="field">
-        <label className="field-label">Model</label>
-        <select
-          className="select"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          style={{ width: "100%" }}
-        >
-          <option value="">-- pick a model --</option>
-          {modelOptions.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
-        </select>
-        <div className="field-help">Model list comes from the provider row, not a live introspection (T0025).</div>
+        <label className="field-label">
+          Embedding model
+          {isEdit && <span className="hint">locked after create</span>}
+        </label>
+        {isEdit ? (
+          <input
+            className="input"
+            value={model}
+            disabled
+            style={{ width: "100%", opacity: 0.6 }}
+          />
+        ) : (
+          <select
+            className="select"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            style={{ width: "100%" }}
+          >
+            <option value="">-- pick a model --</option>
+            {modelOptions.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
+          </select>
+        )}
+        {!isEdit && <div className="field-help">Model list comes from the provider row, not a live introspection (T0025).</div>}
         {fieldErrors["body.embedder.model"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.embedder.model"]}</div>}
       </div>
       <div className="field">
@@ -828,6 +905,135 @@ function KN_NewCollectionModal({ embedProviders, sspProviders = [], pushToast, o
             : "Backs this collection's vector index. Immutable after create."}
         </div>
         {fieldErrors["body.search_provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.search_provider_id"]}</div>}
+      </div>
+
+      {/* MMR (Maximal Marginal Relevance) */}
+      <div className="field">
+        <label className="field-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={mmrEnabled}
+            onChange={(e) => setMmrEnabled(e.target.checked)}
+          />
+          MMR diversification
+          <span className="hint">optional</span>
+        </label>
+        <div className="field-help">
+          Maximal Marginal Relevance re-ranks results to reduce near-duplicate chunks.
+        </div>
+        {mmrEnabled && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 8 }}>
+            <div>
+              <label className="field-label" style={{ fontSize: 11 }}>lambda_mult (0-1)</label>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                max="1"
+                step="0.05"
+                value={mmrLambda}
+                onChange={(e) => setMmrLambda(e.target.value)}
+                style={{ width: "100%" }}
+              />
+              <div className="field-help" style={{ fontSize: 10.5 }}>
+                1.0 = pure relevance, 0.0 = pure diversity. Default 0.5.
+              </div>
+              {fieldErrors["body.search.mmr.lambda_mult"] && (
+                <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.search.mmr.lambda_mult"]}</div>
+              )}
+            </div>
+            <div>
+              <label className="field-label" style={{ fontSize: 11 }}>fetch_k (optional)</label>
+              <input
+                className="input"
+                type="number"
+                min="1"
+                value={mmrFetchK}
+                onChange={(e) => setMmrFetchK(e.target.value)}
+                placeholder="auto"
+                style={{ width: "100%" }}
+              />
+              <div className="field-help" style={{ fontSize: 10.5 }}>
+                Candidates fetched before MMR runs. Leave blank to auto-compute (max(50, 10*k)).
+              </div>
+              {fieldErrors["body.search.mmr.fetch_k"] && (
+                <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.search.mmr.fetch_k"]}</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Cross-encoder reranker (CER) */}
+      <div className="field">
+        <label className="field-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={cerEnabled}
+            onChange={(e) => setCerEnabled(e.target.checked)}
+          />
+          Cross-encoder reranker
+          <span className="hint">optional</span>
+        </label>
+        <div className="field-help">
+          Re-scores retrieved candidates with a cross-encoder model before returning results.
+        </div>
+        {cerEnabled && (
+          <div style={{ marginTop: 8 }}>
+            <div className="field" style={{ marginBottom: 8 }}>
+              <label className="field-label" style={{ fontSize: 11 }}>Cross-encoder provider</label>
+              <select
+                className="select"
+                value={cerProviderId}
+                onChange={(e) => setCerProviderId(e.target.value)}
+                style={{ width: "100%" }}
+              >
+                <option value="">-- pick a provider --</option>
+                {cerProviders.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+              </select>
+              {cerProviders.length === 0 && (
+                <div className="field-help" style={{ color: "var(--amber)", fontSize: 10.5 }}>
+                  No cross-encoder providers configured. Create one at /providers/cross-encoder first.
+                </div>
+              )}
+              {fieldErrors["body.search.cer.provider_id"] && (
+                <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.search.cer.provider_id"]}</div>
+              )}
+            </div>
+            <div className="field" style={{ marginBottom: 8 }}>
+              <label className="field-label" style={{ fontSize: 11 }}>Cross-encoder model</label>
+              <select
+                className="select"
+                value={cerModel}
+                onChange={(e) => setCerModel(e.target.value)}
+                style={{ width: "100%" }}
+              >
+                <option value="">-- pick a model --</option>
+                {cerModelOptions.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
+              </select>
+              {fieldErrors["body.search.cer.model"] && (
+                <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.search.cer.model"]}</div>
+              )}
+            </div>
+            <div>
+              <label className="field-label" style={{ fontSize: 11 }}>top_n</label>
+              <input
+                className="input"
+                type="number"
+                min="1"
+                value={cerTopN}
+                onChange={(e) => setCerTopN(e.target.value)}
+                style={{ width: "100%", maxWidth: 160 }}
+              />
+              <div className="field-help" style={{ fontSize: 10.5 }}>
+                Candidates the cross-encoder scores. Default 100; quality plateaus past ~100.
+              </div>
+              {fieldErrors["body.search.cer.top_n"] && (
+                <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.search.cer.top_n"]}</div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </Modal>
   );

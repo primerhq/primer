@@ -31,11 +31,20 @@ panel on the right.
    - **Embedding provider** -- pick from the providers configured
      under Providers / Embedding. The dropdown is empty if none
      are configured yet; create one there first.
-   - **Model** -- options are drawn from the selected provider's
+   - **Embedding model** -- options are drawn from the selected provider's
      declared model list.
    - **Search provider** -- the vector database (pgvector or
      pgvectorscale) that stores this collection's index.
      Immutable after create.
+   - **MMR diversification** (optional) -- enable Maximal Marginal
+     Relevance to reduce near-duplicate chunks in search results.
+     Tune `lambda_mult` (0 = max diversity, 1 = pure relevance; default
+     0.5) and optionally `fetch_k` (candidates pulled before MMR runs;
+     defaults to max(50, 10*k) if left blank).
+   - **Cross-encoder reranker** (optional) -- enable a cross-encoder
+     model to re-score retrieved candidates before returning results.
+     Pick the cross-encoder provider and model, and set `top_n` (how
+     many candidates the cross-encoder scores; default 100).
 4. Click **Create**.
 
 A success toast confirms the collection was created and the table
@@ -45,15 +54,20 @@ refreshes.
 The embedding model and search provider are bound at create time
 and cannot be changed afterwards. If you need a different model,
 delete the collection and create a new one; documents must be
-re-ingested.
+re-ingested. The MMR and cross-encoder settings can be changed at
+any time without re-indexing.
 ```
 
 ## Editing a collection
 
 Select the collection row to open the detail panel, then click
-**Edit**. Only the description can change on a non-system,
-non-harness-managed collection. The ID, embedding model, and
-search provider are locked.
+**Edit**. The description, MMR diversification, and cross-encoder
+reranker settings are editable. The ID, embedding provider, embedding
+model, and search provider are locked after creation and displayed
+read-only.
+
+System collections (marked with a system badge in the table) are
+maintained automatically and cannot be edited or deleted by hand.
 
 System collections (marked with a system badge in the table) are
 maintained automatically and cannot be edited or deleted by hand.

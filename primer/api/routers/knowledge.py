@@ -103,6 +103,39 @@ async def _validate_ssp_immutable(
         )
 
 
+async def _validate_embedder_immutable(
+    entity: Collection, existing: Collection, request: Request
+) -> None:
+    """on_pre_update hook: reject changes to embedder after create.
+
+    Changing the embedder would invalidate every existing chunk's vector
+    dimensions, so we treat both ``embedder.provider_id`` and
+    ``embedder.model`` as create-bound.
+    """
+    if existing.embedder.provider_id != entity.embedder.provider_id:
+        raise RequestValidationError(
+            errors=[
+                {
+                    "type": "value_error",
+                    "loc": ("body", "embedder", "provider_id"),
+                    "msg": "field is immutable after create",
+                    "input": entity.embedder.provider_id,
+                }
+            ]
+        )
+    if existing.embedder.model != entity.embedder.model:
+        raise RequestValidationError(
+            errors=[
+                {
+                    "type": "value_error",
+                    "loc": ("body", "embedder", "model"),
+                    "msg": "field is immutable after create",
+                    "input": entity.embedder.model,
+                }
+            ]
+        )
+
+
 async def _collection_pre_create(entity: Collection, request: Request) -> None:
     """Composed on_pre_create: SSP reference check."""
     await _validate_ssp_exists(entity, request)
@@ -111,8 +144,9 @@ async def _collection_pre_create(entity: Collection, request: Request) -> None:
 async def _collection_pre_update(
     entity: Collection, existing: Collection, request: Request
 ) -> None:
-    """Composed on_pre_update: SSP immutability check."""
+    """Composed on_pre_update: SSP + embedder immutability checks."""
     await _validate_ssp_immutable(entity, existing, request)
+    await _validate_embedder_immutable(entity, existing, request)
 
 
 # ---- Collection router -----------------------------------------------------
