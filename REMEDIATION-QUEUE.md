@@ -21,6 +21,10 @@ primectl. Mark a track N/A with a one-line reason.
   session always transitions to ENDED/failed + drops its lease even if the
   workspace IO write fails; +1 unit test (128 tests green) - MERGED 75a7d08f
   (e2e t0539/t0630/t0649/t0679 deferred to the final e2e gate)
+- user-2 collection-search-ui - MMR + cross-encoder controls on user-collection
+  create/edit dialogs; embedder provider/model locked on edit (422 via
+  _validate_embedder_immutable); +8 unit +8 e2e; 204 unit green - MERGED 704f6a73
+  (e2e KNW-SC-01..08 deferred to the final e2e gate)
 
 ## Pending tasks
 
@@ -266,9 +270,10 @@ Mostly independent of user-1/2/3 (own files); can run in parallel with them.
 |------|--------|----------|-------|--------|
 | llm-timeout | (merged) | - | - | merged 40357e2a |
 | failure-isolation | (merged) | - | a107c6a7 | merged 75a7d08f |
+| user-2-collection-ui | (merged) | - | a066c650 | merged 704f6a73 |
 | user-4-webhook | feat/user-4-webhook | primer-user-4-webhook | ada35505 | in-flight |
-| user-2-collection-ui | feat/user-2-collection-ui | primer-user-2-collection-ui | a066c650 | in-flight |
 | git-timeout | feat/git-timeout | primer-git-timeout | a15f02c9 | in-flight |
+| chat-approval-pending | feat/chat-approval-pending | primer-chat-approval-pending | ae527ce0 | in-flight |
 | _all others_ | - | - | - | pending |
 
 ## Conflict map (concurrent tasks MUST NOT share a hot file)
