@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 _CHUNK_TARGET_CHARS = 1500
 _CHUNK_HARD_CAP = 3000
 
+# Number of chunks embedded per embedder call. Mirrors
+# ``DocumentIngester.DEFAULT_BATCH_SIZE`` so user-collection ingestion and
+# the internal-collection catalog batch identically.
+_EMBED_BATCH_SIZE = 32
+
 
 def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
     """Extract the stored vector dimension from a ConflictError message.
@@ -173,31 +178,40 @@ async def index_document(
     # every new vector is in hand, so a failure here leaves the prior
     # index intact and the document still searchable.
     #
-    # One embed call per chunk keeps the code simple and matches the
-    # catalog's per-record approach. The first chunk's vector length
-    # determines the collection dimensionality.
+    # Batch the chunk embeddings (mirrors DocumentIngester): each embed
+    # call carries up to ``_EMBED_BATCH_SIZE`` chunks and returns one
+    # embedding per input in input order, so the records line up with the
+    # chunks one-to-one. This is behaviour-equivalent to the previous
+    # per-chunk loop (same vector per chunk, same chunk_id == str(idx),
+    # same order) but collapses N embedder round-trips into ceil(N / 32).
+    # The dimensionality-mismatch PROBE above is untouched; only the main
+    # chunk embedding is batched here.
     records: list[EmbeddingRecord] = []
-    for idx, chunk in enumerate(chunks):
+    for batch_start in range(0, len(chunks), _EMBED_BATCH_SIZE):
+        batch = chunks[batch_start : batch_start + _EMBED_BATCH_SIZE]
         response = await embedder.embed(
             model=collection.embedder.model,
-            inputs=[TextPart(text=chunk)],
+            inputs=[TextPart(text=chunk) for chunk in batch],
         )
-        if not response.embeddings:
+        if len(response.embeddings) != len(batch):
             raise PrimerError(
-                f"embedder returned no embedding for document "
-                f"{document.id!r} chunk {idx}"
+                f"embedder returned {len(response.embeddings)} embeddings "
+                f"for {len(batch)} chunk(s) of document {document.id!r}"
             )
-        vector = list(response.embeddings[0].vector)
-        records.append(
-            EmbeddingRecord(
-                collection_id=collection.id,
-                document_id=document.id,
-                chunk_id=str(idx),
-                text=chunk,
-                vector=vector,
-                meta={"document_name": document.name},
+        for offset, (chunk, emb) in enumerate(
+            zip(batch, response.embeddings, strict=True)
+        ):
+            idx = batch_start + offset
+            records.append(
+                EmbeddingRecord(
+                    collection_id=collection.id,
+                    document_id=document.id,
+                    chunk_id=str(idx),
+                    text=chunk,
+                    vector=list(emb.vector),
+                    meta={"document_name": document.name},
+                )
             )
-        )
 
     # Now that embedding succeeded, atomically-ish replace the document's
     # chunks: drop the prior set, then upsert the new one. The vector store

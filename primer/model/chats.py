@@ -115,6 +115,22 @@ class Chat(Identifiable):
             "message writer (see primer.chat.executor)."
         ),
     )
+    next_unprocessed_seq: int = Field(
+        default=0,
+        description=(
+            "Scan cursor for the worker-side claim drain (perf optimization). "
+            "Every chat_messages row with ``seq < next_unprocessed_seq`` "
+            "belongs to a turn that has already completed (its user_message "
+            "is paired with a terminal row), so the claim's "
+            "``_find_next_user_message`` / ``_find_resume_reply`` scans need "
+            "only consider rows at or after this seq. Advanced to "
+            "``last_seq + 1`` whenever the chat drains fully (no more "
+            "unprocessed user_messages). Defaults to 0 -> scan from the start, "
+            "which is exactly equivalent to the pre-cursor full scan, so "
+            "existing chat rows (which lack the field) behave unchanged on "
+            "their first drain."
+        ),
+    )
     turn_status: Literal["idle", "claimable", "running"] = Field(
         default="idle",
         description=(

@@ -184,8 +184,33 @@ async def _iter_catalogue(
         )
 
 
+# Process-level cache for the dispatch routing map, keyed on the
+# McpExposure singleton's ``updated_at`` stamp. The map is otherwise
+# rebuilt on every ``tools/call`` (a full catalogue enumeration). Caching
+# it is safe because a tool is only DISPATCHABLE when it is in the
+# allowlist, and the allowlist can only change through
+# :func:`update_exposure`, which bumps ``updated_at`` -- so any change
+# that could make a new scoped id routable also invalidates this cache.
+# (A toolset added WITHOUT an exposure edit is not yet in the allowlist,
+# so its absence from a stale map never affects a real dispatch.)
+_ROUTING_CACHE: dict[str, tuple[datetime, dict[str, tuple[str, str]]]] = {}
+
+
+def _routing_cache_key(deps: ExposureDeps) -> str:
+    """Key the cache per storage provider so two providers (e.g. distinct
+    test instances) never share a routing map."""
+    return f"{id(deps.storage_provider)}"
+
+
+def _clear_routing_cache() -> None:
+    """Drop the cached routing maps (test seam)."""
+    _ROUTING_CACHE.clear()
+
+
 async def build_routing_map(
     deps: ExposureDeps,
+    *,
+    use_cache: bool = True,
 ) -> dict[str, tuple[str, str]]:
     """Return ``{scoped_id: (toolset_id, bare_tool_name)}`` for the catalogue.
 
@@ -197,10 +222,27 @@ async def build_routing_map(
     toolset whose id itself contains ``__`` (e.g. ``acme__ts``) and a
     built-in tool whose bare name contains ``__`` (e.g. ``harness__list``)
     both resolve correctly, where neither a first- nor last-``__`` split can.
+
+    The result is memoized per storage provider and keyed on the
+    :class:`McpExposure` row's ``updated_at`` stamp: a hit returns the cached
+    map without re-enumerating the catalogue; a miss (first call, or the
+    stamp moved because the operator edited the allowlist) rebuilds it. Pass
+    ``use_cache=False`` to force a fresh build (used by the validation path,
+    which must see in-flight catalogue changes).
     """
+    if use_cache:
+        exposure = await get_exposure(deps)
+        key = _routing_cache_key(deps)
+        cached = _ROUTING_CACHE.get(key)
+        if cached is not None and cached[0] == exposure.updated_at:
+            return cached[1]
+
     routing: dict[str, tuple[str, str]] = {}
     async for tool, _provider in _iter_catalogue(deps):
         routing[tool_scoped_id(tool)] = (tool.toolset_id, tool.id)
+
+    if use_cache:
+        _ROUTING_CACHE[_routing_cache_key(deps)] = (exposure.updated_at, routing)
     return routing
 
 

@@ -463,17 +463,79 @@ async def _find_next_user_message(
 
     This correctly handles the worker-dispatch model where user_messages
     are pre-seeded to storage before the worker claims the chat.
+
+    Cursor optimization (perf, behaviour-equivalent)
+    ------------------------------------------------
+    ``Chat.next_unprocessed_seq`` records a seq below which the chat is
+    KNOWN to be fully drained: every row with ``seq < cursor`` belongs to
+    a completed turn (each user_message paired with its terminal). The
+    scan therefore only needs to consider rows with ``seq >= cursor``,
+    counting terminals/user_messages over that suffix alone. This is
+    EXACTLY equivalent to the full scan: at the cursor checkpoint the
+    prefix holds ``k`` non-excluded user_messages and ``k`` terminals, so
+    the global ``user_messages[total_terminals]`` index reduces to
+    ``suffix_user_messages[suffix_terminals]`` (the ``k`` prefix terms
+    cancel). The cursor is only ever advanced to ``last_seq + 1`` at a
+    fully-drained checkpoint (see below), so the invariant holds. A fresh
+    chat (cursor 0) scans from the start, identical to the pre-cursor code.
     """
     msgs = deps.storage_provider.get_storage(ChatMessage)
+    chats = deps.storage_provider.get_storage(Chat)
+    chat = await chats.get(chat_id)
+    cursor = chat.next_unprocessed_seq if chat is not None else 0
+
+    rows = await _read_messages_from_cursor(msgs, chat_id, cursor)
+
+    _TERMINALS = frozenset({"done", "error", "cancelled", "yielded"})
+    terminal_count = 0
+    user_messages: list[ChatMessage] = []
+    for row in rows:
+        if row.kind in _TERMINALS:
+            terminal_count += 1
+        elif row.kind == "user_message":
+            # A reply consumed by the resume path is flagged
+            # ``_history_excluded``; it has already been folded into
+            # a tool_result and must NOT be re-served as a fresh turn.
+            if (row.payload or {}).get("_history_excluded"):
+                continue
+            user_messages.append(row)
+
+    # The Nth terminal closes the Nth user_message; the (N+1)th
+    # user_message is the next one to process. If there are fewer
+    # user_messages than (terminal_count + 1), the queue is drained.
+    target_index = terminal_count  # 0-based index into user_messages list
+    if target_index < len(user_messages):
+        return user_messages[target_index]
+    # Fully drained: every user_message in the suffix is paired with a
+    # terminal. Advance the cursor past the rows we actually scanned so the
+    # next drain skips them. We use the max seq SEEN IN THIS SNAPSHOT (never
+    # a re-read last_seq) so a user_message appended concurrently -- after
+    # the snapshot but before the cursor write -- is never skipped: its seq
+    # is strictly greater than every row we observed, hence >= the new
+    # cursor, so the next scan still finds it.
+    max_seen = rows[-1].seq if rows else (cursor - 1)
+    await _advance_drain_cursor(chats, chat_id, max_seen + 1, cursor)
+    return None
+
+
+async def _read_messages_from_cursor(
+    msgs,
+    chat_id: str,
+    cursor: int,
+) -> list[ChatMessage]:
+    """Read every ChatMessage with ``seq >= cursor`` in ascending seq order.
+
+    Pages internally (window of 200) so memory stays bounded. Filtering
+    by ``seq >= cursor`` is applied in-process to keep the storage query
+    backend-agnostic; the cursor still bounds how far back the page walk
+    can start mattering, and skipped pages are cheap reads. When the
+    cursor is 0 this returns every row, identical to the old full scan.
+    """
     pred = Predicate(
         left=FieldRef(name="chat_id"), op=Op.EQ,
         right=Value(value=chat_id),
     )
-
-    _TERMINALS = frozenset({"done", "error", "cancelled", "yielded"})
-
-    terminal_count = 0
-    user_messages: list[ChatMessage] = []
+    out: list[ChatMessage] = []
     offset = 0
     PAGE = 200
     while True:
@@ -482,26 +544,31 @@ async def _find_next_user_message(
             order_by=[OrderBy(field="seq", direction="asc")],
         )
         for row in page.items:
-            if row.kind in _TERMINALS:
-                terminal_count += 1
-            elif row.kind == "user_message":
-                # A reply consumed by the resume path is flagged
-                # ``_history_excluded``; it has already been folded into
-                # a tool_result and must NOT be re-served as a fresh turn.
-                if (row.payload or {}).get("_history_excluded"):
-                    continue
-                user_messages.append(row)
+            if row.seq >= cursor:
+                out.append(row)
         if len(page.items) < PAGE:
             break
         offset += PAGE
+    return out
 
-    # The Nth terminal closes the Nth user_message; the (N+1)th
-    # user_message is the next one to process. If there are fewer
-    # user_messages than (terminal_count + 1), the queue is drained.
-    target_index = terminal_count  # 0-based index into user_messages list
-    if target_index < len(user_messages):
-        return user_messages[target_index]
-    return None
+
+async def _advance_drain_cursor(
+    chats, chat_id: str, new_cursor: int, prev_cursor: int,
+) -> None:
+    """Advance ``Chat.next_unprocessed_seq`` to ``new_cursor`` on a fully
+    drained chat. No-op when the chat vanished or the cursor wouldn't move.
+
+    ``new_cursor`` is ``max_scanned_seq + 1`` (NOT a re-read ``last_seq``)
+    so a concurrently-appended user_message is never skipped. Only writes
+    when the cursor actually advances (avoids a redundant storage
+    round-trip on every idle drain)."""
+    fresh = await chats.get(chat_id)
+    if fresh is None:
+        return
+    if new_cursor <= fresh.next_unprocessed_seq or new_cursor <= prev_cursor:
+        return
+    fresh.next_unprocessed_seq = new_cursor
+    await chats.update(fresh)
 
 
 async def _find_resume_reply(
@@ -517,25 +584,19 @@ async def _find_resume_reply(
     the first un-consumed ``user_message`` whose seq is greater than the
     pending ``tool_call`` row's seq. Returns None when no reply has
     arrived yet (the chat should release idle and wait).
+
+    Cursor-bounded scan (perf, behaviour-equivalent): the parked turn is
+    by definition NOT drained, so ``Chat.next_unprocessed_seq`` has not
+    advanced past its prompting user_message; the pending ``tool_call``
+    and the awaited reply both sit at ``seq >= cursor``. Scanning from the
+    cursor therefore returns exactly the same reply the full scan would.
     """
     msgs = deps.storage_provider.get_storage(ChatMessage)
-    pred = Predicate(
-        left=FieldRef(name="chat_id"), op=Op.EQ,
-        right=Value(value=chat_id),
-    )
+    chats = deps.storage_provider.get_storage(Chat)
+    chat = await chats.get(chat_id)
+    cursor = chat.next_unprocessed_seq if chat is not None else 0
     tool_call_id = pending.get("tool_call_id")
-    rows: list[ChatMessage] = []
-    offset = 0
-    PAGE = 200
-    while True:
-        page = await msgs.find(
-            pred, OffsetPage(offset=offset, length=PAGE),
-            order_by=[OrderBy(field="seq", direction="asc")],
-        )
-        rows.extend(page.items)
-        if len(page.items) < PAGE:
-            break
-        offset += PAGE
+    rows = await _read_messages_from_cursor(msgs, chat_id, cursor)
 
     pending_seq: int | None = None
     for row in rows:

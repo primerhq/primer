@@ -75,7 +75,39 @@ class ChatChannelRouter:
     async def _find_thread_chat(
         self, *, channel_id: str, thread_external_id: str,
     ) -> Chat | None:
+        """Resolve the live Chat bound to ``(channel_id, thread_external_id)``.
+
+        Fast path: a :class:`CorrelationStore` record keyed on the thread
+        anchor (written by :meth:`resolve_or_create` when the thread's chat is
+        created) maps the thread directly to its chat id, so the common case
+        is a single keyed lookup + a single get -- no table scan.
+
+        Slow path (legacy / anomaly): when no correlation record exists, or it
+        points at a chat that has been deleted, no longer carries the matching
+        binding, or has ``status == 'ended'``, fall back to the full scan that
+        this method used historically and refresh the correlation to the live
+        chat it finds. The return value is therefore IDENTICAL to the old scan
+        for every case: the fast path only short-circuits when it has a live
+        chat whose binding matches (which the scan would also have returned),
+        and every other case defers to the scan itself.
+        """
         chats = self._sp.get_storage(Chat)
+        # Fast path: keyed correlation lookup (thread external id is the anchor).
+        record = await self._correlation.lookup(channel_id, thread_external_id)
+        if record is not None and record.chat_id is not None:
+            candidate = await chats.get(record.chat_id)
+            if (
+                candidate is not None
+                and candidate.status != "ended"
+                and candidate.channel_binding is not None
+                and candidate.channel_binding.channel_id == channel_id
+                and candidate.channel_binding.thread_external_id
+                == thread_external_id
+            ):
+                return candidate
+        # Slow path: scan (covers legacy chats with no correlation record, an
+        # ended/mismatched correlated chat, etc.).  Refresh the correlation so
+        # the next lookup hits the fast path.
         offset = 0
         while True:
             page = await chats.find(
@@ -89,6 +121,9 @@ class ChatChannelRouter:
                     and b.thread_external_id == thread_external_id
                     and c.status != "ended"
                 ):
+                    await self._correlation.upsert_chat(
+                        channel_id=channel_id, anchor=thread_external_id,
+                        chat_id=c.id)
                     return c
             if len(page.items) < 200:
                 return None

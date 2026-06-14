@@ -464,32 +464,67 @@ async def get_subscription(
     return sub
 
 
+# Window size for the paginated list helpers below. Each list walks the
+# storage backend page by page until exhausted so NOTHING is silently
+# dropped past a single fixed cap (the previous fixed ``length=200`` lost
+# every row beyond the 200th). Memory stays bounded to one window at a
+# time while accumulating the full result.
+_LIST_PAGE_SIZE = 200
+
+
+async def _drain_list(storage, *, predicate=None) -> list:
+    """Page through ``storage`` (``find`` with ``predicate``, or ``list`` when
+    ``predicate`` is None) until exhausted, returning every row.
+
+    Bounded memory: only one window of ``_LIST_PAGE_SIZE`` rows is held by
+    the backend per round-trip; the accumulator grows with the true result
+    size, which is the intended (un-truncated) behaviour."""
+    out: list = []
+    offset = 0
+    while True:
+        page = (
+            await storage.list(OffsetPage(offset=offset, length=_LIST_PAGE_SIZE))
+            if predicate is None
+            else await storage.find(
+                predicate, OffsetPage(offset=offset, length=_LIST_PAGE_SIZE)
+            )
+        )
+        out.extend(page.items)
+        if len(page.items) < _LIST_PAGE_SIZE:
+            break
+        offset += _LIST_PAGE_SIZE
+    return out
+
+
 async def list_triggers(
     *,
     kind: str | None = None,
     enabled: bool | None = None,
     deps: ServiceDeps,
 ) -> list[Trigger]:
+    """Return ALL triggers (optionally filtered), paging through every row.
+
+    Previously capped at the first 200 rows, silently dropping the rest;
+    now walks the backend page by page until exhausted."""
     storage = deps.storage_provider.get_storage(Trigger)
     if kind is None and enabled is None:
-        page = await storage.list(OffsetPage(offset=0, length=200))
-        return list(page.items)
+        return await _drain_list(storage)
     q = Q(Trigger)
     if kind is not None:
         q = q.where_op("config.kind", Op.EQ, kind)
     if enabled is not None:
         q = q.where_op("enabled", Op.EQ, enabled)
-    page = await storage.find(q.build(), OffsetPage(offset=0, length=200))
-    return list(page.items)
+    return await _drain_list(storage, predicate=q.build())
 
 
 async def list_subscriptions(
     *, trigger_id: str, deps: ServiceDeps,
 ) -> list[Subscription]:
+    """Return ALL subscriptions for a trigger, paging through every row
+    (previously capped at the first 200)."""
     subs_storage = deps.storage_provider.get_storage(Subscription)
     q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger_id)
-    page = await subs_storage.find(q.build(), OffsetPage(offset=0, length=200))
-    return list(page.items)
+    return await _drain_list(subs_storage, predicate=q.build())
 
 
 __all__ = [
