@@ -353,6 +353,24 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
                 result = await self._dispatch_toolcall_with_bypass(
                     node_def, entry.arguments
                 )
+            except YieldToWorker as yld:
+                # Two-phase park: the approval gate sat on a *yielding* tool.
+                # The operator APPROVED (phase 1), so the bypassed re-dispatch
+                # ran the real tool - which itself yields for its own event
+                # (timer/file/graph/human). Do NOT swallow this as a node
+                # failure: re-record the node as a pending ToolCall on the
+                # NEW event key (phase 2) so the drain-until-empty check below
+                # re-parks via _build_pending_park_yield(). Mirrors the normal
+                # dispatch path's YieldToWorker handling in _stream_node.
+                self._pending_toolcalls.append(
+                    _PendingToolCall(
+                        node_id=entry.node_id,
+                        tool_call_id=yld.tool_call_id,
+                        parked_event_key=yld.yielded.event_key,
+                        arguments=entry.arguments,
+                    )
+                )
+                continue
             except _ToolApprovalRejected as rej:
                 # Spec B §4.8 / Phase 6 Task 6.4 — operator rejected or
                 # the approval timed out; stamp the node as a failure

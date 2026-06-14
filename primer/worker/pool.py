@@ -30,6 +30,7 @@ from primer.int.scheduler import (
 )
 from primer.model.scheduler import WorkerConfig
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
+from primer.model.yield_ import YieldToWorker
 from primer.worker.turn import _CancelScope
 from primer.worker.yield_resume_registry import get_resume_hook
 from primer.worker.yield_runtime import (
@@ -695,6 +696,17 @@ class WorkerPool:
                     output=hook_result.output,
                     error=hook_result.is_error,
                 )
+        except YieldToWorker as yld:
+            # Two-phase park: an approval gate sat on a *yielding* tool. The
+            # operator just APPROVED (phase 1), so _resume_tool_approval
+            # re-dispatched the real tool with bypass_approval=True - which
+            # itself yields for its own event (timer/file/graph/human). Do
+            # NOT swallow this as an error: re-park the session on the new
+            # event key (phase 2), preserving the in-progress turn messages,
+            # so it resumes when the real event fires. Mirrors the normal
+            # park path in primer/session/dispatch.py and
+            # _repark_invoke_graph_outcome below.
+            return self._repark_resumed_yield_outcome(session, parked, yld)
         except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
             logger.exception(
                 "resume: hook for tool %r on session %s raised; synthesising"
@@ -947,6 +959,58 @@ class WorkerPool:
                 parked_state=new_parked.to_jsonable(),
                 parked_event_key=restamped.yielded.event_key,
                 parked_event_keys=restamped.yielded.event_keys,
+                parked_until=now + timedelta(seconds=timeout),
+                parked_at=now,
+            ),
+        )
+
+    def _repark_resumed_yield_outcome(self, session, parked, yld):
+        """Re-park an AGENT session whose approval-gated tool, once approved,
+        yielded for its OWN real event (phase 2 of the two-phase park).
+
+        Builds a fresh ParkedState from the re-raised YieldToWorker's event
+        key / tool_call_id / resume_metadata, preserving the in-progress turn's
+        rehydrated assistant messages so the eventual real-event resume pairs
+        the tool_result against the original tool_use. Mirrors the normal park
+        path in primer/session/dispatch.py and _repark_invoke_graph_outcome.
+        """
+        from datetime import timedelta
+        from primer.int.claim import ParkRequest, ReleaseOutcome
+
+        yielded = yld.yielded
+        now = datetime.now(timezone.utc)
+        timeout = yielded.timeout if yielded.timeout is not None else 3600.0
+
+        # Stamp parked_at_iso so the eventual resume hook can compute elapsed
+        # without a separate read (mirrors dispatch.py's first-park path).
+        resume_metadata = dict(yielded.resume_metadata)
+        resume_metadata["parked_at_iso"] = now.isoformat()
+        yielded_stamped = type(yielded)(
+            tool_name=yielded.tool_name,
+            event_key=yielded.event_key,
+            timeout=yielded.timeout,
+            resume_metadata=resume_metadata,
+            event_keys=getattr(yielded, "event_keys", None),
+        )
+
+        new_parked = ParkedState(
+            yielded=yielded_stamped,
+            # Preserve the in-progress turn history (the assistant message that
+            # emitted the original tool_use) so the real-event resume can pair
+            # the synthesised tool_result against it.
+            llm_messages=parked.llm_messages,
+            turn_no=session.turn_no,
+            started_at=now,
+            tool_call_id=yld.tool_call_id,
+            graph_checkpoint=getattr(yld, "graph_checkpoint", None),
+        )
+        return ReleaseOutcome(
+            success=True,
+            drop_lease=True,
+            park=ParkRequest(
+                parked_state=new_parked.to_jsonable(),
+                parked_event_key=yielded_stamped.event_key,
+                parked_event_keys=getattr(yielded_stamped, "event_keys", None),
                 parked_until=now + timedelta(seconds=timeout),
                 parked_at=now,
             ),
