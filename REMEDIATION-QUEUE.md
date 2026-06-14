@@ -302,7 +302,8 @@ Mostly independent of user-1/2/3 (own files); can run in parallel with them.
 | auth | (merged) | - | a9387770 | merged 5c31ad87 (app.py auto-merged clean) |
 | auto-start | (merged) | - | ad97f6ad | merged 8b43feaf |
 | dim-mismatch | feat/dim-mismatch | primer-dim-mismatch | ad57b181 | in-flight |
-| user-1-bug-reporter | feat/user-1-bug-reporter | primer-user-1-bug-reporter | (dispatching) | in-flight |
+| user-1-bug-reporter | feat/user-1-bug-reporter | primer-user-1-bug-reporter | ae1965c7 | in-flight |
+| correlation-bus | feat/correlation-bus | primer-correlation-bus | ac947490 | in-flight |
 | _all others_ | - | - | - | pending |
 
 ## Conflict map (concurrent tasks MUST NOT share a hot file)
